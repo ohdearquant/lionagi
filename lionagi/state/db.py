@@ -9537,3 +9537,56 @@ def _raise_refused_closes(refused: list[tuple[StateDB, Exception]]) -> None:
     raise RuntimeError(
         f"{len(refused)} shared StateDB handle(s) could not be closed: {named}"
     ) from (refused[0][1])
+
+
+def _engine_catalog_projection(db: StateDB) -> str:
+    """Keep JSON undecoded so each catalog row can be interpreted independently."""
+    options = "CAST(options AS TEXT) AS options" if db.dialect == "postgresql" else "options"
+    return (
+        "id, name, kind, model, max_depth, max_agents, "
+        + options
+        + ", description, created_at, updated_at"
+    )
+
+
+async def _list_engine_catalog_rows(
+    db: StateDB, *, kind: str | None, after: str | None, limit: int
+) -> list[dict[str, Any]]:
+    """Fetch a bounded ID-ordered catalog page, leaving options in its stored form."""
+    conditions = ["id IS NOT NULL"]
+    if db.dialect == "sqlite":
+        # Legacy SQLite TEXT columns may hold BLOB IDs; only text IDs are addressable.
+        conditions.append("typeof(id) = 'text'")
+    params: dict[str, Any] = {"limit": limit}
+    if kind is not None:
+        conditions.append("kind = :kind")
+        params["kind"] = kind
+    if after is not None:
+        conditions.append("id > :after")
+        params["after"] = after
+    query = (
+        "SELECT "  # noqa: S608 -- only fixed SQL fragments are joined; values are bound
+        + _engine_catalog_projection(db)
+        + " FROM engine_defs WHERE "
+        + " AND ".join(conditions)
+        + " ORDER BY id ASC LIMIT :limit"
+    )
+    async with db._read() as conn:
+        rows = (await conn.execute(text(query), params)).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def _get_engine_catalog_row(db: StateDB, def_id: str) -> dict[str, Any] | None:
+    """Fetch a catalog row by ID without decoding its options."""
+    # Do not coerce legacy SQLite BLOB IDs to text or expose them by a text lookup.
+    sqlite_text = " AND typeof(id) = 'text'" if db.dialect == "sqlite" else ""
+    query = (
+        "SELECT "  # noqa: S608 -- projection is chosen from fixed SQL fragments
+        + _engine_catalog_projection(db)
+        + " FROM engine_defs WHERE id IS NOT NULL"
+        + sqlite_text
+        + " AND id = :id"
+    )
+    async with db._read() as conn:
+        row = (await conn.execute(text(query), {"id": def_id})).mappings().first()
+    return None if row is None else dict(row)

@@ -357,6 +357,10 @@ async def compile_workflow_def(
                 raise WorkflowCompileError(
                     f"unknown engine_def_id {engine_def_id!r}", node_id=node_id
                 )
+            from .engine_defs import _catalog_is_registered_engine_kind
+
+            if not _catalog_is_registered_engine_kind(defn.get("kind")):
+                raise WorkflowCompileError("Engine preset kind is not registered", node_id=node_id)
             # Node-level config overrides never went through engine_defs' creation-time
             # checks; re-validate so a saved workflow can't smuggle a hostile test_cmd.
             from .engine_defs import (

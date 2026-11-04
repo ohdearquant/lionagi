@@ -1,0 +1,476 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""HTTP coverage for the read-only engine blueprint and preset catalog."""
+
+from __future__ import annotations
+
+import base64
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
+
+
+@pytest.fixture
+def catalog_app(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    httpx = pytest.importorskip("httpx", reason="httpx not installed")
+
+    import lionagi.state.db as db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
+    from lionagi.studio.app import app
+
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://127.0.0.1:8765",
+    )
+    return db_path, client
+
+
+async def _initialize(db_path: Path) -> None:
+    from lionagi.state.db import StateDB
+
+    async with StateDB(db_path):
+        pass
+
+
+def _insert(db_path: Path, rows: list[tuple[str | None, str, str | bytes, object]]) -> None:
+    """Seed legacy raw values without the validated HTTP write path."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO engine_defs (id,name,kind,options,created_at,updated_at) "
+            "VALUES (?,?,?,?,1,1)",
+            rows,
+        )
+
+
+def _encode(payload: object) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _encode_bytes(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+async def test_blueprints_describe_registered_runtime_inputs_and_options(catalog_app):
+    from lionagi.cli._engine_definitions import KIND_META
+
+    _, client = catalog_app
+    async with client as ac:
+        response = await ac.get("/api/engine-catalog/blueprints")
+        repeated = await ac.get("/api/engine-catalog/blueprints")
+    assert response.status_code == 200, response.text
+    assert repeated.status_code == 200
+    assert repeated.json() == response.json()
+    body = response.json()
+    assert body["schema_version"] == 1
+    items = body["items"]
+    assert len(items) == len(KIND_META)
+    assert {item["kind"] for item in items} == set(KIND_META)
+    for item in items:
+        meta = KIND_META[item["kind"]]
+        assert item["input"] == {"name": meta["pos_arg"], "help": meta["pos_help"]}
+        assert "topology" not in item
+        assert set(item["common_fields"]) == {"model", "max_depth", "max_agents"}
+        assert all({"name", "type", "required"} <= set(option) for option in item["options"])
+    coding = next(item for item in items if item["kind"] == "coding")
+    assert {o["name"]: (o["type"], o["required"]) for o in coding["options"]} == {
+        "test_cmd": ("string", True),
+        "export_dir": ("string", False),
+    }
+
+
+async def test_http_id_roundtrip_empty_punctuation_unicode_and_maximum(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    ids = ["", "a/b%?#雪", "é" * 2048]
+    _insert(db_path, [(value, f"preset-{i}", "research", "{}") for i, value in enumerate(ids)])
+    async with client as ac:
+        for value in ids:
+            response = await ac.get("/api/engine-catalog/preset", params={"id": value})
+            assert response.status_code == 200, response.text
+            assert response.json()["id"] == value
+        missing_parameter = await ac.get("/api/engine-catalog/preset")
+        unknown_id = await ac.get("/api/engine-catalog/preset", params={"id": "missing"})
+    assert missing_parameter.status_code == 422
+    assert unknown_id.status_code == 404
+
+
+async def test_list_pages_more_than_200_and_binds_filter(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    ids = [f"item-{i:03}" for i in range(231)]
+    _insert(
+        db_path,
+        [
+            (value, f"name-{i:03}", "research" if i % 2 else "review", "{}")
+            for i, value in enumerate(ids)
+        ],
+    )
+    seen = []
+    cursor = None
+    async with client as ac:
+        for _ in range(4):
+            params = {"limit": 100}
+            if cursor is not None:
+                params["cursor"] = cursor
+            response = await ac.get("/api/engine-catalog/presets", params=params)
+            assert response.status_code == 200, response.text
+            page = response.json()
+            seen.extend(row["id"] for row in page["items"])
+            next_cursor = page["next_cursor"]
+            assert next_cursor != cursor or next_cursor is None
+            cursor = next_cursor
+            if cursor is None:
+                break
+        assert cursor is None
+        assert seen == ids
+        first = await ac.get("/api/engine-catalog/presets", params={"kind": "research", "limit": 3})
+        assert first.status_code == 200
+        assert all(row["kind"] == "research" for row in first.json()["items"])
+        token = first.json()["next_cursor"]
+        assert token
+        wrong_filter = await ac.get(
+            "/api/engine-catalog/presets", params={"kind": "review", "cursor": token}
+        )
+        assert wrong_filter.status_code == 422
+        assert token not in wrong_filter.text
+
+
+async def test_empty_id_is_a_cursor_position(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    _insert(db_path, [("", "empty", "research", "{}"), ("a", "next", "research", "{}")])
+    async with client as ac:
+        first = await ac.get("/api/engine-catalog/presets", params={"limit": 1})
+        assert first.status_code == 200
+        assert [r["id"] for r in first.json()["items"]] == [""]
+        token = first.json()["next_cursor"]
+        assert token
+        second = await ac.get("/api/engine-catalog/presets", params={"limit": 1, "cursor": token})
+        assert second.status_code == 200
+        assert [r["id"] for r in second.json()["items"]] == ["a"]
+        assert second.json()["next_cursor"] is None
+        explicit = await ac.get(
+            "/api/engine-catalog/presets",
+            params={"cursor": _encode({"v": 1, "after": "", "kind": None})},
+        )
+        assert explicit.status_code == 200
+        assert [r["id"] for r in explicit.json()["items"]] == ["a"]
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "!not-base64!",
+        _encode_bytes(b"\xff"),
+        _encode_bytes(b"{"),
+        _encode_bytes(b'{"v":1,"v":1,"after":"a","kind":null}'),
+        _encode({"v": True, "after": "a", "kind": None}),
+        _encode({"v": 2, "after": "a", "kind": None}),
+        _encode({"v": 1, "after": 5, "kind": None}),
+        _encode({"v": 1, "after": "a"}),
+        _encode({"v": 1, "after": "a", "kind": None, "extra": 1}),
+        _encode({"v": 1, "after": "a", "kind": "unknown"}),
+        _encode({"v": 1, "after": "x" * 4097, "kind": None}),
+        _encode({"v": 1, "after": "a", "kind": None}) + "=",
+    ],
+)
+async def test_invalid_cursor_is_generic_422_even_when_store_absent(catalog_app, token):
+    _, client = catalog_app
+    async with client as ac:
+        response = await ac.get("/api/engine-catalog/presets", params={"cursor": token})
+    assert response.status_code == 422
+    assert token not in response.text
+
+
+async def test_oversized_id_in_middle_is_returned_without_loop_or_silent_drop(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    huge_id = "m" * 4097
+    ids = [f"a-{i:03}" for i in range(199)] + [huge_id] + [f"z-{i:03}" for i in range(50)]
+    _insert(db_path, [(value, f"oversize-{i:03}", "research", "{}") for i, value in enumerate(ids)])
+    seen = []
+    cursor = None
+    seen_cursors = set()
+    async with client as ac:
+        for _ in range(5):
+            params = {"limit": 100}
+            if cursor is not None:
+                assert cursor not in seen_cursors
+                seen_cursors.add(cursor)
+                params["cursor"] = cursor
+            response = await ac.get("/api/engine-catalog/presets", params=params)
+            assert response.status_code == 200, response.text
+            page = response.json()
+            batch = [row["id"] for row in page["items"]]
+            seen.extend(batch)
+            if huge_id in batch:
+                assert batch == [huge_id]
+                assert page["next_cursor"] is None
+                assert page["stop_reason"] == "id_exceeds_cursor_bound"
+                break
+            cursor = page["next_cursor"]
+            assert cursor is not None
+        else:
+            pytest.fail("pagination never reached oversized ID")
+    assert seen == ids[:200]
+
+
+async def test_legacy_option_shapes_are_isolated_and_unknown_kinds_remain_visible(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    secret = "never-echo-malformed-content"
+    deep = "[" * 1100 + "0" + "]" * 1100
+    _insert(
+        db_path,
+        [
+            ("a", "valid", "research", '{"test_cmd":"ignored","export_dir":"ignored"}'),
+            ("b", "json-null", "research", "null"),
+            ("c", "sql-null", "research", None),
+            ("d", "malformed", "research", '{"secret":"' + secret),
+            ("e", "array", "research", '["not-a-map"]'),
+            ("f", "bytes", "research", b"\xff\xfe"),
+            ("g", "deep", "research", deep),
+            ("h", "unknown", "future-kind", '{"old":"value"}'),
+            ("i", "unknown-and-broken", "future-kind", '{"old":'),
+        ],
+    )
+    async with client as ac:
+        response = await ac.get("/api/engine-catalog/presets")
+        assert response.status_code == 200, response.text
+        rows = {row["id"]: row for row in response.json()["items"]}
+        assert set(rows) == set("abcdefghi")
+        assert rows["a"]["availability"] == "available"
+        assert rows["a"]["reasons"] == []
+        assert rows["a"]["stored_option_keys"] == ["export_dir", "test_cmd"]
+        assert rows["a"]["unused_option_keys"] == ["export_dir", "test_cmd"]
+        for row_id in ("b", "c"):
+            assert rows[row_id]["availability"] == "available"
+            assert rows[row_id]["options"] == {}
+            assert rows[row_id]["stored_option_keys"] == []
+        for row_id, reason in (
+            ("d", "options_malformed"),
+            ("e", "options_not_object"),
+            ("f", "options_undecodable"),
+        ):
+            assert rows[row_id]["availability"] == "unavailable"
+            assert rows[row_id]["reasons"] == [reason]
+            assert rows[row_id]["options"] is None
+            assert rows[row_id]["stored_option_keys"] is None
+            assert rows[row_id]["unused_option_keys"] is None
+        assert rows["g"]["availability"] == "unavailable"
+        assert rows["g"]["options"] is None
+        assert rows["g"]["reasons"] == ["options_undecodable"]
+        assert rows["h"]["availability"] == "unavailable"
+        assert rows["h"]["reasons"] == ["kind_not_registered"]
+        assert rows["h"]["stored_option_keys"] == ["old"]
+        assert rows["h"]["unused_option_keys"] is None
+        assert rows["i"]["availability"] == "unavailable"
+        assert rows["i"]["reasons"] == ["kind_not_registered", "options_malformed"]
+        assert rows["i"]["options"] is None
+        assert rows["i"]["stored_option_keys"] is None
+        assert rows["i"]["unused_option_keys"] is None
+        assert secret not in response.text
+        for row_id in "defghi":
+            detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
+            assert detail.status_code == 200
+            assert detail.json() == rows[row_id]
+            assert secret not in detail.text
+
+
+async def test_existing_http_create_with_omitted_options_is_available(catalog_app):
+    _, client = catalog_app
+    async with client as ac:
+        created = await ac.post(
+            "/api/engine-defs/", json={"name": "omitted-options", "kind": "research"}
+        )
+        assert created.status_code == 201, created.text
+        def_id = created.json()["id"]
+        response = await ac.get("/api/engine-catalog/preset", params={"id": def_id})
+        listing = await ac.get("/api/engine-catalog/presets")
+    assert response.status_code == 200, response.text
+    assert listing.status_code == 200, listing.text
+    row = response.json()
+    assert row["availability"] == "available"
+    assert row["reasons"] == []
+    assert row["options"] == {}
+    assert next(item for item in listing.json()["items"] if item["id"] == def_id) == row
+
+
+async def test_catalog_excludes_legacy_null_ids_but_keeps_empty_id(catalog_app):
+    """Legacy SQLite permits NULL primary keys; their schema repair is tracked in #4228."""
+    db_path, client = catalog_app
+    schema = Path(__file__).resolve().parents[2] / "lionagi/state/schema.sql"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(schema.read_text())
+    _insert(
+        db_path,
+        [
+            (None, "legacy-null-one", "research", "{}"),
+            (None, "legacy-null-two", "research", "{}"),
+            ("", "supported-empty-id", "research", "{}"),
+        ],
+    )
+    async with client as ac:
+        page = await ac.get("/api/engine-catalog/presets")
+        detail = await ac.get("/api/engine-catalog/preset", params={"id": ""})
+    assert page.status_code == 200, page.text
+    assert [row["id"] for row in page.json()["items"]] == [""]
+    assert detail.status_code == 200
+    assert detail.json()["id"] == ""
+
+
+async def test_legacy_blob_kind_is_redacted_and_does_not_break_valid_neighbor(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    raw_kind = b"never-echo-kind-\xff"
+    _insert(
+        db_path,
+        [("a", "valid", "research", "{}"), ("b", "blob-kind", raw_kind, "{}")],
+    )
+    async with client as ac:
+        listing = await ac.get("/api/engine-catalog/presets")
+        assert listing.status_code == 200, listing.text
+        rows = {row["id"]: row for row in listing.json()["items"]}
+        assert rows["a"]["availability"] == "available"
+        assert rows["a"]["reasons"] == []
+        assert rows["b"]["availability"] == "unavailable"
+        assert rows["b"]["reasons"] == ["kind_not_text"]
+        assert rows["b"]["kind"] is None
+        assert "never-echo-kind" not in listing.text
+        detail = await ac.get("/api/engine-catalog/preset", params={"id": "b"})
+        assert detail.status_code == 200, detail.text
+        assert detail.json() == rows["b"]
+        assert "never-echo-kind" not in detail.text
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT kind, typeof(kind) FROM engine_defs WHERE id = ?", ("b",)
+        ).fetchone() == (
+            raw_kind,
+            "blob",
+        )
+
+
+async def test_cursor_id_bound_counts_decoded_utf8_bytes_not_encoded_length(catalog_app):
+    _, client = catalog_app
+    within_bound = _encode({"v": 1, "after": "é" * 2048, "kind": None})
+    over_bound = _encode({"v": 1, "after": "é" * 2049, "kind": None})
+    assert len(within_bound) > 4096
+    async with client as ac:
+        good = await ac.get("/api/engine-catalog/presets", params={"cursor": within_bound})
+        bad = await ac.get("/api/engine-catalog/presets", params={"cursor": over_bound})
+    assert good.status_code == 200, good.text
+    assert bad.status_code == 422
+    assert over_bound not in bad.text
+
+
+async def test_unknown_kind_filter_is_refused(catalog_app):
+    _, client = catalog_app
+    async with client as ac:
+        response = await ac.get("/api/engine-catalog/presets", params={"kind": "future-kind"})
+    assert response.status_code == 422
+
+
+async def test_noncanonical_base64_and_bad_payloads_use_same_generic_error(catalog_app):
+    """Unused base64 pad bits must not create a second encoding of the same cursor."""
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    after = "id"
+    valid = _encode({"v": 1, "after": after, "kind": None})
+    while len(valid) % 4 == 0:
+        after += "x"
+        valid = _encode({"v": 1, "after": after, "kind": None})
+    last = alphabet.index(valid[-1])
+    noncanonical = valid[:-1] + alphabet[last ^ 1]
+    pad = "=" * (-len(valid) % 4)
+    assert base64.urlsafe_b64decode(valid + pad) == base64.urlsafe_b64decode(noncanonical + pad)
+    _, client = catalog_app
+    async with client as ac:
+        responses = [
+            await ac.get("/api/engine-catalog/presets", params={"cursor": token})
+            for token in (
+                noncanonical,
+                "not-a-cursor",
+                _encode({"v": True, "after": "a", "kind": None}),
+            )
+        ]
+    assert all(response.status_code == 422 for response in responses)
+    assert responses[0].json() == responses[1].json() == responses[2].json()
+
+
+async def test_legacy_unserializable_options_do_not_break_neighbor_or_detail(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    deep = '{"legacy":' + "[" * 992 + "0" + "]" * 992 + "}"
+    _insert(
+        db_path,
+        [
+            ("a", "healthy", "research", "{}"),
+            ("b", "nan", "research", '{"legacy":NaN}'),
+            ("c", "overflow", "research", '{"legacy":1e1000}'),
+            ("d", "deep-wrapper", "research", deep),
+            ("e", "infinity", "research", '{"legacy":Infinity}'),
+            ("f", "surrogate", "research", r'{"legacy":"\ud800"}'),
+        ],
+    )
+    async with client as ac:
+        listing = await ac.get("/api/engine-catalog/presets")
+        assert listing.status_code == 200, listing.text
+        rows = {row["id"]: row for row in listing.json()["items"]}
+        assert rows["a"]["availability"] == "available"
+        for row_id, reason in (
+            ("b", "options_malformed"),
+            ("c", "options_undecodable"),
+            ("d", "options_undecodable"),
+            ("e", "options_malformed"),
+            ("f", "options_undecodable"),
+        ):
+            assert rows[row_id]["availability"] == "unavailable"
+            assert rows[row_id]["reasons"] == [reason]
+            assert rows[row_id]["options"] is None
+            assert rows[row_id]["stored_option_keys"] is None
+            assert rows[row_id]["unused_option_keys"] is None
+            detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
+            assert detail.status_code == 200, detail.text
+            assert detail.json() == rows[row_id]
+
+
+async def test_options_depth_boundary_and_quoted_brackets(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+
+    def nested(depth):
+        return '{"legacy":' + "[" * (depth - 1) + "0" + "]" * (depth - 1) + "}"
+
+    # The object counts as depth 1. Brackets and escaped quotes inside strings do not count.
+    quoted = json.dumps({"legacy": ('[[[\\"' * 100) + "]]]"})
+    _insert(
+        db_path,
+        [
+            ("a", "depth-32", "research", nested(32)),
+            ("b", "depth-33", "research", nested(33)),
+            ("c", "quoted-brackets", "research", quoted),
+        ],
+    )
+    async with client as ac:
+        response = await ac.get("/api/engine-catalog/presets")
+        assert response.status_code == 200, response.text
+        rows = {row["id"]: row for row in response.json()["items"]}
+        assert rows["a"]["availability"] == "available"
+        assert rows["a"]["reasons"] == []
+        assert rows["b"]["availability"] == "unavailable"
+        assert rows["b"]["reasons"] == ["options_undecodable"]
+        assert rows["b"]["options"] is None
+        assert rows["c"]["availability"] == "available"
+        assert rows["c"]["reasons"] == []
+        assert rows["c"]["options"] == json.loads(quoted)
+        for row_id in "abc":
+            detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
+            assert detail.status_code == 200, detail.text
+            assert detail.json() == rows[row_id]

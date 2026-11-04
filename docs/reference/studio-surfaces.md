@@ -126,6 +126,24 @@ Sources: UI `routes/library.tsx` and `components/library/`; services
 `agents.py`, `playbooks.py`, `skills.py`, `plugins.py`, `mcp_servers.py`,
 `hooks_library.py`, `operator_hooks.py`, `workflow_defs.py`, and `engine_defs.py`.
 
+The backend also exposes a read-only Engine preset catalog while its tab is hidden:
+
+- `GET /api/engine-catalog/blueprints` describes registered engine kinds and their preset inputs.
+- `GET /api/engine-catalog/presets` lists presets in ID order, with `limit` (default 100,
+  maximum 200), optional `kind`, and an opaque `cursor`. It is not a snapshot: an insertion
+  before a cursor may be missed; deleting or renaming a preset does not change its ID order.
+- `GET /api/engine-catalog/preset?id=<encoded-id>` retrieves one preset independently of pages.
+  An empty `id` is distinct from an omitted parameter. Rows with a NULL or non-text ID are outside the
+  catalog; the schema mismatch is tracked in [#4228](https://github.com/ohdearquant/lionagi/issues/4228).
+
+A stored ID longer than 4,096 UTF-8 bytes is returned alone with no next cursor and
+`stop_reason` set to `id_exceeds_cursor_bound` when it is first in a page. The client can then
+show that traversal stopped. Proxies may impose request-line limits on encoded IDs and cursors.
+Unregistered kinds and unreadable options remain listed as unavailable; their stored data is not
+rewritten. The descriptor's model and budget constraints describe preset/Studio admission only.
+Workflow engine-node overrides follow their existing validation path and are not governed by this
+descriptor.
+
 ## Teams
 
 **Teams** browses crews created with `li team`. The list shows a team's name,

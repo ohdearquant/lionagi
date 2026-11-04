@@ -279,3 +279,256 @@ async def delete_engine_def_route(def_id: str) -> dict[str, Any]:
     if not ok:
         raise HTTPException(status_code=404, detail=f"Engine definition '{def_id}' not found")
     return {"ok": True}
+
+
+_CATALOG_CURSOR_ID_BYTES = 4096
+_CATALOG_OPTIONS_MAX_DEPTH = 32
+_CATALOG_JSON_STRING = r'"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"'
+_CATALOG_CURSOR_SHAPE = re.compile(
+    rf'\{{"v":1,"after":{_CATALOG_JSON_STRING},"kind":(?:null|{_CATALOG_JSON_STRING})\}}'
+)
+
+
+def _catalog_encode_cursor(after: str, kind: str | None) -> str:
+    import base64
+    import json
+
+    payload = json.dumps(
+        {"v": 1, "after": after, "kind": kind}, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _catalog_decode_cursor(cursor: str, kind: str | None) -> str:
+    import base64
+    import binascii
+    import json
+
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", cursor):
+            raise ValueError("invalid encoding")
+        data = base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
+        payload = data.decode("utf-8")
+        # The only accepted JSON structure has no nested containers or duplicate keys.
+        if _CATALOG_CURSOR_SHAPE.fullmatch(payload) is None:
+            raise ValueError("invalid shape")
+        obj = json.loads(payload)
+        after = obj["after"]
+        if obj["kind"] != kind or len(after.encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES:
+            raise ValueError("invalid cursor")
+        if _catalog_encode_cursor(after, kind) != cursor:
+            raise ValueError("noncanonical cursor")
+        return after
+    except (binascii.Error, UnicodeError, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid engine catalog cursor") from exc
+
+
+def _catalog_options(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
+    import json
+
+    if raw is None:
+        return {}, None
+    if isinstance(raw, bytes | bytearray | memoryview):
+        try:
+            raw = bytes(raw).decode("utf-8")
+        except UnicodeDecodeError:
+            return None, "options_undecodable"
+    if isinstance(raw, str):
+        depth = 0
+        quoted = False
+        escaped = False
+        for char in raw:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif char in "[{":
+                depth += 1
+                if depth > _CATALOG_OPTIONS_MAX_DEPTH:
+                    return None, "options_undecodable"
+            elif char in "]}":
+                depth -= 1
+
+        class NonJsonConstantError(ValueError):
+            pass
+
+        def reject_constant(_constant: str) -> None:
+            raise NonJsonConstantError("non-JSON constant")
+
+        try:
+            value = json.loads(raw, parse_constant=reject_constant)
+        except (json.JSONDecodeError, NonJsonConstantError):
+            return None, "options_malformed"
+        except (RecursionError, UnicodeError, ValueError):
+            return None, "options_undecodable"
+    else:
+        value = raw
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (RecursionError, UnicodeError, ValueError, TypeError):
+        return None, "options_undecodable"
+    if value is None:
+        return {}, None
+    if not isinstance(value, dict):
+        return None, "options_not_object"
+    return value, None
+
+
+def _catalog_registry() -> tuple[dict[str, dict[str, Any]], Any]:
+    # This is the Studio access point for the in-place engine registry.
+    from lionagi.cli._engine_definitions import KIND_META, _is_registered_engine_kind
+
+    return KIND_META, _is_registered_engine_kind
+
+
+def _catalog_is_registered_engine_kind(kind: object) -> bool:
+    _, is_registered = _catalog_registry()
+    return is_registered(kind)
+
+
+def _catalog_annotate_row(row: dict[str, Any]) -> dict[str, Any]:
+    registry, is_registered = _catalog_registry()
+    result = dict(row)
+    options, options_reason = _catalog_options(result.pop("options", None))
+    result["options"] = options
+    result["unused_option_keys"] = None
+    result["stored_option_keys"] = None
+    reasons = []
+    kind = result.get("kind")
+    registered = is_registered(kind)
+    if not isinstance(kind, str):
+        result["kind"] = None
+        reasons.append("kind_not_text")
+    elif not registered:
+        reasons.append("kind_not_registered")
+    if options_reason is not None:
+        reasons.append(options_reason)
+    if options is not None:
+        keys = sorted(options)
+        result["stored_option_keys"] = keys
+        if registered:
+            result["unused_option_keys"] = sorted(set(keys) - set(registry[kind]["preset_options"]))
+    result["availability"] = "unavailable" if reasons else "available"
+    result["reasons"] = reasons
+    return result
+
+
+def _catalog_validate_kind(kind: str | None) -> None:
+    if kind is not None and not _catalog_is_registered_engine_kind(kind):
+        raise HTTPException(status_code=422, detail="Invalid engine catalog kind")
+
+
+def engine_catalog_blueprints() -> dict[str, Any]:
+    """Describe preset inputs from the runtime engine registry."""
+    registry, _ = _catalog_registry()
+    items = []
+    for kind, meta in registry.items():
+        items.append(
+            {
+                "kind": kind,
+                "input": {"name": meta["pos_arg"], "help": meta["pos_help"]},
+                "options": [
+                    {"name": name, **option} for name, option in meta["preset_options"].items()
+                ],
+                "common_fields": {
+                    "model": {"type": "string", "nullable": True, "scope": "preset"},
+                    "max_depth": {
+                        "type": "integer",
+                        "nullable": True,
+                        "minimum": 1,
+                        "maximum": 100,
+                        "scope": "preset",
+                    },
+                    "max_agents": {
+                        "type": "integer",
+                        "nullable": True,
+                        "minimum": 1,
+                        "maximum": 100,
+                        "scope": "preset",
+                    },
+                },
+            }
+        )
+    return {"schema_version": 1, "items": items}
+
+
+async def list_engine_catalog_presets(
+    *, kind: str | None = None, limit: int = 100, cursor: str | None = None
+) -> dict[str, Any]:
+    """List non-NULL-ID presets by ID, without snapshot isolation.
+
+    An insertion before the cursor can be missed; deletes and renames preserve the ID order.
+    Rows with NULL or non-text IDs are outside this catalog (see #4228).
+    """
+    from lionagi.state.db import _list_engine_catalog_rows
+
+    _catalog_validate_kind(kind)
+    after = _catalog_decode_cursor(cursor, kind) if cursor is not None else None
+    if state_db_known_absent():
+        return {"items": [], "next_cursor": None}
+    async with StateDB() as db:
+        rows = await _list_engine_catalog_rows(db, kind=kind, after=after, limit=limit + 1)
+    visible = rows[:limit]
+    has_more = len(rows) > limit
+    if visible and len(visible[0]["id"].encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES:
+        return {
+            "items": [_catalog_annotate_row(visible[0])],
+            "next_cursor": None,
+            "stop_reason": "id_exceeds_cursor_bound",
+        }
+    # A trailing oversized ID cannot be encoded as the next seek position.
+    while visible and len(visible[-1]["id"].encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES:
+        visible.pop()
+        has_more = True
+    next_cursor = _catalog_encode_cursor(visible[-1]["id"], kind) if has_more else None
+    return {"items": [_catalog_annotate_row(row) for row in visible], "next_cursor": next_cursor}
+
+
+async def get_engine_catalog_preset(def_id: str) -> dict[str, Any] | None:
+    """Return a text-ID preset independently of the loaded page."""
+    from lionagi.state.db import _get_engine_catalog_row
+
+    if state_db_known_absent():
+        return None
+    async with StateDB() as db:
+        row = await _get_engine_catalog_row(db, def_id)
+    return _catalog_annotate_row(row) if row is not None else None
+
+
+@studio_route(
+    "/engine-catalog/blueprints", method="GET", area="engine-defs", name="engine_catalog_blueprints"
+)
+async def engine_catalog_blueprints_route() -> dict[str, Any]:
+    return engine_catalog_blueprints()
+
+
+@studio_route(
+    "/engine-catalog/presets", method="GET", area="engine-defs", name="list_engine_catalog_presets"
+)
+async def list_engine_catalog_presets_route(
+    kind: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
+    cursor: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """List text-ID presets; paging is not a snapshot (see #4228).
+
+    Options over 32 JSON nesting levels are unavailable. Preset inputs are flat
+    key/value pairs, so this limit does not exclude normal preset options.
+    """
+    return await list_engine_catalog_presets(kind=kind, limit=limit, cursor=cursor)
+
+
+@studio_route(
+    "/engine-catalog/preset", method="GET", area="engine-defs", name="get_engine_catalog_preset"
+)
+async def get_engine_catalog_preset_route(def_id: str = Query(..., alias="id")) -> dict[str, Any]:
+    """Look up a text-ID preset by query parameter, including an empty ID (see #4228)."""
+    row = await get_engine_catalog_preset(def_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Engine preset not found")
+    return row

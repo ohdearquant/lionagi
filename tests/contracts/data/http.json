@@ -1,5 +1,5 @@
 {
-  "count": 146,
+  "count": 149,
   "routes": [
     {
       "ordinal": 0,
@@ -225,6 +225,54 @@
     },
     {
       "ordinal": 7,
+      "path": "/api/sessions/{session_id}",
+      "methods": [
+        "PUT"
+      ],
+      "name": "label_session",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Label Session Api Sessions  Session Id  Put"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "sessions"
+      ],
+      "summary": null,
+      "description": "Set or clear the display label without changing the session's activity.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.sessions",
+        "qualname": "label_session_route"
+      }
+    },
+    {
+      "ordinal": 8,
       "path": "/api/sessions/{session_id}/stream",
       "methods": [
         "GET"
@@ -268,7 +316,7 @@
       }
     },
     {
-      "ordinal": 8,
+      "ordinal": 9,
       "path": "/api/sessions/{session_id}/signals",
       "methods": [
         "GET"
@@ -314,7 +362,55 @@
       }
     },
     {
-      "ordinal": 9,
+      "ordinal": 10,
+      "path": "/api/sessions/{session_id}/signals/page",
+      "methods": [
+        "GET"
+      ],
+      "name": "session_signals_page",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Session Signals Page Api Sessions  Session Id  Signals Page Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "sessions"
+      ],
+      "summary": null,
+      "description": "One bounded persisted prefix page; this read does not subscribe to a live tail.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.sessions",
+        "qualname": "session_signals_page"
+      }
+    },
+    {
+      "ordinal": 11,
       "path": "/api/runs/",
       "methods": [
         "GET"
@@ -362,7 +458,7 @@
       }
     },
     {
-      "ordinal": 10,
+      "ordinal": 12,
       "path": "/api/runs/projects",
       "methods": [
         "GET"
@@ -400,7 +496,7 @@
       }
     },
     {
-      "ordinal": 11,
+      "ordinal": 13,
       "path": "/api/runs/{run_id}",
       "methods": [
         "GET"
@@ -448,7 +544,7 @@
       }
     },
     {
-      "ordinal": 12,
+      "ordinal": 14,
       "path": "/api/runs/{run_id}/file",
       "methods": [
         "GET"
@@ -496,7 +592,7 @@
       }
     },
     {
-      "ordinal": 13,
+      "ordinal": 15,
       "path": "/api/schedules/",
       "methods": [
         "GET"
@@ -544,7 +640,7 @@
       }
     },
     {
-      "ordinal": 14,
+      "ordinal": 16,
       "path": "/api/schedules/limits",
       "methods": [
         "GET"
@@ -582,7 +678,7 @@
       }
     },
     {
-      "ordinal": 15,
+      "ordinal": 17,
       "path": "/api/schedules/{schedule_id}",
       "methods": [
         "GET"
@@ -630,7 +726,7 @@
       }
     },
     {
-      "ordinal": 16,
+      "ordinal": 18,
       "path": "/api/schedules/",
       "methods": [
         "POST"
@@ -678,7 +774,7 @@
       }
     },
     {
-      "ordinal": 17,
+      "ordinal": 19,
       "path": "/api/schedules/{schedule_id}",
       "methods": [
         "PATCH"
@@ -726,7 +822,7 @@
       }
     },
     {
-      "ordinal": 18,
+      "ordinal": 20,
       "path": "/api/schedules/{schedule_id}",
       "methods": [
         "DELETE"
@@ -774,7 +870,7 @@
       }
     },
     {
-      "ordinal": 19,
+      "ordinal": 21,
       "path": "/api/schedules/{schedule_id}/enable",
       "methods": [
         "POST"
@@ -822,7 +918,7 @@
       }
     },
     {
-      "ordinal": 20,
+      "ordinal": 22,
       "path": "/api/schedules/{schedule_id}/disable",
       "methods": [
         "POST"
@@ -870,7 +966,7 @@
       }
     },
     {
-      "ordinal": 21,
+      "ordinal": 23,
       "path": "/api/schedules/{schedule_id}/trigger",
       "methods": [
         "POST"
@@ -918,7 +1014,7 @@
       }
     },
     {
-      "ordinal": 22,
+      "ordinal": 24,
       "path": "/api/schedules/{schedule_id}/runs",
       "methods": [
         "GET"
@@ -966,7 +1062,7 @@
       }
     },
     {
-      "ordinal": 23,
+      "ordinal": 25,
       "path": "/api/schedules/runs/{run_id}",
       "methods": [
         "GET"
@@ -1015,7 +1111,7 @@
       }
     },
     {
-      "ordinal": 24,
+      "ordinal": 26,
       "path": "/api/schedules/{schedule_id}/status",
       "methods": [
         "GET"
@@ -1063,7 +1159,7 @@
       }
     },
     {
-      "ordinal": 25,
+      "ordinal": 27,
       "path": "/api/launches/",
       "methods": [
         "POST"
@@ -1111,7 +1207,7 @@
       }
     },
     {
-      "ordinal": 26,
+      "ordinal": 28,
       "path": "/api/invocations/{invocation_id}/cancel",
       "methods": [
         "POST"
@@ -1159,7 +1255,7 @@
       }
     },
     {
-      "ordinal": 27,
+      "ordinal": 29,
       "path": "/api/runs/{run_id}/resume",
       "methods": [
         "GET"
@@ -1207,7 +1303,7 @@
       }
     },
     {
-      "ordinal": 28,
+      "ordinal": 30,
       "path": "/api/runs/{run_id}/resume",
       "methods": [
         "POST"
@@ -1255,7 +1351,7 @@
       }
     },
     {
-      "ordinal": 29,
+      "ordinal": 31,
       "path": "/api/engine-runs/",
       "methods": [
         "GET"
@@ -1303,7 +1399,7 @@
       }
     },
     {
-      "ordinal": 30,
+      "ordinal": 32,
       "path": "/api/engine-runs/{run_id}",
       "methods": [
         "GET"
@@ -1351,7 +1447,7 @@
       }
     },
     {
-      "ordinal": 31,
+      "ordinal": 33,
       "path": "/api/agents/",
       "methods": [
         "GET"
@@ -1389,7 +1485,7 @@
       }
     },
     {
-      "ordinal": 32,
+      "ordinal": 34,
       "path": "/api/agents/{name}",
       "methods": [
         "GET"
@@ -1437,7 +1533,7 @@
       }
     },
     {
-      "ordinal": 33,
+      "ordinal": 35,
       "path": "/api/agents/{name}",
       "methods": [
         "POST"
@@ -1485,7 +1581,7 @@
       }
     },
     {
-      "ordinal": 34,
+      "ordinal": 36,
       "path": "/api/agents/{name}",
       "methods": [
         "PUT"
@@ -1533,7 +1629,7 @@
       }
     },
     {
-      "ordinal": 35,
+      "ordinal": 37,
       "path": "/api/agents/{name}",
       "methods": [
         "DELETE"
@@ -1581,7 +1677,7 @@
       }
     },
     {
-      "ordinal": 36,
+      "ordinal": 38,
       "path": "/api/agents/{name}/validate",
       "methods": [
         "POST"
@@ -1629,7 +1725,7 @@
       }
     },
     {
-      "ordinal": 37,
+      "ordinal": 39,
       "path": "/api/definitions/",
       "methods": [
         "GET"
@@ -1677,7 +1773,7 @@
       }
     },
     {
-      "ordinal": 38,
+      "ordinal": 40,
       "path": "/api/definitions/{kind}/{name}",
       "methods": [
         "GET"
@@ -1725,7 +1821,7 @@
       }
     },
     {
-      "ordinal": 39,
+      "ordinal": 41,
       "path": "/api/definitions/{kind}/{name}/versions/{version}",
       "methods": [
         "GET"
@@ -1773,7 +1869,7 @@
       }
     },
     {
-      "ordinal": 40,
+      "ordinal": 42,
       "path": "/api/definitions/{kind}/{name}",
       "methods": [
         "POST"
@@ -1821,7 +1917,7 @@
       }
     },
     {
-      "ordinal": 41,
+      "ordinal": 43,
       "path": "/api/definitions/{kind}/{name}/rollback",
       "methods": [
         "POST"
@@ -1869,7 +1965,7 @@
       }
     },
     {
-      "ordinal": 42,
+      "ordinal": 44,
       "path": "/api/definitions/snapshot",
       "methods": [
         "POST"
@@ -1917,7 +2013,7 @@
       }
     },
     {
-      "ordinal": 43,
+      "ordinal": 45,
       "path": "/api/playbooks/",
       "methods": [
         "GET"
@@ -1955,7 +2051,7 @@
       }
     },
     {
-      "ordinal": 44,
+      "ordinal": 46,
       "path": "/api/playbooks/{name}",
       "methods": [
         "GET"
@@ -2003,7 +2099,7 @@
       }
     },
     {
-      "ordinal": 45,
+      "ordinal": 47,
       "path": "/api/playbooks/{name}",
       "methods": [
         "POST"
@@ -2051,7 +2147,7 @@
       }
     },
     {
-      "ordinal": 46,
+      "ordinal": 48,
       "path": "/api/playbooks/{name}",
       "methods": [
         "PUT"
@@ -2099,7 +2195,7 @@
       }
     },
     {
-      "ordinal": 47,
+      "ordinal": 49,
       "path": "/api/playbooks/{name}",
       "methods": [
         "DELETE"
@@ -2147,7 +2243,7 @@
       }
     },
     {
-      "ordinal": 48,
+      "ordinal": 50,
       "path": "/api/playbooks/{name}/validate",
       "methods": [
         "POST"
@@ -2195,7 +2291,7 @@
       }
     },
     {
-      "ordinal": 49,
+      "ordinal": 51,
       "path": "/api/playbooks/{name}/run",
       "methods": [
         "POST"
@@ -2243,7 +2339,7 @@
       }
     },
     {
-      "ordinal": 50,
+      "ordinal": 52,
       "path": "/api/playbook-templates/",
       "methods": [
         "GET"
@@ -2281,7 +2377,7 @@
       }
     },
     {
-      "ordinal": 51,
+      "ordinal": 53,
       "path": "/api/playbook-templates/{name}",
       "methods": [
         "GET"
@@ -2329,7 +2425,7 @@
       }
     },
     {
-      "ordinal": 52,
+      "ordinal": 54,
       "path": "/api/playbook-templates/{name}/install",
       "methods": [
         "POST"
@@ -2377,7 +2473,7 @@
       }
     },
     {
-      "ordinal": 53,
+      "ordinal": 55,
       "path": "/api/shows/",
       "methods": [
         "GET"
@@ -2418,7 +2514,7 @@
       }
     },
     {
-      "ordinal": 54,
+      "ordinal": 56,
       "path": "/api/shows/gated-plays",
       "methods": [
         "GET"
@@ -2459,7 +2555,7 @@
       }
     },
     {
-      "ordinal": 55,
+      "ordinal": 57,
       "path": "/api/shows/import",
       "methods": [
         "POST"
@@ -2500,7 +2596,7 @@
       }
     },
     {
-      "ordinal": 56,
+      "ordinal": 58,
       "path": "/api/shows/{topic}",
       "methods": [
         "GET"
@@ -2548,7 +2644,7 @@
       }
     },
     {
-      "ordinal": 57,
+      "ordinal": 59,
       "path": "/api/shows/{topic}/stream",
       "methods": [
         "GET"
@@ -2592,7 +2688,7 @@
       }
     },
     {
-      "ordinal": 58,
+      "ordinal": 60,
       "path": "/api/skills/",
       "methods": [
         "GET"
@@ -2630,7 +2726,7 @@
       }
     },
     {
-      "ordinal": 59,
+      "ordinal": 61,
       "path": "/api/skills/{name}",
       "methods": [
         "GET"
@@ -2678,7 +2774,7 @@
       }
     },
     {
-      "ordinal": 60,
+      "ordinal": 62,
       "path": "/api/skills/{name}/validate",
       "methods": [
         "POST"
@@ -2726,7 +2822,7 @@
       }
     },
     {
-      "ordinal": 61,
+      "ordinal": 63,
       "path": "/api/plugins",
       "methods": [
         "GET"
@@ -2764,7 +2860,7 @@
       }
     },
     {
-      "ordinal": 62,
+      "ordinal": 64,
       "path": "/api/plugins/{name}",
       "methods": [
         "GET"
@@ -2812,7 +2908,7 @@
       }
     },
     {
-      "ordinal": 63,
+      "ordinal": 65,
       "path": "/api/plugins/{plugin_name}/skills/{skill_name}",
       "methods": [
         "GET"
@@ -2860,7 +2956,7 @@
       }
     },
     {
-      "ordinal": 64,
+      "ordinal": 66,
       "path": "/api/plugins/{plugin_name}/agents/{agent_name}",
       "methods": [
         "GET"
@@ -2908,7 +3004,7 @@
       }
     },
     {
-      "ordinal": 65,
+      "ordinal": 67,
       "path": "/api/mcp/servers/",
       "methods": [
         "GET"
@@ -2946,7 +3042,7 @@
       }
     },
     {
-      "ordinal": 66,
+      "ordinal": 68,
       "path": "/api/mcp/servers/{name}",
       "methods": [
         "GET"
@@ -2994,7 +3090,7 @@
       }
     },
     {
-      "ordinal": 67,
+      "ordinal": 69,
       "path": "/api/mcp/servers/",
       "methods": [
         "POST"
@@ -3042,7 +3138,7 @@
       }
     },
     {
-      "ordinal": 68,
+      "ordinal": 70,
       "path": "/api/mcp/servers/{name}",
       "methods": [
         "PUT"
@@ -3090,7 +3186,7 @@
       }
     },
     {
-      "ordinal": 69,
+      "ordinal": 71,
       "path": "/api/mcp/servers/{name}/enable",
       "methods": [
         "POST"
@@ -3138,7 +3234,7 @@
       }
     },
     {
-      "ordinal": 70,
+      "ordinal": 72,
       "path": "/api/mcp/servers/{name}/disable",
       "methods": [
         "POST"
@@ -3186,7 +3282,7 @@
       }
     },
     {
-      "ordinal": 71,
+      "ordinal": 73,
       "path": "/api/mcp/servers/{name}",
       "methods": [
         "DELETE"
@@ -3234,7 +3330,7 @@
       }
     },
     {
-      "ordinal": 72,
+      "ordinal": 74,
       "path": "/api/mcp/servers/{name}/check",
       "methods": [
         "POST"
@@ -3282,7 +3378,7 @@
       }
     },
     {
-      "ordinal": 73,
+      "ordinal": 75,
       "path": "/api/mcp/servers/{name}/validate",
       "methods": [
         "POST"
@@ -3330,7 +3426,7 @@
       }
     },
     {
-      "ordinal": 74,
+      "ordinal": 76,
       "path": "/api/teams/",
       "methods": [
         "GET"
@@ -3378,7 +3474,7 @@
       }
     },
     {
-      "ordinal": 75,
+      "ordinal": 77,
       "path": "/api/teams/{team_id}",
       "methods": [
         "GET"
@@ -3426,7 +3522,7 @@
       }
     },
     {
-      "ordinal": 76,
+      "ordinal": 78,
       "path": "/api/invocations/",
       "methods": [
         "GET"
@@ -3474,7 +3570,7 @@
       }
     },
     {
-      "ordinal": 77,
+      "ordinal": 79,
       "path": "/api/invocations/{invocation_id}",
       "methods": [
         "GET"
@@ -3522,7 +3618,7 @@
       }
     },
     {
-      "ordinal": 78,
+      "ordinal": 80,
       "path": "/api/artifacts/{artifact_id}",
       "methods": [
         "GET"
@@ -3570,7 +3666,7 @@
       }
     },
     {
-      "ordinal": 79,
+      "ordinal": 81,
       "path": "/api/artifacts/by-session/{session_id}",
       "methods": [
         "GET"
@@ -3618,7 +3714,7 @@
       }
     },
     {
-      "ordinal": 80,
+      "ordinal": 82,
       "path": "/api/projects/",
       "methods": [
         "GET"
@@ -3656,7 +3752,7 @@
       }
     },
     {
-      "ordinal": 81,
+      "ordinal": 83,
       "path": "/api/projects/{name}",
       "methods": [
         "GET"
@@ -3704,7 +3800,7 @@
       }
     },
     {
-      "ordinal": 82,
+      "ordinal": 84,
       "path": "/api/projects/",
       "methods": [
         "POST"
@@ -3752,7 +3848,7 @@
       }
     },
     {
-      "ordinal": 83,
+      "ordinal": 85,
       "path": "/api/projects/{name}",
       "methods": [
         "PUT"
@@ -3800,7 +3896,7 @@
       }
     },
     {
-      "ordinal": 84,
+      "ordinal": 86,
       "path": "/api/projects/{name}/assign",
       "methods": [
         "POST"
@@ -3848,7 +3944,7 @@
       }
     },
     {
-      "ordinal": 85,
+      "ordinal": 87,
       "path": "/api/projects/{name}",
       "methods": [
         "DELETE"
@@ -3896,7 +3992,7 @@
       }
     },
     {
-      "ordinal": 86,
+      "ordinal": 88,
       "path": "/api/identity",
       "methods": [
         "GET"
@@ -3934,7 +4030,7 @@
       }
     },
     {
-      "ordinal": 87,
+      "ordinal": 89,
       "path": "/api/studio/pairing-codes",
       "methods": [
         "POST"
@@ -3970,7 +4066,7 @@
       }
     },
     {
-      "ordinal": 88,
+      "ordinal": 90,
       "path": "/api/studio/pair",
       "methods": [
         "POST"
@@ -4018,7 +4114,7 @@
       }
     },
     {
-      "ordinal": 89,
+      "ordinal": 91,
       "path": "/api/studio/disconnect",
       "methods": [
         "POST"
@@ -4056,7 +4152,7 @@
       }
     },
     {
-      "ordinal": 90,
+      "ordinal": 92,
       "path": "/api/engine-defs/",
       "methods": [
         "GET"
@@ -4107,7 +4203,7 @@
       }
     },
     {
-      "ordinal": 91,
+      "ordinal": 93,
       "path": "/api/engine-defs/",
       "methods": [
         "POST"
@@ -4155,7 +4251,7 @@
       }
     },
     {
-      "ordinal": 92,
+      "ordinal": 94,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "GET"
@@ -4203,7 +4299,7 @@
       }
     },
     {
-      "ordinal": 93,
+      "ordinal": 95,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4251,7 +4347,7 @@
       }
     },
     {
-      "ordinal": 94,
+      "ordinal": 96,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4299,7 +4395,141 @@
       }
     },
     {
-      "ordinal": 95,
+      "ordinal": 97,
+      "path": "/api/engine-catalog/blueprints",
+      "methods": [
+        "GET"
+      ],
+      "name": "engine_catalog_blueprints",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Engine Catalog Blueprints Api Engine Catalog Blueprints Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "engine-defs"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.engine_defs",
+        "qualname": "engine_catalog_blueprints_route"
+      }
+    },
+    {
+      "ordinal": 98,
+      "path": "/api/engine-catalog/presets",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_engine_catalog_presets",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response List Engine Catalog Presets Api Engine Catalog Presets Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "engine-defs"
+      ],
+      "summary": null,
+      "description": "List text-ID presets; paging is not a snapshot (see #4228).\n\nOptions over 32 JSON nesting levels are unavailable. Preset inputs are flat\nkey/value pairs, so this limit does not exclude normal preset options.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.engine_defs",
+        "qualname": "list_engine_catalog_presets_route"
+      }
+    },
+    {
+      "ordinal": 99,
+      "path": "/api/engine-catalog/preset",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_engine_catalog_preset",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Engine Catalog Preset Api Engine Catalog Preset Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "engine-defs"
+      ],
+      "summary": null,
+      "description": "Look up a text-ID preset by query parameter, including an empty ID (see #4228).",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.engine_defs",
+        "qualname": "get_engine_catalog_preset_route"
+      }
+    },
+    {
+      "ordinal": 100,
       "path": "/api/workflow-defs/",
       "methods": [
         "GET"
@@ -4350,7 +4580,7 @@
       }
     },
     {
-      "ordinal": 96,
+      "ordinal": 101,
       "path": "/api/workflow-defs/",
       "methods": [
         "POST"
@@ -4398,7 +4628,7 @@
       }
     },
     {
-      "ordinal": 97,
+      "ordinal": 102,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "GET"
@@ -4446,7 +4676,7 @@
       }
     },
     {
-      "ordinal": 98,
+      "ordinal": 103,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4494,7 +4724,7 @@
       }
     },
     {
-      "ordinal": 99,
+      "ordinal": 104,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4542,7 +4772,7 @@
       }
     },
     {
-      "ordinal": 100,
+      "ordinal": 105,
       "path": "/api/workflow-defs/{def_id}/run",
       "methods": [
         "POST"
@@ -4590,7 +4820,7 @@
       }
     },
     {
-      "ordinal": 101,
+      "ordinal": 106,
       "path": "/api/sessions/{session_id}/tags",
       "methods": [
         "POST"
@@ -4638,7 +4868,7 @@
       }
     },
     {
-      "ordinal": 102,
+      "ordinal": 107,
       "path": "/api/sessions/{session_id}/tags/{tag:path}",
       "methods": [
         "DELETE"
@@ -4686,7 +4916,7 @@
       }
     },
     {
-      "ordinal": 103,
+      "ordinal": 108,
       "path": "/api/operator/conversations",
       "methods": [
         "GET"
@@ -4734,7 +4964,7 @@
       }
     },
     {
-      "ordinal": 104,
+      "ordinal": 109,
       "path": "/api/operator/conversations",
       "methods": [
         "POST"
@@ -4782,7 +5012,7 @@
       }
     },
     {
-      "ordinal": 105,
+      "ordinal": 110,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "PATCH"
@@ -4830,7 +5060,7 @@
       }
     },
     {
-      "ordinal": 106,
+      "ordinal": 111,
       "path": "/api/operator/conversations/{conversation_id}/fork",
       "methods": [
         "POST"
@@ -4878,7 +5108,7 @@
       }
     },
     {
-      "ordinal": 107,
+      "ordinal": 112,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "GET"
@@ -4926,7 +5156,7 @@
       }
     },
     {
-      "ordinal": 108,
+      "ordinal": 113,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "DELETE"
@@ -4974,7 +5204,7 @@
       }
     },
     {
-      "ordinal": 109,
+      "ordinal": 114,
       "path": "/api/operator/conversations/{conversation_id}/turns",
       "methods": [
         "POST"
@@ -5022,7 +5252,7 @@
       }
     },
     {
-      "ordinal": 110,
+      "ordinal": 115,
       "path": "/api/operator/models",
       "methods": [
         "GET"
@@ -5060,7 +5290,7 @@
       }
     },
     {
-      "ordinal": 111,
+      "ordinal": 116,
       "path": "/api/operator/conversations/{conversation_id}/view",
       "methods": [
         "POST"
@@ -5108,7 +5338,7 @@
       }
     },
     {
-      "ordinal": 112,
+      "ordinal": 117,
       "path": "/api/operator/conversations/{conversation_id}/requests/{request_id}/cancel",
       "methods": [
         "POST"
@@ -5156,7 +5386,7 @@
       }
     },
     {
-      "ordinal": 113,
+      "ordinal": 118,
       "path": "/api/operator/conversations/{conversation_id}/stream",
       "methods": [
         "GET"
@@ -5200,7 +5430,7 @@
       }
     },
     {
-      "ordinal": 114,
+      "ordinal": 119,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
       "methods": [
         "POST"
@@ -5248,7 +5478,7 @@
       }
     },
     {
-      "ordinal": 115,
+      "ordinal": 120,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/decision",
       "methods": [
         "POST"
@@ -5296,7 +5526,7 @@
       }
     },
     {
-      "ordinal": 116,
+      "ordinal": 121,
       "path": "/api/operator/conversations/{conversation_id}/effects/{effect_id}/ack",
       "methods": [
         "POST"
@@ -5344,7 +5574,7 @@
       }
     },
     {
-      "ordinal": 117,
+      "ordinal": 122,
       "path": "/api/hooks/library",
       "methods": [
         "GET"
@@ -5382,7 +5612,7 @@
       }
     },
     {
-      "ordinal": 118,
+      "ordinal": 123,
       "path": "/api/hooks/library/{name}",
       "methods": [
         "PUT"
@@ -5430,7 +5660,7 @@
       }
     },
     {
-      "ordinal": 119,
+      "ordinal": 124,
       "path": "/api/hooks/library/{name}",
       "methods": [
         "DELETE"
@@ -5478,7 +5708,7 @@
       }
     },
     {
-      "ordinal": 120,
+      "ordinal": 125,
       "path": "/api/operator/hooks",
       "methods": [
         "GET"
@@ -5516,7 +5746,7 @@
       }
     },
     {
-      "ordinal": 121,
+      "ordinal": 126,
       "path": "/api/operator/hooks",
       "methods": [
         "PUT"
@@ -5564,7 +5794,7 @@
       }
     },
     {
-      "ordinal": 122,
+      "ordinal": 127,
       "path": "/api/approvals/",
       "methods": [
         "POST"
@@ -5612,7 +5842,7 @@
       }
     },
     {
-      "ordinal": 123,
+      "ordinal": 128,
       "path": "/api/approvals/evidence/verify",
       "methods": [
         "GET"
@@ -5650,7 +5880,7 @@
       }
     },
     {
-      "ordinal": 124,
+      "ordinal": 129,
       "path": "/api/approvals/{approval_id}",
       "methods": [
         "GET"
@@ -5698,7 +5928,7 @@
       }
     },
     {
-      "ordinal": 125,
+      "ordinal": 130,
       "path": "/api/approvals/{approval_id}/grant",
       "methods": [
         "POST"
@@ -5746,7 +5976,7 @@
       }
     },
     {
-      "ordinal": 126,
+      "ordinal": 131,
       "path": "/api/approvals/{approval_id}/deny",
       "methods": [
         "POST"
@@ -5794,7 +6024,7 @@
       }
     },
     {
-      "ordinal": 127,
+      "ordinal": 132,
       "path": "/api/admin/doctor",
       "methods": [
         "GET"
@@ -5842,7 +6072,7 @@
       }
     },
     {
-      "ordinal": 128,
+      "ordinal": 133,
       "path": "/api/admin/health",
       "methods": [
         "GET"
@@ -5880,7 +6110,7 @@
       }
     },
     {
-      "ordinal": 129,
+      "ordinal": 134,
       "path": "/api/admin/readiness",
       "methods": [
         "GET"
@@ -5928,7 +6158,7 @@
       }
     },
     {
-      "ordinal": 130,
+      "ordinal": 135,
       "path": "/api/admin/transition",
       "methods": [
         "POST"
@@ -5976,7 +6206,7 @@
       }
     },
     {
-      "ordinal": 131,
+      "ordinal": 136,
       "path": "/api/admin/events",
       "methods": [
         "GET"
@@ -6024,7 +6254,7 @@
       }
     },
     {
-      "ordinal": 132,
+      "ordinal": 137,
       "path": "/api/admin/prune-old-data",
       "methods": [
         "POST"
@@ -6074,7 +6304,7 @@
       }
     },
     {
-      "ordinal": 133,
+      "ordinal": 138,
       "path": "/api/admin/maintenance",
       "methods": [
         "POST"
@@ -6122,7 +6352,7 @@
       }
     },
     {
-      "ordinal": 134,
+      "ordinal": 139,
       "path": "/api/admin/prune",
       "methods": [
         "POST"
@@ -6172,7 +6402,7 @@
       }
     },
     {
-      "ordinal": 135,
+      "ordinal": 140,
       "path": "/api/stats/activity",
       "methods": [
         "GET"
@@ -6218,7 +6448,7 @@
       }
     },
     {
-      "ordinal": 136,
+      "ordinal": 141,
       "path": "/api/stats/spend",
       "methods": [
         "GET"
@@ -6264,7 +6494,7 @@
       }
     },
     {
-      "ordinal": 137,
+      "ordinal": 142,
       "path": "/api/stats/spend/rollup",
       "methods": [
         "GET"
@@ -6310,7 +6540,7 @@
       }
     },
     {
-      "ordinal": 138,
+      "ordinal": 143,
       "path": "/api/stats",
       "methods": [
         "GET"
@@ -6346,7 +6576,7 @@
       }
     },
     {
-      "ordinal": 139,
+      "ordinal": 144,
       "path": "/api/attention/dispositions/",
       "methods": [
         "GET"
@@ -6384,7 +6614,7 @@
       }
     },
     {
-      "ordinal": 140,
+      "ordinal": 145,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "PUT"
@@ -6432,7 +6662,7 @@
       }
     },
     {
-      "ordinal": 141,
+      "ordinal": 146,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "DELETE"
@@ -6480,7 +6710,7 @@
       }
     },
     {
-      "ordinal": 142,
+      "ordinal": 147,
       "path": "/api/attention/dispositions/{item_id}/history",
       "methods": [
         "GET"
@@ -6528,7 +6758,7 @@
       }
     },
     {
-      "ordinal": 143,
+      "ordinal": 148,
       "path": "/health",
       "methods": [
         "GET"
@@ -6572,109 +6802,13 @@
         "module": "lionagi.studio.app",
         "qualname": "create_app.<locals>.health"
       }
-    },
-    {
-      "ordinal": 143,
-      "path": "/api/sessions/{session_id}",
-      "methods": [
-        "PUT"
-      ],
-      "name": "label_session",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Label Session Api Sessions  Session Id  Put"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "sessions"
-      ],
-      "summary": null,
-      "description": "Set or clear the display label without changing the session's activity.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.sessions",
-        "qualname": "label_session_route"
-      }
-    },
-    {
-      "ordinal": 145,
-      "path": "/api/sessions/{session_id}/signals/page",
-      "methods": [
-        "GET"
-      ],
-      "name": "session_signals_page",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Session Signals Page Api Sessions  Session Id  Signals Page Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "sessions"
-      ],
-      "summary": null,
-      "description": "One bounded persisted prefix page; this read does not subscribe to a live tail.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.sessions",
-        "qualname": "session_signals_page"
-      }
     }
   ],
   "openapi": {
     "openapi": "3.1.0",
     "info": {
       "title": "Lion Studio Server",
-      "version": "0.35.5"
+      "version": "0.37.0"
     },
     "paths": {
       "/api/admin/doctor": {
@@ -8111,6 +8245,151 @@
                     "type": "object",
                     "additionalProperties": true,
                     "title": "Response Get Version Api Definitions  Kind   Name  Versions  Version  Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/engine-catalog/blueprints": {
+        "get": {
+          "tags": [
+            "engine-defs"
+          ],
+          "summary": "Engine Catalog Blueprints",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Engine Catalog Blueprints Api Engine Catalog Blueprints Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/engine-catalog/preset": {
+        "get": {
+          "tags": [
+            "engine-defs"
+          ],
+          "summary": "Get Engine Catalog Preset",
+          "description": "Look up a text-ID preset by query parameter, including an empty ID (see #4228).",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Engine Catalog Preset Api Engine Catalog Preset Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/engine-catalog/presets": {
+        "get": {
+          "tags": [
+            "engine-defs"
+          ],
+          "summary": "List Engine Catalog Presets",
+          "description": "List text-ID presets; paging is not a snapshot (see #4228).\n\nOptions over 32 JSON nesting levels are unavailable. Preset inputs are flat\nkey/value pairs, so this limit does not exclude normal preset options.",
+          "parameters": [
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Cursor"
+              }
+            },
+            {
+              "name": "kind",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Kind"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "maximum": 200,
+                "minimum": 1,
+                "default": 100,
+                "title": "Limit"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response List Engine Catalog Presets Api Engine Catalog Presets Get"
                   }
                 }
               }
@@ -13509,7 +13788,7 @@
         }
       }
     },
-    "path_count": 112,
+    "path_count": 115,
     "schemas": {
       "AcknowledgeEffectRequest": {
         "properties": {
