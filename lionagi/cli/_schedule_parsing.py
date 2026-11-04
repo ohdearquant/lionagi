@@ -157,6 +157,26 @@ _CHAIN_ACTION_ALLOWED_KEYS = frozenset(
 )
 
 
+def _effective_chain_kind(action: dict, parent_kind: str) -> str | None:
+    """Resolve the selected kind using the same precedence as a chain overlay."""
+    kind = action.get("kind", action.get("action_kind", parent_kind))
+    if not isinstance(kind, str):
+        return None
+    kind = str.__str__(kind)
+    return _ALIAS_ACTION_KINDS.get(kind, kind)
+
+
+def _usable_chain_action(schedule: dict, success: bool) -> dict | None:
+    """Return the selected stored chain action if the scheduler can use its kind."""
+    field = "on_success" if success else "on_fail"
+    action = schedule.get(field)
+    if not isinstance(action, dict) or not action:
+        return None
+    if _effective_chain_kind(action, schedule.get("action_kind")) not in _VALID_ACTION_KINDS:
+        return None
+    return action
+
+
 def _merge_chain_action(schedule: dict, chain_action: dict) -> dict:
     """The schedule a chained run fires: *schedule* overlaid with its ``on_success`` or
     ``on_fail`` action, whose short keys replace the action fields they name, None included.

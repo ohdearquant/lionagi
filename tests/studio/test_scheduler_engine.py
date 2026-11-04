@@ -634,9 +634,52 @@ def test_chain_selection_ignores_unselected_invalid_value(success, caplog):
     assert not caplog.records
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"kind": "agent", "action_kind": "private-legacy"},
+        {"action_kind": "playbook"},
+        {"prompt": "inherit parent kind"},
+    ],
+)
+def test_chain_selection_accepts_selected_kind_and_ignores_shadow(action, caplog):
+    from lionagi.studio.scheduler.engine import _selected_chain_action
+
+    schedule = _minimal_schedule(action_kind="agent", on_fail=action)
+    with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
+        assert _selected_chain_action(schedule, False) is action
+    assert not caplog.records
+
+
+def test_chain_selection_accepts_string_subclass_without_hashing():
+    from lionagi.studio.scheduler.engine import _selected_chain_action
+
+    class HashTrap(str):
+        def __hash__(self):
+            raise AssertionError("kind hash called")
+
+    action = {"kind": HashTrap("agent")}
+    assert _selected_chain_action(_minimal_schedule(on_success=action), True) is action
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "value", ["private-legacy", ["private-legacy"], 7, True, None, "", [], 0, False]
+    "value",
+    [
+        "private-legacy",
+        ["private-legacy"],
+        7,
+        True,
+        None,
+        "",
+        [],
+        0,
+        False,
+        {"kind": "private-legacy"},
+        {"kind": 7},
+        {"action_kind": 7},
+        {"kind": None, "action_kind": "agent"},
+    ],
 )
 @pytest.mark.parametrize("success", [False, True])
 async def test_fire_skips_unusable_stored_chain_without_changing_outcome(

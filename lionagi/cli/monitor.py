@@ -1485,8 +1485,10 @@ async def _schedule_declares_chain_action(
     the outcome that just landed, i.e. a grace wait for the chain child is warranted."""
     if schedule_id not in cache:
         cache[schedule_id] = await db.get_schedule(schedule_id)
+    from ._schedule_parsing import _usable_chain_action
+
     sched = cache[schedule_id] or {}
-    return bool(sched.get("on_success")) if exit_code == 0 else bool(sched.get("on_fail"))
+    return _usable_chain_action(sched, exit_code == 0) is not None
 
 
 def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
