@@ -251,7 +251,7 @@ the difference decides what the mechanism is worth.** It is a check against
 *accident*: code that writes a session's status without meaning to claim it is a
 mirrored transcript. It is not, and at this layer cannot be, a check against
 *impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
-caller-supplied strings (`lionagi/state/db.py:5071-5082`) and they arrive at the
+caller-supplied strings (`lionagi/state/db.py:5399-5410`) and they arrive at the
 lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
 (`lionagi/state/lifecycle/models.py:49-52`). Any caller in the process can pass
 `actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
@@ -281,7 +281,7 @@ Three things block it, each read at the source:
   `service.py:561` the declared edges are read as an empty tuple when it is
   false. So the declared-edge policy, `actor_types` included, is never
   inspected on the only path that writes a mirrored session's status.
-- A reason prefix is not an authorization: `lionagi/state/reasons.py:221-229`
+- A reason prefix is not an authorization: `lionagi/state/reasons.py:224-232`
   validates exact registered codes, and the session policy admits the whole
   `session` prefix (`lionagi/state/lifecycle/policy.py:185-196`). Registering
   `session.idle.*` binds no code to either reconciler.

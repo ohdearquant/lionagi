@@ -1706,7 +1706,14 @@ async def test_do_kill_all_stale_sweep_write_does_not_clobber_interleaved_flow_w
         # 6's reproduction, which seeded unverifiable_since/count before the
         # interleaving).
         await db.merge_session_node_metadata(
-            sid, {"unverifiable_since": 111.0, "unverifiable_count": 1}
+            sid,
+            {
+                "unverifiable_since": 111.0,
+                "unverifiable_count": 1,
+                "unverifiable_epoch": 0,
+                "unverifiable_quarantined": False,
+                "unverifiable_identity": json.dumps([54321, None, None], separators=(",", ":")),
+            },
         )
 
     real_fetch_all = StateDB.fetch_all
