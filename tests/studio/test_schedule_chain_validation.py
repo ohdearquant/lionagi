@@ -15,7 +15,11 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from unittest.mock import AsyncMock, patch
 
-from lionagi.cli._schedule_parsing import _MAX_CHAIN_DEPTH, _parse_chain_action
+from lionagi.cli._schedule_parsing import (
+    _MAX_CHAIN_DEPTH,
+    _parse_chain_action,
+    _validate_chain_kinds,
+)
 from lionagi.studio.services.schedules import create_schedule, update_schedule
 
 FIELDS = ("on_success", "on_fail")
@@ -382,8 +386,37 @@ def test_non_string_parent_kind_is_refused_at_service_boundary(field, parent_kin
 
     assert create_error is not None and "action_kind" in str(create_error)
     assert update_error is not None and "action_kind" in str(update_error)
+    assert type(parent_kind).__name__ in str(create_error)
+    assert type(parent_kind).__name__ in str(update_error)
     created.create_schedule.assert_not_called()
     updated.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("parent_kind", [42, ["private-value"], {"private-value": True}, [], {}])
+@pytest.mark.parametrize("with_chain", [False, True])
+@pytest.mark.parametrize("operation", ["create", "update"])
+def test_action_kind_type_is_refused_on_create_and_update(parent_kind, with_chain, operation):
+    chain = {"on_success": {"kind": "agent", "on_success": None}} if with_chain else {}
+    if operation == "create":
+        store, error = _run_create(_create_data(action_kind=parent_kind, **chain))
+    else:
+        store, error = _run_update({"action_kind": parent_kind, **chain})
+
+    assert error is not None
+    assert "action_kind" in str(error)
+    assert type(parent_kind).__name__ in str(error)
+    assert "private-value" not in str(error)
+    store.create_schedule.assert_not_called()
+    store.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("parent_kind", [42, ["private-value"], {"private-value": True}])
+def test_direct_kind_validation_refuses_non_string_parent(parent_kind):
+    with pytest.raises(ValueError) as caught:
+        _validate_chain_kinds({"kind": "agent"}, "chain", parent_kind)
+    assert "action_kind" in str(caught.value)
+    assert type(parent_kind).__name__ in str(caught.value)
+    assert "private-value" not in str(caught.value)
 
 
 @pytest.mark.parametrize("field", FIELDS)

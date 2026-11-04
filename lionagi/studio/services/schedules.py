@@ -308,6 +308,11 @@ def _svc_validate_prompt(prompt: str | None) -> None:
     _validate_prompt(prompt)
 
 
+def _svc_validate_action_kind_type(kind: Any) -> None:
+    if kind is not None and not isinstance(kind, str):
+        raise ValueError(f"action_kind must be a string, got {type(kind).__name__}")
+
+
 def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
     """Service-boundary check: a play launch has no '--' separator, so a prompt it sends that
     starts with '-' would re-parse as a flag of `li play`."""
@@ -1129,6 +1134,7 @@ async def get_schedule_by_name(name: str) -> dict[str, Any] | None:
 
 
 async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
+    _svc_validate_action_kind_type(data.get("action_kind"))
     if not data.get("name"):
         raise ValueError("Schedule name is required")
     if not data.get("trigger_type"):
@@ -1243,6 +1249,9 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         if cleared:
             raise ValueError(f"Field(s) {sorted(cleared)} cannot be cleared to null")
 
+        effective = {**schedule, **fields}
+        _svc_validate_action_kind_type(effective.get("action_kind"))
+
         if "action_model" in fields:
             _svc_validate_action_model(fields["action_model"])
         if "action_prompt" in fields:
@@ -1278,7 +1287,6 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         if "threshold_config" in fields:
             _svc_validate_threshold_config(fields["threshold_config"])
 
-        effective = {**schedule, **fields}
         kind_changed = "action_kind" in fields and fields["action_kind"] != schedule.get(
             "action_kind"
         )
