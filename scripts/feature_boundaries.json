@@ -1646,6 +1646,10 @@
       "layer": "adapter",
       "owner": "state"
     },
+    "lionagi.state._quarantine_identity": {
+      "layer": "adapter",
+      "owner": "state"
+    },
     "lionagi.state.artifact_verifier": {
       "layer": "adapter",
       "owner": "state"

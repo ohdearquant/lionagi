@@ -2905,6 +2905,12 @@
       "resolve_mirrored_content",
       "write_mirrored_messages"
     ],
+    "lionagi/state/_quarantine_identity.py": [
+      "QuarantineProbeError",
+      "encode_identity",
+      "is_current_quarantine",
+      "quarantine_identity"
+    ],
     "lionagi/state/artifact_verifier.py": [
       "ArtifactContract",
       "ArtifactPathError",
