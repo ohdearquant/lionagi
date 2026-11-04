@@ -92,9 +92,11 @@ bearer, `"configured"` for the configured token.
 The page stores only a bearer identified as `"launch"` in `localStorage`,
 bound to the daemon's API base. A configured bearer, or one whose source is
 missing or unknown (including an answer from an older daemon), stays in
-`sessionStorage` for the tab. A new window with an opener may start with a copy
-of the opener's session storage. If storage is unavailable, the bearer remains
-in memory for the current page load. Pairing with a configured or unknown-source
+`sessionStorage` for the tab. Browsers can copy session storage into a new
+window opened with an opener, or into a duplicated or restored tab. Same-origin
+pages in that tab family may hold a copy; pages on other origins cannot read it.
+If storage is unavailable, the bearer remains in memory for the current page
+load. Pairing with a configured or unknown-source
 bearer removes a local bearer for that same API base when storage permits. The
 page never reuses unmarked local bearers saved by older versions and removes them
 when storage permits because it cannot tell whether they are configured

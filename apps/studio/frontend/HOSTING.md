@@ -66,9 +66,11 @@ page removes the code from the address bar on load, exchanges it for that bearer
 and a decision capability at `POST /api/studio/pair`. Only a bearer identified
 as a launch bearer is kept in `localStorage`, bound to the daemon's API base.
 A configured token, or a bearer whose source is missing or unknown, is kept in
-`sessionStorage` for the tab. A new window opened with an opener can receive a
-copy of the opener's session storage. If storage is unavailable, the bearer
-stays in memory for the current page load. The page never reuses unmarked bearers
+`sessionStorage` for the tab. Browsers can copy session storage into a new window
+opened with an opener, or into a duplicated or restored tab. Same-origin pages
+in that tab family may hold a copy; pages on other origins cannot read it.
+If storage is unavailable, the bearer stays in memory for the current page load.
+The page never reuses unmarked bearers
 saved by older versions and removes them when storage permits, so an already
 paired page needs pairing again once.
 The decision capability also stays in `sessionStorage` and is sent in

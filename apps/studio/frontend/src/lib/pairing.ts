@@ -261,8 +261,7 @@ export function storedBearerToCheck(apiBase: string): string | undefined {
  * capability is left alone.
  */
 export function forgetPairedBearer(refused: string, apiBase: string): void {
-  const matches = (value: Paired | undefined) =>
-    value?.token === refused && value.base === apiBase;
+  const matches = (value: Paired | undefined) => value?.token === refused && value.base === apiBase;
   if (matches(paired)) paired = undefined;
   for (const storage of ["localStorage", "sessionStorage"] as const) {
     if (matches(readStoredBearer(storage))) writeStoredBearer(storage, undefined);
