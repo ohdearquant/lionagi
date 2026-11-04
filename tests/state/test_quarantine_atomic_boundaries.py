@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from contextlib import asynccontextmanager
 
@@ -106,10 +105,6 @@ async def test_postgres_sql_checks_full_19_digit_bounds(tmp_path, monkeypatch):
     assert "^[0-9]{1,18}$" not in sql
 
 
-@pytest.mark.skipif(
-    not os.environ.get("LIONAGI_TEST_PG_URL"),
-    reason="no PostgreSQL service configured via LIONAGI_TEST_PG_URL",
-)
 @pytest.mark.integration
 @pytest.mark.parametrize("epoch", [999999999999999999, 1000000000000000000])
 async def test_postgres_epoch_and_count_19_digit_boundaries(pg_url, epoch):
