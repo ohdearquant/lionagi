@@ -303,7 +303,7 @@ The shared dependency closure is part of step 3:
   `lionagi/cli/_runs.py:1485`, `lionagi/cli/_runs.py:1913`,
   `lionagi/cli/_runs.py:2131`).
 - Checkpoint resolution uses public inspection services instead of the retained
-  status adapter (`lionagi/cli/orchestrate/_checkpoint.py:227`).
+  status adapter (`lionagi/cli/orchestrate/_checkpoint.py:238`).
 - Shared code and Studio use the existing neutral log emitters. Their identity
   already comes from `lionagi._log_channels`. The formatter configuration in
   `lionagi/cli/_logging.py` (lines 10 and 91 at 04e03ffe) moves whole to
