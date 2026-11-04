@@ -180,6 +180,10 @@ ignore = [
     "W293",   # blank line whitespace (handled by formatter)
 ]
 
+[tool.ruff.lint.isort]
+# Keep first-party classification stable when a module file moves between roots.
+known-first-party = ["lionagi", "lionhub"]
+
 [tool.ruff.lint.flake8-bugbear]
 # pydantic.Field in a default is the documented way to attach a description to a
 # parameter; the FieldInfo it returns is inert, so B008's mutable-default hazard
