@@ -13,14 +13,35 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _changelog_bullets(text):
-    """Yield individual Markdown bullets, preserving indented continuation lines."""
+    """Yield top-level bullets without nested items or fenced code."""
     bullet = []
+    fence = None
+    nested = False
     for line in text.splitlines():
+        if fence is not None:
+            char, length = fence
+            if re.fullmatch(r"[ \t]*" + re.escape(char) + "{" + str(length) + r",}[ \t]*", line):
+                fence = None
+            continue
+        fence_open = re.match(r"[ \t]*(`{3,}|~{3,})", line)
+        if fence_open:
+            if line.startswith(fence_open.group(1)) and bullet:
+                yield " ".join(bullet)
+                bullet = []
+            marker = fence_open.group(1)
+            fence = (marker[0], len(marker))
+            continue
         if line.startswith("- "):
             if bullet:
                 yield " ".join(bullet)
             bullet = [line]
-        elif bullet and line[:1] in {" ", "\t"} and line.strip():
+            nested = False
+        elif re.match(r"[ \t]+(?:[-+*]|[0-9]+[.)])[ \t]+", line):
+            if bullet:
+                yield " ".join(bullet)
+            bullet = []
+            nested = True
+        elif bullet and not nested and line[:1] in {" ", "\t"} and line.strip():
             bullet.append(line.strip())
         else:
             if bullet:
@@ -30,11 +51,29 @@ def _changelog_bullets(text):
         yield " ".join(bullet)
 
 
+def _unfenced_lines(text):
+    """Exclude fenced examples when accepting historical changelog table rows."""
+    fence = None
+    for line in text.splitlines():
+        if fence is not None:
+            char, length = fence
+            if re.fullmatch(r"[ \t]*" + re.escape(char) + "{" + str(length) + r",}[ \t]*", line):
+                fence = None
+            continue
+        opening = re.match(r"[ \t]*(`{3,}|~{3,})", line)
+        if opening:
+            marker = opening.group(1)
+            fence = (marker[0], len(marker))
+        else:
+            yield line
+
+
 def test_changelog_names_every_move():
     from scripts.fold_changelog_fragments import FoldRefusedError, _parse_fragment
 
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     bullets = list(_changelog_bullets(changelog))
+    historical_lines = list(_unfenced_lines(changelog))
     directory = ROOT / "changelog.d"
     if directory.is_dir():
         for path in directory.iterdir():
@@ -44,10 +83,14 @@ def test_changelog_names_every_move():
                 fragment = _parse_fragment(path)
             except FoldRefusedError:
                 continue
-            bullets.extend(" ".join(lines) for _, lines in fragment.bullets)
+            for _, lines in fragment.bullets:
+                bullets.extend(_changelog_bullets("\n".join(lines)))
     for row in _moved.MOVED:
         line = f"| `{row.old}` | `{row.new}` | {row.removed_in} |"
-        version = re.compile(rf"(?<![0-9A-Za-z.]){re.escape(row.removed_in)}(?![0-9A-Za-z]|\.\d)")
+        version = re.compile(
+            rf"(?<![0-9A-Za-z.]){re.escape(row.removed_in)}"
+            r"(?![-+0-9A-Za-z]|\.\d)"
+        )
         documented = any(
             f"`{row.old}`" in bullet
             and f"`{row.new}`" in bullet
@@ -55,7 +98,7 @@ def test_changelog_names_every_move():
             and version.search(bullet, bullet.index(f"`{row.new}`") + len(f"`{row.new}`"))
             for bullet in bullets
         )
-        assert line in changelog or documented, row
+        assert any(line in item for item in historical_lines) or documented, row
 
 
 @pytest.mark.parametrize("location", ["fragment", "folded"])
@@ -178,3 +221,48 @@ def test_invalid_move_fragment_is_refused_by_fold(tmp_path, monkeypatch):
     assert main(tmp_path) == 1
     assert changelog.read_text() == original
     assert fragment.read_text() == invalid
+
+
+@pytest.mark.parametrize("location", ["fragment", "folded"])
+@pytest.mark.parametrize(
+    "case", ["nested", "fenced", "fenced_deep", "prerelease", "local", "extra_component"]
+)
+def test_changelog_move_rejects_nonbullet_or_inexact_version(tmp_path, monkeypatch, location, case):
+    row = _moved.Moved("lionagi.old", "lionhub.new", "0.37.0", "2.0.0")
+    monkeypatch.setattr(_moved, "MOVED", (row,))
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    (tmp_path / "changelog.d").mkdir()
+    statements = {
+        "nested": "- `lionagi.old` moved.\n  - `lionhub.new` removal in 2.0.0.\n",
+        "fenced": (
+            "- Example:\n  ```\n  `lionagi.old` to `lionhub.new` in 2.0.0.\n  ```\n"
+            if location == "fragment"
+            else "```md\n- `lionagi.old` to `lionhub.new` in 2.0.0.\n```\n"
+        ),
+        "fenced_deep": "- Example:\n    ```\n    `lionagi.old` to `lionhub.new` in 2.0.0.\n    ```\n",
+        "prerelease": "- `lionagi.old` to `lionhub.new` in 2.0.0-rc1.\n",
+        "local": "- `lionagi.old` to `lionhub.new` in 2.0.0+local.\n",
+        "extra_component": "- `lionagi.old` to `lionhub.new` in 2.0.0.1.\n",
+    }
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text("## [Unreleased]\n\n" + (statements[case] if location == "folded" else ""))
+    if location == "fragment":
+        (tmp_path / "changelog.d" / "42.md").write_text("### Changed\n\n" + statements[case])
+    with pytest.raises(AssertionError):
+        test_changelog_names_every_move()
+
+
+@pytest.mark.parametrize("fenced", [False, True], ids=["historical-table", "fenced-table"])
+def test_only_unfenced_historical_table_proves_a_move(tmp_path, monkeypatch, fenced):
+    row = _moved.Moved("lionagi.old", "lionhub.new", "0.37.0", "2.0.0")
+    monkeypatch.setattr(_moved, "MOVED", (row,))
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    table = "| `lionagi.old` | `lionhub.new` | 2.0.0 |\n"
+    if fenced:
+        table = "```markdown\n" + table + "```\n"
+    (tmp_path / "CHANGELOG.md").write_text("## [Unreleased]\n\n" + table)
+    if fenced:
+        with pytest.raises(AssertionError):
+            test_changelog_names_every_move()
+    else:
+        test_changelog_names_every_move()
