@@ -166,6 +166,7 @@ A ref is usable only when all of these hold: it is a dict, `kind == "chain_decis
 
 Cases in `_advance_chains` (`lionagi/cli/monitor.py:1560-1645`), applied to a row that has become terminal, in this order:
 
+- Chain following is off (`--no-chain`, so `chain` is false): resolved now, as today (`monitor.py:1589`). The recorded selection is not read.
 - Status `cancelled` or `skipped`: resolved now, as today (`monitor.py:1591`).
 - Selection `on_success` or `on_fail`: the row joins `awaiting_grace` with `_CHAIN_GRACE_TICKS` (`monitor.py:1597`). The child is found by `chain_parent_id` (`monitor.py:1517-1523`), as today. The stored schedule is not read.
 - Selection `none`: resolved now, whatever `exit_code` is (`monitor.py:1598-1599`). Nothing is pending and no grace is open, so the wait loop ends before its next sleep (`monitor.py:1752-1753`, `:1763-1772`).
@@ -204,7 +205,7 @@ New tests (none exist at this checkout):
 3. `tests/studio/test_scheduler_engine.py::test_selection_is_none_at_depth_cap`: a run at `_MAX_CHAIN_DEPTH` records `none` and launches nothing.
 4. `tests/state/lifecycle/test_schedule_adapter.py::test_schedule_run_status_write_keeps_reason_columns`: a `db.update_status` write for a schedule_run persists `status_evidence_refs`. A companion case shows that the `transition()` route drops them. This is the reason-column gate test (D1).
 5. `tests/studio/test_scheduler_engine.py::test_lost_terminal_cas_does_not_chain_normal_path` and `::test_lost_terminal_cas_does_not_chain_recovery`: a lost compare-and-set on each path launches no child and writes no selection.
-6. `tests/cli/test_monitor_run.py::test_chain_decision_none_returns_without_sleep`: a `none` row resolves with no sleep, whatever its exit code.
+6. `tests/cli/test_monitor_run.py::test_chain_decision_none_returns_without_sleep`: a `none` row resolves with no sleep, whatever its exit code. `::test_chain_decision_branch_with_no_chain_returns_without_sleep`: with `--no-chain`, an `on_success` row resolves with no sleep and the wait returns the row's own result.
 7. `tests/cli/test_monitor_run.py::test_chain_decision_branch_follows_child`: an `on_fail` selection on an exit-0 parent waits for and prints the child.
 8. `tests/cli/test_monitor_run.py::test_chain_decision_survives_schedule_edit`: after the stored schedule's `on_success` is removed, a recorded `on_success` still waits for the child.
 9. `tests/cli/test_monitor_run.py::test_chain_decision_unknown_version_is_legacy_with_one_warning` and `::test_chain_decision_malformed_is_legacy_with_one_warning`: each treats the row as having no ref and emits one warning line for that row.
