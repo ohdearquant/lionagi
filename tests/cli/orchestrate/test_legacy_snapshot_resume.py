@@ -142,8 +142,10 @@ async def test_absolute_snapshot_can_replay_without_stored_launch_dir(monkeypatc
 @pytest.mark.asyncio
 @pytest.mark.parametrize("found", [True, False])
 async def test_missing_launch_dir_replays_current_discovery_with_truthful_reason(
-    tmp_run, monkeypatch, found
-):  # noqa: F811
+    tmp_run,  # noqa: F811
+    monkeypatch,
+    found,
+):
     source = tmp_run / ".mcp.json"
     if found:
         source.write_text(json.dumps({"mcpServers": {"current": {"command": "echo"}}}))

@@ -110,7 +110,9 @@ def test_spawned_leg_keeps_the_server_set_the_submission_resolved(sandbox, submi
     # The submission is assembled and the child is spawned. Now the file moves.
     source.write_text(json.dumps({"mcpServers": {"s2": {"command": "two"}}}))
 
-    seen = resolve_spawn_mcp_servers(launch_dir=submit_dir, submit_snapshot=_config_arg(captured["argv"]))
+    seen = resolve_spawn_mcp_servers(
+        launch_dir=submit_dir, submit_snapshot=_config_arg(captured["argv"])
+    )
     assert set(seen.servers) == {"s1"}
     assert handle["mcp_config_reason"] is None
 
@@ -131,7 +133,9 @@ def test_spawned_leg_survives_the_source_config_being_removed(sandbox, submit_di
 
     source.unlink()
 
-    seen = resolve_spawn_mcp_servers(launch_dir=submit_dir, submit_snapshot=_config_arg(captured["argv"]))
+    seen = resolve_spawn_mcp_servers(
+        launch_dir=submit_dir, submit_snapshot=_config_arg(captured["argv"])
+    )
     assert set(seen.servers) == {"s1"}
 
 
