@@ -427,12 +427,14 @@ The loader already selects the longest matching prefix and supports non-package
 specs (`lionagi/_moved.py::_row`, and the comment in `lionagi/_moved.py::_MovedFinder.find_spec`
 that begins "Describe the old name the way the new module is described").
 
-Before adding these rows, extend the move-test enumerator to accept a module
-target without `__path__`; it currently assumes every target is a package
-(`tests/test_moved_modules.py:48`).
+The move-test enumerator accepts a module target without `__path__`
+(`tests/test_moved_modules.py:48`–`:59`).
+The `_mirror_settings` row needs a data-only accommodation in the pickle-coverage
+test because the module defines no picklable object; keep pickle coverage unchanged
+for every other row (`tests/test_moved_modules.py:112`–`:128`).
 Enumerate every specific row and the residual package, test each import order,
-and retain stale-file detection. This is a test-support change, not permission to
-replace the alias loader or weaken identity requirements.
+and retain stale-file detection. This does not permit replacing the alias loader
+or weakening identity requirements.
 
 Preserve logger names when implementations move. The source includes
 `logging.getLogger("lionagi.cli")` in the run module
