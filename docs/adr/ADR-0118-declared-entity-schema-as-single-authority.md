@@ -55,6 +55,7 @@ counts, the numeric P1 inventory figures below have not been reverified at `bb57
    table omitted from both the set and the metadata population is not discovered by that
    column-name comparison.
 
+The following four-or-five-location estimate has not been reverified at `bb57cc96`.
 Adding one column today can require four or five separately-edited, separately-reviewed
 locations. Recent regressions in this area (a backfill writing a guessed `ended_at` that
 downstream read as measured; an audit default misfiling automatic disables as operator
@@ -88,6 +89,8 @@ A guard that passes while its two subjects disagree is worse than no guard, beca
 cited as the reason the duplication is safe.
 
 **P3 — DDL issuance and connection ownership are not confined to the state layer.**
+The following counts of tables, modules, request handlers and call sites, direct connections,
+and `require_file_store` references are earlier estimates, not reverified at `bb57cc96`.
 `studio/operator/store.py` (2,647 lines at `bb57cc96`) declares and creates 6 tables of its
 own and is in effect a second persistence layer beside `StateDB`. Four `studio/services/*` modules create 7
 more tables of their own. That DDL does not run at import: each module holds its
@@ -106,9 +109,12 @@ referenced 37 times, but `services/shows.py`, `services/signals.py` and `service
 never call it.
 
 **P4 — SQL is hand-built, and identifier safety is convention rather than construction.**
-There are 361 lexical `text(` sites across `state/` and `studio/` and zero in `protocols/` or
-`service/`. There are 88 `# noqa: S608` suppressions across 12 files (45 in `state/db.py`, 17
-in `studio/services/db_maintenance.py`, 7 in `studio/services/sessions.py`, the rest in
+The following `text(`, suppression and identifier-interpolation counts are earlier estimates, not
+reverified at `bb57cc96`. A raw `text(` substring search also matches names such as `context(`;
+the suppression estimates do not establish the number of interpolated identifiers.
+An earlier inventory estimated 361 lexical `text(` sites across `state/` and `studio/` and zero in
+`protocols/` or `service/`. It estimated 88 `# noqa: S608` suppressions across 12 files
+(45 in `state/db.py`, 17 in `studio/services/db_maintenance.py`, 7 in `studio/services/sessions.py`, the rest in
 single digits), of which 22 are direct interpolations of an identifier into a statement being
 constructed (14 `text(f"…")`, 8 `execute(f"…")`). No injection of a caller-supplied *value*
 was found: every site is guarded by a nearby allow-list, fixed tuple, or enum check. The
@@ -140,10 +146,12 @@ typed CRUD, schema introspection, schema diffing, risk-classified migration plan
 identifier validation and typed error mapping in a size previously estimated at roughly 4,000
 lines; that estimate has not been verified here.
 
-**P7 — misplaced modules.** Provider transcript mirrors live in the state package
+**P7 — misplaced modules.** The vocabulary count in this paragraph has not been
+reverified at `bb57cc96`. Provider transcript mirrors live in the state package
 (`state/claude_mirror.py`, `state/codex_mirror.py`, `state/_mirror_common.py`) although they
-are provider-format concerns. `state/reasons.py` mixes four unrelated vocabularies in 248
-lines: reason-code namespaces, the canonical entity-type vocabulary, a frontend route alias,
+are provider-format concerns. `state/reasons.py` mixes four unrelated vocabularies in 266
+LF-terminated lines at `bb57cc96` (248 at `79c9772930`; see reproduction below): reason-code
+namespaces, the canonical entity-type vocabulary, a frontend route alias,
 plural table-name aliases, a code-format validator, and the entity-type → physical-table map
 that `update_status()` uses.
 
@@ -169,7 +177,9 @@ and departs from it where the departures are called out. The shape is:
 ### What that implementation gets wrong
 
 Adopt the pattern, and do not copy the code: the implementation studied has defects that a bulk
-port would import wholesale, several of them observable by running it.
+port would import wholesale, several of them observable by running it. The numerical examples
+of hash seeds, output orders, dimensions and implementation versions below have not been
+reverified at `bb57cc96` or attributed to a reproducible reference revision.
 
 - **Generated output is not deterministic, measurably.** Field selection filters by iterating the
   caller's collection rather than filtering the stored ordered tuple, and the composition path
@@ -214,6 +224,8 @@ unchanged. This codebase is SQLAlchemy-based and SQLite-first with PostgreSQL su
 (`StateDB.dialect` branches throughout). SQLite's `ALTER TABLE` cannot drop constraints, change
 column types, or add foreign keys, which is exactly why the `*_new` rebuild pattern exists. Any
 port that assumes PostgreSQL is dead on arrival.
+
+The following two-NULL-row example has not been reverified at `bb57cc96`.
 
 Worse, it fails quietly. SQLite accepts `UUID`, `JSONB`, `DOUBLE PRECISION` and
 `TIMESTAMP WITH TIME ZONE` as column type names and gives them none of the corresponding
@@ -373,8 +385,11 @@ view definition/dependency · zero or multiple owners for one catalog object.
 Each arm must go red on its own. The acceptance test is a mutation, not a passing run: reverting
 an adapter's read of one field must redden exactly that field's arm and no other, which proves
 both that the arm is live and that the arms are independent. The direction differences and four
-indexes declared in one authority and not the other supply direction and membership fixture
-candidates; the rest are constructed.
+indexes (the source membership scan is at `bb57cc96`) declared in one authority and not the other
+supply direction and membership fixture candidates; the rest are constructed.
+
+The counts of 22 interpolations, five allow-lists and 88 suppressions in D4 are earlier estimates
+not reverified at `bb57cc96`; they are not an acceptance threshold.
 
 **D4 — generated statement builders replace hand-built SQL for row CRUD.** Insert column lists,
 update SET clauses, and update allow-lists derive from the spec's field set. The 22 identifier
@@ -384,6 +399,9 @@ carries validated identifier types instead of `str`. Hand-written SQL remains le
 expected for genuinely bespoke work — locking, CTEs, JSON operators, window aggregates, atomic
 CAS transitions, retention sweeps — which moves behind named typed owners with an explicit
 escape hatch that validates identifiers, rather than being scattered through route code.
+
+The D5 counts of seven rebuild paths over five tables, including three schedules paths and six
+other replay paths, have not been reverified at `bb57cc96`.
 
 **D5 — migration is a diff between declared and introspected schema, and it fails closed.** At
 open, introspect the live database, diff against the declared schema, and produce a
@@ -509,6 +527,9 @@ The distinction is enforced at the catch site because the defect this replaces i
 blanket `except Exception: continue` that could not tell the two apart and then stamped the
 version anyway.
 
+The operator-table and studio-service re-declaration counts in this discussion have not been
+reverified at `bb57cc96`.
+
 One consequence of "unknown shape means quarantine" has to be settled before Phase 4 turns
 application on, because the phasing creates the condition on purpose. Migration applies in Phase
 4; the operator-store tables do not enter the registry until Phase 5. Between those two points a
@@ -542,6 +563,9 @@ with no handle, DDL, or version write. A complete unknown shape takes zero retri
 connection whose write fails at the backend, while the same PostgreSQL shape without safe
 read-only credentials returns `Unavailable`. A later open after restoration is evaluated anew.
 
+The D6 counts of six operator tables, seven re-declarations, 38 direct contexts and three
+services without the guard have not been reverified at `bb57cc96`.
+
 **D6 — DDL issuance and store access become the state layer's exclusive right.** The six
 operator-store tables and the 7 studio-service re-declarations register in the registry (the
 latter as the state-owned tables they already duplicate). Studio loses its
@@ -558,9 +582,14 @@ persistence-schema decision or a proven pure move. ADR-0122 decides the provider
 projection, and persistence port boundaries and their compatibility path. ADR-0118 removes the
 state import inversion only through that accepted boundary; Phase 0 does not move these files.
 
+The D8 per-class code counts below count direct string-literal assignments by class at `bb57cc96`
+using the AST scan in the reproduction section. The seven proposed renames and 497 sites have not
+been reverified at `bb57cc96`. The six facade values and seven existing policy values used in the
+projection design also require a same-revision inventory.
+
 **D8 — `reasons.py` is keyed two different ways at once; separate them.** The module holds two
 vocabularies that look like one. The eight code classes are keyed on *producer domain*, and each
-owns exactly one code prefix: `RunReasons` → `run.` (30 codes), `SessionReasons` → `session.`
+owns exactly one code prefix: `RunReasons` → `run.` (33 codes), `SessionReasons` → `session.`
 (6), `PlayReasons` → `play.` (8), `ShowReasons` → `show.` (5), `ScheduleReasons` → `schedule.`
 (7), `ScheduleDefinitionReasons` → `schedule_definition.` (9), `TeamReasons` → `team.` (1),
 `DispatchReasons` → `dispatch.` (8). Everything around them —
@@ -664,6 +693,9 @@ demonstrates in this repository.
 
 ### Ordering against ADR-0117
 
+The count of 16 inventoried hand-authored declarations below has not been reverified at
+`bb57cc96`.
+
 ADR-0117 declares its canonical schema target as hand-written `CREATE TABLE` text for
 `progression_items` and `progression_storage_state`. Under D1 that is one more authored
 authority, so the two ADRs have to agree on which absorbs which rather than discovering it later.
@@ -712,6 +744,9 @@ declared index to a table that already exists — the separate index ledger exis
 that — so a schema change made in the writer phase would still have to be applied to the spec and
 the old migration ledger together, and a missed edit points a generated writer at a shape the
 upgraded store does not have.
+
+Numerical estimates of existing authorities, policies, rebuild paths and direct connections in
+the phase plan below have not been reverified at `bb57cc96`; target counts are design requirements.
 
 - **Foundation gate:** accept and implement the relevant ADR-0119 contracts for dataclass
   defaults/default factories, Sentinel states, ordered field identity, structural equality/hash,
@@ -821,6 +856,9 @@ concurrency, serialization and retry underneath both.
 
 ## Scope boundary: typed rows
 
+The estimate of 51 untyped read methods, repeated below, has not been reverified at `bb57cc96`;
+the annotation patterns alone do not establish the number of public read signatures.
+
 `StateDB`'s read surface returns untyped rows — 51 methods annotated
 `dict[str, Any] | None` or `list[dict[str, Any]]` — so every consumer re-parses the same fields
 and no reader is checked against the schema. It is the same root cause as P1: nothing connects
@@ -886,7 +924,8 @@ At `bb57cc96`, `projects.py`, `shows.py`, `signals.py`, `run_tags.py`, `approval
 `attention.py` total 2,426 lines; the first three total 1,263. At `79c9772930` those totals were
 2,387 and 1,209. The earlier draft estimated 286 duplicate lines across the first three (159, 78
 and 49 respectively); these region boundaries and the current duplicate total have not been
-revalidated. `StateDB` already
+revalidated. The following counts of six project, five show and two signal methods have not been
+reverified at `bb57cc96`. `StateDB` already
 carries six project methods, five show methods and two signal methods. The bulk of `shows.py` is
 filesystem show-import and presentation logic that no store method covers, so it is not a
 candidate for this cut at all. `run_tags`, `approvals` and `attention` own real domain logic and
@@ -900,13 +939,16 @@ project exists, where `StateDB` returns `False`, which is the difference between
 at the route. Each swap is an API contract decision with a caller behind it, so the
 caller-by-caller pass Phase 5 opens with is what sizes this work.
 
-Add to it the 38 direct store connections across 9 modules that collapse to one
-`StateStore`/`TransactionRunner`, the
+The following estimate of 38 direct store connections across nine modules has not been
+reverified at `bb57cc96`. Add to it the 38 direct store connections across 9 modules that collapse
+to one `StateStore`/`TransactionRunner`, the
 repeated session-by-id lookups in the operator package, and the admin-event insert duplicated
 between `studio/operator/store.py` and `StateDB.insert_admin_event`. Sizing the rest is Phase 5's
 opening pass, not something to estimate from here.
 
 ## Consequences
+
+The seven-path count repeated below has not been reverified at `bb57cc96`.
 
 - One column addition becomes one edit in one place, and "what is the schema" has one answer.
 - The identifier-interpolation class disappears rather than being re-guarded site by site.
@@ -928,14 +970,16 @@ opening pass, not something to estimate from here.
 Counts are source-site counts, not runtime frequencies, and the units are deliberately not
 summed: a declaration, a statement string, and an execution call are different things. Except
 where explicitly measured at the stated revision, these inventory figures have not been
-reverified at `bb57cc96`.
+reverified at `bb57cc96`. In particular, the migration ledger, inline DDL, execution-call,
+allow-list, suppression, operator and service-table, request-handler and connection counts in
+the next five rows are unverified estimates, not measured current totals.
 
 | Where | Declares schema | Issues DDL | Builds SQL | Notes |
 |---|---|---|---|---|
 | `state/schema_meta.py` | 34 tables, 408 direct columns, 93 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21` | via `create_all` | — | what production builds from; PK, FK, CHECK, unique, partial-index and server-default counts need a fresh same-pin inventory — Phase 1 compares generated objects and Phase 2 compares physical catalogs |
 | `state/schema.sql` | 34 tables, 97 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21`; pragma and seed totals require a fresh inventory | tests only | — | `_SCHEMA_PATH` at `db.py:174`; not executed by writable open |
 | `state/schema_migrations.py` | 127 additive column declarations over 14 tables | 10 indexes per dialect | — | the two dialect tuples are textually identical |
-| `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 9,539 lines at `bb57cc96`; 5 `_*_COLUMNS` allow-lists; 73 `S608` |
+| `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 9,539 lines and 73 physical lines containing `S608` at `bb57cc96` (see scan below); 5 `_*_COLUMNS` allow-lists |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |
 | `studio/operator/store.py` | 6 tables (+2 indexes) + own migration | yes | 119 sites | 2,647 lines at `bb57cc96`; a second persistence layer |
 | `studio/services/*` | 7 re-declarations of state tables, 4 modules | on the request path, in 20 request-handling functions | 93 execution calls | 38 direct store connections in 9 files |
@@ -953,7 +997,7 @@ rather than subtracting totals, and separately counts declarations containing de
 
 | Divergence | `schema.sql` | `schema_meta.py` |
 |---|---|---|
-| Index membership | 4 declared here and absent there | 0 declared here and absent there |
+| Index membership at `bb57cc9619765bd03e7dd2b3369725335d48af21` | 4 declared here and absent there | 0 declared here and absent there |
 | Index count (2026-08-15) | 87 | 83 |
 | Descending index declarations at `bb57cc9619765bd03e7dd2b3369725335d48af21` | 17 indexes contain `DESC` | 1 index contains `.desc()` |
 | `idx_sessions_run_id` | present | absent (also in the migration registry) |
@@ -989,9 +1033,16 @@ spot-checking them. Its reported 38-versus-37 counts and the claim that
 population at `bb57cc9619765bd03e7dd2b3369725335d48af21`; a complete same-pin comparison is
 needed before treating those counts or the gap's completeness as current.
 
-Cross-cutting: 361 lexical `text(` sites in `state/` + `studio/` against zero in `protocols/` and
-`service/`; 88 `S608` suppressions across 12 files; 22 identifier interpolations; 34
+The cross-cutting figures below have not been reverified at `bb57cc96`: neither the lexical
+`text(` estimate (which may also match `context(`), the S608 and interpolated-identifier estimates,
+nor the `BEGIN IMMEDIATE` and untyped-method estimates are established current counts.
+
+Earlier cross-cutting estimates: 361 lexical `text(` sites in `state/` + `studio/` against zero
+in `protocols/` and `service/`; 88 `S608` suppressions across 12 files; 22 identifier interpolations; 34
 `BEGIN IMMEDIATE` sites; 51 `StateDB` methods returning untyped row dicts.
+
+The following estimates of five session lookups, eight frame inserts and six admin-event inserts
+have not been reverified at `bb57cc96`.
 
 Duplicate query ownership worth its own issues: session-by-id is reimplemented five times across
 the operator modules against `state/db.py`'s own; projects, shows and signals each duplicate a
@@ -1055,6 +1106,26 @@ historical_meta = ast.parse((historical / "lionagi/state/schema_meta.py").read_t
 historical_meta_indexes = [n for n in ast.walk(historical_meta) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "Index"]
 print("79c DESC-bearing SQL/metadata declarations", sum(bool(re.search(r"\bDESC\b", n.group(), re.I)) for n in historical_indexes), sum(any(isinstance(x, ast.Attribute) and x.attr == "desc" for x in ast.walk(n)) for n in historical_meta_indexes))
 PY
+```
+
+The line counts for `state/reasons.py`, physical `S608`-containing lines in `state/db.py`, and
+the direct class string-literal assignment counts in D8 are reproducible separately (the scans do
+not infer runtime use):
+
+```sh
+git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/reasons.py | wc -l
+git show 79c9772930ac8da8522c3b3ced5d2974d13daea1:lionagi/state/reasons.py | wc -l
+git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/db.py | rg -c S608
+git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/reasons.py | python3 -c '
+import ast, sys
+m = ast.parse(sys.stdin.read())
+for c in m.body:
+    if isinstance(c, ast.ClassDef) and c.name.endswith("Reasons"):
+        values = [a.value.value for a in c.body if isinstance(a, ast.Assign)
+                  and len(a.targets) == 1 and isinstance(a.targets[0], ast.Name)
+                  and isinstance(a.value, ast.Constant) and isinstance(a.value.value, str)]
+        print(c.name, len(values))
+'
 ```
 
 The temporary directory can be removed after inspection.
