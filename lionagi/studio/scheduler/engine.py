@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from lionagi.cli._schedule_parsing import _CHAIN_ACTION_ALLOWED_KEYS, _MAX_CHAIN_DEPTH
+from lionagi.cli._schedule_parsing import _MAX_CHAIN_DEPTH, _merge_chain_action
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.ln.concurrency import ExceptionGroup, current_time
 from lionagi.ln.concurrency import sleep as _sleep
@@ -454,22 +454,6 @@ def _selected_chain_action(schedule: dict, success: bool) -> dict | None:
         )
         return None
     return action
-
-
-def _merge_chain_action(schedule: dict, chain_action: dict) -> dict:
-    """The schedule a chained run fires: *schedule* overlaid with its ``on_success`` or
-    ``on_fail`` action, whose short keys replace the action fields they name, None included.
-    Only the keys a chain action may carry are overlaid; any other stored key leaves the
-    parent's field in place."""
-    chain_action = {k: v for k, v in chain_action.items() if k in _CHAIN_ACTION_ALLOWED_KEYS}
-    chain_schedule = {**schedule, **chain_action}
-    chain_schedule["action_kind"] = chain_action.get(
-        "kind", chain_action.get("action_kind", schedule["action_kind"])
-    )
-    for key in ("model", "prompt", "agent", "playbook"):
-        if key in chain_action:
-            chain_schedule[f"action_{key}"] = chain_action[key]
-    return chain_schedule
 
 
 class SchedulerEngine:

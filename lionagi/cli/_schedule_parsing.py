@@ -156,6 +156,22 @@ _CHAIN_ACTION_ALLOWED_KEYS = frozenset(
 )
 
 
+def _merge_chain_action(schedule: dict, chain_action: dict) -> dict:
+    """The schedule a chained run fires: *schedule* overlaid with its ``on_success`` or
+    ``on_fail`` action, whose short keys replace the action fields they name, None included.
+    Only the keys a chain action may carry are overlaid; any other stored key leaves the
+    parent's field in place."""
+    chain_action = {k: v for k, v in chain_action.items() if k in _CHAIN_ACTION_ALLOWED_KEYS}
+    chain_schedule = {**schedule, **chain_action}
+    chain_schedule["action_kind"] = chain_action.get(
+        "kind", chain_action.get("action_kind", schedule["action_kind"])
+    )
+    for key in ("model", "prompt", "agent", "playbook"):
+        if key in chain_action:
+            chain_schedule[f"action_{key}"] = chain_action[key]
+    return chain_schedule
+
+
 def _is_schedule_request_timeout(exc: OSError) -> bool:
     """Return whether urllib stopped because the request exceeded its deadline."""
     return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
@@ -172,12 +188,33 @@ def _schedule_request_timeout_message(
     )
 
 
+def _validate_chain_kinds(action: dict, label: str, parent_kind: str) -> str | None:
+    if not isinstance(parent_kind, str):
+        raise ValueError(f"action_kind must be a string, got {type(parent_kind).__name__}")
+    parent_kind = str.__str__(parent_kind)
+    parent_kind = _ALIAS_ACTION_KINDS.get(parent_kind, parent_kind)
+    for kind_key in ("kind", "action_kind"):
+        if kind_key not in action:
+            continue
+        value = action[kind_key]
+        if not isinstance(value, str):
+            return f"{label}.{kind_key}: must be a valid action kind"
+        value = str.__str__(value)
+        if value not in _VALID_ACTION_KINDS and value not in _ALIAS_ACTION_KINDS:
+            return f"{label}.{kind_key}: must be a valid action kind"
+        normalized = _ALIAS_ACTION_KINDS.get(value, value)
+        if normalized in {"command", "flow_yaml"} and normalized != parent_kind:
+            return f"{label}.{kind_key}: target-bearing action kind must match its parent kind"
+    return None
+
+
 def _validate_chain_action_node(
     action: Any,
     label: str,
     self_field: str,
     chain_depth: int,
     max_chain_depth: int,
+    parent_kind: str = "agent",
 ) -> str | None:
     """Validate one chain_action node, recursing into its own nested
     on_success/on_fail the same way the engine's chain-fire would reach them.
@@ -196,6 +233,13 @@ def _validate_chain_action_node(
     if unknown:
         allowed = ", ".join(sorted(_CHAIN_ACTION_ALLOWED_KEYS))
         return f"{label}: unknown key(s) {sorted(unknown)}; allowed: {allowed}"
+
+    err = _validate_chain_kinds(action, label, parent_kind)
+    if err:
+        return err
+    effective_kind = action.get("kind", action.get("action_kind", parent_kind))
+    effective_kind = str.__str__(effective_kind)
+    effective_kind = _ALIAS_ACTION_KINDS.get(effective_kind, effective_kind)
 
     if self_field not in action:
         warn(
@@ -227,13 +271,42 @@ def _validate_chain_action_node(
                 nested_field,
                 chain_depth + 1,
                 max_chain_depth,
+                effective_kind,
             )
             if err:
                 return err
     return None
 
 
-def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str | None]:
+def _validate_reachable_chain_actions(schedule: dict[str, Any]) -> str | None:
+    """Check each chain node the engine's shallow merge can reach, up to its depth cap."""
+
+    def walk(parent: dict, depth: int, path: str, previous_action: dict | None) -> str | None:
+        if depth >= _MAX_CHAIN_DEPTH:
+            return None
+        for field in ("on_success", "on_fail"):
+            action = parent.get(field)
+            if not action:
+                continue
+            label = f"{path}.{field}" if path else field
+            if previous_action is not None and field not in previous_action:
+                label += " (inherited)"
+            if not isinstance(action, dict):
+                return f"{label}: malformed chain must be an object; clear this chain to proceed"
+            err = _validate_chain_kinds(action, label, parent["action_kind"])
+            if err:
+                return err
+            err = walk(_merge_chain_action(parent, action), depth + 1, label, action)
+            if err:
+                return err
+        return None
+
+    return walk(schedule, 0, "", None)
+
+
+def _parse_chain_action(
+    raw: str, flag: str, parent_kind: str = "agent"
+) -> tuple[dict[str, Any] | None, str | None]:
     """Parse+validate a --on-success/--on-fail JSON blob, recursively.
 
     Returns (parsed_dict, error_message); error_message is None on success.
@@ -245,7 +318,12 @@ def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str
 
     field = "on_success" if flag == "--on-success" else "on_fail"
     err = _validate_chain_action_node(
-        parsed, flag, field, chain_depth=1, max_chain_depth=_MAX_CHAIN_DEPTH
+        parsed,
+        flag,
+        field,
+        chain_depth=1,
+        max_chain_depth=_MAX_CHAIN_DEPTH,
+        parent_kind=parent_kind,
     )
     if err:
         return None, err
@@ -388,15 +466,17 @@ def build_create_body(args: argparse.Namespace) -> tuple[dict[str, Any] | None, 
     if args.description:
         body["description"] = args.description
     if args.on_success:
-        parsed, err = _parse_chain_action(args.on_success, "--on-success")
+        parsed, err = _parse_chain_action(args.on_success, "--on-success", action_kind)
         if err:
             return None, err
         body["on_success"] = parsed
     if args.on_fail:
-        parsed, err = _parse_chain_action(args.on_fail, "--on-fail")
+        parsed, err = _parse_chain_action(args.on_fail, "--on-fail", action_kind)
         if err:
             return None, err
         body["on_fail"] = parsed
+    if err := _validate_reachable_chain_actions(body):
+        return None, err
     return body, None
 
 

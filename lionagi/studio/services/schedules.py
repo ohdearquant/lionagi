@@ -194,7 +194,7 @@ def _svc_validate_action_command(command: str | None) -> None:
     _validate_command_allowlisted(command)
 
 
-def _svc_validate_chain_action(value: Any, field: str) -> None:
+def _svc_validate_chain_action(value: Any, field: str, parent_kind: str) -> None:
     """Service-boundary check: an ``on_success`` / ``on_fail`` chain action must
     follow the same rules as the ``li schedule`` flag of the same name -- a JSON
     object whose keys the scheduler's chain-fire merge understands, nested no
@@ -212,8 +212,16 @@ def _svc_validate_chain_action(value: Any, field: str) -> None:
         field,
         chain_depth=1,
         max_chain_depth=_MAX_CHAIN_DEPTH,
+        parent_kind=parent_kind,
     )
     if err:
+        raise ValueError(err)
+
+
+def _svc_validate_reachable_chains(schedule: dict[str, Any]) -> None:
+    from lionagi.cli._schedule_parsing import _validate_reachable_chain_actions
+
+    if err := _validate_reachable_chain_actions(schedule):
         raise ValueError(err)
 
 
@@ -298,6 +306,11 @@ def _svc_validate_prompt(prompt: str | None) -> None:
     from lionagi.studio.scheduler.subprocess import _validate_prompt
 
     _validate_prompt(prompt)
+
+
+def _svc_validate_action_kind_type(kind: Any) -> None:
+    if kind is not None and not isinstance(kind, str):
+        raise ValueError(f"action_kind must be a string, got {type(kind).__name__}")
 
 
 def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
@@ -1121,6 +1134,7 @@ async def get_schedule_by_name(name: str) -> dict[str, Any] | None:
 
 
 async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
+    _svc_validate_action_kind_type(data.get("action_kind"))
     if not data.get("name"):
         raise ValueError("Schedule name is required")
     if not data.get("trigger_type"):
@@ -1139,8 +1153,9 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_action_command(data.get("action_command"))
     _svc_validate_command_args(data.get("action_command_args"))
-    _svc_validate_chain_action(data.get("on_success"), "on_success")
-    _svc_validate_chain_action(data.get("on_fail"), "on_fail")
+    _svc_validate_chain_action(data.get("on_success"), "on_success", data["action_kind"])
+    _svc_validate_chain_action(data.get("on_fail"), "on_fail", data["action_kind"])
+    _svc_validate_reachable_chains(data)
     _svc_validate_github_repo(data.get("github_repo"))
     _svc_validate_github_filter(data.get("github_filter"))
     _svc_validate_max_runs(data.get("max_runs"))
@@ -1234,6 +1249,20 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         if cleared:
             raise ValueError(f"Field(s) {sorted(cleared)} cannot be cleared to null")
 
+        effective = {**schedule, **fields}
+        kind_dependent_fields = {
+            "action_kind",
+            "on_success",
+            "on_fail",
+            "action_prompt",
+            "action_playbook",
+            "action_extra_args",
+            "action_flow_yaml",
+            "action_command",
+        }
+        if kind_dependent_fields & fields.keys():
+            _svc_validate_action_kind_type(effective.get("action_kind"))
+
         if "action_model" in fields:
             _svc_validate_action_model(fields["action_model"])
         if "action_prompt" in fields:
@@ -1252,10 +1281,6 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_action_command(fields["action_command"])
         if "action_command_args" in fields:
             _svc_validate_command_args(fields["action_command_args"])
-        if "on_success" in fields:
-            _svc_validate_chain_action(fields["on_success"], "on_success")
-        if "on_fail" in fields:
-            _svc_validate_chain_action(fields["on_fail"], "on_fail")
         if "github_repo" in fields:
             _svc_validate_github_repo(fields["github_repo"])
         if "github_filter" in fields:
@@ -1273,7 +1298,16 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         if "threshold_config" in fields:
             _svc_validate_threshold_config(fields["threshold_config"])
 
-        effective = {**schedule, **fields}
+        kind_changed = "action_kind" in fields and fields["action_kind"] != schedule.get(
+            "action_kind"
+        )
+        if {"on_success", "on_fail"} & fields.keys() or kind_changed:
+            for field in ("on_success", "on_fail"):
+                if field in fields:
+                    _svc_validate_chain_action(
+                        effective.get(field), field, effective["action_kind"]
+                    )
+            _svc_validate_reachable_chains(effective)
         # Checked only when the update sets a field it reads, so a row stored before the check
         # can still be paused or edited elsewhere.
         if {"action_kind", "action_prompt", "action_playbook"} & set(fields):

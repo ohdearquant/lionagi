@@ -745,6 +745,44 @@ async def test_fire_on_success_chain_fires():
 
 
 @pytest.mark.asyncio
+async def test_fire_chain_keeps_parent_command_target():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(
+        action_kind="command", action_command="echo inherited", on_success={"kind": "command"}
+    )
+    original_fire = engine._fire
+    children = []
+
+    async def capture(sched, run_id, *, chain_depth=0, **kwargs):
+        if chain_depth:
+            children.append(sched)
+            return
+        return await original_fire(sched, run_id, chain_depth=chain_depth, **kwargs)
+
+    engine._fire = capture
+    with (
+        patch("lionagi.studio.scheduler.subprocess.build_argv", return_value=(["li"], None)),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await original_fire(
+            schedule,
+            "run-target",
+            trigger_context={},
+            chain_depth=0,
+            expect_next_fire_at=schedule.get("next_fire_at"),
+        )
+
+    assert len(children) == 1
+    assert children[0]["action_kind"] == "command"
+    assert children[0]["action_command"] == "echo inherited"
+
+
+@pytest.mark.asyncio
 async def test_fire_running_child_with_on_success_does_not_run_success_chain():
     """A clean leader exit (exit_code=0) with a child session that has not
     independently reached a terminal status resolves to "completed_empty",
