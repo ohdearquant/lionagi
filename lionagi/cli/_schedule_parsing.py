@@ -19,6 +19,7 @@ import json
 import math
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -156,6 +157,31 @@ _CHAIN_ACTION_ALLOWED_KEYS = frozenset(
 )
 
 
+def _selected_chain_kind(action: dict, parent_kind: str) -> Any:
+    """Select the stored kind without changing its spelling."""
+    return action.get("kind", action.get("action_kind", parent_kind))
+
+
+def _effective_chain_kind(action: dict, parent_kind: str) -> str | None:
+    """Normalize the selected kind for validation without changing the stored value."""
+    kind = _selected_chain_kind(action, parent_kind)
+    if not isinstance(kind, str):
+        return None
+    kind = str.__str__(kind)
+    return _ALIAS_ACTION_KINDS.get(kind, kind)
+
+
+def _chain_action_with_usable_selected_kind(schedule: dict, success: bool) -> dict | None:
+    """Return the selected stored chain action if the scheduler can use its kind."""
+    field = "on_success" if success else "on_fail"
+    action = schedule.get(field)
+    if not isinstance(action, dict) or not action:
+        return None
+    if _effective_chain_kind(action, schedule.get("action_kind")) not in _VALID_ACTION_KINDS:
+        return None
+    return action
+
+
 def _merge_chain_action(schedule: dict, chain_action: dict) -> dict:
     """The schedule a chained run fires: *schedule* overlaid with its ``on_success`` or
     ``on_fail`` action, whose short keys replace the action fields they name, None included.
@@ -163,9 +189,7 @@ def _merge_chain_action(schedule: dict, chain_action: dict) -> dict:
     parent's field in place."""
     chain_action = {k: v for k, v in chain_action.items() if k in _CHAIN_ACTION_ALLOWED_KEYS}
     chain_schedule = {**schedule, **chain_action}
-    chain_schedule["action_kind"] = chain_action.get(
-        "kind", chain_action.get("action_kind", schedule["action_kind"])
-    )
+    chain_schedule["action_kind"] = _selected_chain_kind(chain_action, schedule["action_kind"])
     for key in ("model", "prompt", "agent", "playbook"):
         if key in chain_action:
             chain_schedule[f"action_{key}"] = chain_action[key]
@@ -237,9 +261,8 @@ def _validate_chain_action_node(
     err = _validate_chain_kinds(action, label, parent_kind)
     if err:
         return err
-    effective_kind = action.get("kind", action.get("action_kind", parent_kind))
-    effective_kind = str.__str__(effective_kind)
-    effective_kind = _ALIAS_ACTION_KINDS.get(effective_kind, effective_kind)
+    effective_kind = _effective_chain_kind(action, parent_kind)
+    assert effective_kind is not None  # Kind types were validated above.
 
     if self_field not in action:
         warn(
@@ -278,7 +301,10 @@ def _validate_chain_action_node(
     return None
 
 
-def _validate_reachable_chain_actions(schedule: dict[str, Any]) -> str | None:
+def _validate_reachable_chain_actions(
+    schedule: dict[str, Any],
+    validate_effective: Callable[[dict[str, Any], str], str | None] | None = None,
+) -> str | None:
     """Check each chain node the engine's shallow merge can reach, up to its depth cap."""
 
     def walk(parent: dict, depth: int, path: str, previous_action: dict | None) -> str | None:
@@ -296,7 +322,10 @@ def _validate_reachable_chain_actions(schedule: dict[str, Any]) -> str | None:
             err = _validate_chain_kinds(action, label, parent["action_kind"])
             if err:
                 return err
-            err = walk(_merge_chain_action(parent, action), depth + 1, label, action)
+            child = _merge_chain_action(parent, action)
+            if validate_effective and (err := validate_effective(child, label)):
+                return err
+            err = walk(child, depth + 1, label, action)
             if err:
                 return err
         return None

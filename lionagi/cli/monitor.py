@@ -23,6 +23,7 @@ from lionagi.state.engine import mask_credentials
 
 from ._project import detect_project
 from ._runs import _resolved_run_state_dir
+from ._schedule_parsing import _chain_action_with_usable_selected_kind
 from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
 from ._util import pid_alive as _pid_alive_int
 
@@ -1481,12 +1482,15 @@ async def _schedule_declares_chain_action(
     *,
     cache: dict[str, dict[str, Any] | None],
 ) -> bool:
-    """True if `schedule_id` declares an on_success/on_fail action matching
-    the outcome that just landed, i.e. a grace wait for the chain child is warranted."""
+    """Whether the action selected for this outcome has a usable kind.
+
+    A declared action with an unusable kind returns False, so it does not
+    warrant a grace wait for a chain child.
+    """
     if schedule_id not in cache:
         cache[schedule_id] = await db.get_schedule(schedule_id)
     sched = cache[schedule_id] or {}
-    return bool(sched.get("on_success")) if exit_code == 0 else bool(sched.get("on_fail"))
+    return _chain_action_with_usable_selected_kind(sched, exit_code == 0) is not None
 
 
 def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
