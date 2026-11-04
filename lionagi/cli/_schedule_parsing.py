@@ -19,6 +19,7 @@ import json
 import math
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -278,7 +279,10 @@ def _validate_chain_action_node(
     return None
 
 
-def _validate_reachable_chain_actions(schedule: dict[str, Any]) -> str | None:
+def _validate_reachable_chain_actions(
+    schedule: dict[str, Any],
+    validate_effective: Callable[[dict[str, Any], str], str | None] | None = None,
+) -> str | None:
     """Check each chain node the engine's shallow merge can reach, up to its depth cap."""
 
     def walk(parent: dict, depth: int, path: str, previous_action: dict | None) -> str | None:
@@ -296,7 +300,10 @@ def _validate_reachable_chain_actions(schedule: dict[str, Any]) -> str | None:
             err = _validate_chain_kinds(action, label, parent["action_kind"])
             if err:
                 return err
-            err = walk(_merge_chain_action(parent, action), depth + 1, label, action)
+            child = _merge_chain_action(parent, action)
+            if validate_effective and (err := validate_effective(child, label)):
+                return err
+            err = walk(child, depth + 1, label, action)
             if err:
                 return err
         return None

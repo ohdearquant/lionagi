@@ -86,6 +86,37 @@ _NON_NULLABLE_SCHEDULE_FIELDS: frozenset[str] = frozenset(
     {"name", "trigger_type", "action_kind", "missed_fire_policy", "overlap_policy"}
 )
 
+# Updates touching these fields must validate the effective action kind.
+_KIND_VALIDATION_FIELDS = frozenset(
+    {
+        "action_kind",
+        "on_success",
+        "on_fail",
+        "action_prompt",
+        "action_playbook",
+        "action_extra_args",
+        "action_flow_yaml",
+        "action_command",
+        "action_model",
+        "action_agent",
+    }
+)
+# These fields affect values a reachable chain can inherit.
+_CHAIN_VALIDATION_FIELDS = frozenset(
+    {
+        "on_success",
+        "on_fail",
+        "action_model",
+        "action_agent",
+        "action_playbook",
+        "action_prompt",
+        "action_extra_args",
+    }
+)
+# These sets gate the root play checks and leave unrelated legacy edits alone.
+_PLAY_PROMPT_FIELDS = frozenset({"action_kind", "action_prompt", "action_playbook"})
+_PLAY_TARGET_FIELDS = _PLAY_PROMPT_FIELDS | {"action_extra_args"}
+
 
 def _svc_validate_action_model(model: str | None) -> None:
     """Service-boundary check: reject action_model values that inject CLI flags."""
@@ -221,7 +252,23 @@ def _svc_validate_chain_action(value: Any, field: str, parent_kind: str) -> None
 def _svc_validate_reachable_chains(schedule: dict[str, Any]) -> None:
     from lionagi.cli._schedule_parsing import _validate_reachable_chain_actions
 
-    if err := _validate_reachable_chain_actions(schedule):
+    def validate_effective(child: dict[str, Any], label: str) -> str | None:
+        # The chain validator accepts string subclasses without calling their hash.
+        kind = child.get("action_kind")
+        if isinstance(kind, str):
+            child = {**child, "action_kind": str.__str__(kind)}
+        try:
+            _svc_validate_action_model(child.get("action_model"))
+            _svc_validate_identifier(child.get("action_agent"), "action_agent")
+            _svc_validate_identifier(child.get("action_playbook"), "action_playbook")
+            _svc_validate_prompt(child.get("action_prompt"))
+            _svc_validate_play_prompt(child)
+            _svc_validate_play_playbook(child)
+        except ValueError as exc:
+            return f"{label}: {exc}"
+        return None
+
+    if err := _validate_reachable_chain_actions(schedule, validate_effective):
         raise ValueError(err)
 
 
@@ -1250,17 +1297,7 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             raise ValueError(f"Field(s) {sorted(cleared)} cannot be cleared to null")
 
         effective = {**schedule, **fields}
-        kind_dependent_fields = {
-            "action_kind",
-            "on_success",
-            "on_fail",
-            "action_prompt",
-            "action_playbook",
-            "action_extra_args",
-            "action_flow_yaml",
-            "action_command",
-        }
-        if kind_dependent_fields & fields.keys():
+        if _KIND_VALIDATION_FIELDS & fields.keys():
             _svc_validate_action_kind_type(effective.get("action_kind"))
 
         if "action_model" in fields:
@@ -1301,7 +1338,7 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         kind_changed = "action_kind" in fields and fields["action_kind"] != schedule.get(
             "action_kind"
         )
-        if {"on_success", "on_fail"} & fields.keys() or kind_changed:
+        if _CHAIN_VALIDATION_FIELDS & fields.keys() or kind_changed:
             for field in ("on_success", "on_fail"):
                 if field in fields:
                     _svc_validate_chain_action(
@@ -1310,9 +1347,9 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_reachable_chains(effective)
         # Checked only when the update sets a field it reads, so a row stored before the check
         # can still be paused or edited elsewhere.
-        if {"action_kind", "action_prompt", "action_playbook"} & set(fields):
+        if _PLAY_PROMPT_FIELDS & fields.keys():
             _svc_validate_play_prompt(effective)
-        if {"action_kind", "action_prompt", "action_playbook", "action_extra_args"} & set(fields):
+        if _PLAY_TARGET_FIELDS & fields.keys():
             _svc_validate_play_playbook(effective)
         effective_repo = effective.get("github_repo")
         if effective_repo is not None:
