@@ -86,22 +86,45 @@ def test_tab_indented_mcp_in_unreadable_frontmatter_is_refused(indent, prefix):
         _parse_profile("reviewer", f"---\n{prefix}{indent}mcp: none\n---\nReview.")
 
 
-def test_mcp_after_preface_remains_prompt_and_warns(monkeypatch):
-    warnings = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
-    text = "# Reviewer\n---\nmcp: none\n---\nReview."
+@pytest.mark.parametrize(
+    "block",
+    [
+        "mcp: none\n",
+        "'mcp': none\n",
+        "defaults: &d {mcp: none}\n<<: *d\n",
+        "mcp: none\nmodel: [unterminated\n",
+        "\t'mcp': none\nmodel: [unterminated\n",
+    ],
+)
+@pytest.mark.parametrize("closing", ["---\nReview.", ""])
+def test_mcp_after_preface_is_refused_with_repair(block, closing):
+    text = f"# Reviewer\n---\n{block}{closing}"
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", text)
+    message = str(raised.value)
+    assert "reviewer" in message and "mcp" in message
+    assert "line 2" in message and "top" in message
 
-    profile = _parse_profile("reviewer", text)
 
-    assert profile.raw_body == text
-    assert profile.mcp is None
-    assert any("mcp" in warning and "ignored" in warning for warning in warnings)
+def test_mcp_after_same_line_preface_is_refused():
+    with pytest.raises(ConfigurationError, match=r"line 1.*top"):
+        _parse_profile("reviewer", "Reviewer ---\nmcp: none\n---\nReview.")
+
+
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_deep_closed_mcp_frontmatter_is_refused(position):
+    nested = "x: " + "[" * 500 + "a" + "]" * 500 + "\n"
+    block = "mcp: none\n" + nested if position == "before" else nested + "mcp: none\n"
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", "---\n" + block + "---\nReview.")
 
 
 @pytest.mark.parametrize(
     "text",
     [
         "# Reviewer\n```yaml\n---\nmcp: none\n---\n```",
+        "# Reviewer\n~~~yaml\n---\nmcp: none\nmodel: [broken\n---\n~~~",
+        "# Reviewer\n```yaml\n---\n'mcp': none\nmodel: [broken\n---\n```",
         "# Reviewer\n---\n# mcp: none\nmodel: example\n---\nReview.",
         "# Reviewer\n---\nprompt: |\n  mcp: none\n---\nReview.",
     ],

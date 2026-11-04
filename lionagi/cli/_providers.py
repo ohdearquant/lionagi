@@ -1030,7 +1030,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         # otherwise make the ordinary frontmatter reader discard the block.
         yaml.safe_load(block)
         root = yaml.compose(block, Loader=yaml.SafeLoader)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, RecursionError):
         if unreadable_yaml_has_sensitive_text(block):
             raise ConfigurationError(
                 f"agent profile {name!r}: frontmatter could not be parsed (invalid YAML); "
@@ -1179,6 +1179,15 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         except (yaml.YAMLError, RecursionError):
             return False, None
 
+    def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
+        if (reads and isinstance(document, dict) and "mcp" in document) or (
+            not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M)
+        ):
+            raise ConfigurationError(
+                f"agent profile {name!r}: the --- block on line {line} follows prompt text "
+                "and its mcp declaration would be ignored; move the block to the top"
+            )
+
     if text.startswith("---"):
         try:
             parse_frontmatter_strict(text)
@@ -1223,19 +1232,10 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                 if _DASHES.fullmatch(line.rstrip()):
                     delimiters.append(i)
             warned_containment = False
-            warned_mcp = False
             for opening, end in pairwise([*delimiters, len(lines)]):
                 block = "\n".join(lines[opening + 1 : end])
                 reads, document = read(block)
-                if not warned_mcp and (
-                    (reads and isinstance(document, dict) and "mcp" in document)
-                    or (not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M))
-                ):
-                    warn(
-                        f"agent profile {name!r}: the --- block on line {opening + 1} follows "
-                        "prompt text, so its mcp declaration is ignored"
-                    )
-                    warned_mcp = True
+                refuse_misplaced_mcp(block, reads, document, opening + 1)
                 if not warned_containment and (
                     _FLAG_KEY_LINE.search(block)
                     or (reads and isinstance(document, dict) and _contain_flag_values(block))
@@ -1255,6 +1255,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
         block = "\n".join(rest if closing is None else rest[:closing])
         reads, document = read(block)
+        refuse_misplaced_mcp(block, reads, document, 1)
         if reads and isinstance(document, dict):
             if not document:
                 return {}

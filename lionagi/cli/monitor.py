@@ -455,6 +455,9 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
     ]
     if quarantined:
         lines.append("identity unverified, quarantined: " + ", ".join(quarantined))
+    for row in rows:
+        if row.get("_quarantine_record_unreadable") is True:
+            lines.append(f"quarantine record unreadable: {row['_quarantine_kind']} {row['id']}")
 
     return "\n".join(lines)
 
@@ -464,34 +467,15 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
 
 def _is_unverifiable_quarantined(row: dict[str, Any]) -> bool:
     """Show a running row's disposition only while its recorded identity matches."""
-    from lionagi.state.db import UNVERIFIABLE_PID_QUARANTINE_THRESHOLD
+    from lionagi.state._quarantine_identity import is_current_quarantine
 
-    from ._kill_service import NOT_JUDGEABLE_HERE, unaddressable_pid_reason
-    from ._pid_quarantine import quarantine_identity
+    return is_current_quarantine(row)
 
-    metadata = _parse_json_field(row.get("node_metadata")) or {}
-    if row.get("status") != "running" or metadata.get("unverifiable_quarantined") is not True:
-        return False
-    count = metadata.get("unverifiable_count")
-    epoch = metadata.get("unverifiable_epoch")
-    if (
-        type(count) is not int
-        or count < UNVERIFIABLE_PID_QUARANTINE_THRESHOLD
-        or type(epoch) is not int
-        or epoch < 0
-    ):
-        return False
-    # Host and process mode are enough to establish whether this row belongs
-    # here. A boot-time probe would be both unnecessary and unable to resolve
-    # an identity that is already recorded as unverifiable.
-    scope_metadata = {key: value for key, value in metadata.items() if key != "pid_boot_time"}
-    if unaddressable_pid_reason(scope_metadata) in NOT_JUDGEABLE_HERE:
-        return False
-    identity = quarantine_identity({**row, "node_metadata": metadata})
-    if identity is None:
-        return False
-    encoded = json.dumps(identity, separators=(",", ":"), allow_nan=False)
-    return metadata.get("unverifiable_identity") == encoded
+
+def _has_unreadable_quarantine(row: dict[str, Any]) -> bool:
+    from lionagi.state._quarantine_identity import _is_unreadable_quarantine
+
+    return _is_unreadable_quarantine(row)
 
 
 def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
@@ -503,6 +487,8 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "project": sess.get("project") or "-",
         "status": sess.get("status") or "?",
         "unverifiable_quarantined": _is_unverifiable_quarantined(sess),
+        "_quarantine_record_unreadable": _has_unreadable_quarantine(sess),
+        "_quarantine_kind": "session",
         # Older terminal records can retain a phase from their live execution.
         "phase": (
             None if sess.get("status") in SESSION_TERMINAL_STATUSES else sess.get("current_phase")
@@ -548,6 +534,8 @@ def _invocation_to_row(inv: dict[str, Any]) -> dict[str, Any]:
         "project": "-",
         "status": inv.get("status") or "?",
         "unverifiable_quarantined": _is_unverifiable_quarantined(inv),
+        "_quarantine_record_unreadable": _has_unreadable_quarantine(inv),
+        "_quarantine_kind": "invocation",
         "phase": inv.get("skill") or "-",
         "elapsed": _elapsed(
             inv.get("started_at"),
@@ -621,6 +609,8 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     lines.append(f"  status:    {_colour_status(sess.get('status') or '?')}")
     if _is_unverifiable_quarantined(sess):
         lines.append("  quarantine: process identity unverified")
+    elif _has_unreadable_quarantine(sess):
+        lines.append(f"  quarantine record unreadable: session {sess['id']}")
     lines.append(f"  kind:      {sess.get('invocation_kind') or '-'}")
     if sess.get("playbook_name"):
         lines.append(f"  playbook:  {sess['playbook_name']}")
@@ -781,6 +771,8 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
     lines.append(f"  status:        {_colour_status(inv.get('status') or '?')}")
     if _is_unverifiable_quarantined(inv):
         lines.append("  quarantine:    process identity unverified")
+    elif _has_unreadable_quarantine(inv):
+        lines.append(f"  quarantine record unreadable: invocation {inv['id']}")
     lines.append(f"  kind:          {_invocation_kind(inv)}")
     lines.append(f"  skill:         {inv.get('skill') or '-'}")
     lines.append(f"  plugin:        {inv.get('plugin') or '-'}")
@@ -1051,7 +1043,9 @@ async def _gather_entities(
         sessions = [
             s
             for s in sessions
-            if s["id"] not in play_session_ids or _is_unverifiable_quarantined(s)
+            if s["id"] not in play_session_ids
+            or _is_unverifiable_quarantined(s)
+            or _has_unreadable_quarantine(s)
         ]
 
     rows.extend(("session", s) for s in sessions)

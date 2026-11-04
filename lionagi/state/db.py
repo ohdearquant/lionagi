@@ -48,6 +48,10 @@ from lionagi.ln.concurrency import (
     shield,
 )
 from lionagi.ln.types import SingletonType
+from lionagi.state._quarantine_identity import (
+    UNVERIFIABLE_PID_QUARANTINE_THRESHOLD,
+    encode_identity,
+)
 from lionagi.state.compat import (
     _LINEAGE_KEY,
     _NATIVE_LINEAGE,
@@ -969,7 +973,6 @@ def _cancellation_wins(cm_func):
 
 
 _log = logging.getLogger(__name__)
-UNVERIFIABLE_PID_QUARANTINE_THRESHOLD = 3
 
 # The rows a compatibility-mode transaction inserted, recorded as its run's once it commits.
 _COMPAT_INSERTED: ContextVar[list[tuple[str, Any]] | None] = ContextVar(
@@ -5011,14 +5014,14 @@ class StateDB:
         table = "sessions" if entity_type == "session" else "invocations"
         meta, epoch, malformed = self._unverifiable_snapshot(snapshot)
         fields = ("pid", "pid_create_time", "pid_host", "pid_boot_time", "process_identity_mode")
-        identity = json.dumps(
-            [
+        identity = (
+            None
+            if clear
+            else encode_identity(
                 pid,
                 create_time,
                 snapshot.get("cli_worker_generation") if entity_type == "session" else None,
-            ],
-            separators=(",", ":"),
-            allow_nan=False,
+            )
         )
         original = snapshot.get("node_metadata")
         if original is not None and not isinstance(original, (dict, str)):

@@ -10,7 +10,7 @@ import pytest
 from lionagi.cli import _kill_service
 from lionagi.cli import kill as kill_cli
 from lionagi.state.db import StateDB
-from tests.cli.test_quarantine_sweep import _row, _seed, _sweep, isolated_store  # noqa: F401
+from tests.cli.quarantine_helpers import fetch_row, isolated_store, seed, sweep  # noqa: F401
 
 
 @pytest.mark.parametrize("kind", ["session", "invocation"])
@@ -18,10 +18,10 @@ from tests.cli.test_quarantine_sweep import _row, _seed, _sweep, isolated_store 
 async def test_pid_a_to_b_to_a_epoch_guards_old_disposition(
     kind, observe_intervening_pid, monkeypatch
 ):
-    entity_id = await _seed(kind)
+    entity_id = await seed(kind)
     for _ in range(3):
-        await _sweep(monkeypatch, ["unverifiable"])
-    old = await _row(kind, entity_id)
+        await sweep(monkeypatch, ["unverifiable"])
+    old = await fetch_row(kind, entity_id)
     old_meta = old["node_metadata"]
     assert old_meta["unverifiable_quarantined"] is True
 
@@ -33,8 +33,8 @@ async def test_pid_a_to_b_to_a_epoch_guards_old_disposition(
         )
         await merge(entity_id, {"pid": 54322})
     if observe_intervening_pid:
-        await _sweep(monkeypatch, ["unverifiable"])
-        intervening = (await _row(kind, entity_id))["node_metadata"]
+        await sweep(monkeypatch, ["unverifiable"])
+        intervening = (await fetch_row(kind, entity_id))["node_metadata"]
         assert intervening["unverifiable_epoch"] != old_meta["unverifiable_epoch"]
         assert intervening["unverifiable_count"] == 1
         assert intervening["unverifiable_quarantined"] is False
@@ -48,8 +48,8 @@ async def test_pid_a_to_b_to_a_epoch_guards_old_disposition(
 
     if observe_intervening_pid:
         for _ in range(3):
-            await _sweep(monkeypatch, ["unverifiable"])
-        current = (await _row(kind, entity_id))["node_metadata"]
+            await sweep(monkeypatch, ["unverifiable"])
+        current = (await fetch_row(kind, entity_id))["node_metadata"]
         assert current["unverifiable_quarantined"] is True
         assert current["unverifiable_epoch"] != old_meta["unverifiable_epoch"]
 
@@ -65,7 +65,7 @@ async def test_pid_a_to_b_to_a_epoch_guards_old_disposition(
         # A -> B -> A with no B observation leaves the same stored identity and
         # epoch; the guard cannot infer the unobserved change and accepts it.
         assert outcome.result == ("conflict" if observe_intervening_pid else "applied")
-    row = await _row(kind, entity_id)
+    row = await fetch_row(kind, entity_id)
     assert row["status"] == ("running" if observe_intervening_pid else "cancelled")
 
 
@@ -82,19 +82,19 @@ async def test_unbound_fallback_warns_without_tracking_even_in_dry_run(
         artifact_dir = tmp_path / "artifacts"
         artifact_dir.mkdir()
         (artifact_dir / ".pid").write_text("54321", encoding="utf-8")
-        entity_id = await _seed(metadata={}, extras={"artifacts_path": str(artifact_dir)})
+        entity_id = await seed(metadata={}, extras={"artifacts_path": str(artifact_dir)})
         verdicts = ["unverifiable"]
     else:
         manifest = tmp_path / "run.json"
         manifest.write_text(json.dumps({"status": "running", "pid": 54321}))
-        entity_id = await _seed(metadata={}, extras={"source_kind": "imported_fs"})
+        entity_id = await seed(metadata={}, extras={"source_kind": "imported_fs"})
         monkeypatch.setattr(_kill_service, "_run_manifest_path", lambda _id: manifest)
         monkeypatch.setattr(_kill_service, "_pid_alive", lambda _pid: True)
         verdicts = []
-    before = await _row("session", entity_id)
+    before = await fetch_row("session", entity_id)
     for _ in range(3):
-        await _sweep(monkeypatch, verdicts, dry_run=dry_run)
-    after = await _row("session", entity_id)
+        await sweep(monkeypatch, verdicts, dry_run=dry_run)
+    after = await fetch_row("session", entity_id)
     assert after["status"] == "running"
     assert after["node_metadata"] == before["node_metadata"]
     assert "unverifiable_count" not in after["node_metadata"]
@@ -113,7 +113,7 @@ async def test_live_peer_only_clears_quarantine_with_equivalent_boot_evidence(
     monkeypatch.setattr(_kill_service.psutil, "boot_time", lambda: 2000.0)
     monkeypatch.setattr(_kill_service, "_pid_alive", lambda _pid: True)
     unknown_boot = 2000.0 if same_boot else 1000.0
-    unknown = await _seed(
+    unknown = await seed(
         metadata={"pid": 54321, "pid_create_time": 100.0, "pid_boot_time": unknown_boot}
     )
     live = None
@@ -128,12 +128,12 @@ async def test_live_peer_only_clears_quarantine_with_equivalent_boot_evidence(
     monkeypatch.setattr(kill_cli, "check_pid_identity", identity)
     for _ in range(3):
         assert await kill_cli._do_kill_all_stale(threshold_seconds=3600) == 0
-    before = (await _row("session", unknown))["node_metadata"]
+    before = (await fetch_row("session", unknown))["node_metadata"]
     assert before["unverifiable_count"] == 3
     assert before["unverifiable_quarantined"] is True
-    live = await _seed(metadata={"pid": 54321, "pid_create_time": 100.0, "pid_boot_time": 2000.0})
+    live = await seed(metadata={"pid": 54321, "pid_create_time": 100.0, "pid_boot_time": 2000.0})
     assert await kill_cli._do_kill_all_stale(threshold_seconds=3600) == 0
-    after = (await _row("session", unknown))["node_metadata"]
+    after = (await fetch_row("session", unknown))["node_metadata"]
     if same_boot:
         assert "unverifiable_count" not in after
         assert after.get("unverifiable_quarantined") is not True
@@ -146,10 +146,10 @@ async def test_live_peer_only_clears_quarantine_with_equivalent_boot_evidence(
 
 @pytest.mark.parametrize("kind", ["session", "invocation"])
 async def test_sweep_sees_stale_writer_restoring_old_pid_and_resets_quarantine(kind, monkeypatch):
-    entity_id = await _seed(kind)
+    entity_id = await seed(kind)
     for _ in range(3):
-        await _sweep(monkeypatch, ["unverifiable"])
-    old = await _row(kind, entity_id)
+        await sweep(monkeypatch, ["unverifiable"])
+    old = await fetch_row(kind, entity_id)
     assert old["node_metadata"]["unverifiable_quarantined"] is True
     async with StateDB() as db:
         merge = (
@@ -158,8 +158,8 @@ async def test_sweep_sees_stale_writer_restoring_old_pid_and_resets_quarantine(k
             else db.merge_invocation_node_metadata
         )
         await merge(entity_id, {"pid": 54322})
-    await _sweep(monkeypatch, ["unverifiable"])
-    interim = (await _row(kind, entity_id))["node_metadata"]
+    await sweep(monkeypatch, ["unverifiable"])
+    interim = (await fetch_row(kind, entity_id))["node_metadata"]
     assert interim["unverifiable_count"] == 1
     assert interim["unverifiable_quarantined"] is False
     assert interim["unverifiable_epoch"] != old["node_metadata"]["unverifiable_epoch"]
@@ -171,8 +171,8 @@ async def test_sweep_sees_stale_writer_restoring_old_pid_and_resets_quarantine(k
             else db.merge_invocation_node_metadata
         )
         await merge(entity_id, {"pid": old["node_metadata"]["pid"]})
-    await _sweep(monkeypatch, ["unverifiable"])
-    current = (await _row(kind, entity_id))["node_metadata"]
+    await sweep(monkeypatch, ["unverifiable"])
+    current = (await fetch_row(kind, entity_id))["node_metadata"]
     assert current["unverifiable_count"] == 1
     assert current["unverifiable_quarantined"] is False
     assert current["unverifiable_epoch"] != interim["unverifiable_epoch"]
@@ -192,7 +192,7 @@ async def test_sweep_sees_stale_writer_restoring_old_pid_and_resets_quarantine(k
 async def test_live_peer_with_different_host_or_mode_evidence_cannot_clear(extra, monkeypatch):
     import socket
 
-    unknown = await _seed()
+    unknown = await seed()
     live = None
 
     def identity(_pid, _name, *, expected_session_id=None, _reason_out=None, **_kwargs):
@@ -205,12 +205,12 @@ async def test_live_peer_with_different_host_or_mode_evidence_cannot_clear(extra
     monkeypatch.setattr(kill_cli, "check_pid_identity", identity)
     for _ in range(3):
         assert await kill_cli._do_kill_all_stale(threshold_seconds=3600) == 0
-    before = (await _row("session", unknown))["node_metadata"]
+    before = (await fetch_row("session", unknown))["node_metadata"]
     assert before["unverifiable_quarantined"] is True
     value = socket.gethostname() if extra == "pid_host" else "local"
-    live = await _seed(metadata={"pid": 54321, "pid_create_time": 100.0, extra: value})
+    live = await seed(metadata={"pid": 54321, "pid_create_time": 100.0, extra: value})
     assert await kill_cli._do_kill_all_stale(threshold_seconds=3600) == 0
-    after = (await _row("session", unknown))["node_metadata"]
+    after = (await fetch_row("session", unknown))["node_metadata"]
     assert after["unverifiable_count"] == 4
     assert after["unverifiable_quarantined"] is True
     assert after["unverifiable_epoch"] == before["unverifiable_epoch"]
