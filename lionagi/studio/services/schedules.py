@@ -87,6 +87,8 @@ _NON_NULLABLE_SCHEDULE_FIELDS: frozenset[str] = frozenset(
 )
 
 # Updates touching these fields must validate the effective action kind.
+# Model and agent may be inherited by reachable children, so their updates also
+# check the parent kind's type before validating the chain.
 _KIND_VALIDATION_FIELDS = frozenset(
     {
         "action_kind",

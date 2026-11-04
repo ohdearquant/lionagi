@@ -171,7 +171,7 @@ def _effective_chain_kind(action: dict, parent_kind: str) -> str | None:
     return _ALIAS_ACTION_KINDS.get(kind, kind)
 
 
-def _usable_chain_action(schedule: dict, success: bool) -> dict | None:
+def _chain_action_with_usable_selected_kind(schedule: dict, success: bool) -> dict | None:
     """Return the selected stored chain action if the scheduler can use its kind."""
     field = "on_success" if success else "on_fail"
     action = schedule.get(field)
@@ -261,8 +261,8 @@ def _validate_chain_action_node(
     err = _validate_chain_kinds(action, label, parent_kind)
     if err:
         return err
-    effective_kind = str.__str__(_selected_chain_kind(action, parent_kind))
-    effective_kind = _ALIAS_ACTION_KINDS.get(effective_kind, effective_kind)
+    effective_kind = _effective_chain_kind(action, parent_kind)
+    assert effective_kind is not None  # Kind types were validated above.
 
     if self_field not in action:
         warn(

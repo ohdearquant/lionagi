@@ -23,6 +23,7 @@ from lionagi.state.engine import mask_credentials
 
 from ._project import detect_project
 from ._runs import _resolved_run_state_dir
+from ._schedule_parsing import _chain_action_with_usable_selected_kind
 from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
 from ._util import pid_alive as _pid_alive_int
 
@@ -1485,10 +1486,8 @@ async def _schedule_declares_chain_action(
     the outcome that just landed, i.e. a grace wait for the chain child is warranted."""
     if schedule_id not in cache:
         cache[schedule_id] = await db.get_schedule(schedule_id)
-    from ._schedule_parsing import _usable_chain_action
-
     sched = cache[schedule_id] or {}
-    return _usable_chain_action(sched, exit_code == 0) is not None
+    return _chain_action_with_usable_selected_kind(sched, exit_code == 0) is not None
 
 
 def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
