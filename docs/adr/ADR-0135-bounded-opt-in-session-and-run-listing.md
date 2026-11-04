@@ -23,7 +23,7 @@ V2 implementation and adoption require acceptance of this record and the tests i
 
 **P1 — A bounded result is not a bounded query.** At the source baseline the page query uses
 a limited CTE, selected-session correlated aggregates, a CROSS JOIN and a final ORDER BY
-(`lionagi/studio/services/sessions.py:540-594` at `1717674a2140d3571fcb90e3f68204845048ef80`). Status filtering uses an IN predicate with
+(`lionagi/studio/services/sessions.py:491-545` at `1717674a2140d3571fcb90e3f68204845048ef80`). Status filtering uses an IN predicate with
 a NULL arm for completed (`lionagi/studio/services/sessions.py:411-415` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`). OFFSET remains
 (`lionagi/studio/services/sessions.py:598` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`) and a separate exact count is read
 (`lionagi/studio/services/sessions.py:445-460` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`, `lionagi/studio/services/sessions.py:1879` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`).
@@ -490,7 +490,7 @@ Readiness also verifies the access paths used after candidate selection: Session
 progression id point lookups, an index with leading branches.session_id, and the
 `(session_id, tag)` primary key whenever run_tags exists. The baseline supplies those
 through `lionagi/state/schema.sql:110`, `lionagi/state/schema.sql:72`,
-`lionagi/state/schema.sql:307` and `lionagi/state/schema.sql:97` at `1717674a2140d3571fcb90e3f68204845048ef80`. An equivalent branch
+`lionagi/state/schema.sql:278-279` and `lionagi/state/schema.sql:97` at `1717674a2140d3571fcb90e3f68204845048ef80`. An equivalent branch
 index is sufficient; a full scan over unrelated branches/tags is not selected-row fanout.
 Missing required hydration access paths receive the same readiness refusal.
 
