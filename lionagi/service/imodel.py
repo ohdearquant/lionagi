@@ -47,7 +47,7 @@ _CALIBRATION_FLOOR = 4_000
 def _derive_safe_exception_group(
     source: BaseExceptionGroup, members: list[BaseException]
 ) -> BaseExceptionGroup:
-    """Derive a group, retaining metadata and refusing a dishonest derive result."""
+    """Check derive. Caller-owned text and attributes, including derive output, are not sanitized."""
     replacement = None
     try:
         if hasattr(source, "derive"):
