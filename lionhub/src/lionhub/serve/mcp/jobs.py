@@ -1329,6 +1329,7 @@ def submit(
     no_mcp_config: bool = False,
     exclude_mcp_servers: list[str] | None = None,
     write_capable: bool = False,
+    profile: Any | None = None,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1352,7 +1353,8 @@ def submit(
     is incompatible with both caller-owned answers. These are passed as values
     (not re-parsed out of *flags*, which are already rendered in
     `--flag=value` form) since this function must decide whether to resolve its
-    own server set.
+    own server set. *profile* is the already-resolved submitting agent profile,
+    so its MCP policy is applied before any ambient config is read.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -1360,6 +1362,13 @@ def submit(
     # detached run checks again, but a server that exits first leaves it outside that tree
     # (ADR-0133 D7).
     refuse_nested_agent()
+
+    profile_disables_mcp = profile is not None and profile.mcp == "none"
+    if profile_disables_mcp and mcp_config is not None:
+        raise SubmitInputError(
+            f"agent profile {profile.name!r} declares mcp: none; "
+            "it cannot be combined with --mcp-config"
+        )
 
     exclusions = [] if exclude_mcp_servers is None else exclude_mcp_servers
     if not isinstance(exclusions, list) or any(
@@ -1380,6 +1389,11 @@ def submit(
         raise SubmitInputError(
             "exclude_mcp_servers cannot be combined with no_mcp_config because no server set "
             "will be resolved"
+        )
+    if excluded_mcp_servers and profile_disables_mcp:
+        raise SubmitInputError(
+            "exclude_mcp_servers cannot be combined with a profile declaring mcp: none "
+            "because no server set will be resolved"
         )
 
     submit_cwd = _submit_cwd()
@@ -1429,6 +1443,8 @@ def submit(
         # positional; options this function adds must go in front or they
         # arrive as text instead of being parsed.
         options, positionals = _split_at_sentinel(flags)
+        if profile_disables_mcp and not no_mcp_config:
+            options = ["--no-mcp-config", *options]
         prompt_path = None
         if prompt is not None:
             if kind == "agent":
@@ -1457,7 +1473,10 @@ def submit(
         # never inspected a set. Providers may merge their own global config,
         # so this is deliberately not called the effective server set.
         declared_mcp_servers: list[str] | None = None
-        if no_mcp_config:
+        if profile_disables_mcp:
+            mcp_config_reason = f"mcp_disabled_by_profile:{profile.name}"
+            declared_mcp_servers = []
+        elif no_mcp_config:
             mcp_config_reason = "mcp_disabled_by_caller"
             declared_mcp_servers = []
         elif mcp_config is not None:

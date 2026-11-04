@@ -97,6 +97,14 @@ __all__ = (
 DEFAULT_ORCHESTRATOR_AGENT = "orchestrator"
 
 
+def _select_orchestrator_agent(
+    agent_name: str | None, model_spec: str | None
+) -> tuple[str | None, bool]:
+    """Choose the named profile or the implicit default when no model is named."""
+    defaulted = not agent_name and not model_spec
+    return (DEFAULT_ORCHESTRATOR_AGENT if defaulted else agent_name), defaulted
+
+
 def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None]:
     """Parse model_spec into (model, provider) for session-row provenance."""
     ms = parse_model_spec(model_spec) if model_spec else None
@@ -1036,9 +1044,7 @@ async def setup_orchestration(
     # Naming neither agent nor model defaults to the orchestrator profile;
     # naming either one is honoured as-is (and still refused below if it
     # can't resolve to a model).
-    defaulted_agent = not agent_name and not model_spec
-    if defaulted_agent:
-        agent_name = DEFAULT_ORCHESTRATOR_AGENT
+    agent_name, defaulted_agent = _select_orchestrator_agent(agent_name, model_spec)
 
     orc_profile: AgentProfile | None = None
     if agent_name:
@@ -1391,6 +1397,7 @@ async def build_worker_branch(
     grant_spawn: bool = False,
     spawn_assignees: list[str] | tuple[str, ...] | set[str] | None = None,
     modes: list[str] | None = None,
+    recorded_profile_mcp_source: str | None = None,
 ) -> tuple[Branch, str, AgentProfile | None, bool]:
     """Resolve model/profile/system and build a worker Branch. The fourth
     return value, ``messenger_bound``, is True when this worker got the
@@ -1402,10 +1409,16 @@ async def build_worker_branch(
     )
 
     w_model, w_profile, w_cfg = _resolve_worker_model_spec(env, role, model_override)
-    profile_disables_mcp = not env.bare and getattr(w_profile, "mcp", None) == "none"
+    live_profile_disables_mcp = not env.bare and getattr(w_profile, "mcp", None) == "none"
+    profile_disables_mcp = bool(recorded_profile_mcp_source) or live_profile_disables_mcp
     if profile_disables_mcp and getattr(env, "mcp_config_explicit", False):
+        if not live_profile_disables_mcp:
+            raise ConfigurationError(
+                f"Recorded restriction from profile {recorded_profile_mcp_source!r} declares "
+                "mcp: none and cannot be combined with --mcp-config."
+            )
         raise ConfigurationError(
-            f"Agent profile {w_profile.name!r} declares mcp: none and cannot be combined "
+            f"Agent profile {getattr(w_profile, 'name', role)!r} declares mcp: none and cannot be combined "
             "with --mcp-config."
         )
 

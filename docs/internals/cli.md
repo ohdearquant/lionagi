@@ -509,9 +509,13 @@ with `--no-mcp-config` keeps no servers across `li o flow --resume`, and a run
 started with no flag searches for `.mcp.json` from its original launch
 directory, rather than re-running `setup_orchestration` with today's defaults
 and re-discovering whatever `.mcp.json` happens to sit near the resuming
-directory. A profile's `mcp: none` choice is persisted as the effective refusal and its profile
-source, so a resumed flow keeps that choice even if the profile changes. The search runs again at resume, so it reads that config as it is
-then. A checkpoint written before these fields existed (no `no_mcp_config`
+directory. An orchestrator profile's `mcp: none` is stored as the effective refusal and a
+profile-origin marker in the run configuration. Each planned worker's profile refusal and the
+profile name that caused it are stored in its plan entry; each reactive spawn stores whether it
+inherited a profile refusal. A retry preserves those recorded refusals even if a profile later
+removes them, while a current profile can add a new refusal. The search runs again at resume, so
+it reads that config as it is then. A recorded worker refusal is enforced on resume; a plan entry
+without one uses the current profile. A checkpoint written before these fields existed (no `no_mcp_config`
 key in its persisted `config`) has no record of that original decision, so
 `_resume_flow` fails closed: it treats the checkpoint as `no_mcp_config=True`
 and logs a warning, rather than defaulting to ambient discovery for a run

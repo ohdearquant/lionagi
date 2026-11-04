@@ -542,8 +542,8 @@ Update the dynamic adapter load at
 Self-recognition must accept both canonical and compatibility spellings during 1.x,
 rather than silently dropping old subprocess recognition. Its current module/script
 sets and path-tail comparison are at
-`lionagi/cli/orchestrate/_orchestration.py:623` and
-`lionagi/cli/orchestrate/_orchestration.py:666`.
+`lionagi/cli/orchestrate/_orchestration.py:631` and
+`lionagi/cli/orchestrate/_orchestration.py:674`.
 Old spellings retained solely for recognition are compatibility data, never import
 or launch targets. The existing old-reference checker distinguishes imports/call
 arguments from set data (`tests/test_moved_modules.py:593`); keep canonical

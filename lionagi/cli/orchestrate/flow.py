@@ -950,6 +950,7 @@ class _DagState:
     # planned leg's actions= wiring. Populated in _build_dag's per-leg loop.
     worker_branches: dict[str, object] = field(default_factory=dict)
     messenger_bound: dict[str, bool] = field(default_factory=dict)
+    worker_profile_mcp_sources: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -1022,6 +1023,7 @@ async def _build_dag(
     *,
     reactive_spec: str,
     max_spawn: int,
+    checkpoint_plan: list[dict] | None = None,
 ) -> _DagState:
     """Wire worker branches into the operation graph builder and snapshot to Studio."""
     assignments = plan_result.assignments
@@ -1046,6 +1048,7 @@ async def _build_dag(
     role_artifact_defaults: dict[str, dict | None] = {}
     worker_branches: dict[str, object] = {}
     worker_messenger_bound: dict[str, bool] = {}
+    worker_profile_mcp_sources: dict[str, str] = {}
     spawn_assignees = sorted({ta.assignee for ta in assignments})
 
     # The plan is the run's own statement of which workers it will have, made
@@ -1056,6 +1059,10 @@ async def _build_dag(
 
     for i, ta in enumerate(assignments):
         try:
+            entry = checkpoint_plan[i] if checkpoint_plan is not None else {}
+            recorded_source = (
+                entry.get("profile_mcp_source") if entry.get("profile_mcp_disabled") else None
+            )
             w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
                 env,
                 agent_id=agent_ids[i],
@@ -1065,12 +1072,17 @@ async def _build_dag(
                 grant_spawn=_may_spawn(ta.assignee),
                 spawn_assignees=spawn_assignees,
                 modes=ta.modes or None,
+                **({"recorded_profile_mcp_source": recorded_source} if recorded_source else {}),
             )
         except BaseException as exc:
             attribute_worker_build_failure(exc, agent_id=agent_ids[i], role=ta.assignee)
             raise
         worker_branches[agent_ids[i]] = w_branch
         worker_messenger_bound[agent_ids[i]] = messenger_bound
+        if recorded_source:
+            worker_profile_mcp_sources[agent_ids[i]] = recorded_source
+        elif not env.bare and getattr(w_profile, "mcp", None) == "none":
+            worker_profile_mcp_sources[agent_ids[i]] = w_profile.name
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
 
@@ -1207,6 +1219,7 @@ async def _build_dag(
         role_artifact_defaults=role_artifact_defaults,
         worker_branches=worker_branches,
         messenger_bound=worker_messenger_bound,
+        worker_profile_mcp_sources=worker_profile_mcp_sources,
     )
 
 
@@ -3685,9 +3698,23 @@ async def _run_flow_inner(
         plan_entries = resume_checkpoint.get("plan") or []
         if not plan_entries:
             raise FlowResumeError("Checkpoint has an empty plan — nothing to resume.")
+        for entry in plan_entries:
+            disabled = entry.get("profile_mcp_disabled", False)
+            source = entry.get("profile_mcp_source")
+            if (
+                type(disabled) is not bool
+                or (disabled and (not isinstance(source, str) or not source.strip()))
+                or (not disabled and "profile_mcp_source" in entry)
+            ):
+                raise FlowResumeError("Checkpoint has an invalid planned-worker MCP restriction.")
         assignments = [
             TaskAssignment(
-                **{k: v for k, v in entry.items() if k not in ("agent_id", "dep_indices")}
+                **{
+                    k: v
+                    for k, v in entry.items()
+                    if k
+                    not in ("agent_id", "dep_indices", "profile_mcp_disabled", "profile_mcp_source")
+                }
             )
             for entry in plan_entries
         ]
@@ -3891,6 +3918,7 @@ async def _run_flow_inner(
         plan_result,
         reactive_spec=reactive_spec,
         max_spawn=max_spawn,
+        checkpoint_plan=plan_entries if resume_checkpoint is not None else None,
     )
 
     if resume_checkpoint is not None:
@@ -3903,12 +3931,20 @@ async def _run_flow_inner(
             retry_failed=retry_failed,
             checkpoint_spawned=resume_checkpoint.get("spawned") or None,
         )
-        checkpoint_plan = resume_checkpoint["plan"]
+        checkpoint_plan = [dict(entry) for entry in resume_checkpoint["plan"]]
     else:
         checkpoint_plan = [
             {**assignments[i].model_dump(), "agent_id": agent_ids[i], "dep_indices": dep_indices[i]}
             for i in range(len(assignments))
         ]
+
+    # Preserve each planned worker's profile-origin refusal and its source.
+    # A current profile can tighten a resumed plan, never loosen one.
+    for i, agent_id in enumerate(agent_ids):
+        source = dag_state.worker_profile_mcp_sources.get(agent_id)
+        if source is not None:
+            checkpoint_plan[i]["profile_mcp_disabled"] = True
+            checkpoint_plan[i]["profile_mcp_source"] = source
 
     exec_result = await _execute_dag(
         env,
