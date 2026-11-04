@@ -338,7 +338,7 @@ The shared dependency closure is part of step 3:
   `lionagi/cli/_runs.py:1485`, `lionagi/cli/_runs.py:1913`,
   `lionagi/cli/_runs.py:2131`).
 - Checkpoint resolution uses public inspection services instead of the retained
-  status adapter (`lionagi/cli/orchestrate/_checkpoint.py:238`).
+  status adapter (`lionagi/cli/orchestrate/_checkpoint.py:241`).
 - Shared code and Studio use the existing neutral log emitters. Their identity
   already comes from `lionagi._log_channels`. The formatter configuration in
   `lionagi/cli/_logging.py` (lines 10 and 91 at 04e03ffe) moves whole to
@@ -542,8 +542,8 @@ Update the dynamic adapter load at
 Self-recognition must accept both canonical and compatibility spellings during 1.x,
 rather than silently dropping old subprocess recognition. Its current module/script
 sets and path-tail comparison are at
-`lionagi/cli/orchestrate/_orchestration.py:631` and
-`lionagi/cli/orchestrate/_orchestration.py:674`.
+`lionagi/cli/orchestrate/_orchestration.py:638` and
+`lionagi/cli/orchestrate/_orchestration.py:681`.
 Old spellings retained solely for recognition are compatibility data, never import
 or launch targets. The existing old-reference checker distinguishes imports/call
 arguments from set data (`tests/test_moved_modules.py:593`); keep canonical
