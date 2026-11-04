@@ -66,6 +66,19 @@ def test_unclosed_mcp_frontmatter_is_refused():
     assert "mcp" in str(raised.value)
 
 
+def test_unclosed_unreadable_backslash_explains_and_both_delimiter_repairs_work():
+    settings = "model: codex/gpt-5.5\n"
+    body = "Review \\local\n"
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", "---\n" + settings + body)
+    message = str(raised.value)
+    assert "no closing ---" in message
+    assert "add" in message and "closing ---" in message
+    assert "remove" in message and "opening ---" in message
+    assert _parse_profile("reviewer", "---\n" + settings + "---\n" + body).mcp is None
+    assert _parse_profile("reviewer", settings + body).mcp is None
+
+
 @pytest.mark.parametrize("indent", ["\t", "  \t", "\t  "])
 @pytest.mark.parametrize("prefix", ["name: reviewer\n", "model: [unterminated\n"])
 def test_tab_indented_mcp_in_unreadable_frontmatter_is_refused(indent, prefix):
@@ -120,9 +133,11 @@ def test_unreadable_frontmatter_with_multiline_escaped_key_is_refused(declaratio
     text = f"---\n\tbad: x\n{declaration}{ending}"
     with pytest.raises(ConfigurationError) as caught:
         _parse_profile("reviewer", text)
-    assert "invalid YAML" in str(caught.value)
+    if ending:
+        assert "invalid YAML" in str(caught.value)
+    else:
+        assert "no closing ---" in str(caught.value)
     assert "backslash" in str(caught.value)
-    assert "fix" in str(caught.value).lower()
 
 
 @pytest.mark.parametrize("content", ["ordinary \\\\ path", "mixed-case McP text"])
@@ -251,7 +266,10 @@ def test_misindented_mcp_after_block_scalar_in_unreadable_frontmatter_is_refused
     with pytest.raises(ConfigurationError) as raised:
         _parse_profile("reviewer", text)
     assert "mcp" in str(raised.value)
-    assert "could not be parsed" in str(raised.value)
+    if ending:
+        assert "could not be parsed" in str(raised.value)
+    else:
+        assert "no closing ---" in str(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -370,7 +388,7 @@ def test_real_quoted_values_with_mcp_text_in_unreadable_block_are_refused(frontm
 
 
 @pytest.mark.parametrize("key", ["mcp: none", '"m\\u0063p": none'])
-def test_long_unreadable_flow_key_is_detected_with_linear_scanner_input(key, monkeypatch):
+def test_long_unreadable_flow_uses_no_yaml_scan(key, monkeypatch):
     import yaml
 
     real_scan = yaml.scan

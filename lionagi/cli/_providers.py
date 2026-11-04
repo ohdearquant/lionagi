@@ -973,20 +973,12 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
 
     from lionagi.libs.frontmatter import _FM_SPLIT
 
-    def refuse(*, unreadable: bool = False) -> None:
-        if unreadable:
-            raise ConfigurationError(
-                f"agent profile {name!r}: frontmatter could not be parsed (invalid YAML); "
-                "it mentions mcp or contains a backslash; fix the YAML to proceed"
-            )
-        raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
-
-    def mentions_mcp_key(block: str, *, readable: bool = False) -> bool:
+    def unreadable_yaml_has_sensitive_text(block: str) -> bool:
         # In unreadable YAML, no fragment can be reliably identified as a key
         # or value. Refuse either signal even in comments or scalar text.
-        if not readable:
-            return "mcp" in block.lower() or "\\" in block
+        return "mcp" in block.lower() or "\\" in block
 
+    def readable_yaml_has_mcp_key(block: str) -> bool:
         # An unclosed frontmatter block can itself be readable YAML. Preserve
         # its existing key-token behavior, including anchors and aliases.
         anchors: dict[str, str] = {}
@@ -1023,11 +1015,14 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         try:
             yaml.safe_load(block)
         except (yaml.YAMLError, RecursionError):
-            readable = False
+            sensitive = unreadable_yaml_has_sensitive_text(block)
         else:
-            readable = True
-        if mentions_mcp_key(block, readable=readable):
-            refuse(unreadable=not readable)
+            sensitive = readable_yaml_has_mcp_key(block)
+        if sensitive:
+            raise ConfigurationError(
+                f"agent profile {name!r}: frontmatter with mcp text or a backslash has no "
+                "closing ---; add a closing --- after the settings or remove the opening ---"
+            )
         return
     block = parts[1]
     try:
@@ -1036,8 +1031,11 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         yaml.safe_load(block)
         root = yaml.compose(block, Loader=yaml.SafeLoader)
     except yaml.YAMLError:
-        if mentions_mcp_key(block):
-            refuse(unreadable=True)
+        if unreadable_yaml_has_sensitive_text(block):
+            raise ConfigurationError(
+                f"agent profile {name!r}: frontmatter could not be parsed (invalid YAML); "
+                "it mentions mcp or contains a backslash; fix the YAML to proceed"
+            ) from None
         return
 
     def contains_mcp_key(node: Any) -> bool:
@@ -1060,7 +1058,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     # A profile frontmatter must be a mapping. Other YAML shapes are normally
     # ignored, but ignoring one that contains this policy could remove it.
     if not isinstance(root, yaml.MappingNode) and contains_mcp_key(root):
-        refuse()
+        raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
 
     def declarations(node: Any, path: frozenset[int]) -> int:
         if not isinstance(node, yaml.MappingNode) or id(node) in path:
@@ -1076,7 +1074,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         return total
 
     if declarations(root, frozenset()) > 1:
-        refuse()
+        raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
 
 
 _CONTAIN_KEY = "contain_user_settings"
