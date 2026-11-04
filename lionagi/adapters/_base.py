@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import urllib.parse
 from collections.abc import Callable
-from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
+from typing import Any, ClassVar, NoReturn, Protocol, TypeVar, runtime_checkable
 
 from pydantic import ValidationError
 
@@ -141,6 +141,7 @@ def _redact_details(details: dict[str, Any]) -> dict[str, Any]:
 
 _ADAPTER_PYTHON_ERRORS = (KeyError, ImportError, AttributeError, ValueError)
 _NO_ADAPTER_DATA = object()
+_ADAPTER_DATA_NODE_BUDGET = 128
 
 
 def _safe_adapter_data(value: Any) -> Any:
@@ -150,7 +151,7 @@ def _safe_adapter_data(value: Any) -> Any:
     objects, and cut-off branches use ``<cycle>``, ``<redacted>``, and
     ``<truncated>`` respectively. Dictionary keys become ``item_N``.
     """
-    remaining = 128
+    remaining = _ADAPTER_DATA_NODE_BUDGET
     active: set[int] = set()
 
     def visit(item: Any, depth: int) -> Any:
@@ -440,7 +441,7 @@ class AdapterBase:
         )
 
     @classmethod
-    def _handle_error(cls, exc: Exception, category: str, **extra_details) -> None:
+    def _handle_error(cls, exc: Exception, category: str, **extra_details) -> NoReturn:
         error_class = cls._error_mapping.get(category, AdapterError)
         details: dict[str, Any] = {
             "category": category,
