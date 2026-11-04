@@ -1092,7 +1092,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         # long flow-style line.
         scalar_indent: int | None = None
         for number, line in enumerate(block.splitlines()):
-            stripped = line.lstrip(" ")
+            stripped = line.lstrip(" \t")
             indent = len(line) - len(stripped)
             if scalar_indent is not None:
                 if not stripped or stripped.startswith("#") or indent > scalar_indent:
@@ -1100,7 +1100,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                 scalar_indent = None
             if number in scalar_lines:
                 continue
-            if scan(line)[0]:
+            if scan(stripped)[0]:
                 return True
             fragments = tuple(flow_fragments(line))
             # A malformed line can use an alias before a later anchor. Collect
@@ -1327,10 +1327,21 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                     continue
                 if _DASHES.fullmatch(line.rstrip()):
                     delimiters.append(i)
+            warned_containment = False
+            warned_mcp = False
             for opening, end in pairwise([*delimiters, len(lines)]):
                 block = "\n".join(lines[opening + 1 : end])
                 reads, document = read(block)
-                if (
+                if not warned_mcp and (
+                    (reads and isinstance(document, dict) and "mcp" in document)
+                    or (not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M))
+                ):
+                    warn(
+                        f"agent profile {name!r}: the --- block on line {opening + 1} follows "
+                        "prompt text, so its mcp declaration is ignored"
+                    )
+                    warned_mcp = True
+                if not warned_containment and (
                     _FLAG_KEY_LINE.search(block)
                     or (reads and isinstance(document, dict) and _contain_flag_values(block))
                     or (not reads and _CONTAIN_KEY in block)
@@ -1341,7 +1352,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                         "in the block applies; its worker is not contained, though the block "
                         "names contain_user_settings"
                     )
-                    break
+                    warned_containment = True
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
         # the next ``---`` line or, unclosed, to the end.

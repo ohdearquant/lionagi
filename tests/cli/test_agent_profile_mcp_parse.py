@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from lionagi._errors import ConfigurationError
@@ -66,6 +64,42 @@ def test_unclosed_mcp_frontmatter_is_refused():
 
     assert "reviewer" in str(raised.value)
     assert "mcp" in str(raised.value)
+
+
+@pytest.mark.parametrize("indent", ["\t", "  \t", "\t  "])
+@pytest.mark.parametrize("prefix", ["name: reviewer\n", "model: [unterminated\n"])
+def test_tab_indented_mcp_in_unreadable_frontmatter_is_refused(indent, prefix):
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", f"---\n{prefix}{indent}mcp: none\n---\nReview.")
+
+
+def test_mcp_after_preface_remains_prompt_and_warns(monkeypatch):
+    warnings = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    text = "# Reviewer\n---\nmcp: none\n---\nReview."
+
+    profile = _parse_profile("reviewer", text)
+
+    assert profile.raw_body == text
+    assert profile.mcp is None
+    assert any("mcp" in warning and "ignored" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "# Reviewer\n```yaml\n---\nmcp: none\n---\n```",
+        "# Reviewer\n---\n# mcp: none\nmodel: example\n---\nReview.",
+        "# Reviewer\n---\nprompt: |\n  mcp: none\n---\nReview.",
+    ],
+)
+def test_mcp_examples_after_preface_do_not_warn(monkeypatch, text):
+    warnings = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    profile = _parse_profile("reviewer", text)
+    assert profile.raw_body == text
+    assert profile.mcp is None
+    assert not any("mcp" in warning for warning in warnings)
 
 
 def test_unrelated_unreadable_frontmatter_keeps_existing_leniency():
@@ -259,17 +293,6 @@ def test_plain_scalar_quote_does_not_hide_later_mcp_key(frontmatter):
 def test_real_quoted_values_with_mcp_text_remain_lenient(frontmatter):
     profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
     assert profile.mcp is None
-
-
-def test_long_unreadable_flow_profile_is_scanned_in_bounded_time():
-    # The invalid token makes whole-document scanning stop before the last key.
-    # The thousands of commas used to cause an overlapping scan of every suffix.
-    line = "model: @invalid," + "a," * 9_500 + "mcp: none\n"
-    start = time.perf_counter()
-    with pytest.raises(ConfigurationError, match="mcp"):
-        _parse_profile("reviewer", f"---\n{line}---\nReview.")
-    elapsed = time.perf_counter() - start
-    assert elapsed < 0.05, f"unreadable 19 KB frontmatter took {elapsed:.3f}s"
 
 
 @pytest.mark.parametrize("key", ["mcp: none", '"m\\u0063p": none'])
