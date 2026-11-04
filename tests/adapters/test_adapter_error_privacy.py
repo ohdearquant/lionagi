@@ -637,16 +637,19 @@ def test_dataframe_internal_dump_iteration_failure_remains_redacted(monkeypatch)
         def __iter__(self):
             raise RuntimeError(_MARKER)
 
-    monkeypatch.setattr(pandas_adapter, "_require_pandas", lambda: None)
+    class FakePandas:
+        @staticmethod
+        def DataFrame(records):
+            return list(records)
+
+    monkeypatch.setattr(pandas_adapter, "_require_pandas", lambda: FakePandas)
     with pytest.raises(AdapterValidationError) as captured:
-        pandas_adapter.DataFrameAdapter._models_to_dataframe(
-            HostileList(), lambda record: record, None
-        )
+        pandas_adapter.DataFrameAdapter._models_to_dataframe(HostileList())
     if _contains_marker(captured.value):
         pytest.fail("internal record iteration exposed an exception", pytrace=False)
 
 
-def test_dataframe_internal_dump_callback_propagates_unchanged(monkeypatch):
+def test_dataframe_dump_callback_propagates_unchanged_without_pandas(monkeypatch):
     from lionagi.adapters import pandas_ as pandas_adapter
 
     original = RuntimeError("dump error")
@@ -656,7 +659,7 @@ def test_dataframe_internal_dump_callback_propagates_unchanged(monkeypatch):
         raise original
 
     with pytest.raises(RuntimeError) as captured:
-        pandas_adapter.DataFrameAdapter._models_to_dataframe([object()], reject, None)
+        pandas_adapter.DataFrameAdapter.to_obj([object()], adapt_meth=reject)
     assert captured.value is original
 
 
@@ -796,12 +799,16 @@ def test_dataframe_public_to_obj_does_not_retain_unexpected_record_error(monkeyp
     class Record(BaseModel):
         amount: str
 
-    def reject(cls, items, adapt_meth, adapt_kw, **kwargs):
+    calls = []
+
+    def reject(cls, records, **kwargs):
+        calls.append(True)
         raise RuntimeError(_MARKER)
 
     monkeypatch.setattr(DataFrameAdapter, "_models_to_dataframe", classmethod(reject))
     with pytest.raises(AdapterValidationError) as captured:
         DataFrameAdapter.to_obj([Record(amount=_MARKER)])
+    assert calls == [True]
     if _contains_marker(captured.value):
         pytest.fail("public conversion error retained caller data", pytrace=False)
 
