@@ -875,6 +875,7 @@ async def _seed_dispatched_run_with_session(
     inv_id: str,
     sess_id: str,
     session_status: str,
+    run_fields: dict | None = None,
 ) -> None:
     await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
     await db.create_invocation(
@@ -892,7 +893,7 @@ async def _seed_dispatched_run_with_session(
     )
     await claim_and_advance(
         db,
-        _run_row(run_id, sid, fired_at=1000.0, invocation_id=inv_id),
+        _run_row(run_id, sid, fired_at=1000.0, invocation_id=inv_id, **(run_fields or {})),
         schedule_id=sid,
         schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
     )
@@ -934,6 +935,83 @@ async def test_reconcile_finalizes_dispatched_orphan_from_terminal_session_evide
     # side effects never happen for a run this pass just marked completed.
     assert invocation["status"] == "completed"
     assert invocation["ended_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_reconciled_chain_keeps_parent_command_target(tmp_path, monkeypatch):
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    sid, run_id = "sched-target", "run-target"
+    async with StateDB(db_path) as db:
+        await _seed_dispatched_run_with_session(
+            db,
+            sid=sid,
+            run_id=run_id,
+            inv_id="inv-target",
+            sess_id="sess-target",
+            session_status="completed",
+        )
+        await db.update_schedule(
+            sid,
+            action_kind="command",
+            action_command="echo inherited",
+            on_success={"kind": "command"},
+        )
+
+    engine = SchedulerEngine(svc=_DBSchedulerStateService())
+    children = []
+    engine._tracked_fire = lambda sched, *args, **kwargs: children.append(sched)
+    await engine._reconcile_dispatched_orphans()
+
+    assert len(children) == 1
+    assert children[0]["action_kind"] == "command"
+    assert children[0]["action_command"] == "echo inherited"
+
+
+@pytest.mark.asyncio
+async def test_reconciled_legacy_child_may_refire_root_chain(tmp_path, monkeypatch):
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    sid, run_id = "sched-sibling", "run-sibling-child"
+    async with StateDB(db_path) as db:
+        await _seed_dispatched_run_with_session(
+            db,
+            sid=sid,
+            run_id=run_id,
+            inv_id="inv-sibling",
+            sess_id="sess-sibling",
+            session_status="failed",
+            run_fields={"chain_depth": 1, "action_kind": "agent"},
+        )
+        await db.update_schedule(
+            sid,
+            action_kind="command",
+            action_command="echo inherited",
+            on_success={"kind": "agent", "on_success": None},
+            on_fail={"kind": "command", "on_fail": None},
+        )
+
+    engine = SchedulerEngine(svc=_DBSchedulerStateService())
+    children = []
+    engine._tracked_fire = lambda sched, *args, **kwargs: children.append(sched)
+    await engine._reconcile_dispatched_orphans()
+    assert len(children) == 1
+    assert children[0]["action_kind"] == "command"
+    assert children[0]["action_command"] == "echo inherited"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_value", ["old", ["old"], 1, True, [], 0])
+async def test_legacy_non_object_chain_values_round_trip_via_sqlite(tmp_path, legacy_value):
+    async with StateDB(tmp_path / "state.db") as db:
+        await db.create_schedule(_schedule_row("legacy-shape", on_fail=legacy_value))
+        stored = await db.get_schedule("legacy-shape")
+    assert stored["on_fail"] == legacy_value
+    assert type(stored["on_fail"]) is type(legacy_value)
 
 
 @pytest.mark.asyncio
