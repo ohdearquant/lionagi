@@ -969,6 +969,7 @@ def _cancellation_wins(cm_func):
 
 
 _log = logging.getLogger(__name__)
+UNVERIFIABLE_PID_QUARANTINE_THRESHOLD = 3
 
 # The rows a compatibility-mode transaction inserted, recorded as its run's once it commits.
 _COMPAT_INSERTED: ContextVar[list[tuple[str, Any]] | None] = ContextVar(
@@ -4938,6 +4939,333 @@ class StateDB:
         Same semantics as :meth:`merge_session_node_metadata`, for the invocations table.
         """
         await self._merge_node_metadata("invocations", invocation_id, patch)
+
+    @staticmethod
+    def _unverifiable_snapshot(snapshot: dict[str, Any]) -> tuple[dict[str, Any], int, bool]:
+        """Read a probe's metadata and epoch without treating malformed history as valid."""
+        raw = snapshot.get("node_metadata")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = None
+                malformed = True
+            else:
+                malformed = not isinstance(raw, dict)
+        else:
+            malformed = raw is not None and not isinstance(raw, dict)
+        metadata = raw if isinstance(raw, dict) else {}
+        epoch = metadata.get("unverifiable_epoch", 0)
+        if type(epoch) is not int or not 0 <= epoch < 9223372036854775806:
+            malformed = True
+            epoch = 0
+        count = metadata.get("unverifiable_count")
+        since = metadata.get("unverifiable_since")
+        if count is not None and (type(count) is not int or not 0 < count < 9223372036854775806):
+            malformed = True
+        if since is not None:
+            try:
+                valid_since = type(since) in (int, float) and math.isfinite(since) and since >= 0
+            except OverflowError:
+                valid_since = False
+            if not valid_since:
+                malformed = True
+        if (
+            "unverifiable_quarantined" in metadata
+            and type(metadata["unverifiable_quarantined"]) is not bool
+        ):
+            malformed = True
+        if "unverifiable_identity" in metadata and not isinstance(
+            metadata["unverifiable_identity"], str
+        ):
+            malformed = True
+        if malformed:
+            _log.warning("Discarding malformed unverifiable PID observation history")
+        return metadata, epoch, malformed
+
+    async def _update_unverifiable_pid(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        snapshot: dict[str, Any],
+        pid: int | None,
+        create_time: float | None,
+        observed_at: float,
+        clear: bool,
+    ) -> dict[str, Any]:
+        """Atomically apply a PID observation, guarded by the pre-probe row snapshot.
+
+        Unknown observations keep the epoch token, allowing simultaneous observations
+        to increment independently. A verified-live observation advances it, refusing
+        an unknown probe based on the old epoch even if it completes afterwards.
+        """
+        if entity_type not in ("session", "invocation"):
+            raise ValueError("PID observation requires a session or invocation")
+        if self._compat is not None:
+            self._refuse_in_compatibility(
+                "observe_unverifiable_pid", "PID quarantine requires native state"
+            )
+        if self.dialect not in ("sqlite", "postgresql"):
+            raise RuntimeError("PID quarantine is unavailable for this state backend")
+        table = "sessions" if entity_type == "session" else "invocations"
+        meta, epoch, malformed = self._unverifiable_snapshot(snapshot)
+        fields = ("pid", "pid_create_time", "pid_host", "pid_boot_time", "process_identity_mode")
+        identity = json.dumps(
+            [
+                pid,
+                create_time,
+                snapshot.get("cli_worker_generation") if entity_type == "session" else None,
+            ],
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        original = snapshot.get("node_metadata")
+        if original is not None and not isinstance(original, (dict, str)):
+            _log.warning("Refusing PID observation on non-object metadata")
+            return {"applied": False, "malformed": True}
+        if isinstance(original, str):
+            try:
+                if not isinstance(json.loads(original), dict):
+                    raise ValueError("metadata is not an object")
+            except (ValueError, TypeError, RecursionError):
+                _log.warning("Refusing PID observation on unreadable metadata")
+                return {"applied": False, "malformed": True}
+        try:
+            # Only these fields participate in the process identity guard. A
+            # malformed historical value must not erase an otherwise valid PID.
+            saved = json.dumps(
+                {key: meta[key] for key in fields if key in meta},
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            _log.warning("Refusing PID observation on malformed process identity")
+            return {"applied": False, "malformed": True}
+        try:
+            json.dumps(meta, allow_nan=False)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            # JSON-invalid history needs a guarded normalization. Preserve all
+            # other keys, and refuse if any other value cannot be represented.
+            normalize_history = True
+            malformed = True
+            _log.warning("Resetting malformed unverifiable PID observation history")
+        else:
+            normalize_history = False
+        params = {
+            "id": entity_id,
+            "snapshot": saved,
+            "epoch": epoch,
+            "identity": identity,
+            "observed_at": observed_at,
+            "now": time.time(),
+            "generation": snapshot.get("cli_worker_generation"),
+            "threshold": UNVERIFIABLE_PID_QUARANTINE_THRESHOLD,
+        }
+        # These are the row fields used to establish local process identity. Guard
+        # their JSON type as well as their value (missing differs from JSON null).
+        if self.dialect == "sqlite":
+            doc = (
+                "json(:normalized_metadata)"
+                if normalize_history
+                else "(CASE WHEN json_valid(node_metadata) AND json_type(node_metadata) = 'object' THEN node_metadata ELSE '{}' END)"
+            )
+            current_epoch = (
+                f"(CASE WHEN json_type({doc}, '$.unverifiable_epoch') = 'integer' "
+                f"AND json_extract({doc}, '$.unverifiable_epoch') >= 0 "
+                f"AND json_extract({doc}, '$.unverifiable_epoch') < 9223372036854775806 "
+                f"THEN json_extract({doc}, '$.unverifiable_epoch') ELSE 0 END)"
+            )
+            guards = " ".join(
+                f"AND json_type({doc}, '$.{key}') IS json_type(:snapshot, '$.{key}') "
+                f"AND json_extract({doc}, '$.{key}') IS json_extract(:snapshot, '$.{key}')"
+                for key in fields
+            )
+            valid = (
+                f"(json_extract({doc}, '$.unverifiable_identity') = :identity "
+                f"AND json_type({doc}, '$.unverifiable_count') = 'integer' "
+                f"AND json_type({doc}, '$.unverifiable_quarantined') IN ('true', 'false') "
+                f"AND (json_type({doc}, '$.unverifiable_epoch') IS NULL OR "
+                f"(json_type({doc}, '$.unverifiable_epoch') = 'integer' AND "
+                f"json_extract({doc}, '$.unverifiable_epoch') >= 0 AND "
+                f"json_extract({doc}, '$.unverifiable_epoch') < 9223372036854775806)) "
+                f"AND json_extract({doc}, '$.unverifiable_count') > 0 "
+                f"AND json_extract({doc}, '$.unverifiable_count') < 9223372036854775806 "
+                f"AND json_type({doc}, '$.unverifiable_since') IN ('integer', 'real') "
+                f"AND json_extract({doc}, '$.unverifiable_since') >= 0 "
+                f"AND json_extract({doc}, '$.unverifiable_since') <= 1.7976931348623157e308)"
+            )
+            count = f"(CASE WHEN {valid} THEN json_extract({doc}, '$.unverifiable_count') + 1 ELSE 1 END)"
+            if clear:
+                updated = (
+                    f"json_set(json_remove({doc}, '$.unverifiable_since', '$.unverifiable_count', "
+                    "'$.unverifiable_identity', '$.unverifiable_quarantined'), "
+                    f"'$.unverifiable_epoch', {current_epoch} + 1)"
+                )
+            else:
+                next_epoch = (
+                    f"({current_epoch} + CASE WHEN json_type({doc}, '$.unverifiable_identity') = 'text' "
+                    f"AND json_extract({doc}, '$.unverifiable_identity') != :identity THEN 1 ELSE 0 END)"
+                )
+                updated = (
+                    f"json_set({doc}, '$.unverifiable_epoch', {next_epoch}, "
+                    f"'$.unverifiable_identity', :identity, '$.unverifiable_count', {count}, "
+                    f"'$.unverifiable_since', CASE WHEN {valid} THEN "
+                    f"json_extract({doc}, '$.unverifiable_since') ELSE :observed_at END, "
+                    f"'$.unverifiable_quarantined', json(CASE WHEN {count} >= :threshold "
+                    "THEN 'true' ELSE 'false' END))"
+                )
+            generation_guard = (
+                " AND cli_worker_generation IS :generation" if entity_type == "session" else ""
+            )
+        else:
+            doc = (
+                "CAST(:normalized_metadata AS jsonb)"
+                if normalize_history
+                else "(CASE WHEN jsonb_typeof(node_metadata::jsonb) = 'object' THEN node_metadata::jsonb ELSE '{}'::jsonb END)"
+            )
+            current_epoch = (
+                f"(CASE WHEN jsonb_typeof({doc}->'unverifiable_epoch') = 'number' "
+                f"AND ({doc}->>'unverifiable_epoch') ~ '^[0-9]{{1,19}}$' "
+                f"THEN CASE WHEN ({doc}->>'unverifiable_epoch')::numeric < 9223372036854775806 "
+                f"THEN ({doc}->>'unverifiable_epoch')::bigint ELSE 0 END ELSE 0 END)"
+            )
+            guards = " ".join(
+                f"AND ({doc}->'{key}') IS NOT DISTINCT FROM (CAST(:snapshot AS jsonb)->'{key}')"
+                for key in fields
+            )
+            valid = (
+                f"({doc}->>'unverifiable_identity' = :identity "
+                f"AND jsonb_typeof({doc}->'unverifiable_count') = 'number' "
+                f"AND jsonb_typeof({doc}->'unverifiable_quarantined') = 'boolean' "
+                f"AND (({doc}->'unverifiable_epoch') IS NULL OR "
+                f"(jsonb_typeof({doc}->'unverifiable_epoch') = 'number' AND "
+                f"CASE WHEN ({doc}->>'unverifiable_epoch') ~ '^[0-9]{{1,19}}$' "
+                f"THEN ({doc}->>'unverifiable_epoch')::numeric < 9223372036854775806 "
+                f"ELSE false END)) "
+                f"AND CASE WHEN ({doc}->>'unverifiable_count') ~ '^[1-9][0-9]{{0,18}}$' "
+                f"THEN ({doc}->>'unverifiable_count')::numeric < 9223372036854775806 "
+                f"ELSE false END "
+                f"AND CASE WHEN jsonb_typeof({doc}->'unverifiable_since') = 'number' "
+                f"THEN ({doc}->>'unverifiable_since')::numeric BETWEEN 0 AND 1.7976931348623157e308 "
+                "ELSE false END)"
+            )
+            count = (
+                f"(CASE WHEN {valid} THEN ({doc}->>'unverifiable_count')::bigint + 1 ELSE 1 END)"
+            )
+            if clear:
+                updated = (
+                    f"(({doc} - 'unverifiable_since' - 'unverifiable_count' - 'unverifiable_identity' "
+                    "- 'unverifiable_quarantined') || "
+                    f"jsonb_build_object('unverifiable_epoch', {current_epoch} + 1))"
+                )
+            else:
+                next_epoch = (
+                    f"({current_epoch} + CASE WHEN jsonb_typeof({doc}->'unverifiable_identity') = 'string' "
+                    f"AND {doc}->>'unverifiable_identity' != :identity THEN 1 ELSE 0 END)"
+                )
+                updated = (
+                    f"({doc} || jsonb_build_object('unverifiable_epoch', {next_epoch}, "
+                    f"'unverifiable_identity', CAST(:identity AS text), 'unverifiable_count', {count}, "
+                    f"'unverifiable_since', CASE WHEN {valid} THEN "
+                    f"({doc}->>'unverifiable_since')::double precision ELSE :observed_at END, "
+                    f"'unverifiable_quarantined', {count} >= :threshold))"
+                )
+            updated = f"({updated})::json"
+            generation_guard = (
+                " AND cli_worker_generation IS NOT DISTINCT FROM :generation"
+                if entity_type == "session"
+                else ""
+            )
+        raw_guard = " AND CAST(node_metadata AS TEXT) = :raw_metadata" if normalize_history else ""
+        stmt = text(
+            f"UPDATE {table} SET node_metadata = {updated}, updated_at = :now "  # noqa: S608
+            f"WHERE id = :id AND status = 'running' AND {current_epoch} = :epoch "
+            f"{generation_guard} {guards} {raw_guard} RETURNING node_metadata"
+        )
+        # Normalizing malformed history uses a raw-value compare-and-swap.
+        # A competing writer can win after our read, so re-read a bounded
+        # number of times while retaining the original identity and epoch.
+        for _attempt in range(3 if normalize_history else 1):
+            async with self._tx() as conn:
+                if normalize_history:
+                    raw_metadata = (
+                        await conn.execute(
+                            text(f"SELECT CAST(node_metadata AS TEXT) FROM {table} WHERE id = :id"),  # noqa: S608
+                            {"id": entity_id},
+                        )
+                    ).scalar_one_or_none()
+                    if raw_metadata is None:
+                        return {"applied": False, "malformed": True}
+                    try:
+                        current = json.loads(raw_metadata)
+                        if not isinstance(current, dict):
+                            raise ValueError("metadata is not an object")
+                        for key in (
+                            "unverifiable_epoch",
+                            "unverifiable_since",
+                            "unverifiable_count",
+                            "unverifiable_identity",
+                            "unverifiable_quarantined",
+                        ):
+                            if key in current:
+                                try:
+                                    json.dumps(current[key], allow_nan=False)
+                                except (TypeError, ValueError, OverflowError, RecursionError):
+                                    del current[key]
+                        params["normalized_metadata"] = json.dumps(
+                            current, allow_nan=False, separators=(",", ":")
+                        )
+                    except (TypeError, ValueError, OverflowError, RecursionError):
+                        _log.warning("Refusing PID observation: unrelated metadata is malformed")
+                        return {"applied": False, "malformed": True}
+                    params["raw_metadata"] = raw_metadata
+                result = (await conn.execute(stmt, params)).scalar_one_or_none()
+            if result is not None:
+                break
+        else:
+            return {"applied": False, "malformed": malformed}
+        decoded = json.loads(result) if isinstance(result, str) else result
+        return {**decoded, "applied": True, "malformed": malformed}
+
+    @_operation("observe_unverifiable_pid")
+    async def observe_unverifiable_pid(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        snapshot: dict[str, Any],
+        pid: int | None,
+        create_time: float | None,
+        observed_at: float,
+    ) -> dict[str, Any]:
+        return await self._update_unverifiable_pid(
+            entity_type,
+            entity_id,
+            snapshot=snapshot,
+            pid=pid,
+            create_time=create_time,
+            observed_at=observed_at,
+            clear=False,
+        )
+
+    @_operation("clear_unverifiable_pid")
+    async def clear_unverifiable_pid(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._update_unverifiable_pid(
+            entity_type,
+            entity_id,
+            snapshot=snapshot,
+            pid=None,
+            create_time=None,
+            observed_at=time.time(),
+            clear=True,
+        )
 
     @_operation("update_artifact_verification")
     async def update_artifact_verification(

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from typing import Any
 
@@ -34,9 +35,118 @@ from ._kill_service import (
     unaddressable_pid_reason,
 )
 from ._logging import log_error, warn
+from ._pid_quarantine import quarantine_identity
 from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
 from ._util import resolve_entity as _resolve_entity
+
+
+def _same_process_scope(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Only share a live observation when its host, mode, and boot evidence agree."""
+    first = left.get("node_metadata")
+    second = right.get("node_metadata")
+    if not isinstance(first, dict) or not isinstance(second, dict):
+        return False
+    for key in ("pid_host", "process_identity_mode", "pid_boot_time"):
+        if (key in first) != (key in second):
+            return False
+        if key in first and (
+            type(first[key]) is not type(second[key]) or first[key] != second[key]
+        ):
+            return False
+    return True
+
+
+def _quarantine_still_unverifiable(row: dict[str, Any], *, kind: str) -> bool:
+    """Recheck the bound local process immediately before recording a disposition."""
+    identity = quarantine_identity(row)
+    metadata = row.get("node_metadata")
+    if identity is None or not isinstance(metadata, dict):
+        return False
+    pid, created, _generation = identity
+    try:
+        reason = unaddressable_pid_reason(metadata)
+        if reason in NOT_JUDGEABLE_HERE or reason == "boot_mismatch":
+            return False
+        _reason, alive = _pid_addressability(reason, pid)
+        if alive is None:
+            alive = _pid_alive(pid)
+        if not alive:
+            return False
+        return (
+            check_pid_identity(
+                pid,
+                "lionagi",
+                expected_session_id=row["id"] if kind == "session" else None,
+                expected_create_time=created,
+            )
+            == "unverifiable"
+        )
+    except Exception:
+        # An unexpected probe failure cannot establish the required condition.
+        return False
+
+
+async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> int:
+    """Record an operator disposition without attempting to stop a process."""
+    from lionagi.state.db import StateDB
+    from lionagi.state.lifecycle import LifecycleNotFoundError
+
+    if not reason.strip():
+        log_error("a non-blank --reason is required to resolve quarantine")
+        return 1
+    async with StateDB() as db:
+        try:
+            resolved = await _resolve_entity(db, id_or_short)
+        except AmbiguousIdError as exc:
+            log_error(str(exc))
+            return 1
+        if resolved is None:
+            log_error("quarantined entity not found")
+            return 1
+        _, kind, row = resolved
+        if kind not in ("session", "invocation") or row.get("status") != "running":
+            log_error("entity is not a running quarantined session or invocation")
+            return 1
+        metadata = row.get("node_metadata")
+        identity = quarantine_identity(row)
+        scope_metadata = (
+            {key: value for key, value in metadata.items() if key != "pid_boot_time"}
+            if isinstance(metadata, dict)
+            else {}
+        )
+        if (
+            not isinstance(metadata, dict)
+            or identity is None
+            or metadata.get("unverifiable_quarantined") is not True
+            or metadata.get("unverifiable_identity") != json.dumps(identity, separators=(",", ":"))
+            or unaddressable_pid_reason(scope_metadata) in NOT_JUDGEABLE_HERE
+        ):
+            log_error("entity is not quarantined for its current local process identity")
+            return 1
+        try:
+            outcome = await db._lifecycle_service().guarded_quarantine_disposition(
+                entity_type=kind,
+                entity_id=row["id"],
+                snapshot=row,
+                target_status=target,
+                operator_reason=reason.strip(),
+                identity_unverifiable=lambda current: _quarantine_still_unverifiable(
+                    current, kind=kind
+                ),
+            )
+        except LifecycleNotFoundError:
+            log_error(
+                "quarantine changed or identity can now be verified; no update made; use normal li kill"
+            )
+            return 1
+        if outcome.result != "applied":
+            log_error(
+                "quarantine changed or identity can now be verified; no update made; use normal li kill"
+            )
+            return 1
+        print(f"recorded {target} operator disposition for {kind} {row['id']}")
+        return 0
 
 
 async def _do_kill(
@@ -263,6 +373,9 @@ async def _do_kill_all_stale(
         "permission_denied": 0,
         "identity_unknown": 0,
     }
+    pending_observations: list[tuple[str, dict[str, Any], str | None]] = []
+    verified_live: list[tuple[str, dict[str, Any]]] = []
+    quarantined_ids: list[str] = []
 
     live_status_for: dict[str, str] = {
         "sessions": "running",
@@ -273,29 +386,17 @@ async def _do_kill_all_stale(
 
         async def keep_unverifiable(
             entity_type: str,
-            entity_id: str,
-            meta: dict[str, Any],
+            row: dict[str, Any],
             reason: str | None,
         ) -> None:
-            nonlocal skipped_unverifiable, unverifiable_tracked
+            nonlocal skipped_unverifiable
             skipped_unverifiable += 1
             if reason in unknown_reasons:
                 unknown_reasons[reason] += 1
-            if not dry_run:
-                since = meta.get("unverifiable_since")
-                if not isinstance(since, (int, float)):
-                    since = time.time()
-                count = meta.get("unverifiable_count")
-                count = (count + 1) if isinstance(count, int) else 1
-                marker_patch = {"unverifiable_since": since, "unverifiable_count": count}
-                if entity_type == "session":
-                    await db.merge_session_node_metadata(entity_id, marker_patch)
-                else:
-                    await db.merge_invocation_node_metadata(entity_id, marker_patch)
-                unverifiable_tracked += 1
+            pending_observations.append((entity_type, row, reason))
             if verbose:
                 print(
-                    f"  skip {entity_type} {entity_id[:12]}: process identity "
+                    f"  skip {entity_type} {row['id'][:12]}: process identity "
                     f"unverifiable ({reason or 'unknown'}) — retained"
                 )
 
@@ -343,9 +444,7 @@ async def _do_kill_all_stale(
                 pid = read_pid_from_entity(row_dict)
                 unjudgeable, pid_alive_now = _pid_addressability(unjudgeable, pid)
                 if unjudgeable == "boot_unverifiable":
-                    await keep_unverifiable(
-                        entity_type, entity_id, row_meta_for_host, "boot_disagreement"
-                    )
+                    await keep_unverifiable(entity_type, row_dict, "boot_disagreement")
                     continue
 
                 if (
@@ -358,6 +457,7 @@ async def _do_kill_all_stale(
                     )
                     if imported_verdict == "ours":
                         skipped_live += 1
+                        verified_live.append((entity_type, row_dict))
                         if verbose:
                             print(
                                 f"  skip {entity_type} {entity_id[:12]}: "
@@ -365,9 +465,7 @@ async def _do_kill_all_stale(
                             )
                         continue
                     if imported_verdict == "unverifiable":
-                        await keep_unverifiable(
-                            entity_type, entity_id, row_meta_for_host, imported_reason
-                        )
+                        await keep_unverifiable(entity_type, row_dict, imported_reason)
                         continue
                 # A live pid alone isn't enough — the OS may have reused it. Correlate against
                 # the row's own session id/create_time, same as the direct-kill path.
@@ -397,6 +495,7 @@ async def _do_kill_all_stale(
                     )
                     if verdict == "ours":
                         skipped_live += 1
+                        verified_live.append((entity_type, row_dict))
                         if verbose:
                             print(
                                 f"  skip {entity_type} {entity_id[:12]}: "
@@ -405,7 +504,7 @@ async def _do_kill_all_stale(
                         continue
                     if verdict == "unverifiable":
                         await keep_unverifiable(
-                            entity_type, entity_id, meta, reasons[0] if reasons else None
+                            entity_type, row_dict, reasons[0] if reasons else None
                         )
                         continue
                     # "not_ours" (the pid was recycled by an unrelated process)
@@ -447,6 +546,54 @@ async def _do_kill_all_stale(
                 )
                 killed += 1
                 print(f"  cancelled stale {entity_type} {entity_id[:12]} (pid={pid})")
+
+        # Resolve all probes before writing: if this sweep found the same
+        # process both live and unverifiable, the live result wins.
+        live_rows = [row for _, row in verified_live if quarantine_identity(row) is not None]
+
+        def live_match(row: dict[str, Any], identity: tuple) -> bool:
+            return any(
+                quarantine_identity(live) == identity and _same_process_scope(live, row)
+                for live in live_rows
+            )
+
+        for entity_type, row, _reason in pending_observations:
+            identity = quarantine_identity(row)
+            if identity is None:
+                warn(
+                    f"  {entity_type} {row['id'][:12]}: process identity not bound in the row; "
+                    "quarantine not recorded"
+                )
+            elif dry_run and not live_match(row, identity):
+                metadata = row.get("node_metadata") or {}
+                if metadata.get("unverifiable_quarantined") is True and metadata.get(
+                    "unverifiable_identity"
+                ) == json.dumps(identity, separators=(",", ":")):
+                    quarantined_ids.append(row["id"])
+        if not dry_run:
+            for entity_type, row in verified_live:
+                if quarantine_identity(row) is not None:
+                    await db.clear_unverifiable_pid(entity_type, row["id"], snapshot=row)
+            for entity_type, row, _reason in pending_observations:
+                identity = quarantine_identity(row)
+                if identity is None:
+                    continue
+                if live_match(row, identity):
+                    await db.clear_unverifiable_pid(entity_type, row["id"], snapshot=row)
+                    continue
+                pid, create_time, _generation = identity
+                result = await db.observe_unverifiable_pid(
+                    entity_type,
+                    row["id"],
+                    snapshot=row,
+                    pid=pid,
+                    create_time=create_time,
+                    observed_at=time.time(),
+                )
+                if result.get("applied"):
+                    unverifiable_tracked += 1
+                    if result.get("unverifiable_quarantined") is True:
+                        quarantined_ids.append(row["id"])
 
         play_rows = await db.fetch_all("SELECT * FROM plays WHERE status = 'running'", ())
         for row_dict in (db._row_to_dict(r) for r in play_rows):
@@ -566,16 +713,15 @@ async def _do_kill_all_stale(
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
     if unverifiable_tracked:
-        # Durable evidence, not just this sweep's counter: a row that stays
-        # uninspectable forever (e.g. permission denied) never reaches any
-        # other outcome, so its unverifiable_since/count are now visible on
-        # the row itself rather than only inferred from repeated sweeps.
         warn(
             f"{unverifiable_tracked} running row(s) recorded "
             "unverifiable-pid evidence this sweep (node_metadata.unverifiable_since / "
-            "unverifiable_count) — no automatic disposition is applied; inspect "
+            "unverifiable_count); inspect "
             "with `li status` and resolve manually."
         )
+    print(
+        f"quarantined identity-unverified rows ({len(quarantined_ids)}): {', '.join(quarantined_ids)}"
+    )
     if skipped_unlinked_plays:
         # One line per sweep, not one per row: a play created by a live run
         # never records the sessions it started, so this is a property of how
@@ -641,6 +787,11 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Optional human-readable reason recorded in status_transitions.",
     )
     kill.add_argument(
+        "--resolve-quarantine",
+        choices=("failed", "aborted", "cancelled"),
+        help="Record an operator disposition for a quarantined row without signalling its PID; requires --reason.",
+    )
+    kill.add_argument(
         "--recursive",
         action="store_true",
         help=(
@@ -689,6 +840,15 @@ def run_kill(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 
     verbose = getattr(args, "verbose", False)
+
+    disposition = getattr(args, "resolve_quarantine", None)
+    if disposition is not None:
+        if not args.id or args.all_stale or args.dry_run or args.recursive:
+            log_error(
+                "--resolve-quarantine requires one id and cannot be combined with sweep, dry-run or recursion"
+            )
+            return 1
+        return run_async(_resolve_quarantine(args.id, target=disposition, reason=args.reason))
 
     if args.all_stale:
         return run_async(

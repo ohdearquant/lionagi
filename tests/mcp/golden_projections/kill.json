@@ -39,6 +39,16 @@
         "type": "boolean",
         "x-flag": "--recursive"
       },
+      "resolve_quarantine": {
+        "description": "Record an operator disposition for a quarantined row without signalling its PID; requires `reason`.",
+        "enum": [
+          "failed",
+          "aborted",
+          "cancelled"
+        ],
+        "type": "string",
+        "x-flag": "--resolve-quarantine"
+      },
       "threshold": {
         "default": 3600,
         "description": "Stale threshold in seconds (default 3600 = 1h). Only entities started more than this many seconds ago are swept.",

@@ -1578,6 +1578,9 @@
     "lionagi/cli/_orchestrate_parsing.py": [
       "add_orchestrate_subparser"
     ],
+    "lionagi/cli/_pid_quarantine.py": [
+      "quarantine_identity"
+    ],
     "lionagi/cli/_project.py": [
       "detect_project"
     ],
