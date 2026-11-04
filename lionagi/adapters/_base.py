@@ -12,6 +12,8 @@ import urllib.parse
 from collections.abc import Callable
 from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 
+from pydantic import ValidationError
+
 from lionagi.libs.credential_fields import fold_field_name, is_secret_field_name
 
 T = TypeVar("T")
@@ -138,6 +140,54 @@ def _redact_details(details: dict[str, Any]) -> dict[str, Any]:
 
 
 _ADAPTER_PYTHON_ERRORS = (KeyError, ImportError, AttributeError, ValueError)
+_NO_ADAPTER_DATA = object()
+
+
+def _safe_adapter_data(value: Any) -> Any:
+    """Keep bounded builtin container shapes without exposing keys or values.
+
+    At most 128 nodes and four container levels are inspected. Cycles, opaque
+    objects, and cut-off branches use ``<cycle>``, ``<redacted>``, and
+    ``<truncated>`` respectively. Dictionary keys become ``item_N``.
+    """
+    remaining = 128
+    active: set[int] = set()
+
+    def visit(item: Any, depth: int) -> Any:
+        nonlocal remaining
+        if remaining <= 0:
+            return "<truncated>"
+        remaining -= 1
+        kind = type(item)
+        if kind is not dict and kind is not list and kind is not tuple:
+            return "<redacted>"
+        if id(item) in active:
+            return "<cycle>"
+        if depth >= 4:
+            if kind is dict:
+                return {"<truncated>": "<truncated>"}
+            return ("<truncated>",) if kind is tuple else ["<truncated>"]
+        active.add(id(item))
+        try:
+            if kind is dict:
+                output = {}
+                for index, (_, child) in enumerate(item.items()):
+                    if remaining <= 0:
+                        output["<truncated>"] = "<truncated>"
+                        break
+                    output[f"item_{index}"] = visit(child, depth + 1)
+                return output
+            output = []
+            for child in item:
+                if remaining <= 0:
+                    output.append("<truncated>")
+                    break
+                output.append(visit(child, depth + 1))
+            return tuple(output) if kind is tuple else output
+        finally:
+            active.remove(id(item))
+
+    return visit(value, 0)
 
 
 class AdapterError(Exception):
@@ -352,6 +402,42 @@ class AdapterBase:
         if not isinstance(url, str):
             return url
         return _redact_url(url)
+
+    @classmethod
+    def _validation_error(cls, exc: Exception, data: Any, *, row: int | None = None):
+        """Build a value-free error without formatting the validation exception."""
+        try:
+            count = ValidationError.error_count(exc)
+        except Exception:
+            count = None
+        details: dict[str, Any] = {"category": "validation", "original_exception": "validation"}
+        if row is not None:
+            details["row"] = row
+        errors = [{"count": count}] if count is not None else []
+        return AdapterValidationError(
+            "Validation failed",
+            data=_safe_adapter_data(data),
+            errors=errors,
+            adapter=cls.adapter_key,
+            details=details,
+        )
+
+    @classmethod
+    def _record_validation_error(
+        cls, data: Any = _NO_ADAPTER_DATA, *, unexpected: bool = False, truncated: bool = False
+    ):
+        """Build a fixed error when record conversion itself raises."""
+        details: dict[str, Any] = {"category": "validation", "original_exception": "exception"}
+        if unexpected:
+            details["unexpected"] = True
+        if truncated:
+            details["truncated"] = True
+        return AdapterValidationError(
+            "Validation failed",
+            adapter=cls.adapter_key,
+            details=details,
+            data=None if data is _NO_ADAPTER_DATA else _safe_adapter_data(data),
+        )
 
     @classmethod
     def _handle_error(cls, exc: Exception, category: str, **extra_details) -> None:
