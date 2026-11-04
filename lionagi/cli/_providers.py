@@ -644,6 +644,8 @@ class AgentProfile:
     contain_user_settings: bool = False
     """Run a Claude flow or fan-out worker of this role with no settings files read, so the
     operator's hooks and permission rules do not gate it; see ``_contain_claude_worker``."""
+    mcp: str | None = None
+    """MCP policy for this profile; ``none`` disables inherited MCP configuration."""
 
 
 class AgentProfileNotFoundError(FileNotFoundError):
@@ -743,6 +745,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["workload"] = profile.workload
     if profile.contain_user_settings:
         config["contain_user_settings"] = True
+    if profile.mcp is not None:
+        config["mcp"] = profile.mcp
     return config
 
 
@@ -950,6 +954,129 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
     return DEFAULT_WORKLOAD
 
 
+def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
+    """Read the profile MCP policy without silently ignoring an invalid declaration."""
+    if "mcp" not in frontmatter:
+        return None
+    raw = frontmatter["mcp"]
+    if isinstance(raw, str) and raw == "none":
+        return raw
+    raise ConfigurationError(f"agent profile {name!r}: mcp must be 'none'")
+
+
+def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
+    """Refuse an unreadable or ambiguous MCP declaration without changing other settings."""
+    if not text.startswith("---"):
+        return
+
+    import yaml
+
+    from lionagi.libs.frontmatter import _FM_SPLIT
+
+    def unreadable_yaml_has_sensitive_text(block: str) -> bool:
+        # In unreadable YAML, no fragment can be reliably identified as a key
+        # or value. Refuse either signal even in comments or scalar text.
+        return "mcp" in block.lower() or "\\" in block
+
+    def readable_yaml_has_mcp_key(block: str) -> bool:
+        # An unclosed frontmatter block can itself be readable YAML. Preserve
+        # its existing key-token behavior, including anchors and aliases.
+        anchors: dict[str, str] = {}
+        expecting_key = False
+        pending_anchor = None
+        try:
+            for token in yaml.scan(block, Loader=yaml.SafeLoader):
+                if isinstance(token, yaml.AnchorToken):
+                    pending_anchor = token.value
+                elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
+                    anchors[pending_anchor] = token.value
+                    pending_anchor = None
+                elif pending_anchor is not None and not isinstance(token, yaml.TagToken):
+                    pending_anchor = None
+                if isinstance(token, yaml.KeyToken):
+                    expecting_key = True
+                elif expecting_key and isinstance(token, yaml.ScalarToken):
+                    expecting_key = False
+                    if token.value == "mcp":
+                        return True
+                elif expecting_key and isinstance(token, yaml.AliasToken):
+                    expecting_key = False
+                    if anchors.get(token.value) == "mcp":
+                        return True
+                elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
+                    expecting_key = False
+        except yaml.YAMLError:
+            return False
+        return False
+
+    parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
+    if len(parts) < 3:
+        block = text[3:]
+        try:
+            yaml.safe_load(block)
+        except (yaml.YAMLError, RecursionError):
+            sensitive = unreadable_yaml_has_sensitive_text(block)
+        else:
+            sensitive = readable_yaml_has_mcp_key(block)
+        if sensitive:
+            raise ConfigurationError(
+                f"agent profile {name!r}: frontmatter with mcp text or a backslash has no "
+                "closing ---; add a closing --- after the settings or remove the opening ---"
+            )
+        return
+    block = parts[1]
+    try:
+        # Check construction as well as syntax: an unsupported YAML tag can
+        # otherwise make the ordinary frontmatter reader discard the block.
+        yaml.safe_load(block)
+        root = yaml.compose(block, Loader=yaml.SafeLoader)
+    except (yaml.YAMLError, RecursionError):
+        if unreadable_yaml_has_sensitive_text(block):
+            raise ConfigurationError(
+                f"agent profile {name!r}: frontmatter could not be parsed (invalid YAML); "
+                "it mentions mcp or contains a backslash; fix the YAML to proceed"
+            ) from None
+        return
+
+    def contains_mcp_key(node: Any) -> bool:
+        pending = [node]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if isinstance(current, yaml.MappingNode):
+                for key, value in current.value:
+                    if isinstance(key, yaml.ScalarNode) and key.value == "mcp":
+                        return True
+                    pending.extend((key, value))
+            elif isinstance(current, yaml.SequenceNode):
+                pending.extend(current.value)
+        return False
+
+    # A profile frontmatter must be a mapping. Other YAML shapes are normally
+    # ignored, but ignoring one that contains this policy could remove it.
+    if not isinstance(root, yaml.MappingNode) and contains_mcp_key(root):
+        raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
+
+    def declarations(node: Any, path: frozenset[int]) -> int:
+        if not isinstance(node, yaml.MappingNode) or id(node) in path:
+            return 0
+        path = path | {id(node)}
+        total = 0
+        for key, value in node.value:
+            if key.tag == "tag:yaml.org,2002:merge":
+                sources = value.value if isinstance(value, yaml.SequenceNode) else [value]
+                total += sum(declarations(source, path) for source in sources)
+            elif isinstance(key, yaml.ScalarNode) and key.value == "mcp":
+                total += 1
+        return total
+
+    if declarations(root, frozenset()) > 1:
+        raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
+
+
 _CONTAIN_KEY = "contain_user_settings"
 # A line that sets the flag as a key, in a mapping or a list item, quoted or not.
 _FLAG_KEY_LINE = re.compile(rf"^[ \t]*(?:-[ \t]+)*[\"']?{_CONTAIN_KEY}[\"']?[ \t]*:", re.M)
@@ -1049,8 +1176,17 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     def read(block: str) -> tuple[bool, Any]:
         try:
             return True, yaml.safe_load(block)
-        except yaml.YAMLError:
+        except (yaml.YAMLError, RecursionError):
             return False, None
+
+    def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
+        if (reads and isinstance(document, dict) and "mcp" in document) or (
+            not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M)
+        ):
+            raise ConfigurationError(
+                f"agent profile {name!r}: the --- block on line {line} follows prompt text "
+                "and its mcp declaration would be ignored; move the block to the top"
+            )
 
     if text.startswith("---"):
         try:
@@ -1095,10 +1231,12 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                     continue
                 if _DASHES.fullmatch(line.rstrip()):
                     delimiters.append(i)
+            warned_containment = False
             for opening, end in pairwise([*delimiters, len(lines)]):
                 block = "\n".join(lines[opening + 1 : end])
                 reads, document = read(block)
-                if (
+                refuse_misplaced_mcp(block, reads, document, opening + 1)
+                if not warned_containment and (
                     _FLAG_KEY_LINE.search(block)
                     or (reads and isinstance(document, dict) and _contain_flag_values(block))
                     or (not reads and _CONTAIN_KEY in block)
@@ -1109,7 +1247,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                         "in the block applies; its worker is not contained, though the block "
                         "names contain_user_settings"
                     )
-                    break
+                    warned_containment = True
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
         # the next ``---`` line or, unclosed, to the end.
@@ -1117,6 +1255,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
         block = "\n".join(rest if closing is None else rest[:closing])
         reads, document = read(block)
+        refuse_misplaced_mcp(block, reads, document, 1)
         if reads and isinstance(document, dict):
             if not document:
                 return {}
@@ -1150,6 +1289,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
     ):
         start += 1
     text = text[start:]
+    _check_profile_mcp_frontmatter(name, text)
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:
         frontmatter = _settings_of_unread_frontmatter(name, text)
@@ -1215,6 +1355,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         ),
         workload=_parse_profile_workload(name, frontmatter.get("workload")),
         contain_user_settings=_parse_profile_contain_user_settings(name, frontmatter),
+        mcp=_parse_profile_mcp(name, frontmatter),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -1235,6 +1376,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "account_connectors",
                 "workload",
                 "contain_user_settings",
+                "mcp",
             )
         },
     )

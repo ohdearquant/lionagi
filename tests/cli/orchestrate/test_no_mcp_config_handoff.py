@@ -138,6 +138,150 @@ async def _codex_cli_args(imodel, *, hook_expected: bool = True) -> list[str]:
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_profile_disables_mcp_and_records_source(
+    tmp_run, monkeypatch, codex_home
+):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": {"example": {"command": "x"}}}))
+    codex_home.write_config({"hidden": {"command": "x"}})
+    profile = AgentProfile(name="isolated", model="codex/gpt-5", mcp="none")
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)
+
+    env = await setup_orchestration(
+        pattern_name="Fanout",
+        model_spec="codex/gpt-5",
+        agent_name="isolated",
+        save_dir=None,
+        cwd=None,
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+    )
+    args = await _codex_cli_args(env.orc_branch.chat_model)
+
+    assert env.mcp_servers == {}
+    assert "--ignore-user-config" in args
+    assert not any("example" in arg or "hidden" in arg for arg in args)
+    assert env.orc_branch.metadata["mcp_launch"] == {
+        "mcp_config": None,
+        "no_mcp_config": True,
+        "no_mcp_config_source": "profile",
+        "launch_dir": str(tmp_run.resolve()),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ["orchestrator", "checkpoint", "cli"])
+async def test_worker_inherits_profile_origin_for_resume(tmp_run, monkeypatch, codex_home, origin):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": {"example": {"command": "x"}}}))
+    codex_home.write_config({"hidden": {"command": "x"}})
+    original_load = orch_mod.load_agent_profile
+
+    def load_profile(name):
+        if name == "isolated":
+            return AgentProfile(name=name, model="codex/gpt-5", mcp="none")
+        return original_load(name)
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", load_profile)
+    env = await setup_orchestration(
+        pattern_name="Fanout",
+        model_spec="codex/gpt-5",
+        agent_name="isolated" if origin == "orchestrator" else None,
+        save_dir=None,
+        cwd=None,
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+        no_mcp_config=origin != "orchestrator",
+        no_mcp_config_source="profile" if origin == "checkpoint" else None,
+    )
+    branch, _, _, _ = await build_worker_branch(env, agent_id="w1", role="implementer")
+    args = await _codex_cli_args(branch.chat_model)
+
+    assert "--ignore-user-config" in args
+    assert not any("example" in arg or "hidden" in arg for arg in args)
+    if origin == "cli":
+        assert "mcp_launch" not in branch.metadata
+    else:
+        assert branch.metadata["mcp_launch"] == {
+            "mcp_config": None,
+            "no_mcp_config": True,
+            "no_mcp_config_source": "profile",
+            "launch_dir": str(tmp_run.resolve()),
+        }
+
+
+@pytest.mark.asyncio
+async def test_worker_profile_disables_ambient_mcp_and_records_source(
+    tmp_run, monkeypatch, codex_home
+):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": {"example": {"command": "x"}}}))
+    codex_home.write_config({"hidden": {"command": "x"}})
+    env = await _setup(no_mcp_config=False)
+    profile = AgentProfile(name="isolated", model="codex/gpt-5", mcp="none")
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)
+
+    branch, _, _, _ = await build_worker_branch(env, agent_id="w1", role="isolated")
+    args = await _codex_cli_args(branch.chat_model)
+
+    assert set(env.mcp_servers) == {"example"}
+    assert "--ignore-user-config" in args
+    assert not any("example" in arg or "hidden" in arg for arg in args)
+    assert branch.metadata["mcp_launch"]["no_mcp_config"] is True
+    assert branch.metadata["mcp_launch"]["no_mcp_config_source"] == "profile"
+
+
+@pytest.mark.asyncio
+async def test_worker_profile_refuses_explicit_config_before_model_build(tmp_run, monkeypatch):
+    named = tmp_run / "named.json"
+    named.write_text(json.dumps({"mcpServers": {"example": {"command": "x"}}}))
+    env = await _setup(no_mcp_config=False, mcp_config=str(named))
+    profile = AgentProfile(name="isolated", model="codex/gpt-5", mcp="none")
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)
+    built = []
+    monkeypatch.setattr(orch_mod, "build_imodel_from_spec", lambda *a, **kw: built.append(True))
+
+    with pytest.raises(ConfigurationError, match="mcp: none.*--mcp-config"):
+        await build_worker_branch(env, agent_id="w1", role="isolated")
+    assert built == []
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_profile_refuses_explicit_config_before_discovery(tmp_run, monkeypatch):
+    import lionagi.cli._mcp_resolve as mcp_mod
+
+    profile = AgentProfile(name="isolated", model="codex/gpt-5", mcp="none")
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)
+    discovered = []
+    monkeypatch.setattr(mcp_mod, "resolve_spawn_mcp_servers", lambda *a, **kw: discovered.append(1))
+
+    with pytest.raises(ConfigurationError, match="mcp: none.*--mcp-config"):
+        await setup_orchestration(
+            pattern_name="Fanout",
+            model_spec="codex/gpt-5",
+            agent_name="isolated",
+            save_dir=None,
+            cwd=None,
+            yolo=False,
+            verbose=False,
+            effort=None,
+            theme=None,
+            mcp_config="named.json",
+        )
+    assert discovered == []
+
+
+def test_namespaced_profile_validation_error_is_not_treated_as_a_model(monkeypatch):
+    def invalid_profile(_name):
+        raise ConfigurationError("agent profile 'pack/reviewer': mcp must be 'none'")
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", invalid_profile)
+    with pytest.raises(ConfigurationError, match="mcp must be"):
+        orch_mod.resolve_worker_spec("pack/reviewer")
+
+
+@pytest.mark.asyncio
 async def test_no_mcp_config_reaches_the_worker_as_an_empty_server_set(tmp_run):
     env = await _setup(no_mcp_config=True)
 

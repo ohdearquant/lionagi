@@ -112,6 +112,7 @@ class CheckpointWriter:
         context: Any | None = None,
         emitter_workload: str | None = None,
         emitter_contains_user_settings: bool = False,
+        profile_mcp_disabled: bool = False,
     ) -> None:
         """Record one reactively spawned node's outcome, keyed by its own node id.
 
@@ -147,6 +148,8 @@ class CheckpointWriter:
                 entry["emitter_workload"] = emitter_workload
             if emitter_contains_user_settings:
                 entry["emitter_contains_user_settings"] = True
+            if profile_mcp_disabled:
+                entry["profile_mcp_disabled"] = True
             for i, existing in enumerate(self.spawned):
                 if existing.get("node_id") == node_id:
                     self.spawned[i] = entry

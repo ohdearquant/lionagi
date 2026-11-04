@@ -950,6 +950,7 @@ class _DagState:
     # planned leg's actions= wiring. Populated in _build_dag's per-leg loop.
     worker_branches: dict[str, object] = field(default_factory=dict)
     messenger_bound: dict[str, bool] = field(default_factory=dict)
+    worker_profile_mcp_sources: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -1022,6 +1023,7 @@ async def _build_dag(
     *,
     reactive_spec: str,
     max_spawn: int,
+    checkpoint_plan: list[dict] | None = None,
 ) -> _DagState:
     """Wire worker branches into the operation graph builder and snapshot to Studio."""
     assignments = plan_result.assignments
@@ -1046,6 +1048,7 @@ async def _build_dag(
     role_artifact_defaults: dict[str, dict | None] = {}
     worker_branches: dict[str, object] = {}
     worker_messenger_bound: dict[str, bool] = {}
+    worker_profile_mcp_sources: dict[str, str] = {}
     spawn_assignees = sorted({ta.assignee for ta in assignments})
 
     # The plan is the run's own statement of which workers it will have, made
@@ -1056,6 +1059,10 @@ async def _build_dag(
 
     for i, ta in enumerate(assignments):
         try:
+            entry = checkpoint_plan[i] if checkpoint_plan is not None else {}
+            recorded_source = (
+                entry.get("profile_mcp_source") if entry.get("profile_mcp_disabled") else None
+            )
             w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
                 env,
                 agent_id=agent_ids[i],
@@ -1065,12 +1072,17 @@ async def _build_dag(
                 grant_spawn=_may_spawn(ta.assignee),
                 spawn_assignees=spawn_assignees,
                 modes=ta.modes or None,
+                **({"recorded_profile_mcp_source": recorded_source} if recorded_source else {}),
             )
         except BaseException as exc:
             attribute_worker_build_failure(exc, agent_id=agent_ids[i], role=ta.assignee)
             raise
         worker_branches[agent_ids[i]] = w_branch
         worker_messenger_bound[agent_ids[i]] = messenger_bound
+        if recorded_source:
+            worker_profile_mcp_sources[agent_ids[i]] = recorded_source
+        elif not env.bare and getattr(w_profile, "mcp", None) == "none":
+            worker_profile_mcp_sources[agent_ids[i]] = w_profile.name
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
 
@@ -1207,6 +1219,7 @@ async def _build_dag(
         role_artifact_defaults=role_artifact_defaults,
         worker_branches=worker_branches,
         messenger_bound=worker_messenger_bound,
+        worker_profile_mcp_sources=worker_profile_mcp_sources,
     )
 
 
@@ -1369,6 +1382,9 @@ def _reconstruct_spawned_nodes(
         assignee = entry.get("assignee")
         spawn_id = entry.get("spawn_id")
         metadata: dict[str, Any] = {}
+        profile_mcp_disabled = entry.get("profile_mcp_disabled") is True
+        if profile_mcp_disabled:
+            metadata["profile_mcp_disabled"] = True
         if assignee:
             metadata["assignee"] = assignee
         if spawn_id:
@@ -1397,6 +1413,36 @@ def _reconstruct_spawned_nodes(
         # the node is fully reconstructible from its recorded operation,
         # instruction and context.
         role_branch = rebuild_branch(assignee)
+        if profile_mcp_disabled and entry["status"] == "failed" and retry_failed:
+            if getattr(env, "mcp_config_explicit", False):
+                raise CLIInputRefusedError(
+                    "resume refused: an agent profile declares mcp: none and cannot be combined "
+                    "with --mcp-config."
+                )
+            # Reconstructed nodes are already in the graph, so the reactive spawn
+            # callback never runs. Give this retry its own contained branch rather
+            # than reusing the (possibly unrestricted) role or orchestrator.
+            role_branch = (role_branch or env.orc_branch).clone()
+            role_branch.metadata["mcp_launch"] = {
+                "mcp_config": None,
+                "no_mcp_config": True,
+                "no_mcp_config_source": "profile",
+                "launch_dir": str(
+                    Path(getattr(env, "mcp_launch_dir", None) or os.getcwd()).resolve()
+                ),
+            }
+            model = getattr(role_branch, "chat_model", None)
+            if model is not None and getattr(model, "is_cli", False):
+                from ._orchestration import _isolate_worker_cli_config
+
+                _isolate_worker_cli_config(
+                    model,
+                    contain_user_settings=bool(entry.get("emitter_contains_user_settings")),
+                    mcp_server_names=(),
+                    role=assignee,
+                )
+                _hand_mcp_servers(model, {}, label=spawn_id or node_id, exclusive=True)
+            env.session.include_branches(role_branch)
         if role_branch is not None:
             node.branch_id = role_branch.id
         built[node_id] = node
@@ -1942,6 +1988,9 @@ async def _execute_dag(
                     spawn_fields["emitter_contains_user_settings"] = bool(
                         spawned_node.metadata.get("emitter_contains_user_settings")
                     )
+                    spawn_fields["profile_mcp_disabled"] = bool(
+                        spawned_node.metadata.get("profile_mcp_disabled")
+                    )
                     if spawned_node.metadata.get("escalated_from") is not None:
                         # An escalation retry runs on a clone of the branch of the node it
                         # retries, at that node's class, and is built with no record of it:
@@ -1959,6 +2008,8 @@ async def _execute_dag(
                 retry_branch = executor.operation_branches.get(escalation_retry.id)
                 if _claude_worker_contained(getattr(retry_branch, "chat_model", None)):
                     spawn_fields["emitter_contains_user_settings"] = True
+                if _profile_disabled_mcp(retry_branch):
+                    spawn_fields["profile_mcp_disabled"] = True
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
@@ -2255,6 +2306,15 @@ async def _execute_dag(
         else None
     )
 
+    def _profile_disabled_mcp(branch: Any) -> bool:
+        metadata = getattr(branch, "metadata", None)
+        launch = metadata.get("mcp_launch") if isinstance(metadata, dict) else None
+        return (
+            isinstance(launch, dict)
+            and launch.get("no_mcp_config") is True
+            and launch.get("no_mcp_config_source") == "profile"
+        )
+
     def _build_spawn_node(req: SpawnRequest, emitter: Any) -> Any:
         # Whether the worker that emitted the request ran contained is recorded for
         # _spawn_branch_setup. A request naming no assignee can be cloned from the
@@ -2266,6 +2326,7 @@ async def _execute_dag(
         contained = False
         executor = _executor_ref.get("executor")
         emitter_model = None
+        emitter_branch = None
         if emitter is not None and executor is not None:
             emitter_branch = executor.operation_branches.get(emitter.id)
             if emitter_branch is not env.orc_branch:
@@ -2326,11 +2387,26 @@ async def _execute_dag(
                         "which would read its own user settings. Name a Claude or codex role, "
                         "or ask for a dependent agent, which runs on the asking worker's engine."
                     )
+        target_branch = (
+            role_base.get(req.assignee) or role_base.get(role_by_worker.get(req.assignee))
+            if req.assignee
+            else None
+        )
+        profile_mcp_disabled = _profile_disabled_mcp(emitter_branch) or _profile_disabled_mcp(
+            target_branch
+        )
+        if profile_mcp_disabled and getattr(env, "mcp_config_explicit", False):
+            raise CLIInputRefusedError(
+                "spawn refused: an agent profile declares mcp: none and cannot be combined "
+                "with --mcp-config."
+            )
         node = _role_spawn_node(req, emitter)
         if workload is not None:
             node.metadata["emitter_workload"] = workload
         if contained:
             node.metadata["emitter_contains_user_settings"] = True
+        if profile_mcp_disabled:
+            node.metadata["profile_mcp_disabled"] = True
         return node
 
     def _spawn_branch_setup(operation: Any, branch: Any) -> None:
@@ -2346,6 +2422,27 @@ async def _execute_dag(
         env.worker_artifact_dirs[spawn_id] = artifact_dir
         chat_model = getattr(branch, "chat_model", None)
         is_cli = bool(chat_model and getattr(chat_model, "is_cli", False))
+        source_branch = getattr(branch, "metadata", {}).get("clone_from")
+        profile_mcp_disabled = (
+            bool(operation.metadata.get("profile_mcp_disabled"))
+            or _profile_disabled_mcp(source_branch)
+            or getattr(env, "mcp_disabled_by_profile", False)
+        )
+        if profile_mcp_disabled and getattr(env, "mcp_config_explicit", False):
+            raise CLIInputRefusedError(
+                "spawn refused: an agent profile declares mcp: none and cannot be combined "
+                "with --mcp-config."
+            )
+        if profile_mcp_disabled:
+            operation.metadata["profile_mcp_disabled"] = True
+            branch.metadata["mcp_launch"] = {
+                "mcp_config": None,
+                "no_mcp_config": True,
+                "no_mcp_config_source": "profile",
+                "launch_dir": str(
+                    Path(getattr(env, "mcp_launch_dir", None) or os.getcwd()).resolve()
+                ),
+            }
         # The clone inherits the emitter's prompt. Retarget its destination and
         # only describe that destination as a workspace when one is assigned.
         _retarget_spawn_prompt(
@@ -2373,7 +2470,7 @@ async def _execute_dag(
         # for it was (recorded by _build_spawn_node).
         from ._orchestration import _isolate_worker_cli_config
 
-        worker_mcp_servers = getattr(env, "mcp_servers", None)
+        worker_mcp_servers = {} if profile_mcp_disabled else getattr(env, "mcp_servers", None)
         _isolate_worker_cli_config(
             chat_model,
             contain_user_settings=bool(operation.metadata.get("emitter_contains_user_settings")),
@@ -3117,6 +3214,7 @@ async def _run_flow(
     notify: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    no_mcp_config_source: str | None = None,
     mcp_launch_dir: str | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
@@ -3180,6 +3278,8 @@ async def _run_flow(
             "no_mcp_config": no_mcp_config,
             "mcp_launch_dir": mcp_launch_dir,
         }
+        if no_mcp_config_source is not None:
+            _checkpoint_config["no_mcp_config_source"] = no_mcp_config_source
 
         env = await setup_orchestration(
             pattern_name="Flow",
@@ -3199,7 +3299,15 @@ async def _run_flow(
             mcp_config=mcp_config,
             no_mcp_config=no_mcp_config,
             mcp_launch_dir=mcp_launch_dir,
+            **(
+                {"no_mcp_config_source": no_mcp_config_source}
+                if no_mcp_config_source is not None
+                else {}
+            ),
         )
+        if getattr(env, "mcp_disabled_by_profile", False):
+            _checkpoint_config["no_mcp_config"] = True
+            _checkpoint_config["no_mcp_config_source"] = "profile"
 
         # `--notify` is compatibility sugar over the terminal-callback registry:
         # registered against this run's own entity, unregistered in `finally`
@@ -3590,9 +3698,23 @@ async def _run_flow_inner(
         plan_entries = resume_checkpoint.get("plan") or []
         if not plan_entries:
             raise FlowResumeError("Checkpoint has an empty plan — nothing to resume.")
+        for entry in plan_entries:
+            disabled = entry.get("profile_mcp_disabled", False)
+            source = entry.get("profile_mcp_source")
+            if (
+                type(disabled) is not bool
+                or (disabled and (not isinstance(source, str) or not source.strip()))
+                or (not disabled and "profile_mcp_source" in entry)
+            ):
+                raise FlowResumeError("Checkpoint has an invalid planned-worker MCP restriction.")
         assignments = [
             TaskAssignment(
-                **{k: v for k, v in entry.items() if k not in ("agent_id", "dep_indices")}
+                **{
+                    k: v
+                    for k, v in entry.items()
+                    if k
+                    not in ("agent_id", "dep_indices", "profile_mcp_disabled", "profile_mcp_source")
+                }
             )
             for entry in plan_entries
         ]
@@ -3796,6 +3918,7 @@ async def _run_flow_inner(
         plan_result,
         reactive_spec=reactive_spec,
         max_spawn=max_spawn,
+        checkpoint_plan=plan_entries if resume_checkpoint is not None else None,
     )
 
     if resume_checkpoint is not None:
@@ -3808,12 +3931,20 @@ async def _run_flow_inner(
             retry_failed=retry_failed,
             checkpoint_spawned=resume_checkpoint.get("spawned") or None,
         )
-        checkpoint_plan = resume_checkpoint["plan"]
+        checkpoint_plan = [dict(entry) for entry in resume_checkpoint["plan"]]
     else:
         checkpoint_plan = [
             {**assignments[i].model_dump(), "agent_id": agent_ids[i], "dep_indices": dep_indices[i]}
             for i in range(len(assignments))
         ]
+
+    # Preserve each planned worker's profile-origin refusal and its source.
+    # A current profile can tighten a resumed plan, never loosen one.
+    for i, agent_id in enumerate(agent_ids):
+        source = dag_state.worker_profile_mcp_sources.get(agent_id)
+        if source is not None:
+            checkpoint_plan[i]["profile_mcp_disabled"] = True
+            checkpoint_plan[i]["profile_mcp_source"] = source
 
     exec_result = await _execute_dag(
         env,

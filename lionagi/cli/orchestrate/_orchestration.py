@@ -97,6 +97,14 @@ __all__ = (
 DEFAULT_ORCHESTRATOR_AGENT = "orchestrator"
 
 
+def _select_orchestrator_agent(
+    agent_name: str | None, model_spec: str | None
+) -> tuple[str | None, bool]:
+    """Choose the named profile or the implicit default when no model is named."""
+    defaulted = not agent_name and not model_spec
+    return (DEFAULT_ORCHESTRATOR_AGENT if defaulted else agent_name), defaulted
+
+
 def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None]:
     """Parse model_spec into (model, provider) for session-row provenance."""
     ms = parse_model_spec(model_spec) if model_spec else None
@@ -478,6 +486,9 @@ def resolve_worker_spec(
         return profile.model or token, profile
     except FileNotFoundError:
         return token, None
+    except ConfigurationError:
+        # A resolved profile with invalid configuration is not a model spec.
+        raise
     except ValueError:
         if "/" in token:
             return token, None
@@ -584,6 +595,10 @@ class OrchestrationEnv:
     # show a worker whose registration was skipped. Two independent records
     # disagreeing is the whole signal.
     expected_worker_ids: list[str] = field(default_factory=list)
+    # Last to preserve positional construction of the existing fields.
+    mcp_config_explicit: bool = False
+    mcp_launch_dir: str | None = None
+    mcp_disabled_by_profile: bool = False
 
     def expect_worker(self, agent_id: str) -> None:
         """Declare that this run intends to run a worker under *agent_id*."""
@@ -1013,32 +1028,12 @@ async def setup_orchestration(
     pack: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    no_mcp_config_source: str | None = None,
     mcp_launch_dir: str | None = None,
 ) -> OrchestrationEnv:
     """Resolve orchestrator config, allocate run, build branch+session."""
     from lionagi.cli._mcp_resolve import resolve_spawn_mcp_servers
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
-
-    # Read from *this* process's directory, before --cwd is applied to anything.
-    # Every worker this run builds is handed the same set, so it is resolved
-    # once here — the only point at which the directory the run was started
-    # from is still the one in effect. A resumed flow passes the directory
-    # its first run was launched from instead, since this process may be
-    # somewhere else.
-    mcp_resolution = resolve_spawn_mcp_servers(
-        mcp_config,
-        launch_dir=mcp_launch_dir or os.getcwd(),
-        disabled=no_mcp_config,
-    )
-    # A refusal resolves to no servers for the same reason a fruitless search
-    # does, and the two must not reach the workers as the same thing: one is a
-    # decision to hand over an empty set, the other is having nothing to hand
-    # over. Keep the decision as an empty set so it survives the handoff.
-    run_mcp_servers = {} if no_mcp_config else mcp_resolution.servers
-    worker_mcp_servers, withheld_mcp_servers = _worker_mcp_policy(
-        run_mcp_servers,
-        explicit=mcp_resolution.explicit,
-    )
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory. Forward the tilde-expanded path (providers never expand `~`).
@@ -1049,9 +1044,7 @@ async def setup_orchestration(
     # Naming neither agent nor model defaults to the orchestrator profile;
     # naming either one is honoured as-is (and still refused below if it
     # can't resolve to a model).
-    defaulted_agent = not agent_name and not model_spec
-    if defaulted_agent:
-        agent_name = DEFAULT_ORCHESTRATOR_AGENT
+    agent_name, defaulted_agent = _select_orchestrator_agent(agent_name, model_spec)
 
     orc_profile: AgentProfile | None = None
     if agent_name:
@@ -1076,6 +1069,31 @@ async def setup_orchestration(
             yolo = True
         if orc_profile.fast_mode and not fast:
             fast = True
+
+    profile_disables_mcp = getattr(orc_profile, "mcp", None) == "none"
+    profile_origin_mcp_disabled = profile_disables_mcp or (
+        no_mcp_config and no_mcp_config_source == "profile"
+    )
+    if profile_disables_mcp and mcp_config is not None:
+        raise ConfigurationError(
+            f"Agent profile {orc_profile.name!r} declares mcp: none and cannot be combined "
+            "with --mcp-config."
+        )
+    no_mcp_config = no_mcp_config or profile_disables_mcp
+    # Resolve from the launching directory, before --cwd applies. A resumed
+    # flow supplies the original launch directory.
+    launch_dir = mcp_launch_dir or os.getcwd()
+    mcp_resolution = resolve_spawn_mcp_servers(
+        mcp_config,
+        launch_dir=launch_dir,
+        disabled=no_mcp_config,
+    )
+    # An explicit empty set is distinct from finding no configuration.
+    run_mcp_servers = {} if no_mcp_config else mcp_resolution.servers
+    worker_mcp_servers, withheld_mcp_servers = _worker_mcp_policy(
+        run_mcp_servers,
+        explicit=mcp_resolution.explicit,
+    )
 
     if not model_spec:
         # Only reachable when the caller named an agent, since naming nothing
@@ -1172,6 +1190,13 @@ async def setup_orchestration(
             resolved_mcp_servers=run_mcp_servers,
         )
         orc_branch.name = "orchestrator"
+    if profile_origin_mcp_disabled:
+        orc_branch.metadata["mcp_launch"] = {
+            "mcp_config": None,
+            "no_mcp_config": True,
+            "no_mcp_config_source": "profile",
+            "launch_dir": str(Path(launch_dir).resolve()),
+        }
     _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
     session = (
         Session(id=_session_id_env, default_branch=orc_branch)
@@ -1202,6 +1227,9 @@ async def setup_orchestration(
         total_budget=total_budget,
         pack=loaded_pack,
         mcp_servers=worker_mcp_servers,
+        mcp_config_explicit=mcp_config is not None,
+        mcp_launch_dir=launch_dir,
+        mcp_disabled_by_profile=profile_origin_mcp_disabled,
         withheld_mcp_servers=withheld_mcp_servers,
     )
 
@@ -1369,6 +1397,7 @@ async def build_worker_branch(
     grant_spawn: bool = False,
     spawn_assignees: list[str] | tuple[str, ...] | set[str] | None = None,
     modes: list[str] | None = None,
+    recorded_profile_mcp_source: str | None = None,
 ) -> tuple[Branch, str, AgentProfile | None, bool]:
     """Resolve model/profile/system and build a worker Branch. The fourth
     return value, ``messenger_bound``, is True when this worker got the
@@ -1380,6 +1409,18 @@ async def build_worker_branch(
     )
 
     w_model, w_profile, w_cfg = _resolve_worker_model_spec(env, role, model_override)
+    live_profile_disables_mcp = not env.bare and getattr(w_profile, "mcp", None) == "none"
+    profile_disables_mcp = bool(recorded_profile_mcp_source) or live_profile_disables_mcp
+    if profile_disables_mcp and getattr(env, "mcp_config_explicit", False):
+        if not live_profile_disables_mcp:
+            raise ConfigurationError(
+                f"Recorded restriction from profile {recorded_profile_mcp_source!r} declares "
+                "mcp: none and cannot be combined with --mcp-config."
+            )
+        raise ConfigurationError(
+            f"Agent profile {getattr(w_profile, 'name', role)!r} declares mcp: none and cannot be combined "
+            "with --mcp-config."
+        )
 
     w_effort = env.effort
     if not env.bare and not env.effort:
@@ -1428,7 +1469,7 @@ async def build_worker_branch(
         ignore_user_config=True,
         tool_settings=None if env.bare else _profile_tool_settings(w_profile),
     )
-    worker_mcp_servers = getattr(env, "mcp_servers", None)
+    worker_mcp_servers = {} if profile_disables_mcp else getattr(env, "mcp_servers", None)
     _isolate_worker_cli_config(
         w_imodel,
         contain_user_settings=bool(
@@ -1527,10 +1568,10 @@ async def build_worker_branch(
             system_prompt=composed_extra,
             khive_injection=(getattr(w_profile, "khive_injection", None) if w_profile else None),
         )
-        # This run resolved its servers once and hands the result to every
-        # branch it builds: the resolved servers, the empty set a refusal is, or
-        # no set at all when the search found nothing (see the orchestrator).
-        run_servers = getattr(env, "mcp_servers", None)
+        # Hand the worker's effective selection to the branch: its profile can
+        # replace the run's servers with an empty set; absent that restriction,
+        # the run's resolved servers or its unresolved selection are retained.
+        run_servers = worker_mcp_servers
         wb = await create_agent(
             spec,
             load_settings=False,
@@ -1552,6 +1593,13 @@ async def build_worker_branch(
         if w_profile is not None:
             register_profile_injection(wb, role, w_profile)
 
+    if profile_disables_mcp or getattr(env, "mcp_disabled_by_profile", False):
+        wb.metadata["mcp_launch"] = {
+            "mcp_config": None,
+            "no_mcp_config": True,
+            "no_mcp_config_source": "profile",
+            "launch_dir": str(Path(getattr(env, "mcp_launch_dir", None) or os.getcwd()).resolve()),
+        }
     env.session.include_branches(wb)
 
     if grant_spawn:
