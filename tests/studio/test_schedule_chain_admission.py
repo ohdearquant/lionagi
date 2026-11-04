@@ -39,6 +39,14 @@ def test_chain_rejects_invalid_values_at_every_depth(operation, depth, field):
     write.assert_not_called()
 
 
+@pytest.mark.parametrize("field", ["model", "agent", "playbook", "prompt"])
+def test_chain_rejects_non_string_values_as_invalid(field):
+    write, error = _write_with_chain("create", _chain(1, **{field: 7}))
+    assert error is not None and "on_fail" in str(error) and field in str(error)
+    assert isinstance(error, ValueError)
+    write.assert_not_called()
+
+
 @pytest.mark.parametrize("operation", ["create", "update"])
 @pytest.mark.parametrize("depth", [1, 2])
 @pytest.mark.parametrize(
@@ -111,3 +119,17 @@ def test_unrelated_edit_and_clear_can_repair_legacy_values():
     db, error = _run_update({"on_fail": None}, existing=stored)
     assert error is None
     db.update_schedule.assert_awaited_once_with("sid-chain-1", on_fail=None)
+
+
+@pytest.mark.parametrize(
+    ("parent", "action", "expected"),
+    [
+        ("agent", {"kind": "playbook", "action_kind": "flow"}, "playbook"),
+        ("agent", {"action_kind": "playbook"}, "playbook"),
+        ("playbook", {"prompt": "hello"}, "playbook"),
+    ],
+)
+def test_chain_merge_preserves_selected_kind_spelling(parent, action, expected):
+    from lionagi.cli._schedule_parsing import _merge_chain_action
+
+    assert _merge_chain_action({"action_kind": parent}, action)["action_kind"] == expected

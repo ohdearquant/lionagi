@@ -157,9 +157,14 @@ _CHAIN_ACTION_ALLOWED_KEYS = frozenset(
 )
 
 
+def _selected_chain_kind(action: dict, parent_kind: str) -> Any:
+    """Select the stored kind without changing its spelling."""
+    return action.get("kind", action.get("action_kind", parent_kind))
+
+
 def _effective_chain_kind(action: dict, parent_kind: str) -> str | None:
-    """Resolve the selected kind using the same precedence as a chain overlay."""
-    kind = action.get("kind", action.get("action_kind", parent_kind))
+    """Normalize the selected kind for validation without changing the stored value."""
+    kind = _selected_chain_kind(action, parent_kind)
     if not isinstance(kind, str):
         return None
     kind = str.__str__(kind)
@@ -184,9 +189,7 @@ def _merge_chain_action(schedule: dict, chain_action: dict) -> dict:
     parent's field in place."""
     chain_action = {k: v for k, v in chain_action.items() if k in _CHAIN_ACTION_ALLOWED_KEYS}
     chain_schedule = {**schedule, **chain_action}
-    chain_schedule["action_kind"] = chain_action.get(
-        "kind", chain_action.get("action_kind", schedule["action_kind"])
-    )
+    chain_schedule["action_kind"] = _selected_chain_kind(chain_action, schedule["action_kind"])
     for key in ("model", "prompt", "agent", "playbook"):
         if key in chain_action:
             chain_schedule[f"action_{key}"] = chain_action[key]
@@ -258,8 +261,7 @@ def _validate_chain_action_node(
     err = _validate_chain_kinds(action, label, parent_kind)
     if err:
         return err
-    effective_kind = action.get("kind", action.get("action_kind", parent_kind))
-    effective_kind = str.__str__(effective_kind)
+    effective_kind = str.__str__(_selected_chain_kind(action, parent_kind))
     effective_kind = _ALIAS_ACTION_KINDS.get(effective_kind, effective_kind)
 
     if self_field not in action:

@@ -253,10 +253,14 @@ def _svc_validate_reachable_chains(schedule: dict[str, Any]) -> None:
     from lionagi.cli._schedule_parsing import _validate_reachable_chain_actions
 
     def validate_effective(child: dict[str, Any], label: str) -> str | None:
-        # The chain validator accepts string subclasses without calling their hash.
+        # Normalize for value checks without altering the schedule's stored spelling.
         kind = child.get("action_kind")
         if isinstance(kind, str):
             child = {**child, "action_kind": str.__str__(kind)}
+        for field in ("action_model", "action_agent", "action_playbook", "action_prompt"):
+            value = child.get(field)
+            if value is not None and not isinstance(value, str):
+                return f"{label}: {field} must be a string"
         try:
             _svc_validate_action_model(child.get("action_model"))
             _svc_validate_identifier(child.get("action_agent"), "action_agent")
