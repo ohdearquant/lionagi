@@ -88,6 +88,24 @@ That allocation conflates two parsers. At `4af5b0a9`, the scheduler derives rese
 - Prove scheduler's `_reserved_flow_flags` still derives the option strings from the moved flow parser, including helper-provided options, and rejects a colliding playbook argument; an added parser option must appear without another hand-maintained list. Keep the existing parser and adapter identity checks (`tests/cli/orchestrate/test_import_surface.py:77`–`:89`, `4af5b0a9`) adapted to the canonical path. Verify behavior on the old and new names without an actual network or launched process.
 - Carry moved tests under the hub test layout, the import-graph/persisted-name findings, generated inventories, D6 move evidence, changelog, and any test-enforced citation repair required by ADR-0136 D6.
 
+## Amendment 3 (2026-11-03) — relocate the in-place inspection module as one module
+
+**Context.** D2 assigns the status constants and entity-resolution helpers in `lionagi/cli/status.py` to `lionhub.orchestration.inspection`, keeping presentation and command handling in the CLI adapter (`docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md:265`, `2a0253b1`). At this revision the in-place extraction is already complete: `lionagi/cli/_inspection.py:23`–`:38` owns the status values and exit codes, and `:44`–`:265` owns the resolution helpers. `lionagi/cli/status.py:17`–`:29` imports the shared names and retains the status command implementation from `:41` onward. This amendment changes the relocation unit, not those behaviors or the ownership allocation.
+
+**Decision.**
+
+1. Add a twelfth step-3 whole-module row: `lionagi.cli._inspection` → `lionhub.orchestration.inspection`. Move the entire in-place module, including its status values, exit codes, compiled run-ID pattern and lookup helpers. Its current relative dependency on `lionagi.cli._util` goes to the already allocated `lionhub.orchestration.job` owner. Keep `status.py` as the CLI adapter and keep every binding it exposes at the move base bound to the same objects. Do not reintroduce the earlier private helper aliases.
+2. The move has one exact old-module-prefix `MOVED` row, deprecated in 0.38.0 and removed in 2.0.0; there is no forwarding source file. Old and new module imports name one object, including the pattern, constants and monkeypatchable bindings. Rewrite in-repository callers to the new path. Checkpoint resolution uses the moved inspection service rather than the retained CLI adapter; inspection must not import the CLI or Studio adapters or execution handlers.
+3. Replace D2's `status.py` shared-definition extraction row with the whole `_inspection.py` row: the extraction named there is already done in place, and only the relocation remains. Keep `status.py` in the residual CLI set. `_inspection.py` did not exist in the historical 04e03ffe inventory, so the historical partition of nine original whole modules and 37 original residual files remains unchanged. Amendment 2's eleven whole modules become twelve; catalog-first ordering, D1 and D5's pending decisions and the other move rows are unchanged.
+4. This amendment does not change status behavior, exit codes, resolver precedence, class identities, state semantics, executable ownership or the 2.0 date. The actual move carries the checks and evidence required by ADR-0136 D6, including the tests moved into LionHub, compatibility and import graph, the applicable persisted-name fixtures, the changelog and any test-enforced citation repair.
+
+**Verification required with the move.**
+
+- Check the exact row and the longer-prefix rule with the later CLI parent row in either order; require no old file and exercise old-first/new-first fresh imports, warning, reload, function and module identity, and a patch made through the old name. Check the old pickled function reference using a synthetic fixture.
+- Check that the retained `status` adapter's imported bindings are the same objects as the canonical inspection definitions, and that its former private aliases remain absent. Check `AmbiguousIdError` remains the job service's existing class and is caught by the status/wait/control paths.
+- Check the moved module's import closure against the new package location, with static, relative, local, type-only and literal-dynamic import probes. Explicitly refuse retained `lionagi.cli`, `lionhub.cli` and Studio adapter dependencies; show that the guard rejects a forbidden import and accepts the allowed job service. Relative probes must be resolved relative to `lionhub.orchestration`, not the old `lionagi.cli` package.
+- Exercise lookup, ambiguous-prefix and status integration behaviors with their existing tests and move module-only tests to the LionHub test tree. Run the compatible predecessor stack and required gates before publication.
+
 ## Context
 
 **P1. Code location and executable ownership are different contracts.**
@@ -257,6 +275,8 @@ state live in `_runs` and `_util`
 Copying these bindings into a facade is not equivalent.
 
 **Shared definitions extracted from modules that retain CLI adapters:**
+
+The status row below records the original extraction; Amendment 3 makes the completed `_inspection.py` extraction a whole-module relocation.
 
 | Source at this HEAD | Step-3 public owner | Extraction; retained adapter |
 | --- | --- | --- |
