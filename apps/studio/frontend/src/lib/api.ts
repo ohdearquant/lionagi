@@ -89,7 +89,7 @@ function pairedBearerSentWith(token: string | undefined): string | undefined {
  * and tell the gate the daemon refused it.
  */
 function refuseAccess(sentPairedBearer: string | undefined): void {
-  if (sentPairedBearer !== undefined) forgetPairedBearer(sentPairedBearer);
+  if (sentPairedBearer !== undefined) forgetPairedBearer(sentPairedBearer, API_BASE);
   reportAccessRefused();
 }
 

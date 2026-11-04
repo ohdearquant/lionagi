@@ -72,7 +72,7 @@ async function checkStoredBearer(apiBase: string, bearer: string): Promise<Conne
     clearTimeout(timer);
   }
   if (response.ok) return "connected";
-  if (response.status === 401) forgetPairedBearer(bearer);
+  if (response.status === 401) forgetPairedBearer(bearer, apiBase);
   return "accessRequired";
 }
 
