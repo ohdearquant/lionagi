@@ -87,6 +87,9 @@ class RunReasons:
     CANCELLED_MANUAL_KILL = "run.cancelled.manual_kill"
     CANCELLED_FORCE_KILL = "run.cancelled.force_kill"
     CANCELLED_STALE_AUTO = "run.cancelled.stale_auto"
+    FAILED_IDENTITY_UNVERIFIED = "run.failed.identity_unverified"
+    ABORTED_IDENTITY_UNVERIFIED = "run.aborted.identity_unverified"
+    CANCELLED_IDENTITY_UNVERIFIED = "run.cancelled.identity_unverified"
     PAUSED_OPERATOR = "run.paused.operator"
     # ADR-0071 D4: task-application worker lease outcomes
     QUEUED_LEASE_EXPIRED = "run.queued.lease_expired"

@@ -283,7 +283,8 @@ async def test_imported_process_whose_identity_cannot_be_checked_is_retained(
     async with StateDB(path) as db:
         row = await db.get_session(sid)
         assert row["status"] == "running"
-        assert row["node_metadata"]["unverifiable_count"] == 1
+        # The PID came only from run.json, so no row-bound history can be recorded.
+        assert row["node_metadata"] is None
         transitions = await db.fetch_all(
             "SELECT status FROM status_transitions WHERE entity_id = ?", (sid,)
         )

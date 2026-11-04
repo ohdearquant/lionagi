@@ -706,17 +706,35 @@ li kill abc123 --recursive            # kill + direct children (session -> invoc
 li kill --all-stale                   # sweep dead-PID sessions/invocations
 li kill --all-stale --threshold 3600  # only rows older than 1h
 li kill --all-stale --dry-run
+li kill abc123 --resolve-quarantine failed --reason 'investigated'
 ```
 
 | Arg/Flag | Default | Notes |
 |----------|---------|-------|
 | `id` | none | Entity ID or prefix: run/session/invocation/play |
-| `--reason` | `""` | Recorded in `status_transitions` |
+| `--reason` | `""` | Recorded in `status_transitions`; required for a quarantine disposition |
 | `--recursive` | false | Also kill direct child entities |
 | `--all-stale` | false | Sweep stale sessions/invocations (and their child-derived plays/shows) |
 | `--threshold SECS` | 3600 | Only sweep entities started more than this long ago |
 | `--dry-run` | false | Only valid with `--all-stale`; prints without cancelling |
+| `--resolve-quarantine {failed,aborted,cancelled}` | none | Record an investigated disposition for one quarantined session or invocation without signalling its PID |
 | `--grace SECS` | 5.0 | Wait after SIGTERM before escalating to SIGKILL |
+
+**Unverifiable process identities.** When a stale sweep cannot inspect a locally
+recorded process, it leaves the row running and records the observation. Three
+consecutive unverifiable observations of the same bound process identity mark the
+row as quarantined; the sweep summary and `li monitor` show this state. A verified
+live observation clears the evidence, and a changed recorded identity starts a new
+observation history. PID information found only in a `.pid` file or `run.json`
+cannot be bound to the row and is reported without recording quarantine.
+
+After investigating, an operator can select `failed`, `aborted`, or `cancelled`
+with `--resolve-quarantine` and a non-empty `--reason`. This records the
+operator's disposition and never signals the process. The command rechecks the
+identity and refuses if the row changed or the process can now be verified; use
+normal `li kill` in that case. If a PID changes away and back between observations
+without any sweep seeing the intermediate identity, those observations cannot
+reveal the change.
 
 **`--recursive` scope boundary.** Recursion only reaches PID-bearing workers,
 and an orchestrator row reaches them only through a link it recorded:
