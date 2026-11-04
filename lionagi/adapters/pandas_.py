@@ -121,12 +121,26 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
             except ValidationError as e:
                 data = records[0] if many and type(records) is list and records else records
                 error = cls._validation_error(e, data)
+            except AdapterError:
+                raise
             except Exception as e:
                 cls._handle_error(e, "validation", unexpected=True)
             raise error from None
 
         if many:
-            return [convert(record) for record in records]
+
+            def validated_records():
+                try:
+                    yield from records
+                except validation_errors as e:
+                    error = cls._validation_error(e, records)
+                except ValidationError as e:
+                    error = cls._validation_error(e, records)
+                else:
+                    return
+                raise error from None
+
+            return [convert(record) for record in validated_records()]
         return convert(records)
 
     @classmethod
@@ -138,7 +152,17 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
         **kw,
     ) -> Any:  # pd.DataFrame
         pd = _require_pandas()
-        records = [dispatch_adapt_meth(adapt_meth, i, adapt_kw, type(i)) for i in items]
+
+        def safe_items():
+            try:
+                yield from items
+            except Exception:
+                error = cls._record_validation_error({"item_count": 0}, truncated=True)
+            else:
+                return
+            raise error from None
+
+        records = [dispatch_adapt_meth(adapt_meth, i, adapt_kw, type(i)) for i in safe_items()]
         try:
             return pd.DataFrame(records, **kw)
         except Exception:
@@ -199,7 +223,6 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
                 _require_pandas()
             except ImportError as e:
                 cls._handle_error(e, "validation", unexpected=True)
-            items = list(items)
         except AdapterError:
             raise
         except Exception:
@@ -209,7 +232,18 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
         if error is not None:
             raise error from None
 
-        records = [dispatch_adapt_meth(adapt_meth, item, adapt_kw, type(item)) for item in items]
+        def safe_items():
+            try:
+                yield from items
+            except Exception:
+                error = cls._record_validation_error(unexpected=True)
+            else:
+                return
+            raise error from None
+
+        records = [
+            dispatch_adapt_meth(adapt_meth, item, adapt_kw, type(item)) for item in safe_items()
+        ]
         try:
             return cls._models_to_dataframe(records, lambda record: record, None, **kw)
         except AdapterError:

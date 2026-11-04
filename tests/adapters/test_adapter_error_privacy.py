@@ -519,6 +519,28 @@ def test_dataframe_validation_callback_boundaries_without_pandas():
     assert isinstance(captured.value.__cause__, RuntimeError)
 
 
+def test_dataframe_validation_callback_adapter_error_passthrough_and_selected():
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    original = AdapterParseError("caller error")
+
+    def reject(record):
+        raise original
+
+    with pytest.raises(AdapterParseError) as captured:
+        DataFrameAdapter._validate_and_convert_models(
+            _Validated, {"amount": "value"}, False, reject, None, (ValidationError,)
+        )
+    assert captured.value is original
+
+    with pytest.raises(AdapterValidationError) as selected:
+        DataFrameAdapter._validate_and_convert_models(
+            _Validated, {"amount": "value"}, False, reject, None, (AdapterParseError,)
+        )
+    assert selected.value.__cause__ is None
+    assert selected.value.__context__ is None
+
+
 @pytest.mark.parametrize("error_kind", ["runtime", "pydantic"])
 def test_dataframe_dump_callable_exception_propagates_unchanged(error_kind):
     pytest.importorskip("pandas")
@@ -606,6 +628,104 @@ def test_dataframe_dump_list_iteration_failure_remains_redacted():
         DataFrameAdapter.to_obj(HostileList())
     if _contains_marker(captured.value):
         pytest.fail("record iteration exposed an internal exception", pytrace=False)
+
+
+def test_dataframe_internal_dump_iteration_failure_remains_redacted(monkeypatch):
+    from lionagi.adapters import pandas_ as pandas_adapter
+
+    class HostileList(list):
+        def __iter__(self):
+            raise RuntimeError(_MARKER)
+
+    monkeypatch.setattr(pandas_adapter, "_require_pandas", lambda: None)
+    with pytest.raises(AdapterValidationError) as captured:
+        pandas_adapter.DataFrameAdapter._models_to_dataframe(
+            HostileList(), lambda record: record, None
+        )
+    if _contains_marker(captured.value):
+        pytest.fail("internal record iteration exposed an exception", pytrace=False)
+
+
+def test_dataframe_internal_dump_callback_propagates_unchanged(monkeypatch):
+    from lionagi.adapters import pandas_ as pandas_adapter
+
+    original = RuntimeError("dump error")
+    monkeypatch.setattr(pandas_adapter, "_require_pandas", lambda: None)
+
+    def reject(record):
+        raise original
+
+    with pytest.raises(RuntimeError) as captured:
+        pandas_adapter.DataFrameAdapter._models_to_dataframe([object()], reject, None)
+    assert captured.value is original
+
+
+def test_dataframe_dump_does_not_require_list_subclass_length():
+    pytest.importorskip("pandas")
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    class Record(BaseModel):
+        amount: int
+
+    class HostileLength(list):
+        def __len__(self):
+            raise RuntimeError(_MARKER)
+
+    frame = DataFrameAdapter.to_obj(HostileLength([Record(amount=1)]))
+    assert frame.to_dict(orient="records") == [{"amount": 1}]
+
+
+def test_dataframe_dump_interleaves_callbacks_with_iteration():
+    pytest.importorskip("pandas")
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    class Record(BaseModel):
+        amount: int
+
+    class InterruptedList(list):
+        def __iter__(self):
+            yield Record(amount=1)
+            raise RuntimeError(_MARKER)
+
+    calls = []
+
+    def dump(record):
+        calls.append(record.amount)
+        return {"amount": record.amount}
+
+    with pytest.raises(AdapterValidationError) as captured:
+        DataFrameAdapter.to_obj(InterruptedList(), adapt_meth=dump)
+    assert calls == [1]
+    if _contains_marker(captured.value):
+        pytest.fail("record iteration exposed an internal exception", pytrace=False)
+
+
+@pytest.mark.parametrize("listed", [True, False])
+def test_dataframe_validation_record_iterator_pydantic_error_is_count_only(listed):
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    class Record(BaseModel):
+        amount: int
+
+    try:
+        Record(amount=_MARKER)
+    except ValidationError as exc:
+        original = exc
+
+    class InterruptedRows(list):
+        def __iter__(self):
+            raise original
+
+    selected = (ValidationError,) if listed else (TypeError,)
+    with pytest.raises(AdapterValidationError) as captured:
+        DataFrameAdapter._validate_and_convert_models(
+            Record, InterruptedRows(), True, "model_validate", None, selected
+        )
+    assert captured.value.errors == [{"count": 1}]
+    if _contains_marker(captured.value):
+        pytest.fail("record iteration exposed a validation error", pytrace=False)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
 
 
 def test_dataframe_missing_dependency_precedes_dump_list_iteration(monkeypatch):
