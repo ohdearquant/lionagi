@@ -161,3 +161,32 @@ def test_escaped_mcp_example_in_yaml_block_scalar_is_not_a_key():
 def test_mcp_example_in_yaml_block_scalar_is_not_a_key():
     text = "---\nprompt: |\n  mcp: none\nmodel: [\n---\nReview."
     assert _parse_profile("reviewer", text).mcp is None
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "model: @invalid, mcp: none\n",
+        'model: @invalid, "m\\u0063p": none\n',
+    ],
+)
+def test_mcp_key_after_same_line_syntax_error_is_refused(frontmatter):
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+
+    assert "reviewer" in str(raised.value)
+    assert "mcp" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "model: @invalid # comment, mcp: none\n",
+        'model: @invalid, note: "example, mcp: none"\n',
+        "model: @invalid\nprompt: |\n  mcp: none\n",
+        "model: @invalid, other: value\n",
+    ],
+)
+def test_unrelated_unreadable_same_line_text_remains_lenient(frontmatter):
+    profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+    assert profile.mcp is None

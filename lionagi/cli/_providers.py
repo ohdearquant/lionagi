@@ -1016,13 +1016,56 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
 
         if scan(block, record_block_scalars=True):
             return True
-        # An earlier malformed line can prevent the scanner from reaching a
-        # later key. Retry individual lines, excluding parsed block-scalar text.
-        return any(
-            scan(line)
-            for number, line in enumerate(block.splitlines())
-            if number not in scalar_lines
-        )
+
+        def starts_block_scalar(line: str) -> bool:
+            try:
+                return any(
+                    isinstance(token, yaml.ScalarToken) and token.style in ("|", ">")
+                    for token in yaml.scan(line, Loader=yaml.SafeLoader)
+                )
+            except yaml.YAMLError:
+                return False
+
+        def comma_fragments(line: str):
+            quote = None
+            i = 0
+            while i < len(line):
+                char = line[i]
+                if quote == '"' and char == "\\":
+                    i += 2
+                    continue
+                if quote == "'" and char == "'" and line[i : i + 2] == "''":
+                    i += 2
+                    continue
+                if quote:
+                    if char == quote:
+                        quote = None
+                elif char in ("'", '"'):
+                    quote = char
+                elif char == "#" and (i == 0 or line[i - 1].isspace()):
+                    break
+                elif char == ",":
+                    yield line[i + 1 :]
+                i += 1
+
+        # An earlier malformed token can prevent the scanner from reaching a
+        # later key. Retry lines and comma-delimited suffixes, excluding block
+        # scalar text, quoted values and comments.
+        scalar_indent: int | None = None
+        for number, line in enumerate(block.splitlines()):
+            stripped = line.lstrip(" ")
+            indent = len(line) - len(stripped)
+            if scalar_indent is not None:
+                if not stripped or stripped.startswith("#") or indent > scalar_indent:
+                    continue
+                scalar_indent = None
+            if number in scalar_lines:
+                continue
+            if scan(line) or any(scan(fragment) for fragment in comma_fragments(line)):
+                return True
+            if starts_block_scalar(line):
+                scalar_indent = indent
+        return False
 
     parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
     if len(parts) < 3:
