@@ -964,12 +964,6 @@ def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
     raise ConfigurationError(f"agent profile {name!r}: mcp must be 'none'")
 
 
-_MCP_KEY_TEXT = re.compile(
-    r"(?m)(?:^[ \t]*(?:[-?][ \t]+)?|[{,][ \t]*)[\"']?mcp[\"']?[ \t]*:"
-    r"|^[ \t]*\?[ \t]+[\"']?mcp[\"']?[ \t]*(?:#.*)?$"
-)
-
-
 def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     """Refuse an unreadable or ambiguous MCP declaration without changing other settings."""
     if not text.startswith("---"):
@@ -982,9 +976,57 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     def refuse() -> None:
         raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
 
+    def mentions_mcp_key(block: str) -> bool:
+        scalar_lines: set[int] = set()
+        anchors: dict[str, str] = {}
+
+        def scan(source: str, *, record_block_scalars: bool = False) -> bool:
+            expecting_key = False
+            pending_anchor = None
+            try:
+                for token in yaml.scan(source, Loader=yaml.SafeLoader):
+                    if (
+                        record_block_scalars
+                        and isinstance(token, yaml.ScalarToken)
+                        and token.style in ("|", ">")
+                    ):
+                        scalar_lines.update(range(token.start_mark.line + 1, token.end_mark.line))
+                    if isinstance(token, yaml.AnchorToken):
+                        pending_anchor = token.value
+                    elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
+                        anchors[pending_anchor] = token.value
+                        pending_anchor = None
+                    elif pending_anchor is not None and not isinstance(token, yaml.TagToken):
+                        pending_anchor = None
+                    if isinstance(token, yaml.KeyToken):
+                        expecting_key = True
+                    elif expecting_key and isinstance(token, yaml.ScalarToken):
+                        expecting_key = False
+                        if token.value == "mcp":
+                            return True
+                    elif expecting_key and isinstance(token, yaml.AliasToken):
+                        expecting_key = False
+                        if anchors.get(token.value) == "mcp":
+                            return True
+                    elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
+                        expecting_key = False
+            except yaml.YAMLError:
+                pass
+            return False
+
+        if scan(block, record_block_scalars=True):
+            return True
+        # An earlier malformed line can prevent the scanner from reaching a
+        # later key. Retry individual lines, excluding parsed block-scalar text.
+        return any(
+            scan(line)
+            for number, line in enumerate(block.splitlines())
+            if number not in scalar_lines
+        )
+
     parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
     if len(parts) < 3:
-        if _MCP_KEY_TEXT.search(text[3:]):
+        if mentions_mcp_key(text[3:]):
             refuse()
         return
     block = parts[1]
@@ -994,9 +1036,31 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         yaml.safe_load(block)
         root = yaml.compose(block, Loader=yaml.SafeLoader)
     except yaml.YAMLError:
-        if _MCP_KEY_TEXT.search(block):
+        if mentions_mcp_key(block):
             refuse()
         return
+
+    def contains_mcp_key(node: Any) -> bool:
+        pending = [node]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if isinstance(current, yaml.MappingNode):
+                for key, value in current.value:
+                    if isinstance(key, yaml.ScalarNode) and key.value == "mcp":
+                        return True
+                    pending.extend((key, value))
+            elif isinstance(current, yaml.SequenceNode):
+                pending.extend(current.value)
+        return False
+
+    # A profile frontmatter must be a mapping. Other YAML shapes are normally
+    # ignored, but ignoring one that contains this policy could remove it.
+    if not isinstance(root, yaml.MappingNode) and contains_mcp_key(root):
+        refuse()
 
     def declarations(node: Any, path: frozenset[int]) -> int:
         if not isinstance(node, yaml.MappingNode) or id(node) in path:

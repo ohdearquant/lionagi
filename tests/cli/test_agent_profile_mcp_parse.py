@@ -90,3 +90,74 @@ def test_mcp_example_in_body_is_not_frontmatter():
 def test_mcp_mention_in_comment_does_not_change_unreadable_other_frontmatter():
     profile = _parse_profile("reviewer", "---\n# mcp: none\nmodel: [\n---\nReview.")
     assert profile.mcp is None
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "- mcp: none\n",
+        "- mcp: invalid\n",
+        "[{mcp: none}]\n",
+        "- nested:\n    mcp: none\n",
+    ],
+)
+def test_non_mapping_frontmatter_with_mcp_key_is_refused(frontmatter):
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+
+    assert "reviewer" in str(raised.value)
+    assert "mcp" in str(raised.value)
+
+
+@pytest.mark.parametrize("frontmatter", ["- model: example\n", "'mcp: none'\n"])
+def test_non_mapping_without_mcp_key_keeps_existing_behavior(frontmatter):
+    profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+    assert profile.mcp is None
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        '"m\\u0063p": none\nmodel: [unterminated\n',
+        'model: [unterminated\n"m\\u0063p": none\n',
+        '[{"m\\u0063p": none, broken: [}]\n',
+    ],
+)
+def test_escaped_mcp_key_in_unreadable_frontmatter_is_refused(frontmatter):
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+
+    assert "reviewer" in str(raised.value)
+    assert "mcp" in str(raised.value)
+
+
+def test_escaped_mcp_key_in_unclosed_frontmatter_is_refused():
+    with pytest.raises(ConfigurationError):
+        _parse_profile("reviewer", '---\n"m\\u0063p": none\n')
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "key: &policy_key mcp\n? *policy_key\n: none\nmodel: [\n",
+        "model: [unterminated\nkey: &policy_key mcp\n? *policy_key\n: none\n",
+    ],
+)
+def test_alias_mcp_key_in_unreadable_frontmatter_is_refused(frontmatter):
+    with pytest.raises(ConfigurationError):
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+
+
+def test_escaped_mcp_mention_in_comment_does_not_refuse_unrelated_frontmatter():
+    profile = _parse_profile("reviewer", '---\n# "m\\u0063p": none\nmodel: [\n---\nReview.')
+    assert profile.mcp is None
+
+
+def test_escaped_mcp_example_in_yaml_block_scalar_is_not_a_key():
+    text = '---\nprompt: |\n  "m\\u0063p": none\nmodel: [\n---\nReview.'
+    assert _parse_profile("reviewer", text).mcp is None
+
+
+def test_mcp_example_in_yaml_block_scalar_is_not_a_key():
+    text = "---\nprompt: |\n  mcp: none\nmodel: [\n---\nReview."
+    assert _parse_profile("reviewer", text).mcp is None

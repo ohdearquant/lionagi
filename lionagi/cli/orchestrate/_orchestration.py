@@ -1065,6 +1065,9 @@ async def setup_orchestration(
             fast = True
 
     profile_disables_mcp = getattr(orc_profile, "mcp", None) == "none"
+    profile_origin_mcp_disabled = profile_disables_mcp or (
+        no_mcp_config and no_mcp_config_source == "profile"
+    )
     if profile_disables_mcp and mcp_config is not None:
         raise ConfigurationError(
             f"Agent profile {orc_profile.name!r} declares mcp: none and cannot be combined "
@@ -1181,7 +1184,7 @@ async def setup_orchestration(
             resolved_mcp_servers=run_mcp_servers,
         )
         orc_branch.name = "orchestrator"
-    if profile_disables_mcp or (no_mcp_config and no_mcp_config_source == "profile"):
+    if profile_origin_mcp_disabled:
         orc_branch.metadata["mcp_launch"] = {
             "mcp_config": None,
             "no_mcp_config": True,
@@ -1220,7 +1223,7 @@ async def setup_orchestration(
         mcp_servers=worker_mcp_servers,
         mcp_config_explicit=mcp_config is not None,
         mcp_launch_dir=launch_dir,
-        mcp_disabled_by_profile=profile_disables_mcp,
+        mcp_disabled_by_profile=profile_origin_mcp_disabled,
         withheld_mcp_servers=withheld_mcp_servers,
     )
 
@@ -1577,7 +1580,7 @@ async def build_worker_branch(
         if w_profile is not None:
             register_profile_injection(wb, role, w_profile)
 
-    if profile_disables_mcp:
+    if profile_disables_mcp or getattr(env, "mcp_disabled_by_profile", False):
         wb.metadata["mcp_launch"] = {
             "mcp_config": None,
             "no_mcp_config": True,
