@@ -136,7 +136,7 @@ def test_unexpected_non_validation_error_keeps_existing_diagnostic(kind):
     assert captured.value.__context__ is captured.value.__cause__
 
 
-@pytest.mark.parametrize("kind", ["json", "toml", "csv"])
+@pytest.mark.parametrize("kind", ["json", "toml", "csv", "dataframe"])
 def test_unlisted_model_validator_exception_keeps_message_and_cause(kind):
     class Record(BaseModel):
         amount: str
@@ -151,8 +151,15 @@ def test_unlisted_model_validator_exception_keeps_message_and_cause(kind):
         "toml": (TomlAdapter, 'amount = "value"'),
         "csv": (CsvAdapter, "amount\nvalue\n"),
     }
-    adapter, source = adapters[kind]
-    with pytest.raises(AdapterParseError) as captured:
+    if kind == "dataframe":
+        pd = pytest.importorskip("pandas")
+        from lionagi.adapters.pandas_ import DataFrameAdapter
+
+        adapter, source = DataFrameAdapter, pd.DataFrame([{"amount": "value"}])
+    else:
+        adapter, source = adapters[kind]
+    error_type = AdapterValidationError if kind == "dataframe" else AdapterParseError
+    with pytest.raises(error_type) as captured:
         adapter.from_obj(Record, source)
     assert captured.value.message == "validator error"
     assert isinstance(captured.value.__cause__, RuntimeError)
@@ -455,8 +462,7 @@ def test_dataframe_internal_validation_error_does_not_expose_record(stage):
         pytest.fail("internal validation error exposed rejected data", pytrace=False)
 
 
-@pytest.mark.parametrize("direction", ["from", "to"])
-def test_dataframe_unexpected_conversion_error_does_not_expose_record(direction):
+def test_dataframe_unlisted_validator_exception_retains_original_diagnostic():
     pd = pytest.importorskip("pandas")
     from lionagi.adapters.pandas_ import DataFrameAdapter
 
@@ -467,14 +473,161 @@ def test_dataframe_unexpected_conversion_error_does_not_expose_record(direction)
         raise RuntimeError(_MARKER)
 
     with pytest.raises(AdapterValidationError) as captured:
-        if direction == "from":
-            DataFrameAdapter.from_obj(
-                Record, pd.DataFrame([{"amount": _MARKER}]), adapt_meth=reject
-            )
-        else:
-            DataFrameAdapter.to_obj(Record(amount=_MARKER), adapt_meth=reject)
+        DataFrameAdapter.from_obj(Record, pd.DataFrame([{"amount": _MARKER}]), adapt_meth=reject)
+    assert captured.value.message == _MARKER
+    assert isinstance(captured.value.__cause__, RuntimeError)
+
+
+def test_dataframe_unlisted_pydantic_validation_error_is_redacted():
+    pd = pytest.importorskip("pandas")
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    class Record(BaseModel):
+        amount: int
+
+    with pytest.raises(AdapterValidationError) as captured:
+        DataFrameAdapter.from_obj(
+            Record, pd.DataFrame([{"amount": _MARKER}]), validation_errors=(TypeError,)
+        )
     if _contains_marker(captured.value):
-        pytest.fail("conversion error exposed rejected data", pytrace=False)
+        pytest.fail("Pydantic validation failure exposed rejected data", pytrace=False)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_dataframe_validation_callback_boundaries_without_pandas():
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    class Record(BaseModel):
+        amount: int
+
+    with pytest.raises(AdapterValidationError) as captured:
+        DataFrameAdapter._validate_and_convert_models(
+            Record, {"amount": _MARKER}, False, "model_validate", None, (TypeError,)
+        )
+    if _contains_marker(captured.value):
+        pytest.fail("Pydantic validation exposed a rejected value", pytrace=False)
+
+    def reject(record):
+        raise RuntimeError("validator error")
+
+    with pytest.raises(AdapterValidationError) as captured:
+        DataFrameAdapter._validate_and_convert_models(
+            Record, {"amount": 1}, False, reject, None, (TypeError,)
+        )
+    assert captured.value.message == "validator error"
+    assert isinstance(captured.value.__cause__, RuntimeError)
+
+
+@pytest.mark.parametrize("error_kind", ["runtime", "pydantic"])
+def test_dataframe_dump_callable_exception_propagates_unchanged(error_kind):
+    pytest.importorskip("pandas")
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    class Record(BaseModel):
+        amount: int
+
+    if error_kind == "runtime":
+        original = RuntimeError(_MARKER)
+    else:
+        try:
+            Record(amount=_MARKER)
+        except ValidationError as exc:
+            original = exc
+
+    def reject(record):
+        raise original
+
+    with pytest.raises(type(original)) as captured:
+        DataFrameAdapter.to_obj(Record(amount=1), adapt_meth=reject)
+    assert captured.value is original
+
+
+def test_dataframe_dump_callback_exception_without_pandas(monkeypatch):
+    from lionagi.adapters import pandas_ as pandas_adapter
+
+    original = RuntimeError("dump error")
+    monkeypatch.setattr(pandas_adapter, "_require_pandas", lambda: None)
+
+    def reject(record):
+        raise original
+
+    with pytest.raises(RuntimeError) as captured:
+        pandas_adapter.DataFrameAdapter.to_obj(object(), adapt_meth=reject)
+    assert captured.value is original
+
+
+def test_dataframe_dump_callable_receives_each_item_once():
+    pytest.importorskip("pandas")
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    class Record(BaseModel):
+        amount: int
+
+    calls = []
+
+    def dump(record, *, offset):
+        calls.append(record.amount)
+        return {"amount": record.amount + offset}
+
+    frame = DataFrameAdapter.to_obj(
+        [Record(amount=1), Record(amount=2)], adapt_meth=dump, adapt_kw={"offset": 3}
+    )
+    assert calls == [1, 2]
+    assert frame.to_dict(orient="records") == [{"amount": 4}, {"amount": 5}]
+
+
+def test_dataframe_constructor_error_remains_redacted(monkeypatch):
+    pd = pytest.importorskip("pandas")
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    class Record(BaseModel):
+        amount: str
+
+    def reject(*args, **kwargs):
+        raise RuntimeError(_MARKER)
+
+    monkeypatch.setattr(pd, "DataFrame", reject)
+    with pytest.raises(AdapterValidationError) as captured:
+        DataFrameAdapter.to_obj(Record(amount=_MARKER))
+    if _contains_marker(captured.value):
+        pytest.fail("DataFrame construction exposed a record", pytrace=False)
+
+
+def test_dataframe_dump_list_iteration_failure_remains_redacted():
+    pytest.importorskip("pandas")
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    class HostileList(list):
+        def __iter__(self):
+            raise RuntimeError(_MARKER)
+
+    with pytest.raises(AdapterValidationError) as captured:
+        DataFrameAdapter.to_obj(HostileList())
+    if _contains_marker(captured.value):
+        pytest.fail("record iteration exposed an internal exception", pytrace=False)
+
+
+def test_dataframe_missing_dependency_precedes_dump_list_iteration(monkeypatch):
+    from lionagi.adapters import pandas_ as pandas_adapter
+
+    class HostileList(list):
+        iterated = False
+
+        def __iter__(self):
+            self.iterated = True
+            raise RuntimeError(_MARKER)
+
+    def missing():
+        raise ImportError("pandas unavailable")
+
+    monkeypatch.setattr(pandas_adapter, "_require_pandas", missing)
+    items = HostileList()
+    with pytest.raises(AdapterValidationError) as captured:
+        pandas_adapter.DataFrameAdapter.to_obj(items)
+    assert captured.value.message == "pandas unavailable"
+    assert isinstance(captured.value.__cause__, ImportError)
+    assert not items.iterated
 
 
 @pytest.mark.parametrize("stage", ["structure", "conversion"])
@@ -520,12 +673,15 @@ def test_dataframe_public_to_obj_does_not_retain_unexpected_record_error(monkeyp
     pytest.importorskip("pandas")
     from lionagi.adapters.pandas_ import DataFrameAdapter
 
+    class Record(BaseModel):
+        amount: str
+
     def reject(cls, items, adapt_meth, adapt_kw, **kwargs):
         raise RuntimeError(_MARKER)
 
     monkeypatch.setattr(DataFrameAdapter, "_models_to_dataframe", classmethod(reject))
     with pytest.raises(AdapterValidationError) as captured:
-        DataFrameAdapter.to_obj([_MARKER])
+        DataFrameAdapter.to_obj([Record(amount=_MARKER)])
     if _contains_marker(captured.value):
         pytest.fail("public conversion error retained caller data", pytrace=False)
 
