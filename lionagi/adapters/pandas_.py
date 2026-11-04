@@ -116,12 +116,16 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
         def convert(record):
             try:
                 return dispatch_adapt_meth(adapt_meth, record, adapt_kw, subj_cls)
-            except (*validation_errors, ValidationError) as e:
-                error = cls._validation_error(e, record)
+            except validation_errors as e:
+                validation_error = e
+            except ValidationError as e:
+                validation_error = e
             except AdapterError:
                 raise
             except Exception as e:
                 cls._handle_error(e, "validation", unexpected=True)
+            error = cls._validation_error(validation_error, record)
+            del validation_error
             raise error from None
 
         if many:
@@ -131,9 +135,7 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
     @classmethod
     def _safe_iterator(cls, items, validation_errors=None):
         """Wrap iteration failures without intercepting item callbacks."""
-        caught = (
-            (Exception,) if validation_errors is None else (*validation_errors, ValidationError)
-        )
+        caught = (Exception,) if validation_errors is None else validation_errors
         try:
             yield from items
         except caught as exc:
@@ -141,6 +143,8 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
                 error = cls._record_validation_error(unexpected=True)
             else:
                 error = cls._validation_error(exc, items)
+        except ValidationError as exc:
+            error = cls._validation_error(exc, items)
         else:
             return
         raise error from None

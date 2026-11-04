@@ -94,6 +94,62 @@ def test_unlisted_iterator_exception_is_not_inspected_or_replaced():
     assert result is original
 
 
+@pytest.mark.parametrize("many", [True, False], ids=["valid-batch", "invalid-single"])
+def test_validation_error_types_tuple_is_not_iterated(many):
+    pd = pytest.importorskip("pandas")
+
+    class Record(BaseModel):
+        amount: int
+
+    class ErrorTypes(tuple):
+        calls = 0
+
+        def __iter__(self):
+            type(self).calls += 1
+            raise RuntimeError("exception types were iterated")
+
+    errors = ErrorTypes((ValueError,))
+    frame = pd.DataFrame([{"amount": 1 if many else "invalid"}])
+    if many:
+        assert DataFrameAdapter.from_obj(Record, frame, many=True, validation_errors=errors) == [
+            Record(amount=1)
+        ]
+    else:
+        with pytest.raises(AdapterValidationError) as captured:
+            DataFrameAdapter.from_obj(Record, frame, many=False, validation_errors=errors)
+        assert captured.value.details["original_exception"] == "validation"
+        assert captured.value.details["errors"] == [{"count": 1}]
+        assert captured.value.details["data"] == {"item_0": "<redacted>"}
+    assert ErrorTypes.calls == 0
+
+
+@pytest.mark.parametrize("many", [True, False], ids=["valid-batch", "invalid-single"])
+def test_validation_error_types_tuple_without_pandas(many):
+    class Record(BaseModel):
+        amount: int
+
+    class ErrorTypes(tuple):
+        calls = 0
+
+        def __iter__(self):
+            type(self).calls += 1
+            raise RuntimeError("exception types were iterated")
+
+    errors = ErrorTypes((ValueError,))
+    record = {"amount": 1 if many else "invalid"}
+    if many:
+        assert DataFrameAdapter._validate_and_convert_models(
+            Record, [record], True, "model_validate", None, errors
+        ) == [Record(amount=1)]
+    else:
+        with pytest.raises(AdapterValidationError) as captured:
+            DataFrameAdapter._validate_and_convert_models(
+                Record, record, False, "model_validate", None, errors
+            )
+        assert captured.value.details["errors"] == [{"count": 1}]
+    assert ErrorTypes.calls == 0
+
+
 @pytest.mark.parametrize("stage", ["structure", "records", "constructor"])
 def test_conversion_failure_has_no_invented_data_or_truncation(monkeypatch, stage):
     from lionagi.adapters import pandas_ as adapter
