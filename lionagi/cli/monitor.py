@@ -475,7 +475,8 @@ def _is_unverifiable_quarantined(row: dict[str, Any]) -> bool:
 def _has_unreadable_quarantine(row: dict[str, Any]) -> bool:
     metadata = _parse_json_field(row.get("node_metadata"))
     return (
-        isinstance(metadata, dict)
+        row.get("status") == "running"
+        and isinstance(metadata, dict)
         and metadata.get("unverifiable_quarantined") is True
         and not _is_unverifiable_quarantined(row)
     )

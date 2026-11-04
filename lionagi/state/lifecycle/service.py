@@ -20,7 +20,7 @@ from sqlalchemy import JSON, Boolean, bindparam, text
 
 from lionagi.ln import copy, short_id
 from lionagi.ln.concurrency import fail_after
-from lionagi.state._quarantine_identity import QuarantineScopeProbeError, is_current_quarantine
+from lionagi.state._quarantine_identity import QuarantineProbeError, is_current_quarantine
 
 from ..compat import _quote
 from ..reasons import VALID_REASON_CODES, RunReasons, validate_reason_code
@@ -52,10 +52,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncConnection
 
 logger = logging.getLogger(__name__)
-
-
-class _QuarantineIdentityProbeError(RuntimeError):
-    """A quarantine disposition could not recheck the process identity."""
 
 
 class _HistoryWrite(NamedTuple):
@@ -140,10 +136,12 @@ def _quarantine_snapshot_matches(snapshot: Mapping[str, Any], stored: Any, *, di
             and expected.get("unverifiable_identity") == stored.get("unverifiable_identity")
             and expected.get("unverifiable_epoch") == stored.get("unverifiable_epoch")
         )
-    except QuarantineScopeProbeError:
+    except QuarantineProbeError:
         scope_probe_failed = True
     if scope_probe_failed:
-        raise _QuarantineIdentityProbeError("quarantine identity probe failed")
+        # Raise after the handler so __context__ stays empty; see
+        # tests/state/test_quarantine_probe_exception_privacy.py.
+        raise QuarantineProbeError("quarantine identity probe failed")
     return False
 
 
@@ -796,7 +794,9 @@ class SQLAlchemyLifecycleService:
                         # remains eligible. Do not expose the underlying error.
                         probe_failed = True
                 if probe_failed:
-                    raise _QuarantineIdentityProbeError("quarantine identity probe failed")
+                    # Raise after the handler so __context__ stays empty; see
+                    # tests/state/test_quarantine_probe_exception_privacy.py.
+                    raise QuarantineProbeError("quarantine identity probe failed")
                 if not probe_allowed:
                     return TransitionOutcome(
                         result="conflict",

@@ -2906,7 +2906,7 @@
       "write_mirrored_messages"
     ],
     "lionagi/state/_quarantine_identity.py": [
-      "QuarantineScopeProbeError",
+      "QuarantineProbeError",
       "encode_identity",
       "is_current_quarantine",
       "quarantine_identity"

@@ -12,7 +12,7 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln._proc import (
     current_pid_markers,  # noqa: F401  (re-exported: the kill command's historical import path)
 )
-from lionagi.state._quarantine_identity import QuarantineScopeProbeError, is_current_quarantine
+from lionagi.state._quarantine_identity import QuarantineProbeError, is_current_quarantine
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
@@ -87,7 +87,6 @@ async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> 
     """Record an operator disposition without attempting to stop a process."""
     from lionagi.state.db import StateDB
     from lionagi.state.lifecycle import LifecycleNotFoundError
-    from lionagi.state.lifecycle.service import _QuarantineIdentityProbeError
 
     if not reason.strip():
         log_error("a non-blank --reason is required to resolve quarantine")
@@ -107,7 +106,7 @@ async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> 
             return 1
         try:
             current_quarantine = is_current_quarantine(row, raise_on_scope_error=True)
-        except QuarantineScopeProbeError:
+        except QuarantineProbeError:
             log_error("quarantine identity probe failed; no update made")
             return 1
         if not current_quarantine:
@@ -124,7 +123,7 @@ async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> 
                     current, kind=kind
                 ),
             )
-        except _QuarantineIdentityProbeError:
+        except QuarantineProbeError:
             log_error("quarantine identity probe failed; no update made")
             return 1
         except LifecycleNotFoundError:

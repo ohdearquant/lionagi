@@ -218,6 +218,37 @@ async def test_resolution_refuses_foreign_host(kind, monkeypatch):
 
 
 @pytest.mark.parametrize("kind", ["session", "invocation"])
+async def test_resolution_reports_hostname_probe_failure_without_details(kind, monkeypatch, caplog):
+    entity_id = await _seed(kind)
+    await _quarantine(monkeypatch)
+    async with StateDB() as db:
+        merge = (
+            db.merge_session_node_metadata
+            if kind == "session"
+            else db.merge_invocation_node_metadata
+        )
+        await merge(entity_id, {"pid_host": "recorded-host"})
+    before, history_before = await _row_and_history(kind, entity_id)
+    terminate, cleanup, os_kill = _assert_no_signals(monkeypatch)
+
+    def fail_hostname():
+        raise OSError("private hostname failure")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr("lionagi.state._quarantine_identity.socket.gethostname", fail_hostname)
+        assert await asyncio.to_thread(kill_cli.run_kill, _args(entity_id, "failed")) != 0
+
+    after, history_after = await _row_and_history(kind, entity_id)
+    assert after == before
+    assert history_after == history_before == []
+    assert "probe failed" in caplog.text
+    assert "private hostname failure" not in caplog.text
+    terminate.assert_not_called()
+    cleanup.assert_not_called()
+    os_kill.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["session", "invocation"])
 @pytest.mark.parametrize("verdict", ["ours", "not_ours", "zombie", "dead", "probe_error"])
 async def test_resolution_refuses_when_identity_can_be_verified_or_probe_fails(
     kind, verdict, monkeypatch, caplog

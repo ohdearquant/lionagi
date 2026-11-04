@@ -12,8 +12,8 @@ from typing import Any
 UNVERIFIABLE_PID_QUARANTINE_THRESHOLD = 3
 
 
-class QuarantineScopeProbeError(RuntimeError):
-    """The local host identity could not be checked."""
+class QuarantineProbeError(RuntimeError):
+    """A required quarantine identity probe failed."""
 
 
 def quarantine_identity(row: dict[str, Any]) -> tuple[int, float | None, str | None] | None:
@@ -102,7 +102,9 @@ def is_current_quarantine(row: dict[str, Any], *, raise_on_scope_error: bool = F
                 host_probe_failed = True
             if host_probe_failed:
                 if raise_on_scope_error:
-                    raise QuarantineScopeProbeError("quarantine host identity probe failed")
+                    # Raise after the handler so __context__ stays empty; see
+                    # tests/state/test_quarantine_probe_exception_privacy.py.
+                    raise QuarantineProbeError("quarantine host identity probe failed")
                 return False
             if host != current_host:
                 return False
@@ -110,7 +112,7 @@ def is_current_quarantine(row: dict[str, Any], *, raise_on_scope_error: bool = F
         if identity is None:
             return False
         return metadata.get("unverifiable_identity") == encode_identity(*identity)
-    except QuarantineScopeProbeError:
+    except QuarantineProbeError:
         raise
     except Exception:
         # A malformed row or an unavailable host identity must not authorize
