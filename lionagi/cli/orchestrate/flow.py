@@ -3117,6 +3117,7 @@ async def _run_flow(
     notify: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    no_mcp_config_source: str | None = None,
     mcp_launch_dir: str | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
@@ -3180,6 +3181,8 @@ async def _run_flow(
             "no_mcp_config": no_mcp_config,
             "mcp_launch_dir": mcp_launch_dir,
         }
+        if no_mcp_config_source is not None:
+            _checkpoint_config["no_mcp_config_source"] = no_mcp_config_source
 
         env = await setup_orchestration(
             pattern_name="Flow",
@@ -3199,7 +3202,15 @@ async def _run_flow(
             mcp_config=mcp_config,
             no_mcp_config=no_mcp_config,
             mcp_launch_dir=mcp_launch_dir,
+            **(
+                {"no_mcp_config_source": no_mcp_config_source}
+                if no_mcp_config_source is not None
+                else {}
+            ),
         )
+        if getattr(env, "mcp_disabled_by_profile", False):
+            _checkpoint_config["no_mcp_config"] = True
+            _checkpoint_config["no_mcp_config_source"] = "profile"
 
         # `--notify` is compatibility sugar over the terminal-callback registry:
         # registered against this run's own entity, unregistered in `finally`

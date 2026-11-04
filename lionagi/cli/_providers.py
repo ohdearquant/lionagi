@@ -644,6 +644,8 @@ class AgentProfile:
     contain_user_settings: bool = False
     """Run a Claude flow or fan-out worker of this role with no settings files read, so the
     operator's hooks and permission rules do not gate it; see ``_contain_claude_worker``."""
+    mcp: str | None = None
+    """MCP policy for this profile; ``none`` disables inherited MCP configuration."""
 
 
 class AgentProfileNotFoundError(FileNotFoundError):
@@ -743,6 +745,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["workload"] = profile.workload
     if profile.contain_user_settings:
         config["contain_user_settings"] = True
+    if profile.mcp is not None:
+        config["mcp"] = profile.mcp
     return config
 
 
@@ -950,6 +954,67 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
     return DEFAULT_WORKLOAD
 
 
+def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
+    """Read the profile MCP policy without silently ignoring an invalid declaration."""
+    if "mcp" not in frontmatter:
+        return None
+    raw = frontmatter["mcp"]
+    if isinstance(raw, str) and raw == "none":
+        return raw
+    raise ConfigurationError(f"agent profile {name!r}: mcp must be 'none'")
+
+
+_MCP_KEY_TEXT = re.compile(
+    r"(?m)(?:^[ \t]*(?:[-?][ \t]+)?|[{,][ \t]*)[\"']?mcp[\"']?[ \t]*:"
+    r"|^[ \t]*\?[ \t]+[\"']?mcp[\"']?[ \t]*(?:#.*)?$"
+)
+
+
+def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
+    """Refuse an unreadable or ambiguous MCP declaration without changing other settings."""
+    if not text.startswith("---"):
+        return
+
+    import yaml
+
+    from lionagi.libs.frontmatter import _FM_SPLIT
+
+    def refuse() -> None:
+        raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
+
+    parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
+    if len(parts) < 3:
+        if _MCP_KEY_TEXT.search(text[3:]):
+            refuse()
+        return
+    block = parts[1]
+    try:
+        # Check construction as well as syntax: an unsupported YAML tag can
+        # otherwise make the ordinary frontmatter reader discard the block.
+        yaml.safe_load(block)
+        root = yaml.compose(block, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        if _MCP_KEY_TEXT.search(block):
+            refuse()
+        return
+
+    def declarations(node: Any, path: frozenset[int]) -> int:
+        if not isinstance(node, yaml.MappingNode) or id(node) in path:
+            return 0
+        path = path | {id(node)}
+        total = 0
+        for key, value in node.value:
+            if key.tag == "tag:yaml.org,2002:merge":
+                sources = value.value if isinstance(value, yaml.SequenceNode) else [value]
+                total += sum(declarations(source, path) for source in sources)
+            elif isinstance(key, yaml.ScalarNode) and key.value == "mcp":
+                total += 1
+        return total
+
+    if declarations(root, frozenset()) > 1:
+        refuse()
+
+
 _CONTAIN_KEY = "contain_user_settings"
 # A line that sets the flag as a key, in a mapping or a list item, quoted or not.
 _FLAG_KEY_LINE = re.compile(rf"^[ \t]*(?:-[ \t]+)*[\"']?{_CONTAIN_KEY}[\"']?[ \t]*:", re.M)
@@ -1150,6 +1215,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
     ):
         start += 1
     text = text[start:]
+    _check_profile_mcp_frontmatter(name, text)
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:
         frontmatter = _settings_of_unread_frontmatter(name, text)
@@ -1215,6 +1281,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         ),
         workload=_parse_profile_workload(name, frontmatter.get("workload")),
         contain_user_settings=_parse_profile_contain_user_settings(name, frontmatter),
+        mcp=_parse_profile_mcp(name, frontmatter),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -1235,6 +1302,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "account_connectors",
                 "workload",
                 "contain_user_settings",
+                "mcp",
             )
         },
     )

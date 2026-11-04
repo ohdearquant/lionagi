@@ -1608,11 +1608,6 @@ async def _run_agent(
         # The child's tool surface is meant to be a property of the submission, and
         # this is the only point at which the submitting directory is still known.
         launch_dir = Path(os.getcwd()).resolve()
-        mcp_resolution = resolve_spawn_mcp_servers(
-            mcp_config,
-            launch_dir=launch_dir,
-            disabled=no_mcp_config,
-        )
         if resume and continue_last:
             raise ConfigurationError(
                 "--resume / -r and --continue-last / -c are mutually exclusive."
@@ -1691,6 +1686,15 @@ async def _run_agent(
                     "for this run"
                 )
 
+        profile_disables_mcp = getattr(profile, "mcp", None) == "none"
+        if profile_disables_mcp and mcp_config is not None:
+            raise McpConfigError(
+                f"agent profile {agent_name!r} declares mcp: none; "
+                "it cannot be combined with --mcp-config"
+            )
+        if profile_disables_mcp:
+            no_mcp_config = True
+
         # A codex leg's account integrations follow its role; with no role, or one that sets
         # neither field, the leg's argv is what it was before these fields existed.
         account_connectors = tuple(getattr(profile, "account_connectors", None) or ())
@@ -1749,6 +1753,24 @@ async def _run_agent(
         # reliable "reopened existing" vs "minting new" signal once that block runs.
         is_resumed_branch = branch is not None
 
+        if is_resumed_branch and mcp_config is not None:
+            launched = branch.metadata.get(_MCP_LAUNCH_KEY)
+            if (
+                isinstance(launched, dict)
+                and launched.get("no_mcp_config") is True
+                and launched.get("no_mcp_config_source") == "profile"
+            ):
+                raise McpConfigError(
+                    "this branch was launched with profile mcp: none; "
+                    "it cannot be resumed with --mcp-config"
+                )
+
+        mcp_resolution = resolve_spawn_mcp_servers(
+            mcp_config,
+            launch_dir=launch_dir,
+            disabled=no_mcp_config,
+        )
+
         # A resume that names no MCP flag replays the choice its branch was launched
         # with, searched from where it was launched rather than from where it is
         # resumed. A branch from before that choice was recorded resolves nothing
@@ -1758,6 +1780,7 @@ async def _run_agent(
             if isinstance(launched, dict) and isinstance(launched.get("launch_dir"), str):
                 recorded_config = launched.get("mcp_config")
                 disabled = bool(launched.get("no_mcp_config"))
+                no_mcp_config = disabled
                 # The resolver's own refusals name --mcp-config, which this caller
                 # never passed, so a recorded config is refused here in its own words.
                 how_to_go_on = (
@@ -2309,6 +2332,8 @@ async def _run_agent(
                 "no_mcp_config": no_mcp_config,
                 "launch_dir": str(launch_dir),
             }
+            if profile_disables_mcp:
+                branch.metadata[_MCP_LAUNCH_KEY]["no_mcp_config_source"] = "profile"
 
         if is_resumed_branch:
             from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY

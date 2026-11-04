@@ -29,6 +29,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionagi.agent.factory import apply_forwarded_mcp_servers
+from tests.cli.test_agent_preset_mcp_handover import _wire_agent_stubs
 
 CODEX_SPEC = "codex/gpt-5.3-codex"
 
@@ -65,8 +66,8 @@ def codex_launch(monkeypatch, tmp_path):
 
         async def fake_stream(cmd, **kwargs):
             prepare = kwargs.get("_prepare_argv")
-            assert prepare is not None
-            cmd = prepare(dict(kwargs.get("env") or os.environ))
+            if prepare is not None:
+                cmd = prepare(dict(kwargs.get("env") or os.environ))
             calls.append(list(cmd))
             if False:
                 yield None
@@ -1780,3 +1781,145 @@ async def test_a_codex_worker_refuses_secret_fields_it_cannot_carry(flow_run, co
 
     assert SECRET not in str(refused.value)
     assert codex_home.profile_files() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_mcp", "cli_disabled", "expected_disabled"),
+    [(True, False, True), (False, True, True), (False, False, False)],
+    ids=["profile", "cli-flag", "no-key"],
+)
+async def test_profile_mcp_containment_reaches_real_codex_argv(
+    monkeypatch, tmp_path, codex_home, codex_launch, profile_mcp, cli_disabled, expected_disabled
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    codex_home.write_config({"ambient": {"command": "synthetic-server"}})
+    agents = tmp_path / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "reviewer.md").write_text(
+        f"---\n{'mcp: none' if profile_mcp else 'model: codex/gpt-5.3-codex'}\n---\nReview.\n"
+    )
+    branches = _wire_agent_stubs(monkeypatch, tmp_path)
+    seen = {}
+
+    async def capture(self, instruction=None, **kwargs):
+        event = await self.chat_model.create_event(prompt="hi", repo=tmp_path)
+        seen["argv"] = await codex_launch(event.payload["request"], argv=True)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(CODEX_SPEC, "go", agent_name="reviewer", no_mcp_config=cli_disabled)
+
+    assert ("--ignore-user-config" in seen["argv"]) is expected_disabled
+    metadata = branches[-1].metadata[agent_mod._MCP_LAUNCH_KEY]
+    assert metadata["no_mcp_config"] is expected_disabled
+    if profile_mcp:
+        assert metadata["no_mcp_config_source"] == "profile"
+    else:
+        assert "no_mcp_config_source" not in metadata
+
+
+@pytest.mark.asyncio
+async def test_profile_mcp_none_refuses_explicit_config_before_spawn(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    agents = tmp_path / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "reviewer.md").write_text("---\nmcp: none\n---\nReview.\n")
+    branches = _wire_agent_stubs(monkeypatch, tmp_path)
+    named = _mcp_config_file(tmp_path, SERVERS)
+
+    with pytest.raises(ValueError, match="mcp: none.*--mcp-config"):
+        await agent_mod._run_agent(CODEX_SPEC, "go", agent_name="reviewer", mcp_config=named)
+    assert branches == []
+
+
+@pytest.mark.asyncio
+async def test_resume_replays_profile_containment_into_codex_argv(
+    monkeypatch, tmp_path, codex_home, codex_launch
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    codex_home.write_config({"ambient": {"command": "synthetic-server"}})
+    branch_id = _wire_resume_stubs(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "gpt-5.3-codex",
+        config_overrides={"mcp_servers.old.command": "old-server"},
+    )
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {
+            "mcp_config": None,
+            "no_mcp_config": True,
+            "no_mcp_config_source": "profile",
+            "launch_dir": str(tmp_path),
+        },
+    )
+    seen = {}
+
+    async def capture(self, instruction=None, **kwargs):
+        event = await self.chat_model.create_event(prompt="hi", repo=tmp_path)
+        seen["argv"] = await codex_launch(event.payload["request"], argv=True)
+        seen["metadata"] = self.metadata[agent_mod._MCP_LAUNCH_KEY]
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert "--ignore-user-config" in seen["argv"]
+    assert not any("mcp_servers.old." in value for value in seen["argv"])
+    assert seen["metadata"]["no_mcp_config_source"] == "profile"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config_exists", [True, False], ids=["existing", "missing"])
+@pytest.mark.parametrize("with_profile", [True, False], ids=["profile", "no-profile"])
+async def test_profile_contained_resume_refuses_explicit_config_before_spawn(
+    monkeypatch, tmp_path, codex_home, config_exists, with_profile
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    monkeypatch.chdir(tmp_path)
+    codex_home.write_config({})
+    agents = tmp_path / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "reviewer.md").write_text("---\nmodel: codex/gpt-5.3-codex\n---\nReview.\n")
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "codex", "gpt-5.3-codex")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {
+            "mcp_config": None,
+            "no_mcp_config": True,
+            "no_mcp_config_source": "profile",
+            "launch_dir": str(tmp_path),
+        },
+    )
+    called = AsyncMock()
+    monkeypatch.setattr(Branch, "operate", called)
+    named = _mcp_config_file(tmp_path, SERVERS) if config_exists else str(tmp_path / "missing.json")
+
+    with pytest.raises(ValueError, match="profile mcp: none.*--mcp-config"):
+        await agent_mod._run_agent(
+            None,
+            "follow up",
+            resume=branch_id,
+            mcp_config=named,
+            agent_name="reviewer" if with_profile else None,
+        )
+    called.assert_not_awaited()

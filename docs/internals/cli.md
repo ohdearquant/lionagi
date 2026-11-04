@@ -125,7 +125,10 @@ was launched with. A new branch records that choice once, in `branch.metadata` u
 `mcp_launch`: the config file on the command line as an absolute path (a submitted leg's
 snapshot included), the `--no-mcp-config` flag, and the launch directory. The resume resolves
 from the record, searching from the launch directory, so the directory the resume runs in does
-not decide what is found. A flag given on the resume is used for that leg instead of the record.
+not decide what is found. A flag given on the resume is used for that leg instead of the record,
+except that profile-origin `mcp: none` containment cannot be relaxed with `--mcp-config`; that
+combination is refused even when no profile is named on resume. Its `mcp_launch` record sets
+`no_mcp_config_source` to `profile`.
 Either way, a set resolved on the resume replaces the servers the earlier run was handed, on
 codex (whose servers are merged overrides) as on Claude, and the Claude strict flag goes with
 them. The set is handed to a resumed leg as it is to a new one: a set named by a config file,
@@ -506,7 +509,8 @@ with `--no-mcp-config` keeps no servers across `li o flow --resume`, and a run
 started with no flag searches for `.mcp.json` from its original launch
 directory, rather than re-running `setup_orchestration` with today's defaults
 and re-discovering whatever `.mcp.json` happens to sit near the resuming
-directory. The search runs again at resume, so it reads that config as it is
+directory. A profile's `mcp: none` choice is persisted as the effective refusal and its profile
+source, so a resumed flow keeps that choice even if the profile changes. The search runs again at resume, so it reads that config as it is
 then. A checkpoint written before these fields existed (no `no_mcp_config`
 key in its persisted `config`) has no record of that original decision, so
 `_resume_flow` fails closed: it treats the checkpoint as `no_mcp_config=True`

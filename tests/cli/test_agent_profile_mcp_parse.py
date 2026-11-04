@@ -1,0 +1,92 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Agent profile MCP containment declaration."""
+
+from __future__ import annotations
+
+import pytest
+
+from lionagi._errors import ConfigurationError
+from lionagi.cli._providers import AgentProfile, _parse_profile, profile_config
+
+
+def test_profile_mcp_none_is_a_recognized_runtime_setting():
+    profile = _parse_profile("reviewer", "---\nmcp: none\n---\nReview.")
+
+    assert profile.mcp == "none"
+    assert "mcp" not in profile.extra
+    assert profile_config(profile)["mcp"] == "none"
+
+
+def test_profile_without_mcp_keeps_legacy_defaults():
+    profile = _parse_profile("reviewer", "---\nmodel: codex/gpt-5.5\n---\nReview.")
+
+    assert profile.mcp is None
+    assert AgentProfile(name="manual").mcp is None
+    assert "mcp" not in profile_config(profile)
+
+
+@pytest.mark.parametrize("value", ["other", "null", "true", "false", "0", "[]", "{}", "'NONE'"])
+def test_profile_mcp_invalid_value_is_refused_without_echoing_it(value):
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", f"---\nmcp: {value}\n---\nReview.")
+
+    message = str(raised.value)
+    assert "reviewer" in message
+    assert "mcp" in message
+    assert "must be 'none'" in message
+    if value == "other":
+        assert value not in message
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "mcp: none\nmcp: none\n",
+        "mcp: invalid\nmcp: none\n",
+        "\"mcp\": none\n'mcp': none\n",
+        "defaults: &defaults {mcp: none}\n<<: *defaults\nmcp: none\n",
+        "mcp: [unterminated\n",
+        "mcp: none\nmodel: [unterminated\n",
+    ],
+)
+def test_duplicate_or_unreadable_mcp_frontmatter_is_refused(frontmatter):
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+
+    assert "reviewer" in str(raised.value)
+    assert "mcp" in str(raised.value)
+
+
+def test_unclosed_mcp_frontmatter_is_refused():
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", "---\nmcp: none\n")
+
+    assert "reviewer" in str(raised.value)
+    assert "mcp" in str(raised.value)
+
+
+def test_unrelated_unreadable_frontmatter_keeps_existing_leniency():
+    profile = _parse_profile("reviewer", "---\nmodel: [unterminated\n---\nReview.")
+    assert profile.mcp is None
+
+
+def test_unrelated_duplicate_key_keeps_existing_yaml_behavior():
+    profile = _parse_profile("reviewer", "---\nmodel: first\nmodel: second\n---\nReview.")
+    assert profile.model == "second"
+    assert profile.mcp is None
+
+
+def test_single_merged_mcp_key_is_valid():
+    profile = _parse_profile("reviewer", "---\ndefaults: &d {mcp: none}\n<<: *d\n---\nReview.")
+    assert profile.mcp == "none"
+
+
+def test_mcp_example_in_body_is_not_frontmatter():
+    profile = _parse_profile("reviewer", "Review.\n\nExample:\n```yaml\nmcp: none\n```")
+    assert profile.mcp is None
+
+
+def test_mcp_mention_in_comment_does_not_change_unreadable_other_frontmatter():
+    profile = _parse_profile("reviewer", "---\n# mcp: none\nmodel: [\n---\nReview.")
+    assert profile.mcp is None
