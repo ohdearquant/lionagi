@@ -26,7 +26,7 @@ from .connections.endpoint import (
     _names_credential_setting,
     _stored_base_url,
 )
-from .connections.endpoint_config import RUNTIME_STATE_NAMES
+from .connections.endpoint_config import RUNTIME_STATE_NAMES, _safe_validation_details
 from .hooks import (
     HookedEvent,
     HookEvent,
@@ -44,20 +44,133 @@ if TYPE_CHECKING:
 _CALIBRATION_FLOOR = 4_000
 
 
-def _safe_validation_details(error: ValidationError) -> str:
-    """Count validation failures without rendering caller-controlled details."""
+def _derive_safe_exception_group(
+    source: BaseExceptionGroup, members: list[BaseException]
+) -> BaseExceptionGroup:
+    """Derive a group, retaining metadata and refusing a dishonest derive result."""
+    replacement = None
     try:
-        count = ValidationError.error_count(error)
+        if hasattr(source, "derive"):
+            candidate = source.derive(members)
+            if (
+                isinstance(candidate, BaseExceptionGroup)
+                and len(candidate.exceptions) == len(members)
+                and all(new is old for new, old in zip(candidate.exceptions, members, strict=True))
+            ):
+                replacement = candidate
     except Exception:
-        return "validation failed"
-    label = "error" if count == 1 else "errors"
-    return f"{count} validation {label}"
+        replacement = None
+    if replacement is None:
+        if hasattr(BaseExceptionGroup, "derive"):
+            replacement = BaseExceptionGroup.derive(source, members)
+        else:
+            group_type = (
+                ExceptionGroup if isinstance(source, ExceptionGroup) else BaseExceptionGroup
+            )
+            replacement = group_type(source.message, members)
+    for descriptor in (
+        BaseException.__cause__,
+        BaseException.__context__,
+        BaseException.__traceback__,
+        BaseException.__suppress_context__,
+    ):
+        descriptor.__set__(replacement, descriptor.__get__(source, type(source)))
+    if hasattr(source, "__notes__"):
+        replacement.__notes__ = list(source.__notes__)
+    return replacement
+
+
+def _clean_linked_group(
+    group: BaseExceptionGroup, cache: dict[int, BaseException | None]
+) -> BaseException | None:
+    """Remove validation members from a group reached through a chain link."""
+    if id(group) in cache:
+        return cache[id(group)]
+    scan = [group]
+    scanned: set[int] = set()
+    while scan:
+        candidate = scan.pop()
+        if isinstance(candidate, ValidationError):
+            break
+        if isinstance(candidate, BaseExceptionGroup) and id(candidate) not in scanned:
+            scanned.add(id(candidate))
+            scan.extend(candidate.exceptions)
+    else:
+        cache[id(group)] = group
+        return group
+    pending = [(group, False)]
+    active: set[int] = set()
+    results: list[BaseException | None] = []
+    while pending:
+        current, expanded = pending.pop()
+        if expanded:
+            count = len(current.exceptions)
+            children = results[-count:] if count else []
+            if count:
+                del results[-count:]
+            active.remove(id(current))
+            kept = [child for child in children if child is not None]
+            if not kept:
+                replacement = None
+            elif len(kept) == count and all(
+                new is old for new, old in zip(kept, current.exceptions, strict=True)
+            ):
+                replacement = current
+            else:
+                replacement = _derive_safe_exception_group(current, kept)
+            cache[id(current)] = replacement
+            if replacement is not None:
+                cache[id(replacement)] = replacement
+            results.append(replacement)
+        elif isinstance(current, ValidationError):
+            results.append(None)
+        elif not isinstance(current, BaseExceptionGroup):
+            results.append(current)
+        elif id(current) in active:
+            results.append(None)
+        elif id(current) in cache:
+            results.append(cache[id(current)])
+        else:
+            active.add(id(current))
+            pending.append((current, True))
+            pending.extend((child, False) for child in reversed(current.exceptions))
+    return results[0]
+
+
+def _sever_validation_chains(error: BaseException) -> None:
+    """Cut only links to validation errors, preserving ordinary exception objects."""
+    pending = [error]
+    seen: set[int] = set()
+    groups: dict[int, BaseException | None] = {}
+    while pending:
+        current = pending.pop()
+        if id(current) in seen or isinstance(current, ValidationError):
+            continue
+        seen.add(id(current))
+        for link in (BaseException.__cause__, BaseException.__context__):
+            linked = link.__get__(current, type(current))
+            if isinstance(linked, BaseExceptionGroup):
+                replacement = _clean_linked_group(linked, groups)
+            elif isinstance(linked, ValidationError):
+                replacement = None
+            else:
+                replacement = linked
+            if replacement is not linked:
+                suppressed = BaseException.__suppress_context__.__get__(current, type(current))
+                link.__set__(current, replacement)
+                BaseException.__suppress_context__.__set__(current, suppressed)
+            if replacement is not None:
+                pending.append(replacement)
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
 
 
 def _sanitize_execution_error(error: Any) -> Any:
     """Replace validation errors while preserving other errors and group structure."""
     if isinstance(error, ValidationError):
         return ValueError(f"API call failed: {_safe_validation_details(error)}")
+    if isinstance(error, BaseException):
+        _sever_validation_chains(error)
     if not isinstance(error, BaseExceptionGroup):
         return error
 
@@ -89,13 +202,8 @@ def _sanitize_execution_error(error: Any) -> Any:
             active.remove(id(current))
             if all(new is old for new, old in zip(members, current.exceptions, strict=True)):
                 replacement = current
-            elif hasattr(BaseExceptionGroup, "derive"):
-                replacement = BaseExceptionGroup.derive(current, members)
             else:
-                group_type = (
-                    ExceptionGroup if isinstance(current, ExceptionGroup) else BaseExceptionGroup
-                )
-                replacement = group_type(current.message, members)
+                replacement = _derive_safe_exception_group(current, members)
             replacements[id(current)] = replacement
             results.append(replacement)
         elif isinstance(current, ValidationError):
