@@ -70,3 +70,46 @@ async def test_profile_containment_survives_three_resumes(
     with pytest.raises(ValueError, match="profile mcp: none.*--mcp-config"):
         await agent_mod._run_agent(None, "override", resume=branch_id, mcp_config=str(config))
     assert len(captured) == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_resume_replays_submitted_snapshot_origin(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    monkeypatch.chdir(tmp_path)
+    old = tmp_path / "old.json"
+    old.write_text(json.dumps({"mcpServers": {"original": {"command": "server"}}}))
+    newer = tmp_path / "new.json"
+    newer.write_text(json.dumps({"mcpServers": {"new": {"command": "server"}}}))
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {
+            "mcp_config": str(old),
+            "mcp_config_origin": "submit_snapshot",
+            "no_mcp_config": False,
+            "launch_dir": str(tmp_path),
+        },
+    )
+    calls = []
+    real_resolve = agent_mod.resolve_spawn_mcp_servers
+
+    def capture_resolution(*args, **kwargs):
+        result = real_resolve(*args, **kwargs)
+        calls.append((args, kwargs, result))
+        return result
+
+    seen = {}
+
+    async def capture_branch(self, instruction=None, **kwargs):
+        seen.update(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(agent_mod, "resolve_spawn_mcp_servers", capture_resolution)
+    monkeypatch.setattr(Branch, "operate", capture_branch)
+    await agent_mod._run_agent(None, "continue", resume=branch_id, mcp_submit_snapshot=str(newer))
+    assert calls[-1][1]["submit_snapshot"] == str(old)
+    assert calls[-1][2].explicit is False
+    assert set(seen["mcp_servers"]) == {"original"}

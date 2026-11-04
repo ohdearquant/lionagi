@@ -3522,3 +3522,56 @@ async def test_run_flow_persists_a_relative_mcp_config_as_the_path_it_resolved(
     persisted = inner_mock.call_args.kwargs["checkpoint_config"]["mcp_config"]
     assert persisted == str((launched_from / "cfg.json").resolve())
     assert Path(persisted).is_absolute()
+
+
+async def test_submit_snapshot_origin_round_trips_through_flow_checkpoint(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from lionagi.cli.orchestrate import flow as flow_module
+
+    monkeypatch.chdir(tmp_path)
+    inner = AsyncMock(return_value="ok result")
+    setup = AsyncMock(return_value=_env_for_run_flow(tmp_path))
+    with (
+        patch.object(flow_module, "setup_orchestration", setup),
+        patch.object(flow_module, "_run_flow_inner", inner),
+        patch.object(flow_module, "start_live_persist", AsyncMock()),
+        patch.object(flow_module, "stop_live_persist", AsyncMock()),
+    ):
+        await flow_module._run_flow("claude", "work", mcp_submit_snapshot="snapshot.json")
+    config = inner.call_args.kwargs["checkpoint_config"]
+    assert config["mcp_config_origin"] == "submit_snapshot"
+    assert config["mcp_submit_snapshot"] == str(tmp_path / "snapshot.json")
+    checkpoint = _mcp_checkpoint(config)
+    resumed = AsyncMock(return_value=("ok", "completed"))
+    with (
+        patch.object(
+            flow_module, "resolve_checkpoint_target", AsyncMock(return_value=(None, checkpoint))
+        ),
+        patch.object(flow_module, "_run_flow", resumed),
+    ):
+        await flow_module._resume_flow("abc123")
+    assert resumed.call_args.kwargs["mcp_config_origin"] == "submit_snapshot"
+    assert resumed.call_args.kwargs["mcp_submit_snapshot"] == str(tmp_path / "snapshot.json")
+
+
+async def test_contained_flow_drops_submitted_snapshot_from_checkpoint(
+    temp_db_path: Path, tmp_path: Path
+):
+    from lionagi.cli.orchestrate import flow as flow_module
+
+    env = _env_for_run_flow(tmp_path)
+    env.mcp_disabled_by_profile = True
+    inner = AsyncMock(return_value="ok result")
+    with (
+        patch.object(flow_module, "setup_orchestration", AsyncMock(return_value=env)),
+        patch.object(flow_module, "_run_flow_inner", inner),
+        patch.object(flow_module, "start_live_persist", AsyncMock()),
+        patch.object(flow_module, "stop_live_persist", AsyncMock()),
+    ):
+        await flow_module._run_flow("claude", "work", mcp_submit_snapshot="snapshot.json")
+    config = inner.call_args.kwargs["checkpoint_config"]
+    assert config["no_mcp_config"] is True
+    assert config["no_mcp_config_source"] == "profile"
+    assert "mcp_submit_snapshot" not in config
+    assert "mcp_config_origin" not in config

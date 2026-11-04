@@ -1575,6 +1575,7 @@ async def _run_agent(
     idle_timeout: int | None = None,
     workload: str | None = None,
     *,
+    mcp_submit_snapshot: str | None = None,
     _parent_marker: Callable[[], None] | None = None,
     _lost_write_out: dict[str, Any] | None = None,
     _worker_spawn_continuation: object | None = None,
@@ -1687,6 +1688,8 @@ async def _run_agent(
                 )
 
         profile_disables_mcp = getattr(profile, "mcp", None) == "none"
+        if mcp_config is not None and mcp_submit_snapshot is not None:
+            raise McpConfigError("--mcp-config cannot be combined with --mcp-submit-snapshot")
         if profile_disables_mcp and mcp_config is not None:
             raise McpConfigError(
                 f"agent profile {agent_name!r} declares mcp: none; "
@@ -1769,6 +1772,7 @@ async def _run_agent(
             mcp_config,
             launch_dir=launch_dir,
             disabled=no_mcp_config,
+            submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
         )
 
         # A resume that names no MCP flag replays the choice its branch was launched
@@ -1803,10 +1807,12 @@ async def _run_agent(
                             f"which is no longer a readable file; {how_to_go_on}"
                         )
                 try:
+                    is_submit_snapshot = launched.get("mcp_config_origin") == "submit_snapshot"
                     mcp_resolution = resolve_spawn_mcp_servers(
-                        recorded_config,
+                        None if is_submit_snapshot else recorded_config,
                         launch_dir=launched["launch_dir"],
                         disabled=disabled,
+                        submit_snapshot=recorded_config if is_submit_snapshot else None,
                     )
                 except McpConfigError as exc:
                     # Only a named file is refused; a search that finds nothing usable
@@ -2321,9 +2327,10 @@ async def _run_agent(
             # A snapshot's resolution reports the config it was taken from and the
             # directory its search began in, both provenance; a resume must read the
             # snapshot itself, from this process's own directory.
-            named_on_the_line = mcp_config is not None and mcp_resolution.source is not None
+            selected_config = mcp_config or mcp_submit_snapshot
+            named_on_the_line = selected_config is not None and mcp_resolution.source is not None
             line_file = (
-                explicit_mcp_config_path(mcp_config, launch_dir=launch_dir)
+                explicit_mcp_config_path(selected_config, launch_dir=launch_dir)
                 if named_on_the_line
                 else None
             )
@@ -2334,6 +2341,8 @@ async def _run_agent(
             }
             if profile_disables_mcp:
                 branch.metadata[_MCP_LAUNCH_KEY]["no_mcp_config_source"] = "profile"
+            elif mcp_submit_snapshot is not None and not no_mcp_config:
+                branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "submit_snapshot"
         elif profile_disables_mcp:
             # Once a resumed leg is contained by its profile, later resumes
             # without that profile must not restore the earlier server set.
@@ -2987,6 +2996,11 @@ async def _run_agent(
                     notify=notify,
                     mcp_config=mcp_config,
                     no_mcp_config=no_mcp_config,
+                    **(
+                        {"mcp_submit_snapshot": mcp_submit_snapshot}
+                        if mcp_submit_snapshot is not None
+                        else {}
+                    ),
                     _auto_resumed=True,
                     _worker_spawn_continuation=_resumed_continuation,
                     _injection_totals=_injection_totals,
@@ -3175,6 +3189,7 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
 
+    agent.add_argument("--mcp-submit-snapshot", default=None, help=argparse.SUPPRESS)
     agent.add_argument(
         "--mcp-config",
         dest="mcp_config",
@@ -3359,6 +3374,11 @@ def run_agent(args: argparse.Namespace) -> int:
                 images=image_uris,
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),
+                **(
+                    {"mcp_submit_snapshot": args.mcp_submit_snapshot}
+                    if getattr(args, "mcp_submit_snapshot", None) is not None
+                    else {}
+                ),
             )
         )
     except McpConfigError as exc:

@@ -520,6 +520,11 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 notify=getattr(args, "notify", None),
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),
+                **(
+                    {"mcp_submit_snapshot": args.mcp_submit_snapshot}
+                    if getattr(args, "mcp_submit_snapshot", None) is not None
+                    else {}
+                ),
             ),
             verbose=args.verbose,
             # planning produced no usable assignments — fail loud with actionable message
@@ -765,6 +770,11 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 notify=getattr(args, "notify", None),
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),
+                **(
+                    {"mcp_submit_snapshot": args.mcp_submit_snapshot}
+                    if getattr(args, "mcp_submit_snapshot", None) is not None
+                    else {}
+                ),
             ),
             verbose=args.verbose,
             # planning produced no usable DAG — fail loud with actionable message

@@ -14,6 +14,7 @@ def _add_mcp_config_args(parser: argparse.ArgumentParser) -> None:
     resolved, so the answer is given once here rather than left to each
     provider CLI to find for itself from a directory the caller never chose.
     """
+    parser.add_argument("--mcp-submit-snapshot", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--mcp-config",
         dest="mcp_config",

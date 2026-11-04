@@ -1028,6 +1028,7 @@ async def setup_orchestration(
     pack: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    mcp_submit_snapshot: str | None = None,
     no_mcp_config_source: str | None = None,
     mcp_launch_dir: str | None = None,
 ) -> OrchestrationEnv:
@@ -1087,6 +1088,7 @@ async def setup_orchestration(
         mcp_config,
         launch_dir=launch_dir,
         disabled=no_mcp_config,
+        submit_snapshot=mcp_submit_snapshot,
     )
     # An explicit empty set is distinct from finding no configuration.
     run_mcp_servers = {} if no_mcp_config else mcp_resolution.servers

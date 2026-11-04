@@ -66,9 +66,9 @@ def _child_config(argv: list[str]) -> str | None:
     """
     seen: list[str] = []
     for i, tok in enumerate(argv):
-        if tok == "--mcp-config" and i + 1 < len(argv):
+        if tok in {"--mcp-config", "--mcp-submit-snapshot"} and i + 1 < len(argv):
             seen.append(argv[i + 1])
-        elif tok.startswith("--mcp-config="):
+        elif tok.startswith(("--mcp-config=", "--mcp-submit-snapshot=")):
             seen.append(tok.split("=", 1)[1])
     return seen[-1] if seen else None
 
@@ -143,7 +143,8 @@ def test_the_snapshot_lands_in_front_of_the_positional_sentinel(
 
     argv = captured["argv"]
     assert "--" in argv, argv
-    assert argv.index("--mcp-config") < argv.index("--"), argv
+    assert "--mcp-config" not in argv
+    assert argv.index("--mcp-submit-snapshot") < argv.index("--"), argv
 
 
 @pytest.mark.parametrize("verb", ("flow.submit", "fanout.submit"))
@@ -166,6 +167,7 @@ def test_a_caller_who_names_a_config_gets_that_config_and_a_handle_that_says_so(
         {"query": ["a-model"], "prompt": "hi", "mcp_config": str(chosen), "cwd": str(submit_dir)},
     )
 
+    assert "--mcp-submit-snapshot" not in captured["argv"]
     child_sees = _child_config(captured["argv"])
     assert child_sees == str(chosen)
     seen = resolve_spawn_mcp_servers(child_sees, launch_dir=submit_dir)
@@ -260,6 +262,7 @@ def test_a_play_caller_who_names_a_config_gets_that_config_and_a_handle_that_say
         playbook=playbook,
     )
 
+    assert "--mcp-submit-snapshot" not in captured["argv"]
     child_sees = _child_config(captured["argv"])
     assert child_sees == str(chosen)
     seen = resolve_spawn_mcp_servers(child_sees, launch_dir=submit_dir)
@@ -292,16 +295,16 @@ def test_the_orchestration_cli_accepts_the_flags_the_surface_renders(sandbox):
 def test_a_found_config_reaches_the_run_as_found_and_a_named_one_as_named(
     sandbox, submit_dir, monkeypatch, verb
 ):
-    """The child is pointed at the snapshot with --mcp-config, the flag a caller
-    names a file with. The run still has to tell the two apart: a named file is
-    a grant of everything in it, a found one is not."""
+    """The hidden carrier preserves ambient origin; a named file stays explicit."""
     (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"s1": {"command": "one"}}}))
     named = submit_dir / "named.json"
     named.write_text(json.dumps({"mcpServers": {"s2": {"command": "two"}}}))
 
     captured = _capture_popen(monkeypatch)
     _spawn(verb, {"query": ["a-model"], "prompt": "hi", "cwd": str(submit_dir)})
-    found = resolve_spawn_mcp_servers(_child_config(captured["argv"]), launch_dir=submit_dir)
+    found = resolve_spawn_mcp_servers(
+        launch_dir=submit_dir, submit_snapshot=_child_config(captured["argv"])
+    )
 
     captured = _capture_popen(monkeypatch)
     _spawn(

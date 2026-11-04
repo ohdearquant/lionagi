@@ -32,10 +32,8 @@ __all__ = (
 
 MCP_CONFIG_FILENAME = ".mcp.json"
 
-# Carried by a snapshot of a config that was found rather than named, naming the
-# file it was taken from. A submitted run is pointed at its snapshot with
-# --mcp-config, the flag a caller names a file with, so without this key the set
-# a search found would reach the run as one the caller asked for.
+# Carried by a snapshot of a config that was found rather than named, naming
+# the file it was taken from. Origin comes from the carrier, not this key.
 SNAPSHOT_SOURCE_KEY = "lionagiSnapshotOf"
 # Beside it, the directory that search began in. When the submission names a cwd
 # other than that directory, the run reading the snapshot starts there, so its own
@@ -175,6 +173,7 @@ def resolve_spawn_mcp_servers(
     *,
     launch_dir: str | Path,
     disabled: bool = False,
+    submit_snapshot: str | Path | None = None,
 ) -> McpResolution:
     """Resolve the server set to hand a child spawned from *launch_dir*.
 
@@ -185,16 +184,23 @@ def resolve_spawn_mcp_servers(
     """
     searched_from = Path(launch_dir).expanduser().resolve()
 
+    if explicit is not None and submit_snapshot is not None:
+        raise McpConfigError("--mcp-config cannot be combined with --mcp-submit-snapshot")
+
     if disabled:
         return McpResolution(None, None, None, searched_from)
 
-    if explicit is not None:
-        path = explicit_mcp_config_path(explicit, launch_dir=searched_from)
+    if explicit is not None or submit_snapshot is not None:
+        selected = explicit if explicit is not None else submit_snapshot
+        path = explicit_mcp_config_path(selected, launch_dir=searched_from)
         if not path.is_file():
-            raise McpConfigError(f"--mcp-config {str(explicit)!r} is not a readable file ({path})")
+            flag = "--mcp-config" if explicit is not None else "--mcp-submit-snapshot"
+            raise McpConfigError(f"{flag} {str(selected)!r} is not a readable file ({path})")
         data = _read_config(path)
-        if SNAPSHOT_SOURCE_KEY not in data:
+        if explicit is not None:
             return McpResolution(data["mcpServers"], None, path, searched_from, explicit=True)
+        if SNAPSHOT_SOURCE_KEY not in data:
+            return McpResolution(data["mcpServers"], None, path, searched_from)
         # A snapshot written before the search directory was recorded falls back to this one.
         return McpResolution(
             data["mcpServers"],

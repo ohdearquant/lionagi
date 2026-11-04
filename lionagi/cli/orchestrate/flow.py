@@ -3214,6 +3214,8 @@ async def _run_flow(
     notify: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    mcp_submit_snapshot: str | None = None,
+    mcp_config_origin: str | None = None,
     no_mcp_config_source: str | None = None,
     mcp_launch_dir: str | None = None,
     **legacy_kwargs,
@@ -3280,6 +3282,11 @@ async def _run_flow(
         }
         if no_mcp_config_source is not None:
             _checkpoint_config["no_mcp_config_source"] = no_mcp_config_source
+        if mcp_submit_snapshot is not None and not no_mcp_config:
+            _checkpoint_config["mcp_submit_snapshot"] = _canonical_mcp_config(
+                mcp_submit_snapshot, base=mcp_launch_dir
+            )
+            _checkpoint_config["mcp_config_origin"] = "submit_snapshot"
 
         env = await setup_orchestration(
             pattern_name="Flow",
@@ -3298,6 +3305,11 @@ async def _run_flow(
             pack=pack,
             mcp_config=mcp_config,
             no_mcp_config=no_mcp_config,
+            **(
+                {"mcp_submit_snapshot": mcp_submit_snapshot}
+                if mcp_submit_snapshot is not None
+                else {}
+            ),
             mcp_launch_dir=mcp_launch_dir,
             **(
                 {"no_mcp_config_source": no_mcp_config_source}
@@ -3308,6 +3320,8 @@ async def _run_flow(
         if getattr(env, "mcp_disabled_by_profile", False):
             _checkpoint_config["no_mcp_config"] = True
             _checkpoint_config["no_mcp_config_source"] = "profile"
+            _checkpoint_config.pop("mcp_submit_snapshot", None)
+            _checkpoint_config.pop("mcp_config_origin", None)
 
         # `--notify` is compatibility sugar over the terminal-callback registry:
         # registered against this run's own entity, unregistered in `finally`
@@ -4008,6 +4022,12 @@ async def _resume_flow(
     overrides); every other _run_flow kwarg replays the persisted config."""
     _run_dir, checkpoint = await resolve_checkpoint_target(target)
     config = dict(checkpoint.get("config") or {})
+    origin = config.get("mcp_config_origin")
+    snapshot = config.get("mcp_submit_snapshot")
+    if (origin is not None or snapshot is not None) and (
+        origin != "submit_snapshot" or not snapshot or config.get("mcp_config") is not None
+    ):
+        raise FlowResumeError("Checkpoint has an invalid MCP config origin.")
     if "no_mcp_config" not in config:
         # A checkpoint written before MCP containment was tracked carries no
         # record of the run's original --no-mcp-config decision. Replaying it
