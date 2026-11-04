@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from lionagi._errors import ConfigurationError
@@ -257,3 +259,86 @@ def test_plain_scalar_quote_does_not_hide_later_mcp_key(frontmatter):
 def test_real_quoted_values_with_mcp_text_remain_lenient(frontmatter):
     profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
     assert profile.mcp is None
+
+
+def test_long_unreadable_flow_profile_is_scanned_in_bounded_time():
+    # The invalid token makes whole-document scanning stop before the last key.
+    # The thousands of commas used to cause an overlapping scan of every suffix.
+    line = "model: @invalid," + "a," * 9_500 + "mcp: none\n"
+    start = time.perf_counter()
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", f"---\n{line}---\nReview.")
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.05, f"unreadable 19 KB frontmatter took {elapsed:.3f}s"
+
+
+@pytest.mark.parametrize("key", ["mcp: none", '"m\\u0063p": none'])
+def test_long_unreadable_flow_key_is_detected_with_linear_scanner_input(key, monkeypatch):
+    import yaml
+
+    real_scan = yaml.scan
+    scanned_chars = 0
+
+    def counted_scan(source, *args, **kwargs):
+        nonlocal scanned_chars
+        scanned_chars += len(source)
+        return real_scan(source, *args, **kwargs)
+
+    monkeypatch.setattr(yaml, "scan", counted_scan)
+    text = "---\nmodel: @invalid," + "a," * 4_000 + key + "\n---\nReview."
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", text)
+    assert scanned_chars < 5 * len(text)
+
+
+def test_long_unreadable_flow_with_mcp_only_in_quoted_value_stays_lenient():
+    text = "---\nmodel: @invalid," + "a," * 4_000 + 'note: "mcp: none"\n---\nReview.'
+    assert _parse_profile("reviewer", text).mcp is None
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "model: @invalid, [, note: cant? mcp\n",
+        "model: @invalid, { !tagkey: &policy mcp, *policy: none, \n",
+        "model: @invalid, [*policy: none, : none, key: &policy mcp\n",
+    ],
+)
+def test_explicit_or_aliased_keys_after_malformed_flow_are_refused(frontmatter):
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+
+
+def test_explicit_key_and_anchor_text_inside_quoted_value_stays_lenient():
+    text = '---\nmodel: @invalid, note: "example ? mcp, &policy mcp"\n---\nReview.'
+    assert _parse_profile("reviewer", text).mcp is None
+
+
+def test_unclosed_valid_yaml_does_not_rescan_each_line(monkeypatch):
+    import yaml
+
+    real_scan = yaml.scan
+    scans = 0
+
+    def counted_scan(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(yaml, "scan", counted_scan)
+    body = "note: 'mcp: none'\n" + "description: ordinary\n" * 200
+    assert _parse_profile("reviewer", "---\n" + body).mcp is None
+    assert scans <= 1
+
+
+def test_deep_unclosed_unrelated_frontmatter_keeps_leniency():
+    text = "---\nx: " + "[" * 500 + "a" + "]" * 500
+    assert _parse_profile("reviewer", text).mcp is None
+
+
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_deep_unclosed_mcp_frontmatter_is_refused(position):
+    nested = "x: " + "[" * 500 + "a" + "]" * 500 + "\n"
+    block = "mcp: none\n" + nested if position == "before" else nested + "mcp: none\n"
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", "---\n" + block)

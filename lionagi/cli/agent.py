@@ -2334,6 +2334,15 @@ async def _run_agent(
             }
             if profile_disables_mcp:
                 branch.metadata[_MCP_LAUNCH_KEY]["no_mcp_config_source"] = "profile"
+        elif profile_disables_mcp:
+            # Once a resumed leg is contained by its profile, later resumes
+            # without that profile must not restore the earlier server set.
+            branch.metadata[_MCP_LAUNCH_KEY] = {
+                "mcp_config": None,
+                "no_mcp_config": True,
+                "no_mcp_config_source": "profile",
+                "launch_dir": str(launch_dir),
+            }
 
         if is_resumed_branch:
             from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY

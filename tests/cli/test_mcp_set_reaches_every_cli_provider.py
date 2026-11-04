@@ -57,7 +57,7 @@ def codex_launch(monkeypatch, tmp_path):
 
     from lionhub.providers.openai import _codex_project_layers, codex
 
-    async def launch(request, *, argv: bool = False):
+    async def launch(request, *, argv: bool = False, uncontained_prepare=None):
         """Render the launch command; the `-c` values, or the whole argv when `argv`."""
         calls = []
 
@@ -66,8 +66,10 @@ def codex_launch(monkeypatch, tmp_path):
 
         async def fake_stream(cmd, **kwargs):
             prepare = kwargs.get("_prepare_argv")
-            if prepare is not None:
-                cmd = prepare(dict(kwargs.get("env") or os.environ))
+            if prepare is None and uncontained_prepare is not None:
+                prepare = lambda env: uncontained_prepare(cmd, env)
+            assert prepare is not None
+            cmd = prepare(dict(kwargs.get("env") or os.environ))
             calls.append(list(cmd))
             if False:
                 yield None
@@ -1810,7 +1812,12 @@ async def test_profile_mcp_containment_reaches_real_codex_argv(
 
     async def capture(self, instruction=None, **kwargs):
         event = await self.chat_model.create_event(prompt="hi", repo=tmp_path)
-        seen["argv"] = await codex_launch(event.payload["request"], argv=True)
+        # The uncontained control is rendered before spawn and has no deferred
+        # hook. Supply an explicit identity hook for that case only.
+        uncontained = (lambda cmd, _env: cmd) if not expected_disabled else None
+        seen["argv"] = await codex_launch(
+            event.payload["request"], argv=True, uncontained_prepare=uncontained
+        )
         return "done"
 
     monkeypatch.setattr(Branch, "operate", capture)

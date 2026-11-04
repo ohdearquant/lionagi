@@ -976,11 +976,11 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     def refuse() -> None:
         raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
 
-    def mentions_mcp_key(block: str) -> bool:
+    def mentions_mcp_key(block: str, *, readable: bool = False) -> bool:
         scalar_lines: set[int] = set()
         anchors: dict[str, str] = {}
 
-        def scan(source: str, *, record_block_scalars: bool = False) -> bool:
+        def scan(source: str, *, record_block_scalars: bool = False) -> tuple[bool, bool]:
             expecting_key = False
             pending_anchor = None
             try:
@@ -1003,19 +1003,25 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                     elif expecting_key and isinstance(token, yaml.ScalarToken):
                         expecting_key = False
                         if token.value == "mcp":
-                            return True
+                            return True, False
                     elif expecting_key and isinstance(token, yaml.AliasToken):
                         expecting_key = False
                         if anchors.get(token.value) == "mcp":
-                            return True
+                            return True, False
                     elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
                         expecting_key = False
             except yaml.YAMLError:
-                pass
-            return False
+                return False, False
+            return False, True
 
-        if scan(block, record_block_scalars=True):
+        found, complete = scan(block, record_block_scalars=True)
+        if found:
             return True
+        # A complete token stream has already examined every key. In particular,
+        # a missing closing frontmatter delimiter does not require a scanner per
+        # body line when its YAML token stream itself is readable.
+        if complete and readable:
+            return False
 
         def starts_block_scalar(line: str) -> bool:
             try:
@@ -1029,6 +1035,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         def flow_fragments(line: str):
             quote = None
             scalar_start = True
+            starts = []
             i = 0
             while i < len(line):
                 char = line[i]
@@ -1046,12 +1053,19 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                     quote = char
                 elif char == "#" and (i == 0 or line[i - 1].isspace()):
                     break
-                elif char in ",[{":
-                    yield line[i + 1 :]
+                elif char == "?" and i + 1 < len(line) and line[i + 1].isspace():
+                    # A malformed flow may still contain an explicit YAML key.
+                    # Probe it independently without rescanning the whole suffix.
+                    starts.append((i, True))
+                    scalar_start = True
+                elif char in ",[]{}":
+                    starts.append((i + 1, False))
                     scalar_start = True
                 elif char == ":" and (i + 1 == len(line) or line[i + 1] in " \t,[]{}'\""):
                     scalar_start = True
                 elif scalar_start and char in "!&":
+                    if char == "&":
+                        starts.append((i, True))
                     if char == "!" and line[i : i + 2] == "!<":
                         end = line.find(">", i + 2)
                         i = end if end >= 0 else len(line)
@@ -1063,10 +1077,19 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                 ):
                     scalar_start = False
                 i += 1
+            # Include the next flow segment as local context, but never scan
+            # a suffix past it. Each character is in at most two fragments.
+            for index, (start, explicit_key) in enumerate(starts):
+                next_index = index + (1 if explicit_key else 2)
+                end = starts[next_index][0] - 1 if next_index < len(starts) else i
+                yield line[start:end]
 
         # An earlier malformed token can prevent the scanner from reaching a
-        # later key. Retry lines and flow-delimited suffixes, excluding block
-        # scalar text, quoted values and comments.
+        # later key. Retry lines and bounded flow-delimited fragments, excluding
+        # block scalar text, quoted values and comments. Only fragments which can
+        # contain the literal key, an escaped spelling, or an alias need a YAML
+        # scanner; each character appears in at most two fragments, even on a
+        # long flow-style line.
         scalar_indent: int | None = None
         for number, line in enumerate(block.splitlines()):
             stripped = line.lstrip(" ")
@@ -1077,7 +1100,21 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                 scalar_indent = None
             if number in scalar_lines:
                 continue
-            if scan(line) or any(scan(fragment) for fragment in flow_fragments(line)):
+            if scan(line)[0]:
+                return True
+            fragments = tuple(flow_fragments(line))
+            # A malformed line can use an alias before a later anchor. Collect
+            # candidate anchors first so retry order cannot hide a key alias.
+            if "*" in line and "&" in line:
+                for fragment in fragments:
+                    if "&" in fragment and ("mcp" in fragment or "\\" in fragment):
+                        if scan(fragment)[0]:
+                            return True
+            if any(
+                scan(fragment)[0]
+                for fragment in fragments
+                if "mcp" in fragment or "\\" in fragment or "*" in fragment
+            ):
                 return True
             if starts_block_scalar(line):
                 scalar_indent = indent
@@ -1085,7 +1122,14 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
 
     parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
     if len(parts) < 3:
-        if mentions_mcp_key(text[3:]):
+        block = text[3:]
+        try:
+            yaml.safe_load(block)
+        except (yaml.YAMLError, RecursionError):
+            readable = False
+        else:
+            readable = True
+        if mentions_mcp_key(block, readable=readable):
             refuse()
         return
     block = parts[1]
@@ -1237,7 +1281,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     def read(block: str) -> tuple[bool, Any]:
         try:
             return True, yaml.safe_load(block)
-        except yaml.YAMLError:
+        except (yaml.YAMLError, RecursionError):
             return False, None
 
     if text.startswith("---"):

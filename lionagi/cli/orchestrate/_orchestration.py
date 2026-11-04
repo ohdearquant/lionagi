@@ -1555,9 +1555,9 @@ async def build_worker_branch(
             system_prompt=composed_extra,
             khive_injection=(getattr(w_profile, "khive_injection", None) if w_profile else None),
         )
-        # This run resolved its servers once and hands the result to every
-        # branch it builds: the resolved servers, the empty set a refusal is, or
-        # no set at all when the search found nothing (see the orchestrator).
+        # Hand the worker's effective selection to the branch: its profile can
+        # replace the run's servers with an empty set; absent that restriction,
+        # the run's resolved servers or its unresolved selection are retained.
         run_servers = worker_mcp_servers
         wb = await create_agent(
             spec,
