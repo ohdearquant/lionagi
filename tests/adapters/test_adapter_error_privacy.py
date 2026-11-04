@@ -136,6 +136,59 @@ def test_unexpected_non_validation_error_keeps_existing_diagnostic(kind):
     assert captured.value.__context__ is captured.value.__cause__
 
 
+@pytest.mark.parametrize("kind", ["json", "toml", "csv"])
+def test_unlisted_model_validator_exception_keeps_message_and_cause(kind):
+    class Record(BaseModel):
+        amount: str
+
+        @field_validator("amount")
+        @classmethod
+        def fail(cls, value):
+            raise RuntimeError("validator error")
+
+    adapters = {
+        "json": (JsonAdapter, '{"amount": "value"}'),
+        "toml": (TomlAdapter, 'amount = "value"'),
+        "csv": (CsvAdapter, "amount\nvalue\n"),
+    }
+    adapter, source = adapters[kind]
+    with pytest.raises(AdapterParseError) as captured:
+        adapter.from_obj(Record, source)
+    assert captured.value.message == "validator error"
+    assert isinstance(captured.value.__cause__, RuntimeError)
+
+
+def test_pydantic_diagnostic_keeps_count_but_omits_error_details():
+    class Record(BaseModel):
+        amount: int
+        required: int
+
+    with pytest.raises(AdapterValidationError) as captured:
+        JsonAdapter.from_obj(Record, json.dumps({"amount": _MARKER}))
+    error = captured.value
+    assert error.errors == [{"count": 2}]
+    if _contains_marker(error):
+        pytest.fail("validation diagnostic exposed a rejected value", pytrace=False)
+
+
+def test_custom_pydantic_error_type_does_not_expose_data_or_render_context():
+    class Record(BaseModel):
+        amount: str
+
+        @field_validator("amount")
+        @classmethod
+        def fail(cls, value):
+            raise PydanticCustomError(value, "bad {value}", {"value": _TRAP})
+
+    _TRAP.renders = 0
+    with pytest.raises(AdapterValidationError) as captured:
+        JsonAdapter.from_obj(Record, json.dumps({"amount": _MARKER}))
+    assert captured.value.errors == [{"count": 1}]
+    if _contains_marker(captured.value):
+        pytest.fail("custom error type exposed a value", pytrace=False)
+    assert _TRAP.renders == 0
+
+
 def test_json_many_non_array_does_not_expose_data():
     with pytest.raises(AdapterValidationError) as captured:
         JsonAdapter.from_obj(_Validated, json.dumps({_MARKER: _MARKER}), many=True)
