@@ -3214,6 +3214,10 @@ async def _run_flow(
     notify: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    mcp_submit_snapshot: str | None = None,
+    mcp_config_origin: str | None = None,
+    reject_legacy_mcp_snapshot: bool = False,
+    mcp_launch_dir_unrecorded: bool = False,
     no_mcp_config_source: str | None = None,
     mcp_launch_dir: str | None = None,
     **legacy_kwargs,
@@ -3280,6 +3284,13 @@ async def _run_flow(
         }
         if no_mcp_config_source is not None:
             _checkpoint_config["no_mcp_config_source"] = no_mcp_config_source
+        if mcp_submit_snapshot is not None and not no_mcp_config:
+            _checkpoint_config["mcp_submit_snapshot"] = _canonical_mcp_config(
+                mcp_submit_snapshot, base=mcp_launch_dir
+            )
+            _checkpoint_config["mcp_config_origin"] = "submit_snapshot"
+        elif mcp_config is not None and not no_mcp_config and not reject_legacy_mcp_snapshot:
+            _checkpoint_config["mcp_config_origin"] = "explicit"
 
         env = await setup_orchestration(
             pattern_name="Flow",
@@ -3298,6 +3309,13 @@ async def _run_flow(
             pack=pack,
             mcp_config=mcp_config,
             no_mcp_config=no_mcp_config,
+            **({"reject_legacy_mcp_snapshot": True} if reject_legacy_mcp_snapshot else {}),
+            **({"mcp_launch_dir_unrecorded": True} if mcp_launch_dir_unrecorded else {}),
+            **(
+                {"mcp_submit_snapshot": mcp_submit_snapshot}
+                if mcp_submit_snapshot is not None
+                else {}
+            ),
             mcp_launch_dir=mcp_launch_dir,
             **(
                 {"no_mcp_config_source": no_mcp_config_source}
@@ -3308,6 +3326,8 @@ async def _run_flow(
         if getattr(env, "mcp_disabled_by_profile", False):
             _checkpoint_config["no_mcp_config"] = True
             _checkpoint_config["no_mcp_config_source"] = "profile"
+            _checkpoint_config.pop("mcp_submit_snapshot", None)
+            _checkpoint_config.pop("mcp_config_origin", None)
 
         # `--notify` is compatibility sugar over the terminal-callback registry:
         # registered against this run's own entity, unregistered in `finally`
@@ -4008,6 +4028,46 @@ async def _resume_flow(
     overrides); every other _run_flow kwarg replays the persisted config."""
     _run_dir, checkpoint = await resolve_checkpoint_target(target)
     config = dict(checkpoint.get("config") or {})
+    # Internal replay controls are derived from stored fields, never trusted
+    # as authorizations or provenance claims in the checkpoint itself.
+    config.pop("reject_legacy_mcp_snapshot", None)
+    config.pop("mcp_launch_dir_unrecorded", None)
+    from lionagi.cli._mcp_resolve import LegacyMcpReplayError, _format_recorded_mcp_path
+
+    origin = config.get("mcp_config_origin")
+    snapshot = config.get("mcp_submit_snapshot")
+    launch_dir = config.get("mcp_launch_dir")
+    if "no_mcp_config" in config and not isinstance(config["no_mcp_config"], bool):
+        raise FlowResumeError("The recorded MCP choice is invalid; start a fresh run.")
+    if launch_dir is not None and (
+        not isinstance(launch_dir, str)
+        or not launch_dir.strip()
+        or not Path(launch_dir).is_absolute()
+    ):
+        raise FlowResumeError("The recorded MCP launch directory is invalid; start a fresh run.")
+    if origin is not None or snapshot is not None:
+        named_config = config.get("mcp_config")
+        valid_explicit = (
+            origin == "explicit"
+            and snapshot is None
+            and isinstance(named_config, str)
+            and bool(named_config.strip())
+            and Path(named_config).is_absolute()
+            and config.get("no_mcp_config") is False
+        )
+        valid_snapshot = (
+            origin == "submit_snapshot"
+            and isinstance(snapshot, str)
+            and bool(snapshot.strip())
+            and Path(snapshot).is_absolute()
+            and named_config is None
+            and config.get("no_mcp_config") is False
+        )
+        if not (valid_explicit or valid_snapshot):
+            raise FlowResumeError(
+                "Checkpoint has an invalid MCP config origin for recorded file "
+                f"{_format_recorded_mcp_path(snapshot)}; start a fresh run."
+            )
     if "no_mcp_config" not in config:
         # A checkpoint written before MCP containment was tracked carries no
         # record of the run's original --no-mcp-config decision. Replaying it
@@ -4021,17 +4081,46 @@ async def _resume_flow(
         )
         config["no_mcp_config"] = True
         config.setdefault("mcp_config", None)
+    if (
+        launch_dir is None
+        and config["no_mcp_config"] is False
+        and config.get("mcp_config") is None
+        and snapshot is None
+    ):
+        # Preserve legacy current-directory discovery, but make the loss of
+        # provenance visible on the run rather than claiming an original path.
+        config["mcp_launch_dir_unrecorded"] = True
+    if origin is None and config.get("mcp_config") is not None:
+        recorded_config = config["mcp_config"]
+        if (
+            not isinstance(recorded_config, str)
+            or not recorded_config.strip()
+            or not isinstance(config["no_mcp_config"], bool)
+            or (not Path(recorded_config).is_absolute() and launch_dir is None)
+        ):
+            raise FlowResumeError(
+                f"The recorded MCP configuration {_format_recorded_mcp_path(recorded_config)} "
+                "is ambiguous or unreadable; start a fresh run."
+            )
+    if origin is None and config.get("mcp_config") is not None and config["no_mcp_config"] is False:
+        # The old checkpoint did not say whether this path was caller-named or
+        # submit-generated. The resolver may accept an unmarked named file but
+        # must refuse ambiguous or unreadable bytes without trusting the marker.
+        config["reject_legacy_mcp_snapshot"] = True
     config["dry_run"] = dry_run
     config["show_graph"] = show_graph
     if notify is not None:
         config["notify"] = notify
-    return await _run_flow(
-        prompt=checkpoint.get("prompt", ""),
-        resume_checkpoint=checkpoint,
-        allow_degraded_context=allow_degraded_context,
-        retry_failed=retry_failed,
-        **config,
-    )
+    try:
+        return await _run_flow(
+            prompt=checkpoint.get("prompt", ""),
+            resume_checkpoint=checkpoint,
+            allow_degraded_context=allow_degraded_context,
+            retry_failed=retry_failed,
+            **config,
+        )
+    except LegacyMcpReplayError as exc:
+        raise FlowResumeError(str(exc)) from None
 
 
 _NO_RECORDED_BRANCH_MODEL = object()

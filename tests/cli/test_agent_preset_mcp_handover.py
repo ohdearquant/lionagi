@@ -8,6 +8,7 @@ Caller-named sets must fail when the chosen provider cannot forward them.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import json
 import logging
@@ -183,6 +184,154 @@ async def test_direct_antigravity_leg_rejects_a_named_nonempty_mcp_set(spawn, tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resumed", [False, True], ids=["direct", "resumed"])
+async def test_named_snapshot_marker_cannot_hide_explicit_antigravity_request(
+    spawn, tmp_path, monkeypatch, resumed
+):
+    import lionagi.cli.agent as agent_mod
+    from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
+
+    snapshot = tmp_path / "named.json"
+    _write_mcp_server_snapshot(
+        snapshot,
+        {"named": {"command": "server"}},
+        source=tmp_path / ".mcp.json",
+        searched_from=tmp_path,
+    )
+    kwargs = {"mcp_config": str(snapshot)}
+    model = "gemini-cli/gemini-3.5-flash"
+    if resumed:
+        branch_id, branch_path = _write_cli_branch(tmp_path, "gemini-cli")
+        monkeypatch.setattr(agent_mod, "find_branch", lambda _bid: ("run-x", branch_path))
+        kwargs["resume"] = branch_id
+        model = None
+
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP") as error:
+        await agent_mod._run_agent(model, "go", **kwargs)
+    message = str(error.value).lower()
+    assert "submit snapshot" in message
+    assert "mcp server" in message
+    assert "restart" in message
+
+
+@pytest.mark.parametrize("marked", [False, True], ids=["named", "submit-snapshot"])
+def test_antigravity_old_submit_argv_reports_snapshot_restart_only_when_marked(
+    spawn, tmp_path, monkeypatch, marked
+):
+    """A pre-upgrade server names its generated snapshot with --mcp-config."""
+    import lionagi.cli.agent as agent_mod
+    from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
+
+    config = tmp_path / "mcp-servers.json"
+    if marked:
+        _write_mcp_server_snapshot(
+            config, SUBMITTED, source=spawn.submit_dir / ".mcp.json", searched_from=tmp_path
+        )
+    else:
+        config.write_text(json.dumps({"mcpServers": SUBMITTED}))
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("go")
+    monkeypatch.setattr(agent_mod, "stamp_agent_depth", lambda _name: None)
+
+    parser = argparse.ArgumentParser()
+    agent_mod.add_agent_subparser(parser.add_subparsers(dest="command", required=True))
+    args = parser.parse_args(
+        [
+            "agent",
+            "--notify",
+            "python -m lionhub.serve.mcp._notify_hook --run-id run-x --status {status}",
+            "--mcp-config",
+            str(config),
+            f"--cwd={spawn.submit_dir}",
+            "--prompt-file",
+            str(prompt),
+            "--",
+            "gemini-cli/gemini-3.5-flash",
+        ]
+    )
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP") as error:
+        agent_mod.run_agent(args)
+    assert not spawn.branches
+    message = str(error.value).lower()
+    assert ("submit snapshot" in message) is marked
+    assert ("restart" in message) is marked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resumed", [False, True], ids=["direct", "recorded-explicit"])
+@pytest.mark.parametrize("field", ["lionagiSnapshotOf", "lionagiSnapshotSearchedFrom"])
+@pytest.mark.parametrize("bad_value", [None, "", "relative/path", 123])
+async def test_named_marked_antigravity_config_refuses_malformed_snapshot_metadata(
+    spawn, tmp_path, monkeypatch, resumed, field, bad_value
+):
+    """The snapshot metadata is validated even when its carrier is explicit."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._mcp_resolve import McpConfigError
+
+    snapshot = tmp_path / "marked.json"
+    config = {
+        "mcpServers": SUBMITTED,
+        "lionagiSnapshotOf": str(spawn.submit_dir / ".mcp.json"),
+        "lionagiSnapshotSearchedFrom": str(spawn.submit_dir),
+    }
+    config[field] = bad_value
+    snapshot.write_text(json.dumps(config))
+    model = "gemini-cli/gemini-3.5-flash"
+    kwargs = {"mcp_config": str(snapshot)}
+    if resumed:
+        branch_id, branch_path = _write_cli_branch(tmp_path, "gemini-cli")
+        stored = json.loads(branch_path.read_text())
+        stored["metadata"][agent_mod._MCP_LAUNCH_KEY] = {
+            "mcp_config": str(snapshot),
+            "mcp_config_origin": "explicit",
+            "no_mcp_config": False,
+            "launch_dir": str(spawn.submit_dir),
+        }
+        branch_path.write_text(json.dumps(stored))
+        monkeypatch.setattr(agent_mod, "find_branch", lambda _bid: ("run-x", branch_path))
+        kwargs = {"resume": branch_id}
+        model = None
+    with pytest.raises(McpConfigError):
+        await agent_mod._run_agent(model, "go", **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resumed", [False, True], ids=["direct", "recorded-explicit"])
+async def test_named_snapshot_without_optional_search_directory_reaches_antigravity_refusal(
+    spawn, tmp_path, monkeypatch, resumed
+):
+    import lionagi.cli.agent as agent_mod
+
+    snapshot = tmp_path / "marked.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "mcpServers": SUBMITTED,
+                "lionagiSnapshotOf": str(spawn.submit_dir / ".mcp.json"),
+            }
+        )
+    )
+    model = "gemini-cli/gemini-3.5-flash"
+    kwargs = {"mcp_config": str(snapshot)}
+    if resumed:
+        branch_id, branch_path = _write_cli_branch(tmp_path, "gemini-cli")
+        stored = json.loads(branch_path.read_text())
+        stored["metadata"][agent_mod._MCP_LAUNCH_KEY] = {
+            "mcp_config": str(snapshot),
+            "mcp_config_origin": "explicit",
+            "no_mcp_config": False,
+            "launch_dir": str(spawn.submit_dir),
+        }
+        branch_path.write_text(json.dumps(stored))
+        monkeypatch.setattr(agent_mod, "find_branch", lambda _bid: ("run-x", branch_path))
+        kwargs = {"resume": branch_id}
+        model = None
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP") as error:
+        await agent_mod._run_agent(model, "go", **kwargs)
+    assert "submit snapshot" in str(error.value).lower()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["GEMINI-CLI", "Gemini_Code", "gemini-Cli", " gemini-cli "])
 async def test_a_provider_spelling_that_resolves_is_a_spelling_the_guard_recognises(
     spawn, tmp_path, provider
@@ -265,7 +414,19 @@ async def test_antigravity_leg_keeps_non_requested_mcp_sets_non_failing(
             source=tmp_path / ".mcp.json",
             searched_from=tmp_path,
         )
-        kwargs["mcp_config"] = str(snapshot)
+        if resumed:
+            # A resume replays the persisted choice, not the new submission's
+            # snapshot. Record the carrier that the first run saved.
+            stored = json.loads(branch_path.read_text())
+            stored["metadata"][agent_mod._MCP_LAUNCH_KEY] = {
+                "mcp_config": str(snapshot),
+                "mcp_config_origin": "submit_snapshot",
+                "no_mcp_config": False,
+                "launch_dir": str(spawn.submit_dir),
+            }
+            branch_path.write_text(json.dumps(stored))
+        else:
+            kwargs["mcp_submit_snapshot"] = str(snapshot)
     elif config_case == "disabled":
         kwargs["no_mcp_config"] = True
 
@@ -360,6 +521,7 @@ async def test_a_new_branch_records_the_mcp_choice_a_resume_replays(spawn, tmp_p
 
     assert spawn.branches[-1].metadata[_MCP_LAUNCH_KEY] == {
         "mcp_config": str(named.resolve()),
+        "mcp_config_origin": "explicit",
         "no_mcp_config": False,
         "launch_dir": str(spawn.submit_dir.resolve()),
     }
@@ -389,11 +551,12 @@ async def test_a_submitted_legs_snapshot_is_recorded_for_its_resume(spawn, tmp_p
         "go",
         cwd=str(spawn.target_dir),
         yolo=True,
-        mcp_config=str(snapshot),
+        mcp_submit_snapshot=str(snapshot),
     )
 
     launched = spawn.branches[-1].metadata[_MCP_LAUNCH_KEY]
     assert launched["mcp_config"] == str(snapshot.resolve())
+    assert launched["mcp_config_origin"] == "submit_snapshot"
     # The search directory is provenance; a resume reads from this process's own directory.
     assert launched["launch_dir"] == str(Path.cwd().resolve())
     assert launched["launch_dir"] != str(server_dir)

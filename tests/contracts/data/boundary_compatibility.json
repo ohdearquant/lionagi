@@ -1563,6 +1563,7 @@
       "configure_cli_logging"
     ],
     "lionagi/cli/_mcp_resolve.py": [
+      "LegacyMcpReplayError",
       "McpConfigError",
       "McpResolution",
       "discover_mcp_config",

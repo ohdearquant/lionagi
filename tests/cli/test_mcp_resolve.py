@@ -107,7 +107,7 @@ def test_snapshot_keeps_the_discovered_source_and_is_not_explicit(tmp_path):
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(json.dumps({"mcpServers": SERVERS, SNAPSHOT_SOURCE_KEY: str(source)}))
 
-    resolution = resolve_spawn_mcp_servers(snapshot, launch_dir=tmp_path)
+    resolution = resolve_spawn_mcp_servers(submit_snapshot=snapshot, launch_dir=tmp_path)
 
     assert resolution.servers == SERVERS
     assert resolution.source == source
@@ -129,7 +129,7 @@ def test_a_snapshot_reports_the_directory_its_search_began_in(tmp_path):
     snapshot.parent.mkdir()
     _write_mcp_server_snapshot(snapshot, SERVERS, source=source, searched_from=server_dir)
 
-    resolution = resolve_spawn_mcp_servers(snapshot, launch_dir=checkout)
+    resolution = resolve_spawn_mcp_servers(submit_snapshot=snapshot, launch_dir=checkout)
 
     assert resolution.servers == SERVERS
     assert resolution.source == source
@@ -144,7 +144,7 @@ def test_a_snapshot_without_its_search_directory_reports_the_launch_directory(tm
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(json.dumps({"mcpServers": SERVERS, SNAPSHOT_SOURCE_KEY: str(source)}))
 
-    resolution = resolve_spawn_mcp_servers(snapshot, launch_dir=tmp_path / ".")
+    resolution = resolve_spawn_mcp_servers(submit_snapshot=snapshot, launch_dir=tmp_path / ".")
 
     assert resolution.searched_from == tmp_path.resolve()
 
@@ -164,7 +164,7 @@ def test_a_snapshot_path_that_is_not_absolute_makes_the_file_unusable(tmp_path, 
     snapshot.write_text(json.dumps(document))
 
     with pytest.raises(McpConfigError, match=f"{key}.*must be an absolute path"):
-        resolve_spawn_mcp_servers(snapshot, launch_dir=tmp_path)
+        resolve_spawn_mcp_servers(submit_snapshot=snapshot, launch_dir=tmp_path)
 
 
 def test_config_without_servers_key_is_unusable_not_empty(tmp_path):
@@ -184,3 +184,25 @@ def test_only_the_claude_lane_receives_the_server_set():
     codex = build_chat_model("codex", "gpt-5.6", False, False, None, mcp_servers=SERVERS)
     kwargs = getattr(getattr(codex, "endpoint", None), "config", None)
     assert kwargs is None or "mcp_servers" not in kwargs.kwargs
+
+
+def test_explicit_file_stays_explicit_even_with_snapshot_marker(tmp_path):
+    path = tmp_path / "named.json"
+    path.write_text(
+        json.dumps({"mcpServers": SERVERS, SNAPSHOT_SOURCE_KEY: str(tmp_path / "source")})
+    )
+    resolution = resolve_spawn_mcp_servers(path, launch_dir=tmp_path)
+    assert resolution.explicit is True
+    assert resolution.source == path
+
+
+def test_submit_snapshot_is_suppressed_when_disabled_without_read(tmp_path):
+    resolution = resolve_spawn_mcp_servers(
+        launch_dir=tmp_path, submit_snapshot=tmp_path / "missing", disabled=True
+    )
+    assert resolution.servers is None
+
+
+def test_named_and_submit_snapshot_cannot_both_be_given(tmp_path):
+    with pytest.raises(McpConfigError, match="cannot be combined"):
+        resolve_spawn_mcp_servers("named", submit_snapshot="other", launch_dir=tmp_path)

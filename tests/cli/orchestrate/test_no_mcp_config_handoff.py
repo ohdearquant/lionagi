@@ -72,6 +72,7 @@ async def _setup(
     *,
     no_mcp_config: bool,
     mcp_config: str | None = None,
+    mcp_submit_snapshot: str | None = None,
     model_spec: str = "claude_code/sonnet",
     effort: str | None = None,
 ):
@@ -87,6 +88,7 @@ async def _setup(
         theme=None,
         mcp_config=mcp_config,
         no_mcp_config=no_mcp_config,
+        mcp_submit_snapshot=mcp_submit_snapshot,
     )
 
 
@@ -778,8 +780,8 @@ _CONTROL_AND_KNOWLEDGE = {
 @pytest.mark.asyncio
 async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_run, tmp_path):
     """A run submitted through the MCP server is pointed at a snapshot of the
-    config the submission found, with the same --mcp-config a caller names a
-    file with. Found is still found: the snapshot grants nothing by name."""
+    config the submission found, carried as ambient. Found is still found:
+    the snapshot grants nothing by name."""
     from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
 
     snapshot = tmp_path / "job" / "mcp.json"
@@ -788,7 +790,7 @@ async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_ru
         snapshot, _CONTROL_AND_KNOWLEDGE, source=tmp_run / ".mcp.json", searched_from=tmp_run
     )
 
-    env = await _setup(no_mcp_config=False, mcp_config=str(snapshot))
+    env = await _setup(no_mcp_config=False, mcp_submit_snapshot=str(snapshot))
     branch, _, _, _ = await build_worker_branch(
         env,
         agent_id="w1",

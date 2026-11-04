@@ -134,7 +134,7 @@ def test_noncontained_profile_still_receives_ambient_snapshot(submission, op):
     handle = result["result"]
     assert handle["declared_mcp_servers"] == ["ambient"]
     assert handle["mcp_config_source"] == str(cwd / ".mcp.json")
-    assert "--mcp-config" in spawned[0]
+    assert "--mcp-submit-snapshot" in spawned[0]
 
 
 def test_flow_contained_orchestrator_matches_cli_worker_servers(submission, monkeypatch, tmp_path):
@@ -267,7 +267,7 @@ def test_flow_model_skips_default_contained_orchestrator(submission):
     result = _submit("flow.submit", {"query": ["codex/gpt-5"], "prompt": "work", "cwd": str(cwd)})
     assert result["ok"], result
     assert result["result"]["declared_mcp_servers"] == ["ambient"]
-    assert "--mcp-config" in spawned[0]
+    assert "--mcp-submit-snapshot" in spawned[0]
 
 
 @pytest.mark.parametrize("op", ["flow.submit", "fanout.submit"])
@@ -292,7 +292,7 @@ def test_positional_query_selects_default_or_explicit_model(
     parsed = parser.parse_args(spawned[0][1:])
     assert _resolve_model_and_prompt(parsed.query) == (expected_model, "work")
     assert parsed.no_mcp_config is (expected_model is None)
-    assert ("--mcp-config" in spawned[0]) is (expected_model is not None)
+    assert ("--mcp-submit-snapshot" in spawned[0]) is (expected_model is not None)
 
 
 def test_fanout_uses_contained_default_profile(submission):
@@ -329,7 +329,7 @@ def test_missing_default_profile_keeps_existing_submit_behavior(submission, monk
     result = _submit("flow.submit", {"prompt": "work", "cwd": str(cwd)})
     assert result["ok"], result
     assert result["result"]["declared_mcp_servers"] == ["ambient"]
-    assert "--mcp-config" in spawned[0]
+    assert "--mcp-submit-snapshot" in spawned[0]
 
 
 def test_flow_spec_does_not_assume_default_profile(submission):
@@ -342,12 +342,15 @@ def test_flow_spec_does_not_assume_default_profile(submission):
     result = _submit("flow.submit", {"file": str(spec), "cwd": str(cwd)})
     assert result["ok"], result
     assert result["result"]["declared_mcp_servers"] == ["ambient"]
-    assert "--mcp-config" in spawned[0]
+    assert "--mcp-submit-snapshot" in spawned[0]
 
 
-def test_flow_spec_contained_orchestrator_currently_refuses_snapshot(submission, monkeypatch):
-    from lionagi._errors import ConfigurationError
-    from lionagi.cli.orchestrate import add_orchestrate_subparser, flow, run_orchestrate
+def test_flow_spec_contained_orchestrator_discards_ambient_snapshot(
+    submission, monkeypatch, tmp_path
+):
+    from lionagi.cli import orchestrate
+    from lionagi.cli._runs import RunDir
+    from lionagi.cli.orchestrate import _orchestration as orch
 
     cwd, spawned = submission
     spec = cwd / "flow.yaml"
@@ -355,19 +358,51 @@ def test_flow_spec_contained_orchestrator_currently_refuses_snapshot(submission,
     result = _submit("flow.submit", {"file": str(spec), "cwd": str(cwd)})
     assert result["ok"], result
     assert result["result"]["declared_mcp_servers"] == ["ambient"]
-    assert "--mcp-config" in spawned[0]
+    assert "--mcp-submit-snapshot" in spawned[0]
 
     parser = argparse.ArgumentParser()
-    add_orchestrate_subparser(parser.add_subparsers(dest="command", required=True))
+    orchestrate.add_orchestrate_subparser(parser.add_subparsers(dest="command", required=True))
     parsed = parser.parse_args(spawned[0][1:])
-    monkeypatch.setattr(flow, "stamp_worker_depth", lambda: None)
-    with pytest.raises(ConfigurationError, match="isolated.*mcp: none.*--mcp-config"):
-        run_orchestrate(parsed)
+    captured = []
+
+    def allocate(save_dir=None, run_id=None):
+        run = RunDir(
+            run_id="test", state_root=tmp_path / "state", artifact_root=tmp_path / "artifacts"
+        )
+        run.ensure_state_dirs()
+        run.ensure_artifact_root()
+        return run
+
+    monkeypatch.setattr(orch, "allocate_run", allocate)
+
+    async def capture_flow(**kwargs):
+        env = await orch.setup_orchestration(
+            pattern_name="Flow",
+            model_spec=kwargs["model_spec"],
+            agent_name=kwargs["agent_name"],
+            save_dir=None,
+            cwd=kwargs["cwd"],
+            yolo=False,
+            verbose=False,
+            effort=None,
+            theme=None,
+            mcp_config=kwargs["mcp_config"],
+            no_mcp_config=kwargs["no_mcp_config"],
+            mcp_submit_snapshot=kwargs["mcp_submit_snapshot"],
+        )
+        captured.append(env)
+        return "ok", "completed"
+
+    monkeypatch.setattr(orchestrate, "_run_flow", capture_flow)
+    assert orchestrate.run_orchestrate(parsed) == 0
+    assert len(captured) == 1
+    assert captured[0].orc_profile.name == "isolated"
+    assert captured[0].mcp_servers == {}
 
 
 @pytest.mark.parametrize("op", ["flow.submit", "fanout.submit"])
 @pytest.mark.parametrize("named_config", [False, True])
-def test_submitted_worker_profile_refuses_named_or_snapshotted_config(
+def test_submitted_worker_profile_distinguishes_named_and_snapshotted_config(
     submission, monkeypatch, tmp_path, op, named_config
 ):
     from lionagi._errors import ConfigurationError
@@ -411,6 +446,7 @@ def test_submitted_worker_profile_refuses_named_or_snapshotted_config(
             effort=None,
             theme=None,
             mcp_config=parsed.mcp_config,
+            mcp_submit_snapshot=parsed.mcp_submit_snapshot,
             no_mcp_config=parsed.no_mcp_config,
         )
         assert "ambient" in env.mcp_servers
@@ -423,9 +459,17 @@ def test_submitted_worker_profile_refuses_named_or_snapshotted_config(
             ]
             == "echo"
         )
-        # The snapshot flag and a caller's flag are currently indistinguishable
-        # at this boundary. Refuse both until their origin is carried through.
-        with pytest.raises(ConfigurationError, match="mcp: none.*--mcp-config"):
-            await orch.build_worker_branch(env, agent_id="isolated", role="isolated")
+        if named_config:
+            with pytest.raises(ConfigurationError, match="mcp: none.*--mcp-config"):
+                await orch.build_worker_branch(env, agent_id="isolated", role="isolated")
+        else:
+            worker, _, _, _ = await orch.build_worker_branch(
+                env, agent_id="isolated", role="isolated"
+            )
+            assert worker.metadata["mcp_launch"]["no_mcp_config_source"] == "profile"
+            assert not any(
+                key.startswith("mcp_servers.")
+                for key in worker.chat_model.endpoint.config.kwargs.get("config_overrides", {})
+            )
 
     asyncio.run(run())

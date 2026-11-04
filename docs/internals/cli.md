@@ -94,21 +94,31 @@ whether the caller named the file, and why no usable source was selected.
 whole-file lifecycle write, including orchestration live-start and terminal
 persistence, so a later status update cannot erase or redefine them.
 
-A run submitted through the MCP server reaches its snapshot through `--mcp-config`, the flag a
-caller names a file with, so the snapshot carries `lionagiSnapshotOf`, the path of the config the
-submission found. A file carrying that key resolves as found (`McpResolution.explicit` is false),
-so the set the submission found is not taken for one the caller named: the job-control policy
-under `_hand_mcp_servers` still applies to it, and a leg on a provider with no MCP transport is
-not refused for it the way it is for a named config. The key is read wherever the file is named,
-so a caller who names a copy of a snapshot gets it read as found too. The resolution keeps the
-original path in `source`, which is the path persisted as `mcp_config_source`; the snapshot path
-is only the file the child reads. The snapshot also carries `lionagiSnapshotSearchedFrom`, the
-directory the submission searched from, which the resolution reports as `searched_from` and the
-run persists as `mcp_config_searched_from`, since a submission that names a cwd starts the child
-there, which need not be the directory the search began in. A snapshot from a submission that
-predates that key reports the child's own directory. Both keys must hold absolute paths; any
-other value makes the file unusable. The child's own directory stays the one a relative
-`--mcp-config` name and a resume read from.
+A run submitted through the MCP server receives its generated snapshot through an internal
+ambient-origin carrier. The carrier, not the file's contents, determines that the set was found
+rather than named, so the job-control policy under `_hand_mcp_servers` still applies. A file the
+caller names with `--mcp-config` is explicit even if it contains snapshot metadata. The one
+exception is that a named file carrying the snapshot marker has job-control servers withheld from
+orchestration workers, as for an ambient set. A contained profile drops an ambient snapshot and
+refuses a caller-named config. A checkpoint or agent branch
+records the snapshot origin and path so resume reuses the same choice. A selector-less
+submitted resume takes no new snapshot: its job handle reports that the recorded choice will
+be replayed and leaves declared server names unknown. A flow resume refuses new MCP selectors
+and a new agent profile; an agent resume or continuation refuses server exclusions. Agent
+resumes can still explicitly name a config, disable MCP, or select a profile.
+
+Older records that name a file but lack an origin cannot prove whether the file was caller-named
+or a generated snapshot. Replay reads that file once: a valid file without snapshot metadata
+remains explicit, while a file with snapshot metadata, or an unreadable or malformed file,
+refuses the ambiguous replay and asks for a fresh run. Snapshot metadata is never used to grant
+ambient authority. A fresh caller-named file is still explicit even if it contains that metadata.
+
+A generated snapshot carries `lionagiSnapshotOf` and `lionagiSnapshotSearchedFrom` for reporting
+the original source and search directory. The snapshot path is the file the child reads; the
+original source and search directory are persisted in `mcp_config_source` and
+`mcp_config_searched_from`. A snapshot predating the search-directory key reports the child's
+own directory. When present on a carrier-selected snapshot, both metadata paths must be absolute.
+The child's own directory stays the one a relative `--mcp-config` name and a resume read from.
 
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
@@ -351,10 +361,11 @@ registered and behind a launcher such as `uv run` or `env`, recognised by
 `_is_job_control_server`; any program named `li` run with `mcp` is taken for
 it) is withheld and the rest of the found set reaches them, and a planned
 worker's system prompt names each withheld alias, so its absence is explained
-rather than met as a missing tool. Naming `--mcp-config` is the opt-in: it
-grants everything the file lists, job control included, for a worker meant to
-orchestrate in turn. A submission's snapshot is the exception: it is read as
-found even when named (above), so the policy still applies to it. Once a worker set exists it is the worker's whole set, handed over
+rather than met as a missing tool. Naming an unmarked file with `--mcp-config`
+opts in to everything the file lists, job control included, for a worker meant
+to orchestrate in turn. A named file carrying the snapshot marker remains
+explicit for the orchestrator but has job-control servers withheld from workers
+like an ambient snapshot. Once a worker set exists it is the worker's whole set, handed over
 exclusively: the Claude CLI is run with `--strict-mcp-config`, so it adds none
 of the servers it would discover itself. Every worker, a reactively spawned node included, is passed through
 `_isolate_worker_cli_config` before the hand-over, set or no set: a codex worker

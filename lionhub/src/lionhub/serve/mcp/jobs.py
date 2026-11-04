@@ -418,8 +418,8 @@ def _write_mcp_server_snapshot(
     """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
 
     *source* is the config the submission found. Naming it in the snapshot is
-    what keeps the child, which reads this file through ``--mcp-config``, from
-    taking a found set for one the caller named. *searched_from* is the directory
+    the source used for provenance; it is not an authorization marker.
+    *searched_from* is the directory
     the submission searched from, which the child records as its provenance in
     place of its own directory.
     """
@@ -1330,6 +1330,7 @@ def submit(
     exclude_mcp_servers: list[str] | None = None,
     write_capable: bool = False,
     profile: Any | None = None,
+    replay_mcp_choice: bool = False,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1486,6 +1487,8 @@ def submit(
             mcp_config_path = mcp_config
             mcp_config_source = mcp_config
             mcp_config_reason = "mcp_config_named_by_caller"
+        elif replay_mcp_choice:
+            mcp_config_reason = "mcp_replayed_from_recorded_run"
         else:
             from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
 
@@ -1530,7 +1533,7 @@ def submit(
                 }
                 mcp_config_source = str(resolution.source) if resolution.source else None
                 mcp_config_searched_from = resolution.searched_from
-                # Absolute: the child resolves --mcp-config from its own cwd,
+                # Absolute: the child resolves the path from its own cwd,
                 # which is the submission's directory, not this server's. A
                 # relative jobs root would otherwise name a file the child
                 # cannot open. Symlinks are kept, so an absolute root reports
@@ -1539,7 +1542,7 @@ def submit(
                 declared_mcp_servers = sorted(
                     mcp_servers
                 )  # readable order; child reads the snapshot file, not this list
-                options = ["--mcp-config", mcp_config_path, *options]
+                options = ["--mcp-submit-snapshot", mcp_config_path, *options]
 
         # Wire the CLI's terminal hook back to the MCP server so we record a reliable
         # finished_at/status (and fire the configured delivery) even across a restart.

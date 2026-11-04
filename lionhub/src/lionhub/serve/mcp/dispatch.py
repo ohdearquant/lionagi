@@ -814,6 +814,20 @@ def _write_capable(verb: Verb, args: dict[str, Any], profile: Any) -> bool:
 
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     _refuse_invalid_playbook_spec(schema)
+    resumes = bool(args.get("resume") or args.get("continue_last"))
+    if resumes:
+        flow_selector = verb.job_kind in {"flow", "play"} and (
+            args.get("exclude_mcp_servers") is not None
+            or args.get("mcp_config") is not None
+            or bool(args.get("no_mcp_config"))
+            or args.get("agent") is not None
+        )
+        agent_exclusion = verb.job_kind == "agent" and bool(args.get("exclude_mcp_servers"))
+        if flow_selector or agent_exclusion:
+            raise OpError(
+                "invalid_input",
+                "A resumed run replays its recorded MCP choice; start a fresh run to change it.",
+            )
     prompt = _resolve_prompt(args)
     _refuse_too_many_positionals(verb, args, prompt)
     _refuse_without_model(verb, schema, args, prompt)
@@ -854,6 +868,7 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             exclude_mcp_servers=args.get("exclude_mcp_servers"),
             write_capable=write_capable,
             profile=profile,
+            **({"replay_mcp_choice": True} if resumes else {}),
         )
     except NestedAgentRefusedError as exc:
         # Well-formed, and refused for where the caller runs, which no retry changes.
