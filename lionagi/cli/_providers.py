@@ -1093,13 +1093,14 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         scalar_indent: int | None = None
         for number, line in enumerate(block.splitlines()):
             stripped = line.lstrip(" \t")
-            indent = len(line) - len(stripped)
+            indent = len(line) - len(line.lstrip(" "))
             if scalar_indent is not None:
                 if not stripped or stripped.startswith("#") or indent > scalar_indent:
                     continue
                 scalar_indent = None
             if number in scalar_lines:
                 continue
+            # Strip invalid indentation for line scanning; flow fragments need raw delimiters.
             if scan(stripped)[0]:
                 return True
             fragments = tuple(flow_fragments(line))

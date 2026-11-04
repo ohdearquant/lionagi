@@ -365,3 +365,41 @@ def test_deep_unclosed_mcp_frontmatter_is_refused(position):
     block = "mcp: none\n" + nested if position == "before" else nested + "mcp: none\n"
     with pytest.raises(ConfigurationError, match="mcp"):
         _parse_profile("reviewer", "---\n" + block)
+
+
+@pytest.mark.parametrize("header", ["prompt: |", "prompt: >", "prompt: |-", "key:\n  sub: |"])
+@pytest.mark.parametrize(
+    "tail",
+    ["{lead}mcp: none\nmodel: [unterminated", "{indent}text\n{lead}mcp: none", "{lead}mcp: none"],
+)
+def test_tab_led_mcp_after_block_scalar_is_refused(header, tail):
+    indent = "    " if header.startswith("key:") else "  "
+    lead = "\t  " if header.startswith("key:") else "\t"
+    text = f"---\n{header}\n{tail.format(indent=indent, lead=lead)}\n---\nReview."
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", text)
+
+
+@pytest.mark.parametrize("header", ["prompt: |", "prompt: >", "prompt: |-", "key:\n  sub: |"])
+def test_space_indented_mcp_in_block_scalar_is_not_refused(header):
+    indent = "    " if header.startswith("key:") else "  "
+    text = f"---\n{header}\n{indent}mcp: none\nmodel: [unterminated\n---\nReview."
+    assert _parse_profile("reviewer", text).mcp is None
+
+
+@pytest.mark.parametrize(
+    "header,content",
+    [
+        ("prompt: |", " \tmcp: none"),
+        ("key:\n  sub: |", "    \tmcp: none"),
+    ],
+)
+def test_tabs_after_scalar_indentation_remain_scalar_content(header, content):
+    text = f"---\n{header}\n{content}\nmodel: [unterminated\n---\nReview."
+    assert _parse_profile("reviewer", text).mcp is None
+
+
+def test_tab_at_nested_scalar_indentation_is_refused():
+    text = "---\nkey:\n  sub: |\n  \tmcp: none\nmodel: [unterminated\n---\nReview."
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", text)
