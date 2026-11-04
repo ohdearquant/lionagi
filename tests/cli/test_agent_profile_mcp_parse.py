@@ -189,14 +189,30 @@ def test_escaped_mcp_mention_in_comment_does_not_refuse_unrelated_frontmatter():
     assert profile.mcp is None
 
 
-def test_escaped_mcp_example_in_yaml_block_scalar_is_not_a_key():
+def test_escaped_mcp_example_in_unreadable_block_scalar_is_refused():
     text = '---\nprompt: |\n  "m\\u0063p": none\nmodel: [\n---\nReview.'
-    assert _parse_profile("reviewer", text).mcp is None
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", text)
 
 
-def test_mcp_example_in_yaml_block_scalar_is_not_a_key():
+def test_mcp_example_in_unreadable_block_scalar_is_refused():
     text = "---\nprompt: |\n  mcp: none\nmodel: [\n---\nReview."
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", text)
+
+
+def test_mcp_example_in_readable_block_scalar_remains_lenient():
+    text = "---\nprompt: |\n  mcp: none\n---\nReview."
     assert _parse_profile("reviewer", text).mcp is None
+
+
+@pytest.mark.parametrize("ending", ["---\nReview.", ""])
+def test_misindented_mcp_after_block_scalar_in_unreadable_frontmatter_is_refused(ending):
+    text = f"---\nbad: @x\ndesc: |\n    content\n  mcp: none\n{ending}"
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", text)
+    assert "mcp" in str(raised.value)
+    assert "could not be parsed" in str(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -219,13 +235,19 @@ def test_mcp_key_after_same_line_syntax_error_is_refused(frontmatter):
     [
         "model: @invalid # comment, mcp: none\n",
         'model: @invalid, note: "example, mcp: none"\n',
-        "model: @invalid\nprompt: |\n  mcp: none\n",
         "model: @invalid, other: value\n",
     ],
 )
 def test_unrelated_unreadable_same_line_text_remains_lenient(frontmatter):
     profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
     assert profile.mcp is None
+
+
+@pytest.mark.parametrize("content", ["mcp: none", "example {mcp: none}"])
+def test_mcp_key_shaped_scalar_text_in_unreadable_frontmatter_is_refused(content):
+    text = f"---\nmodel: @invalid\nprompt: |\n  {content}\n---\nReview."
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", text)
 
 
 @pytest.mark.parametrize(
@@ -253,7 +275,6 @@ def test_mcp_key_after_same_line_flow_opener_is_refused(frontmatter):
         "model: @invalid, note: 'example {mcp: none}'\n",
         'model: @invalid {other: "mcp: none"}\n',
         "model: @invalid # example {mcp: none}\n",
-        "model: @invalid\nprompt: |\n  example {mcp: none}\n",
         "model: @invalid {other: value}\n",
     ],
 )
@@ -381,10 +402,11 @@ def test_tab_led_mcp_after_block_scalar_is_refused(header, tail):
 
 
 @pytest.mark.parametrize("header", ["prompt: |", "prompt: >", "prompt: |-", "key:\n  sub: |"])
-def test_space_indented_mcp_in_block_scalar_is_not_refused(header):
+def test_space_indented_mcp_in_unreadable_block_scalar_is_refused(header):
     indent = "    " if header.startswith("key:") else "  "
     text = f"---\n{header}\n{indent}mcp: none\nmodel: [unterminated\n---\nReview."
-    assert _parse_profile("reviewer", text).mcp is None
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", text)
 
 
 @pytest.mark.parametrize(
@@ -394,9 +416,10 @@ def test_space_indented_mcp_in_block_scalar_is_not_refused(header):
         ("key:\n  sub: |", "    \tmcp: none"),
     ],
 )
-def test_tabs_after_scalar_indentation_remain_scalar_content(header, content):
+def test_tabs_after_scalar_indentation_in_unreadable_block_are_refused(header, content):
     text = f"---\n{header}\n{content}\nmodel: [unterminated\n---\nReview."
-    assert _parse_profile("reviewer", text).mcp is None
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", text)
 
 
 def test_tab_at_nested_scalar_indentation_is_refused():

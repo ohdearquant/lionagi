@@ -973,24 +973,21 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
 
     from lionagi.libs.frontmatter import _FM_SPLIT
 
-    def refuse() -> None:
+    def refuse(*, unreadable: bool = False) -> None:
+        if unreadable:
+            raise ConfigurationError(
+                f"agent profile {name!r}: frontmatter could not be parsed and names mcp"
+            )
         raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
 
     def mentions_mcp_key(block: str, *, readable: bool = False) -> bool:
-        scalar_lines: set[int] = set()
         anchors: dict[str, str] = {}
 
-        def scan(source: str, *, record_block_scalars: bool = False) -> tuple[bool, bool]:
+        def scan(source: str) -> tuple[bool, bool]:
             expecting_key = False
             pending_anchor = None
             try:
                 for token in yaml.scan(source, Loader=yaml.SafeLoader):
-                    if (
-                        record_block_scalars
-                        and isinstance(token, yaml.ScalarToken)
-                        and token.style in ("|", ">")
-                    ):
-                        scalar_lines.update(range(token.start_mark.line + 1, token.end_mark.line))
                     if isinstance(token, yaml.AnchorToken):
                         pending_anchor = token.value
                     elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
@@ -1014,7 +1011,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                 return False, False
             return False, True
 
-        found, complete = scan(block, record_block_scalars=True)
+        found, complete = scan(block)
         if found:
             return True
         # A complete token stream has already examined every key. In particular,
@@ -1022,15 +1019,6 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         # body line when its YAML token stream itself is readable.
         if complete and readable:
             return False
-
-        def starts_block_scalar(line: str) -> bool:
-            try:
-                return any(
-                    isinstance(token, yaml.ScalarToken) and token.style in ("|", ">")
-                    for token in yaml.scan(line, Loader=yaml.SafeLoader)
-                )
-            except yaml.YAMLError:
-                return False
 
         def flow_fragments(line: str):
             quote = None
@@ -1085,22 +1073,17 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                 yield line[start:end]
 
         # An earlier malformed token can prevent the scanner from reaching a
-        # later key. Retry lines and bounded flow-delimited fragments, excluding
-        # block scalar text, quoted values and comments. Only fragments which can
+        # later key. Retry every line and bounded flow-delimited fragment. A
+        # broken block scalar cannot reliably identify its content, so key-shaped
+        # lines inside it are candidates too; quoted values and comments stay excluded.
+        # Only fragments which can
         # contain the literal key, an escaped spelling, or an alias need a YAML
         # scanner; each character appears in at most two fragments, even on a
         # long flow-style line.
-        scalar_indent: int | None = None
-        for number, line in enumerate(block.splitlines()):
+        for line in block.splitlines():
             stripped = line.lstrip(" \t")
-            indent = len(line) - len(line.lstrip(" "))
-            if scalar_indent is not None:
-                if not stripped or stripped.startswith("#") or indent > scalar_indent:
-                    continue
-                scalar_indent = None
-            if number in scalar_lines:
-                continue
-            # Strip invalid indentation for line scanning; flow fragments need raw delimiters.
+            # Strip spaces and tabs so malformed indentation cannot hide a key;
+            # flow fragments still need the original delimiters.
             if scan(stripped)[0]:
                 return True
             fragments = tuple(flow_fragments(line))
@@ -1117,8 +1100,6 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                 if "mcp" in fragment or "\\" in fragment or "*" in fragment
             ):
                 return True
-            if starts_block_scalar(line):
-                scalar_indent = indent
         return False
 
     parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
@@ -1131,7 +1112,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         else:
             readable = True
         if mentions_mcp_key(block, readable=readable):
-            refuse()
+            refuse(unreadable=not readable)
         return
     block = parts[1]
     try:
@@ -1141,7 +1122,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         root = yaml.compose(block, Loader=yaml.SafeLoader)
     except yaml.YAMLError:
         if mentions_mcp_key(block):
-            refuse()
+            refuse(unreadable=True)
         return
 
     def contains_mcp_key(node: Any) -> bool:
