@@ -224,3 +224,36 @@ def test_mcp_key_after_same_line_flow_opener_is_refused(frontmatter):
 def test_unrelated_unreadable_flow_text_remains_lenient(frontmatter):
     profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
     assert profile.mcp is None
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "model: @invalid, note: can't, mcp: none\n",
+        'model: @invalid, note: can"t, mcp: none\n',
+        "model: @invalid, note: can't, {mcp: none}\n",
+        'model: @invalid, note: can"t, ["m\\u0063p": none]\n',
+    ],
+)
+def test_plain_scalar_quote_does_not_hide_later_mcp_key(frontmatter):
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+
+    assert "reviewer" in str(raised.value)
+    assert "mcp" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        'model: @invalid, note: "can\'t, mcp: none"\n',
+        "model: @invalid, note: 'can''t, mcp: none'\n",
+        "model: @invalid, note: 'can\"t, {mcp: none}'\n",
+        'model: @invalid, note: !!str "example, mcp: none"\n',
+        'model: @invalid, note: &note "example, mcp: none"\n',
+        'model: @invalid, {"note":"example, mcp: none"}\n',
+    ],
+)
+def test_real_quoted_values_with_mcp_text_remain_lenient(frontmatter):
+    profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+    assert profile.mcp is None

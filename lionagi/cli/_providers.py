@@ -1028,6 +1028,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
 
         def flow_fragments(line: str):
             quote = None
+            scalar_start = True
             i = 0
             while i < len(line):
                 char = line[i]
@@ -1040,12 +1041,27 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                 if quote:
                     if char == quote:
                         quote = None
-                elif char in ("'", '"'):
+                        scalar_start = False
+                elif char in ("'", '"') and scalar_start:
                     quote = char
                 elif char == "#" and (i == 0 or line[i - 1].isspace()):
                     break
                 elif char in ",[{":
                     yield line[i + 1 :]
+                    scalar_start = True
+                elif char == ":" and (i + 1 == len(line) or line[i + 1] in " \t,[]{}'\""):
+                    scalar_start = True
+                elif scalar_start and char in "!&":
+                    if char == "!" and line[i : i + 2] == "!<":
+                        end = line.find(">", i + 2)
+                        i = end if end >= 0 else len(line)
+                    else:
+                        while i + 1 < len(line) and line[i + 1] not in " \t,[]{}":
+                            i += 1
+                elif not char.isspace() and not (
+                    scalar_start and char in "-?" and i + 1 < len(line) and line[i + 1].isspace()
+                ):
+                    scalar_start = False
                 i += 1
 
         # An earlier malformed token can prevent the scanner from reaching a
