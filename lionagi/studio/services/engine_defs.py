@@ -13,10 +13,14 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+import lionagi.cli._engine_definitions as _engine_registry
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
+
+KIND_META = _engine_registry.KIND_META
+is_registered_engine_kind = _engine_registry._is_registered_engine_kind
 
 
 class NameConflictError(Exception):
@@ -30,6 +34,7 @@ _VALID_ENGINE_KINDS: frozenset[str] = frozenset(
 
 # Allowed keys in the options JSON object.
 _ALLOWED_OPTIONS_KEYS: frozenset[str] = frozenset({"test_cmd", "export_dir"})
+_PRESET_BUDGET_BOUNDS = (1, 100)
 
 # Safe shell-token pattern: no leading '-', no shell metacharacters.
 _SAFE_TOKEN_RE = re.compile(r"^[a-zA-Z0-9_./:@\-\+= ]+$")
@@ -74,13 +79,14 @@ def _validate_kind_options(kind: str, options: dict[str, Any] | None) -> None:
 
 
 def _validate_budget(field: str, val: Any) -> None:
-    """A max_depth/max_agents override must be an int in [1, 100] (or absent)."""
+    """Validate an optional max_depth/max_agents override against the preset bounds."""
     if val is None:
         return
     if not isinstance(val, int) or isinstance(val, bool):
         raise ValueError(f"{field} must be an integer")
-    if not (1 <= val <= 100):
-        raise ValueError(f"{field} must be in [1, 100], got {val}")
+    low, high = _PRESET_BUDGET_BOUNDS
+    if not (low <= val <= high):
+        raise ValueError(f"{field} must be in [{low}, {high}], got {val}")
 
 
 def _svc_validate_action_model(model: str | None) -> None:
@@ -309,12 +315,17 @@ def _catalog_decode_cursor(cursor: str, kind: str | None) -> str:
             raise ValueError("invalid encoding")
         data = base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
         payload = data.decode("utf-8")
-        # The only accepted JSON structure has no nested containers or duplicate keys.
+        # The shape check forbids nested containers and duplicate keys before JSON
+        # decoding, so hostile nesting cannot trigger decoder recursion.
         if _CATALOG_CURSOR_SHAPE.fullmatch(payload) is None:
             raise ValueError("invalid shape")
         obj = json.loads(payload)
         after = obj["after"]
-        if obj["kind"] != kind or len(after.encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES:
+        if (
+            not isinstance(after, str)
+            or obj["kind"] != kind
+            or len(after.encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES
+        ):
             raise ValueError("invalid cursor")
         if _catalog_encode_cursor(after, kind) != cursor:
             raise ValueError("noncanonical cursor")
@@ -334,6 +345,7 @@ def _catalog_options(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
         except UnicodeDecodeError:
             return None, "options_undecodable"
     if isinstance(raw, str):
+        # Check depth before decoding: json.loads itself can recurse on deeply nested input.
         depth = 0
         quoted = False
         escaped = False
@@ -369,6 +381,7 @@ def _catalog_options(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
     else:
         value = raw
     try:
+        # The response must be encodable: reject lone surrogates and non-finite values.
         json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (RecursionError, UnicodeError, ValueError, TypeError):
         return None, "options_undecodable"
@@ -379,20 +392,7 @@ def _catalog_options(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
     return value, None
 
 
-def _catalog_registry() -> tuple[dict[str, dict[str, Any]], Any]:
-    # This is the Studio access point for the in-place engine registry.
-    from lionagi.cli._engine_definitions import KIND_META, _is_registered_engine_kind
-
-    return KIND_META, _is_registered_engine_kind
-
-
-def _catalog_is_registered_engine_kind(kind: object) -> bool:
-    _, is_registered = _catalog_registry()
-    return is_registered(kind)
-
-
 def _catalog_annotate_row(row: dict[str, Any]) -> dict[str, Any]:
-    registry, is_registered = _catalog_registry()
     result = dict(row)
     options, options_reason = _catalog_options(result.pop("options", None))
     result["options"] = options
@@ -400,7 +400,7 @@ def _catalog_annotate_row(row: dict[str, Any]) -> dict[str, Any]:
     result["stored_option_keys"] = None
     reasons = []
     kind = result.get("kind")
-    registered = is_registered(kind)
+    registered = is_registered_engine_kind(kind)
     if not isinstance(kind, str):
         result["kind"] = None
         reasons.append("kind_not_text")
@@ -412,22 +412,43 @@ def _catalog_annotate_row(row: dict[str, Any]) -> dict[str, Any]:
         keys = sorted(options)
         result["stored_option_keys"] = keys
         if registered:
-            result["unused_option_keys"] = sorted(set(keys) - set(registry[kind]["preset_options"]))
+            definitions = KIND_META[kind]["preset_options"]
+            result["unused_option_keys"] = sorted(set(keys) - set(definitions))
+            missing_keys = sorted(
+                name
+                for name, definition in definitions.items()
+                if definition.get("required") and not str(options.get(name) or "").strip()
+            )
+            if missing_keys:
+                result["missing_option_keys"] = missing_keys
+                reasons.append("required_option_missing")
+            try:
+                _validate_options(options)
+            except ValueError:
+                invalid_keys = []
+                for name in keys:
+                    try:
+                        _validate_options({name: options[name]})
+                    except ValueError:
+                        invalid_keys.append(name)
+                # Validator messages can include values; only expose the offending keys.
+                result["options"] = None
+                result["invalid_option_keys"] = invalid_keys
+                reasons.append("options_invalid")
     result["availability"] = "unavailable" if reasons else "available"
     result["reasons"] = reasons
     return result
 
 
 def _catalog_validate_kind(kind: str | None) -> None:
-    if kind is not None and not _catalog_is_registered_engine_kind(kind):
+    if kind is not None and not is_registered_engine_kind(kind):
         raise HTTPException(status_code=422, detail="Invalid engine catalog kind")
 
 
 def engine_catalog_blueprints() -> dict[str, Any]:
     """Describe preset inputs from the runtime engine registry."""
-    registry, _ = _catalog_registry()
     items = []
-    for kind, meta in registry.items():
+    for kind, meta in KIND_META.items():
         items.append(
             {
                 "kind": kind,
@@ -440,15 +461,15 @@ def engine_catalog_blueprints() -> dict[str, Any]:
                     "max_depth": {
                         "type": "integer",
                         "nullable": True,
-                        "minimum": 1,
-                        "maximum": 100,
+                        "minimum": _PRESET_BUDGET_BOUNDS[0],
+                        "maximum": _PRESET_BUDGET_BOUNDS[1],
                         "scope": "preset",
                     },
                     "max_agents": {
                         "type": "integer",
                         "nullable": True,
-                        "minimum": 1,
-                        "maximum": 100,
+                        "minimum": _PRESET_BUDGET_BOUNDS[0],
+                        "maximum": _PRESET_BUDGET_BOUNDS[1],
                         "scope": "preset",
                     },
                 },
@@ -463,7 +484,7 @@ async def list_engine_catalog_presets(
     """List non-NULL-ID presets by ID, without snapshot isolation.
 
     An insertion before the cursor can be missed; deletes and renames preserve the ID order.
-    Rows with NULL or non-text IDs are outside this catalog (see #4228).
+    Rows with NULL or non-text IDs are outside this catalog.
     """
     from lionagi.state.db import _list_engine_catalog_rows
 
@@ -507,6 +528,18 @@ async def engine_catalog_blueprints_route() -> dict[str, Any]:
     return engine_catalog_blueprints()
 
 
+_CATALOG_PRESETS_DESCRIPTION = (
+    "List text-ID presets; paging is not a snapshot. Rows with NULL or non-text IDs "
+    "are not listed. When an ID exceeds the cursor bound, that row is returned alone "
+    "and rows after it cannot be reached by paging.\n\n"
+    f"Options over {_CATALOG_OPTIONS_MAX_DEPTH} JSON nesting levels are unavailable. "
+    "Preset inputs are flat key/value pairs, so this limit does not exclude normal "
+    "preset options. "
+    f"Preset budget overrides accept integers from {_PRESET_BUDGET_BOUNDS[0]} to "
+    f"{_PRESET_BUDGET_BOUNDS[1]}, or null."
+)
+
+
 @studio_route(
     "/engine-catalog/presets", method="GET", area="engine-defs", name="list_engine_catalog_presets"
 )
@@ -515,19 +548,18 @@ async def list_engine_catalog_presets_route(
     limit: int = Query(default=100, ge=1, le=200),
     cursor: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    """List text-ID presets; paging is not a snapshot (see #4228).
-
-    Options over 32 JSON nesting levels are unavailable. Preset inputs are flat
-    key/value pairs, so this limit does not exclude normal preset options.
-    """
+    """List text-ID presets with documented pagination and preset limits."""
     return await list_engine_catalog_presets(kind=kind, limit=limit, cursor=cursor)
+
+
+list_engine_catalog_presets_route.__doc__ = _CATALOG_PRESETS_DESCRIPTION
 
 
 @studio_route(
     "/engine-catalog/preset", method="GET", area="engine-defs", name="get_engine_catalog_preset"
 )
 async def get_engine_catalog_preset_route(def_id: str = Query(..., alias="id")) -> dict[str, Any]:
-    """Look up a text-ID preset by query parameter, including an empty ID (see #4228)."""
+    """Look up a text-ID preset by query parameter, including an empty ID."""
     row = await get_engine_catalog_preset(def_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Engine preset not found")

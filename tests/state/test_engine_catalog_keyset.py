@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from lionagi.state.db import StateDB, _get_engine_catalog_row, _list_engine_catalog_rows
@@ -325,28 +324,26 @@ async def test_postgres_http_catalog_isolates_stored_options_and_default_create(
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    ("case", "raw", "expected_reasons", "physical_optional"),
+    ("case", "raw", "expected_reasons"),
     [
-        ("depth32", '{"nested":' + "[" * 31 + "0" + "]" * 31 + "}", [], False),
+        ("depth32", '{"nested":' + "[" * 31 + "0" + "]" * 31 + "}", []),
         (
             "depth33",
             '{"nested":' + "[" * 32 + "0" + "]" * 32 + "}",
             ["options_undecodable"],
-            False,
         ),
         (
             "992nested",
             '{"nested":' + "[" * 992 + "0" + "]" * 992 + "}",
             ["options_undecodable"],
-            True,
         ),
-        ("huge_number", '{"nested":1e1000}', ["options_undecodable"], True),
+        ("huge_number", '{"nested":1e1000}', ["options_undecodable"]),
     ],
 )
 async def test_postgres_http_catalog_json_depth_and_number_boundaries(
-    pg_url, monkeypatch, case, raw, expected_reasons, physical_optional
+    pg_url, monkeypatch, case, raw, expected_reasons
 ):
-    """Test SQL JSON through real list/detail and record a server-side input refusal."""
+    """Test SQL JSON through real list/detail; server input refusals fail the test."""
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
@@ -359,15 +356,7 @@ async def test_postgres_http_catalog_json_depth_and_number_boundaries(
     async with StateDB(url=pg_url) as db:
         inserted = False
         try:
-            try:
-                await _insert(db, def_id=row_id, name=row_id, kind="research", options=raw)
-            except DBAPIError as exc:
-                sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
-                # These optional stress inputs can exceed a server's JSON or numeric limits.
-                # Any other database error remains a failure rather than a claimed limitation.
-                if physical_optional and sqlstate in {"22P02", "22003", "54000", "54001"}:
-                    pytest.skip(f"PostgreSQL refused {case} JSON input (SQLSTATE {sqlstate})")
-                raise
+            await _insert(db, def_id=row_id, name=row_id, kind="research", options=raw)
             inserted = True
             original = await _get_engine_catalog_row(db, row_id)
             transport = httpx.ASGITransport(app=create_app())

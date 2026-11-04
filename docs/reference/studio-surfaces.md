@@ -134,7 +134,7 @@ The backend also exposes a read-only Engine preset catalog while its tab is hidd
   before a cursor may be missed; deleting or renaming a preset does not change its ID order.
 - `GET /api/engine-catalog/preset?id=<encoded-id>` retrieves one preset independently of pages.
   An empty `id` is distinct from an omitted parameter. Rows with a NULL or non-text ID are outside the
-  catalog; the schema mismatch is tracked in [#4228](https://github.com/ohdearquant/lionagi/issues/4228).
+  catalog.
 
 A stored ID longer than 4,096 UTF-8 bytes is returned alone with no next cursor and
 `stop_reason` set to `id_exceeds_cursor_bound` when it is first in a page. The client can then

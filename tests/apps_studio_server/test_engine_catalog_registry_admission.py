@@ -232,7 +232,10 @@ def test_catalog_related_imports_are_cycle_free_in_fresh_interpreters(module, tm
         [
             sys.executable,
             "-c",
-            "import importlib, sys; importlib.import_module(sys.argv[1])",
+            "import importlib, sys; "
+            "module = importlib.import_module(sys.argv[1]); "
+            "definitions = importlib.import_module('lionagi.studio.services.engine_defs'); "
+            "assert module.is_registered_engine_kind is definitions.is_registered_engine_kind",
             module,
         ],
         cwd=repo,

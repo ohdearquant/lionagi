@@ -86,6 +86,53 @@ async def test_blueprints_describe_registered_runtime_inputs_and_options(catalog
     }
 
 
+def test_preset_limits_share_validator_blueprint_and_route_description(monkeypatch):
+    from lionagi.studio.services import engine_defs
+
+    low, high = engine_defs._PRESET_BUDGET_BOUNDS
+    description = engine_defs.list_engine_catalog_presets_route.__doc__
+    assert f"{low} to {high}" in description
+    assert f"{engine_defs._CATALOG_OPTIONS_MAX_DEPTH} JSON nesting" in description
+    for item in engine_defs.engine_catalog_blueprints()["items"]:
+        for field in ("max_depth", "max_agents"):
+            assert item["common_fields"][field]["minimum"] == low
+            assert item["common_fields"][field]["maximum"] == high
+    monkeypatch.setattr(engine_defs, "_PRESET_BUDGET_BOUNDS", (2, 3))
+    engine_defs._validate_budget("max_depth", 2)
+    with pytest.raises(ValueError):
+        engine_defs._validate_budget("max_depth", 1)
+    assert (
+        engine_defs.engine_catalog_blueprints()["items"][0]["common_fields"]["max_depth"]["minimum"]
+        == 2
+    )
+
+
+def test_required_option_detection_uses_registry_metadata(monkeypatch):
+    from lionagi.studio.services import engine_defs
+
+    meta = dict(engine_defs.KIND_META["research"])
+    meta["preset_options"] = {
+        "future_input": {"type": "string", "required": True},
+        "test_cmd": {"type": "string", "required": False},
+    }
+    monkeypatch.setitem(engine_defs.KIND_META, "research", meta)
+    monkeypatch.setattr(
+        engine_defs, "_ALLOWED_OPTIONS_KEYS", engine_defs._ALLOWED_OPTIONS_KEYS | {"future_input"}
+    )
+    assert engine_defs._catalog_annotate_row({"kind": "research", "options": "{}"})["reasons"] == [
+        "required_option_missing"
+    ]
+    assert engine_defs._catalog_annotate_row(
+        {"kind": "research", "options": '{"test_cmd":"pytest"}'}
+    )["reasons"] == ["required_option_missing"]
+    assert (
+        engine_defs._catalog_annotate_row(
+            {"kind": "research", "options": '{"future_input":"ready"}'}
+        )["reasons"]
+        == []
+    )
+
+
 async def test_http_id_roundtrip_empty_punctuation_unicode_and_maximum(catalog_app):
     db_path, client = catalog_app
     await _initialize(db_path)
@@ -187,10 +234,11 @@ async def test_invalid_cursor_is_generic_422_even_when_store_absent(catalog_app,
     async with client as ac:
         response = await ac.get("/api/engine-catalog/presets", params={"cursor": token})
     assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid engine catalog cursor"}
     assert token not in response.text
 
 
-async def test_oversized_id_in_middle_is_returned_without_loop_or_silent_drop(catalog_app):
+async def test_rows_after_oversized_id_are_not_reachable_by_paging(catalog_app):
     db_path, client = catalog_app
     await _initialize(db_path)
     huge_id = "m" * 4097
@@ -221,6 +269,76 @@ async def test_oversized_id_in_middle_is_returned_without_loop_or_silent_drop(ca
         else:
             pytest.fail("pagination never reached oversized ID")
     assert seen == ids[:200]
+
+
+async def test_required_registry_options_control_availability_in_list_and_detail(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    _insert(
+        db_path,
+        [
+            ("a", "empty", "coding", "{}"),
+            ("b", "null", "coding", None),
+            ("c", "valid", "coding", '{"test_cmd":"pytest"}'),
+            ("d", "malformed", "coding", "{"),
+        ],
+    )
+    async with client as ac:
+        response = await ac.get("/api/engine-catalog/presets")
+        assert response.status_code == 200
+        rows = {row["id"]: row for row in response.json()["items"]}
+        for row_id, expected in [
+            ("a", ["required_option_missing"]),
+            ("b", ["required_option_missing"]),
+            ("c", []),
+            ("d", ["options_malformed"]),
+        ]:
+            assert rows[row_id]["reasons"] == expected
+            assert rows[row_id]["availability"] == ("unavailable" if expected else "available")
+            detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
+            assert detail.status_code == 200
+            assert detail.json() == rows[row_id]
+
+
+async def test_invalid_coding_option_values_are_unavailable_and_not_echoed(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    sentinel = "-x-unique-secret"
+    combined_sentinel = "-x-combined-sentinel"
+    _insert(
+        db_path,
+        [
+            ("a", "boolean", "coding", '{"test_cmd":true}'),
+            ("b", "unsafe", "coding", '{"test_cmd":"' + sentinel + '"}'),
+            ("c", "valid", "coding", '{"test_cmd":"pytest"}'),
+            ("d", "missing-and-invalid", "coding", '{"export_dir":"' + combined_sentinel + '"}'),
+        ],
+    )
+    async with client as ac:
+        response = await ac.get("/api/engine-catalog/presets")
+        assert response.status_code == 200, response.text
+        assert sentinel not in response.text
+        assert combined_sentinel not in response.text
+        rows = {row["id"]: row for row in response.json()["items"]}
+        for row_id in ("a", "b"):
+            assert rows[row_id]["availability"] == "unavailable"
+            assert rows[row_id]["reasons"] == ["options_invalid"]
+            assert rows[row_id]["options"] is None
+            assert rows[row_id]["invalid_option_keys"] == ["test_cmd"]
+        assert rows["c"]["availability"] == "available"
+        assert rows["c"]["reasons"] == []
+        assert rows["c"]["options"] == {"test_cmd": "pytest"}
+        assert rows["d"]["availability"] == "unavailable"
+        assert rows["d"]["reasons"] == ["required_option_missing", "options_invalid"]
+        assert rows["d"]["options"] is None
+        assert rows["d"]["missing_option_keys"] == ["test_cmd"]
+        assert rows["d"]["invalid_option_keys"] == ["export_dir"]
+        for row_id in ("a", "b", "c", "d"):
+            detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
+            assert detail.status_code == 200, detail.text
+            assert sentinel not in detail.text
+            assert combined_sentinel not in detail.text
+            assert detail.json() == rows[row_id]
 
 
 async def test_legacy_option_shapes_are_isolated_and_unknown_kinds_remain_visible(catalog_app):
@@ -270,6 +388,8 @@ async def test_legacy_option_shapes_are_isolated_and_unknown_kinds_remain_visibl
         assert rows["g"]["reasons"] == ["options_undecodable"]
         assert rows["h"]["availability"] == "unavailable"
         assert rows["h"]["reasons"] == ["kind_not_registered"]
+        assert rows["h"]["options"] == {"old": "value"}
+        assert "invalid_option_keys" not in rows["h"]
         assert rows["h"]["stored_option_keys"] == ["old"]
         assert rows["h"]["unused_option_keys"] is None
         assert rows["i"]["availability"] == "unavailable"
@@ -305,7 +425,7 @@ async def test_existing_http_create_with_omitted_options_is_available(catalog_ap
 
 
 async def test_catalog_excludes_legacy_null_ids_but_keeps_empty_id(catalog_app):
-    """Legacy SQLite permits NULL primary keys; their schema repair is tracked in #4228."""
+    """Legacy SQLite permits NULL primary keys, which the catalog excludes."""
     db_path, client = catalog_app
     schema = Path(__file__).resolve().parents[2] / "lionagi/state/schema.sql"
     with sqlite3.connect(db_path) as conn:
@@ -453,24 +573,25 @@ async def test_options_depth_boundary_and_quoted_brackets(catalog_app):
     _insert(
         db_path,
         [
-            ("a", "depth-32", "research", nested(32)),
-            ("b", "depth-33", "research", nested(33)),
-            ("c", "quoted-brackets", "research", quoted),
+            ("a", "depth-32", "future-kind", nested(32)),
+            ("b", "depth-33", "future-kind", nested(33)),
+            ("c", "quoted-brackets", "future-kind", quoted),
+            ("d", "valid", "research", "{}"),
         ],
     )
     async with client as ac:
         response = await ac.get("/api/engine-catalog/presets")
         assert response.status_code == 200, response.text
         rows = {row["id"]: row for row in response.json()["items"]}
-        assert rows["a"]["availability"] == "available"
-        assert rows["a"]["reasons"] == []
+        assert rows["a"]["reasons"] == ["kind_not_registered"]
+        assert rows["a"]["options"] == json.loads(nested(32))
         assert rows["b"]["availability"] == "unavailable"
-        assert rows["b"]["reasons"] == ["options_undecodable"]
+        assert rows["b"]["reasons"] == ["kind_not_registered", "options_undecodable"]
         assert rows["b"]["options"] is None
-        assert rows["c"]["availability"] == "available"
-        assert rows["c"]["reasons"] == []
+        assert rows["c"]["reasons"] == ["kind_not_registered"]
         assert rows["c"]["options"] == json.loads(quoted)
-        for row_id in "abc":
+        assert rows["d"]["availability"] == "available"
+        for row_id in "abcd":
             detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
             assert detail.status_code == 200, detail.text
             assert detail.json() == rows[row_id]
