@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from lionagi.cli._schedule_parsing import _MAX_CHAIN_DEPTH, _merge_chain_action
+from lionagi.cli._schedule_parsing import (
+    _MAX_CHAIN_DEPTH,
+    _chain_action_with_usable_selected_kind,
+    _merge_chain_action,
+)
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.ln.concurrency import ExceptionGroup, current_time
 from lionagi.ln.concurrency import sleep as _sleep
@@ -445,14 +449,11 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
 def _selected_chain_action(schedule: dict, success: bool) -> dict | None:
     """Return the selected stored chain if it can be used by the scheduler."""
     field = "on_success" if success else "on_fail"
-    action = schedule.get(field)
-    if not action:
-        return None
-    if not isinstance(action, dict):
+    action = _chain_action_with_usable_selected_kind(schedule, success)
+    if action is None and schedule.get(field):
         _log.warning(
             "Schedule %s has an unusable %s chain action; skipping", schedule.get("id"), field
         )
-        return None
     return action
 
 

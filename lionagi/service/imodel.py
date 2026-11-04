@@ -80,10 +80,18 @@ def _derive_safe_exception_group(
     return replacement
 
 
-def _clean_linked_group(
-    group: BaseExceptionGroup, cache: dict[int, BaseException | None]
+def _rebuild_validation_group(
+    group: BaseExceptionGroup,
+    cache: dict[int, BaseException | None],
+    *,
+    drop_validation: bool,
 ) -> BaseException | None:
-    """Remove validation members from a group reached through a chain link."""
+    """Rebuild validation-containing groups without recursion.
+
+    A back edge in a rebuilt group becomes a fixed error in either mode. A root
+    without validation members remains unchanged, including any existing cycle.
+    Linked groups drop validation leaves; top-level groups replace them.
+    """
     if id(group) in cache:
         return cache[id(group)]
     scan = [group]
@@ -110,7 +118,7 @@ def _clean_linked_group(
                 del results[-count:]
             active.remove(id(current))
             kept = [child for child in children if child is not None]
-            if not kept:
+            if drop_validation and not kept:
                 replacement = None
             elif len(kept) == count and all(
                 new is old for new, old in zip(kept, current.exceptions, strict=True)
@@ -123,11 +131,15 @@ def _clean_linked_group(
                 cache[id(replacement)] = replacement
             results.append(replacement)
         elif isinstance(current, ValidationError):
-            results.append(None)
+            results.append(
+                None
+                if drop_validation
+                else ValueError(f"API call failed: {_safe_validation_details(current)}")
+            )
         elif not isinstance(current, BaseExceptionGroup):
             results.append(current)
         elif id(current) in active:
-            results.append(None)
+            results.append(ValueError("API call failed: cyclic exception group"))
         elif id(current) in cache:
             results.append(cache[id(current)])
         else:
@@ -150,7 +162,7 @@ def _sever_validation_chains(error: BaseException) -> None:
         for link in (BaseException.__cause__, BaseException.__context__):
             linked = link.__get__(current, type(current))
             if isinstance(linked, BaseExceptionGroup):
-                replacement = _clean_linked_group(linked, groups)
+                replacement = _rebuild_validation_group(linked, groups, drop_validation=True)
             elif isinstance(linked, ValidationError):
                 replacement = None
             else:
@@ -174,51 +186,8 @@ def _sanitize_execution_error(error: Any) -> Any:
     if not isinstance(error, BaseExceptionGroup):
         return error
 
-    # Preserve an unrelated group exactly, including a cyclic compatibility shim.
-    scanned: set[int] = set()
-    inspect_pending = [error]
-    while inspect_pending:
-        candidate = inspect_pending.pop()
-        if isinstance(candidate, ValidationError):
-            break
-        if isinstance(candidate, BaseExceptionGroup) and id(candidate) not in scanned:
-            scanned.add(id(candidate))
-            inspect_pending.extend(candidate.exceptions)
-    else:
-        return error
-
-    # Walk iteratively: callers may supply groups deeper than Python's call stack.
-    replacements: dict[int, BaseException] = {}
-    active: set[int] = set()
-    results: list[BaseException] = []
-    pending = [(error, False)]
-    while pending:
-        current, expanded = pending.pop()
-        if expanded:
-            count = len(current.exceptions)
-            members = results[-count:] if count else []
-            if count:
-                del results[-count:]
-            active.remove(id(current))
-            if all(new is old for new, old in zip(members, current.exceptions, strict=True)):
-                replacement = current
-            else:
-                replacement = _derive_safe_exception_group(current, members)
-            replacements[id(current)] = replacement
-            results.append(replacement)
-        elif isinstance(current, ValidationError):
-            results.append(ValueError(f"API call failed: {_safe_validation_details(current)}"))
-        elif not isinstance(current, BaseExceptionGroup):
-            results.append(current)
-        elif id(current) in active:
-            results.append(ValueError("API call failed: cyclic exception group"))
-        elif id(current) in replacements:
-            results.append(replacements[id(current)])
-        else:
-            active.add(id(current))
-            pending.append((current, True))
-            pending.extend((child, False) for child in reversed(current.exceptions))
-    return results[0]
+    # Use a separate cache because top-level leaves have a different policy.
+    return _rebuild_validation_group(error, {}, drop_validation=False)
 
 
 class _ValidationSafeExecution(Execution):

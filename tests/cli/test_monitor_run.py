@@ -526,6 +526,37 @@ async def test_advance_chains_no_declared_action_resolves_without_grace(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,status,exit_code", [("on_success", "completed", 0), ("on_fail", "failed", 1)]
+)
+@pytest.mark.parametrize(
+    "action,usable",
+    [
+        ("legacy", False),
+        ({"kind": "unknown"}, False),
+        ({"kind": 7}, False),
+        ({"kind": None, "action_kind": "agent"}, False),
+        ({"kind": "agent", "action_kind": "unknown"}, True),
+        ({"action_kind": "playbook"}, True),
+        ({"prompt": "next"}, True),
+    ],
+)
+async def test_advance_chains_waits_only_for_usable_selected_action(
+    temp_db_path: Path, action, usable, field, status, exit_code
+) -> None:
+    async with StateDB() as db:
+        schedule_id = await _make_schedule(db, **{field: action})
+        run_id = await _make_schedule_run(db, schedule_id, status=status, exit_code=exit_code)
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        chain_state = _new_chain_state(pending, chain=True)
+
+        await _chain_tick(db, pending, [], chain_state, 0)
+
+    assert (run_id in chain_state["awaiting_grace"]) is usable
+    assert (run_id in chain_state["resolved_roots"]) is not usable
+
+
+@pytest.mark.asyncio
 async def test_advance_chains_grace_expires_without_child_resolves_on_parent_exit_code(
     temp_db_path: Path,
 ) -> None:

@@ -550,7 +550,7 @@
     "lionagi.cli._mirror_settings": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "lionhub.serve.mirror"
+      "target_owner": "lionhub.serve.mirror_settings"
     },
     "lionagi.cli._notify_outcomes": {
       "layer": "root",

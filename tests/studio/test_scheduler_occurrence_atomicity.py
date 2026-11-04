@@ -905,7 +905,22 @@ async def _seed_dispatched_run_with_session(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "value", ["private-legacy", ["private-legacy"], 7, True, None, "", [], 0, False]
+    "value",
+    [
+        "private-legacy",
+        ["private-legacy"],
+        7,
+        True,
+        None,
+        "",
+        [],
+        0,
+        False,
+        {"kind": "private-legacy"},
+        {"kind": 7},
+        {"action_kind": 7},
+        {"kind": None, "action_kind": "agent"},
+    ],
 )
 @pytest.mark.parametrize("status,field", [("completed", "on_success"), ("failed", "on_fail")])
 async def test_reconcile_skips_unusable_chain_and_continues_to_next_orphan(
