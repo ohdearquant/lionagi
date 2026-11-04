@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 
 import pytest
@@ -133,10 +132,6 @@ async def test_invocation_observations_use_same_atomic_rules(tmp_path):
         assert row["node_metadata"]["unverifiable_quarantined"] is True
 
 
-@pytest.mark.skipif(
-    not os.environ.get("LIONAGI_TEST_PG_URL"),
-    reason="no PostgreSQL service configured via LIONAGI_TEST_PG_URL",
-)
 async def test_postgres_two_connections_increment_atomically(pg_url):
     sid = str(uuid.uuid4())
     progression = str(uuid.uuid4())
