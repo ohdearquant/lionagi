@@ -386,7 +386,7 @@ used to bypass ownership.
 
 The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
 copy statement's column list from catalog-read names and re-executing index DDL strings taken from
-`sqlite_master` (`state/db.py:2405-2417`, `:2498-2512`, and the same shape in the six other rebuild paths).
+`sqlite_master` (`state/db.py:2408-2420`, `:2498-2512`, and the same shape in the six other rebuild paths).
 That faithfully preserves whatever the database happens to contain, including objects nothing
 declares, so a rebuild carries drift forward instead of resolving it — a database built from the
 old DDL path keeps its 15 descending indexes through every future migration. It is also the one
