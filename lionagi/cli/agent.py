@@ -58,8 +58,10 @@ from ._context_from import (
 )
 from ._logging import hint, log_error
 from ._mcp_resolve import (
+    LegacyMcpReplayError,
     McpConfigError,
     McpResolution,
+    _format_recorded_mcp_path,
     explicit_mcp_config_path,
     resolve_spawn_mcp_servers,
 )
@@ -1768,12 +1770,60 @@ async def _run_agent(
                     "it cannot be resumed with --mcp-config"
                 )
 
-        mcp_resolution = resolve_spawn_mcp_servers(
-            mcp_config,
-            launch_dir=launch_dir,
-            disabled=no_mcp_config,
-            submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
+        replay_recorded_choice = is_resumed_branch and mcp_config is None and not no_mcp_config
+        recorded_launch = branch.metadata.get(_MCP_LAUNCH_KEY) if replay_recorded_choice else None
+        if replay_recorded_choice:
+            if isinstance(recorded_launch, dict):
+                origin = recorded_launch.get("mcp_config_origin")
+                if origin is not None and (
+                    origin != "submit_snapshot"
+                    or not isinstance(recorded_launch.get("mcp_config"), str)
+                    or not recorded_launch["mcp_config"].strip()
+                    or not os.path.isabs(recorded_launch["mcp_config"])
+                    or not isinstance(recorded_launch.get("launch_dir"), str)
+                    or not recorded_launch["launch_dir"].strip()
+                    or recorded_launch.get("no_mcp_config") is not False
+                ):
+                    raise McpConfigError("this branch has an invalid recorded MCP snapshot origin")
+                if (
+                    "no_mcp_config" in recorded_launch
+                    and type(recorded_launch["no_mcp_config"]) is not bool
+                ):
+                    raise McpConfigError(
+                        "this branch has an invalid recorded MCP configuration flag; start a fresh run"
+                    )
+                launch = recorded_launch.get("launch_dir")
+                has_recorded_path = (
+                    recorded_launch.get("mcp_config") is not None or "launch_dir" in recorded_launch
+                )
+                if has_recorded_path and (not isinstance(launch, str) or not os.path.isabs(launch)):
+                    raise McpConfigError(
+                        "this branch has an invalid recorded MCP launch directory; start a fresh run"
+                    )
+
+        # A pre-carrier record naming a file is ambiguous until that file has
+        # been read. Do not discover the current directory before deciding it.
+        legacy_recorded_file = (
+            isinstance(recorded_launch, dict)
+            and recorded_launch.get("mcp_config_origin") is None
+            and recorded_launch.get("mcp_config") is not None
+            and not bool(recorded_launch.get("no_mcp_config"))
         )
+        if legacy_recorded_file and (
+            not isinstance(recorded_launch.get("launch_dir"), str)
+            or not recorded_launch["launch_dir"].strip()
+        ):
+            raise McpConfigError(
+                f"this branch has an invalid recorded MCP config "
+                f"{_format_recorded_mcp_path(recorded_launch['mcp_config'])}; start a fresh run"
+            )
+        if not replay_recorded_choice:
+            mcp_resolution = resolve_spawn_mcp_servers(
+                mcp_config,
+                launch_dir=launch_dir,
+                disabled=no_mcp_config,
+                submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
+            )
 
         # A resume that names no MCP flag replays the choice its branch was launched
         # with, searched from where it was launched rather than from where it is
@@ -1788,22 +1838,27 @@ async def _run_agent(
                 # The resolver's own refusals name --mcp-config, which this caller
                 # never passed, so a recorded config is refused here in its own words.
                 how_to_go_on = (
-                    "resume it with --mcp-config naming the config to use, or with --no-mcp-config"
+                    "start a fresh run"
+                    if legacy_recorded_file
+                    else "resume it with --mcp-config naming the config to use, or with --no-mcp-config"
                 )
                 if recorded_config is not None and not disabled:
                     try:
                         recorded_path = explicit_mcp_config_path(
                             recorded_config, launch_dir=launched["launch_dir"]
                         )
-                    except (TypeError, RuntimeError) as exc:
-                        # Not a path, or a home directory that does not resolve.
+                    except (TypeError, RuntimeError, ValueError, OSError):
+                        # Stored fields may contain arbitrary values: do not echo an
+                        # object repr or an exception built from those values.
                         raise McpConfigError(
-                            f"this branch was launched with the MCP config {recorded_config}, "
-                            f"which can no longer be used ({exc}); {how_to_go_on}"
-                        ) from exc
+                            f"this branch was launched with the MCP config "
+                            f"{_format_recorded_mcp_path(recorded_config)}, "
+                            f"which can no longer be used; {how_to_go_on}"
+                        ) from None
                     if not recorded_path.is_file():
                         raise McpConfigError(
-                            f"this branch was launched with the MCP config {recorded_path}, "
+                            f"this branch was launched with the MCP config "
+                            f"{_format_recorded_mcp_path(recorded_config)}, "
                             f"which is no longer a readable file; {how_to_go_on}"
                         )
                 try:
@@ -1813,14 +1868,18 @@ async def _run_agent(
                         launch_dir=launched["launch_dir"],
                         disabled=disabled,
                         submit_snapshot=recorded_config if is_submit_snapshot else None,
+                        **({"reject_legacy_snapshot": True} if legacy_recorded_file else {}),
                     )
-                except McpConfigError as exc:
-                    # Only a named file is refused; a search that finds nothing usable
-                    # says so in the resolution instead.
+                except LegacyMcpReplayError as exc:
+                    # The resolver constructed this fixed, safely-labelled message.
+                    raise McpConfigError(str(exc)) from None
+                except McpConfigError:
+                    # Do not expose arbitrary stored metadata or exception content.
                     raise McpConfigError(
-                        f"this branch was launched with the MCP config {recorded_config}, "
-                        f"which can no longer be used ({exc}); {how_to_go_on}"
-                    ) from exc
+                        f"this branch was launched with the MCP config "
+                        f"{_format_recorded_mcp_path(recorded_config)}, "
+                        f"which can no longer be used; {how_to_go_on}"
+                    ) from None
             else:
                 mcp_resolution = McpResolution(
                     None, "no_mcp_launch_recorded", None, Path(os.getcwd()).resolve()

@@ -1486,7 +1486,7 @@ async def test_a_set_resolved_on_resume_replaces_the_one_the_codex_leg_had(
 @pytest.mark.asyncio
 async def test_a_resume_whose_recorded_config_is_gone_names_it(monkeypatch, tmp_path):
     """The caller passed no --mcp-config, so the refusal names the config the
-    branch was launched with, and the two ways on."""
+    branch was launched with and says to start a fresh run."""
     import lionagi.cli.agent as agent_mod
     from lionagi.cli._mcp_resolve import McpConfigError
 
@@ -1502,9 +1502,11 @@ async def test_a_resume_whose_recorded_config_is_gone_names_it(monkeypatch, tmp_
         await agent_mod._run_agent(None, "follow up", resume=branch_id)
 
     message = str(raised.value)
-    assert message.startswith(f"this branch was launched with the MCP config {gone}")
+    assert message.startswith(
+        f"this branch was launched with the MCP config {json.dumps(str(gone))}"
+    )
     assert "which is no longer a readable file" in message
-    assert "--no-mcp-config" in message
+    assert "start a fresh run" in message
 
 
 @pytest.mark.asyncio
@@ -1547,15 +1549,16 @@ async def test_a_recorded_config_that_cannot_even_be_read_is_refused_by_name(
         await agent_mod._run_agent(None, "follow up", resume=branch_id)
 
     message = str(raised.value)
-    assert message.startswith(f"this branch was launched with the MCP config {recorded}")
-    assert "--no-mcp-config" in message
+    label = json.dumps(recorded) if isinstance(recorded, str) else "<invalid path>"
+    assert label in message
+    assert "start a fresh run" in message
     assert seen == {}
 
 
 @pytest.mark.asyncio
 async def test_a_recorded_config_that_can_no_longer_be_used_names_it(monkeypatch, tmp_path):
     """The file is there but no longer reads as a config. The refusal still names
-    the recorded config and the ways on, not a --mcp-config the caller never passed."""
+    the recorded config without exposing malformed contents, and says to start a fresh run."""
     import lionagi.cli.agent as agent_mod
     from lionagi.cli._mcp_resolve import McpConfigError
 
@@ -1573,9 +1576,9 @@ async def test_a_recorded_config_that_can_no_longer_be_used_names_it(monkeypatch
         await agent_mod._run_agent(None, "follow up", resume=branch_id)
 
     message = str(raised.value)
-    assert message.startswith(f"this branch was launched with the MCP config {broken}")
-    assert "is not valid JSON" in message
-    assert "--no-mcp-config" in message
+    assert json.dumps(str(broken)) in message
+    assert "{not json" not in message
+    assert "start a fresh run" in message
 
 
 @pytest.mark.asyncio

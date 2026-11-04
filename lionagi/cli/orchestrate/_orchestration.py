@@ -12,7 +12,7 @@ import re
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import accumulate
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1029,6 +1029,8 @@ async def setup_orchestration(
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
     mcp_submit_snapshot: str | None = None,
+    reject_legacy_mcp_snapshot: bool = False,
+    mcp_launch_dir_unrecorded: bool = False,
     no_mcp_config_source: str | None = None,
     mcp_launch_dir: str | None = None,
 ) -> OrchestrationEnv:
@@ -1089,6 +1091,7 @@ async def setup_orchestration(
         launch_dir=launch_dir,
         disabled=no_mcp_config,
         submit_snapshot=mcp_submit_snapshot,
+        **({"reject_legacy_snapshot": True} if reject_legacy_mcp_snapshot else {}),
     )
     # An explicit empty set is distinct from finding no configuration.
     run_mcp_servers = {} if no_mcp_config else mcp_resolution.servers
@@ -1159,9 +1162,22 @@ async def setup_orchestration(
 
     run = allocate_run(save_dir=save_dir)
     if isinstance(run, RunDir):
+        provenance = mcp_resolution
+        if mcp_launch_dir_unrecorded and not no_mcp_config:
+            from lionagi.cli._mcp_resolve import _format_recorded_mcp_path
+
+            resolution = (mcp_resolution.reason or "resolved").partition(":")[0]
+            provenance = replace(
+                mcp_resolution,
+                reason=(
+                    "no MCP launch directory was recorded; searched "
+                    f"{_format_recorded_mcp_path(str(mcp_resolution.searched_from))}; "
+                    f"resolution {resolution}"
+                ),
+            )
         run = run.with_execution_provenance(
             cwd=cwd or os.getcwd(),
-            mcp_resolution=mcp_resolution,
+            mcp_resolution=provenance,
             mcp_disabled=no_mcp_config,
         )
     run.ensure_artifact_root()

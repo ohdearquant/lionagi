@@ -105,6 +105,12 @@ be replayed and leaves declared server names unknown. A flow resume refuses new 
 and a new agent profile; an agent resume or continuation refuses server exclusions. Agent
 resumes can still explicitly name a config, disable MCP, or select a profile.
 
+Older records that name a file but lack an origin cannot prove whether the file was caller-named
+or a generated snapshot. Replay reads that file once: a valid file without snapshot metadata
+remains explicit, while a file with snapshot metadata, or an unreadable or malformed file,
+refuses the ambiguous replay and asks for a fresh run. Snapshot metadata is never used to grant
+ambient authority. A fresh caller-named file is still explicit even if it contains that metadata.
+
 A generated snapshot carries `lionagiSnapshotOf` and `lionagiSnapshotSearchedFrom` for reporting
 the original source and search directory. The snapshot path is the file the child reads; the
 original source and search directory are persisted in `mcp_config_source` and
