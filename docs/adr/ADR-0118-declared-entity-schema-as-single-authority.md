@@ -935,7 +935,7 @@ reverified at `bb57cc96`.
 | `state/schema_meta.py` | 34 tables, 408 direct columns, 93 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21` | via `create_all` | — | what production builds from; PK, FK, CHECK, unique, partial-index and server-default counts need a fresh same-pin inventory — Phase 1 compares generated objects and Phase 2 compares physical catalogs |
 | `state/schema.sql` | 34 tables, 97 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21`; pragma and seed totals require a fresh inventory | tests only | — | `_SCHEMA_PATH` at `db.py:174`; not executed by writable open |
 | `state/schema_migrations.py` | 127 additive column declarations over 14 tables | 10 indexes per dialect | — | the two dialect tuples are textually identical |
-| `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 9,539 lines at `bb57cc96`; 5 `_*_COLUMNS` allow-lists; 45 `S608` |
+| `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 9,539 lines at `bb57cc96`; 5 `_*_COLUMNS` allow-lists; 73 `S608` |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |
 | `studio/operator/store.py` | 6 tables (+2 indexes) + own migration | yes | 119 sites | 2,647 lines at `bb57cc96`; a second persistence layer |
 | `studio/services/*` | 7 re-declarations of state tables, 4 modules | on the request path, in 20 request-handling functions | 93 execution calls | 38 direct store connections in 9 files |
@@ -1010,7 +1010,7 @@ scratch=$(mktemp -d)
 mkdir -p "$scratch/current" "$scratch/historical"
 git archive bb57cc9619765bd03e7dd2b3369725335d48af21 lionagi tests/state/test_engine_schema.py | tar -x -C "$scratch/current"
 git archive 79c9772930ac8da8522c3b3ced5d2974d13daea1 lionagi | tar -x -C "$scratch/historical"
-python3 - "$scratch/current" "$scratch/historical" <<'PY'
+python3 -I - "$scratch/current" "$scratch/historical" <<'PY'
 import ast
 import pathlib
 import re
