@@ -24,14 +24,14 @@ V2 implementation and adoption require acceptance of this record and the tests i
 **P1 — A bounded result is not a bounded query.** At the source baseline the page query uses
 a limited CTE, selected-session correlated aggregates, a CROSS JOIN and a final ORDER BY
 (`lionagi/studio/services/sessions.py:540-594` at `1717674a2140d3571fcb90e3f68204845048ef80`). Status filtering uses an IN predicate with
-a NULL arm for completed (`lionagi/studio/services/sessions.py:411-415`). OFFSET remains
-(`lionagi/studio/services/sessions.py:598`) and a separate exact count is read
-(`lionagi/studio/services/sessions.py:445-460`, `lionagi/studio/services/sessions.py:1879`).
+a NULL arm for completed (`lionagi/studio/services/sessions.py:411-415` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`). OFFSET remains
+(`lionagi/studio/services/sessions.py:598` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`) and a separate exact count is read
+(`lionagi/studio/services/sessions.py:445-460` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`, `lionagi/studio/services/sessions.py:1879` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`).
 A later `list_sessions` implementation includes a `recent_unfiltered` path and a query-plan
 fallback when its required index or ordering plan is unavailable. The existing projection
 growth test measures the page statement rather than the entire route
-(`tests/apps_studio_server/test_session_listing_projection.py:188`,
-`tests/apps_studio_server/test_session_listing_projection.py:217`).
+(`tests/apps_studio_server/test_session_listing_projection.py:188` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`,
+`tests/apps_studio_server/test_session_listing_projection.py:217` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`).
 
 **P2 — Contains can reject an arbitrary prefix before producing a result.** The filter
 uses escaped, case-insensitive contains on name fields and playbook
