@@ -711,7 +711,7 @@ def test_the_registry_and_counters_are_where_cited() -> None:
         '"writeback_failed": 0,',
     )
     _in_span(_BRANCH, 298, 310, "def last_context_report(self):", "``skipped``")
-    _in_span("lionagi/cli/monitor.py", 698, 709, '"blocks_injected",')
+    _in_span("lionagi/cli/monitor.py", 740, 751, '"blocks_injected",')
 
 
 def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
