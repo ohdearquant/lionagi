@@ -12,9 +12,8 @@ Invoked out-of-process via `sys.executable -m lionagi.cli.main ...` (the
 real `li` entrypoint is `lionagi.cli.main:main`), so these tests see exactly
 what an external caller of the installed `li` binary sees.
 
-Flag-set goldens compare *sorted flag lists* from `--help`, not full help
-text — full text churns on wording tweaks; the flag set is the actual
-contract callers depend on.
+Flag-set goldens compare sorted parser flag lists, including hidden flags,
+rather than rendered help text, which churns on wording tweaks.
 
 Anything needing a live Studio daemon is skipped with a reason rather than
 mocked. Error paths triggerable without a daemon (unreachable Studio URL,
@@ -116,6 +115,7 @@ AGENT_HELP_FLAGS = [
     "--invocation",
     "--list-profiles",
     "--mcp-config",
+    "--mcp-submit-snapshot",
     "--no-mcp-config",
     "--notify",
     "--preset",

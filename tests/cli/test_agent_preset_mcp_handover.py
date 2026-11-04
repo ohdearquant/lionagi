@@ -183,6 +183,33 @@ async def test_direct_antigravity_leg_rejects_a_named_nonempty_mcp_set(spawn, tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resumed", [False, True], ids=["direct", "resumed"])
+async def test_named_snapshot_marker_cannot_hide_explicit_antigravity_request(
+    spawn, tmp_path, monkeypatch, resumed
+):
+    import lionagi.cli.agent as agent_mod
+    from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
+
+    snapshot = tmp_path / "named.json"
+    _write_mcp_server_snapshot(
+        snapshot,
+        {"named": {"command": "server"}},
+        source=tmp_path / ".mcp.json",
+        searched_from=tmp_path,
+    )
+    kwargs = {"mcp_config": str(snapshot)}
+    model = "gemini-cli/gemini-3.5-flash"
+    if resumed:
+        branch_id, branch_path = _write_cli_branch(tmp_path, "gemini-cli")
+        monkeypatch.setattr(agent_mod, "find_branch", lambda _bid: ("run-x", branch_path))
+        kwargs["resume"] = branch_id
+        model = None
+
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP"):
+        await agent_mod._run_agent(model, "go", **kwargs)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["GEMINI-CLI", "Gemini_Code", "gemini-Cli", " gemini-cli "])
 async def test_a_provider_spelling_that_resolves_is_a_spelling_the_guard_recognises(
     spawn, tmp_path, provider
@@ -265,7 +292,19 @@ async def test_antigravity_leg_keeps_non_requested_mcp_sets_non_failing(
             source=tmp_path / ".mcp.json",
             searched_from=tmp_path,
         )
-        kwargs["mcp_config"] = str(snapshot)
+        if resumed:
+            # A resume replays the persisted choice, not the new submission's
+            # snapshot. Record the carrier that the first run saved.
+            stored = json.loads(branch_path.read_text())
+            stored["metadata"][agent_mod._MCP_LAUNCH_KEY] = {
+                "mcp_config": str(snapshot),
+                "mcp_config_origin": "submit_snapshot",
+                "no_mcp_config": False,
+                "launch_dir": str(spawn.submit_dir),
+            }
+            branch_path.write_text(json.dumps(stored))
+        else:
+            kwargs["mcp_submit_snapshot"] = str(snapshot)
     elif config_case == "disabled":
         kwargs["no_mcp_config"] = True
 
@@ -360,6 +399,7 @@ async def test_a_new_branch_records_the_mcp_choice_a_resume_replays(spawn, tmp_p
 
     assert spawn.branches[-1].metadata[_MCP_LAUNCH_KEY] == {
         "mcp_config": str(named.resolve()),
+        "mcp_config_origin": "explicit",
         "no_mcp_config": False,
         "launch_dir": str(spawn.submit_dir.resolve()),
     }
@@ -389,11 +429,12 @@ async def test_a_submitted_legs_snapshot_is_recorded_for_its_resume(spawn, tmp_p
         "go",
         cwd=str(spawn.target_dir),
         yolo=True,
-        mcp_config=str(snapshot),
+        mcp_submit_snapshot=str(snapshot),
     )
 
     launched = spawn.branches[-1].metadata[_MCP_LAUNCH_KEY]
     assert launched["mcp_config"] == str(snapshot.resolve())
+    assert launched["mcp_config_origin"] == "submit_snapshot"
     # The search directory is provenance; a resume reads from this process's own directory.
     assert launched["launch_dir"] == str(Path.cwd().resolve())
     assert launched["launch_dir"] != str(server_dir)

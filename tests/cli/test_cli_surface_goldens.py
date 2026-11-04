@@ -108,6 +108,20 @@ def _run_main(argv: list[str]) -> int:
         return code if isinstance(code, int) else 1
 
 
+@pytest.mark.parametrize(
+    ("command", "subs"),
+    [("agent", ()), ("orchestrate", ("flow",)), ("orchestrate", ("fanout",))],
+)
+def test_submit_snapshot_carrier_is_parsed_but_hidden_from_help(command, subs):
+    parser = _command_parser(command, *subs)
+    action = next(a for a in parser._actions if a.dest == "mcp_submit_snapshot")
+    assert action.help == argparse.SUPPRESS
+    assert "--mcp-submit-snapshot" not in parser.format_help()
+    assert parser.parse_args(["--mcp-submit-snapshot", "snapshot.json"]).mcp_submit_snapshot == (
+        "snapshot.json"
+    )
+
+
 # Goldens — sorted flag/positional sets, pinned from the actual parser tree
 
 TOP_LEVEL_COMMANDS = [
@@ -146,6 +160,7 @@ ORCHESTRATE_FANOUT_FLAGS = [
     "--invocation",
     "--max-concurrent",
     "--mcp-config",
+    "--mcp-submit-snapshot",
     "--no-mcp-config",
     "--notify",
     "--num-workers",
@@ -186,6 +201,7 @@ ORCHESTRATE_FLOW_FLAGS = [
     "--max-concurrent",
     "--max-ops",
     "--mcp-config",
+    "--mcp-submit-snapshot",
     "--no-mcp-config",
     "--notify",
     "--output",
