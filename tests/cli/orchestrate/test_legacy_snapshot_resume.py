@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -189,5 +190,94 @@ async def test_malformed_recorded_flag_never_falls_back_to_discovery(monkeypatch
     run = AsyncMock()
     monkeypatch.setattr(flow, "_run_flow", run)
     with pytest.raises(FlowResumeError, match="recorded MCP choice.*fresh run"):
+        await flow._resume_flow("recorded-run")
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_named_marked_config_survives_flow_start_and_resume(tmp_run, monkeypatch):  # noqa: F811
+    """A named file remains caller-owned even when it has a snapshot marker."""
+    from lionagi.cli.orchestrate import _checkpoint
+    from lionagi.cli.orchestrate._checkpoint import CheckpointWriter, load_checkpoint
+
+    recorded = tmp_run / "named.json"
+    recorded.write_text(
+        json.dumps(
+            {
+                "lionagiSnapshotOf": str(tmp_run / "old.json"),
+                "mcpServers": {"named": {"command": "echo"}},
+            }
+        )
+    )
+    monkeypatch.setattr(flow, "stamp_worker_depth", lambda: None)
+    monkeypatch.setattr(flow, "start_live_persist", AsyncMock())
+    monkeypatch.setattr(flow, "stop_live_persist", AsyncMock(return_value="completed"))
+    monkeypatch.setattr(
+        _mcp_resolve, "discover_mcp_config", lambda _: pytest.fail("ambient discovery")
+    )
+    seen = []
+    checkpoint_path = tmp_run / "checkpoint.json"
+
+    async def execute(_model, prompt, **kwargs):
+        env = kwargs["env"]
+        seen.append(set(env.mcp_servers))
+        if len(seen) == 1:
+            writer = CheckpointWriter(
+                path=checkpoint_path,
+                session_id=str(env.session.id),
+                prompt=prompt,
+                plan=[],
+                config=kwargs["checkpoint_config"],
+            )
+            await writer.flush()
+        return "ok"
+
+    monkeypatch.setattr(flow, "_run_flow_inner", execute)
+    await flow._run_flow("claude_code/sonnet", "work", mcp_config="named.json")
+    checkpoint = load_checkpoint(checkpoint_path)
+    assert checkpoint["config"]["mcp_config"] == str(recorded)
+    monkeypatch.setattr(
+        _checkpoint,
+        "_find_run_dir_by_id",
+        lambda _: SimpleNamespace(checkpoint_path=checkpoint_path),
+    )
+    await flow._resume_flow("recorded-run")
+    assert seen == [{"named"}, {"named"}]
+    assert checkpoint["config"]["mcp_config_origin"] == "explicit"
+
+    # Identical bytes from an older record have no trustworthy origin.
+    checkpoint["config"].pop("mcp_config_origin")
+    checkpoint_path.write_text(json.dumps(checkpoint))
+    with pytest.raises(FlowResumeError, match="ambiguous"):
+        await flow._resume_flow("recorded-run")
+    assert seen == [{"named"}, {"named"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"mcp_config": None},
+        {"mcp_config": "relative.json"},
+        {"mcp_config": ""},
+        {"mcp_config": []},
+        {"no_mcp_config": True},
+        {"no_mcp_config": None},
+        {"mcp_submit_snapshot": "/tmp/snapshot.json"},
+    ],
+)
+async def test_invalid_explicit_recorded_origin_refuses(monkeypatch, override):
+    config = {
+        "mcp_config_origin": "explicit",
+        "mcp_config": "/tmp/named.json",
+        "no_mcp_config": False,
+        **override,
+    }
+    monkeypatch.setattr(
+        flow, "resolve_checkpoint_target", AsyncMock(return_value=(None, {"config": config}))
+    )
+    run = AsyncMock()
+    monkeypatch.setattr(flow, "_run_flow", run)
+    with pytest.raises(FlowResumeError, match="recorded.*fresh run"):
         await flow._resume_flow("recorded-run")
     run.assert_not_awaited()

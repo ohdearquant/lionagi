@@ -3289,6 +3289,8 @@ async def _run_flow(
                 mcp_submit_snapshot, base=mcp_launch_dir
             )
             _checkpoint_config["mcp_config_origin"] = "submit_snapshot"
+        elif mcp_config is not None and not no_mcp_config and not reject_legacy_mcp_snapshot:
+            _checkpoint_config["mcp_config_origin"] = "explicit"
 
         env = await setup_orchestration(
             pattern_name="Flow",
@@ -4044,14 +4046,24 @@ async def _resume_flow(
     ):
         raise FlowResumeError("The recorded MCP launch directory is invalid; start a fresh run.")
     if origin is not None or snapshot is not None:
-        if (
-            origin != "submit_snapshot"
-            or not isinstance(snapshot, str)
-            or not snapshot.strip()
-            or not Path(snapshot).is_absolute()
-            or config.get("mcp_config") is not None
-            or config.get("no_mcp_config") is not False
-        ):
+        named_config = config.get("mcp_config")
+        valid_explicit = (
+            origin == "explicit"
+            and snapshot is None
+            and isinstance(named_config, str)
+            and bool(named_config.strip())
+            and Path(named_config).is_absolute()
+            and config.get("no_mcp_config") is False
+        )
+        valid_snapshot = (
+            origin == "submit_snapshot"
+            and isinstance(snapshot, str)
+            and bool(snapshot.strip())
+            and Path(snapshot).is_absolute()
+            and named_config is None
+            and config.get("no_mcp_config") is False
+        )
+        if not (valid_explicit or valid_snapshot):
             raise FlowResumeError(
                 "Checkpoint has an invalid MCP config origin for recorded file "
                 f"{_format_recorded_mcp_path(snapshot)}; start a fresh run."

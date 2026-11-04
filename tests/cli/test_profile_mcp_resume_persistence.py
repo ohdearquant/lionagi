@@ -13,6 +13,49 @@ from tests.cli.test_mcp_set_reaches_every_cli_provider import _record_launch, _w
 
 
 @pytest.mark.asyncio
+async def test_named_config_with_snapshot_marker_survives_real_branch_resume(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.operations.run.run import _write_branch_snapshot
+    from tests.cli.test_agent_preset_mcp_handover import _wire_agent_stubs
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    config = tmp_path / "named.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {"selected": {"command": "server"}},
+                "lionagiSnapshotOf": str(tmp_path / "another.json"),
+            }
+        )
+    )
+    branches_dir = tmp_path / "branches"
+    branches_dir.mkdir()
+    captured = []
+
+    async def capture(self, instruction=None, **kwargs):
+        captured.append(dict(self.chat_model.endpoint.config.kwargs))
+        await _write_branch_snapshot(self, branches_dir)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    _, _, branch_id, _, _ = await agent_mod._run_agent(
+        "claude_code/sonnet", "start", mcp_config=str(config)
+    )
+    branch_path = branches_dir / f"{branch_id}.json"
+    record = json.loads(branch_path.read_text())["metadata"][agent_mod._MCP_LAUNCH_KEY]
+    (tmp_path / ".mcp.json").write_text("{invalid ambient config")
+    monkeypatch.setattr(agent_mod, "find_branch", lambda _bid: ("r", branch_path))
+    await agent_mod._run_agent(None, "resume", resume=branch_id)
+    assert record["mcp_config_origin"] == "explicit"
+    assert len(captured) == 2
+    assert all(set(call["mcp_servers"]) == {"selected"} for call in captured)
+    assert all(call["strict_mcp_config"] is True for call in captured)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["codex", "claude_code"])
 async def test_profile_containment_survives_three_resumes(
     monkeypatch, tmp_path, codex_home, provider
@@ -125,6 +168,10 @@ async def test_agent_resume_replays_submitted_snapshot_origin(monkeypatch, tmp_p
         {"mcp_config_origin": "submit_snapshot", "mcp_config": ""},
         {"mcp_config_origin": "submit_snapshot", "mcp_config": 42},
         {"mcp_config_origin": "unexpected", "mcp_config": "snapshot.json"},
+        {"mcp_config_origin": [], "mcp_config": "snapshot.json"},
+        {"mcp_config_origin": "explicit", "mcp_config": None},
+        {"mcp_config_origin": "explicit", "mcp_config": "relative.json"},
+        {"mcp_config_origin": "explicit", "mcp_config": "/tmp/config", "no_mcp_config": True},
         {"mcp_config_origin": "submit_snapshot", "mcp_config": "snapshot.json", "launch_dir": None},
         {
             "mcp_config_origin": "submit_snapshot",

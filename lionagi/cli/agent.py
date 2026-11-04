@@ -1776,7 +1776,7 @@ async def _run_agent(
             if isinstance(recorded_launch, dict):
                 origin = recorded_launch.get("mcp_config_origin")
                 if origin is not None and (
-                    origin != "submit_snapshot"
+                    origin not in ("submit_snapshot", "explicit")
                     or not isinstance(recorded_launch.get("mcp_config"), str)
                     or not recorded_launch["mcp_config"].strip()
                     or not os.path.isabs(recorded_launch["mcp_config"])
@@ -2402,6 +2402,8 @@ async def _run_agent(
                 branch.metadata[_MCP_LAUNCH_KEY]["no_mcp_config_source"] = "profile"
             elif mcp_submit_snapshot is not None and not no_mcp_config:
                 branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "submit_snapshot"
+            elif mcp_config is not None and not no_mcp_config:
+                branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "explicit"
         elif profile_disables_mcp:
             # Once a resumed leg is contained by its profile, later resumes
             # without that profile must not restore the earlier server set.
