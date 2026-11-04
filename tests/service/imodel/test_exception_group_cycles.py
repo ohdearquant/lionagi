@@ -145,6 +145,22 @@ def test_all_validation_linked_group_is_removed(fallback_group, link):
     _assert_safe_graph(outer, base_group)
 
 
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+def test_empty_linked_subgroup_is_removed_without_dropping_sibling(fallback_group, link):
+    imodel, base_group, group_type = fallback_group
+    ordinary = LookupError("ordinary")
+    subgroup = group_type("private", [_validation_error()])
+    linked_group = group_type("mixed", [subgroup, ordinary])
+    outer = RuntimeError("outer")
+    setattr(outer, link, linked_group)
+
+    assert imodel._sanitize_execution_error(outer) is outer
+    cleaned = getattr(outer, link)
+    assert isinstance(cleaned, group_type) and cleaned is not linked_group
+    assert cleaned.exceptions == (ordinary,)
+    _assert_safe_graph(outer, base_group)
+
+
 def test_shared_group_keeps_distinct_root_and_link_policies(fallback_group):
     imodel, base_group, group_type = fallback_group
     ordinary = LookupError("ordinary")
