@@ -1814,7 +1814,7 @@ async def ndjson_from_cli(
 
 
 def _resolve_cli_path(path: Path, field_name: str) -> Path:
-    """Resolve a CLI path without retaining a filesystem error that names it."""
+    """Resolve without retaining the path; refuse with ValueError, OSError, or RuntimeError."""
     failure = None
     try:
         resolved = _resolve_allow_missing(path)

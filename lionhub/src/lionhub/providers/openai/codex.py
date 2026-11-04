@@ -1718,14 +1718,25 @@ class CodexCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _contain_path_fields_in_repo(self):
+        value_refused = False
         try:
             repo_root = _resolve_cli_path(self.repo, "working directory")
+        except ValueError:
+            if not self._contains_account_integrations():
+                raise
+            value_refused = True
         except (RuntimeError, OSError):
             if self._contains_account_integrations():
                 # Deferred to __init__, which raises the refusal outside
                 # pydantic's validation and so keeps its own type.
                 return self
             raise
+        if value_refused:
+            message = (
+                "contain_account_integrations cannot use the working directory: "
+                "it cannot be resolved"
+            )
+            raise CLIInputRefusedError(message) from ContainmentRefusedError(message)
         # Each path is read the way the snapshot reads it, `str.__str__(os.fspath(x))`, so
         # the text this check contains is the text the command line renders: a path-like
         # value whose own `__str__` answers differently on a later read cannot pass here
