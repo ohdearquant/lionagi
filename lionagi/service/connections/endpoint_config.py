@@ -263,13 +263,31 @@ class EndpointConfig(BaseModel):
 
     def validate_payload(self, data: dict[str, Any]) -> dict[str, Any]:
         """Validate payload data against the request_options model."""
+        from pydantic import ValidationError
+
         if not self.request_options:
             return data
 
+        validation_details = None
         try:
             obj = self.request_options.model_validate(data)
             if self.serialize_by_alias:
                 return obj.model_dump(by_alias=True, exclude_none=True)
             return data
+        except ValidationError as exc:
+            validation_details = _safe_validation_details(exc)
         except Exception as e:
             raise ValueError("Invalid payload") from e
+        raise ValueError(f"Invalid payload: {validation_details}") from None
+
+
+def _safe_validation_details(error: Any) -> str:
+    """Count validation failures without rendering caller-controlled details."""
+    from pydantic import ValidationError
+
+    try:
+        count = ValidationError.error_count(error)
+    except Exception:
+        return "validation failed"
+    label = "error" if count == 1 else "errors"
+    return f"{count} validation {label}"

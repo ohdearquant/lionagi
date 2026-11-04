@@ -45,6 +45,295 @@ def _private_error():
     )
 
 
+def _assert_safe_error_graph(error):
+    from lionagi.ln.concurrency._compat import BaseExceptionGroup
+
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if (
+            isinstance(current, ValidationError)
+            or _MARKER in str(current)
+            or _MARKER in repr(current)
+        ):
+            pytest.fail("exception graph retained validation input", pytrace=False)
+        pending.extend((current.__cause__, current.__context__))
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+@pytest.mark.parametrize("mixed", [False, True])
+async def test_group_member_validation_chain_is_not_reachable(link, mixed):
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        ordinary = RuntimeError("ordinary failure")
+        setattr(ordinary, link, _private_error())
+        members = [ordinary]
+        if mixed:
+            members.append(_private_error())
+        call.execution.error = ExceptionGroup("outer", members)
+        assert call.execution.error.exceptions[0] is ordinary
+        assert ordinary.args == ("ordinary failure",)
+        _assert_safe_error_graph(call.execution.error)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+async def test_group_member_cyclic_validation_chain_is_not_reachable():
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        first, second = RuntimeError("first"), RuntimeError("second")
+        first.__cause__ = second
+        second.__cause__ = first
+        second.__context__ = _private_error()
+        call.execution.error = ExceptionGroup("cycle", [first])
+        _assert_safe_error_graph(call.execution.error)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+async def test_member_chain_to_nested_group_does_not_retain_validation(link):
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        member = RuntimeError("ordinary")
+        other = LookupError("other")
+        nested = ExceptionGroup("inner", [other, _private_error()])
+        group = ExceptionGroup("wrapper", [nested])
+        cause = OSError("group cause")
+        context = RuntimeError("group context")
+        group.__cause__ = cause
+        group.__context__ = context
+        group.__suppress_context__ = False
+        if hasattr(group, "add_note"):
+            group.add_note("safe note")
+        try:
+            raise group
+        except ExceptionGroup as raised:
+            original_traceback = raised.__traceback__
+        setattr(member, link, group)
+        call.execution.error = ExceptionGroup("outer", [member])
+        assert call.execution.error.exceptions[0] is member
+        cleaned = getattr(member, link)
+        assert cleaned is not group and cleaned.message == "wrapper"
+        assert cleaned.exceptions[0].message == "inner"
+        assert cleaned.exceptions[0].exceptions == (other,)
+        assert cleaned.__cause__ is cause and cleaned.__context__ is context
+        assert cleaned.__suppress_context__ is False
+        assert cleaned.__traceback__ is original_traceback
+        if hasattr(group, "__notes__"):
+            assert cleaned.__notes__ == ["safe note"]
+        _assert_safe_error_graph(call.execution.error)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+async def test_member_chain_to_all_private_group_is_cut(link):
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        member = RuntimeError("ordinary")
+        group = ExceptionGroup("outer", [ExceptionGroup("inner", [_private_error()])])
+        setattr(member, link, group)
+        call.execution.error = ExceptionGroup("event", [member])
+        assert call.execution.error.exceptions[0] is member
+        assert getattr(member, link) is None
+        _assert_safe_error_graph(call.execution.error)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+async def test_group_via_cause_with_cycle_is_sanitized_once():
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        member = RuntimeError("ordinary")
+        group = ExceptionGroup("cause", [member, _private_error()])
+        member.__cause__ = group
+        call.execution.error = ExceptionGroup("event", [member])
+        assert member.__cause__ is not group
+        assert member.__cause__.exceptions == (member,)
+        _assert_safe_error_graph(call.execution.error)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["self", "raise", "different", "well_behaved"])
+async def test_linked_group_derive_cannot_retain_or_substitute_members(mode):
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    class CustomGroup(ExceptionGroup):
+        def derive(self, children):
+            if mode == "self":
+                return self
+            if mode == "raise":
+                raise ValueError("bad derive")
+            if mode == "different":
+                return ExceptionGroup(self.message, [RuntimeError("substituted")])
+            return CustomGroup(self.message, children)
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        other = LookupError("ordinary")
+        group = CustomGroup("nested", [other, _private_error()])
+        cause = RuntimeError("safe cause")
+        group.__cause__ = cause
+        member = RuntimeError("outer")
+        member.__context__ = group
+        call.execution.error = ExceptionGroup("event", [member])
+        cleaned = member.__context__
+        assert isinstance(cleaned, ExceptionGroup)
+        assert cleaned.exceptions == (other,) and cleaned.exceptions[0] is other
+        assert cleaned.__cause__ is cause
+        if mode == "well_behaved":
+            assert type(cleaned) is CustomGroup
+        else:
+            assert type(cleaned) is ExceptionGroup
+        _assert_safe_error_graph(call.execution.error)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+async def test_linked_group_derive_cancellation_propagates():
+    import asyncio
+
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    class CancelledGroup(ExceptionGroup):
+        def derive(self, children):
+            raise asyncio.CancelledError()
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        member = RuntimeError("outer")
+        member.__cause__ = CancelledGroup("nested", [LookupError("ordinary"), _private_error()])
+        with pytest.raises(asyncio.CancelledError):
+            call.execution.error = ExceptionGroup("event", [member])
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+async def test_deep_group_via_cause_is_sanitized_without_recursion():
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        other = LookupError("ordinary")
+        group = ExceptionGroup("leaf", [other, _private_error()])
+        for _ in range(1200):
+            group = ExceptionGroup("nested", [group])
+        member = RuntimeError("ordinary")
+        member.__cause__ = group
+        call.execution.error = ExceptionGroup("event", [member])
+        cleaned = member.__cause__
+        for _ in range(1200):
+            cleaned = cleaned.exceptions[0]
+        assert cleaned.exceptions == (other,)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+async def test_deep_member_cause_chain_is_sanitized_without_recursion():
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        current = _private_error()
+        for _ in range(1500):
+            parent = RuntimeError("ordinary")
+            parent.__cause__ = current
+            current = parent
+        call.execution.error = ExceptionGroup("deep", [current])
+        _assert_safe_error_graph(call.execution.error)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+async def test_group_member_custom_setattr_cannot_keep_validation_cause():
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    class CustomError(RuntimeError):
+        def __setattr__(self, name, value):
+            if name in {"__cause__", "__context__"}:
+                raise RuntimeError("custom exception setter")
+            super().__setattr__(name, value)
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        ordinary = CustomError("ordinary failure")
+        BaseException.__cause__.__set__(ordinary, _private_error())
+        call.execution.error = ExceptionGroup("outer", [ordinary])
+        assert call.execution.error.exceptions[0] is ordinary
+        _assert_safe_error_graph(call.execution.error)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["create", "invoke"])
+async def test_request_options_refusal_has_no_validation_graph(entry):
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    caught = None
+    try:
+        try:
+            if entry == "create":
+                model.create_api_calling(
+                    messages=[{"role": "user", "content": "hello"}], temperature=_MARKER
+                )
+            else:
+                await model.invoke(
+                    messages=[{"role": "user", "content": "hello"}], temperature=_MARKER
+                )
+        except ValueError as exc:
+            caught = exc
+        assert caught is not None
+        assert "1 validation error" in str(caught)
+        _assert_safe_error_graph(caught)
+        traceback = caught.__traceback__
+        while traceback is not None:
+            if any(
+                isinstance(value, ValidationError) for value in traceback.tb_frame.f_locals.values()
+            ):
+                pytest.fail("exception traceback retained a validation error", pytrace=False)
+            traceback = traceback.tb_next
+    finally:
+        await model.close()
+
+
 async def _failed_call(monkeypatch, mode):
     model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
     call = await model.create_event(messages=[{"role": "user", "content": "hello"}])
@@ -424,6 +713,95 @@ async def test_nested_error_assignment_preserves_other_group_members():
 
 
 @pytest.mark.asyncio
+async def test_rebuilt_recorded_groups_preserve_safe_exception_metadata():
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        ordinary = LookupError("ordinary")
+        nested = ExceptionGroup("nested", [ordinary, _private_error()])
+        group = ExceptionGroup("outer", [nested])
+        safe_cause = OSError("safe cause")
+        safe_context = RuntimeError("safe context")
+        nested.__cause__ = safe_cause
+        nested.__context__ = _private_error()
+        group.__cause__ = safe_cause
+        group.__context__ = safe_context
+        nested.__suppress_context__ = False
+        group.__suppress_context__ = False
+        if hasattr(group, "add_note"):
+            group.add_note("outer note")
+            nested.add_note("nested note")
+        try:
+            raise group
+        except ExceptionGroup as raised:
+            traceback = raised.__traceback__
+        call.execution.error = group
+        stored = call.execution.error
+        inner = stored.exceptions[0]
+        assert stored is not group and inner is not nested
+        assert inner.exceptions[0] is ordinary
+        assert stored.__cause__ is safe_cause and stored.__context__ is safe_context
+        assert inner.__cause__ is safe_cause and inner.__context__ is None
+        assert stored.__suppress_context__ is False and inner.__suppress_context__ is False
+        assert stored.__traceback__ is traceback
+        if hasattr(group, "__notes__"):
+            assert stored.__notes__ == ["outer note"] and inner.__notes__ == ["nested note"]
+        _assert_safe_error_graph(stored)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", ["root", "member"])
+@pytest.mark.parametrize("mode", ["self", "raise", "different", "well_behaved"])
+async def test_recorded_group_uses_checked_derive_and_preserves_metadata(level, mode):
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    calls = []
+
+    class CustomGroup(ExceptionGroup):
+        def derive(self, children):
+            calls.append(1)
+            if mode == "self":
+                return self
+            if mode == "raise":
+                raise ValueError("bad derive")
+            if mode == "different":
+                return ExceptionGroup(self.message, [RuntimeError("substituted")])
+            return CustomGroup(self.message, children)
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        other = LookupError("ordinary")
+        group = CustomGroup("nested", [other, _private_error()])
+        cause, context = OSError("safe cause"), RuntimeError("safe context")
+        group.__cause__ = cause
+        group.__context__ = context
+        group.__suppress_context__ = False
+        if hasattr(group, "add_note"):
+            group.add_note("safe note")
+        try:
+            raise group
+        except CustomGroup as raised:
+            traceback = raised.__traceback__
+        call.execution.error = group if level == "root" else ExceptionGroup("event", [group])
+        cleaned = call.execution.error if level == "root" else call.execution.error.exceptions[0]
+        assert calls and cleaned is not group
+        assert cleaned.exceptions[0] is other and isinstance(cleaned.exceptions[1], ValueError)
+        assert cleaned.__cause__ is cause and cleaned.__context__ is context
+        assert cleaned.__suppress_context__ is False and cleaned.__traceback__ is traceback
+        if hasattr(group, "__notes__"):
+            assert cleaned.__notes__ == ["safe note"]
+        assert type(cleaned) is (CustomGroup if mode == "well_behaved" else ExceptionGroup)
+        _assert_safe_error_graph(call.execution.error)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
 async def test_deep_exception_group_is_sanitized_without_recursing():
     from lionagi.ln.concurrency._compat import ExceptionGroup
 
@@ -534,7 +912,7 @@ async def test_unrelated_error_and_group_keep_their_identity():
 
 
 @pytest.mark.asyncio
-async def test_nonvalidation_group_member_keeps_its_own_cause():
+async def test_nonvalidation_group_member_loses_private_validation_cause():
     from lionagi.ln.concurrency._compat import ExceptionGroup
 
     model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
@@ -545,8 +923,46 @@ async def test_nonvalidation_group_member_keeps_its_own_cause():
     call.execution.error = ExceptionGroup("mixed", [ordinary, _private_error()])
     stored = call.execution.error
     assert stored.exceptions[0] is ordinary
-    assert ordinary.__cause__ is caller_cause
+    assert ordinary.__cause__ is None
     assert not isinstance(stored.exceptions[1], ValidationError)
+    _assert_safe_error_graph(stored)
+
+
+@pytest.mark.asyncio
+async def test_nonvalidation_group_member_keeps_ordinary_cause():
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+    ordinary = RuntimeError("ordinary failure")
+    ordinary_cause = LookupError("ordinary cause")
+    ordinary.__cause__ = ordinary_cause
+    call.execution.error = ExceptionGroup("mixed", [ordinary, _private_error()])
+    assert call.execution.error.exceptions[0] is ordinary
+    assert ordinary.__cause__ is ordinary_cause
+    await model.close()
+
+
+@pytest.mark.asyncio
+async def test_member_preserves_text_and_nonvalidation_context_when_private_cause_is_cut():
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        ordinary = RuntimeError(_MARKER)
+        context = LookupError("ordinary context")
+        ordinary.__cause__ = _private_error()
+        ordinary.__context__ = context
+        ordinary.__suppress_context__ = False
+        call.execution.error = ExceptionGroup("mixed", [ordinary])
+        assert call.execution.error.exceptions[0] is ordinary
+        assert ordinary.args == (_MARKER,)
+        assert ordinary.__cause__ is None
+        assert ordinary.__context__ is context
+        assert ordinary.__suppress_context__ is False
+    finally:
+        await model.close()
 
 
 @pytest.mark.asyncio
