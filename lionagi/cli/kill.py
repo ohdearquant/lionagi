@@ -549,13 +549,20 @@ async def _do_kill_all_stale(
 
         # Resolve all probes before writing: if this sweep found the same
         # process both live and unverifiable, the live result wins.
-        live_rows = [row for _, row in verified_live if quarantine_identity(row) is not None]
+        live_rows = [
+            (kind, row) for kind, row in verified_live if quarantine_identity(row) is not None
+        ]
 
-        def live_match(row: dict[str, Any], identity: tuple) -> bool:
-            return any(
-                quarantine_identity(live) == identity and _same_process_scope(live, row)
-                for live in live_rows
-            )
+        def live_match(kind: str, row: dict[str, Any], identity: tuple) -> bool:
+            for live_kind, live in live_rows:
+                live_identity = quarantine_identity(live)
+                if live_identity is None or live_identity[:2] != identity[:2]:
+                    continue
+                if kind == live_kind == "session" and live_identity[2] != identity[2]:
+                    continue
+                if _same_process_scope(live, row):
+                    return True
+            return False
 
         for entity_type, row, _reason in pending_observations:
             identity = quarantine_identity(row)
@@ -564,7 +571,7 @@ async def _do_kill_all_stale(
                     f"  {entity_type} {row['id'][:12]}: process identity not bound in the row; "
                     "quarantine not recorded"
                 )
-            elif dry_run and not live_match(row, identity):
+            elif dry_run and not live_match(entity_type, row, identity):
                 metadata = row.get("node_metadata") or {}
                 if metadata.get("unverifiable_quarantined") is True and metadata.get(
                     "unverifiable_identity"
@@ -578,7 +585,7 @@ async def _do_kill_all_stale(
                 identity = quarantine_identity(row)
                 if identity is None:
                     continue
-                if live_match(row, identity):
+                if live_match(entity_type, row, identity):
                     await db.clear_unverifiable_pid(entity_type, row["id"], snapshot=row)
                     continue
                 pid, create_time, _generation = identity
