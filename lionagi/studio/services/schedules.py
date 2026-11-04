@@ -1345,6 +1345,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             "action_kind"
         )
         if _CHAIN_VALIDATION_FIELDS & fields.keys() or kind_changed:
+            # Editing a chain revalidates both reachable siblings, including a stored one;
+            # unrelated edits remain available for rows with legacy invalid chains.
             for field in ("on_success", "on_fail"):
                 if field in fields:
                     _svc_validate_chain_action(

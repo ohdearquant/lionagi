@@ -122,6 +122,38 @@ def test_unrelated_edit_and_clear_can_repair_legacy_values():
 
 
 @pytest.mark.parametrize(
+    ("edited", "stored_sibling"),
+    [("on_success", "on_fail"), ("on_fail", "on_success")],
+)
+def test_chain_patch_reports_invalid_untouched_sibling(edited, stored_sibling, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from fastapi.testclient import TestClient
+
+    import lionagi.studio.services.schedules as schedules
+    from lionagi.studio.app import app
+
+    stored = _existing(**{stored_sibling: _chain(1, model="-legacy")})
+    db = AsyncMock()
+    db.get_schedule.return_value = stored
+    db_context = AsyncMock()
+    db_context.__aenter__.return_value = db
+    monkeypatch.setattr(schedules, "StateDB", lambda: db_context)
+
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    response = client.patch(f"/api/schedules/{stored['id']}", json={edited: _chain(1)})
+    assert response.status_code == 400
+    assert stored_sibling in response.json()["detail"]
+    assert "model" in response.json()["detail"]
+    db.update_schedule.assert_not_called()
+
+    response = client.patch(f"/api/schedules/{stored['id']}", json={"description": "updated"})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "updated": ["description"]}
+    db.update_schedule.assert_awaited_once_with(stored["id"], description="updated")
+
+
+@pytest.mark.parametrize(
     ("parent", "action", "expected"),
     [
         ("agent", {"kind": "playbook", "action_kind": "flow"}, "playbook"),
