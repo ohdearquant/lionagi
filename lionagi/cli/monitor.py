@@ -1482,8 +1482,11 @@ async def _schedule_declares_chain_action(
     *,
     cache: dict[str, dict[str, Any] | None],
 ) -> bool:
-    """True if `schedule_id` declares an on_success/on_fail action matching
-    the outcome that just landed, i.e. a grace wait for the chain child is warranted."""
+    """Whether the action selected for this outcome has a usable kind.
+
+    A declared action with an unusable kind returns False, so it does not
+    warrant a grace wait for a chain child.
+    """
     if schedule_id not in cache:
         cache[schedule_id] = await db.get_schedule(schedule_id)
     sched = cache[schedule_id] or {}
