@@ -104,6 +104,9 @@ async def test_current_quarantine_is_consistent_across_views_and_resolvers(
     if expected_valid:
         assert "identity unverified, quarantined" in rendered
         assert "quarantine record unreadable" not in monitor_output
+    elif case == "other_host":
+        assert "identity unverified, quarantined" not in rendered
+        assert "quarantine record unreadable" not in monitor_output
     else:
         assert "identity unverified, quarantined" not in rendered
         _assert_unreadable_diagnostic(monitor_output, kind, entity_id, 16)
@@ -116,6 +119,8 @@ async def test_current_quarantine_is_consistent_across_views_and_resolvers(
     if expected_valid:
         assert "quarantine record unreadable" not in sweep_output
         assert entity_id in sweep_output
+    elif case == "other_host":
+        assert "quarantine record unreadable" not in sweep_output
     else:
         _assert_unreadable_diagnostic(sweep_output, kind, entity_id, 12)
     assert await fetch_row(kind, entity_id) == initial

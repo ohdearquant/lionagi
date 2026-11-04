@@ -118,3 +118,32 @@ def is_current_quarantine(row: dict[str, Any], *, raise_on_scope_error: bool = F
         # A malformed row or an unavailable host identity must not authorize
         # a disposition or display an unverified current quarantine.
         return False
+
+
+def _is_unreadable_quarantine(row: dict[str, Any]) -> bool:
+    """Classify malformed running records without calling a foreign host corrupt."""
+    if not isinstance(row, dict) or row.get("status") != "running":
+        return False
+    metadata = row.get("node_metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError, RecursionError):
+            return False
+    if not isinstance(metadata, dict) or metadata.get("unverifiable_quarantined") is not True:
+        return False
+
+    # A valid record can name this host or a different one. Omit only the host
+    # while checking the complete canonical identity and history; a foreign
+    # host does not excuse an invalid token, count, epoch, or process mode.
+    hostless = {key: value for key, value in metadata.items() if key != "pid_host"}
+    if not is_current_quarantine({**row, "node_metadata": hostless}):
+        return True
+    host = metadata.get("pid_host")
+    if isinstance(host, str) and host:
+        try:
+            socket.gethostname()
+        except Exception:
+            # If local scope cannot be determined, retain the existing warning.
+            return True
+    return False

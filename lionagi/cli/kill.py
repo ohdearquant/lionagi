@@ -12,7 +12,11 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln._proc import (
     current_pid_markers,  # noqa: F401  (re-exported: the kill command's historical import path)
 )
-from lionagi.state._quarantine_identity import QuarantineProbeError, is_current_quarantine
+from lionagi.state._quarantine_identity import (
+    QuarantineProbeError,
+    _is_unreadable_quarantine,
+    is_current_quarantine,
+)
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
@@ -401,12 +405,7 @@ async def _do_kill_all_stale(
 
             for row_dict in (db._row_to_dict(r) for r in rows):
                 entity_id = row_dict["id"]
-                meta = row_dict.get("node_metadata")
-                if (
-                    isinstance(meta, dict)
-                    and meta.get("unverifiable_quarantined") is True
-                    and not is_current_quarantine(row_dict)
-                ):
+                if _is_unreadable_quarantine(row_dict):
                     warn(f"{entity_type} {entity_id[:12]}: quarantine record unreadable")
 
                 started = (

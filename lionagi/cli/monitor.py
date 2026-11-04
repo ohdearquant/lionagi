@@ -473,13 +473,9 @@ def _is_unverifiable_quarantined(row: dict[str, Any]) -> bool:
 
 
 def _has_unreadable_quarantine(row: dict[str, Any]) -> bool:
-    metadata = _parse_json_field(row.get("node_metadata"))
-    return (
-        row.get("status") == "running"
-        and isinstance(metadata, dict)
-        and metadata.get("unverifiable_quarantined") is True
-        and not _is_unverifiable_quarantined(row)
-    )
+    from lionagi.state._quarantine_identity import _is_unreadable_quarantine
+
+    return _is_unreadable_quarantine(row)
 
 
 def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
