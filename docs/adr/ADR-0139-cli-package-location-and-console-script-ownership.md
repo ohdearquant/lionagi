@@ -108,7 +108,7 @@ That allocation conflates two parsers. At `4af5b0a9`, the scheduler derives rese
 
 ## Amendment 4 (2026-11-04) — allocate the in-place shared service modules
 
-**Context.** At `8ed68552`, the step-3 D2 table assigns the kill, team, engine and mirror shared definitions to LionHub, leaving each command adapter in the CLI. By that revision these definitions had been extracted in place into five modules. Those modules are absent at both historical source revisions `1717674a` and `04e03ffe`; neither the original partition nor the current whole-module table allocates them. Allocate each explicitly before the step-6 residual CLI move. This changes the relocation units, not the service behavior.
+**Context.** At `8ed68552`, the step-3 D2 table assigns the kill, team, engine and mirror shared definitions to LionHub, leaving each command adapter in the CLI. By that revision these definitions had been extracted in place into five modules. Those modules are absent at both historical source revisions `1717674a` and `04e03ffe`; neither the original partition nor the current whole-module table allocates them. Allocate each explicitly before the step-6 residual CLI move. This changes the relocation units; service behavior is to be preserved, and the cold-import closure of each move is measured per the verification list below.
 
 **Decision.**
 
