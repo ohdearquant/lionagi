@@ -12,6 +12,8 @@
   outcome/evidence behavior; depends on ADR-0119 (deterministic declaration substrate) and
   ADR-0120 (interception and observation planes); coordinates with ADR-0123 (canonical Run)
 
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+
 ## Context
 
 LionAGI currently has the ingredients of an execution system without one authoritative execution
@@ -27,7 +29,7 @@ never calls is `authorize`. So the three routes carry three different control se
 one route carrying controls and the others carrying none, and the missing control on the manager
 route is Session authorization specifically. Session authorization is reached only through the
 `_act` operation, whose sole operational caller in the package is
-`lionagi/operations/act/act.py:135-139`, while Agent factory paths attach tool preprocessors one
+`lionagi/operations/act/act.py:152-155`, while Agent factory paths attach tool preprocessors one
 registration at a time. A caller that holds an `ActionManager`, a fresh plugin Tool, or a callable
 can therefore select a path that does not pass every intended control.
 
@@ -64,11 +66,11 @@ mutable dataclass, and `mode` can be reassigned after construction on an instanc
 holds.
 
 The reconstruction gap is on the write side, not the read side. `_resolve_permissions`
-(`lionagi/agent/spec.py:301-323`) accepts a `PermissionPolicy`, accepts a mapping through
+(`lionagi/agent/spec.py:345-367`) accepts a `PermissionPolicy`, accepts a mapping through
 `PermissionPolicy.from_dict`, accepts the four preset names, and raises `TypeError` or `ValueError`
 on anything else, so a declared mapping is read and applied. What is missing is the inverse:
 `PermissionPolicy` defines `from_dict` and no `to_dict`, and `AgentSpec.to_yaml`
-(`spec.py:230-260`) emits no `permissions` key at all. Measured: a spec composed with
+(`spec.py:272-304`) emits no `permissions` key at all. Measured: a spec composed with
 `{"mode": "rules", "deny": {"bash": ["rm"]}}` round-trips through `to_yaml` then `from_yaml` to
 `permissions=None`, while `model` survives the identical round trip. A reconstructed agent
 therefore has a different effective policy from the declared agent, and the direction of the
@@ -907,8 +909,8 @@ every one of them, whatever its name, when it fingerprints a transport:
 `material = {k: v for k, v in config.items() if not k.startswith("_")}`
 (`lionagi/service/connections/mcp_wrapper.py:1631`), and a registered tool proxy drops them before
 it reconnects: `config_for_client = {k: v for k, v in mcp_config.items() if not k.startswith("_")}`
-(`:2121`). When the pool builds a client it reads only the transport keys it names and ignores the
-rest (`:1960-2042`). The one such key read after a tool is built, `_original_tool_name`, names the
+(`:2139`). When the pool builds a client it reads only the transport keys it names and ignores the
+rest (`:1739-1779,1978-2042`). The one such key read after a tool is built, `_original_tool_name`, names the
 tool that admission checks (`lionagi/protocols/action/manager.py:154`) and picks the tool to call
 on the server already chosen (`mcp_wrapper.py:2137`). It never selects the transport, so these keys
 are no part of it. Equal means the two have the same canonical form, compared exactly as text: the
