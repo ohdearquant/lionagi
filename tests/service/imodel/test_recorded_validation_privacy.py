@@ -837,7 +837,7 @@ async def test_no_backport_cyclic_group_uses_a_fixed_placeholder():
 
     def bound_probe(frame, event, _arg):
         nonlocal steps
-        if frame.f_code.co_name == "_sanitize_execution_error" and event == "line":
+        if frame.f_code.co_name == "_rebuild_validation_group" and event == "line":
             steps += 1
             if steps > 1000:
                 raise RuntimeError("cyclic sanitizer exceeded the test bound")
@@ -880,7 +880,7 @@ async def test_no_backport_cycle_without_validation_keeps_its_identity():
 
     def bound_probe(frame, event, _arg):
         nonlocal steps
-        if frame.f_code.co_name == "_sanitize_execution_error" and event == "line":
+        if frame.f_code.co_name == "_rebuild_validation_group" and event == "line":
             steps += 1
             if steps > 1000:
                 raise RuntimeError("cyclic sanitizer exceeded the test bound")
