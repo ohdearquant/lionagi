@@ -7,12 +7,12 @@ import socket
 import pytest
 
 from lionagi.cli import kill as kill_cli
-from tests.cli.test_quarantine_sweep import (
+from tests.cli.quarantine_helpers import (
     NEXT_GENERATION,
-    _row,
-    _seed,
-    _sweep,
+    fetch_row,
     isolated_store,  # noqa: F401
+    seed,
+    sweep,
 )
 
 
@@ -28,18 +28,18 @@ def _probe_session_live(monkeypatch):
 
 
 async def test_live_session_suppresses_and_clears_matching_invocation(monkeypatch):
-    old_invocation = await _seed("invocation")
+    old_invocation = await seed("invocation")
     for _ in range(3):
-        await _sweep(monkeypatch, ["unverifiable"])
-    before = (await _row("invocation", old_invocation))["node_metadata"]
+        await sweep(monkeypatch, ["unverifiable"])
+    before = (await fetch_row("invocation", old_invocation))["node_metadata"]
     assert before["unverifiable_quarantined"] is True
-    await _seed("session")
-    fresh_invocation = await _seed("invocation")
+    await seed("session")
+    fresh_invocation = await seed("invocation")
     for _ in range(3):
         _probe_session_live(monkeypatch)
         assert await kill_cli._do_kill_all_stale(threshold_seconds=3600) == 0
-    old = await _row("invocation", old_invocation)
-    fresh = await _row("invocation", fresh_invocation)
+    old = await fetch_row("invocation", old_invocation)
+    fresh = await fetch_row("invocation", fresh_invocation)
     assert old["status"] == fresh["status"] == "running"
     assert "unverifiable_count" not in old["node_metadata"], (
         "live process must clear old quarantine"
@@ -54,9 +54,9 @@ async def test_live_session_suppresses_and_clears_matching_invocation(monkeypatc
 async def test_live_session_does_not_clear_invocation_with_different_evidence(
     difference, monkeypatch
 ):
-    invocation = await _seed("invocation")
+    invocation = await seed("invocation")
     for _ in range(3):
-        await _sweep(monkeypatch, ["unverifiable"])
+        await sweep(monkeypatch, ["unverifiable"])
     meta = {"pid": 54321, "pid_create_time": 100.0}
     if difference == "create_time":
         meta["pid_create_time"] = 101.0
@@ -67,19 +67,19 @@ async def test_live_session_does_not_clear_invocation_with_different_evidence(
 
         monkeypatch.setattr(_kill_service.psutil, "boot_time", lambda: 2000.0)
         meta["pid_boot_time"] = 2000.0
-    await _seed("session", metadata=meta)
+    await seed("session", metadata=meta)
     _probe_session_live(monkeypatch)
     assert await kill_cli._do_kill_all_stale(threshold_seconds=3600) == 0
-    row = await _row("invocation", invocation)
+    row = await fetch_row("invocation", invocation)
     assert row["node_metadata"]["unverifiable_count"] == 4
     assert row["node_metadata"]["unverifiable_quarantined"] is True
 
 
 async def test_live_session_does_not_override_different_session_generation(monkeypatch):
-    unknown = await _seed("session")
+    unknown = await seed("session")
     for _ in range(3):
-        await _sweep(monkeypatch, ["unverifiable"])
-    live = await _seed("session", extras={"cli_worker_generation": NEXT_GENERATION})
+        await sweep(monkeypatch, ["unverifiable"])
+    live = await seed("session", extras={"cli_worker_generation": NEXT_GENERATION})
 
     def identity(_pid, _name, *, expected_session_id=None, _reason_out=None, **_kwargs):
         if expected_session_id == live:
@@ -90,16 +90,16 @@ async def test_live_session_does_not_override_different_session_generation(monke
 
     monkeypatch.setattr(kill_cli, "check_pid_identity", identity)
     assert await kill_cli._do_kill_all_stale(threshold_seconds=3600) == 0
-    row = await _row("session", unknown)
+    row = await fetch_row("session", unknown)
     assert row["node_metadata"]["unverifiable_count"] == 4
     assert row["node_metadata"]["unverifiable_quarantined"] is True
 
 
 async def test_live_invocation_clears_matching_session(monkeypatch):
-    session = await _seed("session")
+    session = await seed("session")
     for _ in range(3):
-        await _sweep(monkeypatch, ["unverifiable"])
-    await _seed("invocation")
+        await sweep(monkeypatch, ["unverifiable"])
+    await seed("invocation")
 
     def identity(_pid, _name, *, expected_session_id=None, _reason_out=None, **_kwargs):
         if expected_session_id is None:
@@ -110,6 +110,6 @@ async def test_live_invocation_clears_matching_session(monkeypatch):
 
     monkeypatch.setattr(kill_cli, "check_pid_identity", identity)
     assert await kill_cli._do_kill_all_stale(threshold_seconds=3600) == 0
-    row = await _row("session", session)
+    row = await fetch_row("session", session)
     assert row["status"] == "running"
     assert "unverifiable_count" not in row["node_metadata"]

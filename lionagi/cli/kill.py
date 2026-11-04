@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import time
 from typing import Any
 
@@ -13,6 +12,7 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln._proc import (
     current_pid_markers,  # noqa: F401  (re-exported: the kill command's historical import path)
 )
+from lionagi.state._quarantine_identity import QuarantineScopeProbeError, is_current_quarantine
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
@@ -64,33 +64,30 @@ def _quarantine_still_unverifiable(row: dict[str, Any], *, kind: str) -> bool:
     if identity is None or not isinstance(metadata, dict):
         return False
     pid, created, _generation = identity
-    try:
-        reason = unaddressable_pid_reason(metadata)
-        if reason in NOT_JUDGEABLE_HERE or reason == "boot_mismatch":
-            return False
-        _reason, alive = _pid_addressability(reason, pid)
-        if alive is None:
-            alive = _pid_alive(pid)
-        if not alive:
-            return False
-        return (
-            check_pid_identity(
-                pid,
-                "lionagi",
-                expected_session_id=row["id"] if kind == "session" else None,
-                expected_create_time=created,
-            )
-            == "unverifiable"
-        )
-    except Exception:
-        # An unexpected probe failure cannot establish the required condition.
+    reason = unaddressable_pid_reason(metadata)
+    if reason in NOT_JUDGEABLE_HERE or reason == "boot_mismatch":
         return False
+    _reason, alive = _pid_addressability(reason, pid)
+    if alive is None:
+        alive = _pid_alive(pid)
+    if not alive:
+        return False
+    return (
+        check_pid_identity(
+            pid,
+            "lionagi",
+            expected_session_id=row["id"] if kind == "session" else None,
+            expected_create_time=created,
+        )
+        == "unverifiable"
+    )
 
 
 async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> int:
     """Record an operator disposition without attempting to stop a process."""
     from lionagi.state.db import StateDB
     from lionagi.state.lifecycle import LifecycleNotFoundError
+    from lionagi.state.lifecycle.service import _QuarantineIdentityProbeError
 
     if not reason.strip():
         log_error("a non-blank --reason is required to resolve quarantine")
@@ -108,20 +105,12 @@ async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> 
         if kind not in ("session", "invocation") or row.get("status") != "running":
             log_error("entity is not a running quarantined session or invocation")
             return 1
-        metadata = row.get("node_metadata")
-        identity = quarantine_identity(row)
-        scope_metadata = (
-            {key: value for key, value in metadata.items() if key != "pid_boot_time"}
-            if isinstance(metadata, dict)
-            else {}
-        )
-        if (
-            not isinstance(metadata, dict)
-            or identity is None
-            or metadata.get("unverifiable_quarantined") is not True
-            or metadata.get("unverifiable_identity") != json.dumps(identity, separators=(",", ":"))
-            or unaddressable_pid_reason(scope_metadata) in NOT_JUDGEABLE_HERE
-        ):
+        try:
+            current_quarantine = is_current_quarantine(row, raise_on_scope_error=True)
+        except QuarantineScopeProbeError:
+            log_error("quarantine identity probe failed; no update made")
+            return 1
+        if not current_quarantine:
             log_error("entity is not quarantined for its current local process identity")
             return 1
         try:
@@ -135,6 +124,9 @@ async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> 
                     current, kind=kind
                 ),
             )
+        except _QuarantineIdentityProbeError:
+            log_error("quarantine identity probe failed; no update made")
+            return 1
         except LifecycleNotFoundError:
             log_error(
                 "quarantine changed or identity can now be verified; no update made; use normal li kill"
@@ -410,6 +402,13 @@ async def _do_kill_all_stale(
 
             for row_dict in (db._row_to_dict(r) for r in rows):
                 entity_id = row_dict["id"]
+                meta = row_dict.get("node_metadata")
+                if (
+                    isinstance(meta, dict)
+                    and meta.get("unverifiable_quarantined") is True
+                    and not is_current_quarantine(row_dict)
+                ):
+                    warn(f"{entity_type} {entity_id[:12]}: quarantine record unreadable")
 
                 started = (
                     row_dict.get("started_at")
@@ -572,10 +571,7 @@ async def _do_kill_all_stale(
                     "quarantine not recorded"
                 )
             elif dry_run and not live_match(entity_type, row, identity):
-                metadata = row.get("node_metadata") or {}
-                if metadata.get("unverifiable_quarantined") is True and metadata.get(
-                    "unverifiable_identity"
-                ) == json.dumps(identity, separators=(",", ":")):
+                if is_current_quarantine(row):
                     quarantined_ids.append(row["id"])
         if not dry_run:
             for entity_type, row in verified_live:

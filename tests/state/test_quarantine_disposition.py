@@ -273,17 +273,18 @@ async def test_disposition_probe_exception_fails_closed(tmp_path):
         before = await get(entity_id)
 
         def probe(_):
-            raise OSError("probe failed")
+            raise OSError("private probe detail")
 
-        outcome = await db._lifecycle_service().guarded_quarantine_disposition(
-            entity_type="session",
-            entity_id=entity_id,
-            snapshot=snapshot,
-            target_status="cancelled",
-            operator_reason="reviewed",
-            identity_unverifiable=probe,
-        )
-        assert outcome.result == "conflict"
+        with pytest.raises(RuntimeError, match="probe failed") as caught:
+            await db._lifecycle_service().guarded_quarantine_disposition(
+                entity_type="session",
+                entity_id=entity_id,
+                snapshot=snapshot,
+                target_status="cancelled",
+                operator_reason="reviewed",
+                identity_unverifiable=probe,
+            )
+        assert "private probe detail" not in str(caught.value)
         assert await get(entity_id) == before
 
 

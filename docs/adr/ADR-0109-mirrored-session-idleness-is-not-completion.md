@@ -251,7 +251,7 @@ the difference decides what the mechanism is worth.** It is a check against
 *accident*: code that writes a session's status without meaning to claim it is a
 mirrored transcript. It is not, and at this layer cannot be, a check against
 *impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
-caller-supplied strings (`lionagi/state/db.py:5399-5410`) and they arrive at the
+caller-supplied strings (`lionagi/state/db.py:5402-5413`) and they arrive at the
 lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
 (`lionagi/state/lifecycle/models.py:49-52`). Any caller in the process can pass
 `actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
@@ -342,7 +342,7 @@ about, so it is the subject of the change rather than a downstream reader of
 it. That leaves the **11 downstream consumer files** enumerated below. Read
 "11" as a description of the table and not as a count of everything in the tree
 that reads the constant: the reconciler reads it, and `state/db.py` derives a
-second name from it at `lionagi/state/db.py:484`.
+second name from it at `lionagi/state/db.py:488`.
 
 | Site | Reachable from a mirrored row? | Basis |
 | --- | --- | --- |
@@ -351,7 +351,7 @@ second name from it at `lionagi/state/db.py:484`.
 | `studio/services/run_view.py:64` | Likely, display only | not driven |
 | `studio/services/artifact_verification.py:74` | Unverified | not driven |
 | `studio/services/run_resume_worker.py:72` | Unverified | not driven |
-| `cli/monitor.py:1294,1308,1366` | Unverified | not driven |
+| `cli/monitor.py:1294,1308,1363` | Unverified | not driven |
 | `cli/machine.py:539` | Unverified, display flag | not driven |
 | `cli/_runs.py:1132,1393,1602,1917` | **Yes, by construction** | read at the source: `_linked_engine_session` (`:856-882`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `:1132` branches on that row's terminal status while `:1151` handles it being `running`. `:1393` is different: it is the terminal guard in `_write_terminal_session_status` (`:1375`), its `observed_status` is the run's own session row (`:1371`, `:1637-1639`), and that row is a mirror row only when a resumed branch adopts the mirror session (`:2079`), through the reopen path named at the end of this cell. `:1602` tests the status `_teardown_common` returned to `teardown_persist` (`:1537`), which is the one `:1132` resolved, so it follows that branch. `:1917` is the reopen check in `_reopen_session_for_resume` (`:1891`): the row it reads is a mirror row only when the resumed branch adopted the mirror session, and any status outside the terminal set, `idle` included, reads there as a live leg that is not reopened. The resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionagi/cli/_runs.py:871`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py:78-80`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, the ADR-0105 reopen path at `lionagi/cli/_runs.py:2051-2070` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
 | `cli/agent.py:1343,2631` | Probably not: own run's session | not driven |

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -21,9 +20,10 @@ from sqlalchemy import JSON, Boolean, bindparam, text
 
 from lionagi.ln import copy, short_id
 from lionagi.ln.concurrency import fail_after
+from lionagi.state._quarantine_identity import QuarantineScopeProbeError, is_current_quarantine
 
 from ..compat import _quote
-from ..reasons import VALID_REASON_CODES, validate_reason_code
+from ..reasons import VALID_REASON_CODES, RunReasons, validate_reason_code
 from ..terminal_eligibility import (
     HistoryWriteKind,
     has_delivery_eligibility_column,
@@ -52,6 +52,10 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncConnection
 
 logger = logging.getLogger(__name__)
+
+
+class _QuarantineIdentityProbeError(RuntimeError):
+    """A quarantine disposition could not recheck the process identity."""
 
 
 class _HistoryWrite(NamedTuple):
@@ -114,11 +118,9 @@ def _runner_identity_matches(captured: Mapping[str, Any], stored: Any, *, dialec
 
 
 def _quarantine_snapshot_matches(snapshot: Mapping[str, Any], stored: Any, *, dialect: str) -> bool:
-    """Match the captured quarantine and the process identity it actually names."""
-    from ..db import UNVERIFIABLE_PID_QUARANTINE_THRESHOLD
-
+    """Match the captured and stored current quarantine under the transaction lock."""
     expected = snapshot.get("node_metadata")
-    if not isinstance(expected, dict) or expected.get("unverifiable_quarantined") is not True:
+    if not isinstance(expected, dict):
         return False
     if isinstance(stored, str):
         if dialect != "sqlite":
@@ -127,50 +129,22 @@ def _quarantine_snapshot_matches(snapshot: Mapping[str, Any], stored: Any, *, di
             stored = json.loads(stored)
         except (ValueError, RecursionError):
             return False
-    if not isinstance(stored, dict) or stored.get("unverifiable_quarantined") is not True:
+    if not isinstance(stored, dict):
         return False
-    if any(
-        type(meta.get("unverifiable_count")) is not int
-        or meta["unverifiable_count"] < UNVERIFIABLE_PID_QUARANTINE_THRESHOLD
-        for meta in (expected, stored)
-    ):
-        return False
-    token = expected.get("unverifiable_identity")
-    epoch = expected.get("unverifiable_epoch")
-    if (
-        not isinstance(token, str)
-        or type(epoch) is not int
-        or epoch < 0
-        or stored.get("unverifiable_identity") != token
-        or type(stored.get("unverifiable_epoch")) is not int
-        or stored.get("unverifiable_epoch") != epoch
-    ):
-        return False
-    raw_pid = expected.get("pid")
-    if isinstance(raw_pid, bool) or not isinstance(raw_pid, (int, str)):
-        return False
+    stored_row = {**snapshot, "node_metadata": stored}
+    scope_probe_failed = False
     try:
-        pid = int(raw_pid)
-    except (ValueError, OverflowError):
-        return False
-    if pid <= 0:
-        return False
-    raw_created = expected.get("pid_create_time")
-    created = None
-    if raw_created is not None and not isinstance(raw_created, bool):
-        try:
-            candidate = float(raw_created)
-        except (TypeError, ValueError, OverflowError):
-            pass
-        else:
-            if math.isfinite(candidate) and candidate > 0:
-                created = candidate
-    try:
-        parsed = json.loads(token)
-    except (TypeError, ValueError, RecursionError):
-        return False
-    generation = snapshot.get("cli_worker_generation")
-    return _same_runner_value(parsed, [pid, created, generation])
+        return (
+            is_current_quarantine(dict(snapshot), raise_on_scope_error=True)
+            and is_current_quarantine(stored_row, raise_on_scope_error=True)
+            and expected.get("unverifiable_identity") == stored.get("unverifiable_identity")
+            and expected.get("unverifiable_epoch") == stored.get("unverifiable_epoch")
+        )
+    except QuarantineScopeProbeError:
+        scope_probe_failed = True
+    if scope_probe_failed:
+        raise _QuarantineIdentityProbeError("quarantine identity probe failed")
+    return False
 
 
 class _TxProvider(Protocol):
@@ -553,7 +527,11 @@ class SQLAlchemyLifecycleService:
             else {}
         )
         operator_reason = operator_reason.strip()
-        reason_code = f"run.{target_status}.identity_unverified"
+        reason_code = {
+            "failed": RunReasons.FAILED_IDENTITY_UNVERIFIED,
+            "aborted": RunReasons.ABORTED_IDENTITY_UNVERIFIED,
+            "cancelled": RunReasons.CANCELLED_IDENTITY_UNVERIFIED,
+        }[target_status]
         validate_reason_code(reason_code)
         patch: dict[str, Any] = {"ended_at": time.time()}
         if entity_type == "session":
@@ -803,6 +781,7 @@ class SQLAlchemyLifecycleService:
                 # Probe only the transaction-read row after all snapshot guards.
                 # The callback observes process identity and must never signal it.
                 probe_allowed = False
+                probe_failed = False
                 if callable(identity_unverifiable) and all(
                     row[key] == value for key, value in extra_guard.items()
                 ):
@@ -813,9 +792,11 @@ class SQLAlchemyLifecycleService:
                             probe_row["node_metadata"] = json.loads(probe_row["node_metadata"])
                         probe_allowed = identity_unverifiable(probe_row) is True
                     except Exception:
-                        # An unreadable identity is not affirmative evidence that
-                        # this particular quarantine is still eligible.
-                        probe_allowed = False
+                        # A failed probe cannot establish whether this quarantine
+                        # remains eligible. Do not expose the underlying error.
+                        probe_failed = True
+                if probe_failed:
+                    raise _QuarantineIdentityProbeError("quarantine identity probe failed")
                 if not probe_allowed:
                     return TransitionOutcome(
                         result="conflict",
@@ -1099,7 +1080,7 @@ class SQLAlchemyLifecycleService:
             command.entity_type == "invocation"
             and command.to_status == "cancelled"
             and command.override is None
-            and command.reason.code != "run.cancelled.identity_unverified"
+            and command.reason.code != RunReasons.CANCELLED_IDENTITY_UNVERIFIED
         )
         revise_recorded_cancel = observed_cancel and previous_status == command.to_status
         set_clauses = ["status = :status", "updated_at = :now"]

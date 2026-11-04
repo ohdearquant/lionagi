@@ -241,7 +241,11 @@ async def test_resolution_refuses_when_identity_can_be_verified_or_probe_fails(
     after, history_after = await _row_and_history(kind, entity_id)
     assert after == before
     assert history_after == history_before == []
-    assert "normal li kill" in caplog.text
+    if verdict == "probe_error":
+        assert "probe failed" in caplog.text
+        assert "probe unavailable" not in caplog.text
+    else:
+        assert "normal li kill" in caplog.text
     terminate.assert_not_called()
     cleanup.assert_not_called()
     os_kill.assert_not_called()
