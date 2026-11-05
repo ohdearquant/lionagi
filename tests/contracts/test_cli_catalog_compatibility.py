@@ -50,7 +50,7 @@ def test_legacy_catalog_name_is_the_canonical_object(name):
 
 
 @pytest.mark.parametrize("name", FORWARDED_NAMES)
-def test_legacy_catalog_name_warns_with_its_replacement_and_release_window(name):
+def test_legacy_catalog_name_warns_with_its_replacement_and_removal_release(name):
     _fresh(
         """
 import sys
@@ -67,7 +67,9 @@ warning = deprecations[0]
 message = str(warning.message)
 assert f"lionagi._auto.{name}" in message
 assert f"lionhub.cli.catalog.{name}" in message
-assert "0.37.0" in message and "2.0.0" in message
+assert "2.0.0" in message
+assert "0.37.0" not in message
+assert "deprecated since" not in message
 assert warning.filename == "<string>"
 """,
         name,

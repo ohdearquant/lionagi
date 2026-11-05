@@ -184,9 +184,6 @@ those, read "Removed" first.
 
 ### Changed
 
-- Built-in CLI command discovery now lives in `lionhub.cli.catalog`; command names,
-  aliases and lazy loading are unchanged.
-
 - Session gate denials now store a redacted `GateDenied` signal and deliver it
   to a bound persistence subscriber before observation callbacks; the proposed
   action is no longer retained in the denial's Flow copy.
@@ -427,10 +424,6 @@ those, read "Removed" first.
   record that names only the exception type, and still records `other` for both names.
 
 ### Deprecated
-
-- `lionagi._auto` command catalog functions are deprecated since 0.37.0; import
-  `build_cli_parser`, `command_exists`, `iter_cli_seeds`, `load_cli_command`, and
-  `seed_for` from `lionhub.cli.catalog`. The lazy aliases remain until 2.0.0.
 
 - Filtering emitted events through a Session gate is deprecated. Use route
   predicates or subscribers to filter observations, and `authorize` for

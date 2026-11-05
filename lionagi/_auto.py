@@ -267,11 +267,11 @@ def _read_registration_marker(obj: Any) -> RegistrationMarker | None:
 
 
 _DEPRECATED_ALIASES = {
-    "build_cli_parser": ("lionhub.cli.catalog.build_cli_parser", "0.37.0", "2.0.0"),
-    "command_exists": ("lionhub.cli.catalog.command_exists", "0.37.0", "2.0.0"),
-    "iter_cli_seeds": ("lionhub.cli.catalog.iter_cli_seeds", "0.37.0", "2.0.0"),
-    "load_cli_command": ("lionhub.cli.catalog.load_cli_command", "0.37.0", "2.0.0"),
-    "seed_for": ("lionhub.cli.catalog.seed_for", "0.37.0", "2.0.0"),
+    "build_cli_parser": ("lionhub.cli.catalog.build_cli_parser", "2.0.0"),
+    "command_exists": ("lionhub.cli.catalog.command_exists", "2.0.0"),
+    "iter_cli_seeds": ("lionhub.cli.catalog.iter_cli_seeds", "2.0.0"),
+    "load_cli_command": ("lionhub.cli.catalog.load_cli_command", "2.0.0"),
+    "seed_for": ("lionhub.cli.catalog.seed_for", "2.0.0"),
 }
 
 
@@ -283,10 +283,10 @@ def __getattr__(name: str) -> Any:
 
     from lionagi.ln import import_module
 
-    target, deprecated_in, removed_in = alias
+    target, removed_in = alias
     warnings.warn(
-        f"{__name__}.{name} is deprecated since lionagi {deprecated_in} and will be removed "
-        f"in lionagi {removed_in}. Import from {target} instead.",
+        f"{__name__}.{name} is deprecated and will be removed in lionagi {removed_in}. "
+        f"Import from {target} instead.",
         DeprecationWarning,
         stacklevel=2,
     )
