@@ -132,8 +132,19 @@ async def _append_chunk(buffer_path, chunk) -> None:
             text = text or ""
             fallback = {"text": text, "serialization_error": failure}
         line = json.dumps(fallback, ensure_ascii=True, separators=(",", ":"))
-    async with await anyio.open_file(buffer_path, "a") as f:
-        await f.write(line + "\n")
+    # A failing close must not hide a non-I/O write failure or cancellation.
+    body_error = None
+    try:
+        async with await anyio.open_file(buffer_path, "a") as f:
+            try:
+                await f.write(line + "\n")
+            except BaseException as exc:
+                body_error = exc
+                raise
+    except OSError:
+        if body_error is not None and not isinstance(body_error, OSError):
+            raise body_error from None
+        raise
 
 
 async def _stream_with_deadline(model, api_call, deadline: float | None):
@@ -653,6 +664,7 @@ async def run(
         model = branch.chat_model
         endpoint = model.endpoint
         bfp = None
+        buffer_enabled = False
 
         if param.stream_persist:
             # snapshot_dir for find_branch() lookups; persist_dir for the live JSONL
@@ -661,11 +673,15 @@ async def run(
             snapshot_dir = param.snapshot_dir or param.persist_dir
             await _write_branch_snapshot(branch, snapshot_dir)
 
-            bfp = await acreate_path(
-                param.persist_dir,
-                str(branch.id) + ".buffer.jsonl",
-                file_exist_ok=True,
-            )
+            try:
+                bfp = await acreate_path(
+                    param.persist_dir,
+                    str(branch.id) + ".buffer.jsonl",
+                    file_exist_ok=True,
+                )
+                buffer_enabled = True
+            except OSError:
+                logger.warning("run: live stream buffer unavailable; continuing without it")
 
         thinking_parts: list[str] = []
         text_parts: list[str] = []
@@ -791,14 +807,24 @@ async def run(
 
         try:
             try:
-                if bfp is not None:
-                    async with await anyio.open_file(bfp, "w"):
-                        pass
+                if buffer_enabled:
+                    try:
+                        async with await anyio.open_file(bfp, "w"):
+                            pass
+                    except OSError:
+                        buffer_enabled = False
+                        logger.warning("run: live stream buffer unavailable; continuing without it")
                 async for chunk in stream_gen:
                     # The buffer holds the chunks this loop reads, so a send the stream
                     # discards (see _stream_resending_unheld_session) never reaches it.
-                    if bfp is not None:
-                        await _append_chunk(bfp, chunk)
+                    if buffer_enabled:
+                        try:
+                            await _append_chunk(bfp, chunk)
+                        except OSError:
+                            buffer_enabled = False
+                            logger.warning(
+                                "run: live stream buffer unavailable; continuing without it"
+                            )
                     if branch._hooks is not None:
                         await emit_api_stream_chunk(branch, model, chunk)
                     match chunk.type:
