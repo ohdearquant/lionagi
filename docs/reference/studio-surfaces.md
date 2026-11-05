@@ -136,9 +136,10 @@ The backend also exposes a read-only Engine preset catalog while its tab is hidd
   An empty `id` is distinct from an omitted parameter. Rows with a NULL or non-text ID are outside the
   catalog.
 
-A stored ID longer than 4,096 UTF-8 bytes is returned alone with no next cursor and
-`stop_reason` set to `id_exceeds_cursor_bound` when it is first in a page. The client can then
-show that traversal stopped. Proxies may impose request-line limits on encoded IDs and cursors.
+Trailing IDs longer than 4,096 UTF-8 bytes are deferred when the page has an encodable ID.
+When all IDs on a page exceed that bound, the page has no next cursor and includes
+`stop_reason: id_exceeds_cursor_bound` only if additional rows exist. Proxies may impose
+request-line limits on encoded IDs and cursors.
 Unregistered kinds and unreadable options remain listed as unavailable; their stored data is not
 rewritten. The descriptor's model and budget constraints describe preset/Studio admission only.
 Workflow engine-node overrides follow their existing validation path and are not governed by this

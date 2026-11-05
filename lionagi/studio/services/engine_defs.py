@@ -324,6 +324,7 @@ def _catalog_decode_cursor(cursor: str, kind: str | None) -> str:
         if (
             not isinstance(after, str)
             or obj["kind"] != kind
+            or "\x00" in after
             or len(after.encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES
         ):
             raise ValueError("invalid cursor")
@@ -398,6 +399,8 @@ def _catalog_annotate_row(row: dict[str, Any]) -> dict[str, Any]:
     result["options"] = options
     result["unused_option_keys"] = None
     result["stored_option_keys"] = None
+    result["missing_option_keys"] = None
+    result["invalid_option_keys"] = None
     reasons = []
     kind = result.get("kind")
     registered = is_registered_engine_kind(kind)
@@ -419,8 +422,9 @@ def _catalog_annotate_row(row: dict[str, Any]) -> dict[str, Any]:
                 for name, definition in definitions.items()
                 if definition.get("required") and not str(options.get(name) or "").strip()
             )
+            result["missing_option_keys"] = missing_keys
+            result["invalid_option_keys"] = []
             if missing_keys:
-                result["missing_option_keys"] = missing_keys
                 reasons.append("required_option_missing")
             try:
                 _validate_options(options)
@@ -485,6 +489,9 @@ async def list_engine_catalog_presets(
 
     An insertion before the cursor can be missed; deletes and renames preserve the ID order.
     Rows with NULL or non-text IDs are outside this catalog.
+    Trailing IDs above the cursor bound are deferred if a page contains an encodable ID.
+    If every ID in the page is oversized, return that page with no cursor and include
+    stop_reason only if additional rows exist.
     """
     from lionagi.state.db import _list_engine_catalog_rows
 
@@ -494,18 +501,17 @@ async def list_engine_catalog_presets(
         return {"items": [], "next_cursor": None}
     async with StateDB() as db:
         rows = await _list_engine_catalog_rows(db, kind=kind, after=after, limit=limit + 1)
-    visible = rows[:limit]
-    has_more = len(rows) > limit
-    if visible and len(visible[0]["id"].encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES:
-        return {
-            "items": [_catalog_annotate_row(visible[0])],
-            "next_cursor": None,
-            "stop_reason": "id_exceeds_cursor_bound",
-        }
+    page = rows[:limit]
+    visible = page.copy()
     # A trailing oversized ID cannot be encoded as the next seek position.
     while visible and len(visible[-1]["id"].encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES:
         visible.pop()
-        has_more = True
+    if not visible:
+        result = {"items": [_catalog_annotate_row(row) for row in page], "next_cursor": None}
+        if page and len(rows) > limit:
+            result["stop_reason"] = "id_exceeds_cursor_bound"
+        return result
+    has_more = len(rows) > len(visible)
     next_cursor = _catalog_encode_cursor(visible[-1]["id"], kind) if has_more else None
     return {"items": [_catalog_annotate_row(row) for row in visible], "next_cursor": next_cursor}
 
@@ -514,7 +520,7 @@ async def get_engine_catalog_preset(def_id: str) -> dict[str, Any] | None:
     """Return a text-ID preset independently of the loaded page."""
     from lionagi.state.db import _get_engine_catalog_row
 
-    if state_db_known_absent():
+    if "\x00" in def_id or state_db_known_absent():
         return None
     async with StateDB() as db:
         row = await _get_engine_catalog_row(db, def_id)
@@ -530,18 +536,28 @@ async def engine_catalog_blueprints_route() -> dict[str, Any]:
 
 _CATALOG_PRESETS_DESCRIPTION = (
     "List text-ID presets; paging is not a snapshot. Rows with NULL or non-text IDs "
-    "are not listed. When an ID exceeds the cursor bound, that row is returned alone "
-    "and rows after it cannot be reached by paging.\n\n"
+    "are not listed. If a page contains an encodable ID, trailing oversized IDs are "
+    "deferred; when more rows exist, the cursor names the last encodable ID. "
+    "If every ID on a page is "
+    "oversized, the page is returned with next_cursor null; stop_reason is "
+    "id_exceeds_cursor_bound only if additional rows exist.\n\n"
     f"Options over {_CATALOG_OPTIONS_MAX_DEPTH} JSON nesting levels are unavailable. "
     "Preset inputs are flat key/value pairs, so this limit does not exclude normal "
     "preset options. "
     f"Preset budget overrides accept integers from {_PRESET_BUDGET_BOUNDS[0]} to "
-    f"{_PRESET_BUDGET_BOUNDS[1]}, or null."
+    f"{_PRESET_BUDGET_BOUNDS[1]}, or null. "
+    "Each row includes stored_option_keys, unused_option_keys, missing_option_keys "
+    "and invalid_option_keys: null when not computed, otherwise a sorted list "
+    "([] when none)."
 )
 
 
 @studio_route(
-    "/engine-catalog/presets", method="GET", area="engine-defs", name="list_engine_catalog_presets"
+    "/engine-catalog/presets",
+    method="GET",
+    area="engine-defs",
+    name="list_engine_catalog_presets",
+    description=_CATALOG_PRESETS_DESCRIPTION,
 )
 async def list_engine_catalog_presets_route(
     kind: str | None = Query(default=None),
@@ -550,9 +566,6 @@ async def list_engine_catalog_presets_route(
 ) -> dict[str, Any]:
     """List text-ID presets with documented pagination and preset limits."""
     return await list_engine_catalog_presets(kind=kind, limit=limit, cursor=cursor)
-
-
-list_engine_catalog_presets_route.__doc__ = _CATALOG_PRESETS_DESCRIPTION
 
 
 @studio_route(
