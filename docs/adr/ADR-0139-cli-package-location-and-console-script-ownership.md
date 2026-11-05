@@ -1,6 +1,6 @@
 # ADR-0139: CLI package location and console-script ownership
 
-- **Status**: Proposed; D1 and D5 stay Proposed pending a project decision on where the CLI lives, as does the date of the 2.0 release, which this record does not set
+- **Status**: Proposed; D1 is adopted with the CLI at `lionhub.cli`; D5 and the 2.0 release date stay Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: cli-surface
@@ -9,14 +9,14 @@
 
 **Source HEAD**: `1717674a2140d3571fcb90e3f68204845048ef80`.
 
-Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+Line citations not attributed to a named revision are re-derived at `5aaacb6d9bc4f95535c8761951ed404718df5c0b`.
 Destination paths, interfaces and tests below are requirements, not claims of existing implementation.
 The decision takes effect only when adopted. ADR-0138 is also Proposed at this revision
 (`docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:3`).
 
 ## Amendment 1 (2026-10-30) — two more modules relocate whole at step 3
 
-Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+Line citations not attributed to a named revision are re-derived at `5aaacb6d9bc4f95535c8761951ed404718df5c0b`.
 
 Purpose: add two modules to D2's step-3 whole-module moves, so that no module moved at step 3 imports the retained CLI package and the schedule parsing that the CLI and Studio share has one owner.
 
@@ -160,12 +160,14 @@ four files. These match Amendment 1's counts
 (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:275`).
 Representative edges include shared run persistence, scheduler parser construction,
 and schedule declaration/export
-(`lionagi/studio/operator/coordinator.py:546`,
-`lionagi/studio/scheduler/subprocess.py:251`,
-`lionagi/cli/machine_schedule.py:324`,
-`lionagi/cli/machine_schedule.py:384`).
+(`lionagi/studio/operator/coordinator.py:539`,
+`lionagi/studio/scheduler/subprocess.py:279`,
+`lionagi/cli/machine_schedule.py:322`,
+`lionagi/cli/machine_schedule.py:382`).
+
 There is additionally a literal dynamic import of the mixed Studio CLI module;
-it is not one of the eleven static statements (`lionagi/cli/main.py:58`).
+it is not one of the eleven static statements (`lionagi/cli/main.py:33`).
+This paragraph's line numbers are at `2a49c9fe`.
 The full 46-file partition is specified in D2.
 
 **P3. Command declarations are not command discovery.**
@@ -173,6 +175,7 @@ The populated catalog currently contains 21 canonical commands and a token map;
 a decorator only attaches metadata, and loading imports the module of an already
 selected seed (`lionagi/_auto.py:143`, `lionagi/_auto.py:273`,
 `lionagi/_auto.py:290`, `lionagi/_auto.py:389`).
+This paragraph's line numbers are at `2a49c9fe`.
 Moving only handlers or decorators would leave fresh startup dependent on a core
 catalog or accidental import order. A4 already requires the populated catalog and
 selection/loading entry points to leave core before the first command target moves
@@ -191,7 +194,8 @@ ADR-0062 records composition, routing, execution locus, parsing and output
 contracts. The current implementation additionally has explicit machine-mode
 routing and lazy selected-command construction
 (`docs/adr/ADR-0062-cli-command-surface-ownership.md:66`,
-`lionagi/cli/main.py:330`, `lionagi/cli/main.py:392`).
+`lionagi/cli/main.py:305`, `lionagi/cli/main.py:367`).
+This paragraph's line numbers are at `2a49c9fe`.
 Relocation preserves the behavior at this HEAD and subsequent separately adopted
 behavior changes.
 
@@ -334,7 +338,7 @@ same implementation. Mutable state has one service owner. CLI registration
 decorators remain on the adapter functions defined in the catalog's selected
 module: a reexported decorated handler is not a replacement for a correctly
 defined adapter, because the existing loader checks the defining module and
-exactly one matching marker (`lionagi/_auto.py:398`).
+exactly one matching marker (`lionhub/src/lionhub/cli/catalog.py:185-199`).
 
 The shared dependency closure is part of step 3:
 
@@ -378,7 +382,7 @@ as already allocated by the adjacent records
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:173`).
 The implementation defines the detailed schedule-service API there.
 Ordinary schedule handling must no longer use the dynamic mixed-module import
-at `lionagi/cli/main.py:58`.
+at `lionagi/cli/main.py:64`.
 
 **The step-6 residual set includes these 37 files from the source-HEAD inventory, plus the later notification recorder**, relative to
 `lionagi/cli/`. Mixed files contain their retained adapters after extraction.
@@ -477,27 +481,28 @@ def build_cli_parser(selected: CliSeed | None) -> CliBuild: ...
 ```
 
 These signatures and their current lazy behavior are at
-`lionagi/_auto.py:374`, `lionagi/_auto.py:389`, and `lionagi/_auto.py:433`.
+`lionhub/src/lionhub/cli/catalog.py:161`, `lionhub/src/lionhub/cli/catalog.py:176`,
+and `lionhub/src/lionhub/cli/catalog.py:220`.
 The composition root imports this catalog directly before selection.
 MCP projection and machine-command classification use the same catalog, not copies
-(`lionagi/cli/main.py:13`, `lionagi/cli/main.py:392`,
-`lionagi/cli/machine.py:824`,
-`lionhub/src/lionhub/serve/mcp/projection.py:32`).
+(`lionagi/cli/main.py:17`, `lionagi/cli/main.py:401`,
+`lionagi/cli/machine.py:824-826`,
+`lionhub/src/lionhub/serve/mcp/projection.py:35`).
 
 Keep command names, aliases, order, help metadata, special routing and error behavior
 unchanged. Root discovery does not import every command implementation. Selection
 loads the explicitly cataloged implementation and enforces the existing marker
 contract. Unknown tokens remain unknown; duplicate tokens and missing or duplicate
 markers remain errors
-(`lionagi/_auto.py:256`, `lionagi/_auto.py:379`,
-`lionagi/_auto.py:403`, `lionagi/_auto.py:456`).
+(`lionhub/src/lionhub/cli/catalog.py:142`, `lionhub/src/lionhub/cli/catalog.py:166`,
+`lionhub/src/lionhub/cli/catalog.py:190`, `lionhub/src/lionhub/cli/catalog.py:243`).
 
 Built-in commands implemented outside core, including scheduling and plugin
 management, are discoverable because their declarations are in the hub-owned
 catalog. They need neither an earlier hub import nor caller registration.
 `casts`, `studio` and `schedule` are included; update targets as their owners
-move, including later waves (`lionagi/_auto.py:157`,
-`lionagi/_auto.py:172`, `lionagi/_auto.py:177`, `lionagi/_auto.py:223`).
+move, including later waves (`lionhub/src/lionhub/cli/catalog.py:44`,
+`lionhub/src/lionhub/cli/catalog.py:59`, `lionhub/src/lionhub/cli/catalog.py:64`).
 Do not invent third-party command discovery: the current plugin capability schema
 has no CLI-command field (`lionagi/plugins/manifest.py:131`).
 The step-3 implementation chooses internal compiler factoring and fixtures;
@@ -549,7 +554,7 @@ Rewrite executable module strings, not just imports: the background launch names
 the old CLI at `lionagi/cli/orchestrate/__init__.py:723`, the MCP fallback names it at `lionhub/src/lionhub/serve/mcp/config.py:116`,
 and the diagnostic probe names it at `lionagi/cli/doctor.py:28`.
 Update the dynamic adapter load at
-`lionhub/src/lionhub/serve/mcp/projection.py:526` as well.
+`lionhub/src/lionhub/serve/mcp/projection.py:527` as well.
 Self-recognition must accept both canonical and compatibility spellings during 1.x,
 rather than silently dropping old subprocess recognition. Its current module/script
 sets and path-tail comparison are at
@@ -685,11 +690,13 @@ None is superseded behaviorally by this record.
 The source HEAD, not the older illustrative command tree, is the characterization
 baseline. Preserve early machine routing, invocation accounting, missing-module
 handling and command-specific errors
-(`lionagi/cli/main.py:330`, `lionagi/cli/main.py:395`,
-`lionagi/cli/main.py:515`).
+(`lionagi/cli/main.py:305`, `lionagi/cli/main.py:370`,
+`lionagi/cli/main.py:488`).
+This paragraph's line numbers are at `2a49c9fe`.
+
 `li --version` continues reporting the core version. Its current source is
 `lionagi.version.__version__`; independent hub version reporting requires a
-separate behavior decision (`lionagi/_auto.py:427`).
+separate behavior decision (`lionhub/src/lionhub/cli/catalog.py:214-217`).
 
 **Failure tests:** `test_cli_move_preserves_behavior` and
 `test_cli_version_source_is_unchanged`.
@@ -814,8 +821,8 @@ catalog suites.
    scheduling, plugin-management and casts selection with no earlier import.
    Preserve duplicate-token/marker failures and selected-only loading.
    Existing catalog tests provide characterization fixtures
-   (`tests/contracts/test_auto_registry.py:131`,
-   `tests/contracts/test_auto_registry.py:334`).
+   (`lionhub/tests/lionhub_tests/cli/test_command_catalog.py:70`,
+   `lionhub/tests/lionhub_tests/cli/test_command_catalog.py:174`).
 
 4. **1.x upgrade and subprocess targets (D4):**
    `test_1x_upgrade_replaces_li_target_once`,
@@ -858,7 +865,7 @@ run:
 
 ```text
 python -m pytest tests/packaging/test_cli_distribution_ownership.py tests/packaging/test_cli_relocation.py
-python -m pytest tests/test_moved_modules.py tests/contracts/test_auto_registry.py
+python -m pytest tests/test_moved_modules.py tests/contracts/test_auto_registry.py lionhub/tests/lionhub_tests/cli tests/contracts/test_cli_catalog_compatibility.py
 ```
 
 These commands are acceptance procedures; the two proposed packaging files do not

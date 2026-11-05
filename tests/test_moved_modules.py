@@ -807,16 +807,60 @@ LIONHUB_USERS_UNDER_LIONAGI = frozenset({"agent", "cli", "operations", "service"
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
+def _deprecated_catalog_target_nodes(path: Path, tree: ast.Module) -> set[int]:
+    """Exempt only the declared lazy compatibility targets in the core compiler."""
+    if path != ROOT / "lionagi" / "_auto.py":
+        return set()
+    expected = {
+        name: f"lionhub.cli.catalog.{name}"
+        for name in (
+            "build_cli_parser",
+            "command_exists",
+            "iter_cli_seeds",
+            "load_cli_command",
+            "seed_for",
+        )
+    }
+    for node in tree.body:
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "_DEPRECATED_ALIASES"
+            and isinstance(node.value, ast.Dict)
+            and len(node.value.keys) == len(expected)
+        ):
+            continue
+        targets = {}
+        for key, value in zip(node.value.keys, node.value.values, strict=True):
+            if (
+                isinstance(key, ast.Constant)
+                and key.value in expected
+                and isinstance(value, ast.Tuple)
+                and len(value.elts) == 2
+                and isinstance(value.elts[0], ast.Constant)
+                and value.elts[0].value == expected[key.value]
+            ):
+                targets[key.value] = id(value.elts[0])
+        if targets.keys() == expected.keys():
+            return set(targets.values())
+    return set()
+
+
 def _lionhub_names(path: Path, source: str | None = None) -> list[str]:
     """Every import of lionhub, or string naming a lionhub module, in ``path``."""
     text = path.read_text(encoding="utf-8") if source is None else source
+    tree = ast.parse(text, filename=str(path))
+    compatibility_targets = _deprecated_catalog_target_nodes(path, tree)
     hits = []
-    for node in ast.walk(ast.parse(text, filename=str(path))):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names = [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             names = [node.module or ""]
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in compatibility_targets:
+                continue
             names = [node.value]
         else:
             continue
@@ -845,6 +889,28 @@ def test_the_lionhub_check_sees_each_form_of_reference():
     )
     hits = _lionhub_names(probe, source)
     assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 3], hits
+
+
+def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
+    path = ROOT / "lionagi" / "_auto.py"
+    names = (
+        "build_cli_parser",
+        "command_exists",
+        "iter_cli_seeds",
+        "load_cli_command",
+        "seed_for",
+    )
+    aliases = {name: (f"lionhub.cli.catalog.{name}", "2.0.0") for name in names}
+    source = f"_DEPRECATED_ALIASES = {aliases!r}\n"
+    assert _lionhub_names(path, source) == []
+    additional = "import lionhub.cli.catalog\nEXTRA = 'lionhub.cli.catalog.seed_for'\n"
+    assert [hit.rsplit(": ", 1)[1] for hit in _lionhub_names(path, source + additional)] == [
+        "lionhub.cli.catalog",
+        "lionhub.cli.catalog.seed_for",
+    ]
+    assert len(_lionhub_names(ROOT / "lionagi" / "_other.py", source)) == len(names)
+    aliases["other"] = ("lionhub.cli.catalog.other", "2.0.0")
+    assert len(_lionhub_names(path, f"_DEPRECATED_ALIASES = {aliases!r}\n")) == len(aliases)
 
 
 # The hub's provider modules, as dotted names. A reference is an import, a from-import or a
