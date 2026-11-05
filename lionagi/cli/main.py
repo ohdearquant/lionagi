@@ -20,7 +20,8 @@ except ModuleNotFoundError as exc:
 else:
     _catalog_import_error = None
 
-from ._logging import configure_cli_logging, log_error
+from lionagi._log_channels import log_error
+
 from ._util import (
     EXIT_CODE_ENVIRONMENT_ERROR,
     begin_invocation,
@@ -323,6 +324,10 @@ def _parse_prompt_args(parser: argparse.ArgumentParser, tail: list[str]) -> argp
 def _run(argv: list[str] | None = None) -> int:
     if _catalog_import_error is not None:
         raise _catalog_import_error
+
+    # Defer setup so missing dependencies reach the environment-fault wrapper,
+    # while any saved catalog fault takes precedence.
+    from ._logging import configure_cli_logging
 
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).
     _argv = argv if argv is not None else sys.argv[1:]
