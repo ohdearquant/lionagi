@@ -9,14 +9,14 @@
 
 **Source HEAD**: `1717674a2140d3571fcb90e3f68204845048ef80`.
 
-Line citations not attributed to a named revision are re-derived at `0bf315a1b2ae3107c3e46ac51be8dd138db58adf`.
+Line citations not attributed to a named revision are re-derived at `dc88faf9e0c93cfd008eed0854b01ba973f5dea1`.
 Destination paths, interfaces and tests below are requirements, not claims of existing implementation.
 The decision takes effect only when adopted. ADR-0138 is also Proposed at this revision
 (`docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:3`).
 
 ## Amendment 1 (2026-10-30) — two more modules relocate whole at step 3
 
-Line citations not attributed to a named revision are re-derived at `0bf315a1b2ae3107c3e46ac51be8dd138db58adf`.
+Line citations not attributed to a named revision are re-derived at `dc88faf9e0c93cfd008eed0854b01ba973f5dea1`.
 
 Purpose: add two modules to D2's step-3 whole-module moves, so that no module moved at step 3 imports the retained CLI package and the schedule parsing that the CLI and Studio share has one owner.
 
@@ -865,7 +865,7 @@ run:
 
 ```text
 python -m pytest tests/packaging/test_cli_distribution_ownership.py tests/packaging/test_cli_relocation.py
-python -m pytest tests/test_moved_modules.py tests/contracts/test_auto_registry.py
+python -m pytest tests/test_moved_modules.py tests/contracts/test_auto_registry.py lionhub/tests/lionhub_tests/cli tests/contracts/test_cli_catalog_compatibility.py
 ```
 
 These commands are acceptance procedures; the two proposed packaging files do not
