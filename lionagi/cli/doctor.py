@@ -219,7 +219,7 @@ def _check_code_identity() -> dict[str, str]:
     once, at startup, and nothing since has told anyone. This is the check that
     tells them.
     """
-    from ._code_identity import code_identity
+    from lionhub.serve.diagnostics import code_identity
 
     try:
         identity = code_identity()

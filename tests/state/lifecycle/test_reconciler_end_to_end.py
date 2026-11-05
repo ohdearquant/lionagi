@@ -49,10 +49,10 @@ async def _commit_offline_transition(db: StateDB) -> str:
 async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypatch):
     pytest.importorskip("fastapi")
     import lionagi.state.db as state_db_module
-    from lionagi.cli import _code_identity
     from lionagi.state.lifecycle import notify_settings
     from lionagi.studio.scheduler.engine import scheduler
     from lionagi.studio.services import launches, lifecycle, operator
+    from lionhub.serve import diagnostics as _code_identity
 
     app_module = importlib.import_module("lionagi.studio.app")
     home = tmp_path / "home"

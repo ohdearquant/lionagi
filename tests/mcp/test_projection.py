@@ -597,7 +597,7 @@ def test_projecting_does_not_mutate_a_shared_json_schema() -> None:
     back into a schema other callers read, and it would accumulate across
     calls. Projecting the same parser twice must produce the same thing.
     """
-    from lionagi.cli._argtypes import JsonArgument
+    from lionhub.orchestration.arguments import JsonArgument
 
     declared = {
         "type": "object",

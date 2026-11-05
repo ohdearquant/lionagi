@@ -293,11 +293,16 @@ def test_the_allow_list_adds_only_the_moved_packages_to_lionagi():
 # A module that moved on its own (one file, not a package) is a row of the table too. Its old
 # name sits inside a package that stays in lionagi/, so the finder must serve it while that
 # package is still on disk.
-MOVED_MODULES = (
+MOVED_CORE_MODULES = (
     ("lionagi.providers._provider_errors", "lionagi._provider_errors"),
     ("lionagi.providers._secret_resolution", "lionagi.service.accounts._secret_resolution"),
     ("lionagi.providers._subagent_admission", "lionagi.service._subagent_admission"),
     ("lionagi.providers.openai._chat_schemas", "lionagi.service.connections._chat_schemas"),
+)
+MOVED_MODULES = (
+    *MOVED_CORE_MODULES,
+    ("lionagi.cli._argtypes", "lionhub.orchestration.arguments"),
+    ("lionagi.cli._code_identity", "lionhub.serve.diagnostics"),
 )
 _MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
 
@@ -331,6 +336,13 @@ MOVED_MODULE_PUBLIC_NAMES = {
         "admit_subagent",
         "child_agent_depth",
         "refuse_nested_agent",
+    },
+    "lionhub.orchestration.arguments": {"BoundedInt", "JsonArgument"},
+    "lionhub.serve.diagnostics": {
+        "code_identity",
+        "git_identity",
+        "loaded_package_path",
+        "snapshot_git_position",
     },
     # The request model, every class it is built from, and the developer-message helper.
     "lionagi.service.connections._chat_schemas": {
@@ -382,7 +394,9 @@ def test_a_moved_module_keeps_the_logger_name_it_had():
     assert module.logger.name == "lionagi.providers._secret_resolution"
 
 
-@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
+@pytest.mark.parametrize(
+    ("old", "new"), MOVED_CORE_MODULES, ids=[old for old, _ in MOVED_CORE_MODULES]
+)
 def test_a_module_moved_into_the_core_keeps_its_own_row_after_its_package_moved(old, new):
     # The package around each of these modules later moved to lionhub as a whole. The longer,
     # module-level row still wins for the module's own name, and only for it.
@@ -436,6 +450,63 @@ def _run_fresh(code: str, env: dict[str, str] | None = None) -> str:
     )
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
     return proc.stdout
+
+
+_MOVED_MODULE_COLD_IDENTITY = """
+import importlib, pickle, sys, warnings
+from unittest.mock import patch
+
+def alias_deprecations(items):
+    return [
+        item for item in items
+        if issubclass(item.category, DeprecationWarning)
+        and str(item.message).startswith(old + " moved to ")
+    ]
+
+assert old not in sys.modules and new not in sys.modules
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    first = importlib.import_module(old if old_first else new)
+    second = importlib.import_module(new if old_first else old)
+    again = importlib.import_module(old)
+
+assert first is second is again is sys.modules[old] is sys.modules[new]
+assert first.__spec__.name == new and first.__name__ == new
+deprecations = alias_deprecations(caught)
+assert len(deprecations) == 1, [str(item.message) for item in deprecations]
+assert old in str(deprecations[0].message) and new in str(deprecations[0].message)
+assert deprecations[0].filename == "<string>"
+
+sys.modules.pop(old)
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    for name in names:
+        obj = getattr(first, name)
+        assert obj is getattr(second, name)
+        payload = pickle.dumps(obj, protocol=0).replace(new.encode(), old.encode())
+        assert old.encode() in payload
+        assert pickle.loads(payload) is obj
+assert len(alias_deprecations(caught)) == 1
+
+sentinel = object()
+with patch(old + "." + names[0], sentinel):
+    assert getattr(sys.modules[new], names[0]) is sentinel
+
+assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
+assert first.__spec__.name == new and first.__name__ == new
+assert all(getattr(first, name) is getattr(second, name) for name in names)
+print("ok")
+"""
+
+
+@pytest.mark.parametrize("old_first", [True, False], ids=["old-first", "new-first"])
+@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
+def test_a_moved_module_keeps_its_identity_in_either_cold_import_order(old, new, old_first):
+    setup = (
+        f"old, new, old_first = {old!r}, {new!r}, {old_first!r}\n"
+        f"names = {sorted(MOVED_MODULE_PUBLIC_NAMES[new])!r}\n"
+    )
+    assert _run_fresh(setup + _MOVED_MODULE_COLD_IDENTITY).strip() == "ok"
 
 
 # `python -m <old name>` runs a package's __main__ without importing it, through the

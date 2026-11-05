@@ -442,8 +442,7 @@ def reserve_stdout() -> Iterator[MachineChannel]:
 
 def handshake_data() -> dict[str, Any]:
     from lionagi.version import __version__
-
-    from ._code_identity import code_identity
+    from lionhub.serve.diagnostics import code_identity
 
     return {
         "contract_version": CONTRACT_VERSION,

@@ -897,9 +897,9 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
 
 
 def _server_info() -> dict[str, Any]:
-    from lionagi.cli._code_identity import code_identity
     from lionagi.cli.machine import CONTRACT_VERSION
     from lionagi.version import __version__
+    from lionhub.serve.diagnostics import code_identity
 
     return {
         "lionagi_version": __version__,

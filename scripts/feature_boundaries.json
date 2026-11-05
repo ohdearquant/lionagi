@@ -502,16 +502,6 @@
       "owner": "cli",
       "target_owner": "pending the CLI location decision (ADR-0139 D1)"
     },
-    "lionagi.cli._argtypes": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.arguments"
-    },
-    "lionagi.cli._code_identity": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.serve.diagnostics"
-    },
     "lionagi.cli._context_from": {
       "layer": "root",
       "owner": "cli",

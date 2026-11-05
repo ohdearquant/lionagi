@@ -924,7 +924,7 @@ async def _code_identity_report() -> dict[str, Any]:
     its own health check.
     """
     try:
-        from lionagi.cli._code_identity import code_identity
+        from lionhub.serve.diagnostics import code_identity
 
         return await _run_sync(code_identity)
     except Exception as exc:  # noqa: BLE001 — an unanswerable check is unknown, never absent
