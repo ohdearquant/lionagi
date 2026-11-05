@@ -17,7 +17,12 @@ from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 import lionagi.cli._engine_definitions as _engine_registry
 from lionagi.ln import short_id
-from lionagi.state.db import StateDB, state_db_known_absent
+from lionagi.state.db import (
+    StateDB,
+    _get_engine_def_for_update_in_tx,
+    _update_engine_def_in_tx,
+    state_db_known_absent,
+)
 
 from ..registry import studio_route
 
@@ -29,11 +34,6 @@ class NameConflictError(Exception):
     """Engine definition name is already taken."""
 
 
-# Closed set of engine kinds — must equal set(lionagi.cli._engine_definitions.KIND_META).
-_VALID_ENGINE_KINDS: frozenset[str] = frozenset(
-    {"research", "review", "coding", "hypothesis", "planning"}
-)
-
 # Allowed keys in the options JSON object.
 _ALLOWED_OPTIONS_KEYS: frozenset[str] = frozenset({"test_cmd", "export_dir"})
 _PRESET_BUDGET_BOUNDS = (1, 100)
@@ -43,9 +43,23 @@ _SAFE_TOKEN_RE = re.compile(r"^[a-zA-Z0-9_./:@\-\+= ]+$")
 
 
 def _validate_kind(kind: str) -> None:
-    if kind not in _VALID_ENGINE_KINDS:
+    if not is_registered_engine_kind(kind):
         raise ValueError(
-            f"Invalid engine kind {kind!r}. Valid kinds: {sorted(_VALID_ENGINE_KINDS)}"
+            f"Invalid engine kind {kind!r}. Valid kinds: {sorted(_engine_registry.KIND_META)}"
+        )
+
+
+def _validate_option_value(key: str, val: Any, *, echo_value: bool = True) -> None:
+    """Share value checks while preserving the legacy validator's error text."""
+    if not isinstance(val, str):
+        raise ValueError(f"options.{key} must be a string, got {type(val).__name__}")
+    if val.startswith("-"):
+        shown = f" {val!r}" if echo_value else ""
+        raise ValueError(f"options.{key}{shown} starts with '-' and would inject a CLI flag")
+    if not _SAFE_TOKEN_RE.match(val):
+        shown = f" {val!r}" if echo_value else ""
+        raise ValueError(
+            f"options.{key}{shown} contains shell metacharacters not allowed in engine option values"
         )
 
 
@@ -55,19 +69,29 @@ def _validate_options(options: dict[str, Any] | None) -> None:
     bad_keys = set(options) - _ALLOWED_OPTIONS_KEYS
     if bad_keys:
         raise ValueError(
-            f"options contains disallowed keys {sorted(bad_keys)}. "
-            f"Allowed: {sorted(_ALLOWED_OPTIONS_KEYS)}"
+            f"options contains disallowed keys {sorted(bad_keys)}. Allowed: {sorted(_ALLOWED_OPTIONS_KEYS)}"
         )
     for key, val in options.items():
-        if not isinstance(val, str):
-            raise ValueError(f"options.{key} must be a string, got {type(val).__name__}")
-        if val.startswith("-"):
-            raise ValueError(f"options.{key} {val!r} starts with '-' and would inject a CLI flag")
-        if not _SAFE_TOKEN_RE.match(val):
-            raise ValueError(
-                f"options.{key} {val!r} contains shell metacharacters not allowed in "
-                "engine option values"
-            )
+        _validate_option_value(key, val)
+
+
+def _validate_preset_write_options(kind: str, options: Any) -> None:
+    """Validate submitted options without changing legacy workflow admission."""
+    if not isinstance(options, dict):
+        raise ValueError("options must be an object")
+    if any(not isinstance(key, str) for key in options):
+        raise ValueError("options keys must be strings")
+    definitions = _engine_registry.KIND_META[kind]["preset_options"]
+    bad_keys = set(options) - set(definitions)
+    if bad_keys:
+        raise ValueError(
+            f"options contains disallowed keys {sorted(bad_keys)}. Allowed: {sorted(definitions)}"
+        )
+    for key, val in options.items():
+        _validate_option_value(key, val, echo_value=False)
+    for key, definition in definitions.items():
+        if definition.get("required") and not str(options.get(key) or "").strip():
+            raise ValueError(f"the {kind!r} engine kind requires a non-blank options.{key}")
 
 
 def _validate_kind_options(kind: str, options: dict[str, Any] | None) -> None:
@@ -134,7 +158,10 @@ async def get_engine_def_by_name(name: str) -> dict[str, Any] | None:
 
 
 async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
-    name = data.get("name", "").strip()
+    name = data.get("name", "")
+    if not isinstance(name, str):
+        raise ValueError("Engine definition name must be a string")
+    name = name.strip()
     if not name:
         raise ValueError("Engine definition name is required")
     _svc_validate_identifier(name, "name")
@@ -147,8 +174,12 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
     for field in ("max_depth", "max_agents"):
         _validate_budget(field, data.get(field))
 
-    _validate_options(data.get("options"))
-    _validate_kind_options(kind, data.get("options"))
+    options = data.get("options")
+    if isinstance(options, dict):
+        options = dict(options)
+    elif options is None:
+        options = {}
+    _validate_preset_write_options(kind, options)
 
     def_id = short_id(12)
     now = time.time()
@@ -159,7 +190,7 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
         "model": data.get("model"),
         "max_depth": data.get("max_depth"),
         "max_agents": data.get("max_agents"),
-        "options": data.get("options"),
+        "options": options if "options" in data else None,
         "description": data.get("description"),
         "created_at": now,
         "updated_at": now,
@@ -173,33 +204,58 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
 
 
 async def update_engine_def(def_id: str, fields: dict[str, Any]) -> dict[str, Any] | bool:
+    fields = dict(fields)
+    if "name" in fields:
+        if not isinstance(fields["name"], str):
+            raise ValueError("Engine definition name must be a string")
+        fields["name"] = fields["name"].strip()
+        if not fields["name"]:
+            raise ValueError("Engine definition name is required")
+        _svc_validate_identifier(fields["name"], "name")
+    if "kind" in fields:
+        _validate_kind(fields["kind"])
+    if "model" in fields:
+        _svc_validate_action_model(fields["model"])
+    for field in ("max_depth", "max_agents"):
+        if field in fields:
+            _validate_budget(field, fields[field])
+    if "options" in fields:
+        if fields["options"] is None:
+            fields["options"] = {}
+        elif isinstance(fields["options"], dict):
+            fields["options"] = dict(fields["options"])
+
     async with StateDB() as db:
-        existing = await db.get_engine_def(def_id)
-        if not existing:
-            return False
         if not fields:
+            async with db._read() as conn:
+                existing = await _get_engine_def_for_update_in_tx(
+                    db, conn, def_id, for_update=False
+                )
+            if existing is None:
+                return False
+            # A read-only no-op does not interpret or rewrite legacy options.
             return existing
 
-        if "name" in fields:
-            _svc_validate_identifier(fields["name"], "name")
-        if "kind" in fields:
-            _validate_kind(fields["kind"])
-        if "model" in fields:
-            _svc_validate_action_model(fields["model"])
-        for field in ("max_depth", "max_agents"):
-            if field in fields:
-                _validate_budget(field, fields[field])
-        if "options" in fields:
-            _validate_options(fields["options"])
-
-        # Validate the EFFECTIVE merged definition, not just the patch — a kind
-        # change to 'coding' or dropping test_cmd would otherwise store a def the CLI rejects.
-        effective_kind = fields.get("kind", existing.get("kind"))
-        effective_options = fields["options"] if "options" in fields else existing.get("options")
-        _validate_kind_options(effective_kind, effective_options)
-
         try:
-            await db.update_engine_def(def_id, **fields)
+            async with db.transaction() as conn:
+                existing = await _get_engine_def_for_update_in_tx(db, conn, def_id)
+                if existing is None:
+                    return False
+                old_kind = existing.get("kind")
+                if not is_registered_engine_kind(old_kind):
+                    raise ValueError("Stored engine kind is unavailable")
+                effective_kind = fields.get("kind", old_kind)
+                if "options" in fields:
+                    _validate_preset_write_options(effective_kind, fields["options"])
+                elif effective_kind != old_kind:
+                    options, reason = _catalog_options(existing.get("options"))
+                    if reason is not None or options is None:
+                        raise ValueError(
+                            "Stored options cannot be validated; supply replacement options"
+                        )
+                    _validate_preset_write_options(effective_kind, options)
+                if not await _update_engine_def_in_tx(conn, def_id, fields):
+                    return False
         except (sqlite3.IntegrityError, SAIntegrityError) as exc:
             raise NameConflictError(
                 f"Engine definition name {fields.get('name')!r} already exists"
@@ -250,7 +306,7 @@ async def list_engine_defs_route(
 )
 async def create_engine_def_route(body: CreateEngineDefRequest) -> dict[str, Any]:
     try:
-        return await create_engine_def(body.model_dump(exclude_none=True))
+        return await create_engine_def(body.model_dump(exclude_unset=True))
     except NameConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -267,7 +323,7 @@ async def get_engine_def_route(def_id: str) -> dict[str, Any]:
 
 @studio_route("/engine-defs/{def_id}", method="PUT", area="engine-defs", name="update_engine_def")
 async def update_engine_def_route(def_id: str, body: UpdateEngineDefRequest) -> dict[str, Any]:
-    fields = body.model_dump(exclude_none=True)
+    fields = body.model_dump(exclude_unset=True)
     try:
         ok = await update_engine_def(def_id, fields)
     except NameConflictError as exc:

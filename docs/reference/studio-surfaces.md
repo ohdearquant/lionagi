@@ -145,6 +145,16 @@ rewritten. The descriptor's model and budget constraints describe preset/Studio 
 Workflow engine-node overrides follow their existing validation path and are not governed by this
 descriptor.
 
+Preset creation and updates accept only registered kinds and options consumed by the selected
+kind. `PUT /api/engine-defs/{id}` uses field presence: omitted fields stay unchanged; null clears
+model, budget and description overrides. Name and kind cannot be null, and names are trimmed
+and must remain nonempty. Options replace the entire object; null clears them to `{}`. A kind
+change validates the retained options unless the same request supplies a replacement.
+Unrelated edits with an unchanged kind preserve legacy options exactly, including unreadable
+or unused values. Presets with an unavailable kind remain read-only. Concurrent updates validate
+and write the same current row atomically; direct StateDB writers are internal and unvalidated.
+These write rules do not tighten legacy CLI or workflow execution.
+
 ## Teams
 
 **Teams** browses crews created with `li team`. The list shows a team's name,

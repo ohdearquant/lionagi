@@ -8648,23 +8648,7 @@ class StateDB:
         return result
 
     async def update_engine_def(self, def_id: str, **fields: Any) -> None:
-        allowed = {"name", "kind", "model", "max_depth", "max_agents", "options", "description"}
-        bad = set(fields) - allowed
-        if bad:
-            raise ValueError(f"Invalid engine_def field(s): {bad}")
-        json_fields = {"options"}
-        fields["updated_at"] = time.time()
-        sets_parts = []
-        bind_params = []
-        for k in fields:
-            sets_parts.append(f'"{k}" = :{k}')
-            if k in json_fields:
-                bind_params.append(bindparam(k, type_=JSON))
-        params = dict(fields)
-        params["_id"] = def_id
-        stmt = text(f"UPDATE engine_defs SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
-        if bind_params:
-            stmt = stmt.bindparams(*bind_params)
+        stmt, params = _engine_def_update_statement(def_id, fields)
         async with self._tx() as conn:
             await conn.execute(stmt, params)
 
@@ -9592,4 +9576,54 @@ async def _get_engine_catalog_row(db: StateDB, def_id: str) -> dict[str, Any] | 
     )
     async with db._read() as conn:
         row = (await conn.execute(text(query), {"id": def_id})).mappings().first()
+    return None if row is None else dict(row)
+
+
+def _engine_def_update_statement(def_id: str, fields: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    """Build an engine definition patch without mutating the caller's fields."""
+    allowed = {"name", "kind", "model", "max_depth", "max_agents", "options", "description"}
+    bad = set(fields) - allowed
+    if bad:
+        raise ValueError(f"Invalid engine_def field(s): {bad}")
+    updates = dict(fields)
+    updates["updated_at"] = time.time()
+    sets_parts = []
+    bind_params = []
+    for key in updates:
+        sets_parts.append(f'"{key}" = :{key}')
+        if key == "options":
+            bind_params.append(bindparam(key, type_=JSON))
+    params = dict(updates)
+    params["_id"] = def_id
+    stmt = text(f"UPDATE engine_defs SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
+    if bind_params:
+        stmt = stmt.bindparams(*bind_params)
+    return stmt, params
+
+
+async def _update_engine_def_in_tx(
+    conn: AsyncConnection, def_id: str, fields: dict[str, Any]
+) -> int:
+    """Write an engine definition patch through the caller's transaction."""
+    stmt, params = _engine_def_update_statement(def_id, fields)
+    result = await conn.execute(stmt, params)
+    return result.rowcount
+
+
+async def _get_engine_def_for_update_in_tx(
+    db: StateDB,
+    conn: AsyncConnection,
+    def_id: str,
+    *,
+    for_update: bool = True,
+) -> dict[str, Any] | None:
+    """Read raw options on the held connection, locking a write target when requested."""
+    query = (
+        "SELECT "  # noqa: S608 -- projection is chosen from fixed SQL fragments
+        + _engine_catalog_projection(db)
+        + " FROM engine_defs WHERE id = :id"
+    )
+    if for_update and db.dialect == "postgresql":
+        query += " FOR UPDATE"
+    row = (await conn.execute(text(query), {"id": def_id})).mappings().first()
     return None if row is None else dict(row)
