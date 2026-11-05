@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import sqlite3
 import time
@@ -288,6 +289,7 @@ async def delete_engine_def_route(def_id: str) -> dict[str, Any]:
 
 
 _CATALOG_CURSOR_ID_BYTES = 4096
+_CATALOG_OPTIONS_MAX_BYTES = 65536
 _CATALOG_OPTIONS_MAX_DEPTH = 32
 _CATALOG_JSON_STRING = r'"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"'
 _CATALOG_CURSOR_SHAPE = re.compile(
@@ -341,11 +343,22 @@ def _catalog_options(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
     if raw is None:
         return {}, None
     if isinstance(raw, bytes | bytearray | memoryview):
+        size = raw.nbytes if isinstance(raw, memoryview) else len(raw)
+        if size > _CATALOG_OPTIONS_MAX_BYTES:
+            return None, "options_undecodable"
         try:
             raw = bytes(raw).decode("utf-8")
         except UnicodeDecodeError:
             return None, "options_undecodable"
     if isinstance(raw, str):
+        # UTF-8 uses at least one byte per character; avoid encoding an already oversized value.
+        if len(raw) > _CATALOG_OPTIONS_MAX_BYTES:
+            return None, "options_undecodable"
+        try:
+            if len(raw.encode("utf-8")) > _CATALOG_OPTIONS_MAX_BYTES:
+                return None, "options_undecodable"
+        except UnicodeEncodeError:
+            return None, "options_undecodable"
         # Check depth before decoding: json.loads itself can recurse on deeply nested input.
         depth = 0
         quoted = False
@@ -395,6 +408,25 @@ def _catalog_options(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
 
 def _catalog_annotate_row(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
+    low, high = _PRESET_BUDGET_BOUNDS
+    budget_invalid = any(
+        value is not None
+        and (not isinstance(value, int) or isinstance(value, bool) or not (low <= value <= high))
+        for value in (result.get("max_depth"), result.get("max_agents"))
+    )
+    for field in ("name", "model", "description"):
+        value = result.get(field)
+        if isinstance(value, bytes):
+            try:
+                value.decode("utf-8")
+            except UnicodeDecodeError:
+                result[field] = None
+    for field in ("max_depth", "max_agents"):
+        value = result.get(field)
+        if isinstance(value, bytes | bytearray | memoryview) or (
+            isinstance(value, float) and not math.isfinite(value)
+        ):
+            result[field] = None
     options, options_reason = _catalog_options(result.pop("options", None))
     result["options"] = options
     result["unused_option_keys"] = None
@@ -439,6 +471,8 @@ def _catalog_annotate_row(row: dict[str, Any]) -> dict[str, Any]:
                 result["options"] = None
                 result["invalid_option_keys"] = invalid_keys
                 reasons.append("options_invalid")
+    if budget_invalid:
+        reasons.append("budget_invalid")
     result["availability"] = "unavailable" if reasons else "available"
     result["reasons"] = reasons
     return result
@@ -488,7 +522,7 @@ async def list_engine_catalog_presets(
     """List non-NULL-ID presets by ID, without snapshot isolation.
 
     An insertion before the cursor can be missed; deletes and renames preserve the ID order.
-    Rows with NULL or non-text IDs are outside this catalog.
+    Rows with NULL, non-text or NUL-containing IDs are outside this catalog.
     Trailing IDs above the cursor bound are deferred if a page contains an encodable ID.
     If every ID in the page is oversized, return that page with no cursor and include
     stop_reason only if additional rows exist.
@@ -535,17 +569,18 @@ async def engine_catalog_blueprints_route() -> dict[str, Any]:
 
 
 _CATALOG_PRESETS_DESCRIPTION = (
-    "List text-ID presets; paging is not a snapshot. Rows with NULL or non-text IDs "
-    "are not listed. If a page contains an encodable ID, trailing oversized IDs are "
+    "List text-ID presets; paging is not a snapshot. Rows with NULL, non-text or "
+    "NUL-containing IDs are not listed. If a page contains an encodable ID, trailing oversized IDs are "
     "deferred; when more rows exist, the cursor names the last encodable ID. "
     "If every ID on a page is "
     "oversized, the page is returned with next_cursor null; stop_reason is "
     "id_exceeds_cursor_bound only if additional rows exist.\n\n"
-    f"Options over {_CATALOG_OPTIONS_MAX_DEPTH} JSON nesting levels are unavailable. "
-    "Preset inputs are flat key/value pairs, so this limit does not exclude normal "
-    "preset options. "
+    f"Stored options over {_CATALOG_OPTIONS_MAX_BYTES} UTF-8 bytes or "
+    f"{_CATALOG_OPTIONS_MAX_DEPTH} JSON nesting levels are unavailable. "
+    "Preset inputs are flat key/value pairs, so the nesting limit does not exclude "
+    "normal preset options. "
     f"Preset budget overrides accept integers from {_PRESET_BUDGET_BOUNDS[0]} to "
-    f"{_PRESET_BUDGET_BOUNDS[1]}, or null. "
+    f"{_PRESET_BUDGET_BOUNDS[1]}, or null; invalid stored budgets have reason budget_invalid. "
     "Each row includes stored_option_keys, unused_option_keys, missing_option_keys "
     "and invalid_option_keys: null when not computed, otherwise a sorted list "
     "([] when none)."

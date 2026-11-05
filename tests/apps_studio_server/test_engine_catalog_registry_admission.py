@@ -26,7 +26,24 @@ from lionagi.studio.services.workflow_compile import (  # noqa: E402
 )
 
 
-def test_registry_options_and_dynamic_kind_membership(monkeypatch):
+@pytest.fixture
+def isolated_kind_registry(monkeypatch):
+    """Keep registry mutation local while preserving all three aliases."""
+    originals = (registry.KIND_META, engine_defs.KIND_META, engine_cli.KIND_META)
+    original_order = tuple(registry.KIND_META)
+    with monkeypatch.context() as isolated:
+        kinds = registry.KIND_META.copy()
+        isolated.setattr(registry, "KIND_META", kinds)
+        isolated.setattr(engine_defs, "KIND_META", kinds)
+        isolated.setattr(engine_cli, "KIND_META", kinds)
+        yield kinds
+    assert registry.KIND_META is originals[0]
+    assert engine_defs.KIND_META is originals[1]
+    assert engine_cli.KIND_META is originals[2]
+    assert tuple(registry.KIND_META) == original_order
+
+
+def test_registry_options_and_dynamic_kind_membership(monkeypatch, isolated_kind_registry):
     class UnhashableString(str):
         __hash__ = None
 
@@ -43,9 +60,15 @@ def test_registry_options_and_dynamic_kind_membership(monkeypatch):
     assert registry._is_registered_engine_kind("research")
     for invalid in (None, True, 42, [], {}, "missing", UnhashableString("research")):
         assert not registry._is_registered_engine_kind(invalid)
-    monkeypatch.setitem(registry.KIND_META, "new_kind", {"preset_options": {}})
+    assert (
+        registry.KIND_META
+        is engine_defs.KIND_META
+        is engine_cli.KIND_META
+        is isolated_kind_registry
+    )
+    monkeypatch.setitem(isolated_kind_registry, "new_kind", {"preset_options": {}})
     assert registry._is_registered_engine_kind("new_kind")
-    monkeypatch.delitem(registry.KIND_META, "research")
+    monkeypatch.delitem(isolated_kind_registry, "research")
     assert not registry._is_registered_engine_kind("research")
 
 
@@ -181,7 +204,9 @@ async def test_preset_option_metadata_matches_real_consumers(kind, monkeypatch):
     assert cli_options == workflow_options == expected
 
 
-def test_registry_mutation_updates_blueprint_availability_and_cli_choices(monkeypatch):
+def test_registry_mutation_updates_blueprint_availability_and_cli_choices(
+    monkeypatch, isolated_kind_registry
+):
     """All three read the runtime registry rather than a fixed known-kind copy."""
     fake = {
         "cls_path": ("unused_fake_engine", "FakeEngine"),
@@ -189,8 +214,14 @@ def test_registry_mutation_updates_blueprint_availability_and_cli_choices(monkey
         "pos_help": "A question for the synthetic kind.",
         "preset_options": {},
     }
-    monkeypatch.setitem(registry.KIND_META, "synthetic", fake)
-    monkeypatch.delitem(registry.KIND_META, "research")
+    assert (
+        registry.KIND_META
+        is engine_defs.KIND_META
+        is engine_cli.KIND_META
+        is isolated_kind_registry
+    )
+    monkeypatch.setitem(isolated_kind_registry, "synthetic", fake)
+    monkeypatch.delitem(isolated_kind_registry, "research")
 
     descriptors = {row["kind"]: row for row in engine_defs.engine_catalog_blueprints()["items"]}
     assert descriptors["synthetic"]["input"] == {

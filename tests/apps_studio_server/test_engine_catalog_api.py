@@ -704,3 +704,154 @@ async def test_options_depth_boundary_and_quoted_brackets(catalog_app):
             detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
             assert detail.status_code == 200, detail.text
             assert detail.json() == rows[row_id]
+
+
+@pytest.mark.parametrize("field", ["max_depth", "max_agents"])
+async def test_stored_budget_bounds_affect_list_and_detail(catalog_app, monkeypatch, field):
+    import lionagi.state.db as db_mod
+
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    values = [
+        ("zero", 0),
+        ("high", 101),
+        ("boolean", 1),
+        ("fraction", 1.5),
+        ("text", "not-int"),
+        ("low", 1),
+        ("top", 100),
+        ("null", None),
+    ]
+    _insert(db_path, [(name, name, "research", "{}") for name, _ in values])
+    updates = {
+        "max_depth": "UPDATE engine_defs SET max_depth=? WHERE id=?",
+        "max_agents": "UPDATE engine_defs SET max_agents=? WHERE id=?",
+    }
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(updates[field], [(value, name) for name, value in values])
+
+    # SQLite INTEGER affinity turns bool into 0/1; emulate a bool-bearing driver row
+    # while still exercising the real HTTP routes and the real read helpers.
+    list_rows = db_mod._list_engine_catalog_rows
+    get_row = db_mod._get_engine_catalog_row
+
+    async def with_boolean_on_list(*args, **kwargs):
+        rows = await list_rows(*args, **kwargs)
+        for row in rows:
+            if row["id"] == "boolean":
+                row[field] = True
+        return rows
+
+    async def with_boolean_on_detail(*args, **kwargs):
+        row = await get_row(*args, **kwargs)
+        if row is not None and row["id"] == "boolean":
+            row[field] = True
+        return row
+
+    monkeypatch.setattr(db_mod, "_list_engine_catalog_rows", with_boolean_on_list)
+    monkeypatch.setattr(db_mod, "_get_engine_catalog_row", with_boolean_on_detail)
+    async with client as ac:
+        listing = await ac.get("/api/engine-catalog/presets")
+        assert listing.status_code == 200
+        rows = {row["id"]: row for row in listing.json()["items"]}
+        assert set(rows) == {name for name, _ in values}
+        for row_id, _ in values:
+            expected = (
+                ["budget_invalid"]
+                if row_id in {"zero", "high", "boolean", "fraction", "text"}
+                else []
+            )
+            assert rows[row_id]["reasons"] == expected
+            assert rows[row_id]["availability"] == ("unavailable" if expected else "available")
+            detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
+            assert detail.status_code == 200
+            assert detail.json() == rows[row_id]
+
+
+async def test_budget_reason_follows_kind_and_option_reasons(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    _insert(
+        db_path,
+        [("a", "unknown", "future-kind", "{"), ("b", "missing", "coding", "{}")],
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE engine_defs SET max_depth=0")
+    async with client as ac:
+        listing = await ac.get("/api/engine-catalog/presets")
+        assert listing.status_code == 200
+        rows = {row["id"]: row for row in listing.json()["items"]}
+        assert rows["a"]["reasons"] == [
+            "kind_not_registered",
+            "options_malformed",
+            "budget_invalid",
+        ]
+        assert rows["b"]["reasons"] == ["required_option_missing", "budget_invalid"]
+        for row_id in ("a", "b"):
+            detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
+            assert detail.status_code == 200
+            assert detail.json() == rows[row_id]
+
+
+def test_option_size_limit_checks_utf8_bytes_before_scan_and_parse(monkeypatch):
+    from lionagi.studio.services import engine_defs
+
+    class ScanSpy(str):
+        scanned = False
+
+        def __iter__(self):
+            self.scanned = True
+            return super().__iter__()
+
+    # Multibyte text keeps the character count below the byte limit.
+    exact = '{"x":"' + "é" * 32764 + '"}'
+    oversized = ScanSpy(exact[:-2] + 'a"}')
+    assert len(exact.encode("utf-8")) == 65536
+    assert len(oversized.encode("utf-8")) == 65537
+    assert len(oversized) < 65536
+    spy = Mock(wraps=json.loads)
+    monkeypatch.setattr(json, "loads", spy)
+
+    assert engine_defs._catalog_options(oversized) == (None, "options_undecodable")
+    assert not oversized.scanned
+    spy.assert_not_called()
+    parsed, reason = engine_defs._catalog_options(exact)
+    assert reason is None
+    assert parsed == {"x": "é" * 32764}
+    spy.assert_called_once()
+
+
+async def test_oversized_utf8_options_are_isolated_in_http(catalog_app):
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    exact = '{"x":"' + "é" * 32764 + '"}'
+    oversized = exact[:-2] + 'a"}'
+    assert len(exact.encode("utf-8")) == 65536
+    assert len(oversized.encode("utf-8")) == 65537
+    _insert(
+        db_path,
+        [
+            ("a", "at-bound", "future-kind", exact),
+            ("b", "over-bound", "future-kind", oversized),
+            ("c", "healthy", "research", "{}"),
+            ("d", "over-bound-bad-budget", "research", oversized),
+        ],
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE engine_defs SET max_depth=0 WHERE id='d'")
+    async with client as ac:
+        listing = await ac.get("/api/engine-catalog/presets")
+        assert listing.status_code == 200
+        rows = {row["id"]: row for row in listing.json()["items"]}
+        assert rows["a"]["reasons"] == ["kind_not_registered"]
+        assert rows["a"]["options"] == {"x": "é" * 32764}
+        assert rows["b"]["reasons"] == ["kind_not_registered", "options_undecodable"]
+        assert rows["b"]["options"] is None
+        assert rows["c"]["availability"] == "available"
+        assert rows["d"]["reasons"] == ["options_undecodable", "budget_invalid"]
+        assert rows["d"]["options"] is None
+        assert rows["d"]["availability"] == "unavailable"
+        for row_id in ("a", "b", "c", "d"):
+            detail = await ac.get("/api/engine-catalog/preset", params={"id": row_id})
+            assert detail.status_code == 200
+            assert detail.json() == rows[row_id]

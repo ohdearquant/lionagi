@@ -9555,8 +9555,9 @@ async def _list_engine_catalog_rows(
     """Fetch a bounded ID-ordered catalog page, leaving options in its stored form."""
     conditions = ["id IS NOT NULL"]
     if db.dialect == "sqlite":
-        # Legacy SQLite TEXT columns may hold BLOB IDs; only text IDs are addressable.
+        # SQLite may store BLOB or NUL-containing IDs; PostgreSQL text rejects NUL.
         conditions.append("typeof(id) = 'text'")
+        conditions.append("instr(id, char(0)) = 0")
     params: dict[str, Any] = {"limit": limit}
     if kind is not None:
         conditions.append("kind = :kind")
@@ -9578,8 +9579,10 @@ async def _list_engine_catalog_rows(
 
 async def _get_engine_catalog_row(db: StateDB, def_id: str) -> dict[str, Any] | None:
     """Fetch a catalog row by ID without decoding its options."""
-    # Do not coerce legacy SQLite BLOB IDs to text or expose them by a text lookup.
-    sqlite_text = " AND typeof(id) = 'text'" if db.dialect == "sqlite" else ""
+    # SQLite can hold BLOB or NUL-containing IDs; PostgreSQL text rejects NUL.
+    sqlite_text = (
+        " AND typeof(id) = 'text' AND instr(id, char(0)) = 0" if db.dialect == "sqlite" else ""
+    )
     query = (
         "SELECT "  # noqa: S608 -- projection is chosen from fixed SQL fragments
         + _engine_catalog_projection(db)

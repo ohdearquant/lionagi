@@ -133,8 +133,8 @@ The backend also exposes a read-only Engine preset catalog while its tab is hidd
   maximum 200), optional `kind`, and an opaque `cursor`. It is not a snapshot: an insertion
   before a cursor may be missed; deleting or renaming a preset does not change its ID order.
 - `GET /api/engine-catalog/preset?id=<encoded-id>` retrieves one preset independently of pages.
-  An empty `id` is distinct from an omitted parameter. Rows with a NULL or non-text ID are outside the
-  catalog.
+  An empty `id` is distinct from an omitted parameter. Rows with a NULL, non-text, or NUL-containing
+  ID are outside the catalog.
 
 Trailing IDs longer than 4,096 UTF-8 bytes are deferred when the page has an encodable ID.
 When all IDs on a page exceed that bound, the page has no next cursor and includes

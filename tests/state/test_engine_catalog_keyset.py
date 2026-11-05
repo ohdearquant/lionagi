@@ -217,6 +217,144 @@ async def test_sqlite_catalog_excludes_null_ids_from_legacy_table(tmp_path):
         await db._engine.dispose()
 
 
+async def test_sqlite_catalog_nul_id_detail_helper_returns_no_row(tmp_path):
+    async with StateDB(tmp_path / "nul-detail.db") as db:
+        await _insert(db, def_id="b\x00x", name="nul", kind="research", options="{}")
+        before = await _raw_rows(db)
+        assert await _get_engine_catalog_row(db, "b\x00x") is None
+        assert await _raw_rows(db) == before
+
+
+async def test_sqlite_http_catalog_pages_past_nul_ids(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    httpx = pytest.importorskip("httpx", reason="httpx not installed")
+
+    import lionagi.studio.services.engine_defs as engine_defs
+    from lionagi.studio.app import create_app
+
+    db_path = tmp_path / "nul-pages.db"
+    monkeypatch.setattr(engine_defs, "StateDB", lambda: StateDB(db_path))
+    monkeypatch.setattr(engine_defs, "state_db_known_absent", lambda: False)
+    async with StateDB(db_path) as db:
+        for def_id, name in (("a", "first"), ("b\x00x", "nul"), ("c", "last")):
+            await _insert(db, def_id=def_id, name=name, kind="research", options="{}")
+        before = await _raw_rows(db)
+        assert [
+            row["id"] for row in await _list_engine_catalog_rows(db, kind=None, after=None, limit=5)
+        ] == ["a", "c"]
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://127.0.0.1:8765"
+        ) as client:
+            first = await client.get("/api/engine-catalog/presets", params={"limit": 1})
+            assert first.status_code == 200, first.text
+            assert [row["id"] for row in first.json()["items"]] == ["a"]
+            assert first.json()["next_cursor"] is not None
+            second = await client.get(
+                "/api/engine-catalog/presets",
+                params={"limit": 1, "cursor": first.json()["next_cursor"]},
+            )
+            assert second.status_code == 200, second.text
+            assert [row["id"] for row in second.json()["items"]] == ["c"]
+            assert second.json()["next_cursor"] is None
+            detail = await client.get("/api/engine-catalog/preset", params={"id": "b\x00x"})
+            assert detail.status_code == 404
+        assert await _raw_rows(db) == before
+
+
+@pytest.mark.parametrize("field", ["name", "model", "description", "max_depth", "max_agents"])
+async def test_sqlite_http_catalog_invalid_utf8_blob_keeps_neighbor_readable(
+    tmp_path, monkeypatch, field
+):
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    httpx = pytest.importorskip("httpx", reason="httpx not installed")
+
+    import lionagi.studio.services.engine_defs as engine_defs
+    from lionagi.studio.app import create_app
+
+    db_path = tmp_path / "blob-field.db"
+    monkeypatch.setattr(engine_defs, "StateDB", lambda: StateDB(db_path))
+    monkeypatch.setattr(engine_defs, "state_db_known_absent", lambda: False)
+    async with StateDB(db_path) as db:
+        await _insert(db, def_id="a-bad", name="bad", kind="research", options="{}")
+        await _insert(db, def_id="b-good", name="good", kind="research", options="{}")
+        await _insert(db, def_id="c-utf8", name="utf8", kind="research", options="{}")
+        async with db._tx() as conn:
+            await conn.execute(
+                text(f"UPDATE engine_defs SET {field} = :value WHERE id = 'a-bad'"),
+                {"value": b"\xff"},
+            )
+            await conn.execute(
+                text(f"UPDATE engine_defs SET {field} = :value WHERE id = 'c-utf8'"),
+                {"value": b"utf8"},
+            )
+        before = await _raw_rows(db)
+        transport = httpx.ASGITransport(app=create_app(), raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://127.0.0.1:8765"
+        ) as client:
+            page = await client.get("/api/engine-catalog/presets")
+            detail = await client.get("/api/engine-catalog/preset", params={"id": "a-bad"})
+            neighbor = await client.get("/api/engine-catalog/preset", params={"id": "b-good"})
+            safe_blob = await client.get("/api/engine-catalog/preset", params={"id": "c-utf8"})
+            assert page.status_code == 200, page.text
+            assert detail.status_code == 200, detail.text
+            assert neighbor.status_code == 200, neighbor.text
+            assert safe_blob.status_code == 200, safe_blob.text
+            items = {row["id"]: row for row in page.json()["items"]}
+            assert set(items) == {"a-bad", "b-good", "c-utf8"}
+            assert items["a-bad"] == detail.json()
+            assert items["a-bad"][field] is None
+            assert ("budget_invalid" in items["a-bad"]["reasons"]) == field.startswith("max_")
+            assert items["b-good"] == neighbor.json()
+            assert items["b-good"]["availability"] == "available"
+            assert items["c-utf8"] == safe_blob.json()
+            assert items["c-utf8"][field] == (None if field.startswith("max_") else "utf8")
+            assert ("budget_invalid" in items["c-utf8"]["reasons"]) == field.startswith("max_")
+        assert await _raw_rows(db) == before
+
+
+@pytest.mark.parametrize("field", ["created_at", "updated_at", "max_depth", "max_agents"])
+@pytest.mark.parametrize("value", [float("inf"), float("-inf")])
+async def test_sqlite_http_catalog_nonfinite_number_serializes_as_null(
+    tmp_path, monkeypatch, field, value
+):
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    httpx = pytest.importorskip("httpx", reason="httpx not installed")
+
+    import lionagi.studio.services.engine_defs as engine_defs
+    from lionagi.studio.app import create_app
+
+    db_path = tmp_path / "infinite-timestamp.db"
+    monkeypatch.setattr(engine_defs, "StateDB", lambda: StateDB(db_path))
+    monkeypatch.setattr(engine_defs, "state_db_known_absent", lambda: False)
+    async with StateDB(db_path) as db:
+        await _insert(db, def_id="a-bad", name="bad", kind="research", options="{}")
+        await _insert(db, def_id="b-good", name="good", kind="research", options="{}")
+        async with db._tx() as conn:
+            await conn.execute(
+                text(f"UPDATE engine_defs SET {field} = :value WHERE id = 'a-bad'"),
+                {"value": value},
+            )
+        before = await _raw_rows(db)
+        transport = httpx.ASGITransport(app=create_app(), raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://127.0.0.1:8765"
+        ) as client:
+            page = await client.get("/api/engine-catalog/presets")
+            detail = await client.get("/api/engine-catalog/preset", params={"id": "a-bad"})
+            neighbor = await client.get("/api/engine-catalog/preset", params={"id": "b-good"})
+            assert page.status_code == detail.status_code == neighbor.status_code == 200
+            items = {row["id"]: row for row in page.json()["items"]}
+            assert set(items) == {"a-bad", "b-good"}
+            assert items["a-bad"] == detail.json()
+            assert items["a-bad"][field] is None
+            assert ("budget_invalid" in items["a-bad"]["reasons"]) == field.startswith("max_")
+            assert items["b-good"] == neighbor.json()
+            assert items["b-good"]["availability"] == "available"
+        assert await _raw_rows(db) == before
+
+
 async def test_postgres_catalog_queries_do_not_use_sqlite_typeof():
     """Exercise both generated PG statements even when a PG server is unavailable."""
 
@@ -252,6 +390,7 @@ async def test_postgres_catalog_queries_do_not_use_sqlite_typeof():
     assert len(recorder.statements) == 2
     for statement, _ in recorder.statements:
         assert "typeof(" not in statement.lower()
+        assert "instr(" not in statement.lower()
         assert "CAST(options AS TEXT) AS options" in statement
         assert "id IS NOT NULL" in statement
     assert recorder.statements[0][1] == {"kind": "k", "after": "", "limit": 2}
