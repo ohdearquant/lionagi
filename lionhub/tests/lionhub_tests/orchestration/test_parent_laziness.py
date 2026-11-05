@@ -101,6 +101,33 @@ assert_checkout_modules()
     )
 
 
+@pytest.mark.parametrize(
+    ("module_name", "relative_source"),
+    [
+        (
+            "lionhub.orchestration.arguments",
+            "lionhub/src/lionhub/orchestration/arguments.py",
+        ),
+        ("lionhub.serve.diagnostics", "lionhub/src/lionhub/serve/diagnostics.py"),
+    ],
+    ids=["arguments", "diagnostics"],
+)
+def test_lightweight_modules_do_not_activate_patterns_or_agent(
+    module_name: str, relative_source: str
+) -> None:
+    _run_fresh(
+        f"""
+sys.meta_path.insert(0, NoPatternOrAgent())
+import {module_name}
+module = sys.modules[{module_name!r}]
+
+assert_source(module, {relative_source!r})
+assert_cold()
+assert_checkout_modules()
+"""
+    )
+
+
 def test_from_parent_activates_patterns_and_preserves_all_export_identities() -> None:
     _run_fresh(
         """
@@ -119,7 +146,6 @@ assert parent.__all__ == exports
 assert set(dir(parent)) == legacy_names
 for name in exports:
     original = getattr(patterns, name)
-    assert getattr(parent, name) is original
     assert getattr(parent, name) is original
 assert_checkout_modules()
 """
