@@ -65,7 +65,7 @@ def _built_parsers() -> list[argparse.ArgumentParser]:
     selected one for real; the rest stay metadata-only stubs. Selecting each in
     turn is therefore the only way to reach the whole surface.
     """
-    from lionagi._auto import build_cli_parser, iter_cli_seeds
+    from lionhub.cli.catalog import build_cli_parser, iter_cli_seeds
 
     return [build_cli_parser(seed).parser for seed in iter_cli_seeds()]
 

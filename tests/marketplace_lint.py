@@ -130,7 +130,7 @@ _PRE_PARSE_SHIMS: frozenset[str] = frozenset({"play", "skill", "wait"})
 
 
 def _known_li_subcommands() -> frozenset[str]:
-    from lionagi._auto import iter_cli_seeds
+    from lionhub.cli.catalog import iter_cli_seeds
 
     names: set[str] = set()
     for seed in iter_cli_seeds():
@@ -283,7 +283,7 @@ def test_pre_parse_shims_are_all_declared() -> None:
     """
     from importlib import import_module
 
-    from lionagi._auto import iter_cli_seeds
+    from lionhub.cli.catalog import iter_cli_seeds
 
     # `import_module` reaches the module unambiguously; `from lionagi.cli
     # import main` can resolve to the lazily-exported callable instead,

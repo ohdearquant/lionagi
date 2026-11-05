@@ -821,7 +821,7 @@ def _run_machine_command(argv: list[str]) -> dict[str, Any]:
     if module_name is not None:
         return import_module(module_name, package=__package__).machine_result(rest)
 
-    from lionagi._auto import command_exists
+    from lionhub.cli.catalog import command_exists
 
     if command_exists(name) or name in ("play", "skill", "wait"):
         raise MachineError(
