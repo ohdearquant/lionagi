@@ -19,7 +19,7 @@ SNAPSHOT = ROOT / "tests/contracts/data/boundary_compatibility.json"
 
 
 def _getattr_alias_mappings(tree):
-    """Resolve literal target/version forwarding maps looked up by a module getter."""
+    """Resolve literal target/removal forwarding maps looked up by a module getter."""
     mappings = {}
     for node in tree.body:
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -38,7 +38,7 @@ def _getattr_alias_mappings(tree):
                     and all(
                         isinstance(name, str)
                         and isinstance(target, tuple)
-                        and len(target) == 3
+                        and len(target) == 2
                         and all(isinstance(item, str) for item in target)
                         and "." in target[0]
                         and all(part.isidentifier() for part in target[0].split("."))
@@ -209,8 +209,8 @@ def test_surface_extraction_detects_lazy_alias_changes(tmp_path, mapping_name, l
         )
 
     aliases = {
-        "old": ("new.api.call", "0.37.0", "2.0.0"),
-        "keep": ("new.api.keep", "0.37.0", "2.0.0"),
+        "old": ("new.api.call", "2.0.0"),
+        "keep": ("new.api.keep", "2.0.0"),
     }
     write(aliases)
     original = _surface(tmp_path)
@@ -226,14 +226,14 @@ def test_surface_extraction_detects_lazy_alias_changes(tmp_path, mapping_name, l
     aliases["old"] = removed_alias
     write(aliases)
     assert _surface(tmp_path) == snapshot
-    aliases["extra"] = ("new.api.other", "0.37.0", "2.0.0")
+    aliases["extra"] = ("new.api.other", "2.0.0")
     write(aliases)
     assert _surface(tmp_path)["public_definitions"] != original["public_definitions"]
     del aliases["extra"]
-    aliases["old"] = ("new.api.changed", "0.37.0", "2.0.0")
+    aliases["old"] = ("new.api.changed", "2.0.0")
     write(aliases)
     assert _surface(tmp_path)["package_exports"] != original["package_exports"]
-    aliases["old"] = ("new.api.call", "0.38.0", "2.0.0")
+    aliases["old"] = ("new.api.call", "3.0.0")
     write(aliases)
     assert _surface(tmp_path)["package_exports"] != original["package_exports"]
     aliases.clear()
@@ -245,17 +245,17 @@ def test_surface_extraction_detects_lazy_alias_changes(tmp_path, mapping_name, l
     "source",
     [
         "def __getattr__(name):\n    return MISSING.get(name)\n",
-        "FORWARDS = dict(old=('new.api.call', '0.37.0', '2.0.0'))\n"
+        "FORWARDS = dict(old=('new.api.call', '2.0.0'))\n"
         "def __getattr__(name):\n    return FORWARDS.get(name)\n",
-        "_DEPRECATED_ALIASES = {'old': ('new.api.call', '0.37.0', '2.0.0')}\n"
+        "_DEPRECATED_ALIASES = {'old': ('new.api.call', '2.0.0')}\n"
         "def __getattr__(name):\n    raise AttributeError(name)\n",
-        "_DEPRECATED_ALIASES = {'old': ('new.api.call', '0.37.0', '2.0.0')}\n"
+        "_DEPRECATED_ALIASES = {'old': ('new.api.call', '2.0.0')}\n"
         "def __getattr__(name):\n    _DEPRECATED_ALIASES = {}\n"
         "    return _DEPRECATED_ALIASES.get(name)\n",
         "FIELDS = {'old': ('field', {})}\ndef __getattr__(name):\n    return FIELDS.get(name)\n",
         "FORWARDS = {'old': 'new.api.call'}\n"
         "def __getattr__(name):\n    return FORWARDS.get(name)\n",
-        "FORWARDS = {'old': ('new.api.call', '0.37.0', '2.0.0')}\n"
+        "FORWARDS = {'old': ('new.api.call', '2.0.0')}\n"
         "def __getattr__(name):\n    from elsewhere import FORWARDS\n"
         "    return FORWARDS.get(name)\n",
     ],

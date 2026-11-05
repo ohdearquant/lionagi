@@ -837,7 +837,7 @@ def _deprecated_catalog_target_nodes(path: Path, tree: ast.Module) -> set[int]:
                 isinstance(key, ast.Constant)
                 and key.value in expected
                 and isinstance(value, ast.Tuple)
-                and len(value.elts) == 3
+                and len(value.elts) == 2
                 and isinstance(value.elts[0], ast.Constant)
                 and value.elts[0].value == expected[key.value]
             ):
@@ -900,7 +900,7 @@ def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
         "load_cli_command",
         "seed_for",
     )
-    aliases = {name: (f"lionhub.cli.catalog.{name}", "0.37.0", "2.0.0") for name in names}
+    aliases = {name: (f"lionhub.cli.catalog.{name}", "2.0.0") for name in names}
     source = f"_DEPRECATED_ALIASES = {aliases!r}\n"
     assert _lionhub_names(path, source) == []
     additional = "import lionhub.cli.catalog\nEXTRA = 'lionhub.cli.catalog.seed_for'\n"
@@ -909,7 +909,7 @@ def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
         "lionhub.cli.catalog.seed_for",
     ]
     assert len(_lionhub_names(ROOT / "lionagi" / "_other.py", source)) == len(names)
-    aliases["other"] = ("lionhub.cli.catalog.other", "0.37.0", "2.0.0")
+    aliases["other"] = ("lionhub.cli.catalog.other", "2.0.0")
     assert len(_lionhub_names(path, f"_DEPRECATED_ALIASES = {aliases!r}\n")) == len(aliases)
 
 
