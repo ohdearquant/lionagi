@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from lionagi.cli import doctor
-from lionhub.serve import diagnostics as _code_identity
+from lionhub.serve import diagnostics
 
 
 class _Args:
@@ -21,9 +21,9 @@ def test_the_server_snapshots_its_position_before_it_starts_serving(
 ) -> None:
     from lionhub.serve.mcp import server
 
-    monkeypatch.setattr(_code_identity, "_SNAPSHOT", None)
+    monkeypatch.setattr(diagnostics, "_SNAPSHOT", None)
     seen: dict[str, object] = {}
-    monkeypatch.setattr(server.mcp, "run", lambda: seen.update(snapshot=_code_identity._SNAPSHOT))
+    monkeypatch.setattr(server.mcp, "run", lambda: seen.update(snapshot=diagnostics._SNAPSHOT))
 
     server.main()
     assert seen["snapshot"] is not None
@@ -33,7 +33,7 @@ def test_doctor_says_the_tree_was_dirty_beside_the_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        _code_identity,
+        diagnostics,
         "code_identity",
         lambda: _identity(
             "unknown",
@@ -75,7 +75,7 @@ def _identity(drift_status: str, **overrides: object) -> dict[str, object]:
 
 
 def test_doctor_fails_on_drift(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_code_identity, "code_identity", lambda: _identity("drift"))
+    monkeypatch.setattr(diagnostics, "code_identity", lambda: _identity("drift"))
     result = doctor._check_code_identity()
     assert result["status"] == "fail"
     assert "24 commit(s) behind origin/main" in result["detail"]
@@ -83,14 +83,14 @@ def test_doctor_fails_on_drift(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_doctor_reports_unknown_rather_than_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_code_identity, "code_identity", lambda: _identity("unknown"))
+    monkeypatch.setattr(diagnostics, "code_identity", lambda: _identity("unknown"))
     result = doctor._check_code_identity()
     assert result["status"] == "unknown"
     assert "git state unreadable" in result["detail"]
 
 
 def test_doctor_ok_when_identity_is_clean(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_code_identity, "code_identity", lambda: _identity("ok"))
+    monkeypatch.setattr(diagnostics, "code_identity", lambda: _identity("ok"))
     result = doctor._check_code_identity()
     assert result["status"] == "ok"
     assert "abc123def456 (detached)" in result["detail"]
@@ -99,7 +99,7 @@ def test_doctor_ok_when_identity_is_clean(monkeypatch: pytest.MonkeyPatch) -> No
 def test_doctor_quotes_when_the_position_was_read(monkeypatch: pytest.MonkeyPatch) -> None:
     """A commit with no time attached reads as current; this one says what it is."""
     monkeypatch.setattr(
-        _code_identity,
+        diagnostics,
         "code_identity",
         lambda: _identity("ok", git_snapshot_taken_at="2026-07-26T00:00:00+00:00"),
     )
@@ -111,7 +111,7 @@ def test_doctor_check_that_cannot_run_is_unknown(monkeypatch: pytest.MonkeyPatch
     def _boom() -> dict[str, object]:
         raise RuntimeError("no")
 
-    monkeypatch.setattr(_code_identity, "code_identity", _boom)
+    monkeypatch.setattr(diagnostics, "code_identity", _boom)
     assert doctor._check_code_identity()["status"] == "unknown"
 
 

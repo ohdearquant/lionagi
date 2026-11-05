@@ -96,8 +96,6 @@ TARGET_RULES = {
     "lionagi.integrations": "lionhub (destination not yet recorded)",
     "lionagi.tools": "lionhub (destination not yet recorded)",
     "lionagi.cli": "pending the CLI location decision (ADR-0139 D1)",
-    "lionagi.cli._argtypes": "lionhub.orchestration.arguments",
-    "lionagi.cli._code_identity": "lionhub.serve.diagnostics",
     "lionagi.cli._engine_definitions": "lionhub.orchestration.engine_definitions",
     "lionagi.cli._inspection": "lionhub.orchestration.inspection",
     "lionagi.cli._kill_service": "lionhub.orchestration.kill",

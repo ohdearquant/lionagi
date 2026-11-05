@@ -52,7 +52,7 @@ async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypa
     from lionagi.state.lifecycle import notify_settings
     from lionagi.studio.scheduler.engine import scheduler
     from lionagi.studio.services import launches, lifecycle, operator
-    from lionhub.serve import diagnostics as _code_identity
+    from lionhub.serve import diagnostics
 
     app_module = importlib.import_module("lionagi.studio.app")
     home = tmp_path / "home"
@@ -85,7 +85,7 @@ async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypa
 
     # Retain the actual lifespan and its startup/periodic reconciliation path;
     # unrelated services do not run or touch the host in this test.
-    monkeypatch.setattr(_code_identity, "snapshot_git_position", lambda: None)
+    monkeypatch.setattr(diagnostics, "snapshot_git_position", lambda: None)
     monkeypatch.setattr(notify_settings, "register_settings_terminal_callback", lambda: False)
     monkeypatch.setattr("lionagi.studio.config.TERMINAL_RECONCILE_ENABLED", True)
     monkeypatch.setattr(scheduler, "start", noop)
