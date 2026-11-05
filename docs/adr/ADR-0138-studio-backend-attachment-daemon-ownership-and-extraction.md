@@ -13,7 +13,7 @@ This record decides how the Studio application's backend relates to the daemon: 
 
 ## Context
 
-Source references (`path:line`) explicitly attributed to a historical revision or covered by a section's historical revision note refer to development-line commit `b4a3bebf`, except references to `lionagi/studio/cli.py`, `lionagi/cli/machine_schedule.py`, and `lionagi/cli/_schedule_parsing.py`, which refer to `fa46d0e8`. Line citations not attributed to a named revision are re-derived at `c82740f4e7a5fdd345d61a6444e2c8f0eb2d6cce`. `ADR-0136` denotes `docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md` throughout. Proposed paths, interfaces, configuration names, and verification tests describe the decision, not existing implementation.
+Source references (`path:line`) explicitly attributed to a historical revision or covered by a section's historical revision note refer to development-line commit `b4a3bebf`, except references to `lionagi/studio/cli.py`, `lionagi/cli/machine_schedule.py`, and `lionagi/cli/_schedule_parsing.py`, which refer to `fa46d0e8`. Line citations not attributed to a named revision are re-derived at `611a2f3baee0eb6ca2d4e4db63542645a70f2121`. `ADR-0136` denotes `docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md` throughout. Proposed paths, interfaces, configuration names, and verification tests describe the decision, not existing implementation.
 
 Adoption of this record requires the accompanying Amendment 2 to ADR-0136. During 1.x, the application remains at its current `lionagi.studio` paths inside the single distribution. Wave 2 establishes the daemon, route, identity, and shared-service boundaries. At 2.0, the application moves to `apps/studio/backend/src/`, outside both library wheels. The core never gains a dependency on application code. The ADR-0136 D2 exempt set is `{cli, studio}` until Amendment 2 step 6 moves the CLI, `{studio}` from that step through the last 1.x release, and empty from 2.0, when the application leaves the wheel (`ADR-0136 D1`, `ADR-0136 D2`; `tests/test_moved_modules.py:669` at `b4a3bebf`).
 
@@ -119,7 +119,7 @@ The following table allocates all 29 registered modules. Each source is under `l
 | `lionagi/studio/services/projects.py:288` | Backend | Application project editing and assignment. Shared project lookup is F5. |
 | `lionagi/studio/services/identity.py:26` | Daemon | Authenticate the process reached by a launcher. |
 | `lionagi/studio/services/pairing.py:43`, :63, :119-126 | Daemon | Redeem codes, revoke capabilities, and preserve the retired issuance endpoint. |
-| `lionagi/studio/services/engine_defs.py:239` | Backend | Application definition editing. Launch-time definition lookup is F5. |
+| `lionagi/studio/services/engine_defs.py:240` | Backend | Application definition editing. Launch-time definition lookup is F5. |
 | `lionagi/studio/services/workflow_defs.py:219`, :301 | Backend | Application workflow editing and its execution adapter. |
 | `lionagi/studio/services/sessions.py:1919-1929`, :1933-1940, :1890 | Daemon | Session records and execution streams. Preserve labeling behavior. |
 | `lionagi/studio/services/run_tags.py:133` | Backend | Application tagging actions. Shared read and storage helpers are F5. |
