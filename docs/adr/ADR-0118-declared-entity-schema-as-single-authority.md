@@ -402,8 +402,10 @@ expected for genuinely bespoke work — locking, CTEs, JSON operators, window ag
 CAS transitions, retention sweeps — which moves behind named typed owners with an explicit
 escape hatch that validates identifiers, rather than being scattered through route code.
 
-The D5 counts of seven rebuild paths over five tables, including three schedules paths and six
-other replay paths, have not been reverified at `bb57cc96`.
+At `bb57cc96`, `state/db.py` has seven rebuild paths over five tables, counted as its seven
+`ALTER TABLE … RENAME TO` statements: one for `sessions`, three for `schedules`, and one each for
+`invocations`, `schedule_runs` and `definitions`. The sessions path and the six others are the
+paths D5 refers to below.
 
 **D5 — migration is a diff between declared and introspected schema, and it fails closed.** At
 open, introspect the live database, diff against the declared schema, and produce a
@@ -1119,7 +1121,7 @@ not infer runtime use):
 git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/reasons.py | wc -l
 git show 79c9772930ac8da8522c3b3ced5d2974d13daea1:lionagi/state/reasons.py | wc -l
 git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/db.py | rg -c S608
-git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/reasons.py | python3 -c '
+git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/reasons.py | python3 -I -c '
 import ast, sys
 m = ast.parse(sys.stdin.read())
 for c in m.body:
