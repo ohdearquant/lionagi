@@ -51,7 +51,7 @@ def _health_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict:
 
 def _install_identity(monkeypatch: pytest.MonkeyPatch, identity: dict) -> None:
     """Stand in for the real reading, which shells out to git."""
-    import lionagi.cli._code_identity as ci
+    import lionhub.serve.diagnostics as ci
 
     monkeypatch.setattr(ci, "code_identity", lambda: identity)
 
@@ -102,7 +102,7 @@ def test_a_current_checkout_is_reported_ok(monkeypatch, tmp_path):
 def test_an_unreadable_identity_is_unknown_and_still_present(monkeypatch, tmp_path):
     # The failure that matters: the reading raised. Dropping the key would leave
     # the response looking exactly like a healthy one.
-    import lionagi.cli._code_identity as ci
+    import lionhub.serve.diagnostics as ci
 
     def _boom() -> dict:
         raise RuntimeError("git is not on PATH")
@@ -129,8 +129,8 @@ def test_the_daemon_snapshots_its_position_before_it_starts_serving(monkeypatch)
     distinguishes taking it at startup from taking it later: everything after
     that point can already cause, or observe, a request.
     """
-    import lionagi.cli._code_identity as ci
     import lionagi.studio.app as app_mod
+    import lionhub.serve.diagnostics as ci
     from lionagi.studio.scheduler.engine import scheduler
 
     monkeypatch.setattr(ci, "_SNAPSHOT", None)
@@ -167,8 +167,8 @@ def test_the_daemon_snapshots_its_position_before_it_starts_serving(monkeypatch)
 def test_startup_snapshot_does_not_block_the_event_loop(monkeypatch):
     import threading
 
-    import lionagi.cli._code_identity as ci
     import lionagi.studio.app as app_mod
+    import lionhub.serve.diagnostics as ci
     from lionagi.studio.scheduler.engine import scheduler
 
     seen: dict[str, int] = {}
@@ -211,7 +211,7 @@ def test_the_reading_does_not_block_the_event_loop(monkeypatch, tmp_path):
     """
     import threading
 
-    import lionagi.cli._code_identity as ci
+    import lionhub.serve.diagnostics as ci
 
     serving_thread = threading.get_ident()
     seen: dict[str, int] = {}

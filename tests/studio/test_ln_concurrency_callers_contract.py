@@ -106,11 +106,11 @@ async def _cancel_while_worker_is_blocked(subject, probe, *, abandon):
 
 
 def _admin_subject(monkeypatch, tmp_path, site, probe):
-    from lionagi.cli import _code_identity
     from lionagi.state import db as state_db
     from lionagi.state.reasons import SessionReasons
     from lionagi.studio import config
     from lionagi.studio.services import admin, sessions
+    from lionhub.serve import diagnostics
 
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
@@ -266,7 +266,7 @@ def _admin_subject(monkeypatch, tmp_path, site, probe):
         monkeypatch.setattr(admin, "_ps_snapshot", probe.worker)
         subject = admin._capture_ps_snapshot
     elif site == "identity":
-        monkeypatch.setattr(_code_identity, "code_identity", probe.worker)
+        monkeypatch.setattr(diagnostics, "code_identity", probe.worker)
         subject = admin._code_identity_report
     elif site == "phantom":
         monkeypatch.setattr(admin, "_classify_phantom", probe.worker)

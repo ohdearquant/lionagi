@@ -9,14 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli import _code_identity, doctor
-from lionagi.cli._code_identity import code_identity, git_identity
-
-
-class _Args:
-    """Stand-in for the argparse namespace `run_doctor` reads."""
-
-    json = False
+from lionhub.serve import diagnostics
+from lionhub.serve.diagnostics import code_identity, git_identity
 
 
 def _git(tree: Path, *argv: str) -> str:
@@ -118,7 +112,7 @@ def test_missing_git_binary_is_unknown_not_a_missing_checkout(
     def _no_git(*args: object, **kwargs: object) -> None:
         raise FileNotFoundError("git")
 
-    monkeypatch.setattr(_code_identity.subprocess, "run", _no_git)
+    monkeypatch.setattr(diagnostics.subprocess, "run", _no_git)
 
     git = git_identity(tmp_path)
     assert git["status"] == "unknown"
@@ -141,7 +135,7 @@ def test_a_git_call_that_never_ran_does_not_read_as_a_missing_upstream(
             raise subprocess.TimeoutExpired(argv, 5.0)
         return real_run(argv, **kwargs)
 
-    monkeypatch.setattr(_code_identity.subprocess, "run", _upstream_probe_times_out)
+    monkeypatch.setattr(diagnostics.subprocess, "run", _upstream_probe_times_out)
 
     git = git_identity(checkout_behind)
     assert git["status"] == "unknown"
@@ -151,7 +145,7 @@ def test_a_git_call_that_never_ran_does_not_read_as_a_missing_upstream(
 
 def test_a_spent_allowance_is_unknown_not_ok(checkout_behind: Path) -> None:
     """The whole identity gets one allowance; running out of it is not a pass."""
-    git = git_identity(checkout_behind, _code_identity._Budget(0.0))
+    git = git_identity(checkout_behind, diagnostics._Budget(0.0))
     assert git["status"] == "unknown"
     assert "allowance" in git["detail"]
 
@@ -180,41 +174,35 @@ def test_no_comparison_ref_is_unknown_not_ok(tmp_path: Path) -> None:
     assert git["comparison_ref"] is None
     assert git["behind"] is None
 
-    drift = _code_identity._drift(git, "1.0.0", "1.0.0")
+    drift = diagnostics._drift(git, "1.0.0", "1.0.0")
     assert drift["status"] == "unknown"
     assert drift["unknown"]
 
 
-# the drift verdict
-
-
 def test_version_mismatch_against_installed_distribution_is_drift() -> None:
     git = {"status": "not_a_git_checkout", "detail": "wheel install"}
-    drift = _code_identity._drift(git, "0.1.0", "9.9.9")
+    drift = diagnostics._drift(git, "0.1.0", "9.9.9")
     assert drift["status"] == "drift"
     assert any("9.9.9" in reason for reason in drift["reasons"])
 
 
 def test_wheel_install_with_matching_version_is_ok() -> None:
     git = {"status": "not_a_git_checkout", "detail": "wheel install"}
-    assert _code_identity._drift(git, "0.1.0", "0.1.0")["status"] == "ok"
+    assert diagnostics._drift(git, "0.1.0", "0.1.0")["status"] == "ok"
 
 
 def test_behind_outranks_unknown_in_the_verdict() -> None:
     git = {"status": "ok", "behind": 24, "comparison_ref": "origin/main"}
-    drift = _code_identity._drift(git, "0.1.0", None)
+    drift = diagnostics._drift(git, "0.1.0", None)
     assert drift["status"] == "drift"
     assert any("24 commit(s) behind" in reason for reason in drift["reasons"])
-
-
-# the snapshot, and the tree moving underneath it
 
 
 @pytest.fixture
 def loaded_from(checkout_behind: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Pretend this process imported itself from *checkout_behind*, snapshot unset."""
-    monkeypatch.setattr(_code_identity, "_SNAPSHOT", None)
-    monkeypatch.setattr(_code_identity, "loaded_package_path", lambda: str(checkout_behind))
+    monkeypatch.setattr(diagnostics, "_SNAPSHOT", None)
+    monkeypatch.setattr(diagnostics, "loaded_package_path", lambda: str(checkout_behind))
     return checkout_behind
 
 
@@ -250,21 +238,8 @@ def test_the_snapshot_is_read_once_not_once_per_call(loaded_from: Path) -> None:
     assert code_identity()["git_snapshot_taken_at"] == first
 
 
-def test_the_server_snapshots_its_position_before_it_starts_serving(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from lionhub.serve.mcp import server
-
-    monkeypatch.setattr(_code_identity, "_SNAPSHOT", None)
-    seen: dict[str, object] = {}
-    monkeypatch.setattr(server.mcp, "run", lambda: seen.update(snapshot=_code_identity._SNAPSHOT))
-
-    server.main()
-    assert seen["snapshot"] is not None
-
-
 def test_an_unreadable_live_position_is_unknown_movement_not_no_movement() -> None:
-    moved, detail = _code_identity._checkout_movement(
+    moved, detail = diagnostics._checkout_movement(
         {"status": "ok", "commit": "a" * 40},
         {"status": "unknown", "detail": "git went away"},
     )
@@ -274,7 +249,7 @@ def test_an_unreadable_live_position_is_unknown_movement_not_no_movement() -> No
 
 def test_the_live_count_answers_when_the_checkout_has_not_moved() -> None:
     """Same commit, fresher view of the remote: the newer measurement is the true one."""
-    drift = _code_identity._drift(
+    drift = diagnostics._drift(
         {"status": "ok", "behind": 0, "comparison_ref": "origin/main"},
         "0.1.0",
         None,
@@ -287,7 +262,7 @@ def test_the_live_count_answers_when_the_checkout_has_not_moved() -> None:
 
 def test_the_snapshot_answers_when_the_checkout_has_moved() -> None:
     """Once the tree moves, the live count is about a commit that is not running."""
-    drift = _code_identity._drift(
+    drift = diagnostics._drift(
         {"status": "ok", "behind": 24, "comparison_ref": "origin/main"},
         "0.1.0",
         None,
@@ -298,9 +273,6 @@ def test_the_snapshot_answers_when_the_checkout_has_moved() -> None:
     assert drift["status"] == "drift"
     assert "it moved" in drift["reasons"]
     assert any("24 commit(s) behind" in reason for reason in drift["reasons"])
-
-
-# the tree moving without the commit moving
 
 
 def test_a_dirty_tree_is_fingerprinted_and_a_clean_one_is_too(checkout_behind: Path) -> None:
@@ -339,7 +311,7 @@ def test_a_fingerprint_that_could_not_be_taken_is_none_with_a_reason(
             raise subprocess.TimeoutExpired(argv, 5.0)
         return real_run(argv, **kwargs)
 
-    monkeypatch.setattr(_code_identity.subprocess, "run", _diff_fails)
+    monkeypatch.setattr(diagnostics.subprocess, "run", _diff_fails)
 
     git = git_identity(checkout_behind)
     assert git["worktree_fingerprint"] is None
@@ -377,7 +349,7 @@ def test_the_two_kinds_of_movement_are_reported_separately(loaded_from: Path) ->
 
 
 def test_a_missing_fingerprint_is_unknown_movement_not_a_still_tree() -> None:
-    edited, detail = _code_identity._worktree_movement(
+    edited, detail = diagnostics._worktree_movement(
         {"status": "ok", "commit": "a" * 40, "worktree_fingerprint": None},
         {"status": "ok", "commit": "a" * 40, "worktree_fingerprint": "beef"},
         False,
@@ -578,23 +550,23 @@ def test_an_allowance_spent_inside_the_per_path_loop_yields_no_digest(
 
     top = Path(_git(checkout_behind, "rev-parse", "--show-toplevel"))
     porcelain = _git(checkout_behind, "status", "--porcelain", "-z", "--untracked-files=all")
-    paths = _code_identity._status_paths(porcelain)
+    paths = diagnostics._status_paths(porcelain)
     assert len(paths) == 3
 
-    full, detail = _code_identity._worktree_fingerprint(
-        checkout_behind, top, porcelain, _code_identity._Budget(60.0)
+    full, detail = diagnostics._worktree_fingerprint(
+        checkout_behind, top, porcelain, diagnostics._Budget(60.0)
     )
     assert detail is None
     assert full
 
     with monkeypatch.context() as stop_after_one:
-        stop_after_one.setattr(_code_identity, "_status_paths", lambda _: paths[:1])
-        truncated, _ = _code_identity._worktree_fingerprint(
-            checkout_behind, top, porcelain, _code_identity._Budget(60.0)
+        stop_after_one.setattr(diagnostics, "_status_paths", lambda _: paths[:1])
+        truncated, _ = diagnostics._worktree_fingerprint(
+            checkout_behind, top, porcelain, diagnostics._Budget(60.0)
         )
     assert truncated != full, "truncation invents a difference in a tree that did not change"
 
-    spent, reason = _code_identity._worktree_fingerprint(
+    spent, reason = diagnostics._worktree_fingerprint(
         checkout_behind, top, porcelain, _SpentAfter(2)
     )
     assert spent is None, "a spent allowance must not return the digest built so far"
@@ -602,7 +574,7 @@ def test_an_allowance_spent_inside_the_per_path_loop_yields_no_digest(
     assert "allowance" in reason
     assert f"measuring 1 of the {len(paths)} paths" in reason
 
-    edited, movement = _code_identity._worktree_movement(
+    edited, movement = diagnostics._worktree_movement(
         {"status": "ok", "commit": "a" * 40, "worktree_fingerprint": full},
         {
             "status": "ok",
@@ -625,7 +597,7 @@ def test_a_dirty_snapshot_is_unknown_not_ok() -> None:
         "commit_short": "abc123def456",
         "dirty": True,
     }
-    drift = _code_identity._drift(git, "0.1.0", "0.1.0")
+    drift = diagnostics._drift(git, "0.1.0", "0.1.0")
     assert drift["status"] == "unknown"
     assert any("uncommitted changes" in u for u in drift["unknown"])
 
@@ -633,7 +605,7 @@ def test_a_dirty_snapshot_is_unknown_not_ok() -> None:
 def test_a_clean_snapshot_at_its_ref_is_still_ok() -> None:
     """The dirty rule must not swallow the one state that is genuinely fine."""
     git = {"status": "ok", "behind": 0, "comparison_ref": "origin/main", "dirty": False}
-    assert _code_identity._drift(git, "0.1.0", "0.1.0")["status"] == "ok"
+    assert diagnostics._drift(git, "0.1.0", "0.1.0")["status"] == "ok"
 
 
 def test_a_dirty_tree_read_end_to_end_does_not_claim_ok(loaded_from: Path) -> None:
@@ -647,29 +619,6 @@ def test_a_dirty_tree_read_end_to_end_does_not_claim_ok(loaded_from: Path) -> No
     assert any("uncommitted changes" in u for u in identity["drift"]["unknown"])
 
 
-def test_doctor_says_the_tree_was_dirty_beside_the_commit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        _code_identity,
-        "code_identity",
-        lambda: _identity(
-            "unknown",
-            git={
-                "status": "ok",
-                "commit_short": "abc123def456",
-                "branch": None,
-                "detached": True,
-                "dirty": True,
-            },
-        ),
-    )
-    assert (
-        "abc123def456 (detached) with uncommitted changes"
-        in (doctor._check_code_identity()["detail"])
-    )
-
-
 def test_code_identity_reports_this_process() -> None:
     identity = code_identity()
     assert identity["version"]
@@ -681,117 +630,3 @@ def test_code_identity_reports_this_process() -> None:
     assert identity["git_snapshot_taken_at"]
     assert identity["checkout_moved"] in (True, False, None)
     assert identity["git_live"]["status"] in ("ok", "not_a_git_checkout", "unknown")
-
-
-# the doctor check
-
-
-def _identity(drift_status: str, **overrides: object) -> dict[str, object]:
-    identity: dict[str, object] = {
-        "version": "0.1.0",
-        "package_path": "/somewhere/lionagi",
-        "distribution_version": "0.1.0",
-        "verb_count": 40,
-        "git": {
-            "status": "ok",
-            "commit_short": "abc123def456",
-            "branch": None,
-            "detached": True,
-        },
-        "drift": {
-            "status": drift_status,
-            "reasons": ["24 commit(s) behind origin/main"] if drift_status == "drift" else [],
-            "unknown": ["git state unreadable"] if drift_status == "unknown" else [],
-        },
-    }
-    identity.update(overrides)
-    return identity
-
-
-def test_doctor_fails_on_drift(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_code_identity, "code_identity", lambda: _identity("drift"))
-    result = doctor._check_code_identity()
-    assert result["status"] == "fail"
-    assert "24 commit(s) behind origin/main" in result["detail"]
-    assert "40 verbs" in result["detail"]
-
-
-def test_doctor_reports_unknown_rather_than_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_code_identity, "code_identity", lambda: _identity("unknown"))
-    result = doctor._check_code_identity()
-    assert result["status"] == "unknown"
-    assert "git state unreadable" in result["detail"]
-
-
-def test_doctor_ok_when_identity_is_clean(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_code_identity, "code_identity", lambda: _identity("ok"))
-    result = doctor._check_code_identity()
-    assert result["status"] == "ok"
-    assert "abc123def456 (detached)" in result["detail"]
-
-
-def test_doctor_quotes_when_the_position_was_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A commit with no time attached reads as current; this one says what it is."""
-    monkeypatch.setattr(
-        _code_identity,
-        "code_identity",
-        lambda: _identity("ok", git_snapshot_taken_at="2026-07-26T00:00:00+00:00"),
-    )
-    detail = doctor._check_code_identity()["detail"]
-    assert "as read at 2026-07-26T00:00:00+00:00" in detail
-
-
-def test_doctor_check_that_cannot_run_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom() -> dict[str, object]:
-        raise RuntimeError("no")
-
-    monkeypatch.setattr(_code_identity, "code_identity", _boom)
-    assert doctor._check_code_identity()["status"] == "unknown"
-
-
-def test_run_doctor_exits_nonzero_on_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        doctor,
-        "collect_checks",
-        lambda: {"code_identity": {"status": "unknown", "detail": "cannot tell"}},
-    )
-    assert doctor.run_doctor(_Args()) == 1
-
-
-# the surfaces a client reads
-
-
-def test_handshake_carries_code_identity() -> None:
-    from lionagi.cli.machine import handshake_data
-
-    identity = handshake_data()["code_identity"]
-    assert identity["package_path"]
-    assert identity["verb_count"] > 0
-    assert "status" in identity["drift"]
-
-
-def test_server_info_carries_code_identity() -> None:
-    from lionhub.serve.mcp.dispatch import _server_info
-
-    info = _server_info()
-    assert info["code_identity"]["version"] == info["lionagi_version"]
-    assert info["code_identity"]["verb_count"] == info["verb_count"]
-
-
-def test_doctor_machine_payload_separates_unknown_from_failed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from lionagi.cli import machine
-
-    monkeypatch.setattr(
-        doctor,
-        "collect_checks",
-        lambda: {
-            "a": {"status": "unknown", "detail": "cannot tell"},
-            "b": {"status": "fail", "detail": "broken"},
-            "c": {"status": "ok", "detail": "fine"},
-        },
-    )
-    data = machine.doctor_data()
-    assert data["failed"] == ["b"]
-    assert data["unknown"] == ["a"]

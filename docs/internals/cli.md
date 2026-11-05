@@ -38,7 +38,7 @@ leftover positionals back in order. `li agent status`, `li monitor run
 argparse dispatch, because a positional `id`/free-form-ids slot would
 otherwise swallow a literal token like `"status"` or `"run"`.
 
-## `_code_identity.py` — worktree fingerprint semantics
+## `lionhub/src/lionhub/serve/diagnostics.py` — worktree fingerprint semantics
 
 `_worktree_fingerprint` digests uncommitted state via the status listing, the diff against
 HEAD, and each named path's size/mtime/inode — never file content, so cost doesn't scale with

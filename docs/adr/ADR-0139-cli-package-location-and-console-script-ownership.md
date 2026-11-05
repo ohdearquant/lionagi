@@ -2,14 +2,16 @@
 
 - **Status**: Proposed; D1 is adopted with the CLI at `lionhub.cli`; D5 and the 2.0 release date stay Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: partial — the command catalog has moved to `lionhub.cli.catalog`, with five lazy forwards in `lionagi._auto`; D5, the console-script move, and the 2.0 date remain open
+- **Implementation-status**: partial — the command catalog has moved to `lionhub.cli.catalog`, with five lazy forwards in `lionagi._auto`; argument types and diagnostics have moved to `lionhub.orchestration.arguments` and `lionhub.serve.diagnostics`, with their old import paths in `lionagi._moved`; the other step-3 modules, D5, the console-script move, and the 2.0 date remain open
 - **Area**: cli-surface
 - **Date**: 2026-10-26
 - **Relations**: resolves the CLI decisions deferred by ADR-0136 D7; amends its A4 item 6, B2 step 6 and D7 layout; amends the location references in ADR-0062 D1–D5; specializes the optional base-launcher choice in ADR-0122 D8; complements ADR-0138.
 
 **Source HEAD**: `1717674a2140d3571fcb90e3f68204845048ef80`.
 
-Line citations not attributed to a named revision are re-derived at `5aaacb6d9bc4f95535c8761951ed404718df5c0b`.
+Line citations not attributed to a named revision are re-derived at `95b97d21f3ef78b69f8232ee23280dc6da911bce`.
+The source-column citations in D2's seventeen-module step-3 move table retain
+`5aaacb6d9bc4f95535c8761951ed404718df5c0b` unless a row names another revision; they identify the source before relocation.
 Destination paths, interfaces and tests below are requirements, not claims of existing implementation.
 The decision takes effect only when adopted. ADR-0138 is also Proposed at this revision
 (`docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:3`).
@@ -457,7 +459,7 @@ Preserve logger names when implementations move. The source includes
 The existing source checker admits old logger strings only when its resolved
 destination contains the current module; split destinations require a narrow
 original-logger-ownership check, not renaming the logger or ignoring arbitrary
-old strings (`tests/test_moved_modules.py:743`).
+old strings (`tests/test_moved_modules.py:814`).
 
 **Failure tests:** `test_step3_shared_dependency_closure`,
 `test_move_table_handles_module_and_package_rows`,
@@ -486,8 +488,8 @@ and `lionhub/src/lionhub/cli/catalog.py:220`.
 The composition root imports this catalog directly before selection.
 MCP projection and machine-command classification use the same catalog, not copies
 (`lionagi/cli/main.py:17`, `lionagi/cli/main.py:401`,
-`lionagi/cli/machine.py:824-826`,
-`lionhub/src/lionhub/serve/mcp/projection.py:35`).
+`lionagi/cli/machine.py:823-825`,
+`lionhub/src/lionhub/serve/mcp/projection.py:34`).
 
 Keep command names, aliases, order, help metadata, special routing and error behavior
 unchanged. Root discovery does not import every command implementation. Selection
@@ -562,7 +564,7 @@ sets and path-tail comparison are at
 `lionagi/cli/orchestrate/_orchestration.py:681`.
 Old spellings retained solely for recognition are compatibility data, never import
 or launch targets. The existing old-reference checker distinguishes imports/call
-arguments from set data (`tests/test_moved_modules.py:723`); keep canonical
+arguments from set data (`tests/test_moved_modules.py:794`); keep canonical
 execution targets and test both recognition forms explicitly.
 
 The D2 exemption is exactly `{cli, studio}` before step 6, `{studio}` afterward
@@ -799,7 +801,7 @@ catalog suites.
    version, unknown arguments, sentinel cases and deterministic machine commands.
    Check stdout, stderr, exit status, package-relative imports and environment paths.
    The existing alias test uses `run_name="not_main"`, so it is not this proof
-   (`tests/test_moved_modules.py:451`).
+   (`tests/test_moved_modules.py:522`).
 
 2. **Shared closure, identity and rows (D2):**
    `test_step3_shared_dependency_closure`,

@@ -346,7 +346,7 @@ async def _finalize_warmup(task: asyncio.Task | None) -> None:
 
 @asynccontextmanager
 async def lifespan(app_instance):
-    from lionagi.cli._code_identity import snapshot_git_position
+    from lionhub.serve.diagnostics import snapshot_git_position
 
     from .daemon_log import daemon_log_handler
     from .scheduler.engine import scheduler

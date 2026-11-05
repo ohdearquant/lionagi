@@ -12,7 +12,6 @@ import argparse
 
 import pytest
 
-from lionagi.cli._argtypes import BoundedInt
 from lionhub.serve.mcp.projection import build_parser_for, project_parser
 
 
@@ -54,16 +53,6 @@ def test_the_parser_refuses_what_cannot_name_a_positive_whole_second(capsys, raw
 
 def test_the_parser_refuses_a_value_past_the_greatest_whole_second(capsys):
     assert f"must be from 1 to {2**53 - 1}" in _refusal(capsys, str(2**53))
-
-
-def test_the_bounded_type_states_its_range():
-    kind = BoundedInt(1, 60)
-    assert kind.minimum == 1 and kind.maximum == 60
-    assert kind("60") == 60
-    with pytest.raises(argparse.ArgumentTypeError, match="from 1 to 60"):
-        kind("61")
-    with pytest.raises(argparse.ArgumentTypeError, match="whole number"):
-        kind("x")
 
 
 def test_the_projector_carries_the_bound_into_the_schema():

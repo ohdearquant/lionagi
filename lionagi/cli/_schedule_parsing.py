@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._log_channels import warn
-from lionagi.cli._argtypes import JsonArgument
 from lionagi.ln import now_utc
+from lionhub.orchestration.arguments import JsonArgument
 
 _warned_api_suffix = False
 
