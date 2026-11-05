@@ -7,7 +7,7 @@
 - **Area**: studio
 - **Date**: 2026-10-23, revised 2026-10-26
 - **Source baseline**: `1717674a2140d3571fcb90e3f68204845048ef80`
-- Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+- Line citations not attributed to a named revision are re-derived at `9a03f17512ab7f99376e647ca2c99085e78a96bd`.
 - **Relations**: Refs [#3106](https://github.com/ohdearquant/lionagi/issues/3106);
   independent listing contract; limited precedents in ADR-0071 D4/D5 and
   Proposed ADR-0087 D3; schema authority remains ADR-0056 D2; progression representation
