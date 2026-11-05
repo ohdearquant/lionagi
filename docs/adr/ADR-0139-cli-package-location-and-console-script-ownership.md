@@ -1,6 +1,6 @@
 # ADR-0139: CLI package location and console-script ownership
 
-- **Status**: Proposed; D1 and D5 stay Proposed pending a project decision on where the CLI lives, as does the date of the 2.0 release, which this record does not set
+- **Status**: Proposed; D1 is adopted with the CLI at `lionhub.cli`; D5 and the 2.0 release date stay Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: cli-surface
