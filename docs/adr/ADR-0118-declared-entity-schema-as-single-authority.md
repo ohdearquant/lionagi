@@ -116,8 +116,10 @@ An earlier inventory estimated 361 lexical `text(` sites across `state/` and `st
 `protocols/` or `service/`. It estimated 88 `# noqa: S608` suppressions across 12 files
 (45 in `state/db.py`, 17 in `studio/services/db_maintenance.py`, 7 in `studio/services/sessions.py`, the rest in
 single digits), of which 22 are direct interpolations of an identifier into a statement being
-constructed (14 `text(f"…")`, 8 `execute(f"…")`). No injection of a caller-supplied *value*
-was found: every site is guarded by a nearby allow-list, fixed tuple, or enum check. The
+constructed (14 `text(f"…")`, 8 `execute(f"…")`). That earlier inventory found no injection of
+a caller-supplied *value* at the sites it covered, each being guarded by a nearby allow-list,
+fixed tuple, or enum check. This conclusion is no stronger than the inventory behind it and was
+not reverified at `bb57cc96` either. The
 weakness is that each guard is re-established by hand at each site, and at least one path has
 none: `LifecyclePolicy.table` and `patch_fields` are plain `str`/`frozenset[str]`
 (`state/lifecycle/models.py:108-120`), the registry does not validate them as identifiers, and
