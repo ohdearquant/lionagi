@@ -9,14 +9,14 @@
 
 **Source HEAD**: `1717674a2140d3571fcb90e3f68204845048ef80`.
 
-Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+Line citations not attributed to a named revision are re-derived at `0bf315a1b2ae3107c3e46ac51be8dd138db58adf`.
 Destination paths, interfaces and tests below are requirements, not claims of existing implementation.
 The decision takes effect only when adopted. ADR-0138 is also Proposed at this revision
 (`docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:3`).
 
 ## Amendment 1 (2026-10-30) — two more modules relocate whole at step 3
 
-Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+Line citations not attributed to a named revision are re-derived at `0bf315a1b2ae3107c3e46ac51be8dd138db58adf`.
 
 Purpose: add two modules to D2's step-3 whole-module moves, so that no module moved at step 3 imports the retained CLI package and the schedule parsing that the CLI and Studio share has one owner.
 
@@ -821,8 +821,8 @@ catalog suites.
    scheduling, plugin-management and casts selection with no earlier import.
    Preserve duplicate-token/marker failures and selected-only loading.
    Existing catalog tests provide characterization fixtures
-   (`tests/contracts/test_auto_registry.py:131`,
-   `tests/contracts/test_auto_registry.py:334`).
+   (`lionhub/tests/lionhub_tests/cli/test_command_catalog.py:70`,
+   `lionhub/tests/lionhub_tests/cli/test_command_catalog.py:174`).
 
 4. **1.x upgrade and subprocess targets (D4):**
    `test_1x_upgrade_replaces_li_target_once`,
