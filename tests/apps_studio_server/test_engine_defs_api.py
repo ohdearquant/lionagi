@@ -671,6 +671,69 @@ _OPTION_CASES = [
 ]
 
 
+_TRAILING_NEWLINE_OPTION_CASES = [
+    pytest.param("coding", "test_cmd", "pytest tests\n", id="test-command"),
+    pytest.param("hypothesis", "export_dir", "artifacts\n", id="export-directory"),
+]
+
+
+@pytest.mark.parametrize(("kind", "key", "value"), _TRAILING_NEWLINE_OPTION_CASES)
+async def test_create_refuses_trailing_newline_option_values(patched_app, kind, key, value):
+    _, _, client = patched_app
+    async with client as ac:
+        response = await ac.post(
+            "/api/engine-defs/",
+            json={"name": "newline-option", "kind": kind, "options": {key: value}},
+        )
+        assert response.status_code == 422, response.text
+        assert key in response.text
+        assert value.strip() not in response.text
+        rows = await ac.get("/api/engine-defs/")
+    assert rows.status_code == 200
+    assert rows.json() == []
+
+
+@pytest.mark.parametrize(("kind", "key", "value"), _TRAILING_NEWLINE_OPTION_CASES)
+async def test_update_refuses_trailing_newline_option_values_without_mutating_row(
+    patched_app, kind, key, value
+):
+    _, db_path, client = patched_app
+    def_id = await _seed_engine_def(
+        db_path, name="newline-option", kind=kind, options={key: value.strip()}
+    )
+    before = await _raw_engine_row(db_path, def_id)
+    async with client as ac:
+        response = await ac.put(f"/api/engine-defs/{def_id}", json={"options": {key: value}})
+    assert response.status_code == 422, response.text
+    assert key in response.text
+    assert value.strip() not in response.text
+    assert await _raw_engine_row(db_path, def_id) == before
+
+
+@pytest.mark.parametrize(("kind", "key", "value"), _TRAILING_NEWLINE_OPTION_CASES)
+async def test_kind_transition_refuses_retained_trailing_newline_option_values(
+    patched_app, kind, key, value
+):
+    _, db_path, client = patched_app
+    def_id = await _seed_engine_def(
+        db_path, name="newline-option", kind="research", options={key: value}
+    )
+    before = await _raw_engine_row(db_path, def_id)
+    async with client as ac:
+        response = await ac.put(f"/api/engine-defs/{def_id}", json={"kind": kind})
+    assert response.status_code == 422, response.text
+    assert key in response.text
+    assert value.strip() not in response.text
+    assert await _raw_engine_row(db_path, def_id) == before
+
+
+@pytest.mark.parametrize(("kind", "key", "value"), _TRAILING_NEWLINE_OPTION_CASES)
+def test_legacy_option_validation_accepts_trailing_newline_values(kind, key, value):
+    from lionagi.studio.services.engine_defs import _validate_options
+
+    _validate_options({key: value})
+
+
 @pytest.mark.parametrize(("kind", "options", "bad_key"), _OPTION_CASES)
 async def test_create_consumes_only_the_selected_kind_options(patched_app, kind, options, bad_key):
     _, _, client = patched_app
@@ -933,26 +996,29 @@ def test_legacy_option_validation_does_not_repr_an_accepted_string():
 async def test_empty_update_preserves_legacy_numeric_options_without_decoding(
     patched_app, monkeypatch
 ):
-    from types import SimpleNamespace
+    import json
 
-    from lionagi.studio.services import engine_defs
-
-    def unused_decoder(*args, **kwargs):
-        raise AssertionError("a read-only no-op must not decode stored options")
-
-    # Instrument only the service boundary, leaving the HTTP JSON parser intact.
-    # This pins absence of decoding independently of interpreter digit limits.
-    monkeypatch.setattr(
-        engine_defs,
-        "json",
-        SimpleNamespace(loads=unused_decoder, JSONDecodeError=ValueError),
-        raising=False,
-    )
     _, db_path, client = patched_app
     def_id = await _seed_engine_def(db_path, name="numeric-options", kind="coding")
-    await _replace_raw_options(db_path, def_id, '{"large":' + "9" * 5000 + "}")
+    raw = '{"large":' + "9" * 100 + "}"
+    await _replace_raw_options(db_path, def_id, raw)
     before = await _raw_engine_row(db_path, def_id)
+    original_loads = json.loads
+    decoded_stored_options = []
+
+    def track_stored_options(value, *args, **kwargs):
+        if value == raw:
+            decoded_stored_options.append(value)
+        return original_loads(value, *args, **kwargs)
+
+    # Both persistence and function-local service imports share this decoder.
+    # Only the stored value is tracked, so HTTP JSON parsing proceeds normally.
+    monkeypatch.setattr(json, "loads", track_stored_options)
+    assert json.loads(raw) == {"large": int("9" * 100)}
+    assert decoded_stored_options == [raw]
+    decoded_stored_options.clear()
     async with client as ac:
         response = await ac.put(f"/api/engine-defs/{def_id}", json={})
     assert response.status_code == 200, response.text
+    assert decoded_stored_options == [], "a read-only no-op must not decode stored options"
     assert await _raw_engine_row(db_path, def_id) == before

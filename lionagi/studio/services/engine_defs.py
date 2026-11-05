@@ -49,14 +49,16 @@ def _validate_kind(kind: str) -> None:
         )
 
 
-def _validate_option_value(key: str, val: Any, *, echo_value: bool = True) -> None:
+def _validate_option_value(
+    key: str, val: Any, *, echo_value: bool = True, strict: bool = False
+) -> None:
     """Share value checks while preserving the legacy validator's error text."""
     if not isinstance(val, str):
         raise ValueError(f"options.{key} must be a string, got {type(val).__name__}")
     if val.startswith("-"):
         shown = f" {val!r}" if echo_value else ""
         raise ValueError(f"options.{key}{shown} starts with '-' and would inject a CLI flag")
-    if not _SAFE_TOKEN_RE.match(val):
+    if not (_SAFE_TOKEN_RE.fullmatch(val) if strict else _SAFE_TOKEN_RE.match(val)):
         shown = f" {val!r}" if echo_value else ""
         raise ValueError(
             f"options.{key}{shown} contains shell metacharacters not allowed in engine option values"
@@ -88,7 +90,7 @@ def _validate_preset_write_options(kind: str, options: Any) -> None:
             f"options contains disallowed keys {sorted(bad_keys)}. Allowed: {sorted(definitions)}"
         )
     for key, val in options.items():
-        _validate_option_value(key, val, echo_value=False)
+        _validate_option_value(key, val, echo_value=False, strict=True)
     for key, definition in definitions.items():
         if definition.get("required") and not str(options.get(key) or "").strip():
             raise ValueError(f"the {kind!r} engine kind requires a non-blank options.{key}")
@@ -181,6 +183,11 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
         options = {}
     _validate_preset_write_options(kind, options)
 
+    if "options" in data:
+        stored_options = options
+    else:
+        stored_options = None
+
     def_id = short_id(12)
     now = time.time()
     defn = {
@@ -190,7 +197,7 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
         "model": data.get("model"),
         "max_depth": data.get("max_depth"),
         "max_agents": data.get("max_agents"),
-        "options": options if "options" in data else None,
+        "options": stored_options,
         "description": data.get("description"),
         "created_at": now,
         "updated_at": now,
