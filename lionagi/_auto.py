@@ -261,6 +261,34 @@ def _isolated_registry_for_tests() -> Iterator[None]:
 RegistrationMarker = _Marker
 
 
-def read_registration_marker(obj: Any) -> RegistrationMarker | None:
+def _read_registration_marker(obj: Any) -> RegistrationMarker | None:
     """Return the declaration attached to an object, or None when unmarked."""
     return getattr(obj, _MARKER_ATTR, None)
+
+
+_DEPRECATED_ALIASES = {
+    "build_cli_parser": ("lionhub.cli.catalog.build_cli_parser", "0.37.0", "2.0.0"),
+    "command_exists": ("lionhub.cli.catalog.command_exists", "0.37.0", "2.0.0"),
+    "iter_cli_seeds": ("lionhub.cli.catalog.iter_cli_seeds", "0.37.0", "2.0.0"),
+    "load_cli_command": ("lionhub.cli.catalog.load_cli_command", "0.37.0", "2.0.0"),
+    "seed_for": ("lionhub.cli.catalog.seed_for", "0.37.0", "2.0.0"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    alias = _DEPRECATED_ALIASES.get(name)
+    if alias is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import warnings
+
+    from lionagi.ln import import_module
+
+    target, deprecated_in, removed_in = alias
+    warnings.warn(
+        f"{__name__}.{name} is deprecated since lionagi {deprecated_in} and will be removed "
+        f"in lionagi {removed_in}. Import from {target} instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    module, _, attribute = target.rpartition(".")
+    return getattr(import_module(module), attribute)

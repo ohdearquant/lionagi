@@ -16,7 +16,7 @@ from lionagi._auto import (
     Registration,
     RegistrationContractError,
     RegistrationMarker,
-    read_registration_marker,
+    _read_registration_marker,
 )
 
 __all__ = (
@@ -183,7 +183,7 @@ def load_cli_command(seed: CliSeed) -> Registration:
     module = import_module(seed.module)
     matches: list[tuple[Callable[..., Any], RegistrationMarker]] = []
     for obj in vars(module).values():
-        marker = read_registration_marker(obj)
+        marker = _read_registration_marker(obj)
         if marker is None or marker.cli is None or marker.cli.seed != seed.name:
             continue
         matches.append((obj, marker))

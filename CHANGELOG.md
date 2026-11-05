@@ -428,6 +428,10 @@ those, read "Removed" first.
 
 ### Deprecated
 
+- `lionagi._auto` command catalog functions are deprecated since 0.37.0; import
+  `build_cli_parser`, `command_exists`, `iter_cli_seeds`, `load_cli_command`, and
+  `seed_for` from `lionhub.cli.catalog`. The lazy aliases remain until 2.0.0.
+
 - Filtering emitted events through a Session gate is deprecated. Use route
   predicates or subscribers to filter observations, and `authorize` for
   decisions before an operation runs.
