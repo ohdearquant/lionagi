@@ -196,7 +196,7 @@ def test_handle_play_shortcut_resume_passthrough():
 
 def test_handle_play_shortcut_rejects_flag_before_name(monkeypatch):
     """play --bad returns exit code 1 because flag comes before name."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
     result = _handle_play_shortcut(["play", "--bad"])

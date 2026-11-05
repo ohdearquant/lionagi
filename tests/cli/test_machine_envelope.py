@@ -164,7 +164,7 @@ def test_nothing_else_reaches_stdout(capfd, monkeypatch):
     descriptor write stands in for a spawned child that inherited stdout. All of
     them corrupt the result identically if any one is missed.
     """
-    from lionagi.cli._logging import configure_cli_logging, hint, log_error, progress, warn
+    from lionhub.orchestration.console import configure_cli_logging, hint, log_error, progress, warn
 
     configure_cli_logging(verbose=False)
 

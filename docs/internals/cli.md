@@ -1032,7 +1032,7 @@ prints one frozen, tab-delimited line per run on stdout:
     artifact_dir=<run_dir>\texit_code=<n>
 ```
 
-Stdout carries contract lines only; every diagnostic goes to stderr via `_logging`.
+Stdout carries contract lines only; every diagnostic goes to stderr via `lionhub.orchestration.console`.
 `wait_for_terminal()` is the reusable, importable core (no argv, signal handling, or printing)
 so other surfaces can await completion without shelling out; `run_wait()` is the thin CLI shim
 that resolves argv, drives the poll loop with clean SIGINT/SIGTERM handling, and prints.
@@ -1568,7 +1568,7 @@ installs a fresh generation in the same guarded status write.
 
 The state, passes and `mirror_forever` described below are defined in
 `lionagi/cli/_mirror_service.py`, and the preview-size setting in
-`lionagi/cli/_mirror_settings.py`. `mirror.py` keeps the `li mirror` parser, its
+`lionhub.serve.mirror_settings`. `mirror.py` keeps the `li mirror` parser, its
 `_run` loop and `run_mirror`, and imports the service names back for callers that
 read them from `lionagi.cli.mirror`.
 

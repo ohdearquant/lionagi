@@ -223,7 +223,7 @@ def build_imodel_from_spec(
     # profile names a different model than the spec did.
     codex_profile_overrides: dict[str, Any] = {}
     if provider == "codex" and "/" in ms.model:
-        from ._logging import progress
+        from lionhub.orchestration.console import progress
 
         profile_name = ms.model.split("/", 1)[1]
         resolved_profile = resolve_codex_config_profile(profile_name)
@@ -334,7 +334,7 @@ def build_chat_model(
     # different one than the spec did.
     codex_profile_overrides: dict[str, Any] = {}
     if canonical == "codex":
-        from ._logging import progress
+        from lionhub.orchestration.console import progress
 
         resolved_profile = resolve_codex_config_profile(model)
         if resolved_profile is not None:
@@ -787,7 +787,7 @@ def _warn_if_shadowing_plugin_profile(name: str) -> None:
     )
     if not owners:
         return
-    from ._logging import warn
+    from lionhub.orchestration.console import warn
 
     warn(
         f"agent profile {name!r} is also declared by plugin(s) {', '.join(owners)}; "
@@ -859,7 +859,7 @@ def _parse_profile_timeout(name: str, raw: Any, field: str = "timeout") -> int |
     """
     if raw is None:
         return None
-    from ._logging import warn
+    from lionhub.orchestration.console import warn
 
     if isinstance(raw, bool) or not isinstance(raw, int):
         warn(f"agent profile {name!r}: ignoring invalid {field} {raw!r} (must be a positive int)")
@@ -882,7 +882,7 @@ def _parse_profile_resume_on_timeout(name: str, raw: Any) -> bool:
         return False
     if isinstance(raw, str) and raw.strip().lower() == "once":
         return True
-    from ._logging import warn
+    from lionhub.orchestration.console import warn
 
     warn(
         f"agent profile {name!r}: ignoring unrecognized resume_on_timeout {raw!r} (expected 'once')"
@@ -899,7 +899,7 @@ def _parse_profile_contain_account_integrations(name: str, raw: Any) -> bool:
         return False
     if isinstance(raw, bool):
         return raw
-    from ._logging import warn
+    from lionhub.orchestration.console import warn
 
     warn(
         f"agent profile {name!r}: contain_account_integrations {raw!r} is not true or false; "
@@ -916,7 +916,7 @@ def _parse_profile_contain_user_settings(name: str, frontmatter: dict) -> bool:
     raw = frontmatter["contain_user_settings"]
     if isinstance(raw, bool):
         return raw
-    from ._logging import warn
+    from lionhub.orchestration.console import warn
 
     warn(f"agent profile {name!r}: contain_user_settings {raw!r} is not true or false; containing")
     return True
@@ -929,7 +929,7 @@ def _parse_profile_account_connectors(name: str, raw: Any) -> tuple[str, ...]:
         return ()
     if isinstance(raw, list) and all(isinstance(c, str) and c.strip() for c in raw):
         return tuple(dict.fromkeys(c.strip() for c in raw))
-    from ._logging import warn
+    from lionhub.orchestration.console import warn
 
     warn(
         f"agent profile {name!r}: ignoring account_connectors {raw!r} "
@@ -945,7 +945,7 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
         return DEFAULT_WORKLOAD
     if isinstance(raw, str) and raw in WORKLOADS:
         return raw
-    from ._logging import warn
+    from lionhub.orchestration.console import warn
 
     warn(
         f"agent profile {name!r}: workload {raw!r} is not one of {', '.join(WORKLOADS)}; "
@@ -1170,8 +1170,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     import yaml
 
     from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
-
-    from ._logging import warn
+    from lionhub.orchestration.console import warn
 
     def read(block: str) -> tuple[bool, Any]:
         try:
@@ -1300,7 +1299,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         if len(values) > 1:
             # YAML keeps the last of a repeated key; the flag is off only when every one reads
             # false, so moving a line cannot turn containment off.
-            from ._logging import warn
+            from lionhub.orchestration.console import warn
 
             warn(
                 f"agent profile {name!r}: contain_user_settings is set {len(values)} times; "
@@ -1311,7 +1310,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         elif misplaced := _keys_like_the_contain_flag(frontmatter):
             # A key spelled like the flag, or the flag under another setting, does not set it;
             # say so rather than leave the worker on your settings in silence.
-            from ._logging import warn
+            from lionhub.orchestration.console import warn
 
             warn(
                 f"agent profile {name!r}: contain_user_settings counts only as a top-level key "

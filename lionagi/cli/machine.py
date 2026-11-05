@@ -872,7 +872,7 @@ def run_runs(args: argparse.Namespace) -> int:
     data = runs_data(getattr(args, "limit", _DEFAULT_RUNS_LIMIT))
     listing = data["runs"]
     if not listing["available"]:
-        from ._logging import log_error
+        from lionhub.orchestration.console import log_error
 
         log_error(f"could not list runs ({listing['reason_code']}): {listing['detail']}")
         return 1
@@ -907,7 +907,7 @@ def add_lifecycle_subparser(subparsers: argparse._SubParsersAction) -> None:
     area="lifecycle", cli=CliDeclaration(seed="lifecycle", parser_factory=add_lifecycle_subparser)
 )
 def run_lifecycle(args: argparse.Namespace) -> int:
-    from ._logging import log_error
+    from lionhub.orchestration.console import log_error
 
     data = lifecycle_data(args.run_id)
     state = data["lifecycle"]

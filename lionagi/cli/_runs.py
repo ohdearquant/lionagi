@@ -740,7 +740,7 @@ def save_last_branch_pointer(run_id: str, branch_id: str) -> None:
     swallowed because the next `--continue` will silently pick up an older run,
     and that is confusing precisely when nobody remembers this warning.
     """
-    from lionagi.cli._logging import warn
+    from lionhub.orchestration.console import warn
 
     try:
         ensure_lionagi_dir(LIONAGI_HOME)

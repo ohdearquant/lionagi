@@ -131,7 +131,7 @@ def test_deep_closed_mcp_frontmatter_is_refused(position):
 )
 def test_mcp_examples_after_preface_do_not_warn(monkeypatch, text):
     warnings = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
     profile = _parse_profile("reviewer", text)
     assert profile.raw_body == text
     assert profile.mcp is None
@@ -171,7 +171,7 @@ def test_unreadable_frontmatter_with_any_backslash_or_mcp_text_is_refused(conten
 
 def test_unreadable_frontmatter_without_mcp_or_backslash_warns_and_keeps_body(monkeypatch):
     warnings = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
     profile = _parse_profile("reviewer", "---\ninvalid: @value\n---\nbody")
     assert profile.mcp is None
     assert "body" in profile.raw_body

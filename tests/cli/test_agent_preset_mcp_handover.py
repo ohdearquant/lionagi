@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.cli._logging import _HINT_LOGGER_NAME, _WARN_LOGGER_NAME
+from lionhub.orchestration.console import _HINT_LOGGER_NAME, _WARN_LOGGER_NAME
 from tests.cli._worker_fixtures import WorkerSetup
 
 

@@ -3296,15 +3296,15 @@ def test_resolve_mirrored_content_no_message_match_falls_back(tmp_path):
 def test_config_negative_preview_chars_rejected(monkeypatch):
     import importlib
 
-    from lionagi.cli import _mirror_settings
     from lionagi.studio import config as config_mod
+    from lionhub.serve import mirror_settings
 
     monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", "-1")
     with pytest.raises(ValueError):
-        importlib.reload(_mirror_settings)
+        importlib.reload(mirror_settings)
         importlib.reload(config_mod)
     monkeypatch.delenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", raising=False)
-    importlib.reload(_mirror_settings)
+    importlib.reload(mirror_settings)
     importlib.reload(config_mod)
 
 
@@ -3312,10 +3312,10 @@ def test_config_omitted_preview_chars_defaults_to_500(monkeypatch):
     import importlib
 
     monkeypatch.delenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", raising=False)
-    from lionagi.cli import _mirror_settings
     from lionagi.studio import config as config_mod
+    from lionhub.serve import mirror_settings
 
-    importlib.reload(_mirror_settings)
+    importlib.reload(mirror_settings)
     importlib.reload(config_mod)
     assert config_mod.MIRROR_PREVIEW_CHARS == 500
 
@@ -3840,11 +3840,11 @@ def test_mirror_service_is_defined_in_its_own_module() -> None:
 def test_studio_preview_limit_comes_from_the_settings_module() -> None:
     """The studio config and the mirror service read one preview limit, defined in one place."""
     import lionagi.cli._mirror_service as service
-    from lionagi.cli import _mirror_settings
     from lionagi.studio import config
+    from lionhub.serve import mirror_settings
 
-    assert config.MIRROR_PREVIEW_CHARS == _mirror_settings.MIRROR_PREVIEW_CHARS
-    assert service.MIRROR_PREVIEW_CHARS == _mirror_settings.MIRROR_PREVIEW_CHARS
+    assert config.MIRROR_PREVIEW_CHARS == mirror_settings.MIRROR_PREVIEW_CHARS
+    assert service.MIRROR_PREVIEW_CHARS == mirror_settings.MIRROR_PREVIEW_CHARS
 
 
 def test_mirror_service_imports_neither_a_command_module_nor_the_studio() -> None:
@@ -3860,20 +3860,6 @@ def test_mirror_service_imports_neither_a_command_module_nor_the_studio() -> Non
     assert not [name for name in imported if name.split(".")[:2] == ["lionagi", "studio"]]
 
 
-def test_mirror_settings_imports_only_the_standard_library() -> None:
-    """The settings module is read by the studio config at import time, so it imports nothing else."""
-    import sys
-    from pathlib import Path
-
-    import lionagi.cli
-    from tests.cli._import_guard import resolved_imports
-
-    source = Path(lionagi.cli.__file__).resolve().parent / "_mirror_settings.py"
-    imported = resolved_imports(source, "lionagi.cli")
-    assert imported
-    assert all(name.split(".")[0] in sys.stdlib_module_names for name in imported)
-
-
 def test_importing_the_studio_config_does_not_load_the_mirror_service() -> None:
     """A fresh interpreter that imports the studio config loads the settings module only."""
     import subprocess
@@ -3881,11 +3867,11 @@ def test_importing_the_studio_config_does_not_load_the_mirror_service() -> None:
 
     probe = (
         "import sys, lionagi.studio.config; "
-        "print(' '.join(sorted(m for m in sys.modules if m.startswith('lionagi.cli'))))"
+        "print(' '.join(sorted(m for m in sys.modules if m.startswith(('lionagi.cli', 'lionhub.serve')))))"
     )
     out = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=120
     )
     loaded = set(out.stdout.split())
-    assert "lionagi.cli._mirror_settings" in loaded
+    assert "lionhub.serve.mirror_settings" in loaded
     assert {"lionagi.cli._mirror_service", "lionagi.cli.mirror"}.isdisjoint(loaded)

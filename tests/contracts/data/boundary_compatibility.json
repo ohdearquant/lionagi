@@ -1,252 +1,4 @@
 {
-  "console_scripts": {
-    "li": "lionagi.cli.main:main"
-  },
-  "environment_lookups": {
-    "lionagi/_paths.py": [
-      "os.environ.get:\"LIONAGI_HOME\""
-    ],
-    "lionagi/agent/factory.py": [
-      "os.getenv:\"LIONAGI_KHIVE_INJECTION\""
-    ],
-    "lionagi/cli/_agent_depth.py": [
-      "os.environ.get:SEAT_PROFILES_ENV"
-    ],
-    "lionagi/cli/_mirror_settings.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS\""
-    ],
-    "lionagi/cli/_providers.py": [
-      "os.getenv:\"LIONAGI_INVOCATION_ID\""
-    ],
-    "lionagi/cli/_runs.py": [
-      "os.environ.get:_RUN_ID_ENV_VAR"
-    ],
-    "lionagi/cli/_schedule_parsing.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_URL\""
-    ],
-    "lionagi/cli/agent.py": [
-      "os.environ.get:JOB_MARKER_ENV_VAR",
-      "os.environ.get:_API_ACCOUNT_ENV"
-    ],
-    "lionagi/cli/engine.py": [
-      "os.getenv:\"LIONAGI_INVOCATION_ID\""
-    ],
-    "lionagi/cli/orchestrate/_orchestration.py": [
-      "os.environ.get:\"LIONAGI_SESSION_ID\""
-    ],
-    "lionagi/ln/_cache.py": [
-      "os.environ.get:max_size_env"
-    ],
-    "lionagi/ln/_structural.py": [
-      "os.environ.get:\"LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT\""
-    ],
-    "lionagi/models/field_model.py": [
-      "os.environ.get:\"LIONAGI_FIELD_META_LIMIT\""
-    ],
-    "lionagi/operations/flow.py": [
-      "os.environ.get:\"LIONAGI_MAX_CONCURRENCY\""
-    ],
-    "lionagi/service/_subagent_admission.py": [
-      "os.environ.get:AGENT_DEPTH_ENV",
-      "os.environ:AGENT_DEPTH_ENV"
-    ],
-    "lionagi/service/accounts/_credentials.py": [
-      "os.environ:key_env"
-    ],
-    "lionagi/service/connections/endpoint_config.py": [
-      "os.getenv:name",
-      "os.getenv:self.api_key",
-      "os.getenv:self.api_key"
-    ],
-    "lionagi/service/connections/mcp_wrapper.py": [
-      "os.environ.get:\"MCP_DEBUG\""
-    ],
-    "lionagi/state/engine.py": [
-      "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\"",
-      "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\""
-    ],
-    "lionagi/studio/_traceback_dump.py": [
-      "os.environ.get:_ENV_INTERVAL",
-      "os.environ.get:_ENV_PATH"
-    ],
-    "lionagi/studio/app.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
-      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
-      "os.getenv:\"LIONAGI_STUDIO_HOST\""
-    ],
-    "lionagi/studio/cli.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:\"STUDIO_API_URL\"",
-      "os.environ.get:\"XDG_CONFIG_HOME\"",
-      "os.environ:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
-      "os.environ:\"LIONAGI_STUDIO_HOST\"",
-      "os.environ:\"LIONAGI_STUDIO_HOST\""
-    ],
-    "lionagi/studio/config.py": [
-      "os.environ.get:\"CORS_ORIGINS\"",
-      "os.environ.get:\"LIONAGI_HOME\"",
-      "os.environ.get:\"LIONAGI_SHOWS_ROOT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_CHECKPOINT_INTERVAL_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY\"",
-      "os.environ.get:\"LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES\"",
-      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_DEAD_LETTER_DAYS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_SUCCESS_DAYS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
-      "os.environ.get:\"LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MAX_ADHOC_CONCURRENT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MAX_LAUNCHES\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PHANTOM_STALE_HOURS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PLAY_STALE_HOURS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_ARCHIVE_DIR\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_CHUNK_ROWS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_KEEP_DAYS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_RETENTION_INTERVAL_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_SCHEDULE_RUN_STALE_HOURS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_SHOW_STALE_HOURS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_ZERO_SESSION_GRACE_SECONDS\"",
-      "os.environ.get:\"TZ\"",
-      "os.environ.get:OPERATOR_CWD_ENV_VAR",
-      "os.environ.get:SCHEDULER_TZ_ENV_VAR",
-      "os.environ.get:env_key",
-      "os.environ.get:env_var",
-      "os.environ.get:env_var"
-    ],
-    "lionagi/studio/operator/_common.py": [
-      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
-    ],
-    "lionagi/studio/operator/engine.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_MODEL\"",
-      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_PROVIDER\""
-    ],
-    "lionagi/studio/operator/permission_mcp.py": [
-      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
-    ],
-    "lionagi/studio/operator/run_progress.py": [
-      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
-    ],
-    "lionagi/studio/scheduler/engine.py": [
-      "os.environ.get:\"LIONAGI_SCHEDULER_CWD\""
-    ],
-    "lionagi/studio/scheduler/github.py": [
-      "os.environ.get:\"GITHUB_TOKEN\""
-    ],
-    "lionagi/studio/scheduler/subprocess.py": [
-      "os.environ.get:_COMMAND_ALLOWLIST_ENV",
-      "os.environ.get:_COMMAND_ALLOWLIST_ENV"
-    ],
-    "lionagi/studio/services/approvals.py": [
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
-      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
-      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\""
-    ],
-    "lionagi/studio/services/identity.py": [
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
-    ],
-    "lionagi/studio/services/leo.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_LEO_MODEL\"",
-      "os.environ.get:\"LIONAGI_STUDIO_LEO_PROVIDER\""
-    ],
-    "lionagi/studio/services/pairing.py": [
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
-    ],
-    "lionagi/studio/services/redaction.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_DEMO_MODE\""
-    ],
-    "lionagi/testing/_endpoint.py": [
-      "os.environ.get:ENV_SCRIPT_PATH"
-    ],
-    "lionagi/testing/_env.py": [
-      "os.environ.get:ENV_MODEL",
-      "os.environ.get:ENV_PROVIDER",
-      "os.environ.get:ENV_PROVIDER",
-      "os.environ.get:ENV_SCRIPT_PATH",
-      "os.environ.get:ENV_SCRIPT_PATH",
-      "os.environ:ENV_MODEL",
-      "os.environ:ENV_PROVIDER",
-      "os.environ:ENV_SCRIPT_PATH",
-      "os.environ:key"
-    ],
-    "lionagi/tools/_seatbelt.py": [
-      "os.environ.get:\"UV_CACHE_DIR\"",
-      "os.environ.get:\"XDG_CACHE_HOME\""
-    ],
-    "lionagi/tools/sandbox_backend.py": [
-      "os.environ:k"
-    ]
-  },
-  "extras": {
-    "ag2": [
-      "ag2[openai]>=0.13.0"
-    ],
-    "all": [
-      "lionagi[ollama]",
-      "lionagi[mcp]",
-      "lionagi[rich]",
-      "lionagi[postgres]",
-      "lionagi[graph]",
-      "lionagi[sqlite]",
-      "lionagi[xml]",
-      "lionagi[ag2]",
-      "lionagi[studio]"
-    ],
-    "graph": [
-      "networkx>=3.0.0"
-    ],
-    "mcp": [
-      "fastmcp>=3.4.10",
-      "starlette>=1.3.1",
-      "mcp>=1.30.0"
-    ],
-    "ollama": [
-      "ollama>=0.6.1",
-      "tqdm>=4.67.1"
-    ],
-    "pandas": [
-      "pandas>=1.3.0"
-    ],
-    "postgres": [
-      "pydapter[postgres]>=1.3.2",
-      "asyncpg>=0.27.0"
-    ],
-    "rich": [
-      "rich>=13.0.0"
-    ],
-    "ruvector": [
-      "ruvector>=0.1.2,<0.2",
-      "numpy>=1.24,<3"
-    ],
-    "sqlite": [
-      "aiosqlite>=0.22.0,<0.23"
-    ],
-    "studio": [
-      "fastapi>=0.115",
-      "uvicorn>=0.34",
-      "starlette>=1.3.1",
-      "croniter>=1.4"
-    ],
-    "xml": [
-      "xmltodict>=0.12.0"
-    ]
-  },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -256,7 +8,7 @@
       "from .ln._lazy_init import lazy_import",
       "from .ln.types import DataClass, Operable, Params, Spec, Undefined, Unset",
       "from .version import __version__",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"Session\": (\"session.session\", \"Session\"),\n    \"Branch\": (\"session.branch\", \"Branch\"),\n    \"iModel\": (\"service.imodel\", \"iModel\"),\n    \"Builder\": (\"operations.builder\", \"OperationGraphBuilder\"),\n    \"Operation\": (\"operations.node\", \"Operation\"),\n    \"load_mcp_tools\": (\"protocols.action.manager\", \"load_mcp_tools\"),\n    \"FieldModel\": (\"models.field_model\", \"FieldModel\"),\n    \"OperableModel\": (\"models.operable_model\", \"OperableModel\"),\n    \"Element\": (\"protocols.generic.element\", \"Element\"),\n    \"Pile\": (\"protocols.generic.pile\", \"Pile\"),\n    \"Progression\": (\"protocols.generic.progression\", \"Progression\"),\n    \"Node\": (\"protocols.graph.node\", \"Node\"),\n    \"Edge\": (\"protocols.graph.edge\", \"Edge\"),\n    \"Graph\": (\"protocols.graph.graph\", \"Graph\"),\n    \"Event\": (\"protocols.generic.event\", \"Event\"),\n    \"Message\": (\"protocols.messages\", \"Message\"),\n    \"MemoryItem\": (\"protocols.memory\", \"MemoryItem\"),\n    \"MemoryQuery\": (\"protocols.memory\", \"MemoryQuery\"),\n    \"MemoryStore\": (\"protocols.memory\", \"MemoryStore\"),\n    \"InMemoryStore\": (\"protocols.memory\", \"InMemoryStore\"),\n    \"ContextProvider\": (\"protocols.context_providers\", \"ContextProvider\"),\n    \"ContextProviderRegistry\": (\"protocols.context_providers\", \"ContextProviderRegistry\"),\n    \"ProviderReport\": (\"protocols.context_providers\", \"ProviderReport\"),\n    \"create_message\": (\"protocols.messages.manager\", \"create_message\"),\n    \"HookRegistry\": (\"service.hooks.hook_registry\", \"HookRegistry\"),\n    \"HookedEvent\": (\"service.hooks.hooked_event\", \"HookedEvent\"),\n    \"Broadcaster\": (\"service.broadcaster\", \"Broadcaster\"),\n    \"alcall\": (\"ln\", \"alcall\"),\n    \"lcall\": (\"ln\", \"lcall\"),\n    \"to_list\": (\"ln\", \"to_list\"),\n    \"to_dict\": (\"ln\", \"to_dict\"),\n    \"json_dumps\": (\"ln\", \"json_dumps\"),\n    # lndl \u2014 Lion Notation Definition Language\n    \"LNDLOutput\": (\"lndl\", \"LNDLOutput\"),\n    \"LNDLError\": (\"lndl\", \"LNDLError\"),\n    \"MissingLvarError\": (\"lndl\", \"MissingLvarError\"),\n    \"MissingFieldError\": (\"lndl\", \"MissingFieldError\"),\n    \"TypeMismatchError\": (\"lndl\", \"TypeMismatchError\"),\n    \"InvalidConstructorError\": (\"lndl\", \"InvalidConstructorError\"),\n    \"get_lndl_system_prompt\": (\"lndl\", \"get_lndl_system_prompt\"),\n    \"extract_lndl_blocks\": (\"lndl\", \"extract_lndl_blocks\"),\n    \"normalize_lndl_text\": (\"lndl\", \"normalize_lndl_text\"),\n    # adapters \u2014 inlined adapter stack\n    \"AdapterRegistry\": (\"adapters\", \"AdapterRegistry\"),\n    \"AsyncAdapterRegistry\": (\"adapters\", \"AsyncAdapterRegistry\"),\n    \"Adaptable\": (\"adapters\", \"Adaptable\"),\n    \"AsyncAdaptable\": (\"adapters\", \"AsyncAdaptable\"),\n    \"AdapterError\": (\"adapters\", \"AdapterError\"),\n    \"JsonAdapter\": (\"adapters\", \"JsonAdapter\"),\n    \"CsvAdapter\": (\"adapters\", \"CsvAdapter\"),\n    \"TomlAdapter\": (\"adapters\", \"TomlAdapter\"),\n}",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"Session\": (\"session.session\", \"Session\"),\n    \"Branch\": (\"session.branch\", \"Branch\"),\n    \"iModel\": (\"service.imodel\", \"iModel\"),\n    \"Builder\": (\"operations.builder\", \"OperationGraphBuilder\"),\n    \"Operation\": (\"operations.node\", \"Operation\"),\n    \"load_mcp_tools\": (\"protocols.action.manager\", \"load_mcp_tools\"),\n    \"FieldModel\": (\"models.field_model\", \"FieldModel\"),\n    \"OperableModel\": (\"models.operable_model\", \"OperableModel\"),\n    \"Element\": (\"protocols.generic.element\", \"Element\"),\n    \"Pile\": (\"protocols.generic.pile\", \"Pile\"),\n    \"Progression\": (\"protocols.generic.progression\", \"Progression\"),\n    \"Node\": (\"protocols.graph.node\", \"Node\"),\n    \"Edge\": (\"protocols.graph.edge\", \"Edge\"),\n    \"Graph\": (\"protocols.graph.graph\", \"Graph\"),\n    \"Event\": (\"protocols.generic.event\", \"Event\"),\n    \"Message\": (\"protocols.messages\", \"Message\"),\n    \"MemoryItem\": (\"protocols.memory\", \"MemoryItem\"),\n    \"MemoryQuery\": (\"protocols.memory\", \"MemoryQuery\"),\n    \"MemoryStore\": (\"protocols.memory\", \"MemoryStore\"),\n    \"InMemoryStore\": (\"protocols.memory\", \"InMemoryStore\"),\n    \"ContextProvider\": (\"protocols.context_providers\", \"ContextProvider\"),\n    \"ContextProviderRegistry\": (\"protocols.context_providers\", \"ContextProviderRegistry\"),\n    \"ProviderReport\": (\"protocols.context_providers\", \"ProviderReport\"),\n    \"create_message\": (\"protocols.messages.manager\", \"create_message\"),\n    \"HookRegistry\": (\"service.hooks.hook_registry\", \"HookRegistry\"),\n    \"HookedEvent\": (\"service.hooks.hooked_event\", \"HookedEvent\"),\n    \"Broadcaster\": (\"service.broadcaster\", \"Broadcaster\"),\n    \"alcall\": (\"ln\", \"alcall\"),\n    \"lcall\": (\"ln\", \"lcall\"),\n    \"to_list\": (\"ln\", \"to_list\"),\n    \"to_dict\": (\"ln\", \"to_dict\"),\n    \"json_dumps\": (\"ln\", \"json_dumps\"),\n    # lndl — Lion Notation Definition Language\n    \"LNDLOutput\": (\"lndl\", \"LNDLOutput\"),\n    \"LNDLError\": (\"lndl\", \"LNDLError\"),\n    \"MissingLvarError\": (\"lndl\", \"MissingLvarError\"),\n    \"MissingFieldError\": (\"lndl\", \"MissingFieldError\"),\n    \"TypeMismatchError\": (\"lndl\", \"TypeMismatchError\"),\n    \"InvalidConstructorError\": (\"lndl\", \"InvalidConstructorError\"),\n    \"get_lndl_system_prompt\": (\"lndl\", \"get_lndl_system_prompt\"),\n    \"extract_lndl_blocks\": (\"lndl\", \"extract_lndl_blocks\"),\n    \"normalize_lndl_text\": (\"lndl\", \"normalize_lndl_text\"),\n    # adapters — inlined adapter stack\n    \"AdapterRegistry\": (\"adapters\", \"AdapterRegistry\"),\n    \"AsyncAdapterRegistry\": (\"adapters\", \"AsyncAdapterRegistry\"),\n    \"Adaptable\": (\"adapters\", \"Adaptable\"),\n    \"AsyncAdaptable\": (\"adapters\", \"AsyncAdaptable\"),\n    \"AdapterError\": (\"adapters\", \"AdapterError\"),\n    \"JsonAdapter\": (\"adapters\", \"JsonAdapter\"),\n    \"CsvAdapter\": (\"adapters\", \"CsvAdapter\"),\n    \"TomlAdapter\": (\"adapters\", \"TomlAdapter\"),\n}",
       "def __getattr__(name: str):\n    if name in (\"BaseModel\", \"Field\"):\n        from pydantic import BaseModel, Field\n\n        globals()[\"BaseModel\"] = BaseModel\n        globals()[\"Field\"] = Field\n        return BaseModel if name == \"BaseModel\" else Field\n    if name == \"types\":\n        from . import _types as types\n\n        globals()[\"types\"] = types\n        return types\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
       "__all__ = (\n    \"__version__\",\n    \"Adaptable\",\n    \"AdapterError\",\n    \"AdapterRegistry\",\n    \"AsyncAdaptable\",\n    \"AsyncAdapterRegistry\",\n    \"BaseModel\",\n    \"Branch\",\n    \"Broadcaster\",\n    \"Builder\",\n    \"ContextProvider\",\n    \"ContextProviderRegistry\",\n    \"CsvAdapter\",\n    \"DataClass\",\n    \"Edge\",\n    \"Element\",\n    \"Event\",\n    \"Field\",\n    \"FieldModel\",\n    \"Graph\",\n    \"HookRegistry\",\n    \"HookedEvent\",\n    \"InMemoryStore\",\n    \"InvalidConstructorError\",\n    \"JsonAdapter\",\n    \"LNDLError\",\n    \"LNDLOutput\",\n    \"MemoryItem\",\n    \"MemoryQuery\",\n    \"MemoryStore\",\n    \"Message\",\n    \"MissingFieldError\",\n    \"MissingLvarError\",\n    \"Node\",\n    \"Operable\",\n    \"OperableModel\",\n    \"Operation\",\n    \"Params\",\n    \"Pile\",\n    \"Progression\",\n    \"ProviderReport\",\n    \"Session\",\n    \"Spec\",\n    \"TomlAdapter\",\n    \"TypeMismatchError\",\n    \"Undefined\",\n    \"Unset\",\n    \"alcall\",\n    \"create_message\",\n    \"extract_lndl_blocks\",\n    \"get_lndl_system_prompt\",\n    \"iModel\",\n    \"json_dumps\",\n    \"lcall\",\n    \"ln\",\n    \"load_mcp_tools\",\n    \"logger\",\n    \"normalize_lndl_text\",\n    \"to_dict\",\n    \"to_list\",\n    \"types\",\n)"
     ],
@@ -380,7 +132,7 @@
       "from ..ln._lazy_init import lazy_import",
       "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"build_catalog\": (\"catalog\", None),\n    \"SPAWN_ALLOWED_OPERATIONS\": (\"emission\", None),\n    \"AnalysisResult\": (\"emission\", None),\n    \"ArtifactProduced\": (\"emission\", None),\n    \"ComplexityScore\": (\"emission\", None),\n    \"ComplianceVerdict\": (\"emission\", None),\n    \"Conflict\": (\"emission\", None),\n    \"DesignSpec\": (\"emission\", None),\n    \"Diagnosis\": (\"emission\", None),\n    \"Document\": (\"emission\", None),\n    \"EscalationRequest\": (\"emission\", None),\n    \"ExecutionPlan\": (\"emission\", None),\n    \"Finding\": (\"emission\", None),\n    \"Gap\": (\"emission\", None),\n    \"Objection\": (\"emission\", None),\n    \"OperationOutcome\": (\"emission\", None),\n    \"Postmortem\": (\"emission\", None),\n    \"Proposal\": (\"emission\", None),\n    \"Recommendation\": (\"emission\", None),\n    \"RiskAssessment\": (\"emission\", None),\n    \"SpawnRequest\": (\"emission\", None),\n    \"Synthesis\": (\"emission\", None),\n    \"TaskAssignment\": (\"emission\", None),\n    \"Verdict\": (\"emission\", None),\n    \"VerificationResult\": (\"emission\", None),\n    \"build_emission_operable\": (\"emission\", None),\n    \"field_name_for\": (\"emission\", None),\n    \"Pack\": (\"pack\", None),\n    \"RoleConfig\": (\"pack\", None),\n    \"RolePolicy\": (\"pack\", None),\n    \"Mode\": (\"pattern\", None),\n    \"Pattern\": (\"pattern\", None),\n    \"PatternKind\": (\"pattern\", None),\n    \"Role\": (\"pattern\", None),\n    \"list_modes\": (\"pattern\", None),\n    \"list_roles\": (\"pattern\", None),\n    \"Profile\": (\"profile\", None),\n}",
       "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = (\n    # catalog (read-only metadata seam)\n    \"build_catalog\",\n    # pattern layer\n    \"Pattern\",\n    \"PatternKind\",\n    \"Role\",\n    \"Mode\",\n    \"list_roles\",\n    \"list_modes\",\n    # profile\n    \"Profile\",\n    # pack layer\n    \"Pack\",\n    \"RolePolicy\",\n    \"RoleConfig\",\n    # emission builder\n    \"build_emission_operable\",\n    \"field_name_for\",\n    \"SPAWN_ALLOWED_OPERATIONS\",\n    # emission contracts \u2014 discovery\n    \"Finding\",\n    \"Conflict\",\n    \"Gap\",\n    \"Diagnosis\",\n    \"Synthesis\",\n    # emission contracts \u2014 judgement\n    \"Verdict\",\n    \"ComplianceVerdict\",\n    \"RiskAssessment\",\n    \"Objection\",\n    \"Recommendation\",\n    # emission contracts \u2014 analysis\n    \"AnalysisResult\",\n    \"ComplexityScore\",\n    # emission contracts \u2014 planning / coordination\n    \"ExecutionPlan\",\n    \"TaskAssignment\",\n    \"DesignSpec\",\n    # emission contracts \u2014 production\n    \"ArtifactProduced\",\n    \"VerificationResult\",\n    \"Document\",\n    \"OperationOutcome\",\n    # emission contracts \u2014 generative / retrospective\n    \"Proposal\",\n    \"Postmortem\",\n    # emission contracts \u2014 universal\n    \"EscalationRequest\",\n    \"SpawnRequest\",\n)"
+      "__all__ = (\n    # catalog (read-only metadata seam)\n    \"build_catalog\",\n    # pattern layer\n    \"Pattern\",\n    \"PatternKind\",\n    \"Role\",\n    \"Mode\",\n    \"list_roles\",\n    \"list_modes\",\n    # profile\n    \"Profile\",\n    # pack layer\n    \"Pack\",\n    \"RolePolicy\",\n    \"RoleConfig\",\n    # emission builder\n    \"build_emission_operable\",\n    \"field_name_for\",\n    \"SPAWN_ALLOWED_OPERATIONS\",\n    # emission contracts — discovery\n    \"Finding\",\n    \"Conflict\",\n    \"Gap\",\n    \"Diagnosis\",\n    \"Synthesis\",\n    # emission contracts — judgement\n    \"Verdict\",\n    \"ComplianceVerdict\",\n    \"RiskAssessment\",\n    \"Objection\",\n    \"Recommendation\",\n    # emission contracts — analysis\n    \"AnalysisResult\",\n    \"ComplexityScore\",\n    # emission contracts — planning / coordination\n    \"ExecutionPlan\",\n    \"TaskAssignment\",\n    \"DesignSpec\",\n    # emission contracts — production\n    \"ArtifactProduced\",\n    \"VerificationResult\",\n    \"Document\",\n    \"OperationOutcome\",\n    # emission contracts — generative / retrospective\n    \"Proposal\",\n    \"Postmortem\",\n    # emission contracts — universal\n    \"EscalationRequest\",\n    \"SpawnRequest\",\n)"
     ],
     "lionagi/casts/catalog.py": [
       "__all__ = (\"build_catalog\",)"
@@ -401,9 +153,6 @@
       "from lionagi.ln import lazy_import",
       "__all__ = (\"main\",)",
       "def __getattr__(name: str):\n    # Lazy: importing lionagi.studio.cli (which main.py imports at module\n    # level) must not re-enter main.py through this package init.\n    if name == \"main\":\n        return lazy_import(name, {\"main\": (\"main\", \"main\")}, __name__, globals())\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
-    ],
-    "lionagi/cli/_logging.py": [
-      "__all__ = (\n    \"configure_cli_logging\",\n    \"progress\",\n    \"hint\",\n    \"warn\",\n    \"log_error\",\n)"
     ],
     "lionagi/cli/_mcp_resolve.py": [
       "__all__ = (\n    \"MCP_CONFIG_FILENAME\",\n    \"McpConfigError\",\n    \"McpResolution\",\n    \"SNAPSHOT_SEARCHED_FROM_KEY\",\n    \"SNAPSHOT_SOURCE_KEY\",\n    \"discover_mcp_config\",\n    \"explicit_mcp_config_path\",\n    \"resolve_spawn_mcp_servers\",\n)"
@@ -448,7 +197,7 @@
       "from lionagi.libs.path_safety import validate_path_component as validate_path_component",
       "from lionagi.ln.concurrency import is_cancelled, run_async",
       "from lionagi.service._subagent_admission import refuse_nested_agent",
-      "from .._logging import hint, log_error",
+      "from lionhub.orchestration.console import hint, log_error",
       "from .._orchestrate_parsing import _add_mcp_config_args as _add_mcp_config_args",
       "from .._orchestrate_parsing import add_orchestrate_subparser as add_orchestrate_subparser",
       "from .._util import EXIT_CODE_BY_STATUS",
@@ -1546,9 +1295,6 @@
       "list_running_children",
       "read_pid_from_entity",
       "unaddressable_pid_reason"
-    ],
-    "lionagi/cli/_logging.py": [
-      "configure_cli_logging"
     ],
     "lionagi/cli/_mcp_resolve.py": [
       "LegacyMcpReplayError",
@@ -4146,6 +3892,194 @@
       "select_backend_for_cell"
     ]
   },
+  "environment_lookups": {
+    "lionagi/_paths.py": [
+      "os.environ.get:\"LIONAGI_HOME\""
+    ],
+    "lionagi/agent/factory.py": [
+      "os.getenv:\"LIONAGI_KHIVE_INJECTION\""
+    ],
+    "lionagi/cli/_agent_depth.py": [
+      "os.environ.get:SEAT_PROFILES_ENV"
+    ],
+    "lionagi/cli/_providers.py": [
+      "os.getenv:\"LIONAGI_INVOCATION_ID\""
+    ],
+    "lionagi/cli/_runs.py": [
+      "os.environ.get:_RUN_ID_ENV_VAR"
+    ],
+    "lionagi/cli/_schedule_parsing.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_URL\""
+    ],
+    "lionagi/cli/agent.py": [
+      "os.environ.get:JOB_MARKER_ENV_VAR",
+      "os.environ.get:_API_ACCOUNT_ENV"
+    ],
+    "lionagi/cli/engine.py": [
+      "os.getenv:\"LIONAGI_INVOCATION_ID\""
+    ],
+    "lionagi/cli/orchestrate/_orchestration.py": [
+      "os.environ.get:\"LIONAGI_SESSION_ID\""
+    ],
+    "lionagi/ln/_cache.py": [
+      "os.environ.get:max_size_env"
+    ],
+    "lionagi/ln/_structural.py": [
+      "os.environ.get:\"LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT\""
+    ],
+    "lionagi/models/field_model.py": [
+      "os.environ.get:\"LIONAGI_FIELD_META_LIMIT\""
+    ],
+    "lionagi/operations/flow.py": [
+      "os.environ.get:\"LIONAGI_MAX_CONCURRENCY\""
+    ],
+    "lionagi/service/_subagent_admission.py": [
+      "os.environ.get:AGENT_DEPTH_ENV",
+      "os.environ:AGENT_DEPTH_ENV"
+    ],
+    "lionagi/service/accounts/_credentials.py": [
+      "os.environ:key_env"
+    ],
+    "lionagi/service/connections/endpoint_config.py": [
+      "os.getenv:name",
+      "os.getenv:self.api_key",
+      "os.getenv:self.api_key"
+    ],
+    "lionagi/service/connections/mcp_wrapper.py": [
+      "os.environ.get:\"MCP_DEBUG\""
+    ],
+    "lionagi/state/engine.py": [
+      "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\"",
+      "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\""
+    ],
+    "lionagi/studio/_traceback_dump.py": [
+      "os.environ.get:_ENV_INTERVAL",
+      "os.environ.get:_ENV_PATH"
+    ],
+    "lionagi/studio/app.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\""
+    ],
+    "lionagi/studio/cli.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
+      "os.environ.get:\"STUDIO_API_URL\"",
+      "os.environ.get:\"XDG_CONFIG_HOME\"",
+      "os.environ:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
+      "os.environ:\"LIONAGI_STUDIO_HOST\"",
+      "os.environ:\"LIONAGI_STUDIO_HOST\""
+    ],
+    "lionagi/studio/config.py": [
+      "os.environ.get:\"CORS_ORIGINS\"",
+      "os.environ.get:\"LIONAGI_HOME\"",
+      "os.environ.get:\"LIONAGI_SHOWS_ROOT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_CHECKPOINT_INTERVAL_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_DEAD_LETTER_DAYS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_SUCCESS_DAYS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
+      "os.environ.get:\"LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MAX_ADHOC_CONCURRENT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MAX_LAUNCHES\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PHANTOM_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PLAY_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_ARCHIVE_DIR\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_CHUNK_ROWS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_KEEP_DAYS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_RETENTION_INTERVAL_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_SCHEDULE_RUN_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_SHOW_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_ZERO_SESSION_GRACE_SECONDS\"",
+      "os.environ.get:\"TZ\"",
+      "os.environ.get:OPERATOR_CWD_ENV_VAR",
+      "os.environ.get:SCHEDULER_TZ_ENV_VAR",
+      "os.environ.get:env_key",
+      "os.environ.get:env_var",
+      "os.environ.get:env_var"
+    ],
+    "lionagi/studio/operator/_common.py": [
+      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
+    ],
+    "lionagi/studio/operator/engine.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_MODEL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_PROVIDER\""
+    ],
+    "lionagi/studio/operator/permission_mcp.py": [
+      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
+    ],
+    "lionagi/studio/operator/run_progress.py": [
+      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
+    ],
+    "lionagi/studio/scheduler/engine.py": [
+      "os.environ.get:\"LIONAGI_SCHEDULER_CWD\""
+    ],
+    "lionagi/studio/scheduler/github.py": [
+      "os.environ.get:\"GITHUB_TOKEN\""
+    ],
+    "lionagi/studio/scheduler/subprocess.py": [
+      "os.environ.get:_COMMAND_ALLOWLIST_ENV",
+      "os.environ.get:_COMMAND_ALLOWLIST_ENV"
+    ],
+    "lionagi/studio/services/approvals.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
+      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\""
+    ],
+    "lionagi/studio/services/identity.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
+    ],
+    "lionagi/studio/services/leo.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_LEO_MODEL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_LEO_PROVIDER\""
+    ],
+    "lionagi/studio/services/pairing.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
+    ],
+    "lionagi/studio/services/redaction.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_DEMO_MODE\""
+    ],
+    "lionagi/testing/_endpoint.py": [
+      "os.environ.get:ENV_SCRIPT_PATH"
+    ],
+    "lionagi/testing/_env.py": [
+      "os.environ.get:ENV_MODEL",
+      "os.environ.get:ENV_PROVIDER",
+      "os.environ.get:ENV_PROVIDER",
+      "os.environ.get:ENV_SCRIPT_PATH",
+      "os.environ.get:ENV_SCRIPT_PATH",
+      "os.environ:ENV_MODEL",
+      "os.environ:ENV_PROVIDER",
+      "os.environ:ENV_SCRIPT_PATH",
+      "os.environ:key"
+    ],
+    "lionagi/tools/_seatbelt.py": [
+      "os.environ.get:\"UV_CACHE_DIR\"",
+      "os.environ.get:\"XDG_CACHE_HOME\""
+    ],
+    "lionagi/tools/sandbox_backend.py": [
+      "os.environ:k"
+    ]
+  },
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n)",
   "settings_declarations": [
     "model_config = SettingsConfigDict(\n        # A later file overrides an earlier one and the environment overrides every file, so the\n        # user-wide file under LIONAGI_HOME supplies defaults the working directory can replace.\n        env_file=(LIONAGI_HOME / \".env\", \".env\", \".env.local\", \".secrets.env\"),\n        env_file_encoding=\"utf-8\",\n        case_sensitive=False,\n        extra=\"ignore\",\n    )",
     "aiocache_config: CacheConfig = Field(\n        default_factory=CacheConfig, description=\"Cache settings for aiocache\"\n    )",
@@ -4189,5 +4123,62 @@
     "LOG_REDACT_BINARY_THRESHOLD: int = 1024",
     "_instance: ClassVar[Any] = None",
     "_dotenv_files: tuple[Path, ...] = PrivateAttr(default=())"
-  ]
+  ],
+  "extras": {
+    "ruvector": [
+      "ruvector>=0.1.2,<0.2",
+      "numpy>=1.24,<3"
+    ],
+    "ollama": [
+      "ollama>=0.6.1",
+      "tqdm>=4.67.1"
+    ],
+    "mcp": [
+      "fastmcp>=3.4.10",
+      "starlette>=1.3.1",
+      "mcp>=1.30.0"
+    ],
+    "rich": [
+      "rich>=13.0.0"
+    ],
+    "pandas": [
+      "pandas>=1.3.0"
+    ],
+    "postgres": [
+      "pydapter[postgres]>=1.3.2",
+      "asyncpg>=0.27.0"
+    ],
+    "sqlite": [
+      "aiosqlite>=0.22.0,<0.23"
+    ],
+    "graph": [
+      "networkx>=3.0.0"
+    ],
+    "xml": [
+      "xmltodict>=0.12.0"
+    ],
+    "ag2": [
+      "ag2[openai]>=0.13.0"
+    ],
+    "studio": [
+      "fastapi>=0.115",
+      "uvicorn>=0.34",
+      "starlette>=1.3.1",
+      "croniter>=1.4"
+    ],
+    "all": [
+      "lionagi[ollama]",
+      "lionagi[mcp]",
+      "lionagi[rich]",
+      "lionagi[postgres]",
+      "lionagi[graph]",
+      "lionagi[sqlite]",
+      "lionagi[xml]",
+      "lionagi[ag2]",
+      "lionagi[studio]"
+    ]
+  },
+  "console_scripts": {
+    "li": "lionagi.cli.main:main"
+  }
 }

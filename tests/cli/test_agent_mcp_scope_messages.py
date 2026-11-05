@@ -10,9 +10,9 @@ import logging
 
 import pytest
 
-from lionagi.cli._logging import _WARN_LOGGER_NAME
 from lionagi.cli._mcp_resolve import McpResolution
 from lionagi.cli.agent import _report_mcp_resolution
+from lionhub.orchestration.console import _WARN_LOGGER_NAME
 
 
 def _capture_warnings(fn):

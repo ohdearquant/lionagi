@@ -62,6 +62,15 @@ def _module_pairs() -> list[tuple[str, str]]:
 
 PAIRS = _module_pairs()
 
+# These whole modules deliberately export values rather than pickleable definitions.
+# Any other row without a callable subject still fails the population check.
+CONSTANT_ONLY_MOVED_MODULES = {
+    "lionagi.cli._mirror_settings": (
+        "lionhub.serve.mirror_settings",
+        {"MIRROR_PREVIEW_CHARS": 37},
+    ),
+}
+
 
 def test_the_table_has_moves_and_every_package_has_modules():
     assert _moved.MOVED
@@ -125,7 +134,14 @@ def test_objects_are_shared_and_pickles_naming_the_old_path_load():
             assert old.encode() in payload
             assert pickle.loads(payload) is obj  # noqa: S301
             checked[_moved._row(old).old] += 1
-    assert all(checked.values()), checked
+    rows = {row.old: row.new for row in _moved.MOVED}
+    for old, (new, values) in CONSTANT_ONLY_MOVED_MODULES.items():
+        assert rows.get(old) == new, (old, new, rows.get(old))
+        assert set(values) <= vars(importlib.import_module(new)).keys()
+    assert all(count for old, count in checked.items() if old not in CONSTANT_ONLY_MOVED_MODULES), (
+        checked
+    )
+    assert all(checked[old] == 0 for old in CONSTANT_ONLY_MOVED_MODULES), checked
 
 
 def _moved_element_classes() -> list[tuple[str, type]]:
@@ -303,6 +319,7 @@ MOVED_MODULES = (
     *MOVED_CORE_MODULES,
     ("lionagi.cli._argtypes", "lionhub.orchestration.arguments"),
     ("lionagi.cli._code_identity", "lionhub.serve.diagnostics"),
+    ("lionagi.cli._logging", "lionhub.orchestration.console"),
 )
 _MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
 
@@ -344,6 +361,7 @@ MOVED_MODULE_PUBLIC_NAMES = {
         "loaded_package_path",
         "snapshot_git_position",
     },
+    "lionhub.orchestration.console": {"configure_cli_logging"},
     # The request model, every class it is built from, and the developer-message helper.
     "lionagi.service.connections._chat_schemas": {
         "AssistantMessage",
@@ -502,11 +520,73 @@ print("ok")
 @pytest.mark.parametrize("old_first", [True, False], ids=["old-first", "new-first"])
 @pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
 def test_a_moved_module_keeps_its_identity_in_either_cold_import_order(old, new, old_first):
-    setup = (
-        f"old, new, old_first = {old!r}, {new!r}, {old_first!r}\n"
-        f"names = {sorted(MOVED_MODULE_PUBLIC_NAMES[new])!r}\n"
-    )
+    names = MOVED_MODULE_PUBLIC_NAMES[new]
+    if new == "lionhub.orchestration.console":
+        names = names | {"_ErrorFormatter", "_LazyStderrHandler"}
+    setup = f"old, new, old_first = {old!r}, {new!r}, {old_first!r}\nnames = {sorted(names)!r}\n"
     assert _run_fresh(setup + _MOVED_MODULE_COLD_IDENTITY).strip() == "ok"
+
+
+@pytest.mark.parametrize("old_first", [True, False], ids=["old-first", "new-first"])
+@pytest.mark.parametrize("old", CONSTANT_ONLY_MOVED_MODULES)
+def test_a_constant_only_module_keeps_values_and_patches_in_either_cold_order(
+    old, old_first, tmp_path
+):
+    new, values = CONSTANT_ONLY_MOVED_MODULES[old]
+    environment = {
+        **_isolated_environment(tmp_path),
+        "LIONAGI_HOME": str(tmp_path / "lionagi"),
+        "TMPDIR": str(tmp_path),
+        "LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS": "37",
+    }
+    program = f"""
+import importlib, sys, warnings
+from pathlib import Path
+from unittest.mock import patch
+
+root = Path({str(ROOT)!r}).resolve()
+sys.path[:0] = [str(root), str(root / 'lionhub/src')]
+old, new, old_first = {old!r}, {new!r}, {old_first!r}
+expected = {values!r}
+assert old not in sys.modules and new not in sys.modules
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter('always')
+    first = importlib.import_module(old if old_first else new)
+    second = importlib.import_module(new if old_first else old)
+    again = importlib.import_module(old)
+
+assert first is second is again is sys.modules[old] is sys.modules[new]
+assert first.__name__ == first.__spec__.name == new
+assert Path(first.__file__).resolve() == root / 'lionhub/src/lionhub/serve/mirror_settings.py'
+deprecations = [
+    item for item in caught
+    if issubclass(item.category, DeprecationWarning)
+    and str(item.message).startswith(old + ' moved to ')
+]
+assert len(deprecations) == 1
+assert deprecations[0].filename == '<string>'
+assert {{name for name in vars(first) if name.isupper()}} == set(expected)
+for name, value in expected.items():
+    assert type(getattr(first, name)) is int
+    assert getattr(first, name) == value
+    sentinel = object()
+    with patch(old + '.' + name, sentinel):
+        assert getattr(sys.modules[new], name) is sentinel
+    assert getattr(first, name) == value
+assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
+assert all(getattr(first, name) == value for name, value in expected.items())
+print('ok')
+"""
+    process = subprocess.run(  # noqa: S603 -- this interpreter and a fixed test program
+        [sys.executable, "-I", "-c", program],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert process.returncode == 0, process.stdout[-2000:] + process.stderr[-2000:]
+    assert process.stdout.strip() == "ok"
 
 
 # `python -m <old name>` runs a package's __main__ without importing it, through the

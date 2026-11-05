@@ -85,7 +85,7 @@ class TestIsMountAllowed:
 class TestSymlinkEscapeIsRejected:
     def _build_docker_cmd(self, tmp_path, monkeypatch, symlink_target: Path) -> list[str]:
         """Set up a fake ~/.lionagi with a single evil symlink and capture docker run argv."""
-        from lionagi.cli._logging import configure_cli_logging
+        from lionhub.orchestration.console import configure_cli_logging
 
         configure_cli_logging(verbose=False)
 

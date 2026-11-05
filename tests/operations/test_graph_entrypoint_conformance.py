@@ -3459,9 +3459,9 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     from types import SimpleNamespace as _SimpleNamespace
     from uuid import UUID
 
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
     from lionagi.casts.emission import TaskAssignment
     from lionagi.state.db import StateDB
     from lionhub.orchestration.engines.engine import EngineRun

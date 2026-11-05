@@ -1212,8 +1212,8 @@ def _watch_loop(
 ) -> int:
     """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM."""
     from lionagi.ln.concurrency import SigtermInterrupt, run_async, temporary_signal_handlers
+    from lionhub.orchestration.console import log_error
 
-    from ._logging import log_error
     from .status import EXIT_UNKNOWN
 
     interrupted = False
@@ -1399,7 +1399,7 @@ async def _poll_pending_sessions_once(
         row = await db.get_session(run_id)
         if row is None:
             row = {**pending[run_id], "status": "failed"}
-            from ._logging import log_error
+            from lionhub.orchestration.console import log_error
 
             log_error(f"session {run_id!r} disappeared from state.db while waiting")
         else:
@@ -1478,8 +1478,7 @@ async def _poll_pending_once(
     # Shared schema vocabulary — a hand-listed subset here once omitted
     # timed_out, leaving timed-out occurrences waiting forever.
     from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
-
-    from ._logging import log_error
+    from lionhub.orchestration.console import log_error
 
     for run_id in list(pending):
         row = await db.get_schedule_run(run_id)
@@ -1660,8 +1659,8 @@ def _dispatch_wait(
     see docs/internals/cli.md for chain-following and max_wait semantics."""
     from lionagi.ln.concurrency import SigtermInterrupt, run_async, temporary_signal_handlers
     from lionagi.state.db import StateDB, state_db_known_absent
+    from lionhub.orchestration.console import log_error
 
-    from ._logging import log_error
     from .status import EXIT_RUNNING, EXIT_UNKNOWN
 
     if state_db_known_absent():
@@ -2016,7 +2015,7 @@ def run_monitor(args: argparse.Namespace) -> int:
         if not watched_ids:
             # A truthy --run value can still split to nothing (e.g. ","),
             # which would otherwise dispatch an empty watch set and exit 0.
-            from ._logging import log_error
+            from lionhub.orchestration.console import log_error
 
             log_error("no schedule_run ids given (only empty/comma-only tokens)")
             return 2
@@ -2033,7 +2032,7 @@ def run_monitor(args: argparse.Namespace) -> int:
         try:
             since = _since_timestamp(args.since)
         except ValueError as exc:
-            from ._logging import log_error
+            from lionhub.orchestration.console import log_error
 
             log_error(str(exc))
             return 1
@@ -2057,7 +2056,8 @@ def run_monitor(args: argparse.Namespace) -> int:
         else:
             output = run_async(_run_table(since=since, entity_type=entity_type, project=project))
     except (AmbiguousIdError, _MonitorReadError) as exc:
-        from ._logging import log_error
+        from lionhub.orchestration.console import log_error
+
         from .status import EXIT_UNKNOWN
 
         log_error(str(exc))

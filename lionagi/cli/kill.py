@@ -19,6 +19,7 @@ from lionagi.state._quarantine_identity import (
 )
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
+from lionhub.orchestration.console import log_error, warn
 
 from ._kill_service import (
     _REFUSED_SIGNAL_REASONS,
@@ -38,7 +39,6 @@ from ._kill_service import (
     read_pid_from_entity,
     unaddressable_pid_reason,
 )
-from ._logging import log_error, warn
 from ._pid_quarantine import quarantine_identity
 from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive

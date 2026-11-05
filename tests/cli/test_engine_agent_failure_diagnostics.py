@@ -60,9 +60,9 @@ class MockStateDB:
 
 
 async def test_total_agent_failure_written_to_db_as_failed(monkeypatch):
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -102,9 +102,9 @@ async def test_total_agent_failure_written_to_db_as_failed(monkeypatch):
 async def test_total_agent_failure_folds_with_emission_failures(monkeypatch):
     """Both diagnostics (emission_missing + agent errors) must land in the
     same error column when a run hits both."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -139,9 +139,9 @@ async def test_total_agent_failure_folds_with_emission_failures(monkeypatch):
 async def test_no_total_agent_failure_status_stays_completed(monkeypatch):
     """A run with some successful agents (no _total_agent_failure) must still
     report 'completed' — this diagnostic only fires on total failure."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -174,9 +174,9 @@ async def test_engine_without_total_agent_failure_attr_stays_completed(monkeypat
     """Engine objects without the _total_agent_failure attr (older subclass,
     or an engine that never ran make_agent) must not crash and must not be
     treated as a total failure."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -222,9 +222,9 @@ async def _build_all_agents_failed_engine():
 
 
 async def test_real_engine_total_agent_failure_propagates_to_cli(monkeypatch):
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)

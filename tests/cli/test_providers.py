@@ -580,7 +580,7 @@ def test_profile_frontmatter_examples_in_fences_are_silent(monkeypatch, fence):
     from lionagi.cli._providers import _parse_profile
 
     warnings = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
     text = f"Example profile:\n{fence}yaml\n---\ncontain_user_settings: true\n---\n{fence}\nEnd."
 
     profile = _parse_profile("example", text)
@@ -595,7 +595,7 @@ def test_profile_real_block_after_a_longer_matching_fence_warns_once(monkeypatch
     from lionagi.cli._providers import _parse_profile
 
     warnings = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
     text = (
         f"Example profile:\n{fence}yaml\n---\ncontain_user_settings: true\n---\n"
         f"{fence}{fence[0]}\n---\ncontain_user_settings: true\n---\nBody."
@@ -613,7 +613,7 @@ def test_profile_unclosed_or_mismatched_fence_keeps_examples_silent(monkeypatch,
     from lionagi.cli._providers import _parse_profile
 
     warnings = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
     text = (
         f"Example profile:\n{opening}yaml\n---\ncontain_user_settings: true\n---\n"
         f"{closing}\n---\ncontain_user_settings: true\n---"
@@ -632,7 +632,7 @@ def test_profile_inline_fence_text_does_not_hide_a_real_block(monkeypatch, prose
     from lionagi.cli._providers import _parse_profile
 
     warnings = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
 
     profile = _parse_profile("example", prose + "\n---\ncontain_user_settings: true\n---\nBody.")
 
@@ -646,7 +646,7 @@ def test_profile_actual_frontmatter_keeps_its_containment_flag(monkeypatch, valu
     from lionagi.cli._providers import _parse_profile
 
     warnings = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
 
     profile = _parse_profile(
         "actual", f"---\ncontain_user_settings: {str(value).lower()}\n---\nBody."

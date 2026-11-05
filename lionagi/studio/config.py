@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 # The preview limit is read in one place so the mirror service and the studio agree on it.
-from lionagi.cli._mirror_settings import MIRROR_PREVIEW_CHARS  # noqa: F401
+from lionhub.serve.mirror_settings import MIRROR_PREVIEW_CHARS  # noqa: F401
 
 from ._timezone_rules import MAX_TZIF_BYTES, read_tzif, rules_equal, tzif_rules
 

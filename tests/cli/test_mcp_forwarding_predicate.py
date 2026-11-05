@@ -16,9 +16,9 @@ from lionagi.agent.factory import (
     _forward_mcp_to_cli_request,
     provider_accepts_forwarded_mcp,
 )
-from lionagi.cli._logging import _WARN_LOGGER_NAME
 from lionagi.cli._mcp_resolve import McpResolution
 from lionagi.cli.agent import _report_mcp_resolution
+from lionhub.orchestration.console import _WARN_LOGGER_NAME
 
 # Every provider name the CLI can route a leg to, plus one API provider, so a
 # new CLI backend cannot quietly land on the wrong side of the predicate.

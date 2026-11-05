@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import toml
 
-# Loggers mutated by lionagi.cli._logging.configure_cli_logging(). Tests that
+# Loggers mutated by lionhub.orchestration.console.configure_cli_logging(). Tests that
 # drive main() end-to-end trigger that call, which sets propagate=False and
 # attaches stderr handlers — breaking caplog for any test that runs later in
 # the same worker (e.g. tests/cli/orchestrate/test_flow_spec_file.py).
