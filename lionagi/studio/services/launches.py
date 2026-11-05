@@ -24,6 +24,7 @@ from ..services.schedules import (
     _svc_validate_identifier,
     _svc_validate_prompt,
 )
+from .engine_defs import is_registered_engine_kind
 
 _log = logging.getLogger(__name__)
 
@@ -125,6 +126,8 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     }
     if data["action_kind"] == "engine":
         defn = await _resolve_engine_def(data["action_engine_def"])
+        if not is_registered_engine_kind(defn.get("kind")):
+            raise ValueError("Engine preset kind is not registered")
         # The saved definition supplies engine kind/model/flags; the request
         # supplies the spec prompt and may override the model.
         schedule_dict["action_agent"] = defn["kind"]

@@ -21,28 +21,46 @@ KIND_META: dict[str, dict[str, Any]] = {
         "cls_path": ("lionhub.orchestration.engines", "ResearchEngine"),
         "pos_arg": "topic",
         "pos_help": "Research topic or question.",
+        "preset_options": {},
     },
     "review": {
         "cls_path": ("lionhub.orchestration.engines", "ReviewEngine"),
         "pos_arg": "artifact",
         "pos_help": "Artifact text or path to review.",
+        "preset_options": {},
     },
     "coding": {
         "cls_path": ("lionhub.orchestration.engines", "CodingEngine"),
         "pos_arg": "spec",
         "pos_help": "Coding specification (natural-language or JSON string).",
+        "preset_options": {
+            "test_cmd": {"type": "string", "required": True},
+            "export_dir": {"type": "string", "required": False},
+        },
     },
     "hypothesis": {
         "cls_path": ("lionhub.orchestration.engines", "HypothesisEngine"),
         "pos_arg": "findings",
         "pos_help": "Research findings or background text for hypothesis generation.",
+        "preset_options": {"export_dir": {"type": "string", "required": False}},
     },
     "planning": {
         "cls_path": ("lionhub.orchestration.engines", "PlanningEngine"),
         "pos_arg": "prompt",
         "pos_help": "Goal or task description to plan and execute.",
+        "preset_options": {},
     },
 }
+
+
+def _is_registered_engine_kind(kind: object) -> bool:
+    """Return whether a value names a currently registered engine kind."""
+    if not isinstance(kind, str):
+        return False
+    try:
+        return kind in KIND_META
+    except TypeError:
+        return False
 
 
 def import_engine_class(module: str, name: str) -> type:

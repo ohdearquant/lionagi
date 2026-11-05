@@ -20,6 +20,13 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.graph.edge import Edge, EdgeCondition
 from lionagi.protocols.graph.graph import Graph
 
+from .engine_defs import (
+    _validate_budget,
+    _validate_kind_options,
+    _validate_options,
+    is_registered_engine_kind,
+)
+
 __all__ = (
     "StudioExprCondition",
     "UnsafeExpressionError",
@@ -357,14 +364,10 @@ async def compile_workflow_def(
                 raise WorkflowCompileError(
                     f"unknown engine_def_id {engine_def_id!r}", node_id=node_id
                 )
+            if not is_registered_engine_kind(defn.get("kind")):
+                raise WorkflowCompileError("Engine preset kind is not registered", node_id=node_id)
             # Node-level config overrides never went through engine_defs' creation-time
             # checks; re-validate so a saved workflow can't smuggle a hostile test_cmd.
-            from .engine_defs import (
-                _validate_budget,
-                _validate_kind_options,
-                _validate_options,
-            )
-
             node_options = config.get("options")
             if node_options is not None and not isinstance(node_options, dict):
                 # Non-mapping would raise TypeError on the ** unpack below,
