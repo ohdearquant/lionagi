@@ -810,21 +810,32 @@ async def test_create_and_kind_update_follow_registry_addition_and_removal(
 
     _, db_path, client = patched_app
     def_id = await _seed_engine_def(db_path, name="registry-target", kind="review")
-    monkeypatch.setitem(registry.KIND_META, "new-kind", dict(registry.KIND_META["research"]))
-    async with client as ac:
-        created = await ac.post("/api/engine-defs/", json={"name": "new-kind", "kind": "new-kind"})
-        assert created.status_code == 201, created.text
-        updated = await ac.put(f"/api/engine-defs/{def_id}", json={"kind": "new-kind"})
-        assert updated.status_code == 200, updated.text
-        monkeypatch.delitem(registry.KIND_META, "research")
-        rejected_create = await ac.post(
-            "/api/engine-defs/", json={"name": "removed-kind", "kind": "research"}
-        )
-        assert rejected_create.status_code == 422, rejected_create.text
-        before = await _raw_engine_row(db_path, def_id)
-        rejected_update = await ac.put(f"/api/engine-defs/{def_id}", json={"kind": "research"})
-    assert rejected_update.status_code == 422, rejected_update.text
-    assert await _raw_engine_row(db_path, def_id) == before
+    original = dict(registry.KIND_META)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setitem(registry.KIND_META, "new-kind", dict(registry.KIND_META["research"]))
+            async with client as ac:
+                created = await ac.post(
+                    "/api/engine-defs/", json={"name": "new-kind", "kind": "new-kind"}
+                )
+                assert created.status_code == 201, created.text
+                updated = await ac.put(f"/api/engine-defs/{def_id}", json={"kind": "new-kind"})
+                assert updated.status_code == 200, updated.text
+                scoped.delitem(registry.KIND_META, "research")
+                rejected_create = await ac.post(
+                    "/api/engine-defs/", json={"name": "removed-kind", "kind": "research"}
+                )
+                assert rejected_create.status_code == 422, rejected_create.text
+                before = await _raw_engine_row(db_path, def_id)
+                rejected_update = await ac.put(
+                    f"/api/engine-defs/{def_id}", json={"kind": "research"}
+                )
+            assert rejected_update.status_code == 422, rejected_update.text
+            assert await _raw_engine_row(db_path, def_id) == before
+    finally:
+        # Restoring a deleted dict entry alone changes CLI choice order.
+        registry.KIND_META.clear()
+        registry.KIND_META.update(original)
 
 
 async def test_write_options_follow_registry_option_addition_without_changing_legacy_wrapper(
