@@ -750,8 +750,9 @@ that — so a schema change made in the writer phase would still have to be appl
 the old migration ledger together, and a missed edit points a generated writer at a shape the
 upgraded store does not have.
 
-Numerical estimates of existing authorities, policies, rebuild paths and direct connections in
-the phase plan below have not been reverified at `bb57cc96`; target counts are design requirements.
+Numerical estimates of existing authorities, policies and direct connections in the phase plan
+below have not been reverified at `bb57cc96`; target counts are design requirements. The count of
+seven rebuild paths was measured at `bb57cc96` (D5).
 
 - **Foundation gate:** accept and implement the relevant ADR-0119 contracts for dataclass
   defaults/default factories, Sentinel states, ordered field identity, structural equality/hash,
@@ -953,7 +954,7 @@ opening pass, not something to estimate from here.
 
 ## Consequences
 
-The seven-path count repeated below has not been reverified at `bb57cc96`.
+The seven-path count repeated below is the one measured at `bb57cc96` in D5.
 
 - One column addition becomes one edit in one place, and "what is the schema" has one answer.
 - The identifier-interpolation class disappears rather than being re-guarded site by site.
@@ -1082,6 +1083,9 @@ for label, root in (("bb57", current), ("79c", historical)):
     counts = [(services / (name + ".py")).read_bytes().count(b"\n") for name in names]
     print("service lines", counts, "first three", sum(counts[:3]), "all six", sum(counts))
     for directory in ("state", "studio", "providers", "service", "protocols", "ln"):
+        if not (root / "lionagi" / directory).is_dir():
+            print(directory, "absent")
+            continue
         paths = list((root / "lionagi" / directory).rglob("*.py"))
         print(directory, len(paths), sum(p.read_bytes().count(b"\n") for p in paths))
 
@@ -1100,6 +1104,7 @@ sql_desc = {name(n.group()) for n in sql_indexes if re.search(r"\bDESC\b", n.gro
 meta_desc = {n.args[0].value for n in indexes if any(isinstance(x, ast.Attribute) and x.attr == "desc" for x in ast.walk(n))}
 test = ast.parse((current / "tests/state/test_engine_schema.py").read_text())
 a = next(n for n in test.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "ALL_TABLES" for t in n.targets))
+assert tables and columns and indexes and sql_tables and sql_indexes, "a parser found nothing"
 print("metadata tables/direct columns/named indexes", len(tables), len(columns), len(indexes))
 print("SQL tables/indexes", len(sql_tables), len(sql_indexes))
 print("SQL-only", sorted(sql_names - meta_names), "metadata-only", sorted(meta_names - sql_names))
