@@ -481,7 +481,7 @@ native system block and caches by prompt prefix (D3 names the declaration) **and
 configuration turns prompt caching on. The option is `prompt_caching` (bool, default False), off
 unless set (D5). With the option off, every provider's compiled request is byte-identical to today's
 on every path, with no exception: the Anthropic adapter's `cache_control`-triggered last-message mark
-(`lionhub/src/lionhub/providers/anthropic/messages.py:1343-1369`) stays exactly as today wherever it fires today.
+(`lionhub/src/lionhub/providers/anthropic/messages.py:1343-1369` at `9a03f175`) stays exactly as today wherever it fires today.
 
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — a dict-configured model
@@ -642,7 +642,7 @@ The option is `prompt_caching` (bool, default False), a field of the endpoint co
 adapter reads it from that configuration before the request-option filter runs, so a filtered
 endpoint cannot drop it, and it is never written into the request body. With the option off every
 provider's compiled request is byte-identical to today's on every path, the adapter's
-`cache_control`-triggered last-message mark (`lionhub/src/lionhub/providers/anthropic/messages.py:1343-1369`) included
+`cache_control`-triggered last-message mark (`lionhub/src/lionhub/providers/anthropic/messages.py:1343-1369` at `9a03f175`) included
 wherever it fires today. The mark code only runs when the option is on and the provider declares that
 it accepts a native system block and caches by prefix (D3); marks come only from this option. With
 the option on and the declaration present, this decision's placement replaces that one
