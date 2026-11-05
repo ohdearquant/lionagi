@@ -693,7 +693,7 @@ def test_the_active_prepare_path_is_still_the_one_cited() -> None:
         "current.with_updates(prompt_context=extended_ctx)",
     )
     _in_span("lionagi/operations/chat/chat.py", 68, 68, "_prepare_run_kwargs(")
-    _in_span("lionagi/operations/run/run.py", 636, 636, "_prepare_run_kwargs(")
+    _in_span("lionagi/operations/run/run.py", 647, 647, "_prepare_run_kwargs(")
     _in_span(_PREPARE_MSGS, 100, 100, "def prepare_messages_for_chat(")
 
 
