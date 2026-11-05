@@ -119,6 +119,75 @@ async def test_sqlite_raw_options_preserve_malformed_deep_and_binary_values(tmp_
         assert await _raw_rows(db) == before
 
 
+async def test_sqlite_http_catalog_depth_and_number_boundaries(tmp_path, monkeypatch):
+    """A decodable invalid mapping and undecodable rows leave a valid neighbor readable."""
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    httpx = pytest.importorskip("httpx", reason="httpx not installed")
+
+    import lionagi.studio.services.engine_defs as engine_defs
+    from lionagi.studio.app import create_app
+
+    db_path = tmp_path / "catalog-http.db"
+    monkeypatch.setattr(engine_defs, "StateDB", lambda: StateDB(db_path))
+    monkeypatch.setattr(engine_defs, "state_db_known_absent", lambda: False)
+    async with StateDB(db_path) as db:
+        for row_id, raw in [
+            ("a-depth32", '{"nested":' + "[" * 31 + "0" + "]" * 31 + "}"),
+            ("b-depth33", '{"nested":' + "[" * 32 + "0" + "]" * 32 + "}"),
+            ("c-992nested", '{"nested":' + "[" * 992 + "0" + "]" * 992 + "}"),
+            ("d-huge-number", '{"nested":1e1000}'),
+            ("e-valid", '{"export_dir":"safe"}'),
+        ]:
+            await _insert(db, def_id=row_id, name=row_id, kind="research", options=raw)
+        before = await _raw_rows(db)
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://127.0.0.1:8765"
+        ) as client:
+            response = await client.get("/api/engine-catalog/presets", params={"kind": "research"})
+            assert response.status_code == 200, response.text
+            rows = {row["id"]: row for row in response.json()["items"]}
+            assert set(rows) == {
+                "a-depth32",
+                "b-depth33",
+                "c-992nested",
+                "d-huge-number",
+                "e-valid",
+            }
+
+            at_bound = rows["a-depth32"]
+            assert at_bound["availability"] == "unavailable"
+            assert at_bound["reasons"] == ["options_invalid"]
+            assert at_bound["options"] is None
+            assert at_bound["stored_option_keys"] == ["nested"]
+            assert at_bound["unused_option_keys"] == ["nested"]
+            assert at_bound["missing_option_keys"] == []
+            assert at_bound["invalid_option_keys"] == ["nested"]
+
+            for row_id in ("b-depth33", "c-992nested", "d-huge-number"):
+                row = rows[row_id]
+                assert row["availability"] == "unavailable"
+                assert row["reasons"] == ["options_undecodable"]
+                assert row["options"] is None
+                for key in (
+                    "stored_option_keys",
+                    "unused_option_keys",
+                    "missing_option_keys",
+                    "invalid_option_keys",
+                ):
+                    assert row[key] is None
+
+            valid = rows["e-valid"]
+            assert valid["availability"] == "available"
+            assert valid["reasons"] == []
+            assert valid["options"] == {"export_dir": "safe"}
+            for row_id, row in rows.items():
+                detail = await client.get("/api/engine-catalog/preset", params={"id": row_id})
+                assert detail.status_code == 200, detail.text
+                assert detail.json() == row
+        assert await _raw_rows(db) == before
+
+
 async def test_sqlite_catalog_excludes_null_ids_from_legacy_table(tmp_path):
     db = StateDB(tmp_path / "legacy.db")
     # Older SQLite tables can contain NULL under a TEXT PRIMARY KEY declaration.
@@ -326,7 +395,7 @@ async def test_postgres_http_catalog_isolates_stored_options_and_default_create(
 @pytest.mark.parametrize(
     ("case", "raw", "expected_reasons"),
     [
-        ("depth32", '{"nested":' + "[" * 31 + "0" + "]" * 31 + "}", []),
+        ("depth32", '{"nested":' + "[" * 31 + "0" + "]" * 31 + "}", ["options_invalid"]),
         (
             "depth33",
             '{"nested":' + "[" * 32 + "0" + "]" * 32 + "}",
@@ -380,13 +449,17 @@ async def test_postgres_http_catalog_json_depth_and_number_boundaries(
                 assert row["reasons"] == expected_reasons
                 assert row["availability"] == ("unavailable" if expected_reasons else "available")
                 assert "availability_reason" not in row
-                if expected_reasons:
-                    assert row["options"] is None
+                assert row["options"] is None
+                if expected_reasons == ["options_invalid"]:
+                    assert row["stored_option_keys"] == ["nested"]
+                    assert row["unused_option_keys"] == ["nested"]
+                    assert row["missing_option_keys"] == []
+                    assert row["invalid_option_keys"] == ["nested"]
+                else:
                     assert row["stored_option_keys"] is None
                     assert row["unused_option_keys"] is None
-                else:
-                    assert row["stored_option_keys"] == ["nested"]
-                    assert row["options"] is not None
+                    assert row["missing_option_keys"] is None
+                    assert row["invalid_option_keys"] is None
                 detail = await client.get("/api/engine-catalog/preset", params={"id": row_id})
                 assert detail.status_code == 200, detail.text
                 assert detail.json() == row

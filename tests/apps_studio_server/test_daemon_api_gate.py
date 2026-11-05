@@ -78,6 +78,9 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/definitions/"),
     ("GET", "/api/definitions/{kind}/{name}"),
     ("GET", "/api/definitions/{kind}/{name}/versions/{version}"),
+    ("GET", "/api/engine-catalog/blueprints"),
+    ("GET", "/api/engine-catalog/preset"),
+    ("GET", "/api/engine-catalog/presets"),
     ("GET", "/api/engine-defs/"),
     ("GET", "/api/engine-defs/{def_id}"),
     ("GET", "/api/engine-runs/"),
@@ -280,7 +283,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 142
+    assert len(_GOLDEN_ROUTES) == 145
 
 
 def _compiled_match_shape(path_template: str) -> str:
