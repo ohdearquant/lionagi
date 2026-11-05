@@ -642,9 +642,10 @@ as an explicit compatibility map. This is Phase 1 work, not a pre-registry Phase
 domain reason classes remain separate from both registry-derived projections throughout.
 
 "Derived from the registry" has to mean derived from a *projection* of it, and the projection
-needs declaring, because the two sets are not the same size. At
-`bb57cc9619765bd03e7dd2b3369725335d48af21`, the metadata declares 34 tables; the eventual
-entity-registry population is a separate design outcome. `VALID_ENTITY_TYPES` holds six —
+needs declaring, because `VALID_ENTITY_TYPES` names only part of what is persisted. At
+`bb57cc9619765bd03e7dd2b3369725335d48af21`, the metadata declares 34 tables, and the six
+types map to six of them through `ENTITY_TYPE_TO_TABLE`; the eventual entity-registry
+population is a separate design outcome. `VALID_ENTITY_TYPES` holds six —
 `session`, `show`, `play`, `invocation`,
 `team`, `schedule_run` — and is the compatibility exposure of generic
 `StateDB.update_status()`. It is **not** the complete set whose transitions LifecycleService
