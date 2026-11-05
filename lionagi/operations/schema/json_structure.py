@@ -72,8 +72,9 @@ class JsonStructure(Structure):
             example = str(response_format)
         return (
             "**MUST RETURN JSON-PARSEABLE RESPONSE ENCLOSED BY JSON CODE BLOCKS."
-            f" USER's CAREER DEPENDS ON THE SUCCESS OF IT.** \n```json\n{example}\n```"
-            "No triple backticks. Escape all quotes and special characters."
+            f" USER's CAREER DEPENDS ON THE SUCCESS OF IT.** \n```json\n{example}\n```\n"
+            "Do not put triple backticks inside JSON string values. "
+            "Escape quotes and special characters inside JSON strings."
         ).strip()
 
     @staticmethod
