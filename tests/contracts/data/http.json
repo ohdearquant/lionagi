@@ -1,5 +1,5 @@
 {
-  "count": 146,
+  "count": 149,
   "routes": [
     {
       "ordinal": 0,
@@ -225,6 +225,54 @@
     },
     {
       "ordinal": 7,
+      "path": "/api/sessions/{session_id}",
+      "methods": [
+        "PUT"
+      ],
+      "name": "label_session",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Label Session Api Sessions  Session Id  Put"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "sessions"
+      ],
+      "summary": null,
+      "description": "Set or clear the display label without changing the session's activity.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.sessions",
+        "qualname": "label_session_route"
+      }
+    },
+    {
+      "ordinal": 8,
       "path": "/api/sessions/{session_id}/stream",
       "methods": [
         "GET"
@@ -268,7 +316,7 @@
       }
     },
     {
-      "ordinal": 8,
+      "ordinal": 9,
       "path": "/api/sessions/{session_id}/signals",
       "methods": [
         "GET"
@@ -314,7 +362,55 @@
       }
     },
     {
-      "ordinal": 9,
+      "ordinal": 10,
+      "path": "/api/sessions/{session_id}/signals/page",
+      "methods": [
+        "GET"
+      ],
+      "name": "session_signals_page",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Session Signals Page Api Sessions  Session Id  Signals Page Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "sessions"
+      ],
+      "summary": null,
+      "description": "One bounded persisted prefix page; this read does not subscribe to a live tail.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.sessions",
+        "qualname": "session_signals_page"
+      }
+    },
+    {
+      "ordinal": 11,
       "path": "/api/runs/",
       "methods": [
         "GET"
@@ -362,7 +458,7 @@
       }
     },
     {
-      "ordinal": 10,
+      "ordinal": 12,
       "path": "/api/runs/projects",
       "methods": [
         "GET"
@@ -400,7 +496,7 @@
       }
     },
     {
-      "ordinal": 11,
+      "ordinal": 13,
       "path": "/api/runs/{run_id}",
       "methods": [
         "GET"
@@ -448,7 +544,7 @@
       }
     },
     {
-      "ordinal": 12,
+      "ordinal": 14,
       "path": "/api/runs/{run_id}/file",
       "methods": [
         "GET"
@@ -496,7 +592,7 @@
       }
     },
     {
-      "ordinal": 13,
+      "ordinal": 15,
       "path": "/api/schedules/",
       "methods": [
         "GET"
@@ -544,7 +640,7 @@
       }
     },
     {
-      "ordinal": 14,
+      "ordinal": 16,
       "path": "/api/schedules/limits",
       "methods": [
         "GET"
@@ -582,7 +678,7 @@
       }
     },
     {
-      "ordinal": 15,
+      "ordinal": 17,
       "path": "/api/schedules/{schedule_id}",
       "methods": [
         "GET"
@@ -630,7 +726,7 @@
       }
     },
     {
-      "ordinal": 16,
+      "ordinal": 18,
       "path": "/api/schedules/",
       "methods": [
         "POST"
@@ -678,7 +774,7 @@
       }
     },
     {
-      "ordinal": 17,
+      "ordinal": 19,
       "path": "/api/schedules/{schedule_id}",
       "methods": [
         "PATCH"
@@ -726,7 +822,7 @@
       }
     },
     {
-      "ordinal": 18,
+      "ordinal": 20,
       "path": "/api/schedules/{schedule_id}",
       "methods": [
         "DELETE"
@@ -774,7 +870,7 @@
       }
     },
     {
-      "ordinal": 19,
+      "ordinal": 21,
       "path": "/api/schedules/{schedule_id}/enable",
       "methods": [
         "POST"
@@ -822,7 +918,7 @@
       }
     },
     {
-      "ordinal": 20,
+      "ordinal": 22,
       "path": "/api/schedules/{schedule_id}/disable",
       "methods": [
         "POST"
@@ -870,7 +966,7 @@
       }
     },
     {
-      "ordinal": 21,
+      "ordinal": 23,
       "path": "/api/schedules/{schedule_id}/trigger",
       "methods": [
         "POST"
@@ -918,7 +1014,7 @@
       }
     },
     {
-      "ordinal": 22,
+      "ordinal": 24,
       "path": "/api/schedules/{schedule_id}/runs",
       "methods": [
         "GET"
@@ -966,7 +1062,7 @@
       }
     },
     {
-      "ordinal": 23,
+      "ordinal": 25,
       "path": "/api/schedules/runs/{run_id}",
       "methods": [
         "GET"
@@ -1015,7 +1111,7 @@
       }
     },
     {
-      "ordinal": 24,
+      "ordinal": 26,
       "path": "/api/schedules/{schedule_id}/status",
       "methods": [
         "GET"
@@ -1063,3000 +1159,7 @@
       }
     },
     {
-      "ordinal": 25,
-      "path": "/api/launches/",
-      "methods": [
-        "POST"
-      ],
-      "name": "launch_run",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "202": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response Launch Run Api Launches  Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": 202,
-      "tags": [
-        "launches"
-      ],
-      "summary": null,
-      "description": "Fire an orchestration run immediately; process runs detached.\n\nReturns invocation_id; monitor via GET /api/invocations/{id} and GET /api/sessions/{id}/signals.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.launches",
-        "qualname": "launch_run"
-      }
-    },
-    {
-      "ordinal": 26,
-      "path": "/api/invocations/{invocation_id}/cancel",
-      "methods": [
-        "POST"
-      ],
-      "name": "cancel_launch",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "202": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Cancel Launch Api Invocations  Invocation Id  Cancel Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": 202,
-      "tags": [
-        "launches"
-      ],
-      "summary": null,
-      "description": "Cancel an in-flight launch: terminate its detached process; the task records a cancelled invocation row.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.launches",
-        "qualname": "cancel_launch"
-      }
-    },
-    {
       "ordinal": 27,
-      "path": "/api/runs/{run_id}/resume",
-      "methods": [
-        "GET"
-      ],
-      "name": "resume_availability",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Resume Availability Api Runs  Run Id  Resume Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "runs"
-      ],
-      "summary": null,
-      "description": "Read-only precheck: can this run be resumed, and why/why not.\n\nThe UI calls this before rendering the resume action so a run with no\ncheckpoint reads as an explicit, explained state rather than a dead or\nguessed-at control.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.run_resume",
-        "qualname": "resume_availability_route"
-      }
-    },
-    {
-      "ordinal": 28,
-      "path": "/api/runs/{run_id}/resume",
-      "methods": [
-        "POST"
-      ],
-      "name": "resume_run",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "202": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Resume Run Api Runs  Run Id  Resume Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": 202,
-      "tags": [
-        "runs"
-      ],
-      "summary": null,
-      "description": "Resume any run that has an underlying branch or checkpoint, dispatched by invocation_kind.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.run_resume",
-        "qualname": "resume_run_route"
-      }
-    },
-    {
-      "ordinal": 29,
-      "path": "/api/engine-runs/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_engine_runs",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response List Engine Runs Api Engine Runs  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "engine-runs"
-      ],
-      "summary": null,
-      "description": "List engine-run summaries without stored input, newest-first.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.engine_runs",
-        "qualname": "list_engine_runs_route"
-      }
-    },
-    {
-      "ordinal": 30,
-      "path": "/api/engine-runs/{run_id}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_engine_run",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Engine Run Api Engine Runs  Run Id  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "engine-runs"
-      ],
-      "summary": null,
-      "description": "Return a single engine run row by id.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.engine_runs",
-        "qualname": "get_engine_run_route"
-      }
-    },
-    {
-      "ordinal": 31,
-      "path": "/api/agents/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_agents",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response List Agents Api Agents  Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "agents"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.agents",
-        "qualname": "list_agents_route"
-      }
-    },
-    {
-      "ordinal": 32,
-      "path": "/api/agents/{name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_agent",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Agent Api Agents  Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "agents"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.agents",
-        "qualname": "get_agent_route"
-      }
-    },
-    {
-      "ordinal": 33,
-      "path": "/api/agents/{name}",
-      "methods": [
-        "POST"
-      ],
-      "name": "create_agent",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Create Agent Api Agents  Name  Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "agents"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.agents",
-        "qualname": "create_agent_route"
-      }
-    },
-    {
-      "ordinal": 34,
-      "path": "/api/agents/{name}",
-      "methods": [
-        "PUT"
-      ],
-      "name": "update_agent",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Update Agent Api Agents  Name  Put"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "agents"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.agents",
-        "qualname": "update_agent_route"
-      }
-    },
-    {
-      "ordinal": 35,
-      "path": "/api/agents/{name}",
-      "methods": [
-        "DELETE"
-      ],
-      "name": "delete_agent",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Delete Agent Api Agents  Name  Delete"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "agents"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.agents",
-        "qualname": "delete_agent_route"
-      }
-    },
-    {
-      "ordinal": 36,
-      "path": "/api/agents/{name}/validate",
-      "methods": [
-        "POST"
-      ],
-      "name": "validate_agent",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Validate Agent Api Agents  Name  Validate Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "agents"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.agents",
-        "qualname": "validate_agent"
-      }
-    },
-    {
-      "ordinal": 37,
-      "path": "/api/definitions/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_definitions",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response List Definitions Api Definitions  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "definitions"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
-        "qualname": "list_definitions_route"
-      }
-    },
-    {
-      "ordinal": 38,
-      "path": "/api/definitions/{kind}/{name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_definition",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Definition Api Definitions  Kind   Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "definitions"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
-        "qualname": "get_definition_route"
-      }
-    },
-    {
-      "ordinal": 39,
-      "path": "/api/definitions/{kind}/{name}/versions/{version}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_version",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Version Api Definitions  Kind   Name  Versions  Version  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "definitions"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
-        "qualname": "get_version_route"
-      }
-    },
-    {
-      "ordinal": 40,
-      "path": "/api/definitions/{kind}/{name}",
-      "methods": [
-        "POST"
-      ],
-      "name": "save_definition",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Save Definition Api Definitions  Kind   Name  Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "definitions"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
-        "qualname": "save_definition_route"
-      }
-    },
-    {
-      "ordinal": 41,
-      "path": "/api/definitions/{kind}/{name}/rollback",
-      "methods": [
-        "POST"
-      ],
-      "name": "rollback_definition",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Rollback Definition Api Definitions  Kind   Name  Rollback Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "definitions"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
-        "qualname": "rollback_definition_route"
-      }
-    },
-    {
-      "ordinal": 42,
-      "path": "/api/definitions/snapshot",
-      "methods": [
-        "POST"
-      ],
-      "name": "snapshot_current",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Snapshot Current Api Definitions Snapshot Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "definitions"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
-        "qualname": "snapshot_current_route"
-      }
-    },
-    {
-      "ordinal": 43,
-      "path": "/api/playbooks/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_playbooks",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response List Playbooks Api Playbooks  Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "list_playbooks_route"
-      }
-    },
-    {
-      "ordinal": 44,
-      "path": "/api/playbooks/{name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_playbook",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Playbook Api Playbooks  Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "get_playbook_route"
-      }
-    },
-    {
-      "ordinal": 45,
-      "path": "/api/playbooks/{name}",
-      "methods": [
-        "POST"
-      ],
-      "name": "create_playbook",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Create Playbook Api Playbooks  Name  Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "create_playbook_route"
-      }
-    },
-    {
-      "ordinal": 46,
-      "path": "/api/playbooks/{name}",
-      "methods": [
-        "PUT"
-      ],
-      "name": "update_playbook",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Update Playbook Api Playbooks  Name  Put"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "update_playbook_route"
-      }
-    },
-    {
-      "ordinal": 47,
-      "path": "/api/playbooks/{name}",
-      "methods": [
-        "DELETE"
-      ],
-      "name": "delete_playbook",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Delete Playbook Api Playbooks  Name  Delete"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "delete_playbook"
-      }
-    },
-    {
-      "ordinal": 48,
-      "path": "/api/playbooks/{name}/validate",
-      "methods": [
-        "POST"
-      ],
-      "name": "validate_playbook",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Validate Playbook Api Playbooks  Name  Validate Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "validate_playbook_route"
-      }
-    },
-    {
-      "ordinal": 49,
-      "path": "/api/playbooks/{name}/run",
-      "methods": [
-        "POST"
-      ],
-      "name": "run_playbook",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Run Playbook Api Playbooks  Name  Run Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "run_playbook"
-      }
-    },
-    {
-      "ordinal": 50,
-      "path": "/api/playbook-templates/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_builtin_playbooks",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response List Builtin Playbooks Api Playbook Templates  Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "list_builtin_playbooks_route"
-      }
-    },
-    {
-      "ordinal": 51,
-      "path": "/api/playbook-templates/{name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_builtin_playbook",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Builtin Playbook Api Playbook Templates  Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "get_builtin_playbook_route"
-      }
-    },
-    {
-      "ordinal": 52,
-      "path": "/api/playbook-templates/{name}/install",
-      "methods": [
-        "POST"
-      ],
-      "name": "install_builtin_playbook",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Install Builtin Playbook Api Playbook Templates  Name  Install Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "playbooks"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
-        "qualname": "install_builtin_playbook_route"
-      }
-    },
-    {
-      "ordinal": 53,
-      "path": "/api/shows/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_shows",
-      "response_model": "builtins.list",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "items": {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                "type": "array",
-                "title": "Response List Shows Api Shows  Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "shows"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.shows",
-        "qualname": "list_shows_route"
-      }
-    },
-    {
-      "ordinal": 54,
-      "path": "/api/shows/gated-plays",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_gated_plays",
-      "response_model": "builtins.list",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "items": {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                "type": "array",
-                "title": "Response List Gated Plays Api Shows Gated Plays Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "shows"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.shows",
-        "qualname": "list_gated_plays_route"
-      }
-    },
-    {
-      "ordinal": 55,
-      "path": "/api/shows/import",
-      "methods": [
-        "POST"
-      ],
-      "name": "import_shows",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": {
-                  "type": "integer"
-                },
-                "type": "object",
-                "title": "Response Import Shows Api Shows Import Post"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "shows",
-        "shows"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.shows",
-        "qualname": "import_shows_route"
-      }
-    },
-    {
-      "ordinal": 56,
-      "path": "/api/shows/{topic}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_show",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Show Api Shows  Topic  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "shows"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.shows",
-        "qualname": "get_show_route"
-      }
-    },
-    {
-      "ordinal": 57,
-      "path": "/api/shows/{topic}/stream",
-      "methods": [
-        "GET"
-      ],
-      "name": "stream_show",
-      "response_model": null,
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {}
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "shows"
-      ],
-      "summary": null,
-      "description": "SSE stream of file changes under one show directory.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.shows",
-        "qualname": "stream_show"
-      }
-    },
-    {
-      "ordinal": 58,
-      "path": "/api/skills/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_skills",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response List Skills Api Skills  Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "skills"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.skills",
-        "qualname": "list_skills_route"
-      }
-    },
-    {
-      "ordinal": 59,
-      "path": "/api/skills/{name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_skill",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Skill Api Skills  Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "skills"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.skills",
-        "qualname": "get_skill_route"
-      }
-    },
-    {
-      "ordinal": 60,
-      "path": "/api/skills/{name}/validate",
-      "methods": [
-        "POST"
-      ],
-      "name": "validate_skill",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Validate Skill Api Skills  Name  Validate Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "skills"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.skills",
-        "qualname": "validate_skill_route"
-      }
-    },
-    {
-      "ordinal": 61,
-      "path": "/api/plugins",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_plugins_endpoint",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response List Plugins Endpoint Api Plugins Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "plugins"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.plugins",
-        "qualname": "list_plugins_endpoint"
-      }
-    },
-    {
-      "ordinal": 62,
-      "path": "/api/plugins/{name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_plugin_endpoint",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Plugin Endpoint Api Plugins  Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "plugins"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.plugins",
-        "qualname": "get_plugin_endpoint"
-      }
-    },
-    {
-      "ordinal": 63,
-      "path": "/api/plugins/{plugin_name}/skills/{skill_name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_plugin_skill_endpoint",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Plugin Skill Endpoint Api Plugins  Plugin Name  Skills  Skill Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "plugins"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.plugins",
-        "qualname": "get_plugin_skill_endpoint"
-      }
-    },
-    {
-      "ordinal": 64,
-      "path": "/api/plugins/{plugin_name}/agents/{agent_name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_plugin_agent_endpoint",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Plugin Agent Endpoint Api Plugins  Plugin Name  Agents  Agent Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "plugins"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.plugins",
-        "qualname": "get_plugin_agent_endpoint"
-      }
-    },
-    {
-      "ordinal": 65,
-      "path": "/api/mcp/servers/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_mcp_servers",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response List Mcp Servers Api Mcp Servers  Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "mcp"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
-        "qualname": "list_mcp_servers_route"
-      }
-    },
-    {
-      "ordinal": 66,
-      "path": "/api/mcp/servers/{name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_mcp_server",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Mcp Server Api Mcp Servers  Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "mcp"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
-        "qualname": "get_mcp_server_route"
-      }
-    },
-    {
-      "ordinal": 67,
-      "path": "/api/mcp/servers/",
-      "methods": [
-        "POST"
-      ],
-      "name": "register_mcp_server",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "201": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response Register Mcp Server Api Mcp Servers  Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": 201,
-      "tags": [
-        "mcp"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
-        "qualname": "register_mcp_server_route"
-      }
-    },
-    {
-      "ordinal": 68,
-      "path": "/api/mcp/servers/{name}",
-      "methods": [
-        "PUT"
-      ],
-      "name": "update_mcp_server",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Update Mcp Server Api Mcp Servers  Name  Put"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "mcp"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
-        "qualname": "update_mcp_server_route"
-      }
-    },
-    {
-      "ordinal": 69,
-      "path": "/api/mcp/servers/{name}/enable",
-      "methods": [
-        "POST"
-      ],
-      "name": "enable_mcp_server",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Enable Mcp Server Api Mcp Servers  Name  Enable Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "mcp"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
-        "qualname": "enable_mcp_server_route"
-      }
-    },
-    {
-      "ordinal": 70,
-      "path": "/api/mcp/servers/{name}/disable",
-      "methods": [
-        "POST"
-      ],
-      "name": "disable_mcp_server",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Disable Mcp Server Api Mcp Servers  Name  Disable Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "mcp"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
-        "qualname": "disable_mcp_server_route"
-      }
-    },
-    {
-      "ordinal": 71,
-      "path": "/api/mcp/servers/{name}",
-      "methods": [
-        "DELETE"
-      ],
-      "name": "delete_mcp_server",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Delete Mcp Server Api Mcp Servers  Name  Delete"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "mcp"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
-        "qualname": "delete_mcp_server_route"
-      }
-    },
-    {
-      "ordinal": 72,
-      "path": "/api/mcp/servers/{name}/check",
-      "methods": [
-        "POST"
-      ],
-      "name": "check_mcp_server",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Check Mcp Server Api Mcp Servers  Name  Check Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "mcp"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
-        "qualname": "check_mcp_server_route"
-      }
-    },
-    {
-      "ordinal": 73,
-      "path": "/api/mcp/servers/{name}/validate",
-      "methods": [
-        "POST"
-      ],
-      "name": "validate_mcp_server",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Validate Mcp Server Api Mcp Servers  Name  Validate Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "mcp"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
-        "qualname": "validate_mcp_server_route"
-      }
-    },
-    {
-      "ordinal": 74,
-      "path": "/api/teams/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_teams",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response List Teams Api Teams  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "teams"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.teams",
-        "qualname": "list_teams_route"
-      }
-    },
-    {
-      "ordinal": 75,
-      "path": "/api/teams/{team_id}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_team",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Team Api Teams  Team Id  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "teams"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.teams",
-        "qualname": "get_team_route"
-      }
-    },
-    {
-      "ordinal": 76,
-      "path": "/api/invocations/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_invocations",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response List Invocations Api Invocations  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "invocations"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.invocations",
-        "qualname": "list_invocations_route"
-      }
-    },
-    {
-      "ordinal": 77,
-      "path": "/api/invocations/{invocation_id}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_invocation",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Invocation Api Invocations  Invocation Id  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "invocations"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.invocations",
-        "qualname": "get_invocation_route"
-      }
-    },
-    {
-      "ordinal": 78,
-      "path": "/api/artifacts/{artifact_id}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_artifact",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Artifact Api Artifacts  Artifact Id  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "artifacts"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.invocations",
-        "qualname": "get_artifact_route"
-      }
-    },
-    {
-      "ordinal": 79,
-      "path": "/api/artifacts/by-session/{session_id}",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_for_session",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response List For Session Api Artifacts By Session  Session Id  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "artifacts"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.invocations",
-        "qualname": "list_for_session"
-      }
-    },
-    {
-      "ordinal": 80,
-      "path": "/api/projects/",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_projects",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response List Projects Api Projects  Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "projects"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.projects",
-        "qualname": "list_projects_route"
-      }
-    },
-    {
-      "ordinal": 81,
-      "path": "/api/projects/{name}",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_project",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Get Project Api Projects  Name  Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "projects"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.projects",
-        "qualname": "get_project_route"
-      }
-    },
-    {
-      "ordinal": 82,
-      "path": "/api/projects/",
-      "methods": [
-        "POST"
-      ],
-      "name": "create_project",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "201": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response Create Project Api Projects  Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": 201,
-      "tags": [
-        "projects"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.projects",
-        "qualname": "create_project_route"
-      }
-    },
-    {
-      "ordinal": 83,
-      "path": "/api/projects/{name}",
-      "methods": [
-        "PUT"
-      ],
-      "name": "update_project",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Update Project Api Projects  Name  Put"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "projects"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.projects",
-        "qualname": "update_project_route"
-      }
-    },
-    {
-      "ordinal": 84,
-      "path": "/api/projects/{name}/assign",
-      "methods": [
-        "POST"
-      ],
-      "name": "assign_project",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Assign Project Api Projects  Name  Assign Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "projects"
-      ],
-      "summary": null,
-      "description": "Assign sessions to a project. Use session_ids for specific ones, or all_unassigned=true.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.projects",
-        "qualname": "assign_project"
-      }
-    },
-    {
-      "ordinal": 85,
-      "path": "/api/projects/{name}",
-      "methods": [
-        "DELETE"
-      ],
-      "name": "delete_project",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Delete Project Api Projects  Name  Delete"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "projects"
-      ],
-      "summary": null,
-      "description": null,
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.projects",
-        "qualname": "delete_project_route"
-      }
-    },
-    {
-      "ordinal": 86,
-      "path": "/api/identity",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_identity",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object",
-                "title": "Response Get Identity Api Identity Get"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [],
-      "summary": null,
-      "description": "Identify this daemon only to a caller that proved it holds the token.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.identity",
-        "qualname": "get_identity_route"
-      }
-    },
-    {
-      "ordinal": 87,
-      "path": "/api/studio/pairing-codes",
-      "methods": [
-        "POST"
-      ],
-      "name": "create_pairing_code",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "410": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Response Create Pairing Code Api Studio Pairing Codes Post"
-              }
-            }
-          }
-        }
-      },
-      "status_code": 410,
-      "tags": [],
-      "summary": null,
-      "description": "Retired: a code is minted by the daemon, never by an HTTP request.\n\n``li studio`` obtains a code in process when it starts the daemon, or over\nthe daemon's same-user reconnect socket when one is already running, and\nopens the page with it. This route answered any admitted request before\nthat, which made a code \u2014 and so a bearer \u2014 reachable by a program that can\nonly speak HTTP. It still answers 410 rather than disappearing, so an older\nlauncher learns why it cannot pair.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.pairing",
-        "qualname": "create_pairing_code_route"
-      }
-    },
-    {
-      "ordinal": 88,
-      "path": "/api/studio/pair",
-      "methods": [
-        "POST"
-      ],
-      "name": "redeem_pairing_code",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object",
-                "title": "Response Redeem Pairing Code Api Studio Pair Post"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [],
-      "summary": null,
-      "description": "Spend a pairing code for the bearer a page on an allowed origin sends, and a\ndecision capability bound to that origin.\n\n``token_source`` says which bearer ``token`` is: ``\"launch\"`` for this daemon's\nlaunch bearer, which stops working when the daemon restarts, or ``\"configured\"``\nfor the configured ``LIONAGI_STUDIO_AUTH_TOKEN``, a long-lived credential. The\npage keeps only a launch bearer in local storage, bound to the daemon's API\nbase. A configured bearer stays in session storage or memory for the tab.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.pairing",
-        "qualname": "redeem_pairing_code_route"
-      }
-    },
-    {
-      "ordinal": 89,
-      "path": "/api/studio/disconnect",
-      "methods": [
-        "POST"
-      ],
-      "name": "disconnect_decision_capability",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": {
-                  "type": "boolean"
-                },
-                "type": "object",
-                "title": "Response Disconnect Decision Capability Api Studio Disconnect Post"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [],
-      "summary": null,
-      "description": "Revoke the decision capability a page explicitly disconnects with.\n\nThe page sends it in the same header the decision requests use. An unknown\nor already revoked capability answers ``revoked: false``; the route admits\nexactly what it admitted before, so nothing here is a new gate.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.pairing",
-        "qualname": "disconnect_decision_capability_route"
-      }
-    },
-    {
-      "ordinal": 90,
       "path": "/api/engine-defs/",
       "methods": [
         "GET"
@@ -4107,7 +1210,7 @@
       }
     },
     {
-      "ordinal": 91,
+      "ordinal": 28,
       "path": "/api/engine-defs/",
       "methods": [
         "POST"
@@ -4155,7 +1258,7 @@
       }
     },
     {
-      "ordinal": 92,
+      "ordinal": 29,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "GET"
@@ -4203,7 +1306,7 @@
       }
     },
     {
-      "ordinal": 93,
+      "ordinal": 30,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4251,7 +1354,7 @@
       }
     },
     {
-      "ordinal": 94,
+      "ordinal": 31,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4299,7 +1402,3134 @@
       }
     },
     {
+      "ordinal": 32,
+      "path": "/api/engine-catalog/blueprints",
+      "methods": [
+        "GET"
+      ],
+      "name": "engine_catalog_blueprints",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Engine Catalog Blueprints Api Engine Catalog Blueprints Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "engine-defs"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.engine_defs",
+        "qualname": "engine_catalog_blueprints_route"
+      }
+    },
+    {
+      "ordinal": 33,
+      "path": "/api/engine-catalog/presets",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_engine_catalog_presets",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response List Engine Catalog Presets Api Engine Catalog Presets Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "engine-defs"
+      ],
+      "summary": null,
+      "description": "List text-ID presets; paging is not a snapshot. Rows with NULL, non-text or NUL-containing IDs are not listed. If a page contains an encodable ID, trailing oversized IDs are deferred; when more rows exist, the cursor names the last encodable ID. If every ID on a page is oversized, the page is returned with next_cursor null; stop_reason is id_exceeds_cursor_bound only if additional rows exist.\n\nStored options over 65536 UTF-8 bytes or 32 JSON nesting levels are unavailable. Preset inputs are flat key/value pairs, so the nesting limit does not exclude normal preset options. Preset budget overrides accept integers from 1 to 100, or null; invalid stored budgets have reason budget_invalid. Each row includes stored_option_keys, unused_option_keys, missing_option_keys and invalid_option_keys: null when not computed, otherwise a sorted list ([] when none).",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.engine_defs",
+        "qualname": "list_engine_catalog_presets_route"
+      }
+    },
+    {
+      "ordinal": 34,
+      "path": "/api/engine-catalog/preset",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_engine_catalog_preset",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Engine Catalog Preset Api Engine Catalog Preset Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "engine-defs"
+      ],
+      "summary": null,
+      "description": "Look up a text-ID preset by query parameter, including an empty ID.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.engine_defs",
+        "qualname": "get_engine_catalog_preset_route"
+      }
+    },
+    {
+      "ordinal": 35,
+      "path": "/api/launches/",
+      "methods": [
+        "POST"
+      ],
+      "name": "launch_run",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "202": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Launch Run Api Launches  Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": 202,
+      "tags": [
+        "launches"
+      ],
+      "summary": null,
+      "description": "Fire an orchestration run immediately; process runs detached.\n\nReturns invocation_id; monitor via GET /api/invocations/{id} and GET /api/sessions/{id}/signals.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.launches",
+        "qualname": "launch_run"
+      }
+    },
+    {
+      "ordinal": 36,
+      "path": "/api/invocations/{invocation_id}/cancel",
+      "methods": [
+        "POST"
+      ],
+      "name": "cancel_launch",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "202": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Cancel Launch Api Invocations  Invocation Id  Cancel Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": 202,
+      "tags": [
+        "launches"
+      ],
+      "summary": null,
+      "description": "Cancel an in-flight launch: terminate its detached process; the task records a cancelled invocation row.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.launches",
+        "qualname": "cancel_launch"
+      }
+    },
+    {
+      "ordinal": 37,
+      "path": "/api/runs/{run_id}/resume",
+      "methods": [
+        "GET"
+      ],
+      "name": "resume_availability",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Resume Availability Api Runs  Run Id  Resume Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "runs"
+      ],
+      "summary": null,
+      "description": "Read-only precheck: can this run be resumed, and why/why not.\n\nThe UI calls this before rendering the resume action so a run with no\ncheckpoint reads as an explicit, explained state rather than a dead or\nguessed-at control.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.run_resume",
+        "qualname": "resume_availability_route"
+      }
+    },
+    {
+      "ordinal": 38,
+      "path": "/api/runs/{run_id}/resume",
+      "methods": [
+        "POST"
+      ],
+      "name": "resume_run",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "202": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Resume Run Api Runs  Run Id  Resume Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": 202,
+      "tags": [
+        "runs"
+      ],
+      "summary": null,
+      "description": "Resume any run that has an underlying branch or checkpoint, dispatched by invocation_kind.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.run_resume",
+        "qualname": "resume_run_route"
+      }
+    },
+    {
+      "ordinal": 39,
+      "path": "/api/engine-runs/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_engine_runs",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response List Engine Runs Api Engine Runs  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "engine-runs"
+      ],
+      "summary": null,
+      "description": "List engine-run summaries without stored input, newest-first.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.engine_runs",
+        "qualname": "list_engine_runs_route"
+      }
+    },
+    {
+      "ordinal": 40,
+      "path": "/api/engine-runs/{run_id}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_engine_run",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Engine Run Api Engine Runs  Run Id  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "engine-runs"
+      ],
+      "summary": null,
+      "description": "Return a single engine run row by id.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.engine_runs",
+        "qualname": "get_engine_run_route"
+      }
+    },
+    {
+      "ordinal": 41,
+      "path": "/api/agents/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_agents",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response List Agents Api Agents  Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "agents"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.agents",
+        "qualname": "list_agents_route"
+      }
+    },
+    {
+      "ordinal": 42,
+      "path": "/api/agents/{name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_agent",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Agent Api Agents  Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "agents"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.agents",
+        "qualname": "get_agent_route"
+      }
+    },
+    {
+      "ordinal": 43,
+      "path": "/api/agents/{name}",
+      "methods": [
+        "POST"
+      ],
+      "name": "create_agent",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Create Agent Api Agents  Name  Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "agents"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.agents",
+        "qualname": "create_agent_route"
+      }
+    },
+    {
+      "ordinal": 44,
+      "path": "/api/agents/{name}",
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_agent",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Update Agent Api Agents  Name  Put"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "agents"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.agents",
+        "qualname": "update_agent_route"
+      }
+    },
+    {
+      "ordinal": 45,
+      "path": "/api/agents/{name}",
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_agent",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Delete Agent Api Agents  Name  Delete"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "agents"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.agents",
+        "qualname": "delete_agent_route"
+      }
+    },
+    {
+      "ordinal": 46,
+      "path": "/api/agents/{name}/validate",
+      "methods": [
+        "POST"
+      ],
+      "name": "validate_agent",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Validate Agent Api Agents  Name  Validate Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "agents"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.agents",
+        "qualname": "validate_agent"
+      }
+    },
+    {
+      "ordinal": 47,
+      "path": "/api/definitions/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_definitions",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response List Definitions Api Definitions  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "definitions"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.definitions",
+        "qualname": "list_definitions_route"
+      }
+    },
+    {
+      "ordinal": 48,
+      "path": "/api/definitions/{kind}/{name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_definition",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Definition Api Definitions  Kind   Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "definitions"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.definitions",
+        "qualname": "get_definition_route"
+      }
+    },
+    {
+      "ordinal": 49,
+      "path": "/api/definitions/{kind}/{name}/versions/{version}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_version",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Version Api Definitions  Kind   Name  Versions  Version  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "definitions"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.definitions",
+        "qualname": "get_version_route"
+      }
+    },
+    {
+      "ordinal": 50,
+      "path": "/api/definitions/{kind}/{name}",
+      "methods": [
+        "POST"
+      ],
+      "name": "save_definition",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Save Definition Api Definitions  Kind   Name  Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "definitions"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.definitions",
+        "qualname": "save_definition_route"
+      }
+    },
+    {
+      "ordinal": 51,
+      "path": "/api/definitions/{kind}/{name}/rollback",
+      "methods": [
+        "POST"
+      ],
+      "name": "rollback_definition",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Rollback Definition Api Definitions  Kind   Name  Rollback Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "definitions"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.definitions",
+        "qualname": "rollback_definition_route"
+      }
+    },
+    {
+      "ordinal": 52,
+      "path": "/api/definitions/snapshot",
+      "methods": [
+        "POST"
+      ],
+      "name": "snapshot_current",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Snapshot Current Api Definitions Snapshot Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "definitions"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.definitions",
+        "qualname": "snapshot_current_route"
+      }
+    },
+    {
+      "ordinal": 53,
+      "path": "/api/playbooks/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_playbooks",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response List Playbooks Api Playbooks  Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "list_playbooks_route"
+      }
+    },
+    {
+      "ordinal": 54,
+      "path": "/api/playbooks/{name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_playbook",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Playbook Api Playbooks  Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "get_playbook_route"
+      }
+    },
+    {
+      "ordinal": 55,
+      "path": "/api/playbooks/{name}",
+      "methods": [
+        "POST"
+      ],
+      "name": "create_playbook",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Create Playbook Api Playbooks  Name  Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "create_playbook_route"
+      }
+    },
+    {
+      "ordinal": 56,
+      "path": "/api/playbooks/{name}",
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_playbook",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Update Playbook Api Playbooks  Name  Put"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "update_playbook_route"
+      }
+    },
+    {
+      "ordinal": 57,
+      "path": "/api/playbooks/{name}",
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_playbook",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Delete Playbook Api Playbooks  Name  Delete"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "delete_playbook"
+      }
+    },
+    {
+      "ordinal": 58,
+      "path": "/api/playbooks/{name}/validate",
+      "methods": [
+        "POST"
+      ],
+      "name": "validate_playbook",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Validate Playbook Api Playbooks  Name  Validate Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "validate_playbook_route"
+      }
+    },
+    {
+      "ordinal": 59,
+      "path": "/api/playbooks/{name}/run",
+      "methods": [
+        "POST"
+      ],
+      "name": "run_playbook",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Run Playbook Api Playbooks  Name  Run Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "run_playbook"
+      }
+    },
+    {
+      "ordinal": 60,
+      "path": "/api/playbook-templates/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_builtin_playbooks",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response List Builtin Playbooks Api Playbook Templates  Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "list_builtin_playbooks_route"
+      }
+    },
+    {
+      "ordinal": 61,
+      "path": "/api/playbook-templates/{name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_builtin_playbook",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Builtin Playbook Api Playbook Templates  Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "get_builtin_playbook_route"
+      }
+    },
+    {
+      "ordinal": 62,
+      "path": "/api/playbook-templates/{name}/install",
+      "methods": [
+        "POST"
+      ],
+      "name": "install_builtin_playbook",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Install Builtin Playbook Api Playbook Templates  Name  Install Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "playbooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.playbooks",
+        "qualname": "install_builtin_playbook_route"
+      }
+    },
+    {
+      "ordinal": 63,
+      "path": "/api/shows/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_shows",
+      "response_model": "builtins.list",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array",
+                "title": "Response List Shows Api Shows  Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "shows"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.shows",
+        "qualname": "list_shows_route"
+      }
+    },
+    {
+      "ordinal": 64,
+      "path": "/api/shows/gated-plays",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_gated_plays",
+      "response_model": "builtins.list",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array",
+                "title": "Response List Gated Plays Api Shows Gated Plays Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "shows"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.shows",
+        "qualname": "list_gated_plays_route"
+      }
+    },
+    {
+      "ordinal": 65,
+      "path": "/api/shows/import",
+      "methods": [
+        "POST"
+      ],
+      "name": "import_shows",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object",
+                "title": "Response Import Shows Api Shows Import Post"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "shows",
+        "shows"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.shows",
+        "qualname": "import_shows_route"
+      }
+    },
+    {
+      "ordinal": 66,
+      "path": "/api/shows/{topic}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_show",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Show Api Shows  Topic  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "shows"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.shows",
+        "qualname": "get_show_route"
+      }
+    },
+    {
+      "ordinal": 67,
+      "path": "/api/shows/{topic}/stream",
+      "methods": [
+        "GET"
+      ],
+      "name": "stream_show",
+      "response_model": null,
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "shows"
+      ],
+      "summary": null,
+      "description": "SSE stream of file changes under one show directory.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.shows",
+        "qualname": "stream_show"
+      }
+    },
+    {
+      "ordinal": 68,
+      "path": "/api/skills/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_skills",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response List Skills Api Skills  Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "skills"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.skills",
+        "qualname": "list_skills_route"
+      }
+    },
+    {
+      "ordinal": 69,
+      "path": "/api/skills/{name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_skill",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Skill Api Skills  Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "skills"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.skills",
+        "qualname": "get_skill_route"
+      }
+    },
+    {
+      "ordinal": 70,
+      "path": "/api/skills/{name}/validate",
+      "methods": [
+        "POST"
+      ],
+      "name": "validate_skill",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Validate Skill Api Skills  Name  Validate Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "skills"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.skills",
+        "qualname": "validate_skill_route"
+      }
+    },
+    {
+      "ordinal": 71,
+      "path": "/api/plugins",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_plugins_endpoint",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response List Plugins Endpoint Api Plugins Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "plugins"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.plugins",
+        "qualname": "list_plugins_endpoint"
+      }
+    },
+    {
+      "ordinal": 72,
+      "path": "/api/plugins/{name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_plugin_endpoint",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Plugin Endpoint Api Plugins  Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "plugins"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.plugins",
+        "qualname": "get_plugin_endpoint"
+      }
+    },
+    {
+      "ordinal": 73,
+      "path": "/api/plugins/{plugin_name}/skills/{skill_name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_plugin_skill_endpoint",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Plugin Skill Endpoint Api Plugins  Plugin Name  Skills  Skill Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "plugins"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.plugins",
+        "qualname": "get_plugin_skill_endpoint"
+      }
+    },
+    {
+      "ordinal": 74,
+      "path": "/api/plugins/{plugin_name}/agents/{agent_name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_plugin_agent_endpoint",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Plugin Agent Endpoint Api Plugins  Plugin Name  Agents  Agent Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "plugins"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.plugins",
+        "qualname": "get_plugin_agent_endpoint"
+      }
+    },
+    {
+      "ordinal": 75,
+      "path": "/api/mcp/servers/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_mcp_servers",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response List Mcp Servers Api Mcp Servers  Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "mcp"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.mcp_servers",
+        "qualname": "list_mcp_servers_route"
+      }
+    },
+    {
+      "ordinal": 76,
+      "path": "/api/mcp/servers/{name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_mcp_server",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Mcp Server Api Mcp Servers  Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "mcp"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.mcp_servers",
+        "qualname": "get_mcp_server_route"
+      }
+    },
+    {
+      "ordinal": 77,
+      "path": "/api/mcp/servers/",
+      "methods": [
+        "POST"
+      ],
+      "name": "register_mcp_server",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "201": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Register Mcp Server Api Mcp Servers  Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": 201,
+      "tags": [
+        "mcp"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.mcp_servers",
+        "qualname": "register_mcp_server_route"
+      }
+    },
+    {
+      "ordinal": 78,
+      "path": "/api/mcp/servers/{name}",
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_mcp_server",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Update Mcp Server Api Mcp Servers  Name  Put"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "mcp"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.mcp_servers",
+        "qualname": "update_mcp_server_route"
+      }
+    },
+    {
+      "ordinal": 79,
+      "path": "/api/mcp/servers/{name}/enable",
+      "methods": [
+        "POST"
+      ],
+      "name": "enable_mcp_server",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Enable Mcp Server Api Mcp Servers  Name  Enable Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "mcp"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.mcp_servers",
+        "qualname": "enable_mcp_server_route"
+      }
+    },
+    {
+      "ordinal": 80,
+      "path": "/api/mcp/servers/{name}/disable",
+      "methods": [
+        "POST"
+      ],
+      "name": "disable_mcp_server",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Disable Mcp Server Api Mcp Servers  Name  Disable Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "mcp"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.mcp_servers",
+        "qualname": "disable_mcp_server_route"
+      }
+    },
+    {
+      "ordinal": 81,
+      "path": "/api/mcp/servers/{name}",
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_mcp_server",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Delete Mcp Server Api Mcp Servers  Name  Delete"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "mcp"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.mcp_servers",
+        "qualname": "delete_mcp_server_route"
+      }
+    },
+    {
+      "ordinal": 82,
+      "path": "/api/mcp/servers/{name}/check",
+      "methods": [
+        "POST"
+      ],
+      "name": "check_mcp_server",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Check Mcp Server Api Mcp Servers  Name  Check Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "mcp"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.mcp_servers",
+        "qualname": "check_mcp_server_route"
+      }
+    },
+    {
+      "ordinal": 83,
+      "path": "/api/mcp/servers/{name}/validate",
+      "methods": [
+        "POST"
+      ],
+      "name": "validate_mcp_server",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Validate Mcp Server Api Mcp Servers  Name  Validate Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "mcp"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.mcp_servers",
+        "qualname": "validate_mcp_server_route"
+      }
+    },
+    {
+      "ordinal": 84,
+      "path": "/api/teams/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_teams",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response List Teams Api Teams  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "teams"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.teams",
+        "qualname": "list_teams_route"
+      }
+    },
+    {
+      "ordinal": 85,
+      "path": "/api/teams/{team_id}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_team",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Team Api Teams  Team Id  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "teams"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.teams",
+        "qualname": "get_team_route"
+      }
+    },
+    {
+      "ordinal": 86,
+      "path": "/api/invocations/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_invocations",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response List Invocations Api Invocations  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "invocations"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.invocations",
+        "qualname": "list_invocations_route"
+      }
+    },
+    {
+      "ordinal": 87,
+      "path": "/api/invocations/{invocation_id}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_invocation",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Invocation Api Invocations  Invocation Id  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "invocations"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.invocations",
+        "qualname": "get_invocation_route"
+      }
+    },
+    {
+      "ordinal": 88,
+      "path": "/api/artifacts/{artifact_id}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_artifact",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Artifact Api Artifacts  Artifact Id  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "artifacts"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.invocations",
+        "qualname": "get_artifact_route"
+      }
+    },
+    {
+      "ordinal": 89,
+      "path": "/api/artifacts/by-session/{session_id}",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_for_session",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response List For Session Api Artifacts By Session  Session Id  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "artifacts"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.invocations",
+        "qualname": "list_for_session"
+      }
+    },
+    {
+      "ordinal": 90,
+      "path": "/api/projects/",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_projects",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response List Projects Api Projects  Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "projects"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.projects",
+        "qualname": "list_projects_route"
+      }
+    },
+    {
+      "ordinal": 91,
+      "path": "/api/projects/{name}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_project",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Project Api Projects  Name  Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "projects"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.projects",
+        "qualname": "get_project_route"
+      }
+    },
+    {
+      "ordinal": 92,
+      "path": "/api/projects/",
+      "methods": [
+        "POST"
+      ],
+      "name": "create_project",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "201": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Create Project Api Projects  Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": 201,
+      "tags": [
+        "projects"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.projects",
+        "qualname": "create_project_route"
+      }
+    },
+    {
+      "ordinal": 93,
+      "path": "/api/projects/{name}",
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_project",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Update Project Api Projects  Name  Put"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "projects"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.projects",
+        "qualname": "update_project_route"
+      }
+    },
+    {
+      "ordinal": 94,
+      "path": "/api/projects/{name}/assign",
+      "methods": [
+        "POST"
+      ],
+      "name": "assign_project",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Assign Project Api Projects  Name  Assign Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "projects"
+      ],
+      "summary": null,
+      "description": "Assign sessions to a project. Use session_ids for specific ones, or all_unassigned=true.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.projects",
+        "qualname": "assign_project"
+      }
+    },
+    {
       "ordinal": 95,
+      "path": "/api/projects/{name}",
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_project",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Delete Project Api Projects  Name  Delete"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "projects"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.projects",
+        "qualname": "delete_project_route"
+      }
+    },
+    {
+      "ordinal": 96,
+      "path": "/api/identity",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_identity",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object",
+                "title": "Response Get Identity Api Identity Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [],
+      "summary": null,
+      "description": "Identify this daemon only to a caller that proved it holds the token.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.identity",
+        "qualname": "get_identity_route"
+      }
+    },
+    {
+      "ordinal": 97,
+      "path": "/api/studio/pairing-codes",
+      "methods": [
+        "POST"
+      ],
+      "name": "create_pairing_code",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "410": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Create Pairing Code Api Studio Pairing Codes Post"
+              }
+            }
+          }
+        }
+      },
+      "status_code": 410,
+      "tags": [],
+      "summary": null,
+      "description": "Retired: a code is minted by the daemon, never by an HTTP request.\n\n``li studio`` obtains a code in process when it starts the daemon, or over\nthe daemon's same-user reconnect socket when one is already running, and\nopens the page with it. This route answered any admitted request before\nthat, which made a code \u2014 and so a bearer \u2014 reachable by a program that can\nonly speak HTTP. It still answers 410 rather than disappearing, so an older\nlauncher learns why it cannot pair.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.pairing",
+        "qualname": "create_pairing_code_route"
+      }
+    },
+    {
+      "ordinal": 98,
+      "path": "/api/studio/pair",
+      "methods": [
+        "POST"
+      ],
+      "name": "redeem_pairing_code",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object",
+                "title": "Response Redeem Pairing Code Api Studio Pair Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [],
+      "summary": null,
+      "description": "Spend a pairing code for the bearer a page on an allowed origin sends, and a\ndecision capability bound to that origin.\n\n``token_source`` says which bearer ``token`` is: ``\"launch\"`` for this daemon's\nlaunch bearer, which stops working when the daemon restarts, or ``\"configured\"``\nfor the configured ``LIONAGI_STUDIO_AUTH_TOKEN``, a long-lived credential. The\npage keeps only a launch bearer in local storage, bound to the daemon's API\nbase. A configured bearer stays in session storage or memory for the tab.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.pairing",
+        "qualname": "redeem_pairing_code_route"
+      }
+    },
+    {
+      "ordinal": 99,
+      "path": "/api/studio/disconnect",
+      "methods": [
+        "POST"
+      ],
+      "name": "disconnect_decision_capability",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object",
+                "title": "Response Disconnect Decision Capability Api Studio Disconnect Post"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [],
+      "summary": null,
+      "description": "Revoke the decision capability a page explicitly disconnects with.\n\nThe page sends it in the same header the decision requests use. An unknown\nor already revoked capability answers ``revoked: false``; the route admits\nexactly what it admitted before, so nothing here is a new gate.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.pairing",
+        "qualname": "disconnect_decision_capability_route"
+      }
+    },
+    {
+      "ordinal": 100,
       "path": "/api/workflow-defs/",
       "methods": [
         "GET"
@@ -4350,7 +4580,7 @@
       }
     },
     {
-      "ordinal": 96,
+      "ordinal": 101,
       "path": "/api/workflow-defs/",
       "methods": [
         "POST"
@@ -4398,7 +4628,7 @@
       }
     },
     {
-      "ordinal": 97,
+      "ordinal": 102,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "GET"
@@ -4446,7 +4676,7 @@
       }
     },
     {
-      "ordinal": 98,
+      "ordinal": 103,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4494,7 +4724,7 @@
       }
     },
     {
-      "ordinal": 99,
+      "ordinal": 104,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4542,7 +4772,7 @@
       }
     },
     {
-      "ordinal": 100,
+      "ordinal": 105,
       "path": "/api/workflow-defs/{def_id}/run",
       "methods": [
         "POST"
@@ -4590,7 +4820,7 @@
       }
     },
     {
-      "ordinal": 101,
+      "ordinal": 106,
       "path": "/api/sessions/{session_id}/tags",
       "methods": [
         "POST"
@@ -4638,7 +4868,7 @@
       }
     },
     {
-      "ordinal": 102,
+      "ordinal": 107,
       "path": "/api/sessions/{session_id}/tags/{tag:path}",
       "methods": [
         "DELETE"
@@ -4686,7 +4916,7 @@
       }
     },
     {
-      "ordinal": 103,
+      "ordinal": 108,
       "path": "/api/operator/conversations",
       "methods": [
         "GET"
@@ -4734,7 +4964,7 @@
       }
     },
     {
-      "ordinal": 104,
+      "ordinal": 109,
       "path": "/api/operator/conversations",
       "methods": [
         "POST"
@@ -4782,7 +5012,7 @@
       }
     },
     {
-      "ordinal": 105,
+      "ordinal": 110,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "PATCH"
@@ -4830,7 +5060,7 @@
       }
     },
     {
-      "ordinal": 106,
+      "ordinal": 111,
       "path": "/api/operator/conversations/{conversation_id}/fork",
       "methods": [
         "POST"
@@ -4878,7 +5108,7 @@
       }
     },
     {
-      "ordinal": 107,
+      "ordinal": 112,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "GET"
@@ -4926,7 +5156,7 @@
       }
     },
     {
-      "ordinal": 108,
+      "ordinal": 113,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "DELETE"
@@ -4974,7 +5204,7 @@
       }
     },
     {
-      "ordinal": 109,
+      "ordinal": 114,
       "path": "/api/operator/conversations/{conversation_id}/turns",
       "methods": [
         "POST"
@@ -5022,7 +5252,7 @@
       }
     },
     {
-      "ordinal": 110,
+      "ordinal": 115,
       "path": "/api/operator/models",
       "methods": [
         "GET"
@@ -5060,7 +5290,7 @@
       }
     },
     {
-      "ordinal": 111,
+      "ordinal": 116,
       "path": "/api/operator/conversations/{conversation_id}/view",
       "methods": [
         "POST"
@@ -5108,7 +5338,7 @@
       }
     },
     {
-      "ordinal": 112,
+      "ordinal": 117,
       "path": "/api/operator/conversations/{conversation_id}/requests/{request_id}/cancel",
       "methods": [
         "POST"
@@ -5156,7 +5386,7 @@
       }
     },
     {
-      "ordinal": 113,
+      "ordinal": 118,
       "path": "/api/operator/conversations/{conversation_id}/stream",
       "methods": [
         "GET"
@@ -5200,7 +5430,7 @@
       }
     },
     {
-      "ordinal": 114,
+      "ordinal": 119,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
       "methods": [
         "POST"
@@ -5248,7 +5478,7 @@
       }
     },
     {
-      "ordinal": 115,
+      "ordinal": 120,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/decision",
       "methods": [
         "POST"
@@ -5296,7 +5526,7 @@
       }
     },
     {
-      "ordinal": 116,
+      "ordinal": 121,
       "path": "/api/operator/conversations/{conversation_id}/effects/{effect_id}/ack",
       "methods": [
         "POST"
@@ -5344,7 +5574,7 @@
       }
     },
     {
-      "ordinal": 117,
+      "ordinal": 122,
       "path": "/api/hooks/library",
       "methods": [
         "GET"
@@ -5382,7 +5612,7 @@
       }
     },
     {
-      "ordinal": 118,
+      "ordinal": 123,
       "path": "/api/hooks/library/{name}",
       "methods": [
         "PUT"
@@ -5430,7 +5660,7 @@
       }
     },
     {
-      "ordinal": 119,
+      "ordinal": 124,
       "path": "/api/hooks/library/{name}",
       "methods": [
         "DELETE"
@@ -5478,7 +5708,7 @@
       }
     },
     {
-      "ordinal": 120,
+      "ordinal": 125,
       "path": "/api/operator/hooks",
       "methods": [
         "GET"
@@ -5516,7 +5746,7 @@
       }
     },
     {
-      "ordinal": 121,
+      "ordinal": 126,
       "path": "/api/operator/hooks",
       "methods": [
         "PUT"
@@ -5564,7 +5794,7 @@
       }
     },
     {
-      "ordinal": 122,
+      "ordinal": 127,
       "path": "/api/approvals/",
       "methods": [
         "POST"
@@ -5612,7 +5842,7 @@
       }
     },
     {
-      "ordinal": 123,
+      "ordinal": 128,
       "path": "/api/approvals/evidence/verify",
       "methods": [
         "GET"
@@ -5650,7 +5880,7 @@
       }
     },
     {
-      "ordinal": 124,
+      "ordinal": 129,
       "path": "/api/approvals/{approval_id}",
       "methods": [
         "GET"
@@ -5698,7 +5928,7 @@
       }
     },
     {
-      "ordinal": 125,
+      "ordinal": 130,
       "path": "/api/approvals/{approval_id}/grant",
       "methods": [
         "POST"
@@ -5746,7 +5976,7 @@
       }
     },
     {
-      "ordinal": 126,
+      "ordinal": 131,
       "path": "/api/approvals/{approval_id}/deny",
       "methods": [
         "POST"
@@ -5794,7 +6024,7 @@
       }
     },
     {
-      "ordinal": 127,
+      "ordinal": 132,
       "path": "/api/admin/doctor",
       "methods": [
         "GET"
@@ -5842,7 +6072,7 @@
       }
     },
     {
-      "ordinal": 128,
+      "ordinal": 133,
       "path": "/api/admin/health",
       "methods": [
         "GET"
@@ -5880,7 +6110,7 @@
       }
     },
     {
-      "ordinal": 129,
+      "ordinal": 134,
       "path": "/api/admin/readiness",
       "methods": [
         "GET"
@@ -5928,7 +6158,7 @@
       }
     },
     {
-      "ordinal": 130,
+      "ordinal": 135,
       "path": "/api/admin/transition",
       "methods": [
         "POST"
@@ -5976,7 +6206,7 @@
       }
     },
     {
-      "ordinal": 131,
+      "ordinal": 136,
       "path": "/api/admin/events",
       "methods": [
         "GET"
@@ -6024,7 +6254,7 @@
       }
     },
     {
-      "ordinal": 132,
+      "ordinal": 137,
       "path": "/api/admin/prune-old-data",
       "methods": [
         "POST"
@@ -6074,7 +6304,7 @@
       }
     },
     {
-      "ordinal": 133,
+      "ordinal": 138,
       "path": "/api/admin/maintenance",
       "methods": [
         "POST"
@@ -6122,7 +6352,7 @@
       }
     },
     {
-      "ordinal": 134,
+      "ordinal": 139,
       "path": "/api/admin/prune",
       "methods": [
         "POST"
@@ -6172,7 +6402,7 @@
       }
     },
     {
-      "ordinal": 135,
+      "ordinal": 140,
       "path": "/api/stats/activity",
       "methods": [
         "GET"
@@ -6218,7 +6448,7 @@
       }
     },
     {
-      "ordinal": 136,
+      "ordinal": 141,
       "path": "/api/stats/spend",
       "methods": [
         "GET"
@@ -6264,7 +6494,7 @@
       }
     },
     {
-      "ordinal": 137,
+      "ordinal": 142,
       "path": "/api/stats/spend/rollup",
       "methods": [
         "GET"
@@ -6310,7 +6540,7 @@
       }
     },
     {
-      "ordinal": 138,
+      "ordinal": 143,
       "path": "/api/stats",
       "methods": [
         "GET"
@@ -6346,7 +6576,7 @@
       }
     },
     {
-      "ordinal": 139,
+      "ordinal": 144,
       "path": "/api/attention/dispositions/",
       "methods": [
         "GET"
@@ -6384,7 +6614,7 @@
       }
     },
     {
-      "ordinal": 140,
+      "ordinal": 145,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "PUT"
@@ -6432,7 +6662,7 @@
       }
     },
     {
-      "ordinal": 141,
+      "ordinal": 146,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "DELETE"
@@ -6480,7 +6710,7 @@
       }
     },
     {
-      "ordinal": 142,
+      "ordinal": 147,
       "path": "/api/attention/dispositions/{item_id}/history",
       "methods": [
         "GET"
@@ -6528,7 +6758,7 @@
       }
     },
     {
-      "ordinal": 143,
+      "ordinal": 148,
       "path": "/health",
       "methods": [
         "GET"
@@ -6572,109 +6802,13 @@
         "module": "lionagi.studio.app",
         "qualname": "create_app.<locals>.health"
       }
-    },
-    {
-      "ordinal": 143,
-      "path": "/api/sessions/{session_id}",
-      "methods": [
-        "PUT"
-      ],
-      "name": "label_session",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Label Session Api Sessions  Session Id  Put"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "sessions"
-      ],
-      "summary": null,
-      "description": "Set or clear the display label without changing the session's activity.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.sessions",
-        "qualname": "label_session_route"
-      }
-    },
-    {
-      "ordinal": 145,
-      "path": "/api/sessions/{session_id}/signals/page",
-      "methods": [
-        "GET"
-      ],
-      "name": "session_signals_page",
-      "response_model": "builtins.dict",
-      "dependencies": [],
-      "response_class": {
-        "default_placeholder": "starlette.responses.JSONResponse"
-      },
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Response Session Signals Page Api Sessions  Session Id  Signals Page Get"
-              }
-            }
-          }
-        },
-        "422": {
-          "description": "Validation Error",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      },
-      "status_code": null,
-      "tags": [
-        "sessions"
-      ],
-      "summary": null,
-      "description": "One bounded persisted prefix page; this read does not subscribe to a live tail.",
-      "include_in_schema": true,
-      "handler_identity": {
-        "module": "lionagi.studio.services.sessions",
-        "qualname": "session_signals_page"
-      }
     }
   ],
   "openapi": {
     "openapi": "3.1.0",
     "info": {
       "title": "Lion Studio Server",
-      "version": "0.35.5"
+      "version": "0.37.0"
     },
     "paths": {
       "/api/admin/doctor": {
@@ -8111,6 +8245,151 @@
                     "type": "object",
                     "additionalProperties": true,
                     "title": "Response Get Version Api Definitions  Kind   Name  Versions  Version  Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/engine-catalog/blueprints": {
+        "get": {
+          "tags": [
+            "engine-defs"
+          ],
+          "summary": "Engine Catalog Blueprints",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Engine Catalog Blueprints Api Engine Catalog Blueprints Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/engine-catalog/preset": {
+        "get": {
+          "tags": [
+            "engine-defs"
+          ],
+          "summary": "Get Engine Catalog Preset",
+          "description": "Look up a text-ID preset by query parameter, including an empty ID.",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Engine Catalog Preset Api Engine Catalog Preset Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/engine-catalog/presets": {
+        "get": {
+          "tags": [
+            "engine-defs"
+          ],
+          "summary": "List Engine Catalog Presets",
+          "description": "List text-ID presets; paging is not a snapshot. Rows with NULL, non-text or NUL-containing IDs are not listed. If a page contains an encodable ID, trailing oversized IDs are deferred; when more rows exist, the cursor names the last encodable ID. If every ID on a page is oversized, the page is returned with next_cursor null; stop_reason is id_exceeds_cursor_bound only if additional rows exist.\n\nStored options over 65536 UTF-8 bytes or 32 JSON nesting levels are unavailable. Preset inputs are flat key/value pairs, so the nesting limit does not exclude normal preset options. Preset budget overrides accept integers from 1 to 100, or null; invalid stored budgets have reason budget_invalid. Each row includes stored_option_keys, unused_option_keys, missing_option_keys and invalid_option_keys: null when not computed, otherwise a sorted list ([] when none).",
+          "parameters": [
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Cursor"
+              }
+            },
+            {
+              "name": "kind",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Kind"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "maximum": 200,
+                "minimum": 1,
+                "default": 100,
+                "title": "Limit"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response List Engine Catalog Presets Api Engine Catalog Presets Get"
                   }
                 }
               }
@@ -13509,7 +13788,7 @@
         }
       }
     },
-    "path_count": 112,
+    "path_count": 115,
     "schemas": {
       "AcknowledgeEffectRequest": {
         "properties": {

@@ -80,7 +80,7 @@ Allocate every operation in the existing lifespan as follows. Shared modules sup
 | Reconnect socket and proof key, `lionagi/studio/app.py:388-389`, :417-419 | Daemon | Start and stop once; the key leaves only over the same-user reconnect socket, and the host's health route answers a reconnect challenge with the port proof under that key (an HMAC of challenge and port, `lionagi/studio/app.py:651-668`), never the key. |
 | Transcript mirror, `lionagi/studio/app.py:225-300`, :390, :421 | Daemon | Call a wheel-owned mirror service, keep its stop event and task, and use the current shutdown backstop. |
 | Maintenance warmup, `lionagi/studio/app.py:321-344`, :391-392, :420 | Daemon | Schedule off the readiness path; cancel and await it during shutdown. |
-| Detached launch shutdown, `lionagi/studio/app.py:398`, :423 | Daemon | Cancel and await launch tasks so their existing terminal-row behavior remains intact (`lionagi/studio/services/launches.py:252-259`). |
+| Detached launch shutdown, `lionagi/studio/app.py:398`, :423 | Daemon | Cancel and await launch tasks so their existing terminal-row behavior remains intact (`lionagi/studio/services/launches.py:255-262`). |
 
 Construct and validate the selected application before starting process resources. The successful startup order remains: snapshot, traceback and warnings, notification registration, logging context, scheduler start, daemon reconciliation, optional backend recovery, `begin_serving`, reconnect channel, mirror, deferred warmup, and readiness to serve. Without the backend, omit only backend recovery. Do not rely on a framework to automatically execute the lifespan of a nested mounted application; the root lifecycle explicitly enters the returned backend hook at the designated position.
 
@@ -115,11 +115,11 @@ The following table allocates all 29 registered modules. Each source is under `l
 | `lionagi/studio/services/mcp_servers.py:598` | Backend | Application server-configuration management. |
 | `lionagi/studio/services/teams.py:57` | Backend | Application presentation of team records. |
 | `lionagi/studio/services/invocations.py:368`, :474 | Daemon | Invocation and artifact inspection. |
-| `lionagi/studio/services/launches.py:394`, :412 | Daemon | Submit and cancel daemon-supervised execution. |
+| `lionagi/studio/services/launches.py:397`, :415 | Daemon | Submit and cancel daemon-supervised execution. |
 | `lionagi/studio/services/projects.py:288` | Backend | Application project editing and assignment. Shared project lookup is F5. |
 | `lionagi/studio/services/identity.py:26` | Daemon | Authenticate the process reached by a launcher. |
 | `lionagi/studio/services/pairing.py:43`, :63, :119-126 | Daemon | Redeem codes, revoke capabilities, and preserve the retired issuance endpoint. |
-| `lionagi/studio/services/engine_defs.py:232` | Backend | Application definition editing. Launch-time definition lookup is F5. |
+| `lionagi/studio/services/engine_defs.py:240` | Backend | Application definition editing. Launch-time definition lookup is F5. |
 | `lionagi/studio/services/workflow_defs.py:219`, :301 | Backend | Application workflow editing and its execution adapter. |
 | `lionagi/studio/services/sessions.py:1919-1929`, :1933-1940, :1890 | Daemon | Session records and execution streams. Preserve labeling behavior. |
 | `lionagi/studio/services/run_tags.py:133` | Backend | Application tagging actions. Shared read and storage helpers are F5. |

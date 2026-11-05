@@ -72,6 +72,10 @@ Each line is `{"content": "...chunk..."}`.
 
 Default `persist_dir` is `~/.lionagi/logs/runs` when not set.
 
+If the live buffer cannot be created, truncated, or appended, the run logs a warning
+and continues without further buffer writes. Branch snapshot failures still stop the run,
+and a later buffer cleanup failure can also stop it.
+
 The return value of `operate()` / `run()` is the **complete accumulated text** (or parsed
 `BaseModel`), not the JSONL path.
 
