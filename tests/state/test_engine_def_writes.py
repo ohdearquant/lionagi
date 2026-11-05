@@ -23,6 +23,8 @@ from lionagi.state.db import StateDB
 _BORROWED_DB: contextvars.ContextVar[StateDB | None] = contextvars.ContextVar(
     "engine_write_test_db", default=None
 )
+pytestmark = pytest.mark.asyncio(loop_scope="function")
+
 _WAIT_SECONDS = 5
 
 
@@ -35,7 +37,8 @@ class _Stores:
 
 
 @pytest_asyncio.fixture(
-    params=["sqlite", pytest.param("postgresql", marks=pytest.mark.integration)]
+    params=["sqlite", pytest.param("postgresql", marks=pytest.mark.integration)],
+    loop_scope="function",
 )
 async def stores(request, tmp_path):
     """Open independent handles before starting the operation under test.
