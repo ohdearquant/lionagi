@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -228,3 +229,160 @@ def test_catalog_broken_import_is_not_reported_as_a_missing_environment(
     assert process.stderr.splitlines()[-1] == f"{error_type}: {marker}"
     assert "No run was started" not in process.stderr
     assert "cannot start:" not in process.stderr
+
+
+@pytest.mark.parametrize("error_kind", ["module", "feature"])
+def test_configuration_import_environment_fault_is_reported_before_a_run(
+    tmp_path: Path, error_kind: str
+) -> None:
+    process = _run_fresh(
+        tmp_path,
+        f"""
+        refused = []
+
+        class RefuseConfiguration:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == 'lionagi.cli._logging':
+                    refused.append(fullname)
+                    if {error_kind!r} == 'feature':
+                        from lionagi._feature_errors import MissingFeatureError
+                        raise MissingFeatureError(
+                            feature='startup-console',
+                            missing_distribution='startup-console-dependency',
+                            install_hint='install startup-console-dependency',
+                            import_root='startup_console_dependency',
+                        )
+                    raise ModuleNotFoundError(
+                        "No module named 'startup_console_dependency'",
+                        name='startup_console_dependency',
+                    )
+                return None
+
+        sys.meta_path.insert(0, RefuseConfiguration())
+        cli_main = import_main()
+        from lionagi._log_channels import log_error
+        assert cli_main.log_error is log_error
+        code = cli_main.main(['doctor'])
+        assert refused == ['lionagi.cli._logging']
+        assert_no_startup_effects()
+        sys.exit(code)
+        """,
+    )
+    _assert_environment_refusal(process, "startup_console_dependency")
+    if error_kind == "feature":
+        last_line = [line for line in process.stderr.splitlines() if line.strip()][-1]
+        assert "install startup-console-dependency" in last_line
+
+
+def test_configuration_import_error_is_not_a_missing_environment(tmp_path: Path) -> None:
+    process = _run_fresh(
+        tmp_path,
+        """
+        refused = []
+
+        class RefuseConfiguration:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == 'lionagi.cli._logging':
+                    refused.append(fullname)
+                    raise ImportError('startup-console-import-marker')
+                return None
+
+        sys.meta_path.insert(0, RefuseConfiguration())
+        try:
+            cli_main = import_main()
+            cli_main.main(['doctor'])
+        except ImportError:
+            assert refused == ['lionagi.cli._logging']
+            assert_no_startup_effects()
+            raise
+        else:
+            raise AssertionError('broken logging configuration unexpectedly imported')
+        """,
+    )
+    assert process.returncode == 1, process.stderr
+    assert process.stdout == ""
+    assert process.stderr.splitlines()[-1] == "ImportError: startup-console-import-marker"
+    assert "No run was started" not in process.stderr
+    assert "cannot start:" not in process.stderr
+
+
+def test_saved_catalog_fault_precedes_configuration_import(tmp_path: Path) -> None:
+    process = _run_fresh(
+        tmp_path,
+        """
+        refused = []
+
+        class RefuseStartup:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == 'lionhub.cli.catalog':
+                    refused.append('catalog')
+                    raise ModuleNotFoundError(
+                        "No module named 'startup_catalog_dependency'",
+                        name='startup_catalog_dependency',
+                    )
+                if fullname == 'lionagi.cli._logging':
+                    refused.append('configuration')
+                    raise AssertionError('configuration imported after a saved catalog fault')
+                return None
+
+        sys.meta_path.insert(0, RefuseStartup())
+        cli_main = import_main()
+        code = cli_main.main(['doctor'])
+        assert refused == ['catalog']
+        assert 'lionagi.cli._logging' not in sys.modules
+        assert_no_startup_effects()
+        sys.exit(code)
+        """,
+    )
+    _assert_environment_refusal(process, "startup_catalog_dependency")
+
+
+def test_configuration_precedes_real_machine_output_and_keeps_the_core_emitter(
+    tmp_path: Path,
+) -> None:
+    process = _run_fresh(
+        tmp_path,
+        """
+        cli_main = import_main()
+        from lionagi._log_channels import log_error
+        assert cli_main.log_error is log_error
+        console_file = str(root / 'lionagi/cli/_logging.py')
+        machine_file = str(root / 'lionagi/cli/machine.py')
+        events = []
+
+        def observe(frame, event, arg):
+            filename = frame.f_code.co_filename
+            name = frame.f_code.co_name
+            if filename == console_file and name == 'configure_cli_logging' and event == 'return':
+                assert logging.getLogger('lionagi.cli.error').handlers
+                events.append('configured')
+            elif filename == machine_file and name == 'dispatch_machine' and event == 'call':
+                assert events == ['configured']
+                assert logging.getLogger('lionagi.cli.error').handlers
+                events.append('dispatch')
+            elif filename == machine_file and name == 'emit' and event == 'call':
+                assert events == ['configured', 'dispatch']
+                assert logging.getLogger('lionagi.cli.error').handlers
+                events.append('emit')
+
+        sys.setprofile(observe)
+        try:
+            code = cli_main.main(['--machine', '__startup_unknown_command__'])
+        finally:
+            sys.setprofile(None)
+        assert code == 0
+        assert events == ['configured', 'dispatch', 'emit']
+        assert not external_attempts
+        from lionagi.cli import _util
+        assert not _util.run_was_allocated()
+        assert _util._invocations_in_flight == 0
+        assert_checkout_origins()
+        sys.exit(code)
+        """,
+    )
+    assert process.returncode == 0, process.stderr
+    lines = process.stdout.splitlines()
+    assert len(lines) == 1, process.stdout
+    envelope = json.loads(lines[0])
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "invalid_input"
