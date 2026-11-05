@@ -229,7 +229,7 @@ def _parser_to_dict(p: argparse.ArgumentParser) -> dict[str, Any]:
 
 
 def capture_cli() -> dict[str, Any]:
-    from lionagi._auto import build_cli_parser, iter_cli_seeds
+    from lionhub.cli.catalog import build_cli_parser, iter_cli_seeds
 
     seeds = iter_cli_seeds()
     top_level = [
@@ -541,7 +541,7 @@ def _classify_projection_error(exc: Exception) -> str:
 
 
 def _seed_alias_map() -> dict[str, tuple[str, ...]]:
-    from lionagi._auto import iter_cli_seeds
+    from lionhub.cli.catalog import iter_cli_seeds
 
     return {seed.name: seed.aliases for seed in iter_cli_seeds() if seed.aliases}
 
@@ -687,7 +687,8 @@ def capture_machine() -> list[dict[str, Any]]:
 # `lionagi.studio.cli` even though `schedule` also uses it.
 _IMPORT_TRACE_SCRIPT = (
     "import sys, json\n"
-    "from lionagi._auto import load_cli_command, seed_for, iter_cli_seeds, _http, _cli_realized\n"
+    "from lionagi._auto import _http\n"
+    "from lionhub.cli.catalog import load_cli_command, seed_for, iter_cli_seeds, _cli_realized\n"
     "name = sys.argv[1]\n"
     "seed = seed_for(name)\n"
     "other_modules = {s.module for s in iter_cli_seeds() if s.module != seed.module}\n"
@@ -787,7 +788,7 @@ def capture_import_laziness() -> dict[str, Any]:
     test runs, so only a fresh interpreter can show what one seed selection
     actually pulls in.
     """
-    from lionagi._auto import iter_cli_seeds
+    from lionhub.cli.catalog import iter_cli_seeds
 
     seeds = [s.name for s in iter_cli_seeds()]
     traces = {name: _run_import_trace(name) for name in seeds}

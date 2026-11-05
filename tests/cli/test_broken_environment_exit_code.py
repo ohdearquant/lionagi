@@ -437,6 +437,43 @@ def test_a_missing_command_module_reports_the_environment_end_to_end():
     assert "No run was started" in last_line
 
 
+def test_a_missing_cli_catalog_reports_the_environment_in_a_fresh_process():
+    """A missing catalog must reach the same startup error boundary as a command."""
+    script = textwrap.dedent(
+        """
+        import sys
+
+        BLOCKED = "lionhub.cli.catalog"
+
+        class _RefuseCatalog:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == BLOCKED:
+                    raise ModuleNotFoundError(
+                        f"No module named {fullname!r}", name=fullname
+                    )
+                return None
+
+        sys.meta_path.insert(0, _RefuseCatalog())
+        from lionagi.cli.main import main
+
+        sys.exit(main(["doctor"]))
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
+        timeout=120,
+    )
+
+    assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
+    last_line = [line for line in proc.stderr.splitlines() if line.strip()][-1]
+    assert "lionhub.cli.catalog" in last_line
+    assert "No run was started" in last_line
+
+
 def test_a_missing_import_after_a_run_was_allocated_is_not_an_environment_fault(monkeypatch):
     """Once a run exists on disk, the same error means something different.
 
