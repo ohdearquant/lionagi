@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
@@ -167,6 +169,61 @@ async def test_http_id_roundtrip_empty_punctuation_unicode_and_maximum(catalog_a
         unknown_id = await ac.get("/api/engine-catalog/preset", params={"id": "missing"})
     assert missing_parameter.status_code == 422
     assert unknown_id.status_code == 404
+
+
+@pytest.mark.parametrize("endpoint", ["list", "detail", "oversized"])
+async def test_catalog_annotations_run_in_one_worker_call(catalog_app, monkeypatch, endpoint):
+    from lionagi.studio.services import engine_defs
+
+    db_path, client = catalog_app
+    await _initialize(db_path)
+    if endpoint == "oversized":
+        ids = ["a" * 4097, "b" * 4097, "z"]
+    else:
+        ids = ["a", "b"]
+    _insert(db_path, [(value, f"preset-{i}", "research", "{}") for i, value in enumerate(ids)])
+    loop_thread = threading.get_ident()
+    annotation_threads = []
+    annotation_ids = []
+    worker_calls = []
+    original_annotate = engine_defs._catalog_annotate_row
+    original_to_thread = asyncio.to_thread
+
+    def record_annotation(row):
+        annotation_threads.append(threading.get_ident())
+        annotation_ids.append(row["id"])
+        return original_annotate(row)
+
+    async def record_worker_call(func, *args, **kwargs):
+        before = len(annotation_threads)
+        try:
+            return await original_to_thread(func, *args, **kwargs)
+        finally:
+            if len(annotation_threads) > before:
+                worker_calls.append(func)
+
+    monkeypatch.setattr(engine_defs, "_catalog_annotate_row", record_annotation)
+    monkeypatch.setattr(asyncio, "to_thread", record_worker_call)
+    async with client as ac:
+        if endpoint == "list":
+            response = await ac.get("/api/engine-catalog/presets")
+            expected_ids = ["a", "b"]
+            assert [row["id"] for row in response.json()["items"]] == expected_ids
+        elif endpoint == "oversized":
+            response = await ac.get("/api/engine-catalog/presets", params={"limit": 2})
+            expected_ids = ids[:2]
+            body = response.json()
+            assert [row["id"] for row in body["items"]] == expected_ids
+            assert body["next_cursor"] is None
+            assert body["stop_reason"] == "id_exceeds_cursor_bound"
+        else:
+            response = await ac.get("/api/engine-catalog/preset", params={"id": "a"})
+            expected_ids = ["a"]
+            assert response.json()["id"] == "a"
+    assert response.status_code == 200
+    assert annotation_ids == expected_ids
+    assert annotation_threads and all(thread != loop_thread for thread in annotation_threads)
+    assert len(worker_calls) == 1
 
 
 async def test_list_pages_more_than_200_and_binds_filter(catalog_app):

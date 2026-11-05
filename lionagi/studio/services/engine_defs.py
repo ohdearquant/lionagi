@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 import sqlite3
@@ -541,13 +542,15 @@ async def list_engine_catalog_presets(
     while visible and len(visible[-1]["id"].encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES:
         visible.pop()
     if not visible:
-        result = {"items": [_catalog_annotate_row(row) for row in page], "next_cursor": None}
+        items = await asyncio.to_thread(lambda: [_catalog_annotate_row(row) for row in page])
+        result = {"items": items, "next_cursor": None}
         if page and len(rows) > limit:
             result["stop_reason"] = "id_exceeds_cursor_bound"
         return result
     has_more = len(rows) > len(visible)
     next_cursor = _catalog_encode_cursor(visible[-1]["id"], kind) if has_more else None
-    return {"items": [_catalog_annotate_row(row) for row in visible], "next_cursor": next_cursor}
+    items = await asyncio.to_thread(lambda: [_catalog_annotate_row(row) for row in visible])
+    return {"items": items, "next_cursor": next_cursor}
 
 
 async def get_engine_catalog_preset(def_id: str) -> dict[str, Any] | None:
@@ -558,7 +561,7 @@ async def get_engine_catalog_preset(def_id: str) -> dict[str, Any] | None:
         return None
     async with StateDB() as db:
         row = await _get_engine_catalog_row(db, def_id)
-    return _catalog_annotate_row(row) if row is not None else None
+    return await asyncio.to_thread(_catalog_annotate_row, row) if row is not None else None
 
 
 @studio_route(
