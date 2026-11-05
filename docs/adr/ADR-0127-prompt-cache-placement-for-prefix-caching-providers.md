@@ -485,7 +485,7 @@ on every path, with no exception: the Anthropic adapter's `cache_control`-trigge
 
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — a dict-configured model
-(`service/connections/endpoint.py:567-570` at `9a03f175`) — the flag reaches the mark code and one five-minute mark
+(`service/connections/endpoint.py:571-602` at `9a03f175`) — the flag reaches the mark code and one five-minute mark
 lands on the last message. With the option on and the declaration present, this record's placement
 replaces that mark. For a provider without the declaration the request is unchanged whatever the
 option says. There is no ungated change.
