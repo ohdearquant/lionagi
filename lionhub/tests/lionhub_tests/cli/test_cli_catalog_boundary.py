@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 CORE = ROOT / "lionagi"
 CATALOG = ROOT / "lionhub" / "src" / "lionhub" / "cli" / "catalog.py"
 
