@@ -39,6 +39,9 @@ def route_message_persistence(
         if branch_id is None or branch_id == bid:
             await on_message(message)
 
+    # Rewrites use the add handler's queue without emitting another add event.
+    update = getattr(on_message, "_persist_update", None)
+    branch._persist_message_update = update
     bus.on(HookPoint.MESSAGE_ADD, _handler)
     return _handler
 
@@ -48,6 +51,8 @@ def unroute_message_persistence(holder: Any, handler: HookHandler) -> None:
     bus = getattr(holder, "_hooks", None)
     if bus is not None:
         bus.off(HookPoint.MESSAGE_ADD, handler)
+    if hasattr(holder, "_persist_message_update"):
+        holder._persist_message_update = None
     # Remove by underlying function, not identity: a bound-method object is
     # freshly created on each access, so `is` against a re-fetched one never matches.
     emit_func = getattr(type(holder), "_persist_via_bus", None)

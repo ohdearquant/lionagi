@@ -16,6 +16,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from lionagi.cli._inspection import (
+    resolve_agent_target,
+    resolve_any_target,
+    resolve_play_target,
+)
 from lionagi.cli.status import (
     EXIT_RUNNING,
     EXIT_UNKNOWN,
@@ -25,9 +30,6 @@ from lionagi.cli.status import (
     _detect_degraded,
     _dispatch,
     _render_human,
-    _resolve_agent_target,
-    _resolve_any_target,
-    _resolve_play_target,
     _run_status,
     run_agent_status,
     run_ctl_status,
@@ -35,6 +37,12 @@ from lionagi.cli.status import (
 )
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
+from tests.cli._import_guard import (
+    COMMAND_IMPORT_PROBES,
+    command_module_imports,
+    resolved_imports,
+    source_with_line,
+)
 
 # Fixtures
 
@@ -295,7 +303,7 @@ def test_detect_degraded_play_success_scoped_to_backing_session():
 async def test_resolve_agent_target_by_id(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _make_session(db)
-        result = await _resolve_agent_target(db, sid, None)
+        result = await resolve_agent_target(db, sid, None)
     assert result is not None
     entity_type, row = result
     assert entity_type == "session"
@@ -306,7 +314,7 @@ async def test_resolve_agent_target_by_id(temp_db_path: Path):
 async def test_resolve_agent_target_prefix_match(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _make_session(db)
-        result = await _resolve_agent_target(db, sid[:6], None)
+        result = await resolve_agent_target(db, sid[:6], None)
     assert result is not None
     assert result[1]["id"] == sid
 
@@ -315,7 +323,7 @@ async def test_resolve_agent_target_prefix_match(temp_db_path: Path):
 async def test_resolve_agent_target_falls_back_to_invocation(temp_db_path: Path):
     async with StateDB() as db:
         inv_id = await _make_invocation(db)
-        result = await _resolve_agent_target(db, inv_id, None)
+        result = await resolve_agent_target(db, inv_id, None)
     assert result is not None
     assert result[0] == "invocation"
 
@@ -326,7 +334,7 @@ async def test_resolve_agent_target_explicit_id_ignores_kind_scoping(temp_db_pat
     no-id 'latest' default is kind-scoped."""
     async with StateDB() as db:
         sid = await _make_session(db, invocation_kind="play")
-        result = await _resolve_agent_target(db, sid, None)
+        result = await resolve_agent_target(db, sid, None)
     assert result is not None
     assert result[1]["id"] == sid
 
@@ -336,7 +344,7 @@ async def test_resolve_play_target_falls_back_to_play_table(temp_db_path: Path):
     async with StateDB() as db:
         show_id = await _make_show(db)
         play_id = await _make_play(db, show_id)
-        result = await _resolve_play_target(db, play_id, None)
+        result = await resolve_play_target(db, play_id, None)
     assert result is not None
     assert result[0] == "play"
 
@@ -345,7 +353,7 @@ async def test_resolve_play_target_falls_back_to_play_table(temp_db_path: Path):
 async def test_resolve_any_target_no_kind_scoping(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _make_session(db, invocation_kind="play")
-        result = await _resolve_any_target(db, sid)
+        result = await resolve_any_target(db, sid)
     assert result is not None
     assert result[1]["id"] == sid
 
@@ -353,7 +361,7 @@ async def test_resolve_any_target_no_kind_scoping(temp_db_path: Path):
 @pytest.mark.asyncio
 async def test_resolve_unknown_id_returns_none(temp_db_path: Path):
     async with StateDB() as db:
-        result = await _resolve_agent_target(db, "0" * 40, None)
+        result = await resolve_agent_target(db, "0" * 40, None)
     assert result is None
 
 
@@ -365,7 +373,7 @@ async def test_resolve_agent_target_falls_back_to_branch_id(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _make_session(db)
         branch_id = await _make_branch(db, sid)
-        result = await _resolve_agent_target(db, branch_id, None)
+        result = await resolve_agent_target(db, branch_id, None)
     assert result is not None
     entity_type, row = result
     assert entity_type == "session"
@@ -377,7 +385,7 @@ async def test_resolve_agent_target_branch_id_prefix_match(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _make_session(db)
         branch_id = await _make_branch(db, sid)
-        result = await _resolve_agent_target(db, branch_id[:8], None)
+        result = await resolve_agent_target(db, branch_id[:8], None)
     assert result is not None
     assert result[1]["id"] == sid
 
@@ -387,7 +395,7 @@ async def test_resolve_any_target_falls_back_to_branch_id(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _make_session(db)
         branch_id = await _make_branch(db, sid)
-        result = await _resolve_any_target(db, branch_id)
+        result = await resolve_any_target(db, branch_id)
     assert result is not None
     assert result[0] == "session"
     assert result[1]["id"] == sid
@@ -400,7 +408,7 @@ async def test_resolve_agent_target_unknown_branch_shaped_id_returns_none(temp_d
     async with StateDB() as db:
         sid = await _make_session(db)
         await _make_branch(db, sid)
-        result = await _resolve_agent_target(db, str(uuid.uuid4()), None)
+        result = await resolve_agent_target(db, str(uuid.uuid4()), None)
     assert result is None
 
 
@@ -1031,17 +1039,58 @@ async def _seed_session_with_id(db: StateDB, sid: str) -> str:
 
 
 async def test_fetch_by_id_rejects_ambiguous_prefix(temp_db_path: Path) -> None:
+    from lionagi.cli._inspection import fetch_by_id
     from lionagi.cli._util import AmbiguousIdError
-    from lionagi.cli.status import _fetch_by_id
 
     async with StateDB() as db:
         first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001")
         second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002")
 
         with pytest.raises(AmbiguousIdError) as excinfo:
-            await _fetch_by_id(db, "sessions", "abcde")
+            await fetch_by_id(db, "sessions", "abcde")
 
     assert set(excinfo.value.candidates) == {first, second}
+
+
+def test_resolution_helpers_live_in_inspection_not_status() -> None:
+    """The shared resolvers live in `_inspection`; `status` keeps no copies under
+    the old names, and still re-exports the exit codes other modules import."""
+    from lionagi.cli import _inspection, status
+
+    for name in (
+        "_resolve_any_target",
+        "_resolve_agent_target",
+        "_resolve_play_target",
+        "_resolve_primary_session",
+        "_fetch_by_id",
+        "_run_id_candidates",
+        "_RUN_ID_THROUGH_T",
+    ):
+        assert not hasattr(status, name), name
+    assert status.EXIT_RUNNING == _inspection.EXIT_RUNNING == 3
+    assert status.EXIT_UNKNOWN == _inspection.EXIT_UNKNOWN == 2
+
+
+def test_inspection_imports_no_command_module() -> None:
+    """`_inspection` is the shared layer under the commands, so it must not
+    import any of them."""
+    from lionagi.cli import _inspection
+
+    assert command_module_imports(resolved_imports(_inspection.__file__, "lionagi.cli")) == set()
+
+
+@pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
+def test_inspection_guard_rejects_a_command_import(
+    probe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The layering guard fails when `_inspection` imports a command module, whether the import
+    is absolute, relative or by name."""
+    from lionagi.cli import _inspection
+
+    patched = source_with_line(_inspection.__file__, probe, tmp_path)
+    monkeypatch.setattr(_inspection, "__file__", str(patched))
+    with pytest.raises(AssertionError):
+        test_inspection_imports_no_command_module()
 
 
 @pytest.mark.parametrize("command", ["agent", "play", "ctl"])

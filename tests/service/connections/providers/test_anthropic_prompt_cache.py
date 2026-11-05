@@ -12,10 +12,10 @@ from unittest.mock import patch
 import pytest
 from pydantic import BaseModel
 
-from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionagi.service import cache_intent
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 
 MODEL = "claude-opus-5-5"
 SYSTEM = "You review pull requests."

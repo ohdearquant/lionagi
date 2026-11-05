@@ -617,3 +617,20 @@ def test_projecting_does_not_mutate_a_shared_json_schema() -> None:
     assert declared["properties"]["inner"]["description"] == "Set with --resume.", (
         "the rewrite was written back into the schema the argument declares"
     )
+
+
+def test_internal_submit_snapshot_carrier_is_not_projected() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mcp-config")
+    parser.add_argument("--mcp-submit-snapshot", help=argparse.SUPPRESS)
+    schema = project_parser(parser, path="probe")
+    assert "mcp_config" in schema["properties"]
+    assert "mcp_submit_snapshot" not in schema["properties"]
+
+
+@pytest.mark.parametrize("path", ["orchestrate flow", "orchestrate fanout", "agent"])
+def test_submit_snapshot_carrier_is_hidden_in_real_cli_and_projection(path: str) -> None:
+    parser = build_parser_for(path)
+    assert any(a.dest == "mcp_submit_snapshot" for a in parser._actions)
+    assert "--mcp-submit-snapshot" not in parser.format_help()
+    assert "mcp_submit_snapshot" not in project_parser(parser, path=path)["properties"]

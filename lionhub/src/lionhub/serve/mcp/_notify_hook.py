@@ -550,7 +550,15 @@ def deliver_terminal_notice(
     supervised: the hook runs under a deadline that kills it (see
     :func:`_supervised_delivery_timeout`), the observer runs in-process with
     nobody to cut it short.
+
+    A run *asked for* a notice when its own *target* or *sender* is non-empty;
+    the ``LIONAGI_MCP_NOTIFY_TARGET`` / ``LIONAGI_MCP_NOTIFY_SENDER``
+    fallbacks only fill in an address and do not count as asking. A run that
+    asked and has no delivery command anywhere comes back as a
+    ``no_delivery_command`` failure rather than as the bare
+    ``{"attempted": False}`` of a run that never asked.
     """
+    asked = bool(target) or bool(sender)
     target = target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
     sender = sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
     label = (job or {}).get("label") or (job or {}).get("kind") or "run"
@@ -607,7 +615,17 @@ def deliver_terminal_notice(
             "error": unusable,
             "command": program,
         }
-    return {"attempted": False}  # nothing configured — not a failure
+    if asked:
+        # The run named a recipient but nothing says how to reach it: a notice
+        # nobody can receive must not read like one nobody wanted.
+        return {
+            "attempted": False,
+            "ok": False,
+            "exit_code": None,
+            "error": "no_delivery_command",
+            "command": None,
+        }
+    return {"attempted": False}  # asked for nothing — not a failure
 
 
 def main(argv: list[str] | None = None) -> int:

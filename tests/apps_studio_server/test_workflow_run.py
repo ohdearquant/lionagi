@@ -117,21 +117,21 @@ def patched_env(tmp_path: Path, monkeypatch):
     # constant, not re-read per call) — both attrs need patching, matching the
     # convention already established in test_admin.py.
 
-    import lionagi.cli.engine as cli_engine
+    import lionagi.cli._engine_definitions as cli_engine
 
     monkeypatch.setitem(
-        cli_engine._KIND_META,
+        cli_engine.KIND_META,
         "research",
         {
-            **cli_engine._KIND_META["research"],
+            **cli_engine.KIND_META["research"],
             "cls_path": ("tests.apps_studio_server.test_workflow_run", "_FakeEngine"),
         },
     )
     monkeypatch.setitem(
-        cli_engine._KIND_META,
+        cli_engine.KIND_META,
         "coding",
         {
-            **cli_engine._KIND_META["coding"],
+            **cli_engine.KIND_META["coding"],
             "cls_path": ("tests.apps_studio_server.test_workflow_run", "_FakeEngine"),
         },
     )
@@ -192,13 +192,13 @@ async def test_workflow_run_all_agents_failed_reports_failed_not_completed(
     'failed', not silently report 'completed' with an empty result."""
     wf_svc, engine_defs_svc = patched_env
 
-    import lionagi.cli.engine as cli_engine
+    import lionagi.cli._engine_definitions as cli_engine
 
     monkeypatch.setitem(
-        cli_engine._KIND_META,
+        cli_engine.KIND_META,
         "research",
         {
-            **cli_engine._KIND_META["research"],
+            **cli_engine.KIND_META["research"],
             "cls_path": (
                 "tests.apps_studio_server.test_workflow_run",
                 "_AllAgentsFailedFakeEngine",

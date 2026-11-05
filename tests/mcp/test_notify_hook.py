@@ -153,6 +153,69 @@ def test_marks_terminal_without_delivery(job, monkeypatch):
     assert jobs.status(job)["notify_delivery"] == {"attempted": False}
 
 
+_NO_DELIVERY_COMMAND = {
+    "attempted": False,
+    "ok": False,
+    "exit_code": None,
+    "error": "no_delivery_command",
+    "command": None,
+}
+
+
+@pytest.mark.parametrize(
+    "asked",
+    [["--target", "recipient-a"], ["--sender", "sender-b"]],
+    ids=["target", "sender"],
+)
+def test_a_requested_notice_with_no_delivery_command_is_recorded_as_a_failure(
+    job, monkeypatch, asked
+):
+    """A run that asked for a notice and has nowhere to send it must say so.
+
+    Recording the same bare ``attempted: False`` as a run that never asked would
+    make a notice nobody can receive look like a notice nobody wanted.
+    """
+    calls: list = []
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
+    _no_settings_notifier(monkeypatch)
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", *asked])
+
+    assert rc == 0
+    assert calls == []  # nothing to spawn
+    assert jobs._read_job(job)["notify_delivery"] == _NO_DELIVERY_COMMAND
+    assert jobs.status(job)["notify_delivery"] == _NO_DELIVERY_COMMAND
+
+
+def test_a_requested_notice_with_no_delivery_command_reaches_the_log_once(job, monkeypatch):
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(0))
+    _no_settings_notifier(monkeypatch)
+
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--target", "recipient-a"])
+
+    log = _console_log(job)
+    assert "work happened" in log  # appended, never rewritten
+    undelivered = [line for line in log.splitlines() if "NOT delivered" in line]
+    assert len(undelivered) == 1
+    assert "no_delivery_command" in undelivered[0]
+
+
+def test_an_inherited_target_alone_does_not_count_as_asking_for_a_notice(job, monkeypatch):
+    """The environment is a fallback for the address, not a request for a notice."""
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("LIONAGI_MCP_NOTIFY_TARGET", "recipient-from-env")
+    monkeypatch.setenv("LIONAGI_MCP_NOTIFY_SENDER", "sender-from-env")
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(0))
+    _no_settings_notifier(monkeypatch)
+
+    _notify_hook.main(["--run-id", job, "--status", "completed"])
+
+    assert jobs._read_job(job)["notify_delivery"] == {"attempted": False}
+    assert "NOT delivered" not in _console_log(job)
+
+
 def test_flow_terminal_reason_reaches_mcp_status_and_delivery(job, monkeypatch):
     """The nested MCP hook must retain the flow callback's degraded reason.
 

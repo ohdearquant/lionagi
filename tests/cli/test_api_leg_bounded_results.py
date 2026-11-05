@@ -17,14 +17,14 @@ from lionagi.cli.agent import _api_loop_pass
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
 from lionagi.protocols.messages import ActionResponse, Instruction
-from lionagi.providers.anthropic.messages import (
-    AnthropicMessagesEndpoint,
-    CreateMessageRequest,
-)
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.tools.coding import CodingToolkit
 from lionagi.tools.context.context import _result_text
+from lionhub.providers.anthropic.messages import (
+    AnthropicMessagesEndpoint,
+    CreateMessageRequest,
+)
 from tests.cli.test_agent_api_provider import (
     _answer,
     _last_round,

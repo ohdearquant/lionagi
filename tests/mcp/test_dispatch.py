@@ -1472,7 +1472,7 @@ def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypa
     # Refused in the server, not left to the detached run: a server that exits first
     # would leave that run outside the agent's process tree.
     import lionagi.cli._providers as providers
-    from lionagi.providers import _subagent_admission
+    from lionagi.service import _subagent_admission
     from lionhub.serve.mcp import config
 
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
@@ -1497,7 +1497,7 @@ def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypa
 
 def test_a_play_inside_an_agent_is_refused_before_any_job_exists(a_playbook, monkeypatch, tmp_path):
     import lionagi.cli._providers as providers
-    from lionagi.providers import _subagent_admission
+    from lionagi.service import _subagent_admission
     from lionhub.serve.mcp import config
 
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)

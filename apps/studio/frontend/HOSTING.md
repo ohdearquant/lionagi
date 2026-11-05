@@ -63,10 +63,21 @@ origin that is neither loopback nor its own unless they carry the bearer of its 
 which it keeps in memory only. `li studio` opens the hosted page with a one-time
 pairing code in the URL fragment (`#pair=<code>`, single use, 120 seconds); the
 page removes the code from the address bar on load, exchanges it for that bearer
-and a decision capability at `POST /api/studio/pair`, and keeps the bearer in
-memory. The capability is kept in `sessionStorage` for that tab and sent in
-`X-Studio-Decision-Token` on the two Operator decision requests only. A reload
-loses the bearer, and the page then asks for `li studio` again;
+and a decision capability at `POST /api/studio/pair`. Only a bearer identified
+as a launch bearer is kept in `localStorage`, bound to the daemon's API base.
+A configured token, or a bearer whose source is missing or unknown, is kept in
+`sessionStorage` for the tab. Browsers can copy session storage into a new window
+opened with an opener, or into a duplicated or restored tab. Same-origin pages
+in that tab family may hold a copy; pages on other origins cannot read it.
+If storage is unavailable, the bearer stays in memory for the current page load.
+The page never reuses unmarked bearers
+saved by older versions and removes them when storage permits, so an already
+paired page needs pairing again once.
+The decision capability also stays in `sessionStorage` and is sent in
+`X-Studio-Decision-Token` on the two Operator decision requests only. Before the
+app mounts, the stored bearer is checked with one request; only a 2xx answer
+mounts the app. On refusal the page forgets that bearer and asks for `li studio`
+again;
 with the daemon already running, that opens a freshly paired page over the
 daemon's same-user reconnect socket without starting a second daemon. No HTTP
 route issues a code.

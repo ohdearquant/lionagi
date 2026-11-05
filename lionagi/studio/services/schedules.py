@@ -18,7 +18,8 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
-from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
+from lionagi._flow_spec import normalize_flow_spec_keys as normalize_flow_spec_keys
+from lionagi._flow_spec import validate_flow_spec_fields as validate_flow_spec_fields
 from lionagi.ln import json_dumps, short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 from lionagi.state.lifecycle import ReasonRecord
@@ -26,6 +27,30 @@ from lionagi.state.reasons import ScheduleDefinitionReasons, ScheduleReasons
 
 from ..registry import studio_route
 from . import run_view
+from ._schedule_validation import (
+    _GITHUB_FILTER_ALLOWED_EVENTS as _GITHUB_FILTER_ALLOWED_EVENTS,
+)
+from ._schedule_validation import (
+    _GITHUB_FILTER_ALLOWED_KEYS as _GITHUB_FILTER_ALLOWED_KEYS,
+)
+from ._schedule_validation import (
+    _svc_validate_budget_tokens as _svc_validate_budget_tokens,
+)
+from ._schedule_validation import (
+    _svc_validate_budget_usd as _svc_validate_budget_usd,
+)
+from ._schedule_validation import (
+    _svc_validate_command_args as _svc_validate_command_args,
+)
+from ._schedule_validation import (
+    _svc_validate_github_filter as _svc_validate_github_filter,
+)
+from ._schedule_validation import (
+    _svc_validate_github_repo as _svc_validate_github_repo,
+)
+from ._schedule_validation import (
+    _validate_flow_yaml_spec as _validate_flow_yaml_spec,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -60,6 +85,39 @@ class DisableScheduleRequest(BaseModel):
 _NON_NULLABLE_SCHEDULE_FIELDS: frozenset[str] = frozenset(
     {"name", "trigger_type", "action_kind", "missed_fire_policy", "overlap_policy"}
 )
+
+# Updates touching these fields must validate the effective action kind.
+# Model and agent may be inherited by reachable children, so their updates also
+# check the parent kind's type before validating the chain.
+_KIND_VALIDATION_FIELDS = frozenset(
+    {
+        "action_kind",
+        "on_success",
+        "on_fail",
+        "action_prompt",
+        "action_playbook",
+        "action_extra_args",
+        "action_flow_yaml",
+        "action_command",
+        "action_model",
+        "action_agent",
+    }
+)
+# These fields affect values a reachable chain can inherit.
+_CHAIN_VALIDATION_FIELDS = frozenset(
+    {
+        "on_success",
+        "on_fail",
+        "action_model",
+        "action_agent",
+        "action_playbook",
+        "action_prompt",
+        "action_extra_args",
+    }
+)
+# These sets gate the root play checks and leave unrelated legacy edits alone.
+_PLAY_PROMPT_FIELDS = frozenset({"action_kind", "action_prompt", "action_playbook"})
+_PLAY_TARGET_FIELDS = _PLAY_PROMPT_FIELDS | {"action_extra_args"}
 
 
 def _svc_validate_action_model(model: str | None) -> None:
@@ -169,13 +227,55 @@ def _svc_validate_action_command(command: str | None) -> None:
     _validate_command_allowlisted(command)
 
 
-def _svc_validate_command_args(args: list | None) -> None:
-    """Service-boundary check: action_command_args must be a list. Elements are
-    ``{{var}}`` templates rendered against trigger_context at fire time, not here."""
-    if args is None:
+def _svc_validate_chain_action(value: Any, field: str, parent_kind: str) -> None:
+    """Service-boundary check: an ``on_success`` / ``on_fail`` chain action must
+    follow the same rules as the ``li schedule`` flag of the same name -- a JSON
+    object whose keys the scheduler's chain-fire merge understands, nested no
+    deeper than the chain depth limit.
+
+    ``None`` means "no chain action" and is allowed. Errors read as the command
+    line reports them, so the label is the flag spelling (``--on-success``)."""
+    if value is None:
         return
-    if not isinstance(args, list):
-        raise ValueError(f"action_command_args must be a list of strings, got {args!r}")
+    from lionagi.cli._schedule_parsing import _MAX_CHAIN_DEPTH, _validate_chain_action_node
+
+    err = _validate_chain_action_node(
+        value,
+        "--" + field.replace("_", "-"),
+        field,
+        chain_depth=1,
+        max_chain_depth=_MAX_CHAIN_DEPTH,
+        parent_kind=parent_kind,
+    )
+    if err:
+        raise ValueError(err)
+
+
+def _svc_validate_reachable_chains(schedule: dict[str, Any]) -> None:
+    from lionagi.cli._schedule_parsing import _validate_reachable_chain_actions
+
+    def validate_effective(child: dict[str, Any], label: str) -> str | None:
+        # Normalize for value checks without altering the schedule's stored spelling.
+        kind = child.get("action_kind")
+        if isinstance(kind, str):
+            child = {**child, "action_kind": str.__str__(kind)}
+        for field in ("action_model", "action_agent", "action_playbook", "action_prompt"):
+            value = child.get(field)
+            if value is not None and not isinstance(value, str):
+                return f"{label}: {field} must be a string"
+        try:
+            _svc_validate_action_model(child.get("action_model"))
+            _svc_validate_identifier(child.get("action_agent"), "action_agent")
+            _svc_validate_identifier(child.get("action_playbook"), "action_playbook")
+            _svc_validate_prompt(child.get("action_prompt"))
+            _svc_validate_play_prompt(child)
+            _svc_validate_play_playbook(child)
+        except ValueError as exc:
+            return f"{label}: {exc}"
+        return None
+
+    if err := _validate_reachable_chain_actions(schedule, validate_effective):
+        raise ValueError(err)
 
 
 def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None:
@@ -198,27 +298,6 @@ def _svc_validate_max_runs(max_runs: Any) -> None:
         return
     if isinstance(max_runs, bool) or not isinstance(max_runs, int) or max_runs < 1:
         raise ValueError(f"max_runs must be a positive integer, got {max_runs!r}")
-
-
-def _svc_validate_budget_usd(budget_usd: Any) -> None:
-    """Service-boundary check: reject a non-positive budget_usd. None (unlimited) is always accepted."""
-    if budget_usd is None:
-        return
-    if (
-        isinstance(budget_usd, bool)
-        or not isinstance(budget_usd, int | float)
-        or not math.isfinite(budget_usd)
-        or budget_usd <= 0
-    ):
-        raise ValueError(f"budget_usd must be a finite positive number, got {budget_usd!r}")
-
-
-def _svc_validate_budget_tokens(budget_tokens: Any) -> None:
-    """Service-boundary check: reject a non-positive budget_tokens. None (unlimited) is always accepted."""
-    if budget_tokens is None:
-        return
-    if isinstance(budget_tokens, bool) or not isinstance(budget_tokens, int) or budget_tokens <= 0:
-        raise ValueError(f"budget_tokens must be a positive integer, got {budget_tokens!r}")
 
 
 def _svc_validate_rate_limit(rate_limit: Any) -> None:
@@ -272,60 +351,6 @@ def _svc_validate_threshold_config(config: dict | None) -> None:
     validate_threshold_config(config)
 
 
-def _svc_validate_github_repo(repo: str | None) -> None:
-    """Service-boundary check: reject github_repo values that would manipulate
-    the API path (CWE-918). None is a no-op; an empty string is rejected."""
-    if repo is None:
-        return
-    from lionagi.studio.scheduler.github import _validate_github_repo
-
-    _validate_github_repo(repo)
-
-
-# github_filter's known keys. Only "pr_merged" has real dispatch semantics in
-# github_poll() today; "pr_opened"/"pr_updated"/"pr_closed" are accepted (the
-# frontend ships all four) but currently inert server-side.
-_GITHUB_FILTER_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"state", "base", "draft", "event", "same_repo_only", "merged_page_limit"}
-)
-_GITHUB_FILTER_ALLOWED_EVENTS: frozenset[str] = frozenset(
-    {"pr_merged", "pr_opened", "pr_updated", "pr_closed"}
-)
-
-
-def _svc_validate_github_filter(github_filter: Any) -> None:
-    """Service-boundary check: reject unknown github_filter keys/values — a typo'd
-    key would otherwise match everything and fire on every poll instead of
-    failing loudly at create/update time."""
-    if github_filter is None:
-        return
-    if not isinstance(github_filter, dict):
-        raise ValueError(f"github_filter must be an object, got {type(github_filter).__name__!r}")
-    unknown = set(github_filter) - _GITHUB_FILTER_ALLOWED_KEYS
-    if unknown:
-        raise ValueError(
-            f"github_filter has unknown key(s) {sorted(unknown)}; allowed keys are "
-            f"{sorted(_GITHUB_FILTER_ALLOWED_KEYS)}"
-        )
-    if "merged_page_limit" in github_filter:
-        from lionagi.studio.scheduler.github import merged_page_limit
-
-        merged_page_limit(github_filter["merged_page_limit"])
-    event = github_filter.get("event")
-    if event is not None and event not in _GITHUB_FILTER_ALLOWED_EVENTS:
-        raise ValueError(
-            f"github_filter.event {event!r} is not a supported value; allowed values "
-            f"are {sorted(_GITHUB_FILTER_ALLOWED_EVENTS)} (or omit the key)"
-        )
-    if "same_repo_only" in github_filter:
-        same_repo_only = github_filter["same_repo_only"]
-        if not isinstance(same_repo_only, bool):
-            raise ValueError(
-                "github_filter.same_repo_only must be a boolean, got "
-                f"{type(same_repo_only).__name__!r}"
-            )
-
-
 def _svc_validate_prompt(prompt: str | None) -> None:
     """Service-boundary check: reject action_prompt == '--', the literal
     end-of-options token that argparse would silently swallow."""
@@ -334,6 +359,11 @@ def _svc_validate_prompt(prompt: str | None) -> None:
     from lionagi.studio.scheduler.subprocess import _validate_prompt
 
     _validate_prompt(prompt)
+
+
+def _svc_validate_action_kind_type(kind: Any) -> None:
+    if kind is not None and not isinstance(kind, str):
+        raise ValueError(f"action_kind must be a string, got {type(kind).__name__}")
 
 
 def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
@@ -374,27 +404,6 @@ def _svc_validate_play_playbook(schedule: dict[str, Any]) -> None:
             f"action_extra_args starts with {str(extra[0])!r}, which a play launch with no "
             "playbook passes to `li play` as its subcommand"
         )
-
-
-def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
-    """Parse and validate an inline YAML flow spec; returns an error message on
-    failure or None on success. Mirrors _validate_spec_fields() in the CLI —
-    that's the authoritative source for field rules."""
-    import yaml  # lazy — not needed on every import of this module
-
-    try:
-        data = yaml.safe_load(yaml_text)
-    except yaml.YAMLError as exc:
-        return f"flow_yaml spec is not valid YAML: {exc}"
-
-    if not isinstance(data, dict):
-        return f"flow_yaml spec must be a YAML mapping (dict), got {type(data).__name__}"
-
-    for key in data:
-        if not isinstance(key, str):
-            return f"flow_yaml spec keys must be strings, got {type(key).__name__}"
-
-    return validate_flow_spec_fields(normalize_flow_spec_keys(data))
 
 
 # Health severity is computed from cadence + observed schedule_runs rows and,
@@ -1178,6 +1187,7 @@ async def get_schedule_by_name(name: str) -> dict[str, Any] | None:
 
 
 async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
+    _svc_validate_action_kind_type(data.get("action_kind"))
     if not data.get("name"):
         raise ValueError("Schedule name is required")
     if not data.get("trigger_type"):
@@ -1196,6 +1206,9 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_action_command(data.get("action_command"))
     _svc_validate_command_args(data.get("action_command_args"))
+    _svc_validate_chain_action(data.get("on_success"), "on_success", data["action_kind"])
+    _svc_validate_chain_action(data.get("on_fail"), "on_fail", data["action_kind"])
+    _svc_validate_reachable_chains(data)
     _svc_validate_github_repo(data.get("github_repo"))
     _svc_validate_github_filter(data.get("github_filter"))
     _svc_validate_max_runs(data.get("max_runs"))
@@ -1289,6 +1302,10 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         if cleared:
             raise ValueError(f"Field(s) {sorted(cleared)} cannot be cleared to null")
 
+        effective = {**schedule, **fields}
+        if _KIND_VALIDATION_FIELDS & fields.keys():
+            _svc_validate_action_kind_type(effective.get("action_kind"))
+
         if "action_model" in fields:
             _svc_validate_action_model(fields["action_model"])
         if "action_prompt" in fields:
@@ -1324,12 +1341,23 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         if "threshold_config" in fields:
             _svc_validate_threshold_config(fields["threshold_config"])
 
-        effective = {**schedule, **fields}
+        kind_changed = "action_kind" in fields and fields["action_kind"] != schedule.get(
+            "action_kind"
+        )
+        if _CHAIN_VALIDATION_FIELDS & fields.keys() or kind_changed:
+            # Editing a chain revalidates both reachable siblings, including a stored one;
+            # unrelated edits remain available for rows with legacy invalid chains.
+            for field in ("on_success", "on_fail"):
+                if field in fields:
+                    _svc_validate_chain_action(
+                        effective.get(field), field, effective["action_kind"]
+                    )
+            _svc_validate_reachable_chains(effective)
         # Checked only when the update sets a field it reads, so a row stored before the check
         # can still be paused or edited elsewhere.
-        if {"action_kind", "action_prompt", "action_playbook"} & set(fields):
+        if _PLAY_PROMPT_FIELDS & fields.keys():
             _svc_validate_play_prompt(effective)
-        if {"action_kind", "action_prompt", "action_playbook", "action_extra_args"} & set(fields):
+        if _PLAY_TARGET_FIELDS & fields.keys():
             _svc_validate_play_playbook(effective)
         effective_repo = effective.get("github_repo")
         if effective_repo is not None:

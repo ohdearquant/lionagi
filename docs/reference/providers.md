@@ -81,9 +81,7 @@ A reply's leading `<think>...</think>` block is moved from `content` to `reasoni
 output parses the answer after it; a block with no closing tag, from a reply cut off while it was
 still reasoning, stays in `content`, and streamed replies keep the block where it arrives. A
 generation that fails after its stream has started arrives as a chunk with `is_error` set, and the
-call then fails: `iModel.stream` yields that chunk and raises once the stream ends. A model
-restored with `iModel.from_dict` does not keep its request model, as for every provider today, so
-it forwards its payload unvalidated.
+call then fails: `iModel.stream` yields that chunk and raises once the stream ends.
 Embeddings need `lattice serve` started on a vision-language checkpoint; a checkpoint without one
 gets `400 vision_unsupported`.
 
@@ -157,7 +155,7 @@ AG2GroupChatEndpoint is stream-only — it yields `StreamChunk` events for each 
 
 ```python
 # requires: pip install lionagi[ag2]
-from lionagi.providers.ag2 import AG2GroupChatEndpoint
+from lionhub.providers.ag2 import AG2GroupChatEndpoint
 
 endpoint = AG2GroupChatEndpoint(
     agent_configs=[
@@ -173,11 +171,11 @@ async for chunk in endpoint.stream({"prompt": "Build a Fibonacci function"}):
 
 ## Provider folder structure
 
-Each provider is a directory under `lionagi/providers/{company}/`. The endpoint files
+Each provider is a directory under `lionhub/src/lionhub/providers/{company}/`. The endpoint files
 (one `{endpoint}.py` per capability) are the capability map — the file listing names the capabilities.
 
 ```text
-lionagi/providers/
+lionhub/src/lionhub/providers/
 ├── openai/
 │   ├── _config.py          # OpenAIConfigs + CodexConfigs enums
 │   ├── chat.py             # chat/completions endpoint
@@ -254,12 +252,12 @@ Each provider's `__init__.py` lazily re-exports every endpoint and request class
 import collapses to two layers and loads nothing until first access:
 
 ```python
-from lionagi.providers.openai import OpenaiChatEndpoint
-from lionagi.providers.anthropic import AnthropicMessagesEndpoint
+from lionhub.providers.openai import OpenaiChatEndpoint
+from lionhub.providers.anthropic import AnthropicMessagesEndpoint
 ```
 
 Touching a name imports only that endpoint's module (plus the provider `_config`); the
-other endpoints in the folder stay unloaded. `dir(lionagi.providers.openai)` lists the
+other endpoints in the folder stay unloaded. `dir(lionhub.providers.openai)` lists the
 full export set without triggering any import.
 
 ## Adding a new provider
@@ -267,7 +265,7 @@ full export set without triggering any import.
 **Step 1 — create the folder tree**
 
 ```text
-lionagi/providers/{name}/
+lionhub/src/lionhub/providers/{name}/
     __init__.py     # lazy re-export map (see existing providers)
     _config.py
     chat.py         # one file per endpoint: Endpoint subclass + request/response models
@@ -285,7 +283,7 @@ class MyProviderConfigs(ProviderConfig, Enum):
         "chat/completions",          # endpoint path
         ["chat"],                    # aliases
         EndpointType.API,
-        LazyType("lionagi.providers.myprovider.chat:MyChatRequest"),
+        LazyType("lionhub.providers.myprovider.chat:MyChatRequest"),
         "https://api.myprovider.com/v1",
         "bearer",                    # auth_type
     )
@@ -320,29 +318,66 @@ module registers the endpoint. The registration decorator resolves the member's
 List the endpoint and request classes in `__all__` — the `__init__.py` lazy map derives
 its export set from each module's `__all__`.
 
-**Step 4 — add the import to `registry.py`**
+**Step 4 — add the provider to the built-in manifest**
 
-In `lionagi/service/connections/registry.py`, add the module to `_modules` inside
-`_import_all_providers()`:
+In `lionhub/src/lionhub/providers/manifest.py`, add a `_Provider(...)` row to
+`_DECLARATIONS`. The row names the provider package, the config enum in that package's
+`_config.py`, the provider's key and aliases as the enum declares them, the context-window
+table in `_config.py` (or `None` when the provider has none), and one
+`_Endpoint(member, key, aliases, kind, "module:Class")` per endpoint:
 
 ```python
-def _import_all_providers():
-    _modules: list[str] = [
-        # ... existing entries ...
-        "lionagi.providers.myprovider.chat",
-    ]
-    for mod in _modules:
-        _import_provider_module(mod)
+_DECLARATIONS = (
+    # ... existing rows ...
+    _Provider(
+        "myprovider",
+        "MyProviderConfigs",
+        "myprovider",
+        (),
+        None,
+        (
+            _Endpoint(
+                "CHAT",
+                "chat/completions",
+                ("chat",),
+                "api",
+                "myprovider.chat:MyProviderChatEndpoint",
+            ),
+        ),
+    ),
+)
 ```
 
-Keep the shared `_import_provider_module` helper in this loop. If the endpoint module
-needs an optional third-party dependency at module scope, declare it in
-`_PROVIDER_OPTIONAL_DEPENDENCIES`. A missing declared dependency skips the import with
-a debug diagnostic. Once dependencies resolve, any `ImportError` is reported as a
-provider-load failure at warning level; it is not silently discarded.
+`member` is the name of the enum member, and `module:Class` names the endpoint class and
+its module, relative to `lionhub.providers`. `key`, `aliases` and `kind` are the member's
+endpoint path, aliases and endpoint type (`"api"` or `"agentic"`), and the provider's key and
+aliases are its enum's `_PROVIDER` and `_PROVIDER_ALIASES`. A test compares every row with
+its enum and fails when they differ. Put the provider's default endpoint first: the
+first endpoint is the one `EndpointRegistry.match(provider="myprovider")` resolves to when
+no endpoint is named. Keep the rows in registration order, so add the new row after the
+existing ones.
+
+If the provider has a context-window table, name it in the row instead of `None` and add
+the provider's key to `_CONTEXT_WINDOW_ORDER` in the same file. That order decides which
+table answers when two tables hold the same model name, and a non-empty order that leaves
+out a provider with a table raises a `ValueError`.
+
+The manifest reads `_config.py` for the provider's settings and context windows and imports no
+endpoint module. If `_config.py` itself raises an `ImportError`, the manifest still names the
+provider from its row, with no settings and no context windows, and each of its endpoint
+factories raises `ProviderActivationError` chained from that `ImportError`; any other
+exception from `_config.py` propagates. The first time the registry is used, it calls each declaration's factory,
+which imports the endpoint module and so runs its registration decorator. If that import
+raises an `ImportError`, for example because the module needs an optional third-party
+dependency that is not installed, the registry logs a warning (`provider module
+'lionhub.providers.myprovider.chat' failed to import and was not registered: ...`) and
+registers the rest; the error is not silently discarded. `_PROVIDER_OPTIONAL_DEPENDENCIES` in
+`registry.py` does not apply to these modules: it covers only modules imported through
+`_import_provider_module`, which today is the test-only scripted provider, and it has no
+entries.
 
 `EndpointRegistry.match(provider="myprovider", endpoint="chat")` will then find the
-endpoint automatically. This registry edit is for built-in providers. Third-party
+endpoint automatically. This manifest row is for built-in providers. Third-party
 providers should normally be declared by a plugin; trusted, enabled plugin provider
 targets are imported lazily after a built-in miss, and cannot override a built-in
 provider name.

@@ -783,7 +783,7 @@ class TestPluginProviderStaleSnapshotRegression:
 
 class TestBuiltinProviderRestoration:
     def test_builtin_endpoint_remains_registered_after_plugin_provider_tests(self):
-        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+        from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
         result = match_endpoint(provider="openai", endpoint="chat")
 
@@ -798,7 +798,7 @@ class TestPluginProviderBuiltinCollision:
     def test_builtin_wins_when_a_plugin_declares_the_same_provider(self, write_plugin, caplog):
         import logging
 
-        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+        from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
         # "openai" collides with a built-in; the plugin also declares an
         # unrelated provider so a genuine miss (below) triggers import of
@@ -821,6 +821,62 @@ class TestPluginProviderBuiltinCollision:
 
         result = match_endpoint(provider="openai", endpoint="chat")
         assert isinstance(result, OpenaiChatEndpoint)
+
+    @pytest.mark.parametrize("order", ["colliding-middle", "colliding-first"])
+    def test_a_refused_class_leaves_the_rest_of_its_provider_module_registered(
+        self, write_plugin, caplog, order
+    ):
+        """A provider module that registers a class under a built-in provider name keeps
+        running: the endpoints it registers before and after that class stay registered,
+        the refused class is skipped, and one warning names the plugin and the name."""
+        import logging
+
+        from lionhub.providers.openai.chat import OpenaiChatEndpoint
+
+        classes = [
+            ("FirstEndpoint", "acme-one"),
+            ("CollidingEndpoint", "openai"),
+            ("LastEndpoint", "acme-two"),
+        ]
+        if order == "colliding-first":
+            classes = [classes[1], classes[0], classes[2]]
+        source = (
+            "from lionagi.service.connections.registry import register_endpoint\n"
+            "from lionagi.service.connections.endpoint import Endpoint\n"
+        ) + "".join(
+            f'\n\n@register_endpoint(provider="{provider}", endpoint="chat")\n'
+            f"class {name}(Endpoint):\n    pass\n"
+            for name, provider in classes
+        )
+        write_plugin(
+            "wr",
+            MANIFEST.format(name="web-research"),
+            files={"providers/endpoint.py": source},
+        )
+        _trust("wr")
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.service.connections.registry"):
+            with pytest.raises(ProviderNotFoundError, match="totally-unrelated"):
+                match_endpoint(provider="totally-unrelated", endpoint="chat")
+
+        for provider, name in (("acme-one", "FirstEndpoint"), ("acme-two", "LastEndpoint")):
+            result = match_endpoint(provider=provider, endpoint="chat")
+            assert type(result).__name__ == name
+            assert type(result).__module__ == _module_key("web-research")
+        assert isinstance(match_endpoint(provider="openai", endpoint="chat"), OpenaiChatEndpoint)
+
+        module = sys.modules[_module_key("web-research")]
+        assert "_ENDPOINT_META" not in vars(module.CollidingEndpoint)
+        assert not [e for e in EndpointRegistry._entries if e.cls is module.CollidingEndpoint]
+        warnings_about_the_plugin = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "lionagi.service.connections.registry"
+            and "web-research" in record.getMessage()
+        ]
+        assert len(warnings_about_the_plugin) == 1
+        assert "providers/endpoint.py" in warnings_about_the_plugin[0]
+        assert "'openai'" in warnings_about_the_plugin[0]
 
     def test_sibling_noncolliding_provider_in_the_same_manifest_still_resolves(self, write_plugin):
         """A collision on one declared provider must not take down a sibling,

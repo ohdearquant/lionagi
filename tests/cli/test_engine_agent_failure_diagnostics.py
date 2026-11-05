@@ -80,7 +80,7 @@ async def test_total_agent_failure_written_to_db_as_failed(monkeypatch):
 
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     mock_db = MockStateDB()
     monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)
@@ -119,7 +119,7 @@ async def test_total_agent_failure_folds_with_emission_failures(monkeypatch):
 
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     mock_db = MockStateDB()
     monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)
@@ -156,7 +156,7 @@ async def test_no_total_agent_failure_status_stays_completed(monkeypatch):
 
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     mock_db = MockStateDB()
     monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)
@@ -188,7 +188,7 @@ async def test_engine_without_total_agent_failure_attr_stays_completed(monkeypat
 
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     mock_db = MockStateDB()
     monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)
@@ -231,7 +231,7 @@ async def test_real_engine_total_agent_failure_propagates_to_cli(monkeypatch):
 
     real_engine = await _build_all_agents_failed_engine()
     MockEngineClass = MagicMock(return_value=real_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     mock_db = MockStateDB()
     monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)

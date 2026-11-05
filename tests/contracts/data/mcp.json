@@ -923,6 +923,16 @@
             "default": "",
             "x-flag": "--reason"
           },
+          "resolve_quarantine": {
+            "type": "string",
+            "enum": [
+              "failed",
+              "aborted",
+              "cancelled"
+            ],
+            "description": "Record an operator disposition for a quarantined row without signalling its PID; requires `reason`.",
+            "x-flag": "--resolve-quarantine"
+          },
           "recursive": {
             "type": "boolean",
             "description": "Also kill direct child entities (e.g. invocations spawned by a session). Has no effect on a play kill, which already reaps whatever worker chain the row records, or on a show kill, which cannot reach one -- kill the session ids directly to stop a show's workers.",

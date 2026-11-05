@@ -174,7 +174,10 @@ class Session(Node, Relational):
         return self.observer.route(condition, into=into)
 
     def gate(self, check: Callable) -> "SessionObserver":
-        """Set the governance gate consulted before events are dispatched."""
+        """Set the pre-invoke gate; event filtering by this gate is deprecated.
+
+        Filter observations with route predicates or subscribers instead.
+        """
         return self.observer.gate(check)
 
     def clear_gate(self) -> "SessionObserver":

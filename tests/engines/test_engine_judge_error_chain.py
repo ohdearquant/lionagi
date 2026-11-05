@@ -444,7 +444,7 @@ async def test_a_containment_refusal_naming_an_unreadable_override_is_raised_by_
     containment refusal carries, so a judge that catches that type refuses the request instead
     of reading its failure as a pass."""
     from lionagi._errors import ContainmentRefusedError
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     request = CodexCodeRequest(
         prompt="hi", repo=tmp_path, contain_account_integrations=True
@@ -467,9 +467,9 @@ async def test_a_containment_refusal_naming_an_unreadable_override_keeps_the_typ
     """The same refusal, raised where the process would start, still carries the type the
     judge reads as a refusal rather than as a pass. No process is started."""
     from lionagi._errors import ContainmentRefusedError
-    from lionagi.providers import _cli_subprocess
-    from lionagi.providers.openai import codex as codex_mod
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers import _cli_subprocess
+    from lionhub.providers.openai import codex as codex_mod
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("the Codex CLI was started")
@@ -500,7 +500,7 @@ async def test_a_construction_refusal_naming_an_unreadable_override_is_raised_by
     CLIInputRefusedError, so pydantic does not wrap it, and it carries a containment refusal
     as its cause, so a judge whose engine is built over such a key raises instead of passing."""
     from lionagi._errors import CLIInputRefusedError, ContainmentRefusedError
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     with pytest.raises(CLIInputRefusedError) as refused:
         CodexCodeRequest(

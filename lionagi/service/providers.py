@@ -142,7 +142,7 @@ def codex_unset_effort_default(
     """
     if profile_overrides and "model_reasoning_effort" in profile_overrides:
         return None
-    from lionagi.providers.openai._codex_profile import global_codex_reasoning_effort
+    from lionhub.providers.openai._codex_profile import global_codex_reasoning_effort
 
     global_effort = normalize_effort(global_codex_reasoning_effort(env))
     if global_effort is None:

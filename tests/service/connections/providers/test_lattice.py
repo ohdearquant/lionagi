@@ -16,18 +16,18 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from lionagi._errors import ProviderStreamError
-from lionagi.providers.lattice._config import LATTICE_DEFAULT_BASE_URL
-from lionagi.providers.lattice.chat import (
-    LatticeChatCompletionsRequest,
-    LatticeChatEndpoint,
-    LatticeLoraSelection,
-)
-from lionagi.providers.lattice.embed import LatticeEmbedEndpoint, LatticeEmbedRequest
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.imodel import iModel
 from lionagi.service.resilience import APIClientError
+from lionhub.providers.lattice._config import LATTICE_DEFAULT_BASE_URL
+from lionhub.providers.lattice.chat import (
+    LatticeChatCompletionsRequest,
+    LatticeChatEndpoint,
+    LatticeLoraSelection,
+)
+from lionhub.providers.lattice.embed import LatticeEmbedEndpoint, LatticeEmbedRequest
 
 MODEL = "qwen3.5-0.8b"
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -133,7 +133,7 @@ def test_a_fresh_process_resolves_lattice_without_importing_it_first():
 import sys
 from lionagi.service.connections.match_endpoint import match_endpoint
 
-assert not any(name.startswith("lionagi.providers.lattice") for name in sys.modules)
+assert not any(name.startswith("lionhub.providers.lattice") for name in sys.modules)
 for endpoint, cls in (("chat", "LatticeChatEndpoint"), ("embed", "LatticeEmbedEndpoint")):
     resolved = match_endpoint(provider="lattice", endpoint=endpoint, model="m")
     assert type(resolved).__name__ == cls, (endpoint, type(resolved))
@@ -417,30 +417,28 @@ def test_the_reference_states_the_limits_and_refusals_lionagi_does_not_check():
         assert named in paragraph
 
 
-def test_the_reference_states_the_stream_error_chunk_and_the_restored_model():
-    """Two behaviours a caller cannot see from lionagi: a mid-stream failure arrives as a
-    chunk with `is_error` set rather than as a raise, and a model restored with
-    `iModel.from_dict` sends an unvalidated payload."""
+def test_the_reference_states_the_stream_error_chunk():
+    """A mid-stream failure arrives as an error chunk before the call fails."""
     paragraph = _lattice_doc_paragraph()
 
     assert "is_error" in paragraph and "iModel.stream" in paragraph
-    assert "iModel.from_dict" in paragraph
 
 
 @pytest.mark.asyncio
-async def test_a_model_restored_from_its_dict_sends_an_unvalidated_payload(lattice_server):
-    """`iModel.to_dict()` leaves the request model out of the endpoint config and `from_dict`
-    does not restore it, so a restored model forwards the payload as given: a numeric string
-    the model would have coerced reaches the server as a string."""
+async def test_a_model_restored_from_its_dict_validates_its_payload(lattice_server):
+    """A default snapshot omits the request model, which is recovered on restore."""
     base_url, received = await lattice_server()
     model = iModel(provider="lattice", model=MODEL, base_url=base_url)
 
     restored = iModel.from_dict(model.to_dict())
+    fresh, _ = model.endpoint.create_payload(
+        {"messages": [{"role": "user", "content": "hi"}], "temperature": "0.5"}
+    )
     await restored.invoke(messages=[{"role": "user", "content": "hi"}], temperature="0.5")
 
-    assert restored.endpoint.config.request_options is None
+    assert restored.endpoint.config.request_options is LatticeChatCompletionsRequest
     (request,) = received
-    assert request["body"]["temperature"] == "0.5"
+    assert request["body"]["temperature"] == fresh["temperature"] == 0.5
 
 
 def test_the_request_model_records_what_the_server_does_not_apply():

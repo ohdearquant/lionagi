@@ -28,11 +28,11 @@ from lionagi.cli._providers import (
     build_imodel_from_spec,
     profile_config,
 )
-from lionagi.providers.openai import codex as codex_mod
-from lionagi.providers.openai._codex_profile import CODEX_MCP_PROFILE_PREFIX
-from lionagi.providers.openai.codex import CodexCodeRequest, _override_pairs
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.imodel import iModel
+from lionhub.providers.openai import codex as codex_mod
+from lionhub.providers.openai._codex_profile import CODEX_MCP_PROFILE_PREFIX
+from lionhub.providers.openai.codex import CodexCodeRequest, _override_pairs
 
 
 def _features_switched(args: list[str]) -> list[tuple[str, str]]:
@@ -791,20 +791,21 @@ def test_a_root_profile_key_that_is_not_a_string_is_named_by_its_type(tmp_path, 
 
 def test_containment_refuses_a_working_directory_that_is_a_symlink_to_itself(tmp_path):
     """The config walk cannot resolve such a directory, so it cannot read the configs
-    codex would apply. The refusal names the directory and the reason it cannot be used."""
+    codex would apply. The refusal gives the reason without naming the directory."""
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
     # Python before 3.13 cannot resolve the loop; 3.13 and later resolve it and find no
-    # directory there. Either way the refusal names the directory.
-    with pytest.raises(ContainmentRefusedError, match=re.escape(str(loop))):
+    # directory there. Either way the refusal omits the directory.
+    with pytest.raises(ContainmentRefusedError, match="cannot use the working directory") as raised:
         CodexCodeRequest(prompt="hi", repo=loop, contain_account_integrations=True)
+    assert str(loop) not in str(raised.value)
 
 
 def test_containment_refuses_a_working_directory_that_does_not_exist(tmp_path):
     missing = tmp_path / "missing"
-    with pytest.raises(ContainmentRefusedError, match=re.escape(str(missing))) as raised:
+    with pytest.raises(ContainmentRefusedError, match="working directory.*unavailable") as raised:
         CodexCodeRequest(prompt="hi", repo=missing, contain_account_integrations=True)
-    assert "does not exist or is not a directory" in str(raised.value)
+    assert str(missing) not in str(raised.value)
 
 
 def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp_path):
@@ -817,7 +818,8 @@ def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp
         looped = CodexCodeRequest(prompt="hi", repo=loop)
     except RuntimeError as exc:
         # Python before 3.13 raises while resolving the loop, as it did before containment.
-        assert "Symlink loop" in str(exc)
+        assert "working directory cannot be resolved" in str(exc)
+        assert str(loop) not in str(exc)
     else:
         with pytest.raises(ValueError, match="does not exist or is not a directory"):
             looped.as_cmd_args()
@@ -846,13 +848,16 @@ def _unusable_directory(tmp_path, kind):
 @pytest.mark.parametrize("kind", ["no-permissions", "read-without-search", "child-of-locked"])
 def test_containment_refuses_a_working_directory_it_cannot_enter(tmp_path, kind):
     """Without permission to list and enter the directory the walk cannot read the
-    configs codex would apply, so containment refuses it, naming the directory."""
+    configs codex would apply, so containment refuses it without naming the directory."""
     target, modes = _unusable_directory(tmp_path, kind)
     for path, mode in modes:
         path.chmod(mode)
     try:
-        with pytest.raises(ContainmentRefusedError, match=re.escape(str(target))):
+        with pytest.raises(
+            ContainmentRefusedError, match="cannot use the working directory"
+        ) as raised:
             CodexCodeRequest(prompt="hi", repo=target, contain_account_integrations=True)
+        assert str(target) not in str(raised.value)
     finally:
         for path, _ in modes:
             path.chmod(0o755)
@@ -875,7 +880,7 @@ def test_without_containment_a_directory_it_cannot_enter_is_not_refused_at_const
 
 def test_a_profile_file_that_is_not_utf8_is_refused_naming_it(tmp_path):
     """The profile read decodes the file; bytes that are not UTF-8 make it unreadable."""
-    from lionagi.providers.openai._codex_profile import resolve_codex_config_profile
+    from lionhub.providers.openai._codex_profile import resolve_codex_config_profile
 
     home = tmp_path / "codex-home"
     home.mkdir()
@@ -887,7 +892,7 @@ def test_a_profile_file_that_is_not_utf8_is_refused_naming_it(tmp_path):
 def test_a_codex_home_holding_a_nul_reads_as_having_no_profile():
     """A path the operating system cannot name holds no file, as ``Path.is_file()`` says:
     a bare model name is sent as a model id, and the request is built."""
-    from lionagi.providers.openai._codex_profile import _is_file, resolve_codex_config_profile
+    from lionhub.providers.openai._codex_profile import _is_file, resolve_codex_config_profile
 
     env = {"CODEX_HOME": "/nonexistent/a\0b"}
     assert _is_file(Path("/nonexistent/a\0b/o3.config.toml")) is False
@@ -898,7 +903,7 @@ def test_a_codex_home_holding_a_nul_reads_as_having_no_profile():
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
 def test_a_profile_that_cannot_be_checked_is_refused_naming_it(tmp_path):
     """A codex home this process cannot search leaves the profile unknown, not absent."""
-    from lionagi.providers.openai._codex_profile import resolve_codex_config_profile
+    from lionhub.providers.openai._codex_profile import resolve_codex_config_profile
 
     home = tmp_path / "codex-home"
     home.mkdir()
@@ -915,7 +920,7 @@ def test_a_profile_that_cannot_be_checked_is_refused_naming_it(tmp_path):
 def test_a_project_config_that_cannot_be_checked_is_refused_on_every_python(tmp_path):
     """From Python 3.14 Path.is_file() answers False for a permission error; the walk must
     still refuse a project config it cannot check rather than read it as absent."""
-    from lionagi.providers.openai._codex_profile import project_codex_profile
+    from lionhub.providers.openai._codex_profile import project_codex_profile
 
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)

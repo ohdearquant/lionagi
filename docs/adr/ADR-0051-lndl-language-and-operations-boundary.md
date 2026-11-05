@@ -1,10 +1,40 @@
 # ADR-0051: LNDL language and operations boundary
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-31 (see Amendment 1)
 - **Kind**: Retrospective
 - **Area**: utilities
 - **Date**: 2026-07-09
 - **Relations**: none
+
+## Amendment 1 (2026-10-31) — the language package moved to `lionhub.lndl`
+
+ADR-0136 moves the language out of the core (Amendment 1 A3 and A5, Amendment 3 C1 item 5), so
+`lionhub.lndl` now owns it. D1's module tree is unchanged: it lives under `lionhub/src/lionhub/lndl/`
+with the same module names and the same export surface (`lionhub/src/lionhub/lndl/__init__.py`).
+D4's multi-round seam moves with the language: `lionagi.operations.lndl_middle` is now
+`lionhub.lndl.middle`. D4's narrow parse seam stays in the core (`lionagi/operations/parse/parse.py`)
+and takes fences out with the core's language-neutral extractor, which `lionhub.lndl.extract` also
+builds on, so no core module imports the language apart from the nine root exports below.
+
+`lionagi.lndl` and `lionagi.operations.lndl_middle`, with every module under them, keep importing
+until 2.0.0 through their own rows in `lionagi._moved.MOVED`. Each warns once and returns the same
+module object, so `isinstance` checks, `except` clauses, patches and pickles that name the old path
+keep working. The Middle's logger keeps the name `lionagi.operations.lndl_middle.lndl_middle`.
+
+The nine root exports (`LNDLOutput`, `LNDLError`, `MissingLvarError`, `MissingFieldError`,
+`TypeMismatchError`, `InvalidConstructorError`, `get_lndl_system_prompt`, `extract_lndl_blocks` and
+`normalize_lndl_text`) stay lazy and keep naming the old module path, which the table serves
+(ADR-0136 Amendment 1 A3). The first root access that loads the old module warns at the caller's
+line. A root lazy export reaches the loader through two frames, the root `__getattr__` in
+`lionagi/__init__.py` and `lazy_import` in `lionagi/ln/_lazy_init.py`, so the warning's frame walk
+treats exactly that pair as import machinery, matched by file and function name, and no other code
+in those two files. ADR-0136 Amendment 1 A3 names the lazy-import helper; the root `__getattr__` that
+calls it is the other frame on the same path. The control: with the pair not skipped, the warning that a fresh process raises
+for `lionagi.LNDLOutput` on line 6 of its program points at `lionagi/ln/_lazy_init.py:51` instead of
+line 6 (`test_a_root_lndl_export_is_the_moved_object_and_warns_at_the_callers_line` in
+`tests/test_moved_modules.py`).
+
+Paths in D1 to D5 below name the files where they were when this record was written.
 
 ## Context
 

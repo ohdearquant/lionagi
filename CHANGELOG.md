@@ -6,7 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-11-02
+
+Provider integrations and LNDL move to the `lionhub` import root inside the same distribution;
+the old `lionagi.providers` and `lionagi.lndl` paths keep working with a warning until 2.0.0. A
+hosted Studio page paired by `li studio` with no access token configured now keeps its access
+across reloads, tabs and bookmarks until the daemon restarts. The MCP server no longer accepts
+the flat operation names of its earlier surface, such as `submit_agent`; if you call it with
+those, read "Removed" first.
+
 ### Added
+
+- Provider exception types are available from `lionagi.providers.errors`, so
+  applications can catch them without importing a private module.
+
+- A checked feature ownership inventory and static import report expose
+  dependencies across package layers while keeping existing boundary debt
+  report-only.
+
+- Secure coding agents refuse email addresses in outbound HTTP headers in bash commands and editor writes.
 
 - Merged pull-request schedules can persist a page limit from 5 to 100. When
   repeated scans hit the limit, schedule health explains how to recover.
@@ -103,10 +121,75 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   cache. A CLI model is built unchanged. The spec field is refused with a caller-supplied
   `chat_model` (set the option on that model's endpoint instead) and without a model.
 
+- `CodexCodeRequest.exclusive_mcp_names` carries the names retained from the
+  readable user, system and project MCP configuration across request serialization.
+  Servers enabled by managed or cloud configuration are outside this selection.
+
+- Pull requests add a `changelog.d/<pull request number>.md` fragment instead of editing
+  `CHANGELOG.md`, and `python scripts/fold_changelog_fragments.py` folds the fragments into the
+  `## [Unreleased]` block in pull request number order and deletes them. The convention is
+  described in `changelog.d/README.md`.
+
+- The credential ledger records where a conversation's stable prompt-cache prefix is warm, and a
+  new conversation reserved with that prefix's certificate prefers an account holding it, as long
+  as the account stays within nine tenths of its budget. Failures on an account clear its records;
+  a caller's own cancellation does not. Records that expired more than a day earlier are deleted
+  as new ones are written. Existing ledger files gain the new table and its indexes on open.
+
+- `lionagi._feature_errors.MissingFeatureError` (an `ImportError`) and, in
+  `lionagi._provider_errors`, `ProviderContractVersionError`, `ProviderActivationError` and
+  `ProviderCompositionError`: the error types the provider discovery contract reports. Nothing
+  raises them yet. None of them is a `ProviderError`.
+
+- `lionagi.service.connections.provider_catalog`: immutable provider declarations
+  (`DependencyRequirement`, `EndpointDeclaration`, `ProviderFragment`, `ProviderManifest`) and
+  `compose_provider_catalog`, which checks their contract versions and returns a `ProviderCatalog`.
+  Composition refuses two claimants for one provider key, provider alias or endpoint name with the new
+  `ProviderCollisionError`, which names both. Nothing selects providers through it yet, so provider
+  selection is unchanged.
+
+- `lionhub.providers.manifest.get_provider_manifest()` returns the built-in providers as an
+  immutable `ProviderManifest`, without importing any endpoint implementation. Each endpoint
+  declaration carries a factory that imports its class on first call. Registration and discovery
+  are unchanged.
+
+- `lookup_context_window` accepts a `provider_catalog` keyword. A catalog passed there is used
+  as given, and an empty one gives the 128,000-token estimate without loading the provider hub.
+
+- `ProviderManifest` and `ProviderCatalog` accept an optional `context_window_order`, the
+  order in which `ProviderCatalog.context_window` scans providers after the hinted one. When
+  set it must name every provider that declares context windows exactly once.
+
+- `match_endpoint`, `EndpointRegistry.match` and `iModel` accept a keyword-only
+  `provider_catalog`. When one is supplied the endpoint is selected from that catalog alone,
+  never from the bundled catalog, the registered entries or the plugin registry, and an empty
+  catalog is not the same as omitting the argument. A declared endpoint whose implementation
+  fails to import raises the `ImportError`. Omitting the argument keeps the existing behaviour.
+
+- `iModel` keeps the catalog as `provider_catalog`: `copy()` and
+  `from_dict(provider_catalog=...)` carry it, `to_dict()` does not write it, and
+  `get_context_window` reads the chat model's catalog. Passing an `Endpoint` instance together
+  with a catalog raises `ValueError`.
+
+- `POST /api/studio/pair` returns `token_source`: `"launch"` for the daemon's per-start launch
+  bearer, `"configured"` when `LIONAGI_STUDIO_AUTH_TOKEN` is set.
+
+- A routed Anthropic request that the provider rejects with any non-200 status below 500 other
+  than 401, 403 or 429 now records two names on its attempt in the credential ledger and on the routed error: the
+  provider error type and a rejection class, each from a closed set. A refusal can be told
+  apart without keeping any of the provider's message. A body over 64 KiB, or one that does not
+  parse, is recorded as `other`. This covers the non-streamed attempt and the streamed one. A
+  streamed rejection body is read for at most five seconds and no further once it passes
+  64 KiB; a body that does not arrive in that time, or whose read fails, is recorded as `other`.
+
 ### Changed
 
 - Built-in CLI command discovery now lives in `lionhub.cli.catalog`; command names,
   aliases and lazy loading are unchanged.
+
+- Session gate denials now store a redacted `GateDenied` signal and deliver it
+  to a bound persistence subscriber before observation callbacks; the proposed
+  action is no longer retained in the denial's Flow copy.
 
 - A session tool gate sees arguments bound to a registered callable's
   signature with defaults applied when inspection and binding succeed; otherwise
@@ -133,6 +216,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   artifact before the task. If the artifact turn fails or its reply is not the
   requested word, each dimension sends the artifact with its own task, and the
   run reports `artifact_turn_failed` or `artifact_turn_unused`.
+
+- MCP tools registered by server name now bind to the transport and effective
+  security policy selected at registration, so later configuration reloads or
+  policy changes cannot redirect them or change their policy. With an explicit
+  configuration file, missing server names are refused before any tools are
+  registered. Metadata-free registration also resolves names at registration,
+  including from the default configuration file; an unknown name is refused,
+  and a missing default `.mcp.json` raises `FileNotFoundError`. Registering
+  again picks up changed configuration or policy. Superseded cached clients
+  remain available to be closed by `cleanup()`.
+
+  Inline transport identity accepts exact built-in `None`, `bool`, `int`,
+  `float`, `str`, `list`, `tuple`, and `dict` values recursively; lists and
+  tuples have distinct identities. Nested dictionary keys may be any of those
+  types that Python permits as keys; transport fields may impose stricter rules.
+  Other values, including `Path` and built-in subclasses, and cyclic structures
+  raise `ValueError`. Convert unsupported values to strings where appropriate
+  and remove cycles first. A name absent from the default configuration raises
+  the loader's "not declared in the selected config" error.
+
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared
   credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
@@ -197,6 +300,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 2.0.0 |
   | `lionagi.work` | `lionhub.orchestration.work` | 2.0.0 |
   | `lionagi.mcp` | `lionhub.serve.mcp` | 2.0.0 |
+  | `lionagi.providers` | `lionhub.providers` | 2.0.0 |
+  | `lionagi.lndl` | `lionhub.lndl` | 2.0.0 |
+  | `lionagi.operations.lndl_middle` | `lionhub.lndl.middle` | 2.0.0 |
+  | `lionagi.providers._provider_errors` | `lionagi._provider_errors` | 2.0.0 |
+  | `lionagi.providers._secret_resolution` | `lionagi.service.accounts._secret_resolution` | 2.0.0 |
+  | `lionagi.providers._subagent_admission` | `lionagi.service._subagent_admission` | 2.0.0 |
+  | `lionagi.providers.openai._chat_schemas` | `lionagi.service.connections._chat_schemas` | 2.0.0 |
 
 - The core no longer imports `lionagi.cli`: no import statement or literal
   `import_module` call outside `lionagi.cli`, `lionagi.mcp` and `lionagi.studio`
@@ -236,7 +346,91 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the process had loaded from any config file, so an earlier, unrelated config's servers were
   registered again. Pass `server_names` to choose servers explicitly.
 
+- A tool call whose arguments nest too deeply to serialize (past 255 levels)
+  still runs and returns its result. Its log entry records the arguments as
+  `<arguments too deeply nested>`; any other serialization error still surfaces.
+  Arguments nested past the interpreter's recursion limit run this way only when
+  no session tool gate is set; a gate still denies them without running the tool.
+
+- The transcript mirror service moved from `lionagi/cli/mirror.py` to
+  `lionagi/cli/_mirror_service.py`, and its preview-size setting is read in
+  `lionagi/cli/_mirror_settings.py`. `lionagi.cli.mirror` keeps `run_mirror`, the service
+  names its own loop uses and those other modules import from it; the service's remaining
+  private helpers are now importable only from `lionagi.cli._mirror_service`.
+  `lionagi.studio.config` still exposes `MIRROR_PREVIEW_CHARS`, and importing it no longer
+  loads the mirror implementation.
+
+- The schedule command parsing shared by the Studio command module and the CLI schedule
+  commands moved from `lionagi/studio/cli.py` to `lionagi/cli/_schedule_parsing.py`, and the
+  CLI schedule commands import it from there. `lionagi.studio.cli` keeps
+  `add_schedule_subparser`, `build_create_body`, `suggest_schedule_flag`,
+  `_normalize_schedule_reason`, `_is_schedule_request_timeout` and
+  `_schedule_request_timeout_message`; the parser's other private helpers are now importable
+  only from `lionagi.cli._schedule_parsing`.
+
+- `current_pid_markers` moved from `lionagi/cli/kill.py` to `lionagi/ln/_proc.py`. The kill
+  module re-exports it, so existing imports keep working.
+
+- The `li schedule` parsing module defines the chain-depth cap, the action-kind vocabulary and the
+  identifier check itself, and the Studio scheduler imports them from it. Importing the parsing
+  module no longer loads the Studio scheduler.
+
+- Schedule declarations validate budgets, GitHub filters, flow YAML, and commands without importing
+  the schedules router; existing router validator imports continue to work.
+
+- The process identity, signalling and recorded-worker cleanup helpers moved from
+  `lionagi/cli/kill.py` to `lionagi/cli/_kill_service.py`. The helpers used outside that
+  module dropped their leading underscore (`kill_one`, `list_running_children`,
+  `check_pid_identity` and others), and `lionagi.cli.kill` imports them under those names.
+  The kill command's other private helpers are importable only from
+  `lionagi.cli._kill_service`. The Studio cancel path and `li state doctor` import from the
+  new module, so Studio no longer imports the kill command.
+
+- Context-window tables for anthropic, claude_code, codex, deepseek, gemini, gemini_code, groq,
+  nvidia_nim, openrouter, perplexity and pi now live in each provider package's `_config` module,
+  so they can be read without importing the endpoint. Each endpoint module still exposes
+  `CONTEXT_WINDOWS` as the same object, and the tables' contents are unchanged.
+
+- A structured `communicate()` call whose response stopped at its output token limit, and whose
+  text does not parse as it is, no longer sends a parse repair request. It fails through
+  `handle_validation` at once: `"raise"` raises an error whose message names the output-limit
+  stop, `"return_none"` gives `None` and `"return_value"` gives the text as an
+  `UnparsedResponse` of kind `"extraction"`. `parse()` takes the new keyword-only
+  `stopped_at_output_limit` flag; `Branch.parse()` is unchanged.
+
+- Context-window lookup reads the provider catalog instead of importing each provider
+  module by name. Lookup results are unchanged, and a provider hint is still used only when
+  it is a provider key. When the provider hub is missing or fails to load, the lookup raises
+  `MissingFeatureError`, `ProviderActivationError` or, for an unsupported manifest version,
+  `ProviderContractVersionError`, instead of returning the 128,000-token estimate as if the
+  model were unknown.
+
+- `EndpointRegistry.match` with no endpoint named now resolves a provider the bundled provider
+  catalog declares to its declared default endpoint, whatever was imported first. Before, the
+  first registered entry won, so `openai` resolved to `OpenaiAudioSpeechEndpoint` when the audio
+  module had been imported first. Named endpoints, providers the catalog does not declare, and
+  lookups while the catalog cannot load keep the registry scan. An endpoint registered under a
+  built-in provider before the built-ins load still resolves when no endpoint is named.
+
+- `EndpointRegistry` now registers the built-in providers from the bundled provider catalog,
+  calling every endpoint declaration's factory in catalog order, instead of importing a fixed
+  list of provider modules. `match` results and each provider's endpoint order are unchanged.
+  `list_providers()` lists the `codex` endpoint after the OpenAI endpoints instead of second.
+  When the catalog cannot load, the registry logs one warning naming the failure and registers
+  no built-in provider.
+
+- `AccountRoutingError` now raises `ValueError` when `provider_error_type` or `rejection_class`
+  is set with any code other than `request_rejected`. The message names the rule and does not
+  echo either value.
+
+- When a routed Anthropic rejection body cannot be classified, the classifier logs one debug
+  record that names only the exception type, and still records `other` for both names.
+
 ### Deprecated
+
+- Filtering emitted events through a Session gate is deprecated. Use route
+  predicates or subscribers to filter observations, and `authorize` for
+  decisions before an operation runs.
 
 - `Session.remove_branch(delete=...)`, and `exclude_clone` and `exclude_load` on
   `Session.to_df()` and `Session.concat_messages()`, now emit a `DeprecationWarning` when
@@ -249,6 +443,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   engine does not take them. The attributes keep 0.7 and 200,000 when the arguments are
   omitted. Both will be removed in a future minor release.
 
+- `lionagi.providers._provider_errors` moved to `lionagi._provider_errors`, beside
+  `lionagi._errors`, and stays in the core. The old path keeps working until 2.0.0: it warns
+  once and returns the same module, so existing `except` clauses, `isinstance` checks and
+  pickles written by earlier versions are unaffected. A pickle written from this version names
+  the new path, which versions before the move cannot import.
+
+- `lionagi.providers._secret_resolution` moved to `lionagi.service.accounts._secret_resolution`,
+  and `lionagi.providers._subagent_admission` moved to `lionagi.service._subagent_admission`.
+  Both stay in the core. The old paths keep working until 2.0.0: each warns once and returns the
+  same module, so existing imports, patches and pickles written by earlier versions are
+  unaffected. The secret-resolution logger keeps the name `lionagi.providers._secret_resolution`.
+
+- `lionagi.providers` moved to `lionhub.providers`, a second import root inside the same
+  distribution, so installs need nothing new. `lionagi.providers.openai._chat_schemas` moved to
+  `lionagi.service.connections._chat_schemas` and stays in the core. The old paths keep working
+  until 2.0.0: each warns once and returns the same module, so existing imports, patches and
+  pickles written by earlier versions are unaffected. Modules that moved into the core earlier
+  (provider errors, secret resolution, subagent admission) still resolve to their core homes from
+  their old `lionagi.providers` paths. Logger names keep their `lionagi.providers.*` names.
+
+- `lionagi.lndl` moved to `lionhub.lndl`, and the LNDL Middle `lionagi.operations.lndl_middle`
+  moved to `lionhub.lndl.middle`, both inside the same distribution, so installs need nothing
+  new. The old paths keep working until 2.0.0: each warns once and returns the same module, so
+  existing imports, patches and pickles are unaffected. The nine root exports such as
+  `lionagi.LNDLOutput` keep working and warn at the caller's line on first use. The Middle's
+  logger keeps its `lionagi.operations.lndl_middle.lndl_middle` name.
+
 ### Removed
 
 - The MCP server no longer accepts the flat operation names of its earlier
@@ -259,7 +480,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   for `submit_agent` and `job.list` for `jobs_list`. The catalog and `server.info`
   drop their `synonyms_removed_after` field.
 
+- The private `_import_all_providers()` helper in `lionagi.service.connections.registry` and
+  its module list. A new built-in provider is added as a row in the hub's provider manifest;
+  see "Adding a new provider" in the provider reference.
+
 ### Fixed
+
+- Importing the Claude Code, Codex, and Pi providers no longer configures the
+  application's root logger.
+
+- Successful structured-response repairs on API models now replace the invalid
+  assistant text in later conversation history and run-level live persistence.
+  The original text remains available in the message metadata. A branch using
+  the `persist_message` hook keeps the original stored text.
+
+- Recent Studio session pages on SQLite avoid scanning newer hidden engine
+  transcripts when a compatible optional index is available. Opening an existing
+  store builds the index when its session-time index has the expected shape; a
+  store where it cannot be built keeps the previous listing path. The build holds
+  the SQLite write lock until it completes.
+
+- The email-in-header guard runs in linear time on long hyphenated text.
+
+- A failed or cancelled Operator setup now makes a bounded attempt to close a
+  session created before admission and logs when cleanup did not complete.
+  Cancellation during cleanup still cancels the run unless the store refused a
+  write, in which case the refusal is raised.
+  A failed Operator turn reports an incomplete recovery lookup in its error.
+  The attempt requires a recorded worker generation and a timestamp fence;
+  compatibility stores without that generation cannot close this pre-admission
+  candidate. A concurrent replacement or update that preserves the same timestamp
+  can defeat the fence.
+
+- Adapter error details now fully redact credential-named strings even when
+  they look like URLs; location fields retain their existing URL sanitization.
+
+- ReAct no longer sends an internal display setting in API requests.
+
+- Restored API models use their registered request schema when a snapshot omits it, validating
+  and coercing requests as fresh models do. A formerly unvalidated payload may now be refused,
+  and fields outside that schema are filtered. On restored Anthropic models using the registered
+  schema, with account routing and prompt caching off, `cache_control=True` no longer adds a
+  five-minute mark to the last message, matching fresh models.
 
 - Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
   A caller-supplied chat model keeps its own settings.
@@ -343,6 +605,154 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `parse_batch_function_calls()` decodes each call in the list once, so a string argument whose
   escapes decode to a reserved word followed by `=` (for example `"\x66rom=1"`) keeps its text,
   as `parse_function_call()` already did. The batch parser used to rewrite it to `from_=1`.
+
+- Redaction now recognizes signing-key and HMAC-key field names, such as
+  `LIONAGI_STUDIO_EVIDENCE_HMAC_KEY` and `codesigningkey`, across separator and camel-case spellings,
+  so their values are masked; ordinary names such as `sort_key`, `cache_key` and `primary_key` stay visible.
+
+- `DataLogger` no longer stays alive solely for its exit callback. Pending logs
+  are saved when an unreferenced logger is collected or at normal process exit;
+  if log content refers back to its logger, it remains alive until exit. An
+  automatic save failure is logged and does not clear the snapshot from its pile.
+
+- On Linux, `li kill` and `li kill --all-stale` no longer cancel a live run when its process start
+  time or the boot time disagrees between readers, as can happen after a clock adjustment. The run
+  is kept, and the stale sweep reports each kept run under a per-reason skip count. A run with no
+  readable process ID is outside this change: a boot-time disagreement still marks it as stopped,
+  as before.
+
+- On Linux, a live process whose recorded start time disagrees is held as unknown rather than
+  swept, even when its PID was reused by another process, because the two cases cannot be told
+  apart from epoch times. Such runs get no automatic disposition and are counted per reason in
+  each stale-sweep summary.
+
+- When a guarded session cancellation in `li kill` runs past its deadline, the command now says
+  that the cancellation did not finish before the deadline; it previously reported the cancellation
+  as unavailable with an empty reason.
+
+- A run-directory import no longer overwrites a stored message that another session or branch
+  references: when any field the import would change differs, it refuses the run with
+  `ImportMessageConflictError` naming the message id and the differing columns; an identical
+  shared message is reused unchanged.
+
+- Codex exclusive MCP selections recheck readable user, system and project layers at
+  launch and refuse configurations they cannot safely account for. Existing
+  agents retain their built selection; rebuild them to get launch-time
+  enforcement. A Codex request passed to endpoint payload construction also
+  retains its workspace when that request is rebuilt. If the Codex CLI was not
+  discovered, the call reports that before resolving secrets or checking launch-time configuration.
+  An allowlist naming no server in the readable layers now loads user config with every
+  declared server disabled, where it previously skipped user config.
+  A judge raises when an exclusive MCP selection cannot be enforced. Configuration may
+  still change between the check and Codex reading it: a removed system server can cause
+  startup to fail, while a newly added one can load. Managed and cloud configuration is
+  not visible to the selection check. `CodexCodeRequest.as_cmd_args()` refuses an exclusive
+  selection because only the endpoint's spawn path can check the launch configuration.
+  A request carrying an exclusive selection also refuses MCP overrides that name an
+  unselected server.
+
+- Tool hook and verbose summaries no longer block dispatch when deeply nested
+  arguments exceed Python's string-representation recursion limit.
+
+- Five state lifecycle tests no longer fail on a loaded test runner: each wait ends on the
+  condition the test checks instead of a fixed time bound.
+
+- An API agent whose provider refuses a response (Anthropic `stop_reason: "refusal"`, OpenAI
+  `content_filter` or a `refusal` part) now reports the refusal: the failed round names the
+  provider's stop reason instead of "no JSON object could be read from it", the resume prompt no
+  longer asks for the response format, and a turn that fails this way records `stop_reason` in
+  its `FailedRoundError` details and in the run record.
+
+- A routed request no longer hangs when the thread pool is saturated: each credential ledger
+  call waits at most five seconds for a worker thread and is then refused as `ledger_busy`,
+  while a write that already started still returns its committed result.
+
+- A background run submitted with `notify_seat` or `notify_sender` but no delivery command
+  no longer looks like a run that asked for no notice: it records a `no_delivery_command`
+  failure with one console line, and the submit handle carries a `notify_warning`.
+
+- A server set read from a file named with `--mcp-config` is the agent's whole set on every
+  launch path, including a plain `li agent <model>` leg and a resumed leg: the Claude CLI gets
+  `--strict-mcp-config` and the Codex CLI disables the servers its own configuration declares. A
+  set found by the `.mcp.json` lookup still adds to the provider's own servers.
+
+- Run imports preserve messages shared with other sessions and roll back incomplete runs.
+
+- Request compilation retains supplied context blocks when prompt caching is not placed, including
+  when a branch has no system message or its first instruction uses plain content.
+
+- The scheduler service validates a schedule's `on_success` and `on_fail` chain actions at create
+  and, when the update carries them, at update, with the same rules and messages as
+  `li schedule --on-success` / `--on-fail`. Both now refuse a chain nested past the depth limit,
+  whose deeper actions the scheduler never fires.
+
+- Judge gates propagate deterministic request and policy refusals, including wrapped and grouped
+  errors, instead of treating them as permission to expand work.
+
+- GitHub schedule polling times out an unresponsive `gh auth token` exchange and cleans up the
+  child through the shared process-group helper.
+
+- An API agent turn that fails because the provider refused is now recorded as a non-retryable
+  provider failure (`run.failed.provider_nonretryable`) on the run and in its completion notice,
+  instead of `run.failed.exception`. Its `FailedRoundError` details and the run record also carry
+  the provider's own refusal detail beside `stop_reason`: Anthropic's `stop_details`, or the
+  OpenAI refusal text.
+
+- Bound secret lookup cleanup after termination while preserving cancellation and output privacy.
+
+- Record a placeholder in place of tool output nested past the serializer's depth limit,
+  so the tool call is still reported as returned and its history row is kept.
+
+- Use the argument serialization fallback only for the exact orjson depth error; other
+  `TypeError` exceptions propagate.
+
+- A job process started through the MCP server is reaped as soon as it exits. It used to stay a
+  zombie of the server until another process was spawned or a status call probed its pid.
+
+- A secret lookup whose output read raised after its child had started now kills and reaps the
+  child, and a process-group terminate that raises no longer skips draining, waiting for and
+  closing the child. The lookup still returns no value, and no command text is logged.
+
+- A ReAct reply cut off at its output token limit while writing text no longer ends the turn on
+  an input-cap error. The context fold now shortens such replies, and a failed round whose reply
+  stopped at its output limit is reported with that reason.
+
+- `run.json` no longer records `LIONAGI_API_ACCOUNT` as `api_account` for a run whose chat
+  endpoint sends through the account router, which chooses the account itself and never reads
+  that variable. The account that paid is in `api_usage`. Runs that route nothing still record
+  the name.
+
+- `gemini-2.5-pro` now has a 1,048,576-token context window on every route. The Gemini CLI
+  table gave it 2,097,152, twice the Gemini API value, so a lookup with no provider hint
+  returned the larger window and the answer depended on whether a hint was passed.
+
+- Terminal attempt lifecycle tests no longer fail on a slow runner when their one-second attempt
+  budget runs out during the state reads before the delivery effect starts. The first attempt of
+  each such test is repeated, with a doubled budget, only when it ended without the effect having
+  begun; every attempt still ends on the reconciler's own budget, and every assertion is kept.
+
+- PostgreSQL test teardowns that delete an imported session no longer fail a passing test when
+  another backend holds a conflicting table lock for an instant. The delete, which takes its locks
+  without waiting, is retried for a bounded time; a lock still held after that fails the teardown
+  with the holding backends listed.
+
+- A hosted Studio page paired by `li studio` no longer loses access on reload, in a new tab or
+  from a bookmark. The page keeps the daemon's launch bearer in `localStorage`, bound to the
+  daemon's API base, checks it once with the daemon before the app mounts, and forgets it on the
+  first 401 that carried it, so a restarted daemon asks for `li studio` again. A configured
+  `LIONAGI_STUDIO_AUTH_TOKEN` is held in memory for the page load only and never stored.
+
+- `li studio`, the `li schedule` clients and the `li doctor` daemon check reach a daemon on
+  `localhost`, `127.0.0.0/8` or `::1` without going through a configured proxy
+  (`http_proxy`, `https_proxy`, `all_proxy`, or the macOS system proxy settings). With a proxy
+  set, `li studio` used to miss a daemon already running on its port and open the hosted page
+  with a pairing code that daemon refused ("This daemon needs an access token"). Other hosts
+  keep the proxy settings, and a redirect from loopback to any other host is not followed.
+
+- `li studio` checks that it can bind its port before it issues a pairing link. When nothing
+  answers as a lionagi daemon and the port cannot be bound (in use by another program, a
+  `--host` this machine cannot listen on, a port that needs privileges), the launch stops with
+  an error naming the cause, and no link is printed or opened.
 
 ## [0.36.0] - 2026-10-24
 

@@ -13,9 +13,9 @@ from pydantic import BaseModel
 
 from lionagi.cli._api_usage import APIUsageCollector
 from lionagi.protocols.action.tool_hooks import ToolPreDecision
-from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionagi.service._api_telemetry import record_guard_refusal
 from lionagi.service.connections.endpoint import Endpoint
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 from tests.cli import test_agent_api_provider as provider
 from tests.service.accounts import test_routed_endpoint as routed
 
@@ -43,7 +43,7 @@ def _chars(payload):
 
 @pytest.mark.asyncio
 async def test_openai_cache_counts_reach_real_run_manifest(leg, monkeypatch, tmp_path):
-    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     replies = []

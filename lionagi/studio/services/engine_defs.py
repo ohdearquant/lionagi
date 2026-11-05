@@ -23,7 +23,7 @@ class NameConflictError(Exception):
     """Engine definition name is already taken."""
 
 
-# Closed set of engine kinds — must equal set(lionagi.cli.engine._KIND_META).
+# Closed set of engine kinds — must equal set(lionagi.cli._engine_definitions.KIND_META).
 _VALID_ENGINE_KINDS: frozenset[str] = frozenset(
     {"research", "review", "coding", "hypothesis", "planning"}
 )

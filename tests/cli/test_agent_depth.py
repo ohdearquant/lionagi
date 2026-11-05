@@ -14,14 +14,14 @@ import os
 
 import pytest
 
+from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi.cli._agent_depth import (
     DEPTH_ENV,
     SEAT_PROFILES_ENV,
     stamp_agent_depth,
     stamp_worker_depth,
 )
-from lionagi.providers import _subagent_admission as admission
-from lionagi.providers._provider_errors import NestedAgentRefusedError
+from lionagi.service import _subagent_admission as admission
 
 
 @pytest.fixture(autouse=True)

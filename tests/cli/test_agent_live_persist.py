@@ -1119,7 +1119,7 @@ async def test_rejected_second_setup_leaves_first_context_intact(
 ):
     """A second setup on a still-owned branch must be refused WITHOUT closing
     the first context's shared DB handle or blocking its teardown release."""
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     branch = Branch(name="b1")
     ctx1 = await _setup_live_persist(branch)
@@ -1762,7 +1762,7 @@ async def test_teardown_suppresses_failed_when_linked_engine_session_running(
     temp_db_path: Path,
 ):
     """A stream/provider error must not read as 'failed' while the real engine session is still running."""
-    from lionagi.providers._provider_errors import ProviderError
+    from lionagi._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -1810,7 +1810,7 @@ async def test_teardown_leaves_branch_untouched_when_suppressed_to_running(
     resolves to 'running' (non-terminal), so the branch row — like the
     session row above — must be left exactly as create_branch() left it, not
     stamped with an ended_at from a status that isn't actually final."""
-    from lionagi.providers._provider_errors import ProviderError
+    from lionagi._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-111111111111"
@@ -1858,7 +1858,7 @@ async def test_teardown_suppresses_failed_when_linked_engine_session_completed(
     temp_db_path: Path,
 ):
     """A stream/provider error must not read as 'failed' once the real engine session has completed."""
-    from lionagi.providers._provider_errors import ProviderError
+    from lionagi._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
@@ -1900,7 +1900,7 @@ async def test_teardown_suppresses_failed_when_linked_engine_session_completed(
 
 async def test_teardown_keeps_failed_without_linked_engine_session(temp_db_path: Path):
     """No linked engine session (or no engine_session_uid at all) → a real failure stays failed."""
-    from lionagi.providers._provider_errors import ProviderError
+    from lionagi._provider_errors import ProviderError
 
     branch = Branch(name="b1")
     ctx = await _setup_live_persist(branch, agent_name="implementer")
@@ -1973,7 +1973,7 @@ async def test_teardown_keeps_failed_for_genuine_provider_error_even_when_linked
     failures -- unlike the generic unclassified stream/transport ProviderError, they
     must never be suppressed into 'running'/'completed' just because a linked engine
     session happens to still be alive."""
-    import lionagi.providers._provider_errors as provider_errors
+    import lionagi._provider_errors as provider_errors
     from lionagi.state.claude_mirror import mirror_session
 
     error_cls = getattr(provider_errors, error_name)
@@ -2019,7 +2019,7 @@ async def test_teardown_reconciles_after_delayed_mirror_row_creation(
     """The claude/codex mirror row for engine_session_uid may not exist YET at teardown
     time (mirror-lag race) — _linked_engine_session must bounded-retry and pick it up
     instead of immediately falling through to 'failed'."""
-    from lionagi.providers._provider_errors import ProviderError
+    from lionagi._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-222222222222"
@@ -2133,7 +2133,7 @@ async def test_non_continuation_resume_installs_a_fresh_worker_generation(temp_d
 
 
 async def test_continuation_keeps_worker_generation_and_is_consumed_once(temp_db_path):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
 
     branch = Branch(name="generation-continuation")

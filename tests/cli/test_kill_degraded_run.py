@@ -27,13 +27,14 @@ from unittest.mock import AsyncMock
 import psutil
 import pytest
 
+from lionagi.cli._kill_service import _settle_degraded_run
 from lionagi.cli._runs import (
     PERSISTENCE_DEGRADED_REASON_FIELD,
     _record_persistence_degraded,
     _run_manifest_lock,
     allocate_run,
 )
-from lionagi.cli.kill import _do_kill, _do_kill_all_stale, _settle_degraded_run
+from lionagi.cli.kill import _do_kill, _do_kill_all_stale
 from lionagi.ln._proc import raw_create_time
 
 RUN_ID = "20261005T030000-abc123"
@@ -224,6 +225,7 @@ def test_a_record_written_while_the_kill_settles_waits_for_it_and_is_kept(
     """The kill reads run.json again and writes under the run's manifest lock, which every run.json
     writer takes. Another invocation sharing the run id that records itself after that read waits
     for the kill's write, and its record is the one left."""
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
 
     run = allocate_run(run_id=RUN_ID)
@@ -259,7 +261,7 @@ def test_a_record_written_while_the_kill_settles_waits_for_it_and_is_kept(
         return current
 
     monkeypatch.setattr(fcntl, "flock", observe_flock)
-    monkeypatch.setattr(kill_mod, "json", SimpleNamespace(loads=read_then_record))
+    monkeypatch.setattr(kill_service, "json", SimpleNamespace(loads=read_then_record))
     _settle_degraded_run(run.manifest_path, stopped)
     writer.join(10)
 
@@ -420,8 +422,9 @@ async def test_a_run_that_kept_its_session_is_not_reached_by_its_run_id(runs_roo
 
 
 @pytest.mark.asyncio
-async def test_a_recycled_pid_is_not_signalled(runs_root, leg, caplog):
+async def test_a_recycled_pid_is_not_signalled(runs_root, leg, caplog, monkeypatch):
     """The run's process is gone and another lionagi-looking process holds its pid."""
+    monkeypatch.setattr(psutil, "LINUX", False)
     path = _write_run(
         runs_root, _degraded(leg.pid, pid_create_time=raw_create_time(psutil.Process(leg.pid)) - 60)
     )
@@ -431,6 +434,54 @@ async def test_a_recycled_pid_is_not_signalled(runs_root, leg, caplog):
 
     assert "did not match the expected lionagi process" in caplog.text
     assert leg.poll() is None
+    assert json.loads(path.read_text())["status"] == "running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("linux", "expected_message"),
+    [
+        (False, "did not match the expected lionagi process"),
+        (True, "could not be identified reliably"),
+    ],
+)
+async def test_create_time_mismatch_refuses_degraded_kill_on_each_platform(
+    runs_root, monkeypatch, caplog, linux, expected_message
+):
+    import lionagi.cli._kill_service as kill_service
+    from lionagi.cli import kill as kill_mod
+
+    monkeypatch.setattr(psutil, "LINUX", linux)
+    monkeypatch.setattr(psutil, "Process", lambda _pid: object())
+    monkeypatch.setattr(kill_service, "raw_create_time", lambda _proc: 100.0)
+    patched_pid_alive = lambda _pid: True
+    monkeypatch.setattr(kill_mod, "_pid_alive", patched_pid_alive)
+    monkeypatch.setattr(kill_service, "_pid_alive", patched_pid_alive)
+    monkeypatch.setattr(kill_service, "_pid_is_zombie", lambda _pid: False)
+    signals = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    path = _write_run(
+        runs_root,
+        {
+            "status": "running",
+            PERSISTENCE_DEGRADED_REASON_FIELD: "OperationalError('database is locked')",
+            "pid": 4242,
+            "pid_create_time": 1.0,
+            "process_identity_mode": "local",
+        },
+    )
+
+    reasons = []
+    verdict = kill_mod.check_pid_identity(
+        4242, "lionagi", expected_create_time=1.0, _reason_out=reasons
+    )
+    assert verdict == ("unverifiable" if linux else "not_ours")
+    assert reasons == (["start_mismatch"] if linux else [])
+    with caplog.at_level(logging.WARNING):
+        assert await _do_kill(RUN_ID, grace_seconds=0) == 1
+
+    assert expected_message in caplog.text
+    assert signals == []
     assert json.loads(path.read_text())["status"] == "running"
 
 

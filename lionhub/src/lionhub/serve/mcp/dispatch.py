@@ -20,9 +20,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
-from lionagi.providers._provider_errors import NestedAgentRefusedError
 
 from . import config, jobs, projection, roster
 from .verbs import (
@@ -719,7 +719,9 @@ def _refuse_without_prompt(verb: Verb, args: dict[str, Any], prompt: str | None)
     )
 
 
-def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> Any:
+def _refuse_unknown_profile(
+    args: dict[str, Any], cwd: str | None, *, default_name: str | None = None
+) -> Any:
     """Refuse a submission naming an agent profile nothing declares.
 
     Checked with the exact resolver a spawned run itself would use (same
@@ -732,7 +734,7 @@ def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> Any:
     Returns the loaded profile, or None when the submission names none, so a
     caller can read the authority that profile grants.
     """
-    name = args.get("agent")
+    name = args.get("agent") or default_name
     if not name:
         return None
     from lionagi.cli._providers import (
@@ -746,6 +748,12 @@ def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> Any:
             return load_agent_profile(name)
         # ValueError covers a name the resolver refuses outright, such as one with a path in it
         except (AgentProfileNotFoundError, AmbiguousProfileNameError, ValueError) as exc:
+            if (
+                isinstance(exc, AgentProfileNotFoundError)
+                and default_name
+                and not args.get("agent")
+            ):
+                return None
             raise OpError("invalid_input", str(exc)) from exc
 
 
@@ -806,12 +814,42 @@ def _write_capable(verb: Verb, args: dict[str, Any], profile: Any) -> bool:
 
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     _refuse_invalid_playbook_spec(schema)
+    resumes = bool(args.get("resume") or args.get("continue_last"))
+    if resumes:
+        flow_selector = verb.job_kind in {"flow", "play"} and (
+            args.get("exclude_mcp_servers") is not None
+            or args.get("mcp_config") is not None
+            or bool(args.get("no_mcp_config"))
+            or args.get("agent") is not None
+        )
+        agent_exclusion = verb.job_kind == "agent" and bool(args.get("exclude_mcp_servers"))
+        if flow_selector or agent_exclusion:
+            raise OpError(
+                "invalid_input",
+                "A resumed run replays its recorded MCP choice; start a fresh run to change it.",
+            )
     prompt = _resolve_prompt(args)
     _refuse_too_many_positionals(verb, args, prompt)
     _refuse_without_model(verb, schema, args, prompt)
     _refuse_without_prompt(verb, args, prompt)
     cwd = _resolve_cwd(args)
-    profile = _refuse_unknown_profile(args, cwd)
+    default_name = None
+    if (
+        verb.job_kind in {"flow", "fanout"}
+        and not args.get("file")
+        and not args.get("playbook")
+        and not args.get("resume")
+    ):
+        from lionagi.cli.orchestrate import _resolve_model_and_prompt
+        from lionagi.cli.orchestrate._orchestration import _select_orchestrator_agent
+
+        query = [*(args.get("query") or []), *([prompt] if prompt is not None else [])]
+        resolved = _resolve_model_and_prompt(query)
+        assert resolved is not None  # the positional limit was checked above
+        selected, defaulted = _select_orchestrator_agent(args.get("agent"), resolved[0])
+        if defaulted:
+            default_name = selected
+    profile = _refuse_unknown_profile(args, cwd, default_name=default_name)
     write_capable = _write_capable(verb, args, profile)
     flags = render_argv(schema, args)
     assert verb.job_kind is not None
@@ -829,6 +867,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             no_mcp_config=bool(args.get("no_mcp_config")),
             exclude_mcp_servers=args.get("exclude_mcp_servers"),
             write_capable=write_capable,
+            profile=profile,
+            **({"replay_mcp_choice": True} if resumes else {}),
         )
     except NestedAgentRefusedError as exc:
         # Well-formed, and refused for where the caller runs, which no retry changes.

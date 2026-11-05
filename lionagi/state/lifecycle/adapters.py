@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from . import LifecycleNotFoundError, LifecycleValidationError
 from .models import ActorRecord, OverrideRecord, ReasonRecord, TransitionCommand
-from .service import SQLAlchemyLifecycleService, _runner_identity_matches
+from .service import SQLAlchemyLifecycleService
 
 __all__ = (
     "TransitionRejectedError",
@@ -157,63 +157,23 @@ async def run_cancel_session_if_worker_generation(
 ) -> Literal["applied", "already_terminal", "conflict", "missing", "rejected"]:
     """Bind cancellation to one execution, through the service's guarded transition.
 
-    ``already_terminal`` means the captured execution's end was already recorded, by
-    the runner itself or by an earlier cancel: the refused write is followed by one
-    read, which finds the row terminal and still carrying the captured generation and
-    runner identity. Nothing is written.
+    ``already_terminal`` means the row observed by the guarded transition was
+    terminal and still carried the captured generation and runner identity.
+    Nothing is written; a later change to the row is not ruled out.
     """
-    command = TransitionCommand(
-        entity_type="session",
-        entity_id=session_id,
-        to_status="cancelled",
-        reason=ReasonRecord(
-            code=reason_code, summary=reason_summary, evidence_refs=(dict(evidence),)
-        ),
-        actor=ActorRecord(type="admin", id="user"),
-        expected_statuses=frozenset({"running"}),
-        patch={"current_phase": None},
-    )
     try:
-        outcome = await service._transition(  # noqa: SLF001 -- same-package adapter seam
-            command,
-            extra_guard={"cli_worker_generation": generation_id},
+        outcome, terminal_same_execution = await service.guarded_cancel_session(
+            session_id=session_id,
+            generation_id=generation_id,
             expected_runner_identity=expected_runner_identity,
-            enforce_edges=True,
-            undeclared_edge_mode="reject",
+            reason=ReasonRecord(
+                code=reason_code, summary=reason_summary, evidence_refs=(dict(evidence),)
+            ),
         )
     except LifecycleNotFoundError:
         return "missing"
     except LifecycleValidationError:
         return "rejected"
-    policy = service._registry.get("session")  # noqa: SLF001
-    if outcome.result == "conflict" and outcome.previous_status in policy.terminal_statuses:
-        # A runner that obeys the kill's SIGTERM records its own terminal status during the
-        # grace period. That row is the captured execution's end, not a resumed one; a
-        # resume replaces the generation, so a match on both keys cannot be a later leg.
-        from sqlalchemy import text
-
-        db = service._db  # noqa: SLF001
-        async with db._tx() as conn:  # noqa: SLF001
-            row = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT status, cli_worker_generation, node_metadata "  # noqa: S608
-                            f"FROM {policy.table} WHERE id = :id"
-                        ),
-                        {"id": session_id},
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if (
-            row is not None
-            and row["status"] in policy.terminal_statuses
-            and row["cli_worker_generation"] == generation_id
-            and _runner_identity_matches(
-                expected_runner_identity, row["node_metadata"], dialect=db.dialect
-            )
-        ):
-            return "already_terminal"
+    if outcome.result == "conflict" and terminal_same_execution:
+        return "already_terminal"
     return outcome.result

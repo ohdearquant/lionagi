@@ -334,7 +334,7 @@ def test_a_suite_whose_settings_were_read_before_the_removal_refuses_to_run(prob
 
     assert completed.returncode != 0
     assert (
-        "lionagi.config was imported before tests/conftest.py could remove LIONAGI_STATE_DB_URL"
+        "lionagi.config was imported before tests/_shared_conftest.py could remove LIONAGI_STATE_DB_URL"
         in completed.stdout + completed.stderr
     )
     assert bound == {}

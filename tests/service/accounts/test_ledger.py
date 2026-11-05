@@ -127,7 +127,7 @@ async def test_first_reservation_creates_private_schema(tmp_path):
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-    assert names == {"account", "month", "binding", "attempt", "adjustment"}
+    assert names == {"account", "month", "binding", "attempt", "adjustment", "warm_prefix"}
     assert read_attempt(path, reservation.attempt_id)[0:2] == ("open", None)
 
 

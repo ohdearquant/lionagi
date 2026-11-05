@@ -113,7 +113,7 @@ CWE reference: CWE-400 (uncontrolled resource consumption), CWE-770 (allocation 
 | `lionagi/agent/hooks.py` | guard_destructive, guard_paths, log_tool_call built-in hooks (`log_tool_use` is a deprecated alias) |
 | `lionagi/agent/spec.py` | AgentSpec presets (coding) with path policies |
 | `lionagi/tools/sandbox.py` | SandboxSession — git worktree isolation for speculative edits |
-| `lionagi/providers/` | Provider wrappers, one package each (OpenAI, Anthropic, Gemini, Ollama, etc.) |
+| `lionhub/src/lionhub/providers/` | Provider wrappers, one package each (OpenAI, Anthropic, Gemini, Ollama, etc.) |
 | `lionagi/protocols/action/` | Tool registration and MCP integration |
 | `lionagi/libs/schema/function_to_schema.py` | Tool schema generation from a function signature |
 | `lionagi/session/branch.py` | Branch facade — where tool registration and call dispatch happen |

@@ -153,13 +153,13 @@ def test_pydantic_class_callers_keep_classes_instances_and_rejections():
     ],
 )
 def test_optional_callers_keep_scalar_domain(annotation, expected):
-    from lionagi.lndl.types import _unwrap_scalar
+    from lionhub.lndl.types import _unwrap_scalar
 
     assert _unwrap_scalar(annotation) is expected
 
 
 def test_optional_rendering_keeps_duck_typed_model_classes():
-    middle = importlib.import_module("lionagi.operations.lndl_middle.lndl_middle")
+    middle = importlib.import_module("lionhub.lndl.middle.lndl_middle")
 
     class ModelFieldsOnly:
         model_fields = {"answer": object()}

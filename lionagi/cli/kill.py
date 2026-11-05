@@ -5,1131 +5,143 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
-import json
-import os
-import signal
-import socket
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
-
-import psutil
+from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln._proc import (
-    _admit_recorded_worker_group,
-    _recorded_worker_group_matches,
-    _recorded_worker_group_state,
-    _RecordedGroupRefusal,
-    _RecordedGroupWitness,
-    _RecordedWorkerIdentity,
-    raw_create_time,
+    current_pid_markers,  # noqa: F401  (re-exported: the kill command's historical import path)
 )
-from lionagi.ln._proc import start_time_matches as _start_time_matches
-from lionagi.ln.concurrency import current_time, effective_deadline, fail_after, sleep
+from lionagi.state._quarantine_identity import (
+    QuarantineProbeError,
+    _is_unreadable_quarantine,
+    is_current_quarantine,
+)
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
+from ._kill_service import (
+    _REFUSED_SIGNAL_REASONS,
+    _STALE_SWEEP_ORDER,
+    NOT_JUDGEABLE_HERE,
+    NOT_STOPPED_SIGNALS,
+    _degraded_run,
+    _imported_degraded_process_identity,
+    _kill_degraded_run,
+    _persist_cancel,
+    _pid_addressability,
+    _same_cleanup_session,
+    _try_recorded_worker_cleanup,
+    check_pid_identity,
+    kill_one,
+    list_running_children,
+    read_pid_from_entity,
+    unaddressable_pid_reason,
+)
 from ._logging import log_error, warn
-from ._util import _TABLE_TO_ENTITY_TYPE, BOOT_TIME_TOLERANCE, AmbiguousIdError
+from ._pid_quarantine import quarantine_identity
+from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
-from ._util import recorded_identity_mode as _recorded_identity_mode
-from ._util import recorded_pid_is_foreign as _recorded_pid_is_foreign
 from ._util import resolve_entity as _resolve_entity
 
 
-def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
-    """Extract the OS PID from an entity row."""
-    meta = entity.get("node_metadata") or {}
-    if isinstance(meta, dict):
-        raw_pid = meta.get("pid")
-        if raw_pid is not None:
-            try:
-                return int(raw_pid)
-            except (TypeError, ValueError):
-                pass
-
-    artifacts_path = entity.get("artifacts_path")
-    if artifacts_path:
-        pid_file = os.path.join(artifacts_path, ".pid")
-        try:
-            text = open(pid_file).read().strip()  # noqa: WPS515
-            return int(text)
-        except (OSError, ValueError):
-            pass
-
-    return None
-
-
-def current_pid_markers() -> dict[str, Any]:
-    """Host-scoped process identity for liveness and kill verification."""
-    return {
-        "pid": os.getpid(),
-        "pid_create_time": raw_create_time(psutil.Process(os.getpid())),
-        "pid_host": socket.gethostname(),
-        "pid_boot_time": psutil.boot_time(),
-        "process_identity_mode": "local",
-    }
-
-
-#: Refusals to signal. A pid only names a process together with its host and boot; when the
-#: record cannot show that, nothing is signalled or written, so the row's claim stays true.
-_REFUSED_SIGNAL_REASONS: dict[str, str] = {
-    "identity_mismatch": "did not match the expected lionagi process",
-    "host_mismatch": "was recorded on a different host",
-    "boot_mismatch": "was recorded before this machine last booted",
-    "in_process": (
-        "runs inside a shared host process, so no signal reaches it alone — "
-        "use the Studio cancel for this run"
-    ),
-    "foreign_mode": "records a process identity this CLI does not manage",
-    # Membership here routes this signal through the early return in `_kill_one`, so no
-    # cancellation is written for a process that is demonstrably still running. The kernel
-    # refused the signal, so it arrives from a different direction than its neighbours --
-    # they are refusals this CLI decides before signalling, this one is a refusal it is
-    # handed after asking -- but the caller's question is the same either way: was it
-    # stopped. It was not.
-    "permission_denied": "could not be signalled: permission denied",
-    "no_recorded_process": "names a run whose persistence setup failed and recorded no process",
-    "no_recorded_identity": (
-        "was recorded with no start time, so nothing shows which process it named"
-    ),
-    "imported_no_process": (
-        "is a row `li state import` made from a run.json, which records no process: "
-        "stop the run by its own session id (`li monitor` lists them)"
-    ),
-}
-
-#: Outcomes where nothing was stopped and no cancellation was written: every refusal above.
-#: A caller that reports these as a kill is claiming a stop that did not happen.
-_NOT_STOPPED_SIGNALS = frozenset(_REFUSED_SIGNAL_REASONS)
-
-#: Re-exported so readers find it beside the check that uses it; defined once in ``_util``
-#: because the Studio liveness probe compares the same recorded value.
-_BOOT_TIME_TOLERANCE = BOOT_TIME_TOLERANCE
-
-
-#: Reasons a row is also unfit to sweep. ``boot_mismatch`` is excluded — the mismatch itself
-#: proves the process is gone; the other three mean this host cannot tell if it's alive.
-_NOT_JUDGEABLE_HERE = frozenset({"host_mismatch", "in_process", "foreign_mode"})
-
-#: Identity modes this CLI can signal. ``in_process`` is excluded on purpose — the run shares
-#: a host process, so no signal reaches it alone.
-_LOCALLY_SIGNALLABLE_MODES = frozenset({"local"})
-
-
-def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
-    """Why the recorded pid cannot be signalled from here, or None if it can — checked in order: identity mode, host, then boot time; absent markers return None, not a refusal."""
-    mode = _recorded_identity_mode(meta)
-    if mode is not None and mode not in _LOCALLY_SIGNALLABLE_MODES:
-        return "in_process" if mode == "in_process" else "foreign_mode"
-
-    if _recorded_pid_is_foreign(meta):
-        return "host_mismatch"
-
-    raw_boot = meta.get("pid_boot_time")
-    if raw_boot is not None:
-        try:
-            recorded_boot = float(raw_boot)
-        except (TypeError, ValueError):
-            return None
-        if abs(recorded_boot - psutil.boot_time()) > _BOOT_TIME_TOLERANCE:
-            return "boot_mismatch"
-    return None
-
-
-def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
-    """Exact-token match: is this cmdline a lionagi CLI invocation?"""
-    if not cmdline:
+def _same_process_scope(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Only share a live observation when its host, mode, and boot evidence agree."""
+    first = left.get("node_metadata")
+    second = right.get("node_metadata")
+    if not isinstance(first, dict) or not isinstance(second, dict):
         return False
-    exe = os.path.basename(cmdline[0])
-    if exe in ("li", expected_cmd):
-        return True
-    # Shebang-launched console scripts: argv[0] is the Python interpreter and
-    # argv[1] is the script path (e.g. .venv/bin/li).
-    if exe.lower().startswith("python") and len(cmdline) >= 2:
-        if os.path.basename(cmdline[1]) == "li":
-            return True
-    for flag, mod in zip(cmdline, cmdline[1:], strict=False):
-        if flag == "-m" and (mod == expected_cmd or mod.startswith(expected_cmd + ".")):
-            return True
-    return False
-
-
-_IdentityVerdict = Literal["ours", "not_ours", "unverifiable", "zombie"]
-
-
-def _pid_is_zombie(pid: int) -> bool:
-    """True if *pid* has exited and is waiting for its parent to reap it.
-
-    `pid_alive` answers "does the OS still know this pid", and a zombie
-    satisfies that: it keeps its slot until it is reaped, so `kill -0` keeps
-    succeeding and signals keep being accepted with no effect. Anything that
-    reads "still there" as "still working" will wait out a grace period that
-    can never end and then escalate onto a process that is already dead.
-    """
-    if pid <= 1:
-        return False
-    try:
-        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
-    except psutil.ZombieProcess:
-        return True
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return False
-
-
-def _check_pid_identity(
-    pid: int,
-    expected_cmd: str,
-    *,
-    expected_session_id: str | None = None,
-    expected_create_time: float | None = None,
-) -> _IdentityVerdict:
-    """Classify the process at *pid* against the run we recorded.
-
-    Four answers, every caller must handle all of them:
-
-    - "ours": positively identified as the run in the row.
-    - "not_ours": pid is gone or held by a different process — killing it
-      would hit a stranger.
-    - "unverifiable": present but uninspectable (usually permission denied),
-      or inspectable but with no durable identity recorded to check it
-      against (no session id, no create_time) — a lionagi-looking cmdline
-      alone cannot distinguish our run from any other lionagi process holding
-      this pid. Callers must treat this as still-alive, never as dead, or an
-      unattended sweep would cancel a worker it merely lacks permission to
-      see — and a direct kill must refuse rather than signal a stranger.
-    - "zombie": exited, not yet reaped. Not a recycled pid (the OS won't
-      reissue one before reaping) and not killable again — a finished
-      termination, so folding it into "not_ours" loses a cancellation that
-      already happened.
-
-    A recorded create_time still rules first, since it's readable on a
-    zombie: a reaped-recycled-and-died-again pid reports "not_ours" rather
-    than being mistaken for our own corpse.
-    """
-    try:
-        proc = psutil.Process(pid)
-    except psutil.ZombieProcess:
-        return "zombie"
-    except psutil.NoSuchProcess:
-        return "not_ours"
-    except psutil.AccessDenied:
-        return "unverifiable"
-
-    if expected_create_time is not None:
-        try:
-            create_time_ok = _start_time_matches(raw_create_time(proc), expected_create_time)
-        except psutil.ZombieProcess:
-            return "zombie"
-        except psutil.NoSuchProcess:
-            return "not_ours"
-        except psutil.AccessDenied:
-            return "unverifiable"
-        if not create_time_ok:
-            return "not_ours"
-
-    if expected_session_id is not None:
-        try:
-            marker = proc.environ().get("LIONAGI_SESSION_ID")
-        except psutil.ZombieProcess:
-            # A zombie has no environment left to read, which is exactly how
-            # this case used to disappear into "cannot identify it".
-            return "zombie"
-        except psutil.NoSuchProcess:
-            # The process died between the liveness check and here: the row
-            # is genuinely stale, and letting this escape would abort the
-            # whole sweep with later rows unprocessed.
-            return "not_ours"
-        except (psutil.AccessDenied, NotImplementedError):
-            marker = None
-        if marker is not None:
-            return "ours" if marker == expected_session_id else "not_ours"
-        if expected_create_time is None:
-            # No create_time correlation and the env marker is unreadable:
-            # cmdline alone cannot distinguish this run from a different
-            # concurrent one that recycled the pid.
-            return "unverifiable"
-
-    if expected_session_id is None and expected_create_time is None:
-        # Nothing durable was ever recorded for this row (e.g. an invocation,
-        # which carries no session id and may have no pid_create_time either).
-        # A lionagi-looking cmdline is not proof of identity — any other
-        # lionagi process satisfies it — so there is nothing left to check
-        # this pid against, and cmdline shape alone must not authorize a
-        # signal.
-        return "unverifiable"
-
-    try:
-        cmdline = proc.cmdline()
-    except psutil.ZombieProcess:
-        return "zombie"
-    except psutil.NoSuchProcess:
-        return "not_ours"
-    except psutil.AccessDenied:
-        return "unverifiable"
-
-    return "ours" if _cmdline_is_lionagi(cmdline, expected_cmd) else "not_ours"
-
-
-def _terminate_pid(
-    pid: int,
-    grace_seconds: float = 5.0,
-    expected_cmd: str | None = None,
-    *,
-    expected_session_id: str | None = None,
-    expected_create_time: float | None = None,
-) -> str:
-    """SIGTERM then SIGKILL. Returns "sigterm"/"sigkill"/"already_dead"/"identity_mismatch"."""
-    if not _pid_alive(pid):
-        return "already_dead"
-
-    if _pid_is_zombie(pid):
-        # Exited already, just not reaped by whoever started it. There is
-        # nothing left to signal, and no other process can be holding this pid
-        # until the reap happens, so this is a termination that is already
-        # complete rather than a process we failed to identify.
-        return "already_dead"
-
-    if expected_cmd is not None:
-        verdict = _check_pid_identity(
-            pid,
-            expected_cmd,
-            expected_session_id=expected_session_id,
-            expected_create_time=expected_create_time,
-        )
-        if verdict == "zombie":
-            return "already_dead"
-        # "unverifiable" refuses too: when a human named one entity to kill,
-        # not being able to confirm the target is a reason to stop.
-        if verdict != "ours":
-            return "identity_mismatch"
-
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return "already_dead"
-    except PermissionError as exc:
-        raise RuntimeError(
-            f"cannot send SIGTERM to pid {pid}: {exc}. "
-            "Try again as root, or mark the entity cancelled manually."
-        ) from exc
-
-    deadline = time.monotonic() + grace_seconds
-    interval = 0.1
-    while time.monotonic() < deadline:
-        # A process whose parent never reaps it stays visible to `kill -0`
-        # forever, so waiting on liveness alone would sit out the whole grace
-        # window for a process that obeyed the SIGTERM immediately.
-        if not _pid_alive(pid) or _pid_is_zombie(pid):
-            return "sigterm"
-        time.sleep(interval)
-        interval = min(interval * 2, 0.5)
-
-    if not _pid_alive(pid) or _pid_is_zombie(pid):
-        return "sigterm"
-
-    # Re-check identity before escalating: the pid may have been reused by an
-    # unrelated process in the grace_seconds since SIGTERM, and SIGKILL is not
-    # survivable, so this must not escalate onto a stranger. A pid that now belongs to a different process is
-    # reported the same way a mismatch at entry is.
-    if expected_cmd is not None:
-        verdict = _check_pid_identity(
-            pid,
-            expected_cmd,
-            expected_session_id=expected_session_id,
-            expected_create_time=expected_create_time,
-        )
-        if verdict == "zombie":
-            # It exited between the last poll and this check: the SIGTERM
-            # worked, and escalating would be aiming at a corpse.
-            return "sigterm"
-        if verdict != "ours":
-            return "identity_mismatch"
-
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-
-    return "sigkill"
-
-
-# Only sessions/invocations carry PIDs; plays/shows are orchestrators.
-_STALE_SWEEP_ORDER = ("sessions", "invocations")
-
-
-async def _list_running_children(
-    db: Any, entity_type: str, entity_id: str
-) -> list[tuple[str, str, dict[str, Any]]]:
-    children: list[tuple[str, str, dict[str, Any]]] = []
-
-    if entity_type == "show":
-        rows = await db.fetch_all(
-            "SELECT * FROM plays WHERE show_id = ? AND status = 'running'",
-            (entity_id,),
-        )
-        for row in rows:
-            children.append(("plays", "play", db._row_to_dict(row)))
-
-    if entity_type == "play":
-        # `plays.session_id` is bound only by the Studio show importer; a play
-        # created by a live run leaves it NULL, so this returns nothing for
-        # those and the caller reports the gap rather than a false reap.
-        rows = await db.fetch_all(
-            "SELECT sessions.* FROM plays "
-            "JOIN sessions ON sessions.id = plays.session_id "
-            "WHERE plays.id = ? AND sessions.status = 'running'",
-            (entity_id,),
-        )
-        for row in rows:
-            session_row = db._row_to_dict(row)
-            # Deepest first: whatever the session reaches is signalled before
-            # the session, so no process is orphaned by its owner going
-            # terminal ahead of it.
-            children.extend(await _list_running_children(db, "session", session_row["id"]))
-            children.append(("sessions", "session", session_row))
-
-    if entity_type == "session":
-        # `sessions.invocation_id` points at the invocation that OWNS this
-        # session, so this walks up rather than down. It belongs here anyway:
-        # stopping a session has to stop the process running it, and that
-        # process is the owning invocation. Traversal order still holds, since
-        # the owner is signalled before the session that named it.
-        rows = await db.fetch_all(
-            "SELECT * FROM invocations "
-            "WHERE status = 'running' AND id IN ("
-            "  SELECT invocation_id FROM sessions "
-            "  WHERE invocation_id IS NOT NULL AND id = ?"
-            ")",
-            (entity_id,),
-        )
-        for row in rows:
-            children.append(("invocations", "invocation", db._row_to_dict(row)))
-
-    if entity_type == "invocation":
-        rows = await db.fetch_all(
-            "SELECT * FROM sessions WHERE invocation_id = ? AND status = 'running'",
-            (entity_id,),
-        )
-        for row in rows:
-            children.append(("sessions", "session", db._row_to_dict(row)))
-
-    return children
-
-
-async def _persist_cancel(
-    db: Any,
-    entity_type: str,
-    entity_id: str,
-    *,
-    reason_code: str,
-    reason_summary: str,
-    evidence: dict[str, Any],
-) -> None:
-    """Write the entity's terminal status + status_transition row.
-
-    The status is per entity kind, not one word: a session or invocation goes
-    ``cancelled``, a play goes ``blocked``, a show goes ``aborted``. Anything
-    reported to an operator has to name the one that was actually written.
-
-    Invocation end time records when cancellation was observed, including
-    stale cleanup; it does not reconstruct when an unobserved process died.
-    """
-    from lionagi.state.db import (
-        PLAY_TERMINAL_STATUSES,
-        SHOW_TERMINAL_STATUSES,
-        TransitionRejectedError,
-    )
-
-    if entity_type == "play":
-        row = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (entity_id,))
-        if row is None:
-            return
-        if row["status"] in PLAY_TERMINAL_STATUSES:
-            return
-        target_status = "blocked"
-    elif entity_type == "show":
-        row = await db.fetch_one("SELECT status FROM shows WHERE id = ?", (entity_id,))
-        if row is None:
-            return
-        if row["status"] in SHOW_TERMINAL_STATUSES:
-            return
-        target_status = "aborted"
-    else:
-        table = {
-            "session": "sessions",
-            "invocation": "invocations",
-        }.get(entity_type, "sessions")
-        row = await db.fetch_one(
-            f"SELECT status FROM {table} WHERE id = ?",  # noqa: S608
-            (entity_id,),
-        )
-        if row is None:
-            return
-        if row["status"] != "running":
-            return
-        target_status = "cancelled"
-
-    try:
-        await db.update_status(
-            entity_type,
-            entity_id,
-            new_status=target_status,
-            reason_code=reason_code,
-            reason_summary=reason_summary,
-            evidence_refs=[evidence],
-            source="admin",
-            actor="user",
-            # Guard even a competing cancellation: a same-status write must
-            # not replace the first recorded end time or its reason.
-            expected_statuses={"running"} if entity_type == "invocation" else None,
-            # A session's live phase ends with its terminal status, in this one
-            # statement: a kill can land on a row a SIGKILLed flow left at its
-            # last phase, and a separate clear would be a second write that can
-            # be skipped. Invocations have no phase column; they record their
-            # end time instead.
-            extra_fields=(
-                {"ended_at": time.time()}
-                if entity_type == "invocation"
-                else {"current_phase": None}
-                if entity_type == "session"
-                else None
-            ),
-        )
-    except TransitionRejectedError:
-        # The entity went terminal between the pre-check and this write —
-        # nothing to cancel, same as the pre-check `return`s above.
-        pass
-
-
-async def _kill_one(
-    db: Any,
-    entity_type: str,
-    entity_id: str,
-    row: dict[str, Any],
-    *,
-    user_reason: str,
-    grace_seconds: float = 5.0,
-    verbose: bool = False,
-) -> dict[str, Any]:
-    """Kill one entity: terminate process, persist cancellation."""
-    from lionagi.state.reasons import RunReasons
-
-    meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
-    if entity_type == "session":
-        from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
-
-        # Capture before signalling; missing keys and explicit nulls differ.
-        identity = {key: meta[key] for key in _RUNNER_IDENTITY_FIELDS if key in meta}
-        generation_present = "cli_worker_generation" in row
-        generation = row.get("cli_worker_generation")
-    # Asked before the pid is read, not only when one exists — a pid-less row from another
-    # host or runtime would otherwise fall through and get cancelled for work still running.
-    unaddressable = _unaddressable_pid_reason(meta)
-    if unaddressable in _NOT_JUDGEABLE_HERE:
-        warn(f"  {entity_type} {entity_id[:12]}: {_REFUSED_SIGNAL_REASONS[unaddressable]}")
-        return {
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "signal": unaddressable,
-            "pid": None,
-        }
-
-    pid = _read_pid_from_entity(row)
-    signal_used = "no_pid"
-    # A degraded run that `li state import` gave a row while it still ran: the row has no pid,
-    # the run's own run.json does, and that is the process this kill stops (ADR-0104 Amendment 2).
-    degraded = _degraded_run(entity_id) if pid is None and entity_type == "session" else None
-
-    if degraded is not None:
-        pid, signal_used = _signal_degraded_process(degraded[1], grace_seconds=grace_seconds)
-    elif pid is not None:
-        # Only boot_mismatch can still be pending here; it stays out of the early return
-        # because the stale sweep treats it as evidence the process is gone, unlike a kill.
-        if unaddressable is not None:
-            signal_used = unaddressable
-        else:
-            expected_session_id = entity_id if entity_type == "session" else None
-            raw_ct = meta.get("pid_create_time")
-            try:
-                expected_create_time = float(raw_ct) if raw_ct is not None else None
-            except (TypeError, ValueError):
-                expected_create_time = None
-            try:
-                signal_used = _terminate_pid(
-                    pid,
-                    grace_seconds=grace_seconds,
-                    expected_cmd="lionagi",
-                    expected_session_id=expected_session_id,
-                    expected_create_time=expected_create_time,
-                )
-            except RuntimeError as exc:
-                warn(str(exc))
-                signal_used = "permission_denied"
-    elif entity_type == "session" and row.get("source_kind") == "imported_fs":
-        # `li state import` names a row by the run id of every run.json it reads and puts no pid
-        # on it. Unless the run is a degraded one (above), its process belongs to the session the
-        # run wrote itself, so cancelling this row would stop nothing and say it had.
-        signal_used = "imported_no_process"
-    else:
-        if verbose:
-            warn(f"  {entity_type} {entity_id[:12]}: no PID found — skipping OS signal")
-
-    if signal_used == "sigkill":
-        reason_code = RunReasons.CANCELLED_FORCE_KILL
-        reason_summary = f"Force-killed (SIGKILL after grace period). {user_reason}".strip()
-    elif signal_used in _REFUSED_SIGNAL_REASONS:
-        warn(
-            f"  {entity_type} {entity_id[:12]}: {f'pid {pid} ' if pid is not None else ''}"
-            f"{_REFUSED_SIGNAL_REASONS[signal_used]} — kill skipped"
-        )
-        return {
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "signal": signal_used,
-            "pid": pid,
-        }
-    else:
-        reason_code = RunReasons.CANCELLED_MANUAL_KILL
-        reason_summary = f"Manually cancelled via `li kill`. {user_reason}".strip()
-
-    evidence: dict[str, Any] = {
-        "kind": "kill_event",
-        "signal": signal_used,
-        "pid": pid,
-        "killed_at": time.time(),
-    }
-    if user_reason:
-        evidence["user_reason"] = user_reason
-
-    cancel_status = None
-    cancel_error = None
-    if entity_type == "session":
-        # The process we signalled may have exited and the session been resumed
-        # during the grace period. Guard the write with the original snapshot,
-        # including absent identity keys, rather than re-reading after signalling.
-        if not generation_present:
-            cancel_status = "unavailable"
-            cancel_error = "session generation was not available in the snapshot"
-        else:
-            try:
-                cancel_status = await db.cancel_session_if_worker_generation(
-                    entity_id,
-                    generation,
-                    expected_runner_identity=identity,
-                    reason_code=reason_code,
-                    reason_summary=reason_summary,
-                    evidence=evidence,
-                )
-            except Exception as exc:
-                cancel_status = "unavailable"
-                cancel_error = f"guarded cancellation unavailable: {exc}"
-        # "already_terminal": the signalled execution recorded its own end during the
-        # grace period, so the kill worked and that record is kept as written.
-        if cancel_status not in ("applied", "already_terminal") and cancel_error is None:
-            cancel_error = {
-                "conflict": "session changed before cancellation was recorded",
-                "missing": "session no longer exists",
-                "rejected": "session cancellation was rejected",
-            }.get(cancel_status, f"guarded cancellation returned {cancel_status!r}")
-    else:
-        await _persist_cancel(
-            db,
-            entity_type,
-            entity_id,
-            reason_code=reason_code,
-            reason_summary=reason_summary,
-            evidence=evidence,
-        )
-    if degraded is not None:
-        _settle_degraded_run(*degraded)
-
-    result = {
-        "entity_type": entity_type,
-        "entity_id": entity_id,
-        "signal": signal_used,
-        "pid": pid,
-    }
-    if cancel_status is not None:
-        result["cancel_status"] = cancel_status
-    if cancel_error is not None:
-        result["cancel_error"] = cancel_error
-    return result
-
-
-def _degraded_run(run_id: str) -> tuple[Path, dict[str, Any]] | None:
-    """The run.json of a run whose persistence setup failed, or None for any other id.
-
-    Such a run's setup returned no session, so its run id names no row (setup may have committed
-    one before it failed, which `li monitor` lists under that row's own id, though the run prints
-    none), and the pid it recorded on its own manifest is what its run id reaches (ADR-0104
-    Amendment 2).
-    """
-    from ._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RUNS_ROOT
-
-    # a run id names one directory under RUNS_ROOT: anything that is not a single path
-    # component is no run id, and is never joined onto the path
-    if not run_id or run_id in (".", "..") or Path(run_id).name != run_id:
-        return None
-    # and reached through no link, to another run's directory or out of the root: the run.json
-    # read, and later written, is the one in the directory the id names
-    path = RUNS_ROOT.resolve() / run_id / "run.json"
-    if path.resolve() != path:
-        return None
-    try:
-        manifest = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(manifest, dict) or not manifest.get(PERSISTENCE_DEGRADED_REASON_FIELD):
-        return None
-    return path, manifest
-
-
-def _signal_degraded_process(
-    manifest: dict[str, Any],
-    *,
-    grace_seconds: float,
-) -> tuple[int | None, str]:
-    """Signal the process a degraded run recorded on its run.json; ``(pid, signal)``.
-
-    The checks are a session pid's, less the session id such a run never set: host, boot and
-    identity mode, then the recorded start time and a lionagi command line, refusing when the
-    start time is absent (``no_recorded_identity``, whether or not the pid is alive). A run that
-    recorded no pid answers ``(None, "no_recorded_process")``.
-    """
-    try:
-        pid = int(manifest["pid"])
-    except (KeyError, TypeError, ValueError):
-        return None, "no_recorded_process"
-    if pid <= 0:
-        return None, "no_recorded_process"
-
-    signal_used = _unaddressable_pid_reason(manifest)
-    if signal_used is None:
-        try:
-            expected_create_time = float(manifest["pid_create_time"])
-        except (KeyError, TypeError, ValueError):
-            # The start time is the run's only recorded identity: it set no session id to read
-            # off the process. Without it the record cannot show which process the pid named, so
-            # the kill cannot say it stopped one, alive or dead: nothing is signalled or written.
-            return pid, "no_recorded_identity"
-        try:
-            signal_used = _terminate_pid(
-                pid,
-                grace_seconds=grace_seconds,
-                expected_cmd="lionagi",
-                expected_create_time=expected_create_time,
-            )
-        except RuntimeError as exc:
-            warn(str(exc))
-            signal_used = "permission_denied"
-    return pid, signal_used
-
-
-def _imported_degraded_process_is_live(run_id: str) -> bool:
-    """Whether an imported row's degraded run still names a live process."""
-    degraded = _degraded_run(run_id)
-    if degraded is None:
-        return False
-    manifest = degraded[1]
-    if manifest.get("status") != "running" or _unaddressable_pid_reason(manifest) is not None:
-        return False
-    try:
-        pid = int(manifest["pid"])
-        expected_create_time = float(manifest["pid_create_time"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    if pid <= 0 or not _pid_alive(pid):
-        return False
-    return _check_pid_identity(pid, "lionagi", expected_create_time=expected_create_time) == "ours"
-
-
-def _settle_degraded_run(path: Path, manifest: dict[str, Any]) -> None:
-    """Mark a stopped degraded run cancelled on its run.json, unless it wrote its own end.
-
-    A process that took the SIGTERM wrote its own terminal status on the way out; one that was
-    force-killed, or had already died, could not, and its manifest still says running. Invocations
-    sharing a run id (`LIONAGI_RUN_ID`) share this file, so it is settled only if, read here, it
-    still records the process this kill stopped: one that names another, by pid or start time, is
-    that invocation's record, and is left as it is. So is one this kill cannot read, since what it
-    records cannot be checked. On POSIX the read and the write are made under the run's manifest lock
-    (`flock` on a file beside run.json), which every writer of a run.json takes when it can, so no
-    other locked record lands between them. A lock this kill cannot take (opening or locking the file
-    fails) leaves the file as it is, with a warning; a writer that cannot take it writes without it,
-    with a warning, and where `fcntl` does not exist (Windows) nothing is held and the record is settled
-    unlocked, last writer wins (ADR-0104 Amendment 2, Limits).
-    """
-    from ._runs import _atomic_write_json, _run_manifest_lock
-
-    with contextlib.ExitStack() as held:
-        try:
-            held.enter_context(_run_manifest_lock(path.parent))
-        except OSError as exc:
-            warn(
-                f"  run {path.parent.name}: run.json lock could not be taken ({exc}), left as it is"
-            )
-            return
-        try:
-            current = json.loads(path.read_text())
-        except (OSError, ValueError) as exc:
-            warn(f"  run {path.parent.name}: run.json could not be read ({exc}), left as it is")
-            return
-        if not isinstance(current, dict) or current.get("status") != "running":
-            return
-        stopped = (manifest.get("pid"), manifest.get("pid_create_time"))
-        if (current.get("pid"), current.get("pid_create_time")) != stopped:
-            warn(
-                f"  run {path.parent.name}: run.json now records another process "
-                f"(pid {current.get('pid')}), left as it is"
-            )
-            return
-        current["status"] = "cancelled"
-        current["ended_at"] = time.time()
-        _atomic_write_json(path, current)
-
-
-def _kill_degraded_run(path: Path, manifest: dict[str, Any], *, grace_seconds: float) -> int:
-    """Stop the process a degraded run recorded, by the same identity checks as a session's."""
-    run_id = path.parent.name
-    status = manifest.get("status")
-    if status != "running":
-        log_error(f"run {run_id} is already in terminal state: {status!r} — nothing to kill")
-        return 1
-    pid, signal_used = _signal_degraded_process(manifest, grace_seconds=grace_seconds)
-    if pid is None:
-        log_error(f"run {run_id} recorded no process to stop")
-        return 1
-    if signal_used in _REFUSED_SIGNAL_REASONS:
-        warn(f"  run {run_id}: pid {pid} {_REFUSED_SIGNAL_REASONS[signal_used]} — kill skipped")
-        return 1
-    _settle_degraded_run(path, manifest)
-    print(f"killed run {run_id} (signal={signal_used}, pid={pid})")
-    return 0
-
-
-@dataclass
-class _WorkerCleanup:
-    record: dict[str, Any]
-    identity: _RecordedWorkerIdentity | None
-    witness: _RecordedGroupWitness | None = None
-    refusal: str | None = None
-    signalled: str | None = None
-    empty: bool = False
-    settled: bool = False
-
-
-def _same_cleanup_session(row: dict[str, Any], session: dict[str, Any]) -> bool:
-    """Compare resolved session identity to the worker snapshot, including absence."""
-    from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
-
-    absent = object()
-    for field in ("id", "status", "cli_worker_generation"):
-        if field not in row or field not in session or row[field] != session[field]:
+    for key in ("pid_host", "process_identity_mode", "pid_boot_time"):
+        if (key in first) != (key in second):
             return False
-    for field in ("artifacts_path", "source_kind"):
-        if row.get(field, absent) != session.get(field, absent):
+        if key in first and (
+            type(first[key]) is not type(second[key]) or first[key] != second[key]
+        ):
             return False
-    left = row.get("node_metadata", absent)
-    right = session.get("node_metadata", absent)
-    if isinstance(left, dict) and isinstance(right, dict):
-        for field in _RUNNER_IDENTITY_FIELDS:
-            if left.get(field, absent) != right.get(field, absent):
-                return False
-    elif left != right:
-        return False
     return True
 
 
-def _runner_process_create_time(pid: int) -> tuple[str, float | None]:
-    """Read only the session runner identity, independently of other probes."""
-    from lionagi.ln._proc import process_create_time
-
-    return process_create_time(pid)
-
-
-async def _try_recorded_worker_cleanup(
-    db: Any,
-    row: dict[str, Any],
-    *,
-    user_reason: str,
-    grace_seconds: float,
-    snapshot: dict[str, Any] | None = None,
-) -> int | None:
-    """Handle recorded workers, or leave existing running-session handling intact."""
-    from lionagi.state.compat import StateCompatibilityRefused
-    from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
-    from lionagi.state.reasons import RunReasons
-
-    sid = row["id"]
-    if not callable(getattr(db, "snapshot_cli_worker_spawns", None)):
-        return None
-    if snapshot is None:
-        try:
-            snapshot = await db.snapshot_cli_worker_spawns(sid)
-        except StateCompatibilityRefused:
-            return None
-        except Exception as exc:
-            warn(f"  session {sid[:12]}: worker records could not be read ({exc})")
-            return 1
-    if snapshot is None:
-        log_error(f"session {sid[:12]} changed during cleanup")
-        return 1
-    session = snapshot["session"]
-    status = session["status"]
-    generation = session["cli_worker_generation"]
-    records = snapshot["spawns"]
-    if not _same_cleanup_session(row, session):
-        log_error(f"session {sid[:12]} changed during cleanup")
-        return 1
-
-    running = status == "running"
-    if running:
-        meta = session.get("node_metadata")
-        meta = meta if isinstance(meta, dict) else {}
-        unjudgeable = _unaddressable_pid_reason(meta)
-        if unjudgeable in _NOT_JUDGEABLE_HERE | {"boot_mismatch"}:
-            # A boot mismatch proves the runner and its workers are gone; the
-            # other reasons leave this host unable to stop the recorded workers.
-            if records and unjudgeable in _NOT_JUDGEABLE_HERE:
-                warn(
-                    f"  session {sid[:12]}: {len(records)} recorded worker group(s) not "
-                    f"handled: the runner {_REFUSED_SIGNAL_REASONS[unjudgeable]}"
-                )
-            return None
-        try:
-            raw_pid = meta["pid"]
-            if isinstance(raw_pid, bool) or not isinstance(raw_pid, (int, float, str)):
-                raise ValueError("invalid runner pid")
-            pid = int(raw_pid)
-            # A float must denote the same integer, not be truncated to a
-            # different process. The supported POSIX pid_t is a signed 32-bit
-            # value; larger values cannot be passed safely to psutil's OS API.
-            if (isinstance(raw_pid, float) and raw_pid != pid) or not 1 < pid <= 2**31 - 1:
-                raise ValueError("invalid runner pid")
-        except (KeyError, ValueError, TypeError, OverflowError):
-            if records:
-                warn(f"worker group for session {sid[:12]} could not be confirmed stopped")
-                return 1
-            return None
-        state, _ = _runner_process_create_time(pid)
-        if state == "unknown" and records:
-            log_error(f"session {sid[:12]}: recorded runner could not be verified")
-            return 1
-        if state != "gone":
-            return None
-        evidence = {
-            "kind": "kill_event",
-            "signal": "already_dead",
-            "pid": pid,
-            "killed_at": time.time(),
-        }
-        if user_reason:
-            evidence["user_reason"] = user_reason
-        try:
-            outcome = await db.cancel_session_if_worker_generation(
-                sid,
-                generation,
-                reason_code=RunReasons.CANCELLED_MANUAL_KILL,
-                reason_summary=f"Manually cancelled via `li kill`. {user_reason}".strip(),
-                evidence=evidence,
-                expected_runner_identity={
-                    key: meta[key] for key in _RUNNER_IDENTITY_FIELDS if key in meta
-                },
-            )
-        except Exception as exc:
-            warn(f"  session {sid[:12]}: cancellation could not be confirmed ({exc})")
-            return 1
-        if outcome == "already_terminal":
-            # The runner's own end was recorded after the snapshot and is kept as written;
-            # the session is handled from here as one that had already ended.
-            try:
-                current = await db.get_session(sid)
-            except Exception as exc:
-                warn(f"  session {sid[:12]}: session could not be re-read ({exc})")
-                return 1
-            if (
-                current is None
-                or current.get("status") not in SESSION_TERMINAL_STATUSES
-                or current.get("cli_worker_generation") != generation
-            ):
-                log_error(f"session {sid[:12]} changed during cleanup")
-                return 1
-            running = False
-            status = current["status"]
-            if not records:
-                log_error(
-                    f"session {sid[:12]} is already in terminal state: {status!r} — nothing to kill"
-                )
-                return 1
-        elif outcome != "applied":
-            log_error(f"session {sid[:12]} changed during cleanup")
-            return 1
-        else:
-            status = "cancelled"
-            if not records:
-                print(f"killed session {sid[:12]} (signal=already_dead, pid={pid})")
-                return 0
-    elif not records:
-        return None
-
-    workers = []
-    for record in records:
-        try:
-            identity = _RecordedWorkerIdentity(
-                pid=record["pid"],
-                pgid=record["pgid"],
-                pid_create_time=record["pid_create_time"],
-                pid_host=record["pid_host"],
-                pid_boot_time=record["pid_boot_time"],
-                process_identity_mode=record["process_identity_mode"],
-            )
-            admission = _admit_recorded_worker_group(
-                identity, boot_time_tolerance=BOOT_TIME_TOLERANCE
-            )
-            worker = _WorkerCleanup(record, identity)
-            if isinstance(admission, _RecordedGroupWitness):
-                worker.witness = admission
-            elif isinstance(admission, _RecordedGroupRefusal):
-                worker.refusal = admission.reason
-                if admission.reason == "leader_not_live":
-                    worker.empty = _recorded_worker_group_state(identity) == "empty"
-            else:
-                worker.refusal = "identity_unverifiable"
-            workers.append(worker)
-        except (KeyError, TypeError, ValueError, OSError):
-            workers.append(_WorkerCleanup(record, None, refusal="identity_unverifiable"))
-
-    changed = False
-    guard_failed = False
-
-    async def signal_one(worker: _WorkerCleanup, sig: signal.Signals) -> None:
-        nonlocal changed, guard_failed
-        try:
-            async with db.guard_cli_worker_signal(
-                sid, status, generation, worker.record["spawn_id"]
-            ) as verdict:
-                if verdict != "unchanged":
-                    changed = True
-                else:
-                    await sleep(0)
-                    if _recorded_worker_group_matches(worker.witness) == "matches":
-                        # The synchronous identity read cannot deliver a cooperative
-                        # timeout; refuse a signal if the guard budget elapsed in it.
-                        deadline = effective_deadline()
-                        if deadline is not None and current_time() >= deadline:
-                            raise TimeoutError("worker signal guard deadline expired")
-                        try:
-                            os.killpg(worker.identity.pgid, sig)
-                        except OSError:
-                            pass
-                        else:
-                            worker.signalled = "sigterm" if sig == signal.SIGTERM else "sigkill"
-        except Exception as exc:
-            guard_failed = True
-            warn(f"  session {sid[:12]}: worker signal guard failed ({exc})")
-
-    for worker in workers:
-        if worker.witness is not None:
-            await signal_one(worker, signal.SIGTERM)
-            if changed or guard_failed:
-                break
-    if not changed and not guard_failed and any(w.signalled for w in workers):
-        await sleep(max(0.0, grace_seconds))
-        for worker in workers:
-            if worker.witness is not None and worker.signalled:
-                # Only a matching frozen witness can authorize a KILL; a missing
-                # witness does not prove the group empty. signal_one repeats the
-                # identity check inside the guard before sending any signal.
-                if _recorded_worker_group_matches(worker.witness) == "matches":
-                    await signal_one(worker, signal.SIGKILL)
-                if changed or guard_failed:
-                    break
-    if not changed and not guard_failed:
-        deadline = time.monotonic() + max(0.0, grace_seconds)
-        while True:
-            pending = False
-            for worker in workers:
-                if worker.witness is not None and not worker.empty:
-                    worker.empty = _recorded_worker_group_state(worker.identity) == "empty"
-                    pending |= not worker.empty
-            if not pending or time.monotonic() >= deadline:
-                break
-            await sleep(min(0.1, max(0.0, deadline - time.monotonic())))
-        for worker in workers:
-            if worker.empty:
-                try:
-                    worker.settled = await db.settle_cli_worker_spawn(
-                        worker.record["spawn_id"], confirmed_empty_at=time.time()
-                    )
-                except Exception as exc:
-                    warn(f"  session {sid[:12]}: worker settlement failed ({exc})")
-        try:
-            from lionagi.state.db import _CLI_WORKER_OPERATION_TIMEOUT_SECONDS
-
-            with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
-                current = await db.get_session(sid)
-            changed = current is None or (
-                current.get("status") != status
-                or "cli_worker_generation" not in current
-                or current["cli_worker_generation"] != generation
-            )
-        except Exception as exc:
-            guard_failed = True
-            warn(f"  session {sid[:12]}: worker session recheck failed ({exc})")
-
-    # The last session read can establish a new status or fail altogether.
-    # Never assert that the previous terminal status remains true in either case.
-    if changed:
-        for worker in workers:
-            if worker.signalled and worker.settled:
-                print(
-                    f"stopped worker for session {sid[:12]} (pid={worker.identity.pid}, "
-                    f"pgid={worker.identity.pgid}, signal={worker.signalled})"
-                )
-        log_error(f"session {sid[:12]} changed during cleanup")
-        return 1
-    if guard_failed:
-        for _worker in workers:
-            warn(f"worker group for session {sid[:12]} could not be confirmed stopped")
-        return 1
-
-    if not running and any(w.refusal and not w.empty for w in workers):
-        log_error(f"session {sid[:12]} is already in terminal state: {status!r} — nothing to kill")
-    for worker in workers:
-        if worker.signalled and worker.settled:
-            print(
-                f"stopped worker for session {sid[:12]} (pid={worker.identity.pid}, "
-                f"pgid={worker.identity.pgid}, signal={worker.signalled}); "
-                f"terminal status remains {status!r}"
-            )
-        elif worker.refusal and not worker.empty:
-            detail = (
-                "did not match"
-                if worker.refusal == "identity_mismatch"
-                else "could not be verified"
-            )
-            warn(f"  session {sid[:12]}: recorded worker identity {detail} — kill skipped")
-        elif not worker.settled or guard_failed:
-            warn(
-                f"worker group for session {sid[:12]} could not be confirmed stopped; "
-                f"terminal status remains {status!r}"
-            )
-    if not running and workers and all(w.settled and not w.signalled for w in workers):
-        log_error(f"session {sid[:12]} is already in terminal state: {status!r} — nothing to kill")
-    if running:
-        print(f"killed session {sid[:12]} (signal=already_dead, pid={pid})")
-    signalled = any(w.signalled for w in workers)
+def _quarantine_still_unverifiable(row: dict[str, Any], *, kind: str) -> bool:
+    """Recheck the bound local process immediately before recording a disposition."""
+    identity = quarantine_identity(row)
+    metadata = row.get("node_metadata")
+    if identity is None or not isinstance(metadata, dict):
+        return False
+    pid, created, _generation = identity
+    reason = unaddressable_pid_reason(metadata)
+    if reason in NOT_JUDGEABLE_HERE or reason == "boot_mismatch":
+        return False
+    _reason, alive = _pid_addressability(reason, pid)
+    if alive is None:
+        alive = _pid_alive(pid)
+    if not alive:
+        return False
     return (
-        0
-        if not changed
-        and not guard_failed
-        and all(w.settled for w in workers)
-        and (running or signalled)
-        else 1
+        check_pid_identity(
+            pid,
+            "lionagi",
+            expected_session_id=row["id"] if kind == "session" else None,
+            expected_create_time=created,
+        )
+        == "unverifiable"
     )
+
+
+async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> int:
+    """Record an operator disposition without attempting to stop a process."""
+    from lionagi.state.db import StateDB
+    from lionagi.state.lifecycle import LifecycleNotFoundError
+
+    if not reason.strip():
+        log_error("a non-blank --reason is required to resolve quarantine")
+        return 1
+    async with StateDB() as db:
+        try:
+            resolved = await _resolve_entity(db, id_or_short)
+        except AmbiguousIdError as exc:
+            log_error(str(exc))
+            return 1
+        if resolved is None:
+            log_error("quarantined entity not found")
+            return 1
+        _, kind, row = resolved
+        if kind not in ("session", "invocation") or row.get("status") != "running":
+            log_error("entity is not a running quarantined session or invocation")
+            return 1
+        try:
+            current_quarantine = is_current_quarantine(row, raise_on_scope_error=True)
+        except QuarantineProbeError:
+            log_error("quarantine identity probe failed; no update made")
+            return 1
+        if not current_quarantine:
+            log_error("entity is not quarantined for its current local process identity")
+            return 1
+        try:
+            outcome = await db._lifecycle_service().guarded_quarantine_disposition(
+                entity_type=kind,
+                entity_id=row["id"],
+                snapshot=row,
+                target_status=target,
+                operator_reason=reason.strip(),
+                identity_unverifiable=lambda current: _quarantine_still_unverifiable(
+                    current, kind=kind
+                ),
+            )
+        except QuarantineProbeError:
+            log_error("quarantine identity probe failed; no update made")
+            return 1
+        except LifecycleNotFoundError:
+            log_error(
+                "quarantine changed or identity can now be verified; no update made; use normal li kill"
+            )
+            return 1
+        if outcome.result != "applied":
+            log_error(
+                "quarantine changed or identity can now be verified; no update made; use normal li kill"
+            )
+            return 1
+        print(f"recorded {target} operator disposition for {kind} {row['id']}")
+        return 0
 
 
 async def _do_kill(
@@ -1220,16 +232,16 @@ async def _do_kill(
             # A play row carries no PID of its own, so its whole effect on the
             # running system is through the sessions it started. Resolving them
             # is the kill, not an extra step behind --recursive.
-            children = await _list_running_children(db, entity_type, row["id"])
+            children = await list_running_children(db, entity_type, row["id"])
             play_workers_unreachable = not children
         elif recursive:
-            children = await _list_running_children(db, entity_type, row["id"])
+            children = await list_running_children(db, entity_type, row["id"])
         else:
             children = []
 
         if children:
             for _child_table, child_type, child_row in children:
-                r = await _kill_one(
+                r = await kill_one(
                     db,
                     child_type,
                     child_row["id"],
@@ -1246,7 +258,7 @@ async def _do_kill(
                         f"signal={r['signal']}, but cancellation was not recorded: "
                         f"{r['cancel_error']}"
                     )
-                elif r["signal"] in _NOT_STOPPED_SIGNALS:
+                elif r["signal"] in NOT_STOPPED_SIGNALS:
                     blocked.append(r)
                 else:
                     print(
@@ -1264,7 +276,7 @@ async def _do_kill(
             if recorded_result is not None:
                 return 1 if blocked else recorded_result
 
-        r = await _kill_one(
+        r = await kill_one(
             db,
             entity_type,
             row["id"],
@@ -1280,7 +292,7 @@ async def _do_kill(
                 f"{entity_type} {row['id'][:12]}: signal={r['signal']}, "
                 f"but cancellation was not recorded: {r['cancel_error']}"
             )
-        elif r["signal"] in _NOT_STOPPED_SIGNALS:
+        elif r["signal"] in NOT_STOPPED_SIGNALS:
             blocked.append(r)
         else:
             print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")
@@ -1350,6 +362,15 @@ async def _do_kill_all_stale(
     skipped_unjudgeable = 0
     skipped_unlinked_plays = 0
     unverifiable_tracked = 0
+    unknown_reasons = {
+        "start_mismatch": 0,
+        "boot_disagreement": 0,
+        "permission_denied": 0,
+        "identity_unknown": 0,
+    }
+    pending_observations: list[tuple[str, dict[str, Any], str | None]] = []
+    verified_live: list[tuple[str, dict[str, Any]]] = []
+    quarantined_ids: list[str] = []
 
     live_status_for: dict[str, str] = {
         "sessions": "running",
@@ -1357,6 +378,23 @@ async def _do_kill_all_stale(
     }
 
     async with StateDB() as db:
+
+        async def keep_unverifiable(
+            entity_type: str,
+            row: dict[str, Any],
+            reason: str | None,
+        ) -> None:
+            nonlocal skipped_unverifiable
+            skipped_unverifiable += 1
+            if reason in unknown_reasons:
+                unknown_reasons[reason] += 1
+            pending_observations.append((entity_type, row, reason))
+            if verbose:
+                print(
+                    f"  skip {entity_type} {row['id'][:12]}: process identity "
+                    f"unverifiable ({reason or 'unknown'}) — retained"
+                )
+
         for table in _STALE_SWEEP_ORDER:
             entity_type = _TABLE_TO_ENTITY_TYPE[table]
             live_status = live_status_for[table]
@@ -1367,6 +405,8 @@ async def _do_kill_all_stale(
 
             for row_dict in (db._row_to_dict(r) for r in rows):
                 entity_id = row_dict["id"]
+                if _is_unreadable_quarantine(row_dict):
+                    warn(f"{entity_type} {entity_id[:12]}: quarantine record unreadable")
 
                 started = (
                     row_dict.get("started_at")
@@ -1388,10 +428,9 @@ async def _do_kill_all_stale(
                     if isinstance(row_dict.get("node_metadata"), dict)
                     else {}
                 )
-                unjudgeable = _unaddressable_pid_reason(row_meta_for_host)
-                if unjudgeable in _NOT_JUDGEABLE_HERE:
-                    # Recorded on another host or an unmanaged runtime — reading this host's
-                    # process table would misjudge it as dead.
+                unjudgeable = unaddressable_pid_reason(row_meta_for_host)
+                if unjudgeable in NOT_JUDGEABLE_HERE:
+                    # Another host or unmanaged runtime cannot be judged here.
                     skipped_unjudgeable += 1
                     if verbose:
                         print(
@@ -1399,24 +438,36 @@ async def _do_kill_all_stale(
                             f"{_REFUSED_SIGNAL_REASONS[unjudgeable]} — not judgeable from here"
                         )
                     continue
+                pid = read_pid_from_entity(row_dict)
+                unjudgeable, pid_alive_now = _pid_addressability(unjudgeable, pid)
+                if unjudgeable == "boot_unverifiable":
+                    await keep_unverifiable(entity_type, row_dict, "boot_disagreement")
+                    continue
 
-                pid = _read_pid_from_entity(row_dict)
                 if (
                     entity_type == "session"
                     and pid is None
                     and row_dict.get("source_kind") == "imported_fs"
-                    and _imported_degraded_process_is_live(entity_id)
                 ):
-                    skipped_live += 1
-                    if verbose:
-                        print(
-                            f"  skip {entity_type} {entity_id[:12]}: "
-                            "process recorded in run.json is still alive"
-                        )
-                    continue
+                    imported_verdict, imported_reason = _imported_degraded_process_identity(
+                        entity_id
+                    )
+                    if imported_verdict == "ours":
+                        skipped_live += 1
+                        verified_live.append((entity_type, row_dict))
+                        if verbose:
+                            print(
+                                f"  skip {entity_type} {entity_id[:12]}: "
+                                "process recorded in run.json is still alive"
+                            )
+                        continue
+                    if imported_verdict == "unverifiable":
+                        await keep_unverifiable(entity_type, row_dict, imported_reason)
+                        continue
                 # A live pid alone isn't enough — the OS may have reused it. Correlate against
                 # the row's own session id/create_time, same as the direct-kill path.
-                pid_alive_now = pid is not None and _pid_alive(pid)
+                if pid_alive_now is None:
+                    pid_alive_now = pid is not None and _pid_alive(pid)
                 verdict: str | None = None
                 if pid_alive_now:
                     meta = (
@@ -1431,14 +482,17 @@ async def _do_kill_all_stale(
                     except (TypeError, ValueError):
                         expected_create_time = None
 
-                    verdict = _check_pid_identity(
+                    reasons: list[str] = []
+                    verdict = check_pid_identity(
                         pid,
                         "lionagi",
                         expected_session_id=expected_session_id,
                         expected_create_time=expected_create_time,
+                        _reason_out=reasons,
                     )
                     if verdict == "ours":
                         skipped_live += 1
+                        verified_live.append((entity_type, row_dict))
                         if verbose:
                             print(
                                 f"  skip {entity_type} {entity_id[:12]}: "
@@ -1446,44 +500,9 @@ async def _do_kill_all_stale(
                             )
                         continue
                     if verdict == "unverifiable":
-                        # We couldn't read enough of the process to confirm
-                        # identity either way (e.g. AccessDenied). Treat as
-                        # live rather than sweep it out from under a worker
-                        # we simply can't inspect. That decision must not be
-                        # only a per-sweep counter: persist when this was
-                        # first observed so a permanently-uninspectable pid
-                        # leaves durable evidence instead of being silently
-                        # skipped forever with nothing to show for it.
-                        skipped_unverifiable += 1
-                        if not dry_run:
-                            since = meta.get("unverifiable_since")
-                            if not isinstance(since, (int, float)):
-                                since = time.time()
-                            count = meta.get("unverifiable_count")
-                            count = (count + 1) if isinstance(count, int) else 1
-                            # Merge only the two marker fields through the
-                            # atomic UPDATE. A whole-column snapshot built
-                            # from `meta` (read at the top of this loop) and
-                            # written back with update_session()/
-                            # update_invocation() can land after a concurrent
-                            # writer's own atomic merge (e.g. the flow
-                            # segment/control-log writers) and silently
-                            # overwrite whatever they just added — the same
-                            # clobber this patch closes on the flow side.
-                            marker_patch = {
-                                "unverifiable_since": since,
-                                "unverifiable_count": count,
-                            }
-                            if entity_type == "session":
-                                await db.merge_session_node_metadata(entity_id, marker_patch)
-                            else:
-                                await db.merge_invocation_node_metadata(entity_id, marker_patch)
-                            unverifiable_tracked += 1
-                        if verbose:
-                            print(
-                                f"  skip {entity_type} {entity_id[:12]}: process {pid} "
-                                "identity unverifiable (permission denied) — treated as live"
-                            )
+                        await keep_unverifiable(
+                            entity_type, row_dict, reasons[0] if reasons else None
+                        )
                         continue
                     # "not_ours" (the pid was recycled by an unrelated process)
                     # and "zombie" (our process exited and nobody reaped it)
@@ -1524,6 +543,58 @@ async def _do_kill_all_stale(
                 )
                 killed += 1
                 print(f"  cancelled stale {entity_type} {entity_id[:12]} (pid={pid})")
+
+        # Resolve all probes before writing: if this sweep found the same
+        # process both live and unverifiable, the live result wins.
+        live_rows = [
+            (kind, row) for kind, row in verified_live if quarantine_identity(row) is not None
+        ]
+
+        def live_match(kind: str, row: dict[str, Any], identity: tuple) -> bool:
+            for live_kind, live in live_rows:
+                live_identity = quarantine_identity(live)
+                if live_identity is None or live_identity[:2] != identity[:2]:
+                    continue
+                if kind == live_kind == "session" and live_identity[2] != identity[2]:
+                    continue
+                if _same_process_scope(live, row):
+                    return True
+            return False
+
+        for entity_type, row, _reason in pending_observations:
+            identity = quarantine_identity(row)
+            if identity is None:
+                warn(
+                    f"  {entity_type} {row['id'][:12]}: process identity not bound in the row; "
+                    "quarantine not recorded"
+                )
+            elif dry_run and not live_match(entity_type, row, identity):
+                if is_current_quarantine(row):
+                    quarantined_ids.append(row["id"])
+        if not dry_run:
+            for entity_type, row in verified_live:
+                if quarantine_identity(row) is not None:
+                    await db.clear_unverifiable_pid(entity_type, row["id"], snapshot=row)
+            for entity_type, row, _reason in pending_observations:
+                identity = quarantine_identity(row)
+                if identity is None:
+                    continue
+                if live_match(entity_type, row, identity):
+                    await db.clear_unverifiable_pid(entity_type, row["id"], snapshot=row)
+                    continue
+                pid, create_time, _generation = identity
+                result = await db.observe_unverifiable_pid(
+                    entity_type,
+                    row["id"],
+                    snapshot=row,
+                    pid=pid,
+                    create_time=create_time,
+                    observed_at=time.time(),
+                )
+                if result.get("applied"):
+                    unverifiable_tracked += 1
+                    if result.get("unverifiable_quarantined") is True:
+                        quarantined_ids.append(row["id"])
 
         play_rows = await db.fetch_all("SELECT * FROM plays WHERE status = 'running'", ())
         for row_dict in (db._row_to_dict(r) for r in play_rows):
@@ -1635,20 +706,23 @@ async def _do_kill_all_stale(
         f"\n{prefix} {killed} stale entities "
         f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}, "
         f"skipped_unverifiable_pid={skipped_unverifiable}, "
+        f"skipped_linux_start_mismatch={unknown_reasons['start_mismatch']}, "
+        f"skipped_linux_boot_disagreement={unknown_reasons['boot_disagreement']}, "
+        f"skipped_permission_denied={unknown_reasons['permission_denied']}, "
+        f"skipped_identity_unknown={unknown_reasons['identity_unknown']}, "
         f"skipped_unjudgeable={skipped_unjudgeable}, "
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
     if unverifiable_tracked:
-        # Durable evidence, not just this sweep's counter: a row that stays
-        # uninspectable forever (e.g. permission denied) never reaches any
-        # other outcome, so its unverifiable_since/count are now visible on
-        # the row itself rather than only inferred from repeated sweeps.
         warn(
-            f"{unverifiable_tracked} running row(s) recorded first-observed "
+            f"{unverifiable_tracked} running row(s) recorded "
             "unverifiable-pid evidence this sweep (node_metadata.unverifiable_since / "
-            "unverifiable_count) — no automatic disposition is applied; inspect "
+            "unverifiable_count); inspect "
             "with `li status` and resolve manually."
         )
+    print(
+        f"quarantined identity-unverified rows ({len(quarantined_ids)}): {', '.join(quarantined_ids)}"
+    )
     if skipped_unlinked_plays:
         # One line per sweep, not one per row: a play created by a live run
         # never records the sessions it started, so this is a property of how
@@ -1714,6 +788,11 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Optional human-readable reason recorded in status_transitions.",
     )
     kill.add_argument(
+        "--resolve-quarantine",
+        choices=("failed", "aborted", "cancelled"),
+        help="Record an operator disposition for a quarantined row without signalling its PID; requires --reason.",
+    )
+    kill.add_argument(
         "--recursive",
         action="store_true",
         help=(
@@ -1762,6 +841,15 @@ def run_kill(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 
     verbose = getattr(args, "verbose", False)
+
+    disposition = getattr(args, "resolve_quarantine", None)
+    if disposition is not None:
+        if not args.id or args.all_stale or args.dry_run or args.recursive:
+            log_error(
+                "--resolve-quarantine requires one id and cannot be combined with sweep, dry-run or recursion"
+            )
+            return 1
+        return run_async(_resolve_quarantine(args.id, target=disposition, reason=args.reason))
 
     if args.all_stale:
         return run_async(

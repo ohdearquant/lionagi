@@ -21,6 +21,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,7 +40,7 @@ from lionagi.ln._proc import (
     start_time_matches,
 )
 from lionagi.ln.concurrency import current_time, sleep
-from lionagi.providers._subagent_admission import refuse_nested_agent
+from lionagi.service._subagent_admission import refuse_nested_agent
 
 from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
@@ -417,8 +418,8 @@ def _write_mcp_server_snapshot(
     """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
 
     *source* is the config the submission found. Naming it in the snapshot is
-    what keeps the child, which reads this file through ``--mcp-config``, from
-    taking a found set for one the caller named. *searched_from* is the directory
+    the source used for provenance; it is not an authorization marker.
+    *searched_from* is the directory
     the submission searched from, which the child records as its provenance in
     place of its own directory.
     """
@@ -826,6 +827,37 @@ def _split_at_sentinel(flags: Sequence[str]) -> tuple[list[str], list[str]]:
     except ValueError:
         return tokens, []
     return tokens[:cut], tokens[cut:]
+
+
+def _notify_warning(
+    notify_target: str | None,
+    notify_command: str | None,
+    notify_sender: str | None,
+    cwd: str | None,
+) -> str | None:
+    """Why a requested terminal notice cannot be sent, or None when it can.
+
+    A submission asks for a notice by naming a *notify_target* or a
+    *notify_sender*. It can only be sent when a delivery command resolves the
+    way the terminal hook will resolve it: the per-submit *notify_command*,
+    else ``LIONAGI_MCP_NOTIFY_COMMAND``, else the ``notify.on_terminal``
+    setting. Returns None when no notice was asked for or a command resolves.
+    """
+    if not (notify_target or notify_sender):
+        return None
+    from ._notify_hook import _resolve_command
+
+    argv, reason = _resolve_command(
+        notify_command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"), cwd=cwd
+    )
+    if argv is not None:
+        return None
+    return (
+        f"a terminal notice was asked for but no delivery command is usable "
+        f"({reason or 'no_delivery_command'}): the run will record its status and "
+        "deliver nothing. Give notify_command, set LIONAGI_MCP_NOTIFY_COMMAND, "
+        "or configure notify.on_terminal."
+    )
 
 
 def _notify_template(
@@ -1297,6 +1329,8 @@ def submit(
     no_mcp_config: bool = False,
     exclude_mcp_servers: list[str] | None = None,
     write_capable: bool = False,
+    profile: Any | None = None,
+    replay_mcp_choice: bool = False,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1309,6 +1343,10 @@ def submit(
     per-submit delivery-argv override (JSON list); *notify_target* fills the
     ``{target}`` placeholder in the configured command. With neither and no
     configured default, the run simply records its status and delivers nothing.
+    When a *notify_target* or *notify_sender* is given but no delivery command
+    resolves (per-submit *notify_command*, then ``LIONAGI_MCP_NOTIFY_COMMAND``,
+    then ``notify.on_terminal``), the handle, the record and ``status`` carry a
+    ``notify_warning`` saying so; the run is still submitted.
 
     *mcp_config* and *no_mcp_config* are the caller's own answer to where the
     child's MCP servers come from. *exclude_mcp_servers* removes named servers
@@ -1316,7 +1354,8 @@ def submit(
     is incompatible with both caller-owned answers. These are passed as values
     (not re-parsed out of *flags*, which are already rendered in
     `--flag=value` form) since this function must decide whether to resolve its
-    own server set.
+    own server set. *profile* is the already-resolved submitting agent profile,
+    so its MCP policy is applied before any ambient config is read.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -1324,6 +1363,13 @@ def submit(
     # detached run checks again, but a server that exits first leaves it outside that tree
     # (ADR-0133 D7).
     refuse_nested_agent()
+
+    profile_disables_mcp = profile is not None and profile.mcp == "none"
+    if profile_disables_mcp and mcp_config is not None:
+        raise SubmitInputError(
+            f"agent profile {profile.name!r} declares mcp: none; "
+            "it cannot be combined with --mcp-config"
+        )
 
     exclusions = [] if exclude_mcp_servers is None else exclude_mcp_servers
     if not isinstance(exclusions, list) or any(
@@ -1344,6 +1390,11 @@ def submit(
         raise SubmitInputError(
             "exclude_mcp_servers cannot be combined with no_mcp_config because no server set "
             "will be resolved"
+        )
+    if excluded_mcp_servers and profile_disables_mcp:
+        raise SubmitInputError(
+            "exclude_mcp_servers cannot be combined with a profile declaring mcp: none "
+            "because no server set will be resolved"
         )
 
     submit_cwd = _submit_cwd()
@@ -1393,6 +1444,8 @@ def submit(
         # positional; options this function adds must go in front or they
         # arrive as text instead of being parsed.
         options, positionals = _split_at_sentinel(flags)
+        if profile_disables_mcp and not no_mcp_config:
+            options = ["--no-mcp-config", *options]
         prompt_path = None
         if prompt is not None:
             if kind == "agent":
@@ -1421,7 +1474,10 @@ def submit(
         # never inspected a set. Providers may merge their own global config,
         # so this is deliberately not called the effective server set.
         declared_mcp_servers: list[str] | None = None
-        if no_mcp_config:
+        if profile_disables_mcp:
+            mcp_config_reason = f"mcp_disabled_by_profile:{profile.name}"
+            declared_mcp_servers = []
+        elif no_mcp_config:
             mcp_config_reason = "mcp_disabled_by_caller"
             declared_mcp_servers = []
         elif mcp_config is not None:
@@ -1431,6 +1487,8 @@ def submit(
             mcp_config_path = mcp_config
             mcp_config_source = mcp_config
             mcp_config_reason = "mcp_config_named_by_caller"
+        elif replay_mcp_choice:
+            mcp_config_reason = "mcp_replayed_from_recorded_run"
         else:
             from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
 
@@ -1475,7 +1533,7 @@ def submit(
                 }
                 mcp_config_source = str(resolution.source) if resolution.source else None
                 mcp_config_searched_from = resolution.searched_from
-                # Absolute: the child resolves --mcp-config from its own cwd,
+                # Absolute: the child resolves the path from its own cwd,
                 # which is the submission's directory, not this server's. A
                 # relative jobs root would otherwise name a file the child
                 # cannot open. Symlinks are kept, so an absolute root reports
@@ -1484,7 +1542,7 @@ def submit(
                 declared_mcp_servers = sorted(
                     mcp_servers
                 )  # readable order; child reads the snapshot file, not this list
-                options = ["--mcp-config", mcp_config_path, *options]
+                options = ["--mcp-submit-snapshot", mcp_config_path, *options]
 
         # Wire the CLI's terminal hook back to the MCP server so we record a reliable
         # finished_at/status (and fire the configured delivery) even across a restart.
@@ -1526,6 +1584,8 @@ def submit(
         _withdraw_fresh_mint(fresh_mint)
         raise
 
+    notify_warning = _notify_warning(notify_target, notify_command, notify_sender, cwd)
+
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
     # always finds a record to mark. mark_terminal no-ops on a missing record, so
     # a child that reaches a terminal in the window between spawn and this write
@@ -1559,6 +1619,7 @@ def submit(
         "notify_command": notify_command,
         "notify_target": notify_target,
         "notify_sender": notify_sender,
+        "notify_warning": notify_warning,
         # The actor a write-capable run signs as, the config minted for it, and
         # the submitting actor it was derived from. None for every other submit.
         "child_actor": minted.actor if minted else None,
@@ -1621,6 +1682,10 @@ def submit(
     # lock is taken so a slow process table never holds up another mutation.
     _state, created = _process_create_time(proc.pid)
     pgid = _spawned_pgid(proc.pid)
+    # Nothing else waits on the child, so without this it would linger as a
+    # zombie of this process after it exits. Started once the probes above are
+    # done: they read the child by pid, which it keeps until it is reaped.
+    threading.Thread(target=proc.wait, name=f"job-reaper-{run_id}", daemon=True).start()
     latest = record
     with _locked_job(run_id) as guard:
         if guard.record is None:
@@ -1651,6 +1716,7 @@ def submit(
         "excluded_mcp_servers": recorded_exclusions,
         "mcp_config_servers": declared_mcp_servers,
         "notify_sender": notify_sender,
+        **({"notify_warning": notify_warning} if notify_warning else {}),
         "child_actor": minted.actor if minted else None,
         "child_actor_config": minted.config_path if minted else None,
         "submitting_actor": minted.submitting_actor if minted else None,
@@ -2422,6 +2488,7 @@ def status(run_id: str) -> dict[str, Any]:
         # written before the field existed, which is not the same as "observed".
         "finished_at_precision": (job or {}).get("finished_at_precision"),
         "notify_delivery": notify_delivery,
+        "notify_warning": (job or {}).get("notify_warning"),
         "child_actor": (job or {}).get("child_actor"),
         "child_actor_config": (job or {}).get("child_actor_config"),
         "submitting_actor": (job or {}).get("submitting_actor"),

@@ -753,8 +753,8 @@ class TestProviderCallOverrideSSRFGuard:
     @pytest.mark.asyncio
     async def test_openai_tts_blocks_private_base_url(self):
         """OpenaiAudioSpeechEndpoint._call must reject private base_url."""
-        from lionagi.providers.openai.audio import OpenaiAudioSpeechEndpoint
         from lionagi.service.connections.endpoint_config import EndpointConfig
+        from lionhub.providers.openai.audio import OpenaiAudioSpeechEndpoint
 
         config = EndpointConfig(
             name="openai_audio_speech",
@@ -772,10 +772,10 @@ class TestProviderCallOverrideSSRFGuard:
     @pytest.mark.asyncio
     async def test_openai_stt_blocks_private_base_url(self):
         """OpenaiAudioTranscriptionEndpoint._call must reject private base_url."""
-        from lionagi.providers.openai.audio import (
+        from lionagi.service.connections.endpoint_config import EndpointConfig
+        from lionhub.providers.openai.audio import (
             OpenaiAudioTranscriptionEndpoint,
         )
-        from lionagi.service.connections.endpoint_config import EndpointConfig
 
         config = EndpointConfig(
             name="openai_audio_transcription",
@@ -793,8 +793,8 @@ class TestProviderCallOverrideSSRFGuard:
     @pytest.mark.asyncio
     async def test_openai_image_edit_blocks_private_base_url(self):
         """OpenaiImageEditEndpoint._call must reject private base_url."""
-        from lionagi.providers.openai.images import OpenaiImageEditEndpoint
         from lionagi.service.connections.endpoint_config import EndpointConfig
+        from lionhub.providers.openai.images import OpenaiImageEditEndpoint
 
         config = EndpointConfig(
             name="openai_image_edit",
@@ -814,10 +814,10 @@ class TestProviderCallOverrideSSRFGuard:
     @pytest.mark.asyncio
     async def test_groq_stt_blocks_private_base_url(self):
         """GroqAudioTranscriptionEndpoint._call must reject private base_url."""
-        from lionagi.providers.groq.audio_transcription import (
+        from lionagi.service.connections.endpoint_config import EndpointConfig
+        from lionhub.providers.groq.audio_transcription import (
             GroqAudioTranscriptionEndpoint,
         )
-        from lionagi.service.connections.endpoint_config import EndpointConfig
 
         config = EndpointConfig(
             name="groq_audio_transcription",

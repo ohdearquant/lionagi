@@ -57,18 +57,15 @@ async def _seed(db):
     return row["id"]
 
 
-async def _wait_admission_released(db, consumer, event_id, *, timeout=2):
+async def _wait_admission_released(db, consumer, event_id):
+    """Wait until the event's admission is released; only the per-test timeout bounds it."""
     key = (kernel._store_identity(db), consumer, event_id)
-
-    async def wait():
-        while True:
-            with kernel._workers_lock:
-                active = key in kernel._attempts or key in kernel._workers
-            if not active:
-                return
-            await asyncio.sleep(0)
-
-    await asyncio.wait_for(wait(), timeout)
+    while True:
+        with kernel._workers_lock:
+            active = key in kernel._attempts or key in kernel._workers
+        if not active:
+            return
+        await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -105,26 +102,34 @@ async def test_ack_cancellation_is_uncertain_or_propagated_and_reserved(
     async with StateDB(tmp_path / "state.db") as db:
         event_id = await _seed(db)
         await register_consumer(db, "ack-timeout", start="all")
-        first = TerminalReconciler("ack-timeout", prepare, batch_size=1, timeout=0.10)
+        # Only the timeout origin needs the budget to expire during the ACK; a
+        # direct cancel must reach the ACK before any budget can fire.
+        first_budget = 0.10 if origin == "timeout" else 30.0
+        first = TerminalReconciler("ack-timeout", prepare, batch_size=1, timeout=first_budget)
         second = TerminalReconciler("ack-timeout", prepare, batch_size=1, timeout=0.10)
         task = asyncio.create_task(first.attempt_exact(db, event_id))
         try:
-            await asyncio.wait_for(entered.wait(), 1)
+            entered_wait = asyncio.ensure_future(entered.wait())
+            try:
+                await asyncio.wait({entered_wait, task}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                entered_wait.cancel()
+            assert entered.is_set(), "attempt ended before reaching the ACK"
             if origin == "timeout":
-                result = await asyncio.wait_for(task, 1)
+                result = await task
                 assert result.status == "uncertain"
                 assert result.outcome is DeliveryOutcome.SUCCESS and result.attempted is True
             else:
                 task.cancel("caller cancelled during ACK")
                 with pytest.raises(asyncio.CancelledError) as caught:
-                    await asyncio.wait_for(task, 1)
+                    await task
                 if sys.version_info >= (3, 11):
                     assert caught.value.args == ("caller cancelled during ACK",)
             assert (await second.attempt_exact(db, event_id)).status == "busy"
             assert not await is_acknowledged(db, event_id, "ack-timeout")
             assert calls == [event_id]
             release.set()
-            await asyncio.wait_for(settled.wait(), 10)
+            await settled.wait()
             await _wait_admission_released(db, "ack-timeout", event_id)
             assert await is_acknowledged(db, event_id, "ack-timeout") is commits
             assert secret not in caplog.text
@@ -136,7 +141,7 @@ async def test_ack_cancellation_is_uncertain_or_propagated_and_reserved(
         finally:
             release.set()
             await asyncio.gather(task, return_exceptions=True)
-            await _wait_admission_released(db, "ack-timeout", event_id, timeout=10)
+            await _wait_admission_released(db, "ack-timeout", event_id)
 
 
 @pytest.mark.asyncio

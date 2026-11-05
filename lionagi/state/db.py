@@ -48,6 +48,10 @@ from lionagi.ln.concurrency import (
     shield,
 )
 from lionagi.ln.types import SingletonType
+from lionagi.state._quarantine_identity import (
+    UNVERIFIABLE_PID_QUARANTINE_THRESHOLD,
+    encode_identity,
+)
 from lionagi.state.compat import (
     _LINEAGE_KEY,
     _NATIVE_LINEAGE,
@@ -120,6 +124,7 @@ from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
 from lionagi.state.schema_migrations import MIGRATION_CONSTRAINTS as _MIGRATION_CONSTRAINTS
 from lionagi.state.schema_migrations import MIGRATION_INDEXES as _MIGRATION_INDEXES
+from lionagi.state.schema_migrations import RECENT_VISIBLE_INDEXES as _RECENT_VISIBLE_INDEXES
 
 _RUN_DEFAULTS: dict[str, str] = {
     "running": _RunReasons.STARTED_OK,
@@ -302,6 +307,29 @@ TERMINAL_RUN_STATUSES: tuple[str, ...] = ("completed", "failed", "cancelled", "t
 EXECUTED_RUN_STATUSES: tuple[str, ...] = ("running", *TERMINAL_RUN_STATUSES)
 
 _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin", "system"})
+
+_MESSAGE_UPSERT_FIELDS = (
+    "node_metadata",
+    "content",
+    "embedding",
+    "sender",
+    "recipient",
+    "channel",
+    "role",
+    "lion_class",
+)
+_MESSAGE_INSERT_SQL = """INSERT INTO messages (id, created_at, node_metadata, content,
+    embedding, sender, recipient, channel, role, lion_class)
+    VALUES (:id, :created_at, :node_metadata, :content,
+            :embedding, :sender, :recipient, :channel, :role, :lion_class)"""
+_MESSAGE_UPSERT_STMT = text(
+    _MESSAGE_INSERT_SQL
+    + " ON CONFLICT(id) DO UPDATE SET "
+    + ", ".join(f"{field} = excluded.{field}" for field in _MESSAGE_UPSERT_FIELDS)
+).bindparams(bindparam("node_metadata", type_=JSON), bindparam("content", type_=JSON))
+_MESSAGE_INSERT_IF_ABSENT_STMT = text(
+    _MESSAGE_INSERT_SQL + " ON CONFLICT(id) DO NOTHING"
+).bindparams(bindparam("node_metadata", type_=JSON), bindparam("content", type_=JSON))
 
 _SESSION_COLUMNS = frozenset(
     {
@@ -2034,6 +2062,26 @@ class StateDB:
         """Create indexes that ``metadata.create_all`` cannot add to existing tables."""
         for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
             await conn.execute(text(statement))
+        if self.dialect == "sqlite":
+            indexes = (await conn.exec_driver_sql("PRAGMA index_list('sessions')")).all()
+            old = next((row for row in indexes if row[1] == "idx_sessions_updated"), None)
+            if old is None or old[4]:
+                return
+            fields = (
+                await conn.exec_driver_sql("PRAGMA index_xinfo('idx_sessions_updated')")
+            ).all()
+            keys = [field for field in fields if field[5]]
+            if (
+                len(keys) != 1
+                or keys[0][2] != "updated_at"
+                or str(keys[0][4]).upper() != "BINARY"
+                or keys[0][3] not in (0, 1)
+            ):
+                return
+            # Match the existing index's direction: equal timestamps otherwise
+            # reverse row order when the listing scans in descending order.
+            direction = "DESC" if keys[0][3] else "ASC"
+            await conn.execute(text(_RECENT_VISIBLE_INDEXES[direction]))
 
     async def _classify_terminal_delivery_history_once(self, conn) -> None:
         """Freeze v5 replay eligibility, the unknown count and marker in one transaction."""
@@ -3198,10 +3246,10 @@ class StateDB:
         if not isinstance(role, str) or not role.strip():
             raise ValueError(f"messages.role must be a non-empty string; got {role!r}")
 
-    async def _insert_message_in_tx(self, conn, msg: dict[str, Any]) -> None:
+    async def _message_values_in_tx(self, conn, msg: dict[str, Any]) -> dict[str, Any]:
         lion_class_str = (msg.get("node_metadata") or {}).get("lion_class", "")
         type_id = await self._resolve_lion_class_in_tx(conn, lion_class_str)
-        values = {
+        return {
             "id": msg["id"],
             "created_at": msg["created_at"],
             "node_metadata": msg.get("node_metadata"),
@@ -3213,32 +3261,21 @@ class StateDB:
             "role": msg["role"],
             "lion_class": type_id,
         }
+
+    async def _insert_message_in_tx(self, conn, msg: dict[str, Any]) -> None:
+        values = await self._message_values_in_tx(conn, msg)
         if self._compat is not None:
             await self._write_message_compat(conn, values)
             return
 
         # ON CONFLICT(id) DO UPDATE so re-emitted hooks overwrite stale content.
-        await conn.execute(
-            text(
-                """INSERT INTO messages (id, created_at, node_metadata, content,
-                   embedding, sender, recipient, channel, role, lion_class)
-                   VALUES (:id, :created_at, :node_metadata, :content,
-                           :embedding, :sender, :recipient, :channel, :role, :lion_class)
-                   ON CONFLICT(id) DO UPDATE SET
-                     node_metadata = excluded.node_metadata,
-                     content       = excluded.content,
-                     embedding     = excluded.embedding,
-                     sender        = excluded.sender,
-                     recipient     = excluded.recipient,
-                     channel       = excluded.channel,
-                     role          = excluded.role,
-                     lion_class    = excluded.lion_class"""
-            ).bindparams(
-                bindparam("node_metadata", type_=JSON),
-                bindparam("content", type_=JSON),
-            ),
-            values,
-        )
+        await conn.execute(_MESSAGE_UPSERT_STMT, values)
+
+    async def _insert_import_message_if_absent_in_tx(self, conn, msg: dict[str, Any]) -> bool:
+        self._validate_message(msg)
+        values = await self._message_values_in_tx(conn, msg)
+        result = await conn.execute(_MESSAGE_INSERT_IF_ABSENT_STMT, values)
+        return bool(result.rowcount)
 
     async def _write_message_compat(self, conn, values: dict[str, Any]) -> None:
         # A message this run wrote is rewritten in place, as a re-emitted hook does natively, and
@@ -3402,27 +3439,36 @@ class StateDB:
             progression_id, collection, allow_none=True
         )
         async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    "INSERT INTO progressions (id, created_at, collection) VALUES (:id, :ca, :col) "
-                    "ON CONFLICT (id) DO NOTHING"
-                ),
-                {
-                    "id": progression_id,
-                    "ca": time.time(),
-                    "col": _to_json_column(collection or []),
-                },
-            )
+            await self._create_progression_in_tx(conn, progression_id, collection)
+
+    async def _create_progression_in_tx(
+        self, conn, progression_id: str, collection: list[str] | None = None
+    ) -> None:
+        collection = self._validate_progression_collection(
+            progression_id, collection, allow_none=True
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO progressions (id, created_at, collection) VALUES (:id, :ca, :col) "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {"id": progression_id, "ca": time.time(), "col": _to_json_column(collection or [])},
+        )
 
     async def set_progression(self, progression_id: str, collection: list[str]) -> None:
         """Replace a progression's collection wholesale, serializing the JSON here."""
         if self._compat is None:
             collection = self._validate_progression_collection(progression_id, collection)
         async with self._tx() as conn:
-            await conn.execute(
-                text("UPDATE progressions SET collection = :col WHERE id = :id"),
-                {"col": _to_json_column(collection or []), "id": progression_id},
-            )
+            await self._set_progression_in_tx(conn, progression_id, collection)
+
+    async def _set_progression_in_tx(
+        self, conn, progression_id: str, collection: list[str]
+    ) -> None:
+        await conn.execute(
+            text("UPDATE progressions SET collection = :col WHERE id = :id"),
+            {"col": _to_json_column(collection or []), "id": progression_id},
+        )
 
     async def get_progression(self, progression_id: str) -> list[str]:
         async with self._read() as conn:
@@ -3574,8 +3620,7 @@ class StateDB:
 
     # Sessions
 
-    @_operation("create_session")
-    async def create_session(self, session: dict[str, Any]) -> None:
+    def _prepare_session_insert(self, session: dict[str, Any]) -> tuple[dict[str, Any], float]:
         _validate_session_status(session.get("status"))
         _validate_enum(
             "invocation_kind",
@@ -3658,14 +3703,31 @@ class StateDB:
             "project_source": session.get("project_source"),
             "duration_ms": duration_ms,
         }
+        return params, now
+
+    @_operation("create_session")
+    async def create_session(self, session: dict[str, Any]) -> None:
+        params, now = self._prepare_session_insert(session)
         if self._compat is not None:
             params.pop("cli_worker_generation")
             await self._create_session_compat(session, params, now)
             return
         async with self._tx() as conn:
-            result = await conn.execute(
-                text(
-                    """INSERT INTO sessions (id, cc_session_id, run_id, cli_worker_generation, created_at, node_metadata, name, "user",
+            await self._create_session_in_tx(conn, session, params, now)
+
+        project_name = session.get("project")
+        if project_name:
+            await self.register_project(
+                project_name,
+                session.get("project_source") or "git_remote",
+            )
+
+    async def _create_session_in_tx(
+        self, conn, session: dict[str, Any], params: dict[str, Any], now: float
+    ) -> bool:
+        result = await conn.execute(
+            text(
+                """INSERT INTO sessions (id, cc_session_id, run_id, cli_worker_generation, created_at, node_metadata, name, "user",
                        progression_id, first_msg_id, last_msg_id, updated_at,
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
@@ -3684,37 +3746,31 @@ class StateDB:
                                :model, :provider, :effort, :agent_hash,
                                :project, :project_source, :duration_ms)
                        ON CONFLICT (id) DO NOTHING"""
-                ).bindparams(
-                    bindparam("node_metadata", type_=JSON),
-                    bindparam("artifact_contract_json", type_=JSON),
-                    bindparam("artifact_verification_json", type_=JSON),
+            ).bindparams(
+                bindparam("node_metadata", type_=JSON),
+                bindparam("artifact_contract_json", type_=JSON),
+                bindparam("artifact_verification_json", type_=JSON),
+            ),
+            params,
+        )
+        # Only increment session_count when INSERT actually created a row.
+        if result.rowcount and session.get("status") is not None:
+            await self._initialize_managed_entity_in_tx(
+                conn,
+                entity_type="session",
+                entity_id=session["id"],
+                status=session["status"],
+                actor_id="create_session",
+            )
+        if session.get("invocation_id") and result.rowcount:
+            await conn.execute(
+                text(
+                    "UPDATE invocations SET session_count = session_count + 1, "
+                    "updated_at = :now WHERE id = :inv_id"
                 ),
-                params,
+                {"now": now, "inv_id": session["invocation_id"]},
             )
-            # Only increment session_count when INSERT actually created a row.
-            if result.rowcount and session.get("status") is not None:
-                await self._initialize_managed_entity_in_tx(
-                    conn,
-                    entity_type="session",
-                    entity_id=session["id"],
-                    status=session["status"],
-                    actor_id="create_session",
-                )
-            if session.get("invocation_id") and result.rowcount:
-                await conn.execute(
-                    text(
-                        "UPDATE invocations SET session_count = session_count + 1, "
-                        "updated_at = :now WHERE id = :inv_id"
-                    ),
-                    {"now": now, "inv_id": session["invocation_id"]},
-                )
-
-        project_name = session.get("project")
-        if project_name:
-            await self.register_project(
-                project_name,
-                session.get("project_source") or "git_remote",
-            )
+        return bool(result.rowcount)
 
     async def _create_session_compat(
         self, session: dict[str, Any], params: dict[str, Any], now: float
@@ -4612,34 +4668,54 @@ class StateDB:
 
         if fields:
             fields["updated_at"] = time.time()
-            merging_metadata = self._compat is not None and "node_metadata" in fields
-            sets = ", ".join(
-                f'"{k}" = {_set_if_null_expression(k, self.dialect)}'
-                if k in set_if_null
-                else f'"{k}" = :{k}'
-                for k in fields
-            )
-            params = dict(fields)
-            params["_id"] = session_id
-            clause, owner = self._owner_predicate("sessions")
+            set_if_null = frozenset(set_if_null)
             async with self._tx() as conn:
-                if self._compat is not None:
-                    await self._require_owned(conn, "sessions", session_id, "session")
-                    for link, table, what, _created in _SESSION_LINKS:
-                        if params.get(link) is not None:
-                            await self._require_owned(conn, table, params[link], what)
-                    if merging_metadata:
-                        params["node_metadata"] = await self._merged_node_metadata(
-                            conn,
-                            "sessions",
-                            session_id,
-                            params["node_metadata"],
-                            fill_only_if_absent="node_metadata" in set_if_null,
-                        )
-                await conn.execute(
-                    text(f"UPDATE sessions SET {sets} WHERE id = :_id{clause}"),  # noqa: S608
-                    {**params, **owner},
+                await self._update_session_fields_in_tx(conn, session_id, fields, set_if_null)
+
+    async def _update_session_fields_in_tx(
+        self, conn, session_id: str, fields: dict[str, Any], set_if_null: frozenset[str]
+    ) -> None:
+        merging_metadata = self._compat is not None and "node_metadata" in fields
+        sets = ", ".join(
+            f'"{k}" = {_set_if_null_expression(k, self.dialect)}'
+            if k in set_if_null
+            else f'"{k}" = :{k}'
+            for k in fields
+        )
+        params = dict(fields)
+        params["_id"] = session_id
+        clause, owner = self._owner_predicate("sessions")
+        if self._compat is not None:
+            await self._require_owned(conn, "sessions", session_id, "session")
+            for link, table, what, _created in _SESSION_LINKS:
+                if params.get(link) is not None:
+                    await self._require_owned(conn, table, params[link], what)
+            if merging_metadata:
+                params["node_metadata"] = await self._merged_node_metadata(
+                    conn,
+                    "sessions",
+                    session_id,
+                    params["node_metadata"],
+                    fill_only_if_absent="node_metadata" in set_if_null,
                 )
+        await conn.execute(
+            text(f"UPDATE sessions SET {sets} WHERE id = :_id{clause}"),  # noqa: S608
+            {**params, **owner},
+        )
+
+    async def _update_session_message_refs_in_tx(
+        self, conn, session_id: str, first_msg_id: str, last_msg_id: str
+    ) -> None:
+        await self._update_session_fields_in_tx(
+            conn,
+            session_id,
+            {
+                "first_msg_id": first_msg_id,
+                "last_msg_id": last_msg_id,
+                "updated_at": time.time(),
+            },
+            frozenset(),
+        )
 
     @staticmethod
     def _node_metadata_merge_ops(patch: dict[str, Any]) -> list[tuple[str, tuple[str, ...], Any]]:
@@ -4866,6 +4942,333 @@ class StateDB:
         Same semantics as :meth:`merge_session_node_metadata`, for the invocations table.
         """
         await self._merge_node_metadata("invocations", invocation_id, patch)
+
+    @staticmethod
+    def _unverifiable_snapshot(snapshot: dict[str, Any]) -> tuple[dict[str, Any], int, bool]:
+        """Read a probe's metadata and epoch without treating malformed history as valid."""
+        raw = snapshot.get("node_metadata")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = None
+                malformed = True
+            else:
+                malformed = not isinstance(raw, dict)
+        else:
+            malformed = raw is not None and not isinstance(raw, dict)
+        metadata = raw if isinstance(raw, dict) else {}
+        epoch = metadata.get("unverifiable_epoch", 0)
+        if type(epoch) is not int or not 0 <= epoch < 9223372036854775806:
+            malformed = True
+            epoch = 0
+        count = metadata.get("unverifiable_count")
+        since = metadata.get("unverifiable_since")
+        if count is not None and (type(count) is not int or not 0 < count < 9223372036854775806):
+            malformed = True
+        if since is not None:
+            try:
+                valid_since = type(since) in (int, float) and math.isfinite(since) and since >= 0
+            except OverflowError:
+                valid_since = False
+            if not valid_since:
+                malformed = True
+        if (
+            "unverifiable_quarantined" in metadata
+            and type(metadata["unverifiable_quarantined"]) is not bool
+        ):
+            malformed = True
+        if "unverifiable_identity" in metadata and not isinstance(
+            metadata["unverifiable_identity"], str
+        ):
+            malformed = True
+        if malformed:
+            _log.warning("Discarding malformed unverifiable PID observation history")
+        return metadata, epoch, malformed
+
+    async def _update_unverifiable_pid(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        snapshot: dict[str, Any],
+        pid: int | None,
+        create_time: float | None,
+        observed_at: float,
+        clear: bool,
+    ) -> dict[str, Any]:
+        """Atomically apply a PID observation, guarded by the pre-probe row snapshot.
+
+        Unknown observations keep the epoch token, allowing simultaneous observations
+        to increment independently. A verified-live observation advances it, refusing
+        an unknown probe based on the old epoch even if it completes afterwards.
+        """
+        if entity_type not in ("session", "invocation"):
+            raise ValueError("PID observation requires a session or invocation")
+        if self._compat is not None:
+            self._refuse_in_compatibility(
+                "observe_unverifiable_pid", "PID quarantine requires native state"
+            )
+        if self.dialect not in ("sqlite", "postgresql"):
+            raise RuntimeError("PID quarantine is unavailable for this state backend")
+        table = "sessions" if entity_type == "session" else "invocations"
+        meta, epoch, malformed = self._unverifiable_snapshot(snapshot)
+        fields = ("pid", "pid_create_time", "pid_host", "pid_boot_time", "process_identity_mode")
+        identity = (
+            None
+            if clear
+            else encode_identity(
+                pid,
+                create_time,
+                snapshot.get("cli_worker_generation") if entity_type == "session" else None,
+            )
+        )
+        original = snapshot.get("node_metadata")
+        if original is not None and not isinstance(original, (dict, str)):
+            _log.warning("Refusing PID observation on non-object metadata")
+            return {"applied": False, "malformed": True}
+        if isinstance(original, str):
+            try:
+                if not isinstance(json.loads(original), dict):
+                    raise ValueError("metadata is not an object")
+            except (ValueError, TypeError, RecursionError):
+                _log.warning("Refusing PID observation on unreadable metadata")
+                return {"applied": False, "malformed": True}
+        try:
+            # Only these fields participate in the process identity guard. A
+            # malformed historical value must not erase an otherwise valid PID.
+            saved = json.dumps(
+                {key: meta[key] for key in fields if key in meta},
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            _log.warning("Refusing PID observation on malformed process identity")
+            return {"applied": False, "malformed": True}
+        try:
+            json.dumps(meta, allow_nan=False)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            # JSON-invalid history needs a guarded normalization. Preserve all
+            # other keys, and refuse if any other value cannot be represented.
+            normalize_history = True
+            malformed = True
+            _log.warning("Resetting malformed unverifiable PID observation history")
+        else:
+            normalize_history = False
+        params = {
+            "id": entity_id,
+            "snapshot": saved,
+            "epoch": epoch,
+            "identity": identity,
+            "observed_at": observed_at,
+            "now": time.time(),
+            "generation": snapshot.get("cli_worker_generation"),
+            "threshold": UNVERIFIABLE_PID_QUARANTINE_THRESHOLD,
+        }
+        # These are the row fields used to establish local process identity. Guard
+        # their JSON type as well as their value (missing differs from JSON null).
+        if self.dialect == "sqlite":
+            doc = (
+                "json(:normalized_metadata)"
+                if normalize_history
+                else "(CASE WHEN json_valid(node_metadata) AND json_type(node_metadata) = 'object' THEN node_metadata ELSE '{}' END)"
+            )
+            current_epoch = (
+                f"(CASE WHEN json_type({doc}, '$.unverifiable_epoch') = 'integer' "
+                f"AND json_extract({doc}, '$.unverifiable_epoch') >= 0 "
+                f"AND json_extract({doc}, '$.unverifiable_epoch') < 9223372036854775806 "
+                f"THEN json_extract({doc}, '$.unverifiable_epoch') ELSE 0 END)"
+            )
+            guards = " ".join(
+                f"AND json_type({doc}, '$.{key}') IS json_type(:snapshot, '$.{key}') "
+                f"AND json_extract({doc}, '$.{key}') IS json_extract(:snapshot, '$.{key}')"
+                for key in fields
+            )
+            valid = (
+                f"(json_extract({doc}, '$.unverifiable_identity') = :identity "
+                f"AND json_type({doc}, '$.unverifiable_count') = 'integer' "
+                f"AND json_type({doc}, '$.unverifiable_quarantined') IN ('true', 'false') "
+                f"AND (json_type({doc}, '$.unverifiable_epoch') IS NULL OR "
+                f"(json_type({doc}, '$.unverifiable_epoch') = 'integer' AND "
+                f"json_extract({doc}, '$.unverifiable_epoch') >= 0 AND "
+                f"json_extract({doc}, '$.unverifiable_epoch') < 9223372036854775806)) "
+                f"AND json_extract({doc}, '$.unverifiable_count') > 0 "
+                f"AND json_extract({doc}, '$.unverifiable_count') < 9223372036854775806 "
+                f"AND json_type({doc}, '$.unverifiable_since') IN ('integer', 'real') "
+                f"AND json_extract({doc}, '$.unverifiable_since') >= 0 "
+                f"AND json_extract({doc}, '$.unverifiable_since') <= 1.7976931348623157e308)"
+            )
+            count = f"(CASE WHEN {valid} THEN json_extract({doc}, '$.unverifiable_count') + 1 ELSE 1 END)"
+            if clear:
+                updated = (
+                    f"json_set(json_remove({doc}, '$.unverifiable_since', '$.unverifiable_count', "
+                    "'$.unverifiable_identity', '$.unverifiable_quarantined'), "
+                    f"'$.unverifiable_epoch', {current_epoch} + 1)"
+                )
+            else:
+                next_epoch = (
+                    f"({current_epoch} + CASE WHEN json_type({doc}, '$.unverifiable_identity') = 'text' "
+                    f"AND json_extract({doc}, '$.unverifiable_identity') != :identity THEN 1 ELSE 0 END)"
+                )
+                updated = (
+                    f"json_set({doc}, '$.unverifiable_epoch', {next_epoch}, "
+                    f"'$.unverifiable_identity', :identity, '$.unverifiable_count', {count}, "
+                    f"'$.unverifiable_since', CASE WHEN {valid} THEN "
+                    f"json_extract({doc}, '$.unverifiable_since') ELSE :observed_at END, "
+                    f"'$.unverifiable_quarantined', json(CASE WHEN {count} >= :threshold "
+                    "THEN 'true' ELSE 'false' END))"
+                )
+            generation_guard = (
+                " AND cli_worker_generation IS :generation" if entity_type == "session" else ""
+            )
+        else:
+            doc = (
+                "CAST(:normalized_metadata AS jsonb)"
+                if normalize_history
+                else "(CASE WHEN jsonb_typeof(node_metadata::jsonb) = 'object' THEN node_metadata::jsonb ELSE '{}'::jsonb END)"
+            )
+            current_epoch = (
+                f"(CASE WHEN jsonb_typeof({doc}->'unverifiable_epoch') = 'number' "
+                f"AND ({doc}->>'unverifiable_epoch') ~ '^[0-9]{{1,19}}$' "
+                f"THEN CASE WHEN ({doc}->>'unverifiable_epoch')::numeric < 9223372036854775806 "
+                f"THEN ({doc}->>'unverifiable_epoch')::bigint ELSE 0 END ELSE 0 END)"
+            )
+            guards = " ".join(
+                f"AND ({doc}->'{key}') IS NOT DISTINCT FROM (CAST(:snapshot AS jsonb)->'{key}')"
+                for key in fields
+            )
+            valid = (
+                f"({doc}->>'unverifiable_identity' = :identity "
+                f"AND jsonb_typeof({doc}->'unverifiable_count') = 'number' "
+                f"AND jsonb_typeof({doc}->'unverifiable_quarantined') = 'boolean' "
+                f"AND (({doc}->'unverifiable_epoch') IS NULL OR "
+                f"(jsonb_typeof({doc}->'unverifiable_epoch') = 'number' AND "
+                f"CASE WHEN ({doc}->>'unverifiable_epoch') ~ '^[0-9]{{1,19}}$' "
+                f"THEN ({doc}->>'unverifiable_epoch')::numeric < 9223372036854775806 "
+                f"ELSE false END)) "
+                f"AND CASE WHEN ({doc}->>'unverifiable_count') ~ '^[1-9][0-9]{{0,18}}$' "
+                f"THEN ({doc}->>'unverifiable_count')::numeric < 9223372036854775806 "
+                f"ELSE false END "
+                f"AND CASE WHEN jsonb_typeof({doc}->'unverifiable_since') = 'number' "
+                f"THEN ({doc}->>'unverifiable_since')::numeric BETWEEN 0 AND 1.7976931348623157e308 "
+                "ELSE false END)"
+            )
+            count = (
+                f"(CASE WHEN {valid} THEN ({doc}->>'unverifiable_count')::bigint + 1 ELSE 1 END)"
+            )
+            if clear:
+                updated = (
+                    f"(({doc} - 'unverifiable_since' - 'unverifiable_count' - 'unverifiable_identity' "
+                    "- 'unverifiable_quarantined') || "
+                    f"jsonb_build_object('unverifiable_epoch', {current_epoch} + 1))"
+                )
+            else:
+                next_epoch = (
+                    f"({current_epoch} + CASE WHEN jsonb_typeof({doc}->'unverifiable_identity') = 'string' "
+                    f"AND {doc}->>'unverifiable_identity' != :identity THEN 1 ELSE 0 END)"
+                )
+                updated = (
+                    f"({doc} || jsonb_build_object('unverifiable_epoch', {next_epoch}, "
+                    f"'unverifiable_identity', CAST(:identity AS text), 'unverifiable_count', {count}, "
+                    f"'unverifiable_since', CASE WHEN {valid} THEN "
+                    f"({doc}->>'unverifiable_since')::double precision ELSE :observed_at END, "
+                    f"'unverifiable_quarantined', {count} >= :threshold))"
+                )
+            updated = f"({updated})::json"
+            generation_guard = (
+                " AND cli_worker_generation IS NOT DISTINCT FROM :generation"
+                if entity_type == "session"
+                else ""
+            )
+        raw_guard = " AND CAST(node_metadata AS TEXT) = :raw_metadata" if normalize_history else ""
+        stmt = text(
+            f"UPDATE {table} SET node_metadata = {updated}, updated_at = :now "  # noqa: S608
+            f"WHERE id = :id AND status = 'running' AND {current_epoch} = :epoch "
+            f"{generation_guard} {guards} {raw_guard} RETURNING node_metadata"
+        )
+        # Normalizing malformed history uses a raw-value compare-and-swap.
+        # A competing writer can win after our read, so re-read a bounded
+        # number of times while retaining the original identity and epoch.
+        for _attempt in range(3 if normalize_history else 1):
+            async with self._tx() as conn:
+                if normalize_history:
+                    raw_metadata = (
+                        await conn.execute(
+                            text(f"SELECT CAST(node_metadata AS TEXT) FROM {table} WHERE id = :id"),  # noqa: S608
+                            {"id": entity_id},
+                        )
+                    ).scalar_one_or_none()
+                    if raw_metadata is None:
+                        return {"applied": False, "malformed": True}
+                    try:
+                        current = json.loads(raw_metadata)
+                        if not isinstance(current, dict):
+                            raise ValueError("metadata is not an object")
+                        for key in (
+                            "unverifiable_epoch",
+                            "unverifiable_since",
+                            "unverifiable_count",
+                            "unverifiable_identity",
+                            "unverifiable_quarantined",
+                        ):
+                            if key in current:
+                                try:
+                                    json.dumps(current[key], allow_nan=False)
+                                except (TypeError, ValueError, OverflowError, RecursionError):
+                                    del current[key]
+                        params["normalized_metadata"] = json.dumps(
+                            current, allow_nan=False, separators=(",", ":")
+                        )
+                    except (TypeError, ValueError, OverflowError, RecursionError):
+                        _log.warning("Refusing PID observation: unrelated metadata is malformed")
+                        return {"applied": False, "malformed": True}
+                    params["raw_metadata"] = raw_metadata
+                result = (await conn.execute(stmt, params)).scalar_one_or_none()
+            if result is not None:
+                break
+        else:
+            return {"applied": False, "malformed": malformed}
+        decoded = json.loads(result) if isinstance(result, str) else result
+        return {**decoded, "applied": True, "malformed": malformed}
+
+    @_operation("observe_unverifiable_pid")
+    async def observe_unverifiable_pid(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        snapshot: dict[str, Any],
+        pid: int | None,
+        create_time: float | None,
+        observed_at: float,
+    ) -> dict[str, Any]:
+        return await self._update_unverifiable_pid(
+            entity_type,
+            entity_id,
+            snapshot=snapshot,
+            pid=pid,
+            create_time=create_time,
+            observed_at=observed_at,
+            clear=False,
+        )
+
+    @_operation("clear_unverifiable_pid")
+    async def clear_unverifiable_pid(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._update_unverifiable_pid(
+            entity_type,
+            entity_id,
+            snapshot=snapshot,
+            pid=None,
+            create_time=None,
+            observed_at=time.time(),
+            clear=True,
+        )
 
     @_operation("update_artifact_verification")
     async def update_artifact_verification(
@@ -7191,9 +7594,9 @@ class StateDB:
 
     # Branches
 
-    @_operation("create_branch")
-    async def create_branch(self, branch: dict[str, Any]) -> None:
-        values = {
+    @staticmethod
+    def _prepare_branch_insert(branch: dict[str, Any]) -> dict[str, Any]:
+        return {
             "id": branch["id"],
             "created_at": branch.get("created_at", time.time()),
             "node_metadata": branch.get("node_metadata"),
@@ -7206,6 +7609,10 @@ class StateDB:
             "provider": branch.get("provider"),
             "agent_name": branch.get("agent_name"),
         }
+
+    @_operation("create_branch")
+    async def create_branch(self, branch: dict[str, Any]) -> None:
+        values = self._prepare_branch_insert(branch)
         if self._compat is not None:
             # The session, progression and system message a branch links are rows this run
             # created, so they share its owner.
@@ -7219,16 +7626,23 @@ class StateDB:
                 )
             return
         async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    """INSERT INTO branches (id, created_at, node_metadata, "user", name,
-                       session_id, progression_id, system_msg_id, model, provider, agent_name)
-                       VALUES (:id, :created_at, :node_metadata, :user, :name,
-                               :session_id, :progression_id, :system_msg_id, :model, :provider, :agent_name)
-                       ON CONFLICT (id) DO NOTHING"""
-                ).bindparams(bindparam("node_metadata", type_=JSON)),
-                values,
-            )
+            await self._create_branch_values_in_tx(conn, values)
+
+    async def _create_branch_in_tx(self, conn, branch: dict[str, Any]) -> None:
+        values = self._prepare_branch_insert(branch)
+        await self._create_branch_values_in_tx(conn, values)
+
+    async def _create_branch_values_in_tx(self, conn, values: dict[str, Any]) -> None:
+        await conn.execute(
+            text(
+                """INSERT INTO branches (id, created_at, node_metadata, "user", name,
+                   session_id, progression_id, system_msg_id, model, provider, agent_name)
+                   VALUES (:id, :created_at, :node_metadata, :user, :name,
+                           :session_id, :progression_id, :system_msg_id, :model, :provider, :agent_name)
+                   ON CONFLICT (id) DO NOTHING"""
+            ).bindparams(bindparam("node_metadata", type_=JSON)),
+            values,
+        )
 
     async def get_branch(self, branch_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:

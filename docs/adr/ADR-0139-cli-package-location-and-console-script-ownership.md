@@ -9,29 +9,155 @@
 
 **Source HEAD**: `1717674a2140d3571fcb90e3f68204845048ef80`.
 
-All source citations refer to that revision.
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 Destination paths, interfaces and tests below are requirements, not claims of existing implementation.
 The decision takes effect only when adopted. ADR-0138 is also Proposed at this revision
 (`docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:3`).
+
+## Amendment 1 (2026-10-30) — two more modules relocate whole at step 3
+
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+
+Purpose: add two modules to D2's step-3 whole-module moves, so that no module moved at step 3 imports the retained CLI package and the schedule parsing that the CLI and Studio share has one owner.
+
+**Context.** D2 has two gaps.
+
+At `04e03ffef292f1dad08549cdbf23b53f9b1d5644`, first, `lionagi/cli/_logging.py` has no D2 row, yet two whole modules that D2 moves import it. `lionagi/cli/_providers.py` has twelve indented lazy imports inside functions: lines 163 and 267 import `progress`; lines 711, 783, 806, 823, 840, 853, 869, 972, 1088 and 1099 import `warn`. `lionagi/cli/_runs.py` has one indented lazy import at line 731, `from lionagi.cli._logging import warn`. The file is also listed as a residual CLI file in D2's step-6 list (line 251), so the list and the move set disagree. After step 3, `_providers` and `_runs` live in `lionhub.orchestration`. Without a row, their imports would resolve through the retained `lionagi.cli` parent row into the CLI package, which D2 exists to prevent.
+
+Second, the in-place preparation creates a private module, `lionagi/cli/_schedule_parsing.py`. It does not exist at 04e03ffe. Its content is the shared schedule command parsing that ADR-0138's 'Shared command parsing' row allocates: flow-option declarations, the create-request builder, the schedule subparser, base-URL resolution, timeout wording, schedule reason normalization and flag suggestion. ADR-0138 places schedule services under `lionhub.orchestration.schedule`, and this parsing module is the first of them.
+
+**Decision.**
+
+1. `lionagi/cli/_logging.py` is a ninth complete source module. It moves during step 3 to `lionhub.orchestration.console`, under the same rules as the other eight: one exact old-module-prefix MOVED row, the first containing release as `deprecated_in`, `2.0.0` as `removed_in`, no forwarding file at the source path, and module identity kept. The module holds the channel names re-exported from core, the bare, error and warning formatters, the lazy stderr handler, channel setup, and `configure_cli_logging` with its library-logger list. It imports only the standard-library modules `logging` and `sys` and the core module `lionagi._log_channels`. It imports nothing from `lionagi.cli` or `lionhub.cli`, so it carries no CLI dependency to its new location.
+
+2. `lionagi/cli/_schedule_parsing.py` is created by the in-place preparation. This is a requirement, not a claim about the current tree: at 04e03ffe the file does not exist, and the parsing it will hold is still in `lionagi/studio/cli.py`. The module moves whole during step 3 to `lionhub.orchestration.schedule.parsing`, the first part of the `lionhub.orchestration.schedule` services. It takes one exact old-module-prefix row under the same rules as item 1.
+
+3. The whole-module count becomes ten. The step-6 residual set falls from 38 files to 37 because `_logging.py` leaves it. The 46-file inventory partitions as nine existing whole modules plus 37 residual files. The created parsing module is not in that inventory.
+
+4. Both rows gate step 3 only. The preparatory extractions happen in place first and are not changed by this amendment. The specific rows keep `lionagi.cli._logging` and `lionagi.cli._schedule_parsing` resolving to their new owners, not to nonexistent `lionhub.cli` module paths.
+
+5. The shared-closure bullet on formatter setup in D2 is revised, because the formatter configuration now moves whole rather than staying with the CLI (edit B6 below).
+
+**What it guarantees.**
+
+- Once rewritten, the moved modules import no `lionagi.cli` or `lionhub.cli` code. The twelve lazy imports in `_providers.py` and the one in `_runs.py` use the new console path.
+- Channel logger names, the library-logger names and their levels are unchanged.
+- Module identity is kept, and one module owns `configure_cli_logging`. No facade copies bindings.
+
+**What it does not guarantee.**
+
+- It does not change formatting, channel behavior or output.
+- It does not set release strings or change the step-6 parent row.
+- It does not change the other importers of `_logging`. At 04e03ffe, 25 files under `lionagi/` import it: the two whole modules above and 23 files that stay in `lionagi/cli/` until step 6. Step 3 rewrites those 23 imports to the new path, as for the other whole modules (relocation and import rewrites only, line 86); nothing else in them changes.
+- It does not change the preparatory extraction boundaries.
+- It does not decide console-script ownership. D1 and D5 remain Proposed.
+
+**Verification.** Each check fails without this change.
+
+- Partition check, extended from the step-6 list test: fails if a file appears both in a whole-module row and in the residual list, or in neither. While `_logging.py` remains in the residual list, the nine rows and the 38-file list overlap on that file.
+- Import boundary, extending `test_step3_shared_dependency_closure` to the ninth and tenth modules: a static check covering relative, local, type-only and literal dynamic imports. It requires that `lionhub/src/lionhub/orchestration/console.py` import only the standard library and `lionagi._log_channels`, and that `lionhub.orchestration.schedule.parsing` import no execution handler and no `lionagi.cli`, `lionhub.cli` or `lionagi.studio` module.
+- Moved-caller check: no module under `lionhub/src/lionhub/orchestration` imports `lionagi.cli._logging`, `lionhub.cli._logging`, `lionagi.cli._schedule_parsing` or `lionhub.cli._schedule_parsing`. The thirteen lazy import sites use `lionhub.orchestration.console` or the new parsing path. The check fails if any site keeps the old path.
+- Rows and identity, extending `test_move_table_handles_module_and_package_rows`: in fresh processes, old-first and new-first imports of `lionagi.cli._logging` and `lionagi.cli._schedule_parsing` yield one module object each and one deprecation warning on the old path. Without the specific rows, the parent row would resolve `lionagi.cli._logging` to a nonexistent `lionhub.cli._logging`, so the check fails.
+- Logger names, in `test_preserved_logger_names`: the four channel logger names and the library-logger set are unchanged.
+- Consumers, in `test_shared_state_has_one_owner`: `lionagi/studio/cli.py`, `lionagi/cli/machine_schedule.py` and `lionagi/cli/main.py` import the parsing declarations from the new path only. The check fails if a copy of any declaration remains in one of them.
+
+## Amendment 2 (2026-11-03) — relocate the in-place orchestration parser as one module
+
+**Context.** Amendment 1 describes the schedule parsing preparation as follows (`docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md:27`, `b9c6115a`):
+
+> Second, the in-place preparation creates a private module, `lionagi/cli/_schedule_parsing.py`. It does not exist at 04e03ffe. Its content is the shared schedule command parsing that ADR-0138's 'Shared command parsing' row allocates: flow-option declarations, the create-request builder, the schedule subparser, base-URL resolution, timeout wording, schedule reason normalization and flag suggestion. ADR-0138 places schedule services under `lionhub.orchestration.schedule`, and this parsing module is the first of them.
+
+The D2 whole-module table repeats that ownership (`docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md:220`, `b9c6115a`):
+
+> | `lionagi/cli/_schedule_parsing.py:1` (created by the in-place preparation; absent at 04e03ffe) | `lionhub.orchestration.schedule.parsing` | Entire module: flow-option declarations, create-request builder, schedule subparser, base-URL resolution, timeout wording, schedule reason normalization and flag suggestion. Imports no execution handler. |
+
+That allocation conflates two parsers. At `4af5b0a9`, the scheduler derives reserved **`li o flow`** option strings by importing `add_orchestrate_subparser` from `lionagi.cli._orchestrate_parsing` and selecting its flow parser (`lionagi/studio/scheduler/subprocess.py:237`–`:261`). `lionagi/cli/_schedule_parsing.py` has no reference to `_orchestrate_parsing`, `add_orchestrate_subparser`, or `_reserved_flow_flags` at this revision. The orchestration parser and MCP option helper are already in a separate in-place file (`lionagi/cli/_orchestrate_parsing.py:7`, `:10`, `:41`, `:174`, `:398`–`:399`). The retained orchestration adapter reexports both helpers (`lionagi/cli/orchestrate/__init__.py:26`–`:27`).
+
+**Decision.**
+
+1. Add an eleventh D2 whole-module row: `lionagi.cli._orchestrate_parsing` → `lionhub.orchestration.flow.parsing`. The whole module supplies orchestration parser construction, including `li o flow` option declarations and `_add_mcp_config_args`; command dispatch and execution stay in the adapter. This destination is the public owner already assigned to orchestration parsing by the existing shared-definition row (`ADR-0139:236`, `b9c6115a`), avoids a second owner and sits beside `lionhub.orchestration.flow.checkpoint`. Replace that shared-definition row with the whole-module row rather than allocating it twice.
+2. Correct the two quoted allocations: the schedule parsing row owns the schedule parser, create-request builder, base-URL resolution, timeout wording, schedule reason normalization and flag suggestion. The orchestration parser owns the base `li o flow` declarations. The scheduler derives its reserved flag set from that one parser; no copied or hand-maintained flow flag table is introduced. The current scheduler is the consumer; this decision does **not** assert that `_schedule_parsing` currently imports it.
+3. The new row follows the other whole-module moves: one exact old-module-prefix `MOVED` row, `deprecated_in` equal to the first release containing the move, `removed_in` `2.0.0`, no forwarding source file, one old/new module identity and one deprecation warning for an old-path import. Rewrite in-repository callers to the canonical destination in the move, including the scheduler and retained orchestration adapter, while keeping old adapter exports bound to the same function objects. The sole current cross-module dependency of `_orchestrate_parsing` is `._providers.add_common_cli_args` (`lionagi/cli/_orchestrate_parsing.py:7`); rewrite it to the existing `lionhub.orchestration.spawn` owner when moved. Standard-library imports remain permitted.
+4. Extend the D2 closure rule so `lionhub.orchestration.schedule.parsing` **may** import `lionhub.orchestration.flow.parsing`. This is an allowance, not a requirement to add an import. It still must not import execution handlers, `lionagi.cli`, `lionhub.cli` or `lionagi.studio`; orchestration parsing likewise imports no execution handler or retained CLI/Studio adapter. The boundary test resolves relative, local, type-only and literal dynamic imports; a permitted edge must not become an allowance for arbitrary flow modules or adapters.
+5. The complete-module count becomes eleven, not ten. Both `_orchestrate_parsing` and `_schedule_parsing` are products of in-place preparation and are absent at the historical 04e03ffe inventory; the historical partition remains nine original whole modules plus 37 original residual files. Catalog-first order, D1/D5's pending decisions and the other move rows are unchanged. The change is a record amendment; **no source move takes place until step 3**.
+
+**Verification required with the step-3 move.**
+
+- Extend `test_move_table_handles_module_and_package_rows` and `test_specific_cli_rows_survive_parent_move`: assert the exact new row precedes/overrides the eventual parent resolution, old-first and new-first imports return the same module and functions, one old-path warning, expected `deprecated_in`/`removed_in`, no old on-disk file, and unchanged reload/patch behavior. Exercise no parent row and the later parent row; a missing exact row must fail. Preserve existing persisted-name and class-path checks where applicable.
+- Extend `test_step3_shared_dependency_closure` to admit the one named schedule-parsing → flow-parsing edge and reject an execution handler, old private CLI/Studio path, or an unapproved sibling. Cover static, relative, local, type-only and literal dynamic import forms; include a negative fixture for each forbidden category and a positive fixture for the permitted edge. Require flow parsing's only non-stdlib cross-module import to be `lionhub.orchestration.spawn`; no reverse dependency to scheduler or Studio.
+- Prove scheduler's `_reserved_flow_flags` still derives the option strings from the moved flow parser, including helper-provided options, and rejects a colliding playbook argument; an added parser option must appear without another hand-maintained list. Keep the existing parser and adapter identity checks (`tests/cli/orchestrate/test_import_surface.py:77`–`:89`, `4af5b0a9`) adapted to the canonical path. Verify behavior on the old and new names without an actual network or launched process.
+- Carry moved tests under the hub test layout, the import-graph/persisted-name findings, generated inventories, D6 move evidence, changelog, and any test-enforced citation repair required by ADR-0136 D6.
+
+## Amendment 3 (2026-11-03) — relocate the in-place inspection module as one module
+
+**Context.** D2 assigns the status constants and entity-resolution helpers in `lionagi/cli/status.py` to `lionhub.orchestration.inspection`, keeping presentation and command handling in the CLI adapter (`docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md:265`, `2a0253b1`). At this revision the in-place extraction is already complete: `lionagi/cli/_inspection.py:23`–`:38` owns the status values and exit codes, and `:44`–`:265` owns the resolution helpers. `lionagi/cli/status.py:17`–`:29` imports the shared names and retains the status command implementation from `:41` onward. This amendment changes the relocation unit, not those behaviors or the ownership allocation.
+
+**Decision.**
+
+1. Add a twelfth step-3 whole-module row: `lionagi.cli._inspection` → `lionhub.orchestration.inspection`. Move the entire in-place module, including its status values, exit codes, compiled run-ID pattern and lookup helpers. Its current relative dependency on `lionagi.cli._util` goes to the already allocated `lionhub.orchestration.job` owner. Keep `status.py` as the CLI adapter and keep every binding it exposes at the move base bound to the same objects. Do not reintroduce the earlier private helper aliases.
+2. The move has one exact old-module-prefix `MOVED` row, deprecated in the first release containing the move and removed in 2.0.0; there is no forwarding source file. Old and new module imports name one object, including the pattern, constants and monkeypatchable bindings. Rewrite in-repository callers to the new path. Checkpoint resolution uses the moved inspection service rather than the retained CLI adapter; inspection must not import the CLI or Studio adapters or execution handlers.
+3. Replace D2's `status.py` shared-definition extraction row with the whole `_inspection.py` row: the extraction named there is already done in place, and only the relocation remains. Keep `status.py` in the residual CLI set. `_inspection.py` is absent at both `1717674a` and `04e03ffe`, and the source-HEAD `1717674a` partition of nine original whole modules and 37 original residual files remains unchanged. Amendment 2 item 5's partition counts the 46 files at `1717674a`; `04e03ffe` also holds `lionagi/cli/_notify_outcomes.py`, created after the source HEAD as an inactive recorder, which joins the residual CLI set and moves with step 6. The runs move rewrites its `RunDir` import to the canonical runs owner; when notification routing is wired to the recorder, that change revisits the allocation. Amendment 2's eleven whole modules become twelve; catalog-first ordering, D1 and D5's pending decisions and the other move rows are unchanged.
+4. This amendment does not change status behavior, exit codes, resolver precedence, class identities, state semantics, executable ownership or the 2.0 date. The actual move carries the checks and evidence required by ADR-0136 D6, including the tests moved into LionHub, compatibility and import graph, the applicable persisted-name fixtures, the changelog and any test-enforced citation repair.
+
+**Verification required with the move.**
+
+- Check the exact row and the longer-prefix rule with the later CLI parent row in either order; require no old file and exercise old-first/new-first fresh imports, warning, reload, function and module identity, and a patch made through the old name. Check the old pickled function reference using a synthetic fixture.
+- Check that the retained `status` adapter's imported bindings are the same objects as the canonical inspection definitions, and that its former private aliases remain absent. Check `AmbiguousIdError` remains the job service's existing class and is caught by the status/wait/control paths.
+- Check the moved module's import closure against the new package location, with static, relative, local, type-only and literal-dynamic import probes. Explicitly refuse retained `lionagi.cli`, `lionhub.cli` and Studio adapter dependencies; show that the guard rejects a forbidden import and accepts the allowed job service. Relative probes must be resolved relative to `lionhub.orchestration`, not the old `lionagi.cli` package.
+- Exercise lookup, ambiguous-prefix and status integration behaviors with their existing tests and move module-only tests to the LionHub test tree. Run the compatible predecessor stack and required gates before publication.
+
+## Amendment 4 (2026-11-04) — allocate the in-place shared service modules
+
+**Context.** At `8ed68552`, the step-3 D2 table assigns the kill, team, engine and mirror shared definitions to LionHub, leaving each command adapter in the CLI. By that revision these definitions had been extracted in place into five modules. Those modules are absent at both historical source revisions `1717674a` and `04e03ffe`; neither the original partition nor the current whole-module table allocates them. Allocate each explicitly before the step-6 residual CLI move. This changes the relocation units; service behavior is to be preserved, and the cold-import closure of each move is measured per the verification list below.
+
+**Decision.**
+
+1. Add these five whole-module step-3 rows. Their destinations are the existing D2 owners, except that the configuration-only mirror settings receive their own sibling module so importing settings does not initialize the mirror service:
+
+   | Source module at `8ed68552` | Canonical step-3 destination | Scope and retained adapter |
+   | --- | --- | --- |
+   | `lionagi.cli._engine_definitions` | `lionhub.orchestration.engine_definitions` | All kind metadata and the class loader; retain `engine.py` command parsing and execution. |
+   | `lionagi.cli._kill_service` | `lionhub.orchestration.kill` | The full process-identity, signalling, cancellation-persistence and degraded-run service; retain `kill.py` command selection, parsing and presentation. |
+   | `lionagi.cli._mirror_service` | `lionhub.serve.mirror` | The full mirror implementation, its constants and state; retain `mirror.py` argument handling, `_run` and `run_mirror`. |
+   | `lionagi.cli._mirror_settings` | `lionhub.serve.mirror_settings` | The stdlib-only mirror configuration and its import-time validation; it must not import either the mirror service or Studio. |
+   | `lionagi.cli._team_service` | `lionhub.orchestration.team` | The full team JSON reader; retain other `team.py` command functions. |
+
+2. Each row has one exact old-module-prefix `MOVED` entry, with the first release containing that move as `deprecated_in`, and `2.0.0` as `removed_in`; no forwarding source file remains. Old and canonical imports resolve to one module object. Keep the actual adapter bindings present at the move base bound to the corresponding original service objects; do not recreate previously removed private adapter aliases. Retained command adapters remain separate modules with their own patchable globals. Preserve the single engine `KIND_META` dictionary, mirror settings and mirror state, existing logger names, exception/class identity and service-side monkeypatch behavior.
+
+3. These rows replace the corresponding shared-definition relocation work for kill, team, engine and mirror in D2; they do not duplicate the functions or move their command adapters. Settings move before or with the mirror service. The mirror service rewrites its settings, console and lazy project imports to their canonical owners; the kill service rewrites console, job and lazy runs imports. These dependencies must be available in the compatible predecessor stack or the same change; preserve lazy import timing and exercise the resulting closure rather than assuming an independent release order. Rewrite all in-repository callers, including Studio, to canonical paths. No shared service may depend back on a retained CLI or Studio adapter.
+
+4. The historical `1717674a` partition of nine original whole modules and 37 original residual files remains a historical count. Amendment 3's twelve step-3 whole modules become seventeen, including these five subsequently created modules. `_notify_outcomes` remains in the residual set under Amendment 3. The catalog remains first, and D1, D5, the other step order, CLI registration, ownership of `li`, behavior and the 2.0 date are unchanged. The historical evidence and its revision stay unchanged; D2 records the current allocation.
+
+5. Each actual move carries ADR-0136 D6 evidence, the applicable persisted-name assessment, the repository's generated boundary and compatibility records, documentation, its changelog and any enforced citation repair. Service-only tests move into the LionHub test layout; mixed CLI and Studio integration tests stay with their callers and retain coverage. This amendment does not itself move source.
+
+**Verification required at each move.**
+
+- Exercise the exact specific `MOVED` row against the later CLI-parent row in both orders: old-first and new-first fresh imports, warning, reload, module and callable identity, patch propagation, and absence of an old source file. Use synthetic persisted old-path function/class references where applicable, including mirror `_FileState`; do not inspect user stores. Check every adapter's actual retained bindings and its separately patchable local names.
+- Run static, relative, local, type-only and literal-dynamic import-closure checks resolved from each *new* package; show that the boundary guard rejects a forbidden CLI/Studio adapter edge. Verify the existing runs/kill interaction using the real compatible stack and synthetic state, including any cycles and lazy imports, not merely a static list of top-level imports.
+- Also test each canonical import in a fresh process including every parent package initializer, with unavailable optional dependencies and initialization cycles where applicable. The existing `lionhub.orchestration` parent eagerly loads `patterns`, which imports agent, casts and operations and constructs a `FieldModel`; a leaf-only import scan cannot prove that moving a currently lightweight service preserves its cold-import behavior. Measure the before/after import closure and side effects. If preserving the current contract requires a lazy parent or other prerequisite, obtain a separate maintainer ruling and land that prerequisite without hiding it in the mechanical move.
+- Engine/team: check shared `KIND_META` identity and mutations, loader identity, Studio and CLI callers, team reader locking/error behavior, and that removed engine aliases stay absent. Keep adapter-local loader patches distinct from service-module patches.
+- Kill: check service exception identity in the Studio coordinator, old-name patches, refusal and process-identity behavior, persistence/degraded-run races, and both CLI and Studio cancellation paths, using synthetic fixtures and mocked processes.
+- Mirror: check settings-only import does not load mirror or Studio, current default/zero/negative configuration behavior, the one shared preview setting, service state and logger name, CLI reexports, Studio lazy startup, and mocked transcript/database integration. Resolve the service's lazy project edge to the canonical owner. Update test source-location and defining-module assertions to reflect the move while retaining identity assertions.
+- Establish focused test collection and moved-test parity, run the applicable predecessor stack and gates, and account for all changed call sites, persisted-name references and generated records in the move report. These are requirements, not claims that the future move has passed them.
 
 ## Context
 
 **P1. Code location and executable ownership are different contracts.**
 The current project declares `li = "lionagi.cli.main:main"` and packages both import roots
-(`pyproject.toml:78`, `pyproject.toml:276`).
+(`pyproject.toml:81`, `pyproject.toml:284`).
 ADR-0136 already requires one distribution through 1.x and a separate `lionhub`
 distribution depending on core at 2.0. Its release record must establish exclusive
 package-file and console-script ownership and test installation transitions
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:352`,
-`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:396`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:425`,
+`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:469`).
 It explicitly leaves the CLI path, script owner and core-only executable policy open
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:786`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:860`).
 
 **P2. Relocating the CLI without extracting shared code preserves the wrong dependency.**
 A static AST inventory at the source HEAD finds 46 Python files in `lionagi/cli`,
 32 Studio-to-CLI import statements in 14 files, and 11 CLI-to-Studio statements in
 four files. These match Amendment 1's counts
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:202`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:275`).
 Representative edges include shared run persistence, scheduler parser construction,
 and schedule declaration/export
 (`lionagi/studio/operator/coordinator.py:539`,
@@ -53,13 +179,13 @@ This paragraph's line numbers are at `2a49c9fe`.
 Moving only handlers or decorators would leave fresh startup dependent on a core
 catalog or accidental import order. A4 already requires the populated catalog and
 selection/loading entry points to leave core before the first command target moves
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:218`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:291`).
 
 **P4. Import compatibility cannot establish installer correctness.**
 The alias loader supports longest-prefix lookup, module identity and code loading,
 but the current table has no CLI row
-(`lionagi/_moved.py:46`, `lionagi/_moved.py:55`,
-`lionagi/_moved.py:118`, `lionagi/_moved.py:132`).
+(`lionagi/_moved.py::MOVED`, `lionagi/_moved.py::_row`,
+`lionagi/_moved.py::_AliasLoader.exec_module`, `lionagi/_moved.py::_AliasLoader.get_code`).
 A working old script does not prove that an upgrade installed the intended new
 entry point or left a single file owner.
 
@@ -76,7 +202,7 @@ behavior changes.
 | Concern | Decision |
 | --- | --- |
 | Public CLI location | D1, Proposed pending a project decision: `lionhub.cli`, with `lionhub.cli.main:main` as composition root. |
-| Shared code and move form | D2: eight whole-module moves plus shared-function extraction in step 3; one residual CLI-package row in step 6. |
+| Shared code and move form | D2: seventeen whole-module moves plus shared-function extraction in step 3; one residual CLI-package row in step 6. |
 | Fresh command discovery | D3: `lionhub.cli.catalog` owns the populated catalog and loading APIs. |
 | 1.x executable and aliases | D4: `lionagi` remains script owner; its target changes at step 6; old imports survive through 1.x. |
 | 2.0 executable and installation | D5, Proposed pending a project decision: `lionhub` alone owns `li`; core-only installs have no `li`. |
@@ -88,16 +214,16 @@ Out of scope:
 - Changing command spelling, parsing, output, status codes, execution locus,
   dependency defaults or optional-feature behavior. Actual moves remain relocation
   and import rewrites, as required by ADR-0136 D6 and B2
-  (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:86`,
-  `docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:712`).
+  (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:159`,
+  `docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:785`).
 - The Studio attachment mechanism, application distribution and lifecycle
   corrections. ADR-0138 owns those boundaries; its attachment form remains Proposed
   (`docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:45`).
 - A general third-party CLI discovery protocol. Automatic plugin bootstrap is
-  expressly deferred (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:278`).
+  expressly deferred (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:351`).
 - Exact release versions, compatibility constraints, platform/installer support and
   artifact publication. ADR-0136 D1's distribution release record owns them
-  (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:402`).
+  (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:475`).
 
 ## Decision
 
@@ -144,12 +270,12 @@ for the broader operator surface and yields the shorter module invocation.
 This amends the `serve/cli` illustration and spelling in ADR-0136 D7, A4 item 6,
 and B2 step 6. Those spellings were subject to the deferred CLI decision, not a
 closed destination
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:275`,
-`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:786`,
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:348`,
+`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:860`,
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:163`).
 Neither `lionhub.cli` nor `lionhub.serve.cli` violates D7's generic-name rule:
 that rule prohibits sibling directories directly under `lionhub/src/`
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:737`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:811`).
 
 **Failure tests:** `test_cli_canonical_target` and
 `test_cli_module_invocations_in_fresh_processes` fail if the package, target,
@@ -161,24 +287,33 @@ Follow Amendment 2 B2's order. The catalog moves first within step 3.
 Preparatory extraction is separate from each mechanical move; no service behavior
 changes are hidden in a relocation. Steps 4 and 5 retain their scheduler and daemon
 boundaries, and step 6 moves the remaining CLI
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:62`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:135`).
 
-**Eight complete source modules move during step 3:**
+**Seventeen complete source modules move during step 3:**
 
 | Source at this HEAD | Step-3 destination | Scope |
 | --- | --- | --- |
 | `lionagi/cli/_argtypes.py:23` | `lionhub.orchestration.arguments` | Entire module, including both argument classes. |
 | `lionagi/cli/_code_identity.py:55` | `lionhub.serve.diagnostics` | Entire module, including its snapshot and diagnostic helpers. |
+| `lionagi/cli/_engine_definitions.py:19` | `lionhub.orchestration.engine_definitions` | Entire kind registry and class loader; retain engine command parsing and execution. |
+| `lionagi/cli/_kill_service.py:42` | `lionhub.orchestration.kill` | Entire process identity, signalling, cancellation and degraded-run service; retain kill command selection and presentation. |
+| `lionagi/cli/_mirror_service.py:43` | `lionhub.serve.mirror` | Entire mirror service and state; retain mirror command handling. |
+| `lionagi/cli/_mirror_settings.py:16` | `lionhub.serve.mirror_settings` | Entire stdlib-only mirror settings module; move before or with the mirror service. |
+| `lionagi/cli/_team_service.py:16` | `lionhub.orchestration.team` | Entire shared team JSON reader; retain other team commands. |
+| `lionagi/cli/_inspection.py:1` (created by the in-place preparation; absent at 1717674a and 04e03ffe) | `lionhub.orchestration.inspection` | Entire module, including status constants, exit codes and entity-resolution helpers; retain status command presentation in the CLI adapter. |
+| `lionagi/cli/_logging.py:1` | `lionhub.orchestration.console` | Entire module: the channel names re-exported from core, the bare, error and warning formatters, the lazy stderr handler, channel setup, and `configure_cli_logging`. Imports only the standard library and `lionagi._log_channels`. |
 | `lionagi/cli/_mcp_resolve.py:22` | `lionhub.orchestration.mcp_config` | Entire module and its resolution data type. |
+| `lionagi/cli/_orchestrate_parsing.py:1` (created by the in-place preparation; absent at 04e03ffe) | `lionhub.orchestration.flow.parsing` | Entire module: orchestration parser construction and its MCP-argument helper; retain command dispatch and execution wrappers. |
 | `lionagi/cli/_project.py:19` | `lionhub.orchestration.project` | Entire module and project-detection helper closure. |
-| `lionagi/cli/_providers.py:124` | `lionhub.orchestration.spawn` | Entire module: construction, profiles, and common argument declarations. |
+| `lionagi/cli/_providers.py:184` | `lionhub.orchestration.spawn` | Entire module: construction, profiles, and common argument declarations. |
 | `lionagi/cli/_runs.py:37` | `lionhub.orchestration.runs` | Entire module, including its sole run-allocation and persistence state. |
+| `lionagi/cli/_schedule_parsing.py:1` (created by the in-place preparation; absent at 04e03ffe) | `lionhub.orchestration.schedule.parsing` | Entire module: create-request builder, schedule subparser, base-URL resolution, timeout wording, schedule reason normalization and flag suggestion. Imports no execution handler. |
 | `lionagi/cli/_util.py:14` | `lionhub.orchestration.job` | Entire module: status codes, invocation state, process identity and entity lookup. |
 | `lionagi/cli/orchestrate/_checkpoint.py:21` | `lionhub.orchestration.flow.checkpoint` | Entire module and checkpoint state. |
 
 Each row above becomes one exact old-module-prefix row in `MOVED`, with the first
 release containing that move as `deprecated_in` and `2.0.0` as `removed_in`.
-No forwarding file remains at those eight source paths. This preserves module
+No forwarding file remains at those seventeen source paths. This preserves module
 identity, including mutable globals: the current run allocation and invocation
 state live in `_runs` and `_util`
 (`lionagi/cli/_runs.py:79`, `lionagi/cli/_util.py:36`).
@@ -188,13 +323,13 @@ Copying these bindings into a facade is not equivalent.
 
 | Source at this HEAD | Step-3 public owner | Extraction; retained adapter |
 | --- | --- | --- |
-| `lionagi/cli/orchestrate/__init__.py:394`, `lionagi/cli/orchestrate/__init__.py:425` | `lionhub.orchestration.flow.parsing` | Orchestration parser construction and its MCP-argument helper; retain command dispatch and execution wrappers. The common argument declarations come from `orchestration.spawn`. |
-| `lionagi/cli/orchestrate/_orchestration.py:2187` | `lionhub.orchestration.runs` | `register_branch_hook` and its dependency on the same message-handler implementation; retain the orchestration execution adapter. |
-| `lionagi/cli/status.py:37`, `lionagi/cli/status.py:55` | `lionhub.orchestration.inspection` | Status constants and the resolution functions from `_fetch_by_id` through `_resolve_primary_session` (`lionagi/cli/status.py:262`); retain the subsequent progress, presentation and dispatch helpers. |
-| `lionagi/cli/kill.py:43`, `lionagi/cli/kill.py:508`, `lionagi/cli/kill.py:794` | `lionhub.orchestration.kill` | Process identity, child lookup, termination, cancellation persistence and degraded-run handling through the helper group preceding `_do_kill`; retain command selection, parser and presentation. |
-| `lionagi/cli/team.py:42` | `lionhub.orchestration.team` | `read_team_json`, the concrete shared reader; retain other team command functions. |
-| `lionagi/cli/engine.py:29`, `lionagi/cli/engine.py:62` | `lionhub.orchestration.engine_definitions` | The shared kind metadata and class lookup; retain parser and execution adapter. |
-| `lionagi/cli/mirror.py:25`, `lionagi/cli/mirror.py:111`, `lionagi/cli/mirror.py:854` | `lionhub.serve.mirror` | Mirror constants, state and implementation through `mirror_forever`; retain argument parsing, `_run` and `run_mirror`. Extract its wheel-owned configuration dependency before or with it. |
+| `lionagi/cli/orchestrate/_orchestration.py:2137` (at `1717674a`) | `lionhub.orchestration.runs` | `register_branch_hook` and its dependency on the same message-handler implementation; retain the orchestration execution adapter. |
+
+This historical extraction has already happened in place: at the citation reference,
+`register_branch_hook` is defined in `lionagi/cli/_runs.py:1922` and imported by the
+orchestration adapter (`lionagi/cli/orchestrate/_orchestration.py:58`). It moves with the
+whole `_runs` module above, not as a second extraction or a duplicate implementation.
+The retained adapter keeps its binding to the same function after the move.
 
 The table fixes ownership and the source groups, not new command semantics.
 Extraction introduces public service names for private helpers used across the
@@ -209,22 +344,29 @@ The shared dependency closure is part of step 3:
 
 - `_runs` uses the moved MCP resolution type, project resolver, job utilities
   and shared process-identity helper
-  (`lionagi/cli/_runs.py:21`, `lionagi/cli/_runs.py:34`,
-  `lionagi/cli/_runs.py:1485`, `lionagi/cli/_runs.py:1913`,
-  `lionagi/cli/_runs.py:2131`).
+  (`lionagi/cli/_runs.py:24`, `lionagi/cli/_runs.py:36`,
+  `lionagi/cli/_runs.py:1499`, `lionagi/cli/_runs.py:2053`,
+  `lionagi/cli/_runs.py:2273`).
 - Checkpoint resolution uses public inspection services instead of the retained
-  status adapter (`lionagi/cli/orchestrate/_checkpoint.py:227`).
+  status adapter (`lionagi/cli/orchestrate/_checkpoint.py:241`).
 - Shared code and Studio use the existing neutral log emitters. Their identity
-  already comes from `lionagi._log_channels`; CLI-specific formatter setup stays
-  with the CLI (`lionagi/cli/_logging.py:10`, `lionagi/cli/_logging.py:91`).
+  already comes from `lionagi._log_channels`. The formatter configuration in
+  `lionagi/cli/_logging.py` (lines 10 and 91 at 04e03ffe) moves whole to
+  `lionhub.orchestration.console` during step 3 (row above); the CLI imports it from there.
 - Mirror settings become wheel-owned before or with mirror extraction, preserving
   the current configuration value and defaults rather than importing application
-  configuration (`lionagi/cli/mirror.py:21`;
+  configuration (`lionagi/cli/_mirror_settings.py:16`;
+  `lionagi/cli/_mirror_service.py:28`;
   `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:168`).
-- Shared parser construction must not import execution handlers. The scheduler
-  currently reaches the full orchestration adapter for this parser
+- Shared parser construction must not import execution handlers. At `1717674a`, the scheduler
+  reaches the full orchestration adapter for this parser
   (`lionagi/studio/scheduler/subprocess.py:279`,
-  `lionagi/cli/orchestrate/__init__.py:29`).
+  `lionagi/cli/orchestrate/__init__.py:29`, `lionagi/cli/orchestrate/__init__.py:425`).
+  At the citation reference it imports the in-place orchestration parser directly
+  (`lionagi/studio/scheduler/subprocess.py:251`); the parser and MCP argument helper live in
+  `lionagi/cli/_orchestrate_parsing.py:42` and `:10`, and the adapter reexports them at
+  `lionagi/cli/orchestrate/__init__.py:26-27`. The scheduler continues to derive its reserved
+  flow flags from that parser, and the retained adapter keeps those same function bindings.
 
 In step 3, after catalog creation, extract the wheel-owned adapters
 `lionhub.cli.schedule` and `lionhub.cli.studio` from the mixed
@@ -235,16 +377,16 @@ available in the retained Studio module through 1.x; there is no broad
 `lionagi.studio` move row. Schedule/timezone/action-kind services follow
 `lionhub.orchestration.schedule` and `lionhub.orchestration.scheduler`
 as already allocated by the adjacent records
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:47`,
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:146`,
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:172`,
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:173`).
 The implementation defines the detailed schedule-service API there.
 Ordinary schedule handling must no longer use the dynamic mixed-module import
-at `lionagi/cli/main.py:39`.
+at `lionagi/cli/main.py:64`.
 
-**The step-6 residual set is these 38 existing files**, relative to
+**The step-6 residual set includes these 37 files from the source-HEAD inventory, plus the later notification recorder**, relative to
 `lionagi/cli/`. Mixed files contain their retained adapters after extraction.
-The eight whole-module rows above and this list partition the 46-file AST inventory.
+At `1717674a`, the nine original whole-module files and the 37 original residual files partition the 46-file AST inventory. Eight whole modules created by in-place preparation are outside that inventory; the notification recorder is an additional residual file created after that source HEAD.
 Each source citation below identifies the module header.
 
 - `lionagi/cli/__init__.py:1`
@@ -252,7 +394,7 @@ Each source citation below identifies the module header.
 - `lionagi/cli/_agent_depth.py:1`
 - `lionagi/cli/_api_usage.py:1`
 - `lionagi/cli/_context_from.py:1`
-- `lionagi/cli/_logging.py:1`
+- `lionagi/cli/_notify_outcomes.py:1`
 - `lionagi/cli/agent.py:1`
 - `lionagi/cli/dispatch.py:1`
 - `lionagi/cli/doctor.py:1`
@@ -293,26 +435,29 @@ Moved("lionagi.cli", "lionhub.cli", first_cli_move_release, "2.0.0")
 ```
 
 Here `first_cli_move_release` means the actual release string established when
-step 6 ships, not a new runtime variable. Keep the eight more-specific rows:
+step 6 ships, not a new runtime variable. Keep the seventeen more-specific whole-module rows:
 `lionagi.cli._runs` must still resolve to `lionhub.orchestration.runs`,
 rather than a nonexistent `lionhub.cli._runs`.
 The loader already selects the longest matching prefix and supports non-package
-specs (`lionagi/_moved.py:55`, `lionagi/_moved.py:149`).
+specs (`lionagi/_moved.py::_row`, and the comment in `lionagi/_moved.py::_MovedFinder.find_spec`
+that begins "Describe the old name the way the new module is described").
 
-Before adding these rows, extend the move-test enumerator to accept a module
-target without `__path__`; it currently assumes every target is a package
-(`tests/test_moved_modules.py:48`).
-Enumerate both specific rows and the residual package, test each import order,
-and retain stale-file detection. This is a test-support change, not permission to
-replace the alias loader or weaken identity requirements.
+The move-test enumerator accepts a module target without `__path__`
+(`tests/test_moved_modules.py:48`–`:59`).
+The `_mirror_settings` row needs a data-only accommodation in the pickle-coverage
+test because the module defines no picklable object; keep pickle coverage unchanged
+for every other row (`tests/test_moved_modules.py:112`–`:128`).
+Enumerate every specific row and the residual package, test each import order,
+and retain stale-file detection. This does not permit replacing the alias loader
+or weakening identity requirements.
 
 Preserve logger names when implementations move. The source includes
 `logging.getLogger("lionagi.cli")` in the run module
-(`lionagi/cli/_runs.py:792`).
+(`lionagi/cli/_runs.py:806`).
 The existing source checker admits old logger strings only when its resolved
 destination contains the current module; split destinations require a narrow
 original-logger-ownership check, not renaming the logger or ignoring arbitrary
-old strings (`tests/test_moved_modules.py:613`).
+old strings (`tests/test_moved_modules.py:743`).
 
 **Failure tests:** `test_step3_shared_dependency_closure`,
 `test_move_table_handles_module_and_package_rows`,
@@ -340,7 +485,7 @@ These signatures and their current lazy behavior are at
 and `lionhub/src/lionhub/cli/catalog.py:220`.
 The composition root imports this catalog directly before selection.
 MCP projection and machine-command classification use the same catalog, not copies
-(`lionagi/cli/main.py:15`, `lionagi/cli/main.py:376`,
+(`lionagi/cli/main.py:17`, `lionagi/cli/main.py:401`,
 `lionagi/cli/machine.py:824-826`,
 `lionhub/src/lionhub/serve/mcp/projection.py:35`).
 
@@ -368,7 +513,7 @@ selection, conflicts, authorization and compatibility.
 declaration types/decorator machinery. It contains no populated CLI target list,
 catalog state or forwarding loader that imports the hub. This follows A4 and the
 retained-module requirement in ADR-0138
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:221`,
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:294`,
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:188`).
 Unused HTTP machinery is handled in step 5, not converted into CLI discovery.
 
@@ -388,11 +533,11 @@ li = "lionhub.cli.main:main"
 ```
 
 There is still no separately published hub distribution during this window
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:373`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:446`).
 All repository import callers use canonical moved paths. External old imports
 continue to resolve through the table until 2.0; each row carries its own first
 deprecation release and the common removal version
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:565`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:638`).
 
 A saved older generated wrapper importing `lionagi.cli.main` must continue to
 work against a post-move 1.x installation using the aliases. This does not promise
@@ -406,23 +551,23 @@ stderr and process status in fresh subprocesses. Permit only the specified
 deprecation diagnostics on the old path. At 2.0 the old module invocation fails.
 
 Rewrite executable module strings, not just imports: the background launch names
-the old CLI at `lionagi/cli/orchestrate/__init__.py:1239`, the MCP fallback names it at `lionhub/src/lionhub/serve/mcp/config.py:116`,
+the old CLI at `lionagi/cli/orchestrate/__init__.py:723`, the MCP fallback names it at `lionhub/src/lionhub/serve/mcp/config.py:116`,
 and the diagnostic probe names it at `lionagi/cli/doctor.py:28`.
 Update the dynamic adapter load at
-`lionhub/src/lionhub/serve/mcp/projection.py:523` as well.
+`lionhub/src/lionhub/serve/mcp/projection.py:527` as well.
 Self-recognition must accept both canonical and compatibility spellings during 1.x,
 rather than silently dropping old subprocess recognition. Its current module/script
 sets and path-tail comparison are at
-`lionagi/cli/orchestrate/_orchestration.py:621` and
-`lionagi/cli/orchestrate/_orchestration.py:664`.
+`lionagi/cli/orchestrate/_orchestration.py:638` and
+`lionagi/cli/orchestrate/_orchestration.py:681`.
 Old spellings retained solely for recognition are compatibility data, never import
 or launch targets. The existing old-reference checker distinguishes imports/call
-arguments from set data (`tests/test_moved_modules.py:593`); keep canonical
+arguments from set data (`tests/test_moved_modules.py:723`); keep canonical
 execution targets and test both recognition forms explicitly.
 
 The D2 exemption is exactly `{cli, studio}` before step 6, `{studio}` afterward
 through 1.x, and empty at 2.0. The core gains no new exception or hub-dependent facade
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:29`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:102`).
 
 **Failure tests:** `test_1x_upgrade_replaces_li_target_once`,
 `test_saved_1x_wrapper_uses_alias`,
@@ -561,7 +706,7 @@ separate behavior decision (`lionhub/src/lionhub/cli/catalog.py:214-217`).
 - CLI imports and module invocation gain one permanent public hub path; distribution
   ownership can change at 2.0 without another Python-path migration.
 - Shared run state, process identity and parser declarations acquire public owners.
-  The migration requires eight exact module rows and module-aware compatibility
+  The migration requires seventeen exact module rows and module-aware compatibility
   tests, rather than pretending that all 46 unchanged files move together.
 - The alias table temporarily contains both specific CLI-module rows and a parent
   package row. Removal at 2.0 deletes all of them together; the release must publish
@@ -602,7 +747,7 @@ extraction has already removed those dependencies; it is not the source HEAD.
 Thin adapters can be appropriate in mixed command modules, and this decision uses
 them there. Retaining emptied helper modules would add redundant forwarding
 surfaces and risk copied mutable state. Exact module aliases preserve both module
-and object identity for the eight complete moves. A demonstrated requirement for
+and object identity for the seventeen complete moves. A demonstrated requirement for
 old on-disk module enumeration would require changing ADR-0136's stale-file rule,
 not silently retaining those files.
 
@@ -654,7 +799,7 @@ catalog suites.
    version, unknown arguments, sentinel cases and deterministic machine commands.
    Check stdout, stderr, exit status, package-relative imports and environment paths.
    The existing alias test uses `run_name="not_main"`, so it is not this proof
-   (`tests/test_moved_modules.py:320`).
+   (`tests/test_moved_modules.py:451`).
 
 2. **Shared closure, identity and rows (D2):**
    `test_step3_shared_dependency_closure`,

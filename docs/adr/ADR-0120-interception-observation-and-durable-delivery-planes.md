@@ -680,7 +680,7 @@ exit of the invocation owning this subscription, including failure or cancellati
 cleanup. A nested operation's `RunEnd` or `RunFailed` does not settle its parent:
 `ReactiveExecutor` invokes each node's operation through `Operation.invoke`
 (`lionagi/operations/node.py:84-95`) and `Branch` emits its `RunEnd` or `RunFailed` per operation
-(`lionagi/session/branch.py:479-507`, `:1210-1263`; `lionagi/operations/run/run.py:835-846`), all
+(`lionagi/session/branch.py:480-508`, `:1211-1263`; `lionagi/operations/run/run.py:978-989`), all
 before the enclosing flow returns (`lionagi/operations/flow.py:1717`). No flow- or
 invocation-terminal session Signal exists today: the bus carries `RunEnd` per operation
 (`lionagi/session/signal.py:62`) and nothing terminal beyond it, the flow's own drain of node
@@ -710,10 +710,10 @@ reads from. Durable delivery covers committed `session_signals` rows, not every 
 the record says what is lost and when. For a durable subscriber the source fact is a
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
-(`lionagi/state/schema.sql:839-843`), the sink writes it with the sequence the store assigns
-(`lionagi/state/db.py:7850-7860`), and the cursor is a position in that sequence, read forward with
-`after_seq` (`lionagi/state/db.py:7875-7892`), whose forward read defaults to 500 rows
-(`:7880`). Registration requires a bound usable sink and replayable filters, and persists source
+(`lionagi/state/schema.sql:845-849`), the sink writes it with the sequence the store assigns
+(`lionagi/state/db.py:8264-8274`), and the cursor is a position in that sequence, read forward with
+`after_seq` (`lionagi/state/db.py:8289-8306`), whose forward read defaults to 500 rows
+(`:8294`). Registration requires a bound usable sink and replayable filters, and persists source
 invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
 without destructive truncation; every page is read through a frozen closure cutoff. A fact the
 sink did not confirm is not a committed row and is no durable subscriber's source: it reaches
@@ -804,7 +804,7 @@ everything since; facts past the range belong to the next wake.
   (`lionagi/session/observer.py:298-322`, `:359-398`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
-  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py:977-1057`, `lionhub/src/lionhub/orchestration/engines/review.py:711`,
+  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py:977-1057`, `lionhub/src/lionhub/orchestration/engines/review.py:819`,
   `lionhub/src/lionhub/orchestration/engines/research.py:187`, `:191`), and the reactive flow subscribes to its spawn type
   and `EscalationRequest` and injects the resulting nodes into a graph it is already running
   (`lionagi/operations/flow.py:1164-1165`, `:1457-1501`), under ADR-0023 D6, which decides that the
@@ -813,18 +813,18 @@ everything since; facts past the range belong to the next wake.
 - No per-subscriber cursor exists. The durable reader positions nearest to one exist and none is a
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
-  not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1597`, `:1633-1638`;
-  `lionagi/cli/orchestrate/flow.py:2089-2134`). A schedule holds `github_cursor`, a reader
+  not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1746`, `:1782-1787`;
+  `lionagi/cli/orchestrate/flow.py:2141-2186`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
-  (`lionagi/state/schema.sql:487`, `:558-566`; `lionagi/state/db.py:6004-6006`, `:6140`;
-  `lionagi/studio/scheduler/engine.py:2153-2156`; ADR-0070, Accepted); a direct `update_schedule` or
+  (`lionagi/state/schema.sql:493`, `:564-572`; `lionagi/state/db.py:6407-6409`, `:6543`;
+  `lionagi/studio/scheduler/engine.py:2151-2154`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`lionagi/state/schema.sql:839-843`; writer `lionagi/state/db.py:7850-7860`; forward reader
-  `lionagi/state/db.py:7875-7892`).
+  (`lionagi/state/schema.sql:845-849`; writer `lionagi/state/db.py:8264-8274`; forward reader
+  `lionagi/state/db.py:8289-8306`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:289-296`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
@@ -832,7 +832,7 @@ everything since; facts past the range belong to the next wake.
   observer (the `ReviewVerdict` class and the `await run.emit(final)` in `ReviewEngine._verdict`, both in
   `lionhub/src/lionhub/orchestration/engines/review.py`), which is one emit site, but a `Verdict` cast
   raised outside that path is carried by no lifecycle Signal. `budget` names a token-budget
-  reading (`lionagi/service/token_budget.py:140`); the nearest crossing is the engine's
+  reading (`lionagi/service/token_budget.py:102`); the nearest crossing is the engine's
   `budget_exhausted` notification (`EngineRun._notify_budget_once` in
   `lionhub/src/lionhub/orchestration/engines/engine.py`), whose `kind` is a bare
   string on an engine event, not a session Signal. Both boundaries are declared so the vocabulary

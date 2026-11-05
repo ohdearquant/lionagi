@@ -12,16 +12,18 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Mapping
-from dataclasses import replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, get_args
 
 from sqlalchemy import JSON, Boolean, bindparam, text
 
-from lionagi.ln import short_id
+from lionagi.ln import copy, short_id
+from lionagi.ln.concurrency import fail_after
+from lionagi.state._quarantine_identity import QuarantineProbeError, is_current_quarantine
 
 from ..compat import _quote
-from ..reasons import VALID_REASON_CODES
+from ..reasons import VALID_REASON_CODES, RunReasons, validate_reason_code
 from ..terminal_eligibility import (
     HistoryWriteKind,
     has_delivery_eligibility_column,
@@ -36,6 +38,7 @@ from .callbacks import (
     TerminalCallbackRegistry,
 )
 from .models import (
+    ActorRecord,
     ActorType,
     InitialStateCommand,
     ReasonRecord,
@@ -55,6 +58,13 @@ class _HistoryWrite(NamedTuple):
     transition_id: str
     eligibility_stored: bool
     eligibility_at_write: bool
+
+
+@dataclass
+class _GuardedCancelObservation:
+    """A private observation populated only by one guarded cancellation."""
+
+    terminal_same_execution: bool = False
 
 
 # Only these fields supplied the dead-runner evidence. An omitted key means
@@ -103,16 +113,51 @@ def _runner_identity_matches(captured: Mapping[str, Any], stored: Any, *, dialec
     return True
 
 
+def _quarantine_snapshot_matches(snapshot: Mapping[str, Any], stored: Any, *, dialect: str) -> bool:
+    """Match the captured and stored current quarantine under the transaction lock."""
+    expected = snapshot.get("node_metadata")
+    if not isinstance(expected, dict):
+        return False
+    if isinstance(stored, str):
+        if dialect != "sqlite":
+            return False
+        try:
+            stored = json.loads(stored)
+        except (ValueError, RecursionError):
+            return False
+    if not isinstance(stored, dict):
+        return False
+    stored_row = {**snapshot, "node_metadata": stored}
+    scope_probe_failed = False
+    try:
+        return (
+            is_current_quarantine(dict(snapshot), raise_on_scope_error=True)
+            and is_current_quarantine(stored_row, raise_on_scope_error=True)
+            and expected.get("unverifiable_identity") == stored.get("unverifiable_identity")
+            and expected.get("unverifiable_epoch") == stored.get("unverifiable_epoch")
+        )
+    except QuarantineProbeError:
+        scope_probe_failed = True
+    if scope_probe_failed:
+        # Raise after the handler so __context__ stays empty; see
+        # tests/state/test_quarantine_probe_exception_privacy.py.
+        raise QuarantineProbeError("quarantine identity probe failed")
+    return False
+
+
 class _TxProvider(Protocol):
     """Structural requirement satisfied by ``lionagi.state.db.StateDB``
     without importing it here (would be circular)."""
 
     dialect: str
     mode: str
+    readonly: bool
 
     def _tx(self) -> Any: ...
 
     def _read(self) -> Any: ...
+
+    def _refuse_in_compatibility(self, operation: str, reason: str) -> None: ...
 
     def _owner_predicate(self, table: str) -> tuple[str, dict[str, str]]: ...
 
@@ -376,6 +421,145 @@ class SQLAlchemyLifecycleService:
             fill_only_if_absent=fill_only_if_absent,
         )
 
+    async def guarded_cancel_session(
+        self,
+        *,
+        session_id: str,
+        generation_id: str | None,
+        expected_runner_identity: Mapping[str, Any],
+        reason: ReasonRecord,
+    ) -> tuple[TransitionOutcome, bool]:
+        """Cancel one captured execution and report a matching terminal observation.
+
+        The second result is true only when the row observed in the guarded
+        transition was terminal and matched the captured generation and runner.
+        It describes that transaction's observation, not a later row state.
+        """
+        # The specialized entry point is callable independently of StateDB's
+        # facade, so it must enforce the same native-store and input guards.
+        self._db._refuse_in_compatibility(
+            "cancel_session_if_worker_generation", "worker cleanup requires native storage"
+        )
+        if self._db.readonly:
+            raise ValueError("worker cancellation requires a writable state handle")
+        # Import the facade's canonical validators lazily to avoid a module cycle
+        # and keep generation normalization and input policy in one place.
+        from ..db import (
+            _CLI_WORKER_OPERATION_TIMEOUT_SECONDS,
+            _validate_cli_worker_generation,
+            _validate_cli_worker_session_id,
+        )
+
+        session_id = _validate_cli_worker_session_id(session_id)
+        generation_id = _validate_cli_worker_generation(generation_id)
+        if not isinstance(expected_runner_identity, Mapping):
+            raise ValueError("expected_runner_identity must be a mapping")
+        expected_runner_identity = dict(expected_runner_identity)
+        validate_reason_code(reason.code)
+        command = TransitionCommand(
+            entity_type="session",
+            entity_id=session_id,
+            to_status="cancelled",
+            reason=reason,
+            actor=ActorRecord(type="admin", id="user"),
+            expected_statuses=frozenset({"running"}),
+            patch={"current_phase": None},
+        )
+        observation = _GuardedCancelObservation()
+        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+            outcome = await self._transition(
+                command,
+                extra_guard={"cli_worker_generation": generation_id},
+                expected_runner_identity=expected_runner_identity,
+                enforce_edges=True,
+                undeclared_edge_mode="reject",
+                _guarded_cancel_observation=observation,
+            )
+        return outcome, observation.terminal_same_execution
+
+    async def guarded_quarantine_disposition(
+        self,
+        *,
+        entity_type: str,
+        entity_id: str,
+        snapshot: Mapping[str, Any],
+        target_status: str,
+        operator_reason: str,
+        identity_unverifiable: Callable[[Mapping[str, Any]], bool],
+    ) -> TransitionOutcome:
+        """Record an operator disposition of a quarantined row without signalling a process."""
+        self._db._refuse_in_compatibility(
+            "guarded_quarantine_disposition", "quarantine resolution requires native storage"
+        )
+        if self._db.readonly:
+            raise ValueError("quarantine resolution requires a writable state handle")
+        if entity_type not in {"session", "invocation"}:
+            raise ValueError("quarantine resolution requires a session or invocation")
+        if (
+            not isinstance(snapshot, Mapping)
+            or not isinstance(entity_id, str)
+            or not entity_id
+            or snapshot.get("id") != entity_id
+        ):
+            raise ValueError("quarantine resolution requires the selected row's identity")
+        if target_status not in {"failed", "aborted", "cancelled"}:
+            raise ValueError("quarantine resolution requires failed, aborted or cancelled")
+        if not isinstance(operator_reason, str) or not operator_reason.strip():
+            raise ValueError("quarantine resolution requires a non-blank operator reason")
+        if not callable(identity_unverifiable):
+            raise ValueError("quarantine resolution requires an identity probe")
+        from ..db import _CLI_WORKER_OPERATION_TIMEOUT_SECONDS, _validate_cli_worker_generation
+
+        # The database operation may wait for a lock; isolate the selected row
+        # from any mutations in the caller while that wait is in progress.
+        snapshot = copy(dict(snapshot))
+        generation = (
+            _validate_cli_worker_generation(snapshot.get("cli_worker_generation"))
+            if entity_type == "session"
+            else None
+        )
+        metadata = snapshot.get("node_metadata")
+        identity = (
+            {key: metadata[key] for key in _RUNNER_IDENTITY_FIELDS if key in metadata}
+            if isinstance(metadata, Mapping)
+            else {}
+        )
+        operator_reason = operator_reason.strip()
+        reason_code = {
+            "failed": RunReasons.FAILED_IDENTITY_UNVERIFIED,
+            "aborted": RunReasons.ABORTED_IDENTITY_UNVERIFIED,
+            "cancelled": RunReasons.CANCELLED_IDENTITY_UNVERIFIED,
+        }[target_status]
+        validate_reason_code(reason_code)
+        patch: dict[str, Any] = {"ended_at": time.time()}
+        if entity_type == "session":
+            patch["current_phase"] = None
+        command = TransitionCommand(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            to_status=target_status,
+            reason=ReasonRecord(
+                code=reason_code,
+                summary=f"identity unverified, operator disposition: {operator_reason}",
+                evidence_refs=({"operator_reason": operator_reason},),
+            ),
+            actor=ActorRecord(type="admin", id="user"),
+            expected_statuses=frozenset({"running"}),
+            patch=patch,
+        )
+        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+            return await self._transition(
+                command,
+                extra_guard={"cli_worker_generation": generation}
+                if entity_type == "session"
+                else {},
+                expected_runner_identity=identity,
+                expected_quarantine=snapshot,
+                identity_unverifiable=identity_unverifiable,
+                enforce_edges=True,
+                undeclared_edge_mode="reject",
+            )
+
     async def _emit_terminal_event(
         self,
         command: TransitionCommand,
@@ -430,15 +614,31 @@ class SQLAlchemyLifecycleService:
         *,
         extra_guard: Mapping[str, Any] | None = None,
         expected_runner_identity: Mapping[str, Any] | None = None,
+        expected_quarantine: Mapping[str, Any] | None = None,
+        identity_unverifiable: Callable[[Mapping[str, Any]], bool] | None = None,
         enforce_edges: bool = False,
         undeclared_edge_mode: str = "raise",
         raise_on_unguarded_conflict: bool = False,
         write_reason_columns: bool = True,
         fill_only_if_absent: frozenset[str] = frozenset(),
         owned_links: tuple[tuple[str, str, str], ...] = (),
+        _guarded_cancel_observation: _GuardedCancelObservation | None = None,
     ) -> TransitionOutcome:
+        if _guarded_cancel_observation is not None and (
+            command.entity_type != "session"
+            or command.to_status != "cancelled"
+            or command.expected_statuses != frozenset({"running"})
+            or command.expected_version is not None
+            or command.override is not None
+            or extra_guard is None
+            or set(extra_guard) != {"cli_worker_generation"}
+            or expected_runner_identity is None
+        ):
+            raise LifecycleValidationError("invalid guarded cancellation observation")
         if expected_runner_identity is not None:
-            if command.entity_type != "session":
+            if command.entity_type != "session" and not (
+                command.entity_type == "invocation" and expected_quarantine is not None
+            ):
                 raise LifecycleValidationError("runner identity guard requires a session")
             if not isinstance(expected_runner_identity, Mapping):
                 raise LifecycleValidationError("runner identity guard requires a mapping")
@@ -542,6 +742,15 @@ class SQLAlchemyLifecycleService:
                 command.expected_statuses is not None
                 and previous_status not in command.expected_statuses
             ):
+                if _guarded_cancel_observation is not None:
+                    _guarded_cancel_observation.terminal_same_execution = (
+                        previous_status in policy.terminal_statuses
+                        and row["cli_worker_generation"] == extra_guard["cli_worker_generation"]
+                        and expected_runner_identity is not None
+                        and _runner_identity_matches(
+                            expected_runner_identity, row["node_metadata"], dialect=self._db.dialect
+                        )
+                    )
                 return TransitionOutcome(
                     result="conflict",
                     previous_status=previous_status,
@@ -557,6 +766,44 @@ class SQLAlchemyLifecycleService:
                     current_status=previous_status,
                     transition_id=None,
                 )
+            if expected_quarantine is not None and not _quarantine_snapshot_matches(
+                expected_quarantine, row["node_metadata"], dialect=self._db.dialect
+            ):
+                return TransitionOutcome(
+                    result="conflict",
+                    previous_status=previous_status,
+                    current_status=previous_status,
+                    transition_id=None,
+                )
+            if expected_quarantine is not None:
+                # Probe only the transaction-read row after all snapshot guards.
+                # The callback observes process identity and must never signal it.
+                probe_allowed = False
+                probe_failed = False
+                if callable(identity_unverifiable) and all(
+                    row[key] == value for key, value in extra_guard.items()
+                ):
+                    try:
+                        probe_row = dict(row)
+                        probe_row["id"] = command.entity_id
+                        if isinstance(probe_row["node_metadata"], str):
+                            probe_row["node_metadata"] = json.loads(probe_row["node_metadata"])
+                        probe_allowed = identity_unverifiable(probe_row) is True
+                    except Exception:
+                        # A failed probe cannot establish whether this quarantine
+                        # remains eligible. Do not expose the underlying error.
+                        probe_failed = True
+                if probe_failed:
+                    # Raise after the handler so __context__ stays empty; see
+                    # tests/state/test_quarantine_probe_exception_privacy.py.
+                    raise QuarantineProbeError("quarantine identity probe failed")
+                if not probe_allowed:
+                    return TransitionOutcome(
+                        result="conflict",
+                        previous_status=previous_status,
+                        current_status=previous_status,
+                        transition_id=None,
+                    )
             same_status = previous_status == command.to_status
             declared_edges = policy.edges.get(previous_status, ()) if enforce_edges else ()
             self_edge = next((e for e in declared_edges if e.to_status == command.to_status), None)
@@ -827,10 +1074,13 @@ class SQLAlchemyLifecycleService:
         # same terminal fact, including one recorded after this transition read
         # the row. A first cancellation (previous status not yet terminal) writes
         # both; a later one keeps what is stored and only appends its history.
+        # A quarantine disposition instead records the operator's action time,
+        # even if a still-running invocation carries a stale end timestamp.
         observed_cancel = (
             command.entity_type == "invocation"
             and command.to_status == "cancelled"
             and command.override is None
+            and command.reason.code != RunReasons.CANCELLED_IDENTITY_UNVERIFIED
         )
         revise_recorded_cancel = observed_cancel and previous_status == command.to_status
         set_clauses = ["status = :status", "updated_at = :now"]

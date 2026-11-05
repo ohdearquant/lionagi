@@ -7,6 +7,8 @@ from typing import Any, ClassVar
 from .base import _coerce_id_field, _unwrap_action_data
 from .message import Message, MessageContent, MessageRole
 
+_OUTPUT_TOO_DEEP = "<output too deeply nested>"
+
 
 @dataclass(slots=True)
 class ActionResponseContent(MessageContent):

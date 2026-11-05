@@ -14,10 +14,10 @@ import pytest
 from lionagi.service.types.cli_session import CLISession
 
 CLI_PROVIDERS = [
-    "lionagi/providers/anthropic/claude_code.py",
-    "lionagi/providers/openai/codex.py",
-    "lionagi/providers/google/gemini_code.py",
-    "lionagi/providers/pi/cli.py",
+    "lionhub/src/lionhub/providers/anthropic/claude_code.py",
+    "lionhub/src/lionhub/providers/openai/codex.py",
+    "lionhub/src/lionhub/providers/google/gemini_code.py",
+    "lionhub/src/lionhub/providers/pi/cli.py",
 ]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

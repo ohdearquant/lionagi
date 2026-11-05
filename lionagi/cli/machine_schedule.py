@@ -35,7 +35,7 @@ _RUNS_LIMIT_MAX = 200
 
 
 def _studio_url() -> str:
-    from lionagi.studio.cli import _base_url
+    from lionagi.cli._schedule_parsing import _base_url
 
     return _base_url()
 
@@ -51,6 +51,8 @@ def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) 
     import urllib.error
     import urllib.request
 
+    from lionagi.ln._ssrf import open_url
+
     url = f"{_studio_url()}/api/schedules{path}"
     data = json.dumps(body).encode() if body is not None else None
     declares_json = data is not None or method.upper() not in {"GET", "HEAD", "OPTIONS"}
@@ -62,13 +64,13 @@ def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) 
     )
     started_at = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=STUDIO_TIMEOUT_SECONDS) as response:  # noqa: S310
+        with open_url(request, timeout=STUDIO_TIMEOUT_SECONDS) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:2000]
         raise MachineError(_error_kind(exc.code), _http_message(exc.code, detail)) from exc
     except OSError as exc:
-        from lionagi.studio.cli import (
+        from lionagi.cli._schedule_parsing import (
             _is_schedule_request_timeout,
             _schedule_request_timeout_message,
         )
@@ -131,7 +133,7 @@ def _http_message(code: int, detail: str) -> str:
 
 
 def _schedule_subparsers() -> dict[str, argparse.ArgumentParser]:
-    from lionagi.studio.cli import add_schedule_subparser
+    from lionagi.cli._schedule_parsing import add_schedule_subparser
 
     root = argparse.ArgumentParser(prog="li", add_help=False)
     schedule = add_schedule_subparser(root.add_subparsers(dest="command"))
@@ -420,8 +422,8 @@ def _refuse_inside_an_agent() -> None:
     """Refuse a request that can have the Studio daemon start a run when this process
     runs inside an agent lionagi started. The daemon runs outside this process's tree,
     so no check at spawn can see where the request came from."""
-    from lionagi.providers._provider_errors import NestedAgentRefusedError
-    from lionagi.providers._subagent_admission import refuse_nested_agent
+    from lionagi._provider_errors import NestedAgentRefusedError
+    from lionagi.service._subagent_admission import refuse_nested_agent
 
     try:
         refuse_nested_agent()
@@ -438,7 +440,7 @@ def _create(argv: list[str]) -> dict[str, Any]:
     trigger next resolves at ``resolved_next_fire``. It does not mean a
     scheduler is running to fire it.
     """
-    from lionagi.studio.cli import build_create_body
+    from lionagi.cli._schedule_parsing import build_create_body
 
     _refuse_inside_an_agent()
     known = _parse("create", argv, unhonoured={})
@@ -510,7 +512,7 @@ def _enable(argv: list[str]) -> dict[str, Any]:
 
 
 def _disable(argv: list[str]) -> dict[str, Any]:
-    from lionagi.studio.cli import _normalize_schedule_reason
+    from lionagi.cli._schedule_parsing import _normalize_schedule_reason
 
     known = _parse("disable", argv, unhonoured={})
     body = None

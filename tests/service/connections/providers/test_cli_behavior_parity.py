@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lionagi._errors import ExecutionError
+from lionagi._provider_errors import ProviderError
 from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers._provider_errors import ProviderError
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 
@@ -75,7 +75,7 @@ async def test_an_api_provider_failed_call_records_failure_and_raises():
             "codex",
             "gpt-5.1-codex",
             [{"type": "turn.failed", "error": {"message": "rate limit exceeded"}}],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
         ),
         (
             "claude_code",
@@ -88,7 +88,7 @@ async def test_an_api_provider_failed_call_records_failure_and_raises():
                     "api_error_status": 429,
                 }
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
         ),
         (
             "gemini_code",
@@ -101,13 +101,13 @@ async def test_an_api_provider_failed_call_records_failure_and_raises():
                     "error": "rate limit exceeded",
                 }
             ],
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         ),
         (
             "pi",
             "gemini-2.5-flash",
             [{"type": "error", "error": {"message": "rate limit exceeded"}}],
-            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "lionhub.providers.pi.cli.stream_pi_cli_events",
         ),
     ],
     ids=["codex", "claude_code", "gemini_code", "pi"],
@@ -142,7 +142,7 @@ _ASSISTANT_TEXT = "Investigating why the user is not logged in"
                 },
                 {"type": "turn.failed", "error": {"message": "rate limit exceeded"}},
             ],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
         ),
         (
             "claude_code",
@@ -154,7 +154,7 @@ _ASSISTANT_TEXT = "Investigating why the user is not logged in"
                 },
                 {"type": "result", "result": "rate limit exceeded", "is_error": True},
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
         ),
         (
             "pi",
@@ -171,7 +171,7 @@ _ASSISTANT_TEXT = "Investigating why the user is not logged in"
                     ],
                 },
             ],
-            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "lionhub.providers.pi.cli.stream_pi_cli_events",
         ),
     ],
     ids=["codex", "claude_code", "pi"],
@@ -184,7 +184,7 @@ async def test_a_cli_failure_is_classified_on_its_own_text_not_the_assistant_tex
 ):
     """Assistant text the run produced before it failed is not the failure: the
     error is classified, and reported, on what the provider said went wrong."""
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     branch = Branch(chat_model=_chat_model(provider, model))
     error = await _failed_chat(branch, provider, events, seam)
@@ -198,7 +198,7 @@ async def test_a_cli_failure_is_classified_on_its_own_text_not_the_assistant_tex
 async def test_a_codex_failure_with_no_text_is_not_reported_as_the_assistant_text():
     """A failed turn that says nothing is classified as an unexplained failure,
     not on the assistant text the stream would otherwise fill the result with."""
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     branch = Branch(chat_model=_chat_model("codex", "gpt-5.1-codex"))
     error = await _failed_chat(
@@ -208,7 +208,7 @@ async def test_a_codex_failure_with_no_text_is_not_reported_as_the_assistant_tex
             {"type": "item.completed", "item": {"type": "agent_message", "text": _ASSISTANT_TEXT}},
             {"type": "turn.failed", "error": ""},
         ],
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
     )
 
     assert type(error.__cause__) is type(classify_provider_error("Codex session failed"))
@@ -223,7 +223,7 @@ async def test_a_bare_gemini_error_status_is_reported_by_its_status():
         branch,
         "gemini_code",
         [{"conversation_id": "conv-1", "status": "ERROR"}],
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
     )
 
     assert isinstance(error.__cause__, ProviderError)
@@ -232,7 +232,7 @@ async def test_a_bare_gemini_error_status_is_reported_by_its_status():
 
 @pytest.mark.asyncio
 async def test_a_gemini_teardown_failure_is_reported_as_one():
-    from lionagi.providers._provider_errors import ProviderTeardownError
+    from lionagi._provider_errors import ProviderTeardownError
 
     async def failing_events(_request):
         raise RuntimeError("Event loop is closed")
@@ -240,7 +240,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
 
     branch = Branch(chat_model=_chat_model("gemini_code", "gemini-4-argon"))
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=failing_events,
     ):
         with pytest.raises(ExecutionError) as info:
@@ -265,7 +265,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                     "error": "",
                 }
             ],
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
             "agy returned status=ERROR",
         ),
         (
@@ -285,7 +285,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                     },
                 }
             ],
-            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "lionhub.providers.pi.cli.stream_pi_cli_events",
             "aborted",
         ),
         (
@@ -295,7 +295,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                 {"type": "error", "error": {"message": "rate limit exceeded"}},
                 {"type": "error", "error": ""},
             ],
-            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "lionhub.providers.pi.cli.stream_pi_cli_events",
             "rate limit exceeded",
         ),
         (
@@ -309,7 +309,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                     "errors": ["API Error: 429 rate limit exceeded"],
                 }
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
             "API Error: 429 rate limit exceeded",
         ),
         (
@@ -324,7 +324,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                     "errors": ["API Error: 429 rate limit exceeded"],
                 }
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
             "API Error: 429 rate limit exceeded",
         ),
         (
@@ -334,7 +334,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                 {"type": "error", "message": "rate limit exceeded"},
                 {"type": "turn.failed", "error": {}},
             ],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
             "rate limit exceeded",
         ),
         (
@@ -347,7 +347,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                 },
                 {"type": "result", "result": "rate limit exceeded", "is_error": True},
             ],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
             "rate limit exceeded",
         ),
     ],
@@ -370,7 +370,7 @@ async def test_a_cli_failure_is_classified_on_the_text_that_names_it(
 ):
     """The failure's own text decides the class: not the response or assistant
     message the turn produced, and not a later event that names nothing."""
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     branch = Branch(chat_model=_chat_model(provider, model))
     error = await _failed_chat(branch, provider, events, seam)
@@ -380,10 +380,10 @@ async def test_a_cli_failure_is_classified_on_the_text_that_names_it(
     _assert_failed_call(branch, error, said)
 
 
-_CODEX = "lionagi.providers.openai.codex.stream_codex_cli_events"
-_GEMINI = "lionagi.providers.google.gemini_code.stream_gemini_cli_events"
-_CLAUDE = "lionagi.providers.anthropic.claude_code.stream_cc_cli_events"
-_PI = "lionagi.providers.pi.cli.stream_pi_cli_events"
+_CODEX = "lionhub.providers.openai.codex.stream_codex_cli_events"
+_GEMINI = "lionhub.providers.google.gemini_code.stream_gemini_cli_events"
+_CLAUDE = "lionhub.providers.anthropic.claude_code.stream_cc_cli_events"
+_PI = "lionhub.providers.pi.cli.stream_pi_cli_events"
 
 
 def _agy(status: str, error: str) -> dict:
@@ -562,7 +562,7 @@ async def test_every_failure_a_cli_reported_decides_the_class(
     repeating the assistant text, a later event with an empty or placeholder payload, a failed
     command's output, a status or a reason with no message beside it, and a result's text beside
     its errors neither hide nor replace the text that names the failure."""
-    from lionagi.providers import _provider_errors
+    from lionagi import _provider_errors
 
     branch = Branch(chat_model=_chat_model(provider, model))
     error = await _failed_chat(branch, provider, events, seam)
@@ -574,7 +574,7 @@ async def test_every_failure_a_cli_reported_decides_the_class(
 
 @pytest.mark.asyncio
 async def test_a_gemini_error_is_reported_over_the_teardown_failure_after_it():
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     async def events(_request):
         yield {
@@ -587,7 +587,7 @@ async def test_a_gemini_error_is_reported_over_the_teardown_failure_after_it():
 
     branch = Branch(chat_model=_chat_model("gemini_code", "gemini-4-argon"))
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=events,
     ):
         with pytest.raises(ExecutionError) as info:
@@ -599,7 +599,7 @@ async def test_a_gemini_error_is_reported_over_the_teardown_failure_after_it():
 
 @pytest.mark.asyncio
 async def test_a_codex_result_event_failure_with_no_text_is_not_the_assistant_text():
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     branch = Branch(chat_model=_chat_model("codex", "gpt-5.1-codex"))
     error = await _failed_chat(
@@ -609,7 +609,7 @@ async def test_a_codex_result_event_failure_with_no_text_is_not_the_assistant_te
             {"type": "item.completed", "item": {"type": "agent_message", "text": _ASSISTANT_TEXT}},
             {"type": "result", "is_error": True},
         ],
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
     )
 
     assert type(error.__cause__) is type(classify_provider_error("Codex session failed"))
@@ -628,7 +628,7 @@ async def test_a_codex_result_event_failure_with_no_text_is_not_the_assistant_te
                 {"type": "thread.started", "thread_id": "thread-1"},
                 {"type": "turn.failed", "error": {"message": "rate limit exceeded"}},
             ],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
             "thread-1",
         ),
         (
@@ -638,14 +638,14 @@ async def test_a_codex_result_event_failure_with_no_text_is_not_the_assistant_te
                 {"type": "system", "subtype": "init", "session_id": "session-1"},
                 {"type": "result", "result": "rate limit exceeded", "is_error": True},
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
             "session-1",
         ),
         (
             "gemini_code",
             "gemini-4-argon",
             [{"conversation_id": "conv-1", "status": "ERROR", "error": "rate limit exceeded"}],
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
             "conv-1",
         ),
     ],
@@ -671,7 +671,7 @@ async def test_a_cli_failed_call_keeps_the_provider_session_it_ran_in(
 async def test_ndjson_from_cli_tail_repair_yields_repaired_object():
     """tail_repair callback is invoked on a malformed final JSON fragment and
     the repaired dict is yielded rather than silently dropped."""
-    from lionagi.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
+    from lionhub.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
 
     malformed = b'{"type": "done", "missing_close":'
 
@@ -698,12 +698,12 @@ async def test_ndjson_from_cli_tail_repair_yields_repaired_object():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         patch(
-            "lionagi.providers._cli_subprocess.observe_spawned",
+            "lionhub.providers._cli_subprocess.observe_spawned",
             side_effect=lambda pid, *, expected_marker: SpawnedProcess(
                 pid=pid, pgid=pid, create_time=None
             ),
         ),
-        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+        patch("lionhub.providers._cli_subprocess._group_has_members", return_value=False),
     ):
         async with __import__("contextlib").aclosing(
             ndjson_from_cli([sys.executable], tail_repair=_repair)
@@ -721,7 +721,7 @@ async def test_ndjson_from_cli_no_tail_repair_drops_bad_tail(caplog):
     """Without tail_repair the malformed tail is logged and dropped (default)."""
     import logging
 
-    from lionagi.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
+    from lionhub.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
 
     malformed = b'{"type": "bad"'
 
@@ -742,12 +742,12 @@ async def test_ndjson_from_cli_no_tail_repair_drops_bad_tail(caplog):
     with (
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         patch(
-            "lionagi.providers._cli_subprocess.observe_spawned",
+            "lionhub.providers._cli_subprocess.observe_spawned",
             side_effect=lambda pid, *, expected_marker: SpawnedProcess(
                 pid=pid, pgid=pid, create_time=None
             ),
         ),
-        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+        patch("lionhub.providers._cli_subprocess._group_has_members", return_value=False),
     ):
         with caplog.at_level(logging.ERROR):
             async with __import__("contextlib").aclosing(
@@ -763,8 +763,8 @@ async def test_ndjson_from_cli_no_tail_repair_drops_bad_tail(caplog):
 @pytest.mark.asyncio
 async def test_claude_ndjson_uses_repair_callback():
     """_ndjson_from_cli in Claude models passes tail_repair to ndjson_from_cli."""
-    from lionagi.providers.anthropic import claude_code as cc_models
-    from lionagi.providers.anthropic import claude_code as cc_pkg
+    from lionhub.providers.anthropic import claude_code as cc_models
+    from lionhub.providers.anthropic import claude_code as cc_pkg
 
     call_kwargs: list[dict] = []
 
@@ -789,6 +789,219 @@ async def test_claude_ndjson_uses_repair_callback():
     assert kw["tail_repair"] is not None, "tail_repair must not be None for Claude"
 
 
+# One command-line argument of this many bytes does not start a CLI on macOS.
+_ARGUMENT_MAX_BYTES = 1_048_576
+# The most piped input the Claude Code CLI takes: "10MB" in its documentation.
+_CLAUDE_PIPED_INPUT_MAX_BYTES = 10_000_000
+
+
+async def _claude_spawn_seen(monkeypatch, tmp_path, seen: list, **request_kwargs) -> None:
+    """Drive Claude's spawn path against a stand-in for the shared spawner, which records the
+    command and keyword arguments it is handed in ``seen`` and starts nothing."""
+    from lionhub.providers.anthropic import claude_code as cc
+
+    async def _fake_ndjson(cmd, **kwargs):
+        seen.append((list(cmd), kwargs))
+        return
+        yield
+
+    monkeypatch.setattr(cc, "CLAUDE_CLI", "/fake/claude")
+    monkeypatch.setattr(cc, "ndjson_from_cli", _fake_ndjson)
+    request = cc.ClaudeCodeRequest(repo=tmp_path, **request_kwargs)
+    async for _ in cc._ndjson_from_cli(request):
+        pass
+
+
+@pytest.mark.parametrize("input_format", [None, "text"])
+def test_claude_as_cmd_args_carries_no_prompt_when_the_prompt_goes_on_stdin(input_format):
+    """``-p`` is the print-mode switch; the prompt it would otherwise carry is read from stdin."""
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    kwargs = {} if input_format is None else {"input_format": input_format}
+    args = ClaudeCodeRequest(prompt="a distinctive prompt", **kwargs).as_cmd_args()
+
+    assert "-p" in args
+    assert not any("a distinctive prompt" in arg for arg in args)
+
+
+def test_claude_as_cmd_args_keeps_the_prompt_for_stream_json_input():
+    """With ``stream-json`` input the argument list is what it has always been."""
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    args = ClaudeCodeRequest(prompt="hi", input_format="stream-json").as_cmd_args()
+
+    assert args == [
+        "-p",
+        "hi",
+        "--output-format",
+        "stream-json",
+        "--model",
+        "claude-sonnet-5-5",
+        "--input-format",
+        "stream-json",
+        "--verbose",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_format", [None, "text"])
+async def test_claude_ndjson_writes_the_prompt_to_the_child_stdin(
+    monkeypatch, tmp_path, input_format
+):
+    kwargs = {} if input_format is None else {"input_format": input_format}
+    seen: list = []
+
+    await _claude_spawn_seen(monkeypatch, tmp_path, seen, prompt="what is 2 + 2?", **kwargs)
+
+    assert len(seen) == 1
+    cmd, spawn_kwargs = seen[0]
+    assert spawn_kwargs["stdin_data"] == "what is 2 + 2?"
+    assert "-p" in cmd
+    assert not any("what is 2 + 2?" in arg for arg in cmd)
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_sends_a_history_past_the_argument_limit_on_stdin(
+    monkeypatch, tmp_path
+):
+    """A branch with no resumable session renders its whole history as the prompt; it used to
+    ride the command line and fail to start once it passed the operating system's limit."""
+    messages = [{"role": "system", "content": "be brief"}] + [
+        {"role": "user" if n % 2 == 0 else "assistant", "content": f"turn {n} " + "h" * 400_000}
+        for n in range(3)
+    ]
+    expected = "\n".join(m["content"] for m in messages[1:])
+    assert len(expected.encode()) > _ARGUMENT_MAX_BYTES
+    seen: list = []
+
+    await _claude_spawn_seen(monkeypatch, tmp_path, seen, messages=messages)
+
+    cmd, spawn_kwargs = seen[0]
+    assert spawn_kwargs["stdin_data"] == expected
+    assert sum(len(arg.encode()) for arg in cmd) < 10_000
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_writes_only_the_last_message_of_a_resumed_session(
+    monkeypatch, tmp_path
+):
+    messages = [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+    ]
+    seen: list = []
+
+    await _claude_spawn_seen(monkeypatch, tmp_path, seen, messages=messages, resume="sess-1")
+
+    cmd, spawn_kwargs = seen[0]
+    assert spawn_kwargs["stdin_data"] == "second question"
+    assert cmd[cmd.index("--resume") + 1] == "sess-1"
+    assert not any("question" in arg or "answer" in arg for arg in cmd)
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_keeps_the_prompt_in_the_arguments_for_stream_json_input(
+    monkeypatch, tmp_path
+):
+    """The spawner is handed what it was before: the prompt in the argument list, and no stdin
+    data, so the child's stdin stays the spawner's default."""
+    seen: list = []
+
+    await _claude_spawn_seen(monkeypatch, tmp_path, seen, prompt="hi", input_format="stream-json")
+
+    cmd, spawn_kwargs = seen[0]
+    assert cmd[:3] == ["/fake/claude", "-p", "hi"]
+    assert spawn_kwargs.get("stdin_data") is None
+    assert "stdin" not in spawn_kwargs
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_refuses_a_prompt_past_the_piped_input_cap(monkeypatch, tmp_path):
+    seen: list = []
+
+    with pytest.raises(ValueError, match="10 MB") as refused:
+        await _claude_spawn_seen(
+            monkeypatch, tmp_path, seen, prompt="x" * (_CLAUDE_PIPED_INPUT_MAX_BYTES + 1)
+        )
+
+    assert seen == [], "the CLI must not be started with a prompt it will refuse"
+    assert "10,000,001" in str(refused.value)
+    assert "xxxxxxxx" not in str(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_measures_the_prompt_cap_in_utf8_bytes(monkeypatch, tmp_path):
+    """The cap is on the bytes written to the pipe: a 2-byte character counts twice."""
+    at_the_cap: list = []
+    await _claude_spawn_seen(
+        monkeypatch, tmp_path, at_the_cap, prompt="é" * (_CLAUDE_PIPED_INPUT_MAX_BYTES // 2)
+    )
+    assert len(at_the_cap) == 1
+
+    past_the_cap: list = []
+    with pytest.raises(ValueError, match="10 MB"):
+        await _claude_spawn_seen(
+            monkeypatch,
+            tmp_path,
+            past_the_cap,
+            prompt="é" * (_CLAUDE_PIPED_INPUT_MAX_BYTES // 2 + 1),
+        )
+    assert past_the_cap == []
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_refuses_an_argument_past_the_operating_system_limit(
+    monkeypatch, tmp_path
+):
+    seen: list = []
+
+    with pytest.raises(ValueError, match="--system-prompt") as refused:
+        await _claude_spawn_seen(
+            monkeypatch,
+            tmp_path,
+            seen,
+            prompt="hi",
+            system_prompt="s" * _ARGUMENT_MAX_BYTES,
+        )
+
+    assert seen == [], "the CLI must not be started with an argument it cannot take"
+    message = str(refused.value)
+    assert "Claude Code CLI" in message
+    assert f"{_ARGUMENT_MAX_BYTES:,} bytes" in message
+    assert "sssssss" not in message
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_takes_an_argument_just_under_the_limit(monkeypatch, tmp_path):
+    seen: list = []
+
+    await _claude_spawn_seen(
+        monkeypatch, tmp_path, seen, prompt="hi", system_prompt="s" * (_ARGUMENT_MAX_BYTES - 1)
+    )
+
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_names_the_prompt_argument_for_stream_json_input(monkeypatch, tmp_path):
+    """With ``stream-json`` input the prompt is still an argument, so it is held to the limit
+    too, and named as the value of ``-p``."""
+    seen: list = []
+
+    with pytest.raises(ValueError, match="value of -p"):
+        await _claude_spawn_seen(
+            monkeypatch,
+            tmp_path,
+            seen,
+            prompt="p" * _ARGUMENT_MAX_BYTES,
+            input_format="stream-json",
+        )
+
+    assert seen == []
+
+
 @pytest.mark.asyncio
 async def test_codex_ndjson_does_not_pass_cwd(tmp_path):
     """Codex _ndjson_from_cli must NOT pass cwd= to ndjson_from_cli.
@@ -796,7 +1009,7 @@ async def test_codex_ndjson_does_not_pass_cwd(tmp_path):
     The Codex CLI already receives the workspace via '-C <repo>' in as_cmd_args().
     Passing cwd= as well causes a relative repo path to be resolved twice.
     """
-    from lionagi.providers.openai import codex as codex_models
+    from lionhub.providers.openai import codex as codex_models
 
     call_kwargs: list[dict] = []
 
@@ -826,7 +1039,7 @@ async def test_codex_ndjson_does_not_pass_cwd(tmp_path):
 
 def test_codex_as_cmd_args_contains_dash_c_flag(tmp_path):
     """Codex as_cmd_args() emits '-C <repo>' so the CLI handles the workspace itself."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     # repo must exist on disk (see comment in test_codex_ndjson_does_not_pass_cwd).
     req = CodexCodeRequest(prompt="hello", repo=tmp_path)
@@ -841,7 +1054,7 @@ def test_codex_as_cmd_args_contains_dash_c_flag(tmp_path):
 async def test_gemini_ndjson_defaults_stdin_devnull():
     """agy runs headless print mode and reads nothing from stdin — gemini must
     NOT pass a stdin override, leaving ndjson_from_cli's DEVNULL default."""
-    from lionagi.providers.google import gemini_code as gemini_models
+    from lionhub.providers.google import gemini_code as gemini_models
 
     call_kwargs: list[dict] = []
 
@@ -869,8 +1082,8 @@ async def test_gemini_ndjson_defaults_stdin_devnull():
 @pytest.mark.asyncio
 async def test_pi_ndjson_passes_inherit_stdin():
     """Pi _ndjson_from_cli must pass stdin=_INHERIT_STDIN to ndjson_from_cli."""
-    from lionagi.providers._cli_subprocess import _INHERIT_STDIN
-    from lionagi.providers.pi import cli as pi_models
+    from lionhub.providers._cli_subprocess import _INHERIT_STDIN
+    from lionhub.providers.pi import cli as pi_models
 
     call_kwargs: list[dict] = []
 
@@ -897,7 +1110,7 @@ async def test_pi_ndjson_passes_inherit_stdin():
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_inherit_stdin_omits_stdin_kwarg():
     """When stdin=_INHERIT_STDIN the helper must NOT pass stdin to create_subprocess_exec."""
-    from lionagi.providers._cli_subprocess import _INHERIT_STDIN, SpawnedProcess, ndjson_from_cli
+    from lionhub.providers._cli_subprocess import _INHERIT_STDIN, SpawnedProcess, ndjson_from_cli
 
     captured_kwargs: list[dict] = []
 
@@ -918,12 +1131,12 @@ async def test_ndjson_from_cli_inherit_stdin_omits_stdin_kwarg():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         patch(
-            "lionagi.providers._cli_subprocess.observe_spawned",
+            "lionhub.providers._cli_subprocess.observe_spawned",
             side_effect=lambda pid, *, expected_marker: SpawnedProcess(
                 pid=pid, pgid=pid, create_time=None
             ),
         ),
-        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+        patch("lionhub.providers._cli_subprocess._group_has_members", return_value=False),
     ):
         async with __import__("contextlib").aclosing(
             ndjson_from_cli([sys.executable], stdin=_INHERIT_STDIN)
@@ -942,7 +1155,7 @@ async def test_ndjson_from_cli_inherit_stdin_omits_stdin_kwarg():
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_devnull_passes_stdin_devnull():
     """Default stdin=DEVNULL must be forwarded to create_subprocess_exec (Claude/Codex)."""
-    from lionagi.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
+    from lionhub.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
 
     captured_kwargs: list[dict] = []
 
@@ -963,12 +1176,12 @@ async def test_ndjson_from_cli_devnull_passes_stdin_devnull():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         patch(
-            "lionagi.providers._cli_subprocess.observe_spawned",
+            "lionhub.providers._cli_subprocess.observe_spawned",
             side_effect=lambda pid, *, expected_marker: SpawnedProcess(
                 pid=pid, pgid=pid, create_time=None
             ),
         ),
-        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+        patch("lionhub.providers._cli_subprocess._group_has_members", return_value=False),
     ):
         async with __import__("contextlib").aclosing(ndjson_from_cli([sys.executable])) as stream:
             async for _ in stream:

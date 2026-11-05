@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException, Query
 
-from lionagi.cli.team import read_team_json as _read_json
+from lionagi.cli._team_service import read_team_json as _read_json
 from lionagi.libs.path_safety import safe_join
 from lionagi.utils import LIONAGI_HOME
 

@@ -7,9 +7,9 @@ import os
 
 import pytest
 
-from lionagi.providers.nvidia_nim.chat import NvidiaNimChatEndpoint
-from lionagi.providers.nvidia_nim.embed import NvidiaNimEmbedEndpoint
 from lionagi.service.connections.match_endpoint import match_endpoint
+from lionhub.providers.nvidia_nim.chat import NvidiaNimChatEndpoint
+from lionhub.providers.nvidia_nim.embed import NvidiaNimEmbedEndpoint
 
 # Create config objects using the new endpoint classes (equivalent to old module-level constants)
 NVIDIA_NIM_CHAT_ENDPOINT_CONFIG = NvidiaNimChatEndpoint().config

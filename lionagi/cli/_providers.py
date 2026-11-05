@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi import iModel
+from lionagi._errors import ConfigurationError
 from lionagi._paths import (
     AmbiguousProfileNameError,
     _name_spellings,
@@ -22,11 +23,7 @@ from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
-from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
-from lionagi.providers.openai._codex_profile import (
-    refuse_codex_profile_run_settings,
-    resolve_codex_config_profile,
-)
+from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionagi.service.providers import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
@@ -45,6 +42,10 @@ from lionagi.service.providers import (
     codex_unset_effort_default,
     normalize_effort,
     parse_model_spec,
+)
+from lionhub.providers.openai._codex_profile import (
+    refuse_codex_profile_run_settings,
+    resolve_codex_config_profile,
 )
 
 __all__ = (
@@ -109,6 +110,65 @@ def _add_workload_kwarg(extra: dict, endpoint: Any, workload: str) -> None:
         extra["workload"] = workload
 
 
+# The tool-set fields a profile may declare for a Claude Code agent.
+_PROFILE_TOOL_FIELDS = ("tools", "allowed_tools", "disallowed_tools")
+
+
+def _profile_tool_settings(profile: Any) -> dict[str, Any]:
+    """The tool-set fields *profile* declares, as Claude Code request settings.
+
+    ``tools`` names the built-in tools the agent has at all and becomes the one
+    comma-separated value ``--tools`` takes; ``allowed_tools`` and ``disallowed_tools`` stay
+    lists. Each declared field must be a list of non-empty tool names, and ``tools`` must
+    name at least one: an empty list there is refused rather than read as either "no tools"
+    or "no restriction". A value of any other shape is refused naming the field. A field the
+    profile does not declare is left out, so a profile with none yields ``{}``.
+    """
+    extra = getattr(profile, "extra", None) or {}
+    name = getattr(profile, "name", "<unknown>")
+    settings: dict[str, Any] = {}
+    for key in _PROFILE_TOOL_FIELDS:
+        if key not in extra:
+            continue
+        raw = extra[key]
+        if not isinstance(raw, list) or not all(isinstance(t, str) and t.strip() for t in raw):
+            raise ConfigurationError(
+                f"agent profile {name!r} sets {key} to {raw!r}; it must be a list of "
+                "non-empty tool names."
+            )
+        names = [t.strip() for t in raw]
+        if key != "tools":
+            settings[key] = names
+        elif names:
+            settings[key] = ",".join(names)
+        else:
+            raise ConfigurationError(
+                f"agent profile {name!r} sets {key} to an empty list; name at least one tool, "
+                "or leave the field out to keep every tool available."
+            )
+    return settings
+
+
+def _add_claude_tool_kwargs(kwargs: dict, endpoint: Any, settings: dict[str, Any]) -> None:
+    """Put a profile's non-empty tool-set settings on a Claude Code request, or refuse any
+    other model.
+
+    Only a Claude Code endpoint has these options. Any other provider would drop them or send
+    them as payload keys, so a profile that declares them for another model is refused rather
+    than run with a tool set it did not ask for. The endpoint decides, not the name: a
+    slashless name takes the default chat provider.
+    """
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    provider = EndpointRegistry.canonical_provider(endpoint.config.provider)
+    if not endpoint.is_cli or provider not in _CLAUDE_PROVIDER_NAMES:
+        raise ConfigurationError(
+            f"an agent profile declares {', '.join(settings)}, which apply only to a claude_code "
+            f"model; this agent's model runs on provider {provider!r}."
+        )
+    kwargs.update(settings)
+
+
 def _is_light_codex(imodel: iModel) -> bool:
     # A light codex worker writes only its working directory and the artifact directory
     # the run gives it, and codex refuses it any other writable root.
@@ -134,11 +194,14 @@ def build_imodel_from_spec(
     contain_account_integrations: bool = False,
     workload: str = DEFAULT_WORKLOAD,
     ignore_user_config: bool = False,
+    tool_settings: dict[str, Any] | None = None,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden.
 
     ``ignore_user_config`` builds a codex request that loads no user config, so no
-    effort is derived from that config either.
+    effort is derived from that config either. ``tool_settings`` is a profile's tool set
+    (``_profile_tool_settings``): it goes on a Claude Code request, and any other model is
+    refused.
     """
     ms = parse_model_spec(spec)
     effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
@@ -197,7 +260,7 @@ def build_imodel_from_spec(
         elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
             # agy (Antigravity CLI) has no effort kwarg — fold effort into the
             # resolved --model name instead (see resolve_agy_model).
-            from lionagi.providers.google.gemini_code import resolve_agy_model
+            from lionhub.providers.google.gemini_code import resolve_agy_model
 
             bare_model = ms.model.split("/", 1)[1] if "/" in ms.model else ms.model
             resolved_model = f"{provider_raw}/{resolve_agy_model(bare_model, effort=effort)}"
@@ -225,6 +288,10 @@ def build_imodel_from_spec(
             _add_codex_account_integration_kwargs(
                 endpoint.config.kwargs, account_connectors, contain_account_integrations
             )
+    if tool_settings:
+        _add_claude_tool_kwargs(
+            model_instance.endpoint.config.kwargs, model_instance.endpoint, tool_settings
+        )
     if workload != DEFAULT_WORKLOAD:
         endpoint = model_instance.endpoint
         _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
@@ -245,12 +312,15 @@ def build_chat_model(
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
     workload: str = DEFAULT_WORKLOAD,
+    tool_settings: dict[str, Any] | None = None,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
 
     Returns the bare spec string only when no flag is set and no effort was
     given or derived (a codex request may derive one from the global config);
-    any such setting needs an iModel to carry it.
+    any such setting needs an iModel to carry it. ``tool_settings`` is a profile's tool
+    set (``_profile_tool_settings``): it goes on a Claude Code request, and any other model
+    is refused.
     """
     from lionagi.service.connections.registry import EndpointRegistry
 
@@ -276,10 +346,11 @@ def build_chat_model(
 
         # Whether/how this provider accepts a server set (e.g. codex via config
         # overrides) is decided by apply_forwarded_mcp_servers, not here. An
-        # empty set means the caller states the whole set; non-empty adds to
-        # whatever the provider finds for itself. `mcp_exclusive` says the
-        # caller's set is the whole set even when it is null: `--no-mcp-config`
-        # arrives as the same null as a search that found nothing.
+        # empty set means the caller states the whole set; a non-empty set adds
+        # to whatever the provider finds for itself. `mcp_exclusive` says the
+        # caller's set is the whole set: a config file named with `--mcp-config`,
+        # or `--no-mcp-config`, which arrives as the same null as a search that
+        # found nothing.
         apply_forwarded_mcp_servers(
             extra,
             mcp_servers,
@@ -316,7 +387,7 @@ def build_chat_model(
         elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
             # agy (Antigravity CLI) has no effort kwarg — fold effort into the
             # resolved --model name instead (see resolve_agy_model).
-            from lionagi.providers.google.gemini_code import resolve_agy_model
+            from lionhub.providers.google.gemini_code import resolve_agy_model
 
             model = resolve_agy_model(model, effort=effort)
 
@@ -328,7 +399,7 @@ def build_chat_model(
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
 
-    if extra or workload != DEFAULT_WORKLOAD:
+    if extra or workload != DEFAULT_WORKLOAD or tool_settings:
         model_instance = iModel(
             provider=provider,
             endpoint="query_cli",
@@ -336,6 +407,10 @@ def build_chat_model(
             api_key="dummy",
             **extra,
         )
+        if tool_settings:
+            _add_claude_tool_kwargs(
+                model_instance.endpoint.config.kwargs, model_instance.endpoint, tool_settings
+            )
         if workload != DEFAULT_WORKLOAD:
             endpoint = model_instance.endpoint
             _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
@@ -569,6 +644,8 @@ class AgentProfile:
     contain_user_settings: bool = False
     """Run a Claude flow or fan-out worker of this role with no settings files read, so the
     operator's hooks and permission rules do not gate it; see ``_contain_claude_worker``."""
+    mcp: str | None = None
+    """MCP policy for this profile; ``none`` disables inherited MCP configuration."""
 
 
 class AgentProfileNotFoundError(FileNotFoundError):
@@ -668,6 +745,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["workload"] = profile.workload
     if profile.contain_user_settings:
         config["contain_user_settings"] = True
+    if profile.mcp is not None:
+        config["mcp"] = profile.mcp
     return config
 
 
@@ -875,6 +954,129 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
     return DEFAULT_WORKLOAD
 
 
+def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
+    """Read the profile MCP policy without silently ignoring an invalid declaration."""
+    if "mcp" not in frontmatter:
+        return None
+    raw = frontmatter["mcp"]
+    if isinstance(raw, str) and raw == "none":
+        return raw
+    raise ConfigurationError(f"agent profile {name!r}: mcp must be 'none'")
+
+
+def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
+    """Refuse an unreadable or ambiguous MCP declaration without changing other settings."""
+    if not text.startswith("---"):
+        return
+
+    import yaml
+
+    from lionagi.libs.frontmatter import _FM_SPLIT
+
+    def unreadable_yaml_has_sensitive_text(block: str) -> bool:
+        # In unreadable YAML, no fragment can be reliably identified as a key
+        # or value. Refuse either signal even in comments or scalar text.
+        return "mcp" in block.lower() or "\\" in block
+
+    def readable_yaml_has_mcp_key(block: str) -> bool:
+        # An unclosed frontmatter block can itself be readable YAML. Preserve
+        # its existing key-token behavior, including anchors and aliases.
+        anchors: dict[str, str] = {}
+        expecting_key = False
+        pending_anchor = None
+        try:
+            for token in yaml.scan(block, Loader=yaml.SafeLoader):
+                if isinstance(token, yaml.AnchorToken):
+                    pending_anchor = token.value
+                elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
+                    anchors[pending_anchor] = token.value
+                    pending_anchor = None
+                elif pending_anchor is not None and not isinstance(token, yaml.TagToken):
+                    pending_anchor = None
+                if isinstance(token, yaml.KeyToken):
+                    expecting_key = True
+                elif expecting_key and isinstance(token, yaml.ScalarToken):
+                    expecting_key = False
+                    if token.value == "mcp":
+                        return True
+                elif expecting_key and isinstance(token, yaml.AliasToken):
+                    expecting_key = False
+                    if anchors.get(token.value) == "mcp":
+                        return True
+                elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
+                    expecting_key = False
+        except yaml.YAMLError:
+            return False
+        return False
+
+    parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
+    if len(parts) < 3:
+        block = text[3:]
+        try:
+            yaml.safe_load(block)
+        except (yaml.YAMLError, RecursionError):
+            sensitive = unreadable_yaml_has_sensitive_text(block)
+        else:
+            sensitive = readable_yaml_has_mcp_key(block)
+        if sensitive:
+            raise ConfigurationError(
+                f"agent profile {name!r}: frontmatter with mcp text or a backslash has no "
+                "closing ---; add a closing --- after the settings or remove the opening ---"
+            )
+        return
+    block = parts[1]
+    try:
+        # Check construction as well as syntax: an unsupported YAML tag can
+        # otherwise make the ordinary frontmatter reader discard the block.
+        yaml.safe_load(block)
+        root = yaml.compose(block, Loader=yaml.SafeLoader)
+    except (yaml.YAMLError, RecursionError):
+        if unreadable_yaml_has_sensitive_text(block):
+            raise ConfigurationError(
+                f"agent profile {name!r}: frontmatter could not be parsed (invalid YAML); "
+                "it mentions mcp or contains a backslash; fix the YAML to proceed"
+            ) from None
+        return
+
+    def contains_mcp_key(node: Any) -> bool:
+        pending = [node]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if isinstance(current, yaml.MappingNode):
+                for key, value in current.value:
+                    if isinstance(key, yaml.ScalarNode) and key.value == "mcp":
+                        return True
+                    pending.extend((key, value))
+            elif isinstance(current, yaml.SequenceNode):
+                pending.extend(current.value)
+        return False
+
+    # A profile frontmatter must be a mapping. Other YAML shapes are normally
+    # ignored, but ignoring one that contains this policy could remove it.
+    if not isinstance(root, yaml.MappingNode) and contains_mcp_key(root):
+        raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
+
+    def declarations(node: Any, path: frozenset[int]) -> int:
+        if not isinstance(node, yaml.MappingNode) or id(node) in path:
+            return 0
+        path = path | {id(node)}
+        total = 0
+        for key, value in node.value:
+            if key.tag == "tag:yaml.org,2002:merge":
+                sources = value.value if isinstance(value, yaml.SequenceNode) else [value]
+                total += sum(declarations(source, path) for source in sources)
+            elif isinstance(key, yaml.ScalarNode) and key.value == "mcp":
+                total += 1
+        return total
+
+    if declarations(root, frozenset()) > 1:
+        raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
+
+
 _CONTAIN_KEY = "contain_user_settings"
 # A line that sets the flag as a key, in a mapping or a list item, quoted or not.
 _FLAG_KEY_LINE = re.compile(rf"^[ \t]*(?:-[ \t]+)*[\"']?{_CONTAIN_KEY}[\"']?[ \t]*:", re.M)
@@ -974,8 +1176,17 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     def read(block: str) -> tuple[bool, Any]:
         try:
             return True, yaml.safe_load(block)
-        except yaml.YAMLError:
+        except (yaml.YAMLError, RecursionError):
             return False, None
+
+    def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
+        if (reads and isinstance(document, dict) and "mcp" in document) or (
+            not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M)
+        ):
+            raise ConfigurationError(
+                f"agent profile {name!r}: the --- block on line {line} follows prompt text "
+                "and its mcp declaration would be ignored; move the block to the top"
+            )
 
     if text.startswith("---"):
         try:
@@ -1020,10 +1231,12 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                     continue
                 if _DASHES.fullmatch(line.rstrip()):
                     delimiters.append(i)
+            warned_containment = False
             for opening, end in pairwise([*delimiters, len(lines)]):
                 block = "\n".join(lines[opening + 1 : end])
                 reads, document = read(block)
-                if (
+                refuse_misplaced_mcp(block, reads, document, opening + 1)
+                if not warned_containment and (
                     _FLAG_KEY_LINE.search(block)
                     or (reads and isinstance(document, dict) and _contain_flag_values(block))
                     or (not reads and _CONTAIN_KEY in block)
@@ -1034,7 +1247,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                         "in the block applies; its worker is not contained, though the block "
                         "names contain_user_settings"
                     )
-                    break
+                    warned_containment = True
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
         # the next ``---`` line or, unclosed, to the end.
@@ -1042,6 +1255,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
         block = "\n".join(rest if closing is None else rest[:closing])
         reads, document = read(block)
+        refuse_misplaced_mcp(block, reads, document, 1)
         if reads and isinstance(document, dict):
             if not document:
                 return {}
@@ -1075,6 +1289,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
     ):
         start += 1
     text = text[start:]
+    _check_profile_mcp_frontmatter(name, text)
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:
         frontmatter = _settings_of_unread_frontmatter(name, text)
@@ -1140,6 +1355,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         ),
         workload=_parse_profile_workload(name, frontmatter.get("workload")),
         contain_user_settings=_parse_profile_contain_user_settings(name, frontmatter),
+        mcp=_parse_profile_mcp(name, frontmatter),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -1160,6 +1376,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "account_connectors",
                 "workload",
                 "contain_user_settings",
+                "mcp",
             )
         },
     )

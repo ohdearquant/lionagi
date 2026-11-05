@@ -180,6 +180,7 @@ async def _run_fanout(
     notify: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    mcp_submit_snapshot: str | None = None,
 ) -> tuple[str, str]:
     """Three-phase fan-out: decompose → fan out → synthesize.
 
@@ -189,7 +190,7 @@ async def _run_fanout(
     silently dropped in favour of a hardcoded success.
     """
     from lionagi._cli_worker_context import _bind_cli_worker_recorder
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     with contextlib.ExitStack() as _worker_spawn_bindings:
         _worker_spawn_bindings.enter_context(_bind_cli_worker_recorder(None))
@@ -223,6 +224,11 @@ async def _run_fanout(
             pack=pack,
             mcp_config=mcp_config,
             no_mcp_config=no_mcp_config,
+            **(
+                {"mcp_submit_snapshot": mcp_submit_snapshot}
+                if mcp_submit_snapshot is not None
+                else {}
+            ),
         )
         _shared: dict = {}
 

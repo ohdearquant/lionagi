@@ -86,10 +86,36 @@ bearer. That route requires an Origin in `CORS_ORIGINS` (checked before the code
 is spent); a code is bound to the origins the launcher named, works once, and
 expires after 120 seconds. The answer is the configured token when one is set,
 else the launch bearer, plus a decision capability bound to the page's origin
-(see below). The page keeps the bearer in memory only, so a reload loses it and
-the page then shows the access-required screen with `li studio` as the remedy;
-the capability is kept in `sessionStorage` for that tab, so it survives the
-reload and is gone with the tab.
+(see below). The answer also carries `token_source`: `"launch"` for the launch
+bearer, `"configured"` for the configured token.
+
+The page stores only a bearer identified as `"launch"` in `localStorage`,
+bound to the daemon's API base. A configured bearer, or one whose source is
+missing or unknown (including an answer from an older daemon), stays in
+`sessionStorage` for the tab. Browsers can copy session storage into a new
+window opened with an opener, or into a duplicated or restored tab. Same-origin
+pages in that tab family may hold a copy; pages on other origins cannot read it.
+If storage is unavailable, the bearer remains in memory for the current page
+load. Pairing with a configured or unknown-source
+bearer removes a local bearer for that same API base when storage permits. The
+page never reuses unmarked local bearers saved by older versions and removes them
+when storage permits because it cannot tell whether they are configured
+credentials; an already paired page must pair again once.
+
+Before the app mounts, the page checks a stored bearer with one authenticated
+request (`GET /api/casts/`). Only a 2xx answer mounts the app. The first 401, to
+that check or to a later request that carried it, clears that value; a bearer
+stored or paired since is kept. A restarted daemon draws a new launch bearer,
+so its first refusal sends the page back to the access-required screen with
+`li studio` as the remedy. Any other answer, or none within 15 seconds
+(`PAIRING_TIMEOUT_MS` in `apps/studio/frontend/src/lib/pairing.ts`), shows the
+same screen and keeps the stored bearer for Retry, as does an unreachable daemon.
+
+The launch bearer gates pages on other origins and stops working when the daemon
+restarts. A configured token is a long-lived operator credential, so the page
+keeps it only in the tab's session storage or memory. Scripts on the page's own
+origin can read storage, and the bearer is sent only to its paired API base. The
+decision capability is also kept in `sessionStorage` for the tab.
 
 **The reconnect socket** (`reconnect.py`) — a unix socket in a `studio/`
 directory beside the StateDB file, created with mode 0600 inside a 0700
@@ -109,6 +135,17 @@ right daemon from another port, is refused and `li studio` exits 1 without
 printing the code. It never stops a running daemon; on a platform without unix
 sockets it says to restart the daemon. A process running as the daemon's own OS user can obtain a
 code this way, which is outside what the HTTP-only guarantee covers.
+The HTTP requests `li studio` sends its daemon, the `li schedule` clients and the `li doctor` daemon check open a URL
+whose host is `localhost`, a 127.0.0.0/8 address or `::1` without any proxy
+(`open_url` in `lionagi/ln/_ssrf.py`): a proxy named in the environment or, on macOS,
+in the system settings cannot reach this machine's loopback interface, so with one
+configured a running daemon would read as absent. Other hosts keep the proxy settings, and
+a redirect from loopback to any other host is not followed.
+When nothing answers as a daemon, the hosted launch (`li studio` without `--no-frontend`,
+`--dev` or `--docker`) tries to bind its port once, the way the daemon will, before it
+mints a code: a port it cannot bind stops the launch with an error that names the cause,
+and no link is printed or opened. This is a probe at launch, not a reservation: another
+program can still take the port before the daemon binds.
 
 **Decision capabilities** (`launch_access.py`) — a page pairs with an admission
 bearer and, separately, a decision capability: a random 256-bit secret the
@@ -1522,13 +1559,21 @@ resolution time would let a race during that gap either write to a run that
 changed ownership or silently no-op in a way the caller couldn't
 distinguish from success.
 
-`cancel_run` additionally reuses `lionagi.cli.kill`'s exact primitives
-(`_kill_one`, `_list_running_children`) so a cancellation from the Operator
+`cancel_run` additionally reuses `lionagi.cli._kill_service`'s exact primitives
+(`kill_one`, `list_running_children`) so a cancellation from the Operator
 is indistinguishable from one issued through `li kill --recursive`: running
 children are signalled deepest-first so none are orphaned, and
 `_persist_cancel`'s guard against a non-`running` row means a race that lets
-the process finish naturally during the approval window degrades to
-`already_terminal` rather than a double- or wrong-run cancel. `resume_run`
+the same generation finish naturally degrades to `already_terminal` rather
+than a double cancel. A conflicting generation or rejected state update is
+reported as `not_stopped` with its reason and observed side effects. An
+indeterminate state-write failure reports an unknown `run_untouched` value.
+Process signalling
+waits off the Studio event loop. If the request task is cancelled while signalling,
+the command and its final audit finish before cancellation reaches the caller. Each
+target has its own TERM grace before escalation; the complete command has no fixed
+wall-clock bound because targets are processed in order and persistence can take time.
+`resume_run`
 is a distinct operation from un-pausing: the session lifecycle policy
 (`lionagi/state/lifecycle/policy.py`) has no edge back out of a terminal
 status such as `cancelled`, so resuming never reopens the old run's status —
@@ -1719,11 +1764,16 @@ Whether a *field name* itself means a credential is decided once, by
 copies of this rule used to exist, and a value under an `auth` key was
 withheld on some projections and served on others. `fold_field_name`
 normalizes separators first (`X-API-Key`, `api.key`, and `api_key` all fold
-to the same spelling) so the marker list only needs one spelling per
-concept. A short, closed set of names (`auth`, `authentication`, `bearer`)
-is matched by exact equality rather than substring, because those words
-also occur inside unrelated field names (`author`, `authorized_keys_count`)
-that must not be redacted. The free-text rule asks the same question: a
+to the same spelling); the marker list also includes run-together spellings
+such as `apikey`. The names `auth` and `authentication` match exactly unless
+another substring marker matches, so unrelated names such as `author` and
+`authorized_keys_count` stay visible. `bearer` is also a substring marker.
+HMAC-key and signing-key names are credential
+markers in separated, run-together and camel-case spellings, including as
+substrings. This catches `webhooksigningkey` and `signing_key2`, but also
+classifies `signing_keyword`, `hmac_keyboard`, `designing_key`, and
+`redesigning_key` as credentials.
+A bare `key` is not a marker. The free-text rule asks the same question: a
 `name=value` or `name: value` assignment in prose is matched generically and
 then judged by `is_secret_field_name`, so a name the mapping layer calls a
 credential cannot be one the prose layer serves. That gap was real —

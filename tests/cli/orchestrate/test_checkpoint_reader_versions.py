@@ -138,8 +138,8 @@ async def test_direct_run_resolution_rejects_unsupported_version(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_session_resolution_rejects_unsupported_version(tmp_path, monkeypatch):
+    import lionagi.cli._inspection as inspection_mod
     import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
-    import lionagi.cli.status as status_mod
     import lionagi.state.db as state_db
 
     _write_fixture(tmp_path, json.dumps(_base(3)))
@@ -161,8 +161,8 @@ async def test_session_resolution_rejects_unsupported_version(tmp_path, monkeypa
         return {"id": "session-id", "node_metadata": {"run_id": _RUN_ID}}
 
     monkeypatch.setattr(state_db, "StateDB", FakeStateDB)
-    monkeypatch.setattr(status_mod, "_resolve_any_target", resolve_any)
-    monkeypatch.setattr(status_mod, "_resolve_primary_session", resolve_primary)
+    monkeypatch.setattr(inspection_mod, "resolve_any_target", resolve_any)
+    monkeypatch.setattr(inspection_mod, "resolve_primary_session", resolve_primary)
     with pytest.raises(FlowResumeError):
         await resolve_checkpoint_target("session-id")
 

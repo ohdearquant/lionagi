@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,7 +16,9 @@ from typing import TYPE_CHECKING, Any
 import anyio
 from pydantic import JsonValue
 
+from lionagi._provider_errors import WorkerLivenessError, classify_provider_error
 from lionagi.ln import acreate_path, json_dumps
+from lionagi.ln._json_dump import _to_json_value
 from lionagi.ln.concurrency import current_time, fail_after, run_sync
 from lionagi.models.note import Note
 from lionagi.protocols.messages import (
@@ -24,9 +27,11 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
-from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
-from lionagi.providers._subagent_admission import _on_subagent_admission
+from lionagi.service._subagent_admission import _on_subagent_admission
 from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
+from lionagi.service.connections import AgenticEndpoint
+from lionagi.service.connections.agentic_endpoint import _UNHELD_SESSION_TEXT
+from lionagi.service.types.stream_chunk import StreamChunk
 
 from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
 from .._turn_origin import consume_turn_origin
@@ -67,15 +72,68 @@ async def _write_branch_snapshot(branch: Branch, snapshot_dir: str | Path) -> No
     await run_sync(partial(os.replace, str(tmp_fp), str(fp)))
 
 
-async def _append_chunk(buffer_path, chunk) -> None:
-    """Append one streamed chunk to the live JSONL buffer.
+def _buffer_text(value: Any) -> str | None:
+    """Extract a plain string without invoking a subclass's conversion hook."""
+    return str.__str__(value) if isinstance(value, str) else None
 
-    A non-finite float is refused here rather than written as `null`, which
-    a replay reader can't tell apart from a genuine null.
-    """
-    line = json_dumps(chunk.to_dict(), check_non_finite=True) + "\n"
+
+def _buffer_mapping_get(value: Any, key: str) -> Any:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        return dict.get(value, key) if isinstance(value, dict) else value.get(key)
+    except Exception:
+        return None
+
+
+async def _append_chunk(buffer_path, chunk) -> None:
+    """Append a strict JSON projection, retaining text if serialization fails."""
+    payload = None
+    try:
+        payload = chunk if isinstance(chunk, StreamChunk) else chunk.to_dict()
+        projected = _to_json_value(payload)
+        if isinstance(chunk, StreamChunk):
+            projected["_lionagi_stream_chunk"] = True
+        line = json_dumps(projected)
+    except Exception as exc:
+        nonfinite = (
+            type(exc) is ValueError
+            and exc.args
+            and type(exc.args[0]) is str
+            and exc.args[0].startswith("cannot serialize non-finite float at ")
+        )
+        failure = "non-finite float" if nonfinite else "unserializable value"
+        if isinstance(chunk, StreamChunk):
+            kind = _buffer_text(chunk.type) or "error"
+            content = _buffer_text(chunk.content) or ""
+            fallback = {
+                "_lionagi_stream_chunk": True,
+                "type": kind,
+                "content": content,
+                "serialization_error": failure,
+            }
+        else:
+            data = payload if isinstance(payload, Mapping) else {}
+            if payload is None:
+                # A failing legacy adapter may still expose its text directly.
+                # Read only these fields and never call its serializer again.
+                for name in ("content", "text"):
+                    try:
+                        value = getattr(chunk, name, None)
+                    except Exception:
+                        value = None
+                    if (value := _buffer_text(value)) is not None:
+                        data[name] = value
+            text = _buffer_text(_buffer_mapping_get(data, "content"))
+            if text is None:
+                text = _buffer_text(_buffer_mapping_get(data, "text"))
+            if text is None:
+                text = _buffer_text(_buffer_mapping_get(_buffer_mapping_get(data, "delta"), "text"))
+            text = text or ""
+            fallback = {"text": text, "serialization_error": failure}
+        line = json.dumps(fallback, ensure_ascii=True, separators=(",", ":"))
     async with await anyio.open_file(buffer_path, "a") as f:
-        await f.write(line)
+        await f.write(line + "\n")
 
 
 async def _stream_with_deadline(model, api_call, deadline: float | None):
@@ -207,7 +265,7 @@ async def _stream_with_liveness(
                 is_liveness_boundary, wait_for = first_output_bound(current_time())
 
                 def _time_from_admission(admitted: bool) -> None:
-                    # Called by the CLI spawn (lionagi.providers._subagent_admission, through
+                    # Called by the CLI spawn (lionagi.service._subagent_admission, through
                     # the context set below) when a worker starts waiting for a machine-wide
                     # slot and when it is admitted. Only the caller's own deadline runs during
                     # the wait; the window for the first output opens at admission, and so does
@@ -334,6 +392,100 @@ async def _stream_with_liveness(
                         close_exc,
                     )
             return
+
+
+async def _stream_resending_unheld_session(
+    model,
+    kw: dict,
+    stream_deadline: float | None,
+    liveness_timeout: float | None,
+    api_call_holder: list,
+    *,
+    idle_timeout: float | None = None,
+) -> AsyncGenerator:
+    """``_stream_with_liveness``, with one more send for a restored session the CLI does not hold.
+
+    A turn that resumes a session carries only its new instruction. A branch restored from a
+    snapshot resumes the id the snapshot stored, which no stream in this process has reported,
+    and the CLI keeps its sessions on its own disk, which a saved branch outlives: it can refuse
+    that id before producing any output. The branch still holds the whole history in
+    ``kw["messages"]``, so the turn is sent once more with no id and that history. The endpoint
+    drops the refused id, so the session the CLI starts for the second send, which its first
+    event reports, is the one later turns resume. A refusal of an id a stream in this process
+    reported is raised as it is, and so is any other failure and a failure of the second send.
+
+    While the first send can still be refused, its chunks are held until one is neither a usage
+    ``result`` nor an ``error``, then released in order. A refused send reaches neither the branch,
+    the stream buffer nor this generator's consumer; the model's per-chunk hooks do see its chunks.
+    """
+    endpoint = model.endpoint
+    # The id the turn resumes must be the one the model holds, which run() sets ``kw["resume"]``
+    # from, and no stream in this process may have reported it.
+    restored = (
+        isinstance(endpoint, AgenticEndpoint)
+        and kw.get("resume") is not None
+        and endpoint.reported_session_id is None
+        and model.provider_session_id == kw["resume"]
+    )
+    for attempt in range(2):
+        holding = attempt == 0 and restored
+        held: list = []
+        stream = _stream_with_liveness(
+            model,
+            kw,
+            stream_deadline,
+            liveness_timeout,
+            api_call_holder,
+            idle_timeout=idle_timeout,
+        )
+        refused = False
+        try:
+            async for chunk in stream:
+                if holding:
+                    if chunk.type == "error" and _UNHELD_SESSION_TEXT in str(chunk.content).lower():
+                        refused = True
+                        break
+                    held.append(chunk)
+                    if chunk.type in ("result", "error"):
+                        continue
+                    holding = False
+                    while held:
+                        yield held.pop(0)
+                    continue
+                yield chunk
+        except Exception as exc:
+            if not (holding and _UNHELD_SESSION_TEXT in str(exc).lower()):
+                # Not a refusal: what the send produced before it failed is still its output.
+                while held:
+                    yield held.pop(0)
+                raise
+            refused = True
+        finally:
+            _unwinding = sys.exc_info()[1] is not None
+            try:
+                await stream.aclose()
+            except Exception as close_exc:
+                logger.debug("run: resend stream.aclose() raised during cleanup: %r", close_exc)
+            except BaseException as close_exc:
+                if not _unwinding:
+                    raise
+                logger.debug(
+                    "run: resend stream.aclose() raised %r while another exception was "
+                    "already propagating; suppressing the secondary cleanup failure",
+                    close_exc,
+                )
+        if not refused:
+            # The send ended with only result and error chunks held.
+            while held:
+                yield held.pop(0)
+            return
+        logger.warning(
+            "run: the CLI holds no session for the saved id; sending the turn again with the "
+            "whole history"
+        )
+        kw.pop("resume", None)
+        endpoint.session_id = None
+        api_call_holder.clear()
 
 
 # Result-chunk metadata fields some CLI providers (codex) emit as a per-turn
@@ -500,7 +652,6 @@ async def run(
 
         model = branch.chat_model
         endpoint = model.endpoint
-        prev_stream_func = model.streaming_process_func
         bfp = None
 
         if param.stream_persist:
@@ -512,23 +663,9 @@ async def run(
 
             bfp = await acreate_path(
                 param.persist_dir,
-                str(branch.id) + ".buffer",
-                ".jsonl",
+                str(branch.id) + ".buffer.jsonl",
                 file_exist_ok=True,
             )
-
-            async def _persist_chunk(chunk):
-                if hasattr(chunk, "to_dict"):
-                    await _append_chunk(bfp, chunk)
-                if prev_stream_func is not None:
-                    from lionagi.ln import is_coro_func
-
-                    if is_coro_func(prev_stream_func):
-                        return await prev_stream_func(chunk)
-                    return prev_stream_func(chunk)
-                return None
-
-            model.streaming_process_func = _persist_chunk
 
         thinking_parts: list[str] = []
         text_parts: list[str] = []
@@ -575,7 +712,7 @@ async def run(
 
         request_model = getattr(endpoint, "_request_model", None)
         if request_model is not None:
-            from lionagi.providers.google.gemini_code import (
+            from lionhub.providers.google.gemini_code import (
                 GeminiCodeRequest,
                 derive_print_timeout,
                 format_print_timeout,
@@ -622,7 +759,7 @@ async def run(
         _api_call_holder: list = []
         await emit_api_pre_call(branch, model)
         _api_call_started = True
-        stream_gen = _stream_with_liveness(
+        stream_gen = _stream_resending_unheld_session(
             model,
             kw,
             _stream_deadline,
@@ -654,7 +791,14 @@ async def run(
 
         try:
             try:
+                if bfp is not None:
+                    async with await anyio.open_file(bfp, "w"):
+                        pass
                 async for chunk in stream_gen:
+                    # The buffer holds the chunks this loop reads, so a send the stream
+                    # discards (see _stream_resending_unheld_session) never reaches it.
+                    if bfp is not None:
+                        await _append_chunk(bfp, chunk)
                     if branch._hooks is not None:
                         await emit_api_stream_chunk(branch, model, chunk)
                     match chunk.type:
@@ -771,7 +915,7 @@ async def run(
                 # ProviderError is a RuntimeError subclass — avoid double-wrapping; re-raise if already classified.
                 # A write the store refused in compatibility mode is no provider failure, and keeps
                 # its type (ADR-0128 D6).
-                from lionagi.providers._provider_errors import ProviderError
+                from lionagi._provider_errors import ProviderError
                 from lionagi.state.compat import StateCompatibilityRefused
 
                 if isinstance(_exc, (ProviderError, StateCompatibilityRefused)):
@@ -790,7 +934,6 @@ async def run(
             # catch) — preserve whatever exception is already propagating instead
             # of letting a secondary cleanup failure replace it.
             await _close_stream_gen()
-            model.streaming_process_func = prev_stream_func
             if param.stream_persist:
                 snapshot_dir = param.snapshot_dir or param.persist_dir
                 await _write_branch_snapshot(branch, snapshot_dir)

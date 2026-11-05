@@ -524,7 +524,7 @@ _PREPARE = "lionagi/operations/chat/_prepare.py"
 _CONTEXT = "lionagi/tools/context/context.py"
 _BRANCH = "lionagi/session/branch.py"
 _PROVIDERS = "lionagi/protocols/context_providers.py"
-_CODEX = "lionagi/providers/openai/codex.py"
+_CODEX = "lionhub/src/lionhub/providers/openai/codex.py"
 _TYPES = "lionagi/operations/types.py"
 _INSTRUCTION = "lionagi/protocols/messages/instruction.py"
 _PREPARE_MSGS = "lionagi/protocols/messages/prepare.py"
@@ -537,22 +537,22 @@ def test_the_two_refusals_on_the_active_path_are_where_cited() -> None:
         408,
         'raise ValueError("First message in progression must be an Instruction or System")',
     )
-    _in_span(_PREPARE, 527, 540, "raise EmptyOutgoingContentError(")
+    _in_span(_PREPARE, 561, 574, "raise EmptyOutgoingContentError(")
 
 
 def test_the_empty_content_guard_tests_the_current_turn() -> None:
     _in_span(_PREPARE, 450, 451, "_current_turn_rendered = None")
-    _in_span(_PREPARE, 491, 492, "if i == _last_index:", "_current_turn_rendered = rendered")
+    _in_span(_PREPARE, 496, 497, "if i == _last_index:", "_current_turn_rendered = rendered")
     _in_span(
         _PREPARE,
-        527,
-        540,
+        561,
+        574,
         "if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered",
     )
     _in_span(
         _PREPARE,
-        581,
-        594,
+        618,
+        631,
         "def _has_real_instruction_text(content) -> bool:",
         "Deliberately ignores ``guidance``/``prompt_context``",
     )
@@ -596,20 +596,20 @@ def test_compaction_path_replaces_a_span_with_one_summary() -> None:
 
 
 def test_codex_omission_markers_are_the_three_cited_shapes() -> None:
-    _in_span(_CODEX, 2731, 2734, "[output truncated:", "characters omitted here]")
-    _in_span(_CODEX, 2853, 2856, "items not shown]")
-    _in_span(_CODEX, 2885, 2890, 'note = "[omitted]"', "keys not shown")
+    _in_span(_CODEX, 2929, 2932, "[output truncated:", "characters omitted here]")
+    _in_span(_CODEX, 3051, 3054, "items not shown]")
+    _in_span(_CODEX, 3083, 3088, 'note = "[omitted]"', "keys not shown")
     # The file-change echo repeats the mapping's shape; its payload is the
     # ``{"omitted": ...}`` entry the amendment now names as its own shape.
-    _in_span(_CODEX, 2945, 2948, '{"omitted":', "changes not shown")
+    _in_span(_CODEX, 3143, 3146, '{"omitted":', "changes not shown")
 
 
 def test_amendment_counts_three_codex_marker_shapes_and_cites_each() -> None:
     normalized = _normalized(_amendment_body())
     assert "in three shapes" in normalized
-    for cited in (":2731-2734", ":2853-2856", ":2885-2890"):
+    for cited in (":2929-2932", ":3051-3054", ":3083-3088"):
         assert cited in normalized, f"{cited} is not cited for its marker shape"
-    assert ":2945-2948" in normalized
+    assert ":3143-3146" in normalized
     # The fourth site is the same mapping shape, said so, not a fourth shape.
     assert "A fourth site repeats the mapping's shape rather than adding a new one" in normalized
     # The ``{"omitted": ...}`` entry the file-change echo appends is described as its
@@ -658,7 +658,7 @@ def test_react_context_removal_is_listed_in_the_starting_state() -> None:
 
 
 def test_the_file_change_echo_call_site_is_where_cited() -> None:
-    _in_span(_CODEX, 3134, 3134, "_bounded_changes(changes)")
+    _in_span(_CODEX, 3332, 3332, "_bounded_changes(changes)")
 
 
 def test_amendment_cites_the_value_error_guard_by_line() -> None:
@@ -682,7 +682,9 @@ def test_the_active_prepare_path_is_still_the_one_cited() -> None:
     _in_span(_PREPARE, 208, 208, "context_blocks: Sequence[str] | None = None")
     _in_span(_PREPARE, 391, 392, 'injected = "\\n".join(context_blocks) if context_blocks else ""')
     _in_span(_PREPARE, 232, 233, "ins.metadata[_TURN_CONTEXT] = list(context_blocks)")
-    _in_span(_PREPARE, 495, 496, "rendered = _with_context(rendered, entry.context)")
+    _in_span(_PREPARE, 529, 530, "rendered = _with_context(rendered, entry.context)")
+    _in_span(_PREPARE, 576, 577, "if needs_block_fold and pending_blocks.strip():")
+    _in_span(_PREPARE, 576, 577, 'chat_msgs.append({"role": "user", "content": pending_blocks})')
     _in_span(_PREPARE, 323, 328, "_collect_action_dicts(_act_res, projection)")
     _in_span(
         _PREPARE,
@@ -691,7 +693,7 @@ def test_the_active_prepare_path_is_still_the_one_cited() -> None:
         "current.with_updates(prompt_context=extended_ctx)",
     )
     _in_span("lionagi/operations/chat/chat.py", 68, 68, "_prepare_run_kwargs(")
-    _in_span("lionagi/operations/run/run.py", 484, 484, "_prepare_run_kwargs(")
+    _in_span("lionagi/operations/run/run.py", 636, 636, "_prepare_run_kwargs(")
     _in_span(_PREPARE_MSGS, 100, 100, "def prepare_messages_for_chat(")
 
 
@@ -709,7 +711,7 @@ def test_the_registry_and_counters_are_where_cited() -> None:
         '"writeback_failed": 0,',
     )
     _in_span(_BRANCH, 298, 310, "def last_context_report(self):", "``skipped``")
-    _in_span("lionagi/cli/monitor.py", 669, 680, '"blocks_injected",')
+    _in_span("lionagi/cli/monitor.py", 730, 741, '"blocks_injected",')
 
 
 def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
@@ -722,21 +724,21 @@ def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
     )
     _in_span(
         "lionagi/service/token_budget.py",
-        78,
-        78,
-        "def lookup_context_window(model_name: str, provider: str | None = None) -> int:",
+        18,
+        18,
+        "def lookup_context_window(",
     )
     _in_span(
         "lionagi/service/token_budget.py",
-        118,
-        137,
+        72,
+        99,
         "def get_context_window(branch: Branch) -> int:",
-        "return lookup_context_window(model_name, provider)",
+        "return lookup_context_window(",
     )
     _in_span(
         "lionagi/service/token_budget.py",
-        140,
-        140,
+        102,
+        102,
         "def get_token_budget(branch: Branch)",
     )
     _in_span("lionagi/agent/nudge.py", 207, 207, "get_token_budget(self.branch)")

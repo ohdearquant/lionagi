@@ -12,10 +12,140 @@ from __future__ import annotations
 
 import pytest
 
+from lionagi.adapters._base import _redact_url
 from lionagi.studio.operator import redact
+from lionagi.studio.operator.application_mcp import _safe_content
 
 NO_KNOWN_VALUES: frozenset[str] = frozenset()
 SECRET = "s3cr3t-value-abc123def456"
+
+
+# A value the shape heuristic and the known env values cannot catch, so each
+# test below can only be answered by the name the value sits under.
+SIGNING_KEY_VALUE = "opaque/value=="
+SIGNING_KEY_NAMES = [
+    "LIONAGI_STUDIO_EVIDENCE_HMAC_KEY",
+    "hmac-key",
+    "hmacKey",
+    "SIGNING_KEY",
+    "signing-key",
+    "signingKey",
+    "my_signing_key_id",
+    "mySigningKeyValue",
+    "myHMACKeyBase64",
+    "signingKeyValue",
+    "hmacKeyBase64",
+    "SIGNINGKEY",
+    "SIGNING_KEY_ID",
+    "signing_keys",
+    "hmac_keys",
+    "signing_key2",
+    "SigningKey2",
+    "mysigningkey",
+    "webhooksigningkey",
+    "MYSIGNINGKEY",
+    "signing_keyword",
+    "hmac_keyboard",
+    "signingkeyvalue",
+    "deSigningKey",
+    "designingkey",
+    "designing_key",
+    "redesigning_key",
+    "RedesigningKey",
+    "codesigningkey",
+    "codesigning_key",
+    "code_signing_key",
+    "nodesigningkey",
+    "nodesigning_key",
+    "node_signing_key",
+]
+
+
+def test_the_signing_key_value_is_invisible_to_the_shape_rule():
+    """Guards the signing-key tests below: if the shape rule ever starts
+    catching this value they still pass, but stop being about the name."""
+    assert not redact._looks_like_secret_value(SIGNING_KEY_VALUE)
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_classified_as_credentials(name):
+    assert redact.is_secret_field_name(name)
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_withheld_in_mappings(name):
+    assert redact.redact_scalar(name, SIGNING_KEY_VALUE) == "[redacted]"
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_withheld_in_free_text(name):
+    assert (
+        redact.scrub_text(f"{name}={SIGNING_KEY_VALUE}", known_values=NO_KNOWN_VALUES)
+        == f"{name}=[redacted]"
+    )
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_withheld_in_adapter_urls(name):
+    assert _redact_url(f"https://example.com/?{name}=opaque-value&safe=visible") == (
+        f"https://example.com/?{name}=***&safe=visible"
+    )
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_in_the_environment_become_known_secrets(name, monkeypatch):
+    monkeypatch.setenv(name, SIGNING_KEY_VALUE)
+    assert SIGNING_KEY_VALUE in redact.known_secret_values()
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_withheld_in_tool_content(name):
+    assert _safe_content({name: {"value": SIGNING_KEY_VALUE}}) == {name: "[redacted]"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "sort_key",
+        "cache_key",
+        "primary_key",
+        "key",
+    ],
+)
+def test_unrelated_key_names_remain_visible(name):
+    assert not redact.is_secret_field_name(name)
+    assert redact.redact_scalar(name, "visible") == "visible"
+    assert redact.scrub_text(f"{name}=visible", known_values=NO_KNOWN_VALUES) == f"{name}=visible"
+    assert _safe_content({name: {"value": "visible"}}) == {name: {"value": "visible"}}
+
+
+@pytest.mark.parametrize("name", ["sort_key", "cache_key", "primary_key"])
+def test_unrelated_key_query_parameters_remain_visible_in_urls(name):
+    url = f"https://example.com/?{name}=visible"
+    assert _redact_url(url) == url
+
+
+def test_bare_key_query_parameter_is_reserved_in_urls():
+    # Adapter URLs reserve the bare query parameter "key" independently of the field-name rule.
+    assert _redact_url("https://example.com/?key=visible") == "https://example.com/?key=***"
+
+
+def test_known_signing_key_value_is_scrubbed_when_echoed(monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", SIGNING_KEY_VALUE)
+    assert redact.scrub_text(f"echo {SIGNING_KEY_VALUE}") == "echo [redacted]"
+
+
+@pytest.mark.parametrize(
+    ("name", "folded"),
+    [("accessKey", "accesskey"), ("X-API.Key", "x_api_key"), ("SigningKey2", "signingkey2")],
+)
+def test_fold_field_name_keeps_its_existing_case_and_separator_contract(name, folded):
+    assert redact.fold_field_name(name) == folded
+
+
+@pytest.mark.parametrize("name", ["privateMode", "authorName", "clientService", "apiaryKey"])
+def test_camel_case_names_outside_the_markers_remain_visible(name):
+    assert not redact.is_secret_field_name(name)
 
 
 def _scrub(text: str) -> str:

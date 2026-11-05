@@ -526,6 +526,37 @@ async def test_advance_chains_no_declared_action_resolves_without_grace(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,status,exit_code", [("on_success", "completed", 0), ("on_fail", "failed", 1)]
+)
+@pytest.mark.parametrize(
+    "action,usable",
+    [
+        ("legacy", False),
+        ({"kind": "unknown"}, False),
+        ({"kind": 7}, False),
+        ({"kind": None, "action_kind": "agent"}, False),
+        ({"kind": "agent", "action_kind": "unknown"}, True),
+        ({"action_kind": "playbook"}, True),
+        ({"prompt": "next"}, True),
+    ],
+)
+async def test_advance_chains_waits_only_for_usable_selected_action(
+    temp_db_path: Path, action, usable, field, status, exit_code
+) -> None:
+    async with StateDB() as db:
+        schedule_id = await _make_schedule(db, **{field: action})
+        run_id = await _make_schedule_run(db, schedule_id, status=status, exit_code=exit_code)
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        chain_state = _new_chain_state(pending, chain=True)
+
+        await _chain_tick(db, pending, [], chain_state, 0)
+
+    assert (run_id in chain_state["awaiting_grace"]) is usable
+    assert (run_id in chain_state["resolved_roots"]) is not usable
+
+
+@pytest.mark.asyncio
 async def test_advance_chains_grace_expires_without_child_resolves_on_parent_exit_code(
     temp_db_path: Path,
 ) -> None:
@@ -1669,8 +1700,8 @@ async def test_dispatch_wait_follows_linked_engine_session_to_completion(
     session was alive but not yet terminal) must resolve via the linked
     engine row's status, not hang on its own frozen 'running' column."""
     from lionagi import Branch
+    from lionagi._provider_errors import ProviderError
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
-    from lionagi.providers._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333333"
@@ -1735,8 +1766,8 @@ async def test_dispatch_wait_persists_reconciled_status_to_profile_row(
 ) -> None:
     """`li monitor run` resolving a profile session via its linked engine row must PERSIST the reconciled terminal status through StateDB.update_status(), not just synthesize it in memory for this one call, so the profile session's own DB row doesn't stay stuck at 'running' forever."""
     from lionagi import Branch
+    from lionagi._provider_errors import ProviderError
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
-    from lionagi.providers._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333334"
@@ -1794,8 +1825,8 @@ async def test_dispatch_wait_reconciliation_never_flips_an_already_terminal_row(
     (the terminal row is authoritative) instead of crashing on the
     rejected transition."""
     from lionagi import Branch
+    from lionagi._provider_errors import ProviderError
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
-    from lionagi.providers._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333335"
@@ -1905,8 +1936,8 @@ async def test_effective_session_status_cas_mismatch_reports_persisted_status(
     ignore that `False` and fall through to the synthesized linked-engine
     status; it must re-read and report the persisted row instead."""
     from lionagi import Branch
+    from lionagi._provider_errors import ProviderError
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
-    from lionagi.providers._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333336"

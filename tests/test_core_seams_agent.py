@@ -87,10 +87,10 @@ def test_secret_settings_resolution_keeps_agent_unloaded_in_a_fresh_process(
 
         before = agent_modules()
         assert before == [], before
-        from lionagi.providers import _secret_resolution
+        from lionagi.service.accounts import _secret_resolution
 
         assert Path(_secret_resolution.__file__).resolve() == (
-            root / "lionagi/providers/_secret_resolution.py"
+            root / "lionagi/service/accounts/_secret_resolution.py"
         )
         assert agent_modules() == []
         result = _secret_resolution.resolve_secret_lookup_config(settings=None)

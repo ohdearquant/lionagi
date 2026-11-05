@@ -250,7 +250,7 @@ def test_mirror_offsets_refuse_non_finite(tmp_path, monkeypatch):
     The offset is this module's own arithmetic, but the tool-name map comes out
     of a transcript another program wrote and is never coerced to ``str``.
     """
-    from lionagi.cli import mirror
+    from lionagi.cli import _mirror_service as mirror
 
     target = tmp_path / "offsets.json"
     monkeypatch.setattr(mirror, "_OFFSETS_PATH", target)
@@ -295,7 +295,7 @@ def test_hypothesis_chains_export_refuses_non_finite(tmp_path):
     assert written["events"] == [] and written["open_questions"] == []
 
 
-async def test_stream_buffer_chunk_refuses_non_finite(tmp_path):
+async def test_stream_buffer_chunk_records_non_finite_and_continues(tmp_path):
     from lionagi.operations.run.run import _append_chunk
 
     class _Chunk:
@@ -307,9 +307,21 @@ async def test_stream_buffer_chunk_refuses_non_finite(tmp_path):
 
     target = tmp_path / "b.jsonl"
 
-    with pytest.raises(ValueError, match=r"non-finite float at \$\.usage\.tokens_per_s"):
-        await _append_chunk(target, _Chunk({"usage": {"tokens_per_s": float("nan")}}))
-    assert not target.exists()
+    def reject_constant(value):
+        raise ValueError(f"invalid JSON constant: {value}")
+
+    await _append_chunk(
+        target, _Chunk({"usage": {"tokens_per_s": float("nan")}, "payload": CONTROL})
+    )
+    lines = target.read_text().splitlines()
+    assert len(lines) == 1
+    assert "NaN" not in lines[0] and "Infinity" not in lines[0]
+    assert json.loads(lines[0], parse_constant=reject_constant) == {
+        "text": "",
+        "serialization_error": "non-finite float",
+    }
 
     await _append_chunk(target, _Chunk({"payload": CONTROL}))
-    assert json.loads(target.read_text())["payload"] == CONTROL
+    lines = target.read_text().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[1], parse_constant=reject_constant)["payload"] == CONTROL

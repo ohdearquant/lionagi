@@ -3,6 +3,7 @@
 
 import asyncio
 import contextlib
+import json
 import os
 from unittest.mock import patch
 
@@ -453,7 +454,7 @@ class TestiModel:
         imodel = base_imodel
 
         # NOTE: request_options removed due to incorrect role literals in generated models
-        from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
+        from lionhub.providers.openai.chat import OpenAIChatCompletionsRequest
 
         assert imodel.request_options == OpenAIChatCompletionsRequest
 
@@ -857,6 +858,251 @@ class TestiModel:
         # Check that match_endpoint was used to properly reconstruct
         assert restored.endpoint.config.provider == "anthropic"
         assert restored.endpoint.config.kwargs["model"] == "claude-3-5-sonnet-20241022"
+
+    def test_a_cli_models_session_id_survives_being_saved_and_restored(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        imodel.endpoint.session_id = session_id
+
+        # Through JSON, as a snapshot written to a file and read back.
+        restored = iModel.from_dict(json.loads(json.dumps(imodel.to_dict())))
+
+        assert restored.provider_session_id == session_id
+        assert restored.endpoint.session_id == session_id
+        call = restored.create_api_calling(messages=[{"role": "user", "content": "next"}])
+        assert call.payload["request"].resume == session_id
+
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            "--dangerous",
+            "a b",
+            "x" * 10_240,
+            "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f\n--dangerous",
+            "{7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f}",
+            "7d1c2e905b3a4f6e9a8d0c1b2a3d4e5f",
+            "",
+            12345,
+            ["7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"],
+            "7D1C2E90-5B3A-4F6E-9A8D-0C1B2A3D4E5F",
+            "7d1c2e90-5b3a-4f6e-9a8d-0C1B2A3D4E5F",
+        ],
+        ids=[
+            "flag",
+            "space",
+            "ten-kilobytes",
+            "uuid-then-flag",
+            "braces",
+            "no-dashes",
+            "empty",
+            "integer",
+            "list",
+            "uppercase",
+            "mixed-case",
+        ],
+    )
+    def test_a_stored_session_id_not_in_the_shape_the_cli_issues_is_ignored(self, stored):
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        imodel.endpoint.session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        data = json.loads(json.dumps(imodel.to_dict()))
+        data["endpoint"]["session_id"] = stored
+
+        restored = iModel.from_dict(data)
+
+        assert restored.provider_session_id is None
+        call = restored.create_api_calling(messages=[{"role": "user", "content": "next"}])
+        assert call.payload["request"].resume is None
+
+    def test_a_snapshot_without_a_stored_session_id_restores_with_none(self):
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        data = json.loads(json.dumps(imodel.to_dict()))
+        # A snapshot written before the id was stored has no such entry.
+        data["endpoint"].pop("session_id", None)
+
+        assert iModel.from_dict(data).provider_session_id is None
+
+    def test_a_stored_session_id_does_not_reach_a_model_that_is_not_a_cli(self):
+        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+        data = imodel.to_dict()
+        data["endpoint"]["session_id"] = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+
+        assert iModel.from_dict(data).provider_session_id is None
+
+    def test_a_stored_session_id_does_not_reach_a_cli_whose_refusal_is_not_recovered(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        history = [
+            {"role": "user", "content": "first instruction"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second instruction"},
+        ]
+        saved = iModel(provider="gemini_code", model="gemini-4-argon", api_key="test-key")
+        saved.endpoint.session_id = session_id
+        stored = json.loads(json.dumps(saved.to_dict()))
+        assert stored["endpoint"]["session_id"] == session_id
+
+        restored = iModel.from_dict(stored)
+
+        # A lowercase UUID passes the shape check, but only the Claude Code CLI's refusal of a
+        # stored id is recognized and recovered, so no other CLI resumes one.
+        assert restored.endpoint.session_id is None
+        assert restored.provider_session_id is None
+        assert restored.endpoint.reported_session_id is None
+        request = restored.create_api_calling(messages=history).payload["request"]
+        assert request.resume is None
+        for earlier in ("first instruction", "first answer", "second instruction"):
+            assert earlier in request.prompt
+
+    def test_a_restored_session_id_is_not_one_this_process_has_seen_reported(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        reported_later = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        imodel.endpoint.session_id = session_id
+        assert imodel.endpoint.reported_session_id == session_id
+
+        restored = iModel.from_dict(json.loads(json.dumps(imodel.to_dict())))
+
+        # The restored id is still the one to resume and the one to save again ...
+        assert restored.provider_session_id == session_id
+        call = restored.create_api_calling(messages=[{"role": "user", "content": "next"}])
+        assert call.payload["request"].resume == session_id
+        assert restored.to_dict()["endpoint"]["session_id"] == session_id
+        # ... but no stream in this process has reported it.
+        assert restored.endpoint.reported_session_id is None
+
+        # The stream reports the same id, then a new one.
+        restored.endpoint.session_id = session_id
+        assert restored.endpoint.reported_session_id == session_id
+        restored.endpoint.session_id = reported_later
+        assert restored.endpoint.reported_session_id == reported_later
+        assert restored.provider_session_id == reported_later
+
+    def test_a_restored_id_stays_unreported_in_a_copy_that_shares_the_session(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        imodel.endpoint.session_id = session_id
+        restored = iModel.from_dict(json.loads(json.dumps(imodel.to_dict())))
+
+        shared = restored.copy(share_session=True)
+        assert shared.provider_session_id == session_id
+        assert shared.endpoint.reported_session_id is None
+
+        # An id the stream reported stays reported in the copy.
+        assert imodel.copy(share_session=True).endpoint.reported_session_id == session_id
+
+    def test_an_endpoint_restores_a_session_id_only_in_the_shape_the_cli_issues(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        endpoint = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        ).endpoint
+
+        endpoint.restore_session_id(session_id)
+        assert endpoint.provider_session_id == session_id
+        assert endpoint.reported_session_id is None
+
+        # A value in any other shape is no id: nothing is restored, so nothing is resumed.
+        for stored in ("--dangerous", session_id.upper(), f"{session_id}\n--dangerous", 12345, ""):
+            endpoint.restore_session_id(stored)
+            assert endpoint.provider_session_id is None
+            assert endpoint.reported_session_id is None
+            endpoint.restore_session_id(session_id)
+
+    @staticmethod
+    def _a_cli_model_restored_with(session_id: str) -> iModel:
+        saved = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        saved.endpoint.session_id = session_id
+        return iModel.from_dict(json.loads(json.dumps(saved.to_dict())))
+
+    @pytest.mark.asyncio
+    async def test_a_restored_session_the_cli_refuses_is_dropped_so_the_next_call_sends_history(
+        self,
+    ):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        restored = self._a_cli_model_restored_with(session_id)
+        history = [
+            {"role": "user", "content": "first instruction"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second instruction"},
+        ]
+        sent = []
+
+        async def refused(request, cache_control=False, **kwargs):
+            sent.append(request["request"])
+            raise RuntimeError(f"No conversation found with session ID: {session_id}")
+
+        with patch.object(restored.endpoint, "call", side_effect=refused):
+            failed = await restored.invoke(messages=history)
+
+        # The call resumed the restored id and sent only the newest message, and it failed ...
+        assert failed.status == EventStatus.FAILED
+        assert sent[0].resume == session_id
+        assert sent[0].prompt == "second instruction"
+        # ... so the endpoint no longer holds the id the CLI does not know.
+        assert restored.endpoint.session_id is None
+        assert restored.provider_session_id is None
+
+        next_call = restored.create_api_calling(messages=history)
+        request = next_call.payload["request"]
+        assert request.resume is None
+        for earlier in ("first instruction", "first answer", "second instruction"):
+            assert earlier in request.prompt
+
+    @pytest.mark.parametrize(
+        ("restored", "failure"),
+        [
+            (True, "the CLI hit an unexpected error"),
+            (False, "No conversation found with session ID: {session_id}"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_session_id_is_dropped_only_when_the_cli_refuses_a_restored_one(
+        self, restored, failure
+    ):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        if restored:
+            imodel = self._a_cli_model_restored_with(session_id)
+        else:
+            imodel = iModel(
+                provider="claude_code",
+                model="claude-3-5-sonnet-20241022",
+                api_key="test-key",
+            )
+            # An id the CLI reported in this process.
+            imodel.endpoint.session_id = session_id
+
+        async def failing(request, cache_control=False, **kwargs):
+            raise RuntimeError(failure.format(session_id=session_id))
+
+        with patch.object(imodel.endpoint, "call", side_effect=failing):
+            failed = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+
+        assert failed.status == EventStatus.FAILED
+        assert imodel.endpoint.session_id == session_id
 
     @pytest.mark.asyncio
     async def test_imodel_unsupported_event_type(self):

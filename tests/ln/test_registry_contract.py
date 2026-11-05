@@ -116,9 +116,9 @@ def test_three_source_derived_declarations_preserve_order_and_isolation():
         ("endpoint_type", "api"),
         (
             "options_reference",
-            "lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest",
+            "lionagi.service.connections._chat_schemas:OpenAIChatCompletionsRequest",
         ),
-        ("implementation_reference", "lionagi.providers.openai.chat:OpenaiChatEndpoint"),
+        ("implementation_reference", "lionhub.providers.openai.chat:OpenaiChatEndpoint"),
         ("base_url", "https://api.openai.com/v1"),
         ("auth_type", "bearer"),
     )
@@ -791,7 +791,7 @@ def test_exports_and_cold_import_do_not_activate_domains_or_optional_models():
 import sys, importlib.abc, importlib.util, importlib.metadata, asyncio, builtins
 sys.path.insert(0, ROOT)
 blocked = ("pydantic", "sqlalchemy", "lionagi.state", "lionagi.cli",
-           "lionagi.studio", "lionagi.providers", "openai", "anthropic")
+           "lionagi.studio", "lionhub.providers", "openai", "anthropic")
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if any(fullname == p or fullname.startswith(p + ".") for p in blocked):

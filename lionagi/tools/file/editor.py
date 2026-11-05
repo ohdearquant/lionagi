@@ -122,13 +122,13 @@ def _write_sync(file_path: str, content: str, workspace_root: Path) -> EditorRes
     return EditorResponse(success=True, content=f"Written: {p}")
 
 
-def _edit_sync(
+def _prepare_edit(
     file_path: str,
     old_string: str,
     new_string: str,
     replace_all: bool,
     workspace_root: Path,
-) -> EditorResponse:
+) -> tuple[Path, str, int] | EditorResponse:
     try:
         p = _resolve_existing_workspace_file(file_path, workspace_root)
     except PermissionError as e:
@@ -174,6 +174,20 @@ def _edit_sync(
         )
 
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
+    return p, updated, count
+
+
+def _edit_sync(
+    file_path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool,
+    workspace_root: Path,
+) -> EditorResponse:
+    prepared = _prepare_edit(file_path, old_string, new_string, replace_all, workspace_root)
+    if isinstance(prepared, EditorResponse):
+        return prepared
+    p, updated, count = prepared
 
     try:
         _write_text_no_follow(p, updated)

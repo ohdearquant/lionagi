@@ -7,9 +7,9 @@ and folds every later instruction in its span, as before ADR-0130 Amendment 4.""
 import pytest
 
 from lionagi.agent.context_fold import ContextFold
-from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 from tests.cli.test_agent_api_provider import _text
 
 _CAP = 8_000

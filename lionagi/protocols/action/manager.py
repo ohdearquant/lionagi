@@ -366,6 +366,8 @@ class ActionManager(Manager):
         request_options: dict[str, type] | None = None,
         update: bool = False,
         security: "MCPSecurityConfig | None" = None,
+        *,
+        _bound_transport: dict[str, Any] | None = None,
     ) -> list[str]:
         registered_tools = []
 
@@ -373,12 +375,6 @@ class ActionManager(Manager):
             MCPConnectionPool,
             _attach_mcp_transport_probe,
         )
-
-        # Mint the recovery authorization once, bound to this call's
-        # effective security, and thread it into every Tool created below.
-        # It never touches `_server_security`/config-keyed state: each Tool
-        # holds the capability only in its own excluded, non-serialized slot.
-        capability = MCPConnectionPool._mint_capability(security)
 
         server_name = None
         if isinstance(server_config, dict) and "server" in server_config:
@@ -420,6 +416,7 @@ class ActionManager(Manager):
                     "load the server under a shorter alias before registration."
                 )
             server_alias = server_name
+            capability = _bind_mcp_transport(server_config, _bound_transport, security, server_name)
 
             for tool_name in tool_names:
                 logger.warning(
@@ -447,7 +444,10 @@ class ActionManager(Manager):
                 validate_mcp_tool_admission,
             )
 
-            client = await MCPConnectionPool.get_client(server_config, security=security)
+            capability = _bind_mcp_transport(server_config, _bound_transport, security, server_name)
+            client = await MCPConnectionPool.get_client(
+                server_config, security=capability.security, _bound_transport=capability._transport
+            )
             try:
                 tools = await client.list_tools()
             except Exception as exc:
@@ -543,12 +543,15 @@ class ActionManager(Manager):
         update: bool = False,
         mcp_security: "MCPSecurityConfig | None" = None,
     ) -> dict[str, list[str]]:
+        from lionagi.ln import copy
         from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
         # An omitted policy is not upgraded to a permissive one: it flows
         # through to the wrapper's fail-closed default. See
         # docs/internals/agent-runtime.md for the full trust model.
-        loaded_names = MCPConnectionPool.load_config(config_path)
+        snapshot = MCPConnectionPool._load_config_snapshot(config_path, server_names)
+        MCPConnectionPool._configs.update(copy(snapshot))
+        loaded_names = list(snapshot)
 
         if server_names is None:
             # Default to servers in THIS config file — the pool accumulates
@@ -558,7 +561,10 @@ class ActionManager(Manager):
         for server_name in server_names:
             try:
                 tools = await self.register_mcp_server(
-                    {"server": server_name}, update=update, security=mcp_security
+                    {"server": server_name},
+                    update=update,
+                    security=mcp_security,
+                    _bound_transport=snapshot[server_name],
                 )
                 all_tools[server_name] = tools
                 logger.info("Registered %d tools from server '%s'", len(tools), server_name)
@@ -579,6 +585,7 @@ async def load_mcp_tools(
     update: bool = False,
     mcp_security: "MCPSecurityConfig | None" = None,
 ) -> list[Tool]:
+    from lionagi.ln import copy
     from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
     manager = ActionManager()
@@ -589,8 +596,11 @@ async def load_mcp_tools(
     # explicitly set. Either way, it never recovers a policy some earlier
     # caller authorized for the same identity.
 
+    snapshot = None
     if config_path:
-        loaded_names = MCPConnectionPool.load_config(config_path)
+        snapshot = MCPConnectionPool._load_config_snapshot(config_path, server_names)
+        MCPConnectionPool._configs.update(copy(snapshot))
+        loaded_names = list(snapshot)
         if server_names is None:
             # Same default as load_mcp_config: the servers in this file, not
             # every server the process-global pool has accumulated.
@@ -605,11 +615,15 @@ async def load_mcp_tools(
             if request_options_map and server_name in request_options_map:
                 request_options = request_options_map[server_name]
 
+            bound_kwargs = (
+                {"_bound_transport": snapshot[server_name]} if snapshot is not None else {}
+            )
             tools_registered = await manager.register_mcp_server(
                 {"server": server_name},
                 request_options=request_options,
                 update=update,
                 security=mcp_security,
+                **bound_kwargs,
             )
             logger.info("Loaded %d tools from %s", len(tools_registered), server_name)
         except PermissionError as exc:
@@ -620,6 +634,26 @@ async def load_mcp_tools(
             raise
 
     return list(manager.registry.values())
+
+
+def _bind_mcp_transport(
+    server_config: dict[str, Any],
+    bound_transport: dict[str, Any] | None,
+    security: "MCPSecurityConfig | None",
+    server_name: str | None,
+):
+    """Keep the concrete transport in the non-serialized recovery capability."""
+    from lionagi.ln import copy
+    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+    transport = copy(
+        bound_transport
+        if bound_transport is not None
+        else MCPConnectionPool._resolve_config(server_config)
+    )
+    return MCPConnectionPool._mint_capability(
+        security, transport=transport, server_name=server_name
+    )
 
 
 __all__ = ["ActionManager", "load_mcp_tools", "qualified_mcp_name"]

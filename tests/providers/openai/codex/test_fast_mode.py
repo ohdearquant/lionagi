@@ -18,7 +18,7 @@ from lionagi.cli._providers import (
     add_common_cli_args,
     build_imodel_from_spec,
 )
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionhub.providers.openai.codex import CodexCodeRequest
 
 # ── 1. Default: no service_tier ─────────────────────────────────────────
 

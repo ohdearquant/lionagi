@@ -2,10 +2,11 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: partial: D1-D7 are implemented. D8 is not complete: no test covers
-  item 7's writer-hold, busy-rate and WAL-growth limits declared before a run, or item 9's recovery
-  after lionagi's writes stop, and item 8's authorizer tests run on each supported Python against
-  one aiosqlite version.
+- **Implementation-status**: implemented: D1-D8. Items 7 and 9 of D8 have tests
+  (`tests/state/test_compatibility_concurrency.py` and
+  `tests/state/test_compatibility_recovery.py`). For item 8 the compatibility tests also run on
+  each supported aiosqlite release and on SQLAlchemy at its floor and its newest release (CI job
+  `compat-deps`).
 - **Area**: persistence-state
 - **Date**: 2026-10-14
 - **Relations**: extends ADR-0122 (optional runtime profiles); constrains every writable `StateDB` open;
@@ -133,7 +134,7 @@ catches the error.
 The dependency floor rises from `aiosqlite>=0.21.0` to `aiosqlite>=0.22.0`, the first release whose
 `Connection` exposes `set_authorizer`; 0.21.0 does not. The engine's `connect` listener installs the
 authorizer through SQLAlchemy's `AdaptedConnection.run_async`, which reaches the driver connection on
-its worker thread and is present across the supported `sqlalchemy>=2.0.0` range. A connection whose
+its worker thread and is present across the supported `sqlalchemy>=2.0.38` range. A connection whose
 authorizer cannot be installed refuses to open. The authorizer is a SQLite facility, so a
 compatibility open against any other dialect refuses.
 

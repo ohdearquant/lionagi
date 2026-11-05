@@ -28,8 +28,8 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 from lionagi.service.imodel import iModel
+from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
 
 def test_mcp_servers_excluded_from_model_dump():

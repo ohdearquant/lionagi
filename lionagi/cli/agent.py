@@ -22,6 +22,7 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi._cli_worker_context import _bind_cli_worker_recorder
 from lionagi._errors import ConfigurationError, FailedRoundError, InputTokenCapError
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi._provider_errors import ProviderSafetyError, _WorkerSpawnAdmissionError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
     CancelScope,
@@ -34,14 +35,14 @@ from lionagi.ln.concurrency import (
 )
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
-from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
-from lionagi.providers._subagent_admission import (
+from lionagi.service._api_telemetry import collect_api_turn
+from lionagi.service._subagent_admission import (
     DEFAULT_WORKLOAD,
     WORKLOADS,
     NestedAgentRefusedError,
     SubagentAdmissionRefusedError,
 )
-from lionagi.service._api_telemetry import collect_api_turn
+from lionagi.service.imodel import _endpoint_routing_enabled
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
@@ -57,8 +58,10 @@ from ._context_from import (
 )
 from ._logging import hint, log_error
 from ._mcp_resolve import (
+    LegacyMcpReplayError,
     McpConfigError,
     McpResolution,
+    _format_recorded_mcp_path,
     explicit_mcp_config_path,
     resolve_spawn_mcp_servers,
 )
@@ -71,10 +74,12 @@ from ._providers import (
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
     PROVIDERS_EFFORT_VIA_MODEL_NAME,
+    _add_claude_tool_kwargs,
     _add_codex_account_integration_kwargs,
     _add_workload_kwarg,
     _clamp_claude_effort,
     _clamp_codex_effort,
+    _profile_tool_settings,
     add_common_cli_args,
     build_chat_model,
     build_deadline_preamble,
@@ -173,8 +178,9 @@ _API_FOLD_RESUME_PROMPT = (
     "and how to list or restore it. Continue the task from where you stopped."
 )
 # How many times one turn continues after a pass of the ReAct loop ended on a failed round: a
-# response cut off at its output limit before it wrote any text or tool call, or a reply that did
-# not parse. An LNDL turn repairs such a round inside its own round budget.
+# response cut off at its output limit before it wrote any text or tool call, a response the
+# provider refused, or a reply that did not parse. An LNDL turn repairs such a round inside its
+# own round budget.
 _API_ROUND_RESUMES = 2
 _API_CAPPED_RESUME_PROMPT = (
     "Your last response reached its output token limit before it wrote any text or tool call, "
@@ -189,6 +195,10 @@ _API_UNPARSED_RESUME_PROMPT = (
     "Your last reply could not be read in the required response format ({reason}), so none of "
     "the actions in it ran. The task instruction above is unchanged. Continue the task from "
     "where you stopped, and send the actions again in the required format."
+)
+_API_REFUSED_RESUME_PROMPT = (
+    "Your last response was stopped by the provider before it finished, so nothing in it was "
+    "used. The task instruction above is unchanged. Continue the task from where you stopped."
 )
 # The output limit, thinking included, an Anthropic API leg's requests send when its model names
 # none; the provider's own default is 8,192. Claude Haiku 5.5 thinks by default, and at 8,192 a
@@ -812,11 +822,21 @@ async def _run_api_turn(
     if refusal is not None:
         raise refusal
     if failed is not None:
-        raise FailedRoundError(
+        details: dict[str, Any] = {"continued": round_resumes}
+        refused = _first_refusal(_pass_responses(branch, before))
+        if refused is not None:
+            details["stop_reason"] = refused[0]
+            details.update(_refusal_details(refused[1]))
+        failure = FailedRoundError(
             f"{round_resumes + 1} passes of the tool loop in a row ended on a failed round: "
             f"{failed[1]}",
-            details={"continued": round_resumes},
+            details=details,
         )
+        if refused is not None:
+            # A provider refusal is a provider failure that retrying the same request will not
+            # clear, so the run records it as one rather than as a generic exception.
+            raise failure from ProviderSafetyError(failed[1])
+        raise failure
     answer = getattr(result, "answer", result)
     return "" if answer is None else str(answer)
 
@@ -827,15 +847,29 @@ def _failed_round(branch, before: set, rounds: list) -> tuple[str, str] | None:
 
     ``before`` holds the ids of the branch's messages before the pass, and ``rounds`` is what the
     pass returned with ``return_analysis=True``: each round's analysis, then the answer. The
-    responses checked against the output limit are the pass's last two, the round that ended the
-    loop and the answer turn after it; an answer with no text fails the pass whatever its stop.
+    responses checked for a refusal and then against the output limit are the pass's last two,
+    the round that ended the loop and the answer turn after it. A refused response (see
+    ``_provider_refusal``) wins over an output-limit stop in that window and prints one
+    ``[api] refused`` line; an answer with no text fails the pass whatever its stop. A round
+    whose reply did not parse is reported as having stopped at its output token limit when its
+    response did.
     """
     from lionagi.operations.types import UnparsedResponse
 
-    added = [
-        m for m in branch.msgs.messages if m.id not in before and isinstance(m, AssistantResponse)
-    ]
-    if any(_stopped_at_output_limit_with_nothing(m.model_response) for m in added[-2:]):
+    window = _pass_responses(branch, before)
+    refused = _first_refusal(window)
+    if refused is not None:
+        marker, response = refused
+        tokens = _output_tokens(response)
+        hint(
+            f"[api] refused: stop reason {marker}"
+            + ("" if tokens is None else f", {tokens} output token(s)")
+        )
+        return (
+            _API_REFUSED_RESUME_PROMPT,
+            f"the provider refused the response (stop reason: {marker})",
+        )
+    if any(_stopped_at_output_limit_with_nothing(response) for response in window):
         return (
             _API_CAPPED_RESUME_PROMPT,
             "a response stopped at its output token limit with no text and no tool call",
@@ -848,7 +882,11 @@ def _failed_round(branch, before: set, rounds: list) -> tuple[str, str] | None:
                 detail = detail[:800] + " ...(truncated)"
             reason = f"the response schema rejected it: {detail}"
         else:
+            from lionagi.service._output_limit import read_output_limit_stop
+
             reason = "no JSON object could be read from it"
+            if len(window) > 1 and read_output_limit_stop(window[-2])[0]:
+                reason = "the response stopped at its output token limit, so its text is incomplete"
         return _API_UNPARSED_RESUME_PROMPT.format(reason=reason), f"a reply did not parse: {reason}"
     # An answer turn whose reply had no text, cut off or not, ends ReAct with that empty text.
     answer = rounds[-1] if rounds else None
@@ -862,40 +900,106 @@ def _stopped_at_output_limit_with_nothing(response: Any) -> bool:
     """Whether a raw provider response stopped at its output token limit before it wrote any
     text or tool call. Reads the Anthropic Messages, OpenAI chat completions and OpenAI
     Responses shapes; any other shape, a list of responses included, reads False."""
+    from lionagi.service._output_limit import read_output_limit_stop
+
+    stopped, wrote = read_output_limit_stop(response)
+    return stopped and not wrote
+
+
+def _pass_responses(branch, before: set) -> list:
+    """The raw provider responses a pass ended on: the last two it added, the round that ended
+    the loop and the answer turn after it. ``before`` holds the ids of the branch's messages
+    before the pass. A shortened copy the context fold made of a clipped reply
+    (``clipped_from``) carries no raw response and is not a reply the model sent, so it is
+    skipped and the original keeps its place in the window."""
+    added = [
+        m
+        for m in branch.msgs.messages
+        if m.id not in before
+        and isinstance(m, AssistantResponse)
+        and not m.metadata.get("clipped_from")
+    ]
+    return [m.model_response for m in added[-2:]]
+
+
+def _first_refusal(responses: list) -> tuple[str, Any] | None:
+    """The refusal marker and the raw response of the first refused response in ``responses``,
+    or None when none was refused."""
+    for response in responses:
+        marker = _provider_refusal(response)
+        if marker is not None:
+            return marker, response
+    return None
+
+
+def _refusal_details(response: Any) -> dict[str, Any]:
+    """The provider's own account of a refusal, copied verbatim from a raw response: an Anthropic
+    Messages response's ``stop_details`` when it is a non-empty JSON object, as ``stop_details``;
+    an OpenAI chat completion's non-empty ``message.refusal`` string, or the first non-empty text
+    of an OpenAI Responses ``refusal`` content part, as ``refusal``. Empty when the response
+    carries none of these (a ``content_filter`` stop has no detail), so the key is then absent."""
     if not isinstance(response, dict):
-        return False
+        return {}
     if "stop_reason" in response:
-        if response["stop_reason"] != "max_tokens":
-            return False
-        return not any(
-            isinstance(block, dict)
-            and (
-                block.get("type") == "tool_use"
-                or (block.get("type") == "text" and str(block.get("text") or "").strip())
-            )
-            for block in response.get("content") or []
-        )
+        stop_details = response.get("stop_details")
+        if isinstance(stop_details, dict) and stop_details:
+            return {"stop_details": stop_details}
+        return {}
     choices = response.get("choices")
     if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        if choices[0].get("finish_reason") != "length":
-            return False
-        message = choices[0].get("message") or {}
-        return not str(message.get("content") or "").strip() and not message.get("tool_calls")
-    if response.get("status") == "incomplete":
-        if (response.get("incomplete_details") or {}).get("reason") != "max_output_tokens":
-            return False
-        for item in response.get("output") or []:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "function_call":
-                return False
-            if item.get("type") == "message" and any(
-                isinstance(part, dict) and str(part.get("text") or "").strip()
+        message = choices[0].get("message")
+        refusal = message.get("refusal") if isinstance(message, dict) else None
+        return {"refusal": refusal} if isinstance(refusal, str) and refusal else {}
+    for item in response.get("output") or []:
+        if isinstance(item, dict) and item.get("type") == "message":
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "refusal":
+                    text = part.get("refusal")
+                    if isinstance(text, str) and text:
+                        return {"refusal": text}
+    return {}
+
+
+def _provider_refusal(response: Any) -> str | None:
+    """The provider's refusal marker of a raw response, or None when it was not refused. Reads
+    the Anthropic Messages (``stop_reason`` ``refusal``), OpenAI chat completions
+    (``finish_reason`` ``content_filter``, or a non-empty ``message.refusal``) and OpenAI
+    Responses (a ``message`` output item with a ``refusal`` content part) shapes; any other
+    shape, a list of responses included, reads None."""
+    if not isinstance(response, dict):
+        return None
+    if "stop_reason" in response:
+        return "refusal" if response["stop_reason"] == "refusal" else None
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        if choices[0].get("finish_reason") == "content_filter":
+            return "content_filter"
+        message = choices[0].get("message")
+        refusal = message.get("refusal") if isinstance(message, dict) else None
+        return "refusal" if isinstance(refusal, str) and refusal else None
+    for item in response.get("output") or []:
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "message"
+            and any(
+                isinstance(part, dict) and part.get("type") == "refusal"
                 for part in item.get("content") or []
-            ):
-                return False
-        return True
-    return False
+            )
+        ):
+            return "refusal"
+    return None
+
+
+def _output_tokens(response: Any) -> int | None:
+    """The output token count a raw provider response carries in its ``usage``, or None."""
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    for key in ("output_tokens", "completion_tokens"):
+        count = usage.get(key)
+        if isinstance(count, int) and not isinstance(count, bool):
+            return count
+    return None
 
 
 async def _api_loop_pass(
@@ -906,7 +1010,7 @@ async def _api_loop_pass(
     For ReAct, *rounds* (when given) receives each round's analysis and then the answer.
     """
     if loop in ("lndl", "lndl-calls"):
-        from lionagi.operations.lndl_middle import build_lndl_middle
+        from lionhub.lndl.middle import build_lndl_middle
 
         schemas = branch.acts.get_tool_schema(tools=True)
         return await branch.operate(
@@ -1473,6 +1577,7 @@ async def _run_agent(
     idle_timeout: int | None = None,
     workload: str | None = None,
     *,
+    mcp_submit_snapshot: str | None = None,
     _parent_marker: Callable[[], None] | None = None,
     _lost_write_out: dict[str, Any] | None = None,
     _worker_spawn_continuation: object | None = None,
@@ -1506,11 +1611,6 @@ async def _run_agent(
         # The child's tool surface is meant to be a property of the submission, and
         # this is the only point at which the submitting directory is still known.
         launch_dir = Path(os.getcwd()).resolve()
-        mcp_resolution = resolve_spawn_mcp_servers(
-            mcp_config,
-            launch_dir=launch_dir,
-            disabled=no_mcp_config,
-        )
         if resume and continue_last:
             raise ConfigurationError(
                 "--resume / -r and --continue-last / -c are mutually exclusive."
@@ -1589,10 +1689,24 @@ async def _run_agent(
                     "for this run"
                 )
 
+        profile_disables_mcp = getattr(profile, "mcp", None) == "none"
+        if mcp_config is not None and mcp_submit_snapshot is not None:
+            raise McpConfigError("--mcp-config cannot be combined with --mcp-submit-snapshot")
+        if profile_disables_mcp and mcp_config is not None:
+            raise McpConfigError(
+                f"agent profile {agent_name!r} declares mcp: none; "
+                "it cannot be combined with --mcp-config"
+            )
+        if profile_disables_mcp:
+            no_mcp_config = True
+
         # A codex leg's account integrations follow its role; with no role, or one that sets
         # neither field, the leg's argv is what it was before these fields existed.
         account_connectors = tuple(getattr(profile, "account_connectors", None) or ())
         contain_account_integrations = bool(getattr(profile, "contain_account_integrations", False))
+        # A role's tool set is checked here, before any run is allocated; whether the agent's
+        # model can take it is decided where the request is built.
+        tool_settings = _profile_tool_settings(profile)
         # The flag wins over the role; with neither the leg is heavy, which keeps its configured
         # sandbox and counts against both machine-wide caps.
         if workload is None:
@@ -1644,6 +1758,73 @@ async def _run_agent(
         # reliable "reopened existing" vs "minting new" signal once that block runs.
         is_resumed_branch = branch is not None
 
+        if is_resumed_branch and mcp_config is not None:
+            launched = branch.metadata.get(_MCP_LAUNCH_KEY)
+            if (
+                isinstance(launched, dict)
+                and launched.get("no_mcp_config") is True
+                and launched.get("no_mcp_config_source") == "profile"
+            ):
+                raise McpConfigError(
+                    "this branch was launched with profile mcp: none; "
+                    "it cannot be resumed with --mcp-config"
+                )
+
+        replay_recorded_choice = is_resumed_branch and mcp_config is None and not no_mcp_config
+        recorded_launch = branch.metadata.get(_MCP_LAUNCH_KEY) if replay_recorded_choice else None
+        if replay_recorded_choice:
+            if isinstance(recorded_launch, dict):
+                origin = recorded_launch.get("mcp_config_origin")
+                if origin is not None and (
+                    origin not in ("submit_snapshot", "explicit")
+                    or not isinstance(recorded_launch.get("mcp_config"), str)
+                    or not recorded_launch["mcp_config"].strip()
+                    or not os.path.isabs(recorded_launch["mcp_config"])
+                    or not isinstance(recorded_launch.get("launch_dir"), str)
+                    or not recorded_launch["launch_dir"].strip()
+                    or recorded_launch.get("no_mcp_config") is not False
+                ):
+                    raise McpConfigError("this branch has an invalid recorded MCP snapshot origin")
+                if (
+                    "no_mcp_config" in recorded_launch
+                    and type(recorded_launch["no_mcp_config"]) is not bool
+                ):
+                    raise McpConfigError(
+                        "this branch has an invalid recorded MCP configuration flag; start a fresh run"
+                    )
+                launch = recorded_launch.get("launch_dir")
+                has_recorded_path = (
+                    recorded_launch.get("mcp_config") is not None or "launch_dir" in recorded_launch
+                )
+                if has_recorded_path and (not isinstance(launch, str) or not os.path.isabs(launch)):
+                    raise McpConfigError(
+                        "this branch has an invalid recorded MCP launch directory; start a fresh run"
+                    )
+
+        # A pre-carrier record naming a file is ambiguous until that file has
+        # been read. Do not discover the current directory before deciding it.
+        legacy_recorded_file = (
+            isinstance(recorded_launch, dict)
+            and recorded_launch.get("mcp_config_origin") is None
+            and recorded_launch.get("mcp_config") is not None
+            and not bool(recorded_launch.get("no_mcp_config"))
+        )
+        if legacy_recorded_file and (
+            not isinstance(recorded_launch.get("launch_dir"), str)
+            or not recorded_launch["launch_dir"].strip()
+        ):
+            raise McpConfigError(
+                f"this branch has an invalid recorded MCP config "
+                f"{_format_recorded_mcp_path(recorded_launch['mcp_config'])}; start a fresh run"
+            )
+        if not replay_recorded_choice:
+            mcp_resolution = resolve_spawn_mcp_servers(
+                mcp_config,
+                launch_dir=launch_dir,
+                disabled=no_mcp_config,
+                submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
+            )
+
         # A resume that names no MCP flag replays the choice its branch was launched
         # with, searched from where it was launched rather than from where it is
         # resumed. A branch from before that choice was recorded resolves nothing
@@ -1653,40 +1834,52 @@ async def _run_agent(
             if isinstance(launched, dict) and isinstance(launched.get("launch_dir"), str):
                 recorded_config = launched.get("mcp_config")
                 disabled = bool(launched.get("no_mcp_config"))
+                no_mcp_config = disabled
                 # The resolver's own refusals name --mcp-config, which this caller
                 # never passed, so a recorded config is refused here in its own words.
                 how_to_go_on = (
-                    "resume it with --mcp-config naming the config to use, or with --no-mcp-config"
+                    "start a fresh run"
+                    if legacy_recorded_file
+                    else "resume it with --mcp-config naming the config to use, or with --no-mcp-config"
                 )
                 if recorded_config is not None and not disabled:
                     try:
                         recorded_path = explicit_mcp_config_path(
                             recorded_config, launch_dir=launched["launch_dir"]
                         )
-                    except (TypeError, RuntimeError) as exc:
-                        # Not a path, or a home directory that does not resolve.
+                    except (TypeError, RuntimeError, ValueError, OSError):
+                        # Stored fields may contain arbitrary values: do not echo an
+                        # object repr or an exception built from those values.
                         raise McpConfigError(
-                            f"this branch was launched with the MCP config {recorded_config}, "
-                            f"which can no longer be used ({exc}); {how_to_go_on}"
-                        ) from exc
+                            f"this branch was launched with the MCP config "
+                            f"{_format_recorded_mcp_path(recorded_config)}, "
+                            f"which can no longer be used; {how_to_go_on}"
+                        ) from None
                     if not recorded_path.is_file():
                         raise McpConfigError(
-                            f"this branch was launched with the MCP config {recorded_path}, "
+                            f"this branch was launched with the MCP config "
+                            f"{_format_recorded_mcp_path(recorded_config)}, "
                             f"which is no longer a readable file; {how_to_go_on}"
                         )
                 try:
+                    is_submit_snapshot = launched.get("mcp_config_origin") == "submit_snapshot"
                     mcp_resolution = resolve_spawn_mcp_servers(
-                        recorded_config,
+                        None if is_submit_snapshot else recorded_config,
                         launch_dir=launched["launch_dir"],
                         disabled=disabled,
+                        submit_snapshot=recorded_config if is_submit_snapshot else None,
+                        **({"reject_legacy_snapshot": True} if legacy_recorded_file else {}),
                     )
-                except McpConfigError as exc:
-                    # Only a named file is refused; a search that finds nothing usable
-                    # says so in the resolution instead.
+                except LegacyMcpReplayError as exc:
+                    # The resolver constructed this fixed, safely-labelled message.
+                    raise McpConfigError(str(exc)) from None
+                except McpConfigError:
+                    # Do not expose arbitrary stored metadata or exception content.
                     raise McpConfigError(
-                        f"this branch was launched with the MCP config {recorded_config}, "
-                        f"which can no longer be used ({exc}); {how_to_go_on}"
-                    ) from exc
+                        f"this branch was launched with the MCP config "
+                        f"{_format_recorded_mcp_path(recorded_config)}, "
+                        f"which can no longer be used; {how_to_go_on}"
+                    ) from None
             else:
                 mcp_resolution = McpResolution(
                     None, "no_mcp_launch_recorded", None, Path(os.getcwd()).resolve()
@@ -1726,11 +1919,19 @@ async def _run_agent(
 
         from lionagi.agent.factory import _canonical_provider, _reject_unforwardable_explicit_mcp
 
-        _reject_unforwardable_explicit_mcp(
-            provider,
-            named_explicitly=mcp_resolution.explicit,
-            asked_for_servers=bool(mcp_resolution.servers),
-        )
+        try:
+            _reject_unforwardable_explicit_mcp(
+                provider,
+                named_explicitly=mcp_resolution.explicit,
+                asked_for_servers=bool(mcp_resolution.servers),
+            )
+        except ConfigurationError as exc:
+            if not mcp_resolution.snapshot_marker:
+                raise
+            raise ConfigurationError(
+                f"{exc} This file looks like a submit snapshot; an MCP server started "
+                "before this version must be restarted."
+            ) from None
         # Settings are looked up under the provider the name resolves to, so an alias such as
         # "openai-codex" is clamped and flagged as codex; `provider` stays as written.
         canonical = _canonical_provider(provider)
@@ -1757,10 +1958,11 @@ async def _run_agent(
                 fast,
                 bypass,
                 mcp_servers=mcp_resolution.servers,
-                mcp_exclusive=mcp_resolution.declared_empty,
+                mcp_exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
                 account_connectors=account_connectors,
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
+                tool_settings=tool_settings,
             )
             requested_effort = effort
             effort = resolve_persisted_effort(provider, chat_model, effort)
@@ -2032,7 +2234,7 @@ async def _run_agent(
                 elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
                     # agy (Antigravity CLI) has no effort kwarg — fold effort into
                     # the resolved --model name instead (see resolve_agy_model).
-                    from lionagi.providers.google.gemini_code import resolve_agy_model
+                    from lionhub.providers.google.gemini_code import resolve_agy_model
 
                     cfg["model"] = resolve_agy_model(
                         cfg.get("model"),
@@ -2056,6 +2258,10 @@ async def _run_agent(
             # Like the connectors: the class belongs to this launch, not to the stored row.
             cfg.pop("workload", None)
             _add_workload_kwarg(cfg, branch.chat_model.endpoint, workload)
+            # A role's tool-set fields replace the stored ones; a field it leaves out keeps
+            # the stored value, so resuming without a role does not widen a narrowed agent.
+            if tool_settings:
+                _add_claude_tool_kwargs(cfg, branch.chat_model.endpoint, tool_settings)
             # A resumed leg re-spawns a CLI child, so it needs the server set handed
             # to it just as a new one does; the persisted branch carries the model,
             # not the caller's directory. Which providers can be given a set, and
@@ -2078,9 +2284,11 @@ async def _run_agent(
                 cfg,
                 mcp_resolution.servers,
                 provider=provider,
-                # The persisted request carries the previous run's servers; only a declared set replaces
-                # them. A failed search leaves them, as it leaves a new leg to what its CLI finds.
-                exclusive=mcp_resolution.declared_empty,
+                # A set named by a config file, or declared empty, is the whole set: the provider's
+                # own servers are left out too. A set found by search joins what the provider finds
+                # for itself, and a failed search leaves the earlier run's servers, as it leaves a new
+                # leg to what its CLI finds.
+                exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
             )
             missing_profile = _missing_generated_codex_profile(cfg)
             if missing_profile is not None:
@@ -2186,15 +2394,31 @@ async def _run_agent(
             # A snapshot's resolution reports the config it was taken from and the
             # directory its search began in, both provenance; a resume must read the
             # snapshot itself, from this process's own directory.
-            named_on_the_line = mcp_config is not None and mcp_resolution.source is not None
+            selected_config = mcp_config or mcp_submit_snapshot
+            named_on_the_line = selected_config is not None and mcp_resolution.source is not None
             line_file = (
-                explicit_mcp_config_path(mcp_config, launch_dir=launch_dir)
+                explicit_mcp_config_path(selected_config, launch_dir=launch_dir)
                 if named_on_the_line
                 else None
             )
             branch.metadata[_MCP_LAUNCH_KEY] = {
                 "mcp_config": str(line_file) if line_file is not None else None,
                 "no_mcp_config": no_mcp_config,
+                "launch_dir": str(launch_dir),
+            }
+            if profile_disables_mcp:
+                branch.metadata[_MCP_LAUNCH_KEY]["no_mcp_config_source"] = "profile"
+            elif mcp_submit_snapshot is not None and not no_mcp_config:
+                branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "submit_snapshot"
+            elif mcp_config is not None and not no_mcp_config:
+                branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "explicit"
+        elif profile_disables_mcp:
+            # Once a resumed leg is contained by its profile, later resumes
+            # without that profile must not restore the earlier server set.
+            branch.metadata[_MCP_LAUNCH_KEY] = {
+                "mcp_config": None,
+                "no_mcp_config": True,
+                "no_mcp_config_source": "profile",
                 "launch_dir": str(launch_dir),
             }
 
@@ -2238,7 +2462,10 @@ async def _run_agent(
             run_manifest["api_usage"] = _api_usage.snapshot()
         if context_from:
             run_manifest["context_from"] = list(context_from)
-        if api_account is not None:
+        # A run whose own endpoint sends through the account router does not use the launcher's
+        # account name: the router picks the account for each request and ignores the variable.
+        # Its api_usage record names the account that paid.
+        if api_account is not None and not _endpoint_routing_enabled(branch.chat_model.endpoint):
             run_manifest["api_account"] = api_account
         _write_run_manifest = getattr(run, "write_manifest", None)
         if _write_run_manifest is not None:
@@ -2306,8 +2533,7 @@ async def _run_agent(
             # row: the run records its own process on run.json, where `li kill <run id>` reads it, and
             # says how to stop it (ADR-0104 Amendment 2).
             from lionagi.cli._logging import warn
-
-            from .kill import current_pid_markers
+            from lionagi.ln._proc import current_pid_markers
 
             run_manifest.update(current_pid_markers())
             _write_run_manifest(run_manifest)
@@ -2605,8 +2831,13 @@ async def _run_agent(
             # rate-limit replenisher tasks that hang anyio.run forever).
             with CancelScope(shield=True):
                 # Engine session id, used by teardown to tell a genuine failure
-                # from a wrapper exception racing a still-live engine session.
-                _engine_session_uid = getattr(branch.chat_model.endpoint, "session_id", None)
+                # from a wrapper exception racing a still-live engine session. Only an
+                # id the CLI reported in this process: one restored from the saved
+                # branch belongs to an earlier turn, whose status says nothing of
+                # this one.
+                _engine_session_uid = getattr(
+                    branch.chat_model.endpoint, "reported_session_id", None
+                )
                 registry = getattr(branch, "_context_providers", None)
                 injection_stats = getattr(registry, "stats", None) if registry is not None else None
                 _fold_injection_stats(_injection_totals, injection_stats)
@@ -2728,6 +2959,13 @@ async def _run_agent(
                     run_manifest["error"] = (
                         _error or "The run failed; no reason was recorded for it."
                     )
+                    if isinstance(_terminal_exc, FailedRoundError):
+                        _stop_reason = _terminal_exc.details.get("stop_reason")
+                        if _stop_reason:
+                            run_manifest["stop_reason"] = _stop_reason
+                        for _detail in ("stop_details", "refusal"):
+                            if _terminal_exc.details.get(_detail):
+                                run_manifest[_detail] = _terminal_exc.details[_detail]
                 if _write_run_manifest is not None:
                     _write_run_manifest(run_manifest)
                 # Only when an exception is on its way out, because then this is
@@ -2827,6 +3065,11 @@ async def _run_agent(
                     notify=notify,
                     mcp_config=mcp_config,
                     no_mcp_config=no_mcp_config,
+                    **(
+                        {"mcp_submit_snapshot": mcp_submit_snapshot}
+                        if mcp_submit_snapshot is not None
+                        else {}
+                    ),
                     _auto_resumed=True,
                     _worker_spawn_continuation=_resumed_continuation,
                     _injection_totals=_injection_totals,
@@ -3015,6 +3258,7 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
 
+    agent.add_argument("--mcp-submit-snapshot", default=None, help=argparse.SUPPRESS)
     agent.add_argument(
         "--mcp-config",
         dest="mcp_config",
@@ -3199,6 +3443,11 @@ def run_agent(args: argparse.Namespace) -> int:
                 images=image_uris,
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),
+                **(
+                    {"mcp_submit_snapshot": args.mcp_submit_snapshot}
+                    if getattr(args, "mcp_submit_snapshot", None) is not None
+                    else {}
+                ),
             )
         )
     except McpConfigError as exc:

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import SecretStr
 from pydantic_settings import DotEnvSettingsSource
 
-from lionagi.providers._secret_resolution import (
+from lionagi.service.accounts._secret_resolution import (
     SecretLookupResolution,
     lookup_one_name,
     resolve_secret_lookup_config,

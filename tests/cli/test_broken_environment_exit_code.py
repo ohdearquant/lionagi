@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from lionagi._feature_errors import MissingFeatureError
 from lionagi.cli._util import (
     EXIT_CODE_BY_STATUS,
     EXIT_CODE_ENVIRONMENT_ERROR,
@@ -101,6 +102,229 @@ def test_a_nameless_module_error_still_reports(monkeypatch, reported):
 
     assert cli_main.main([]) == EXIT_CODE_ENVIRONMENT_ERROR
     assert "a required module" in "\n".join(reported)
+
+
+_HUB_HINT = (
+    "the bundled provider hub is missing from this installation; "
+    "reinstall the matching lionagi release to restore it"
+)
+
+# What the provider registry raises when a selected provider cannot activate because a
+# declared dependency, or the bundled provider hub itself, is not installed: the typed
+# error is an ImportError but not a ModuleNotFoundError.
+MISSING_FEATURES = {
+    "optional-dependency": (
+        lambda: MissingFeatureError(
+            feature="providers",
+            missing_distribution="ollama",
+            install_hint="pip install lionagi[ollama]",
+            provider="ollama",
+            endpoint="chat/completions",
+            reason="missing_dependency",
+            import_root="ollama",
+        ),
+        ("ollama", "pip install lionagi[ollama]"),
+    ),
+    "provider-hub": (
+        lambda: MissingFeatureError(
+            feature="providers",
+            missing_distribution="lionagi",
+            install_hint=_HUB_HINT,
+            import_root="lionhub",
+        ),
+        ("lionhub", "reinstall the matching lionagi release"),
+    ),
+    "no-import-root": (
+        lambda: MissingFeatureError(
+            feature="providers",
+            missing_distribution="some-distribution",
+            install_hint="pip install some-distribution",
+        ),
+        ("some-distribution", "pip install some-distribution"),
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("make_error", "expected"), MISSING_FEATURES.values(), ids=MISSING_FEATURES.keys()
+)
+def test_a_missing_feature_exits_with_the_environment_code(
+    monkeypatch, reported, make_error, expected
+):
+    """A typed missing-feature error before any run exists is the environment too.
+
+    The registry raises it where a bare `ModuleNotFoundError` used to escape, and it is an
+    `ImportError` but not a `ModuleNotFoundError`, so a handler for the narrower type alone
+    lets it out as a traceback with the ordinary failure code.
+    """
+
+    def _boom(argv=None):
+        raise make_error()
+
+    monkeypatch.setattr(cli_main, "_run", _boom)
+
+    assert cli_main.main([]) == EXIT_CODE_ENVIRONMENT_ERROR
+
+    summary = "\n".join(reported)
+    for text in expected:
+        assert text in summary
+    assert "No run was started" in summary
+
+
+_NOT_STARTED = (
+    "No run was started, so this is an unusable environment rather than a failed run. "
+    "Install the missing dependency, then re-run."
+)
+
+# What the report says for each kind of error: the name of what is missing, and the guidance
+# that follows it. A module error carries none. A declared dependency's hint is a short install
+# command, and the provider hub's is a whole sentence, so the guidance has to read correctly
+# after either one.
+REPORTED_REQUIREMENTS = {
+    "missing-module": (
+        lambda: ModuleNotFoundError("No module named 'sniffio'", name="sniffio"),
+        "sniffio",
+        "",
+    ),
+    "install-command-hint": (
+        MISSING_FEATURES["optional-dependency"][0],
+        "ollama",
+        " Guidance: pip install lionagi[ollama]",
+    ),
+    "sentence-hint": (
+        MISSING_FEATURES["provider-hub"][0],
+        "lionhub",
+        f" Guidance: {_HUB_HINT}",
+    ),
+    "distribution-name-only": (
+        MISSING_FEATURES["no-import-root"][0],
+        "some-distribution",
+        " Guidance: pip install some-distribution",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("make_error", "missing", "guidance"),
+    REPORTED_REQUIREMENTS.values(),
+    ids=REPORTED_REQUIREMENTS.keys(),
+)
+def test_the_startup_report_names_what_is_missing_then_gives_the_guidance(
+    monkeypatch, reported, make_error, missing, guidance
+):
+    """The sentence names what is missing; the hint follows it as its own sentence rather than
+    sitting in parentheses inside the first one."""
+
+    def _boom(argv=None):
+        raise make_error()
+
+    monkeypatch.setattr(cli_main, "_run", _boom)
+
+    assert cli_main.main([]) == EXIT_CODE_ENVIRONMENT_ERROR
+    assert reported == [
+        f"cannot start: {missing} is not installed in this environment. {_NOT_STARTED}{guidance}"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("make_error", "missing", "guidance"),
+    REPORTED_REQUIREMENTS.values(),
+    ids=REPORTED_REQUIREMENTS.keys(),
+)
+def test_the_command_loader_report_names_what_is_missing_then_gives_the_guidance(
+    monkeypatch, reported, make_error, missing, guidance
+):
+    def _boom(selected):
+        raise make_error()
+
+    monkeypatch.setattr(cli_main, "build_cli_parser", _boom)
+
+    assert cli_main.main(["doctor"]) == EXIT_CODE_ENVIRONMENT_ERROR
+    assert reported == [
+        f"command 'doctor' cannot run: {missing} is not installed in this environment. "
+        f"{_NOT_STARTED}{guidance}"
+    ]
+
+
+@pytest.mark.parametrize("make_error", [make for make, _ in MISSING_FEATURES.values()])
+def test_a_missing_feature_after_a_run_was_allocated_is_not_an_environment_fault(
+    monkeypatch, reported, make_error
+):
+    """The allocation rule holds for the typed error as it does for a missing module."""
+
+    def _boom(argv=None):
+        mark_run_allocated()
+        raise make_error()
+
+    monkeypatch.setattr(cli_main, "_run", _boom)
+
+    with pytest.raises(MissingFeatureError):
+        cli_main.main([])
+    assert reported == []
+
+
+def test_the_loader_boundary_does_not_absorb_a_missing_feature(monkeypatch, reported):
+    """A command module whose import raises the typed error is reported as the environment,
+    not as a command that "failed to load"."""
+
+    def _boom(selected):
+        raise MISSING_FEATURES["optional-dependency"][0]()
+
+    monkeypatch.setattr(cli_main, "build_cli_parser", _boom)
+
+    assert cli_main.main(["doctor"]) == EXIT_CODE_ENVIRONMENT_ERROR
+    assert "ollama" in "\n".join(reported)
+
+
+def test_li_agent_exits_78_when_the_ollama_package_is_absent(tmp_path):
+    """`li agent` selects its provider before it allocates a run, so a provider whose declared
+    package is not installed is an unusable environment: exit 78, the package and the install
+    hint named last, and nothing on disk.
+
+    Driven through `main()` with the real registry. The ollama package is absent from the
+    child's import system, and the nested-agent refusal, which looks at the process's
+    ancestors, is answered the way the agent-depth tests answer it so the run does not depend
+    on what started the test. The home directory is a fresh one, so a run that was allocated
+    would be visible in it.
+    """
+    script = textwrap.dedent(
+        """
+        import sys
+
+        # A None entry makes ``import ollama`` fail and ``find_spec("ollama")`` answer None,
+        # which is what an interpreter without the package does.
+        sys.modules["ollama"] = None
+
+        from lionagi.service import _subagent_admission as admission
+
+        admission._INHERITED_AGENT_DEPTH = 0
+        admission._ancestor_agent_depth = lambda: (0, None)
+
+        from lionagi.cli.main import main
+
+        sys.exit(main(["agent", "ollama/a-model", "say hello"]))
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": SOURCE_PATH,
+            "HOME": str(tmp_path),
+            "USERPROFILE": str(tmp_path),
+        },
+        timeout=120,
+    )
+
+    assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
+    last_line = [line for line in proc.stderr.splitlines() if line.strip()][-1]
+    assert "ollama" in last_line
+    assert "pip install lionagi[ollama]" in last_line
+    assert "No run was started" in last_line
+    assert not (tmp_path / ".lionagi" / "runs").exists()
 
 
 @pytest.mark.parametrize("code", [0, 1, 2, 124, 130])

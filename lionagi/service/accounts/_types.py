@@ -8,7 +8,7 @@ Money is integer nanodollars throughout; no value here holds key material.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from lionagi.ln.types import Enum
@@ -58,13 +58,58 @@ class RouterErrorCode(str, Enum):
     TRANSPORT_ERROR = "transport_error"
 
 
-class AccountRoutingError(Exception):
-    """A routed call's refusal or failure, carrying only a code and validated ids.
+# The closed sets written in ADR-0126 Amendments 7 and 8. A provider table added there
+# extends _PROVIDER_ERROR_TYPES.
+_PROVIDER_ERROR_TYPES = frozenset(
+    {
+        "invalid_request_error",
+        "authentication_error",
+        "billing_error",
+        "permission_error",
+        "not_found_error",
+        "conflict_error",
+        "request_too_large",
+        "rate_limit_error",
+        "api_error",
+        "timeout_error",
+        "overloaded_error",
+        "other",
+    }
+)
+_REJECTION_CLASSES = frozenset(
+    {
+        "prompt_too_long",
+        "tool_result_missing",
+        "prefill_unsupported",
+        "thinking_config_unsupported",
+        "thinking_block_invalid",
+        "tool_choice_unsupported",
+        "tool_type_unsupported",
+        "image_too_large",
+        "credit_balance_low",
+        "spend_limit_reached",
+        "other",
+    }
+)
 
-    The message is built from those fields alone, so no provider text, request
+
+def _check_member(field: str, value: Any, allowed: frozenset[str]) -> None:
+    """Refuse a value that is neither None nor in ``allowed``; name the field, never the value."""
+    if value is not None and not (isinstance(value, str) and value in allowed):
+        raise ValueError(f"{field} is not one of its allowed values")
+
+
+class AccountRoutingError(Exception):
+    """A routed call's refusal or failure, carrying only a code and validated fields.
+
+    The message is built from the code and those validated fields alone (ids, an HTTP
+    status, and two strings checked against closed sets), so no provider text, request
     content or key material can reach it. Raise it ``from None`` where it replaces
     another exception, so a traceback does not print the replaced one. That exception
     stays reachable as ``__context__``, so it must carry no key material either.
+
+    ``provider_error_type`` and ``rejection_class`` are accepted only with
+    ``RouterErrorCode.REQUEST_REJECTED``: with any other code they raise ``ValueError``.
     """
 
     def __init__(
@@ -74,11 +119,23 @@ class AccountRoutingError(Exception):
         account: str | None = None,
         attempt_id: UUID | None = None,
         http_status: int | None = None,
+        provider_error_type: str | None = None,
+        rejection_class: str | None = None,
     ) -> None:
+        _check_member("provider_error_type", provider_error_type, _PROVIDER_ERROR_TYPES)
+        _check_member("rejection_class", rejection_class, _REJECTION_CLASSES)
+        if (
+            provider_error_type is not None or rejection_class is not None
+        ) and code is not RouterErrorCode.REQUEST_REJECTED:
+            raise ValueError(
+                "provider_error_type and rejection_class are set only on a request_rejected error"
+            )
         self.code = code
         self.account = account
         self.attempt_id = attempt_id
         self.http_status = http_status
+        self.provider_error_type = provider_error_type
+        self.rejection_class = rejection_class
         parts = [code.value]
         if account is not None:
             parts.append(f"account={account}")
@@ -86,6 +143,10 @@ class AccountRoutingError(Exception):
             parts.append(f"attempt={attempt_id}")
         if http_status is not None:
             parts.append(f"status={http_status}")
+        if provider_error_type is not None:
+            parts.append(f"type={provider_error_type}")
+        if rejection_class is not None:
+            parts.append(f"class={rejection_class}")
         super().__init__(" ".join(parts))
 
 
@@ -140,12 +201,37 @@ class CompleteUsage:
 
 @dataclass(frozen=True, slots=True)
 class ProvenNotSent:
-    """The transport's own proof that the request never left this process."""
+    """The transport's own proof that the request never left this process.
+
+    ``caller_cancelled`` is true when the caller's own cancellation, not a fault on
+    the account's side, is why the request never left; the ledger then keeps what it
+    knows about the account's cached prefixes.
+    """
+
+    caller_cancelled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class UnknownOutcome:
+    """Settlement evidence that closes an attempt with a reason code and no usage.
+
+    ``provider_error_type`` and ``rejection_class`` are closed-set strings that only a
+    ``request_rejected`` outcome may carry. The ledger records all three on the attempt.
+    """
+
     reason_code: str
+    provider_error_type: str | None = None
+    rejection_class: str | None = None
+
+    def __post_init__(self) -> None:
+        _check_member("provider_error_type", self.provider_error_type, _PROVIDER_ERROR_TYPES)
+        _check_member("rejection_class", self.rejection_class, _REJECTION_CLASSES)
+        if (
+            self.provider_error_type is not None or self.rejection_class is not None
+        ) and self.reason_code != "request_rejected":
+            raise ValueError(
+                "provider_error_type and rejection_class are set only on a request_rejected outcome"
+            )
 
 
 Evidence = CompleteUsage | ProvenNotSent | UnknownOutcome

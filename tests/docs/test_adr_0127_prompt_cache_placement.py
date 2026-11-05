@@ -80,7 +80,8 @@ def test_p4_states_both_paths_for_the_flag() -> None:
     )
     assert "the request-option filter drops the flag" in flat
     assert "on an endpoint with no request-option filter" in flat
-    assert "an `iModel` restored with `request_options` None, or a dict-configured model" in flat
+    assert "on an endpoint with no request-option filter — a dict-configured model" in flat
+    assert "a restored model now keeps its endpoint's registered request model" in flat
     assert "the flag reaches the mark code" in flat
     assert "one ephemeral five-minute mark lands on the last message's last block" in flat
 

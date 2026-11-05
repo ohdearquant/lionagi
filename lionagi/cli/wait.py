@@ -17,10 +17,10 @@ from lionagi.ln.concurrency import sleep
 from lionagi.state.db import TERMINAL_STATUSES_BY_ENTITY_TYPE
 from lionagi.state.reasons import VALID_REASON_CODES
 
+from ._inspection import EXIT_RUNNING, EXIT_UNKNOWN, resolve_any_target, resolve_primary_session
 from ._logging import log_error
 from ._util import AmbiguousIdError
 from .monitor import _resolve_schedule_run, _split_watched_ids
-from .status import EXIT_RUNNING, EXIT_UNKNOWN, _resolve_any_target, _resolve_primary_session
 
 __all__ = (
     "wait_for_terminal",
@@ -32,7 +32,7 @@ __all__ = (
 _UNKNOWN_REASON = "unknown"
 
 # Per-kind "waited run succeeded" predicate, for the aggregate exit code.
-# Mirrors status.py's _SESSION_SUCCESS / _PLAY_SUCCESS.
+# Mirrors _inspection.py's _SESSION_SUCCESS / _PLAY_SUCCESS.
 _SUCCESS_STATUS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"completed"}),
     "invocation": frozenset({"completed"}),
@@ -43,7 +43,7 @@ _SUCCESS_STATUS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 
 async def _resolve_wait_target(db: Any, raw_id: str) -> tuple[str, dict[str, Any]] | None:
     """Any-kind resolver: session, invocation, play (falls back to branch_id), then schedule_run."""
-    hit = await _resolve_any_target(db, raw_id)
+    hit = await resolve_any_target(db, raw_id)
     if hit is not None:
         return hit
     row = await _resolve_schedule_run(db, raw_id)
@@ -70,10 +70,10 @@ async def _artifact_dir_for(db: Any, kind: str, row: dict[str, Any]) -> str | No
     if kind == "session":
         return str(RUNS_ROOT / row["id"])
     if kind == "invocation":
-        primary = await _resolve_primary_session(db, "invocation", row)
+        primary = await resolve_primary_session(db, "invocation", row)
         return str(RUNS_ROOT / primary["id"]) if primary else None
     if kind == "play":
-        primary = await _resolve_primary_session(db, "play", row)
+        primary = await resolve_primary_session(db, "play", row)
         return str(RUNS_ROOT / primary["id"]) if primary else None
     if kind == "schedule_run":
         invocation_id = row.get("invocation_id")
@@ -82,7 +82,7 @@ async def _artifact_dir_for(db: Any, kind: str, row: dict[str, Any]) -> str | No
         inv = await db.get_invocation(invocation_id)
         if inv is None:
             return None
-        primary = await _resolve_primary_session(db, "invocation", inv)
+        primary = await resolve_primary_session(db, "invocation", inv)
         return str(RUNS_ROOT / primary["id"]) if primary else None
     return None
 

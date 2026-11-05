@@ -28,7 +28,7 @@ def _new_flag_payload(endpoint: Endpoint, request: dict):
 
 class TestExaSearchPayloadParity:
     def test_basic_query(self):
-        from lionagi.providers.exa.search import ExaSearchEndpoint, ExaSearchRequest
+        from lionhub.providers.exa.search import ExaSearchEndpoint, ExaSearchRequest
 
         ep = ExaSearchEndpoint()
         req = {"query": "lionagi framework", "num_results": 5}
@@ -39,7 +39,7 @@ class TestExaSearchPayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.exa.search import ExaSearchEndpoint
+        from lionhub.providers.exa.search import ExaSearchEndpoint
 
         ep = ExaSearchEndpoint()
         req = {"query": "test", "num_results": 3}
@@ -49,7 +49,7 @@ class TestExaSearchPayloadParity:
         assert "num_results" not in payload
 
     def test_none_fields_excluded(self):
-        from lionagi.providers.exa.search import ExaSearchEndpoint
+        from lionhub.providers.exa.search import ExaSearchEndpoint
 
         ep = ExaSearchEndpoint()
         req = {"query": "test"}
@@ -60,7 +60,7 @@ class TestExaSearchPayloadParity:
 
 class TestExaContentsPayloadParity:
     def test_basic_ids(self):
-        from lionagi.providers.exa.contents import ExaContentsEndpoint, ExaContentsRequest
+        from lionhub.providers.exa.contents import ExaContentsEndpoint, ExaContentsRequest
 
         ep = ExaContentsEndpoint()
         req = {"ids": ["https://example.com"]}
@@ -71,7 +71,7 @@ class TestExaContentsPayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.exa.contents import ExaContentsEndpoint
+        from lionhub.providers.exa.contents import ExaContentsEndpoint
 
         ep = ExaContentsEndpoint()
         req = {"ids": ["https://example.com"]}
@@ -81,7 +81,7 @@ class TestExaContentsPayloadParity:
 
 class TestExaFindSimilarPayloadParity:
     def test_basic_url(self):
-        from lionagi.providers.exa.find_similar import ExaFindSimilarEndpoint, ExaFindSimilarRequest
+        from lionhub.providers.exa.find_similar import ExaFindSimilarEndpoint, ExaFindSimilarRequest
 
         ep = ExaFindSimilarEndpoint()
         req = {"url": "https://example.com"}
@@ -92,7 +92,7 @@ class TestExaFindSimilarPayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.exa.find_similar import ExaFindSimilarEndpoint
+        from lionhub.providers.exa.find_similar import ExaFindSimilarEndpoint
 
         ep = ExaFindSimilarEndpoint()
         req = {"url": "https://example.com", "num_results": 5}
@@ -103,7 +103,7 @@ class TestExaFindSimilarPayloadParity:
 
 class TestFirecrawlScrapePayloadParity:
     def test_basic_url(self):
-        from lionagi.providers.firecrawl.scrape import (
+        from lionhub.providers.firecrawl.scrape import (
             FirecrawlScrapeEndpoint,
             FirecrawlScrapeRequest,
         )
@@ -117,7 +117,7 @@ class TestFirecrawlScrapePayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
+        from lionhub.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
 
         ep = FirecrawlScrapeEndpoint()
         req = {"url": "https://example.com", "only_main_content": True}
@@ -126,7 +126,7 @@ class TestFirecrawlScrapePayloadParity:
         assert "only_main_content" not in payload
 
     def test_none_fields_excluded(self):
-        from lionagi.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
+        from lionhub.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
 
         ep = FirecrawlScrapeEndpoint()
         req = {"url": "https://example.com"}
@@ -137,7 +137,7 @@ class TestFirecrawlScrapePayloadParity:
 
 class TestFirecrawlMapPayloadParity:
     def test_basic_url(self):
-        from lionagi.providers.firecrawl.map import FirecrawlMapEndpoint, FirecrawlMapRequest
+        from lionhub.providers.firecrawl.map import FirecrawlMapEndpoint, FirecrawlMapRequest
 
         ep = FirecrawlMapEndpoint()
         req = {"url": "https://example.com"}
@@ -150,7 +150,7 @@ class TestFirecrawlMapPayloadParity:
 
 class TestFirecrawlCrawlPayloadParity:
     def test_basic_url(self):
-        from lionagi.providers.firecrawl.crawl import FirecrawlCrawlEndpoint, FirecrawlCrawlRequest
+        from lionhub.providers.firecrawl.crawl import FirecrawlCrawlEndpoint, FirecrawlCrawlRequest
 
         ep = FirecrawlCrawlEndpoint()
         req = {"url": "https://example.com"}
@@ -161,7 +161,7 @@ class TestFirecrawlCrawlPayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.firecrawl.crawl import FirecrawlCrawlEndpoint
+        from lionhub.providers.firecrawl.crawl import FirecrawlCrawlEndpoint
 
         ep = FirecrawlCrawlEndpoint()
         req = {"url": "https://example.com", "max_depth": 3}
@@ -203,12 +203,12 @@ class TestSerializeByAliasDefault:
         assert "maxTokens" not in payload
 
     def test_flag_endpoint_configs_are_true(self):
-        from lionagi.providers.exa.contents import ExaContentsEndpoint
-        from lionagi.providers.exa.find_similar import ExaFindSimilarEndpoint
-        from lionagi.providers.exa.search import ExaSearchEndpoint
-        from lionagi.providers.firecrawl.crawl import FirecrawlCrawlEndpoint
-        from lionagi.providers.firecrawl.map import FirecrawlMapEndpoint
-        from lionagi.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
+        from lionhub.providers.exa.contents import ExaContentsEndpoint
+        from lionhub.providers.exa.find_similar import ExaFindSimilarEndpoint
+        from lionhub.providers.exa.search import ExaSearchEndpoint
+        from lionhub.providers.firecrawl.crawl import FirecrawlCrawlEndpoint
+        from lionhub.providers.firecrawl.map import FirecrawlMapEndpoint
+        from lionhub.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
 
         for cls in (
             ExaSearchEndpoint,

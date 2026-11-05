@@ -94,21 +94,31 @@ whether the caller named the file, and why no usable source was selected.
 whole-file lifecycle write, including orchestration live-start and terminal
 persistence, so a later status update cannot erase or redefine them.
 
-A run submitted through the MCP server reaches its snapshot through `--mcp-config`, the flag a
-caller names a file with, so the snapshot carries `lionagiSnapshotOf`, the path of the config the
-submission found. A file carrying that key resolves as found (`McpResolution.explicit` is false),
-so the set the submission found is not taken for one the caller named: the job-control policy
-under `_hand_mcp_servers` still applies to it, and a leg on a provider with no MCP transport is
-not refused for it the way it is for a named config. The key is read wherever the file is named,
-so a caller who names a copy of a snapshot gets it read as found too. The resolution keeps the
-original path in `source`, which is the path persisted as `mcp_config_source`; the snapshot path
-is only the file the child reads. The snapshot also carries `lionagiSnapshotSearchedFrom`, the
-directory the submission searched from, which the resolution reports as `searched_from` and the
-run persists as `mcp_config_searched_from`, since a submission that names a cwd starts the child
-there, which need not be the directory the search began in. A snapshot from a submission that
-predates that key reports the child's own directory. Both keys must hold absolute paths; any
-other value makes the file unusable. The child's own directory stays the one a relative
-`--mcp-config` name and a resume read from.
+A run submitted through the MCP server receives its generated snapshot through an internal
+ambient-origin carrier. The carrier, not the file's contents, determines that the set was found
+rather than named, so the job-control policy under `_hand_mcp_servers` still applies. A file the
+caller names with `--mcp-config` is explicit even if it contains snapshot metadata. The one
+exception is that a named file carrying the snapshot marker has job-control servers withheld from
+orchestration workers, as for an ambient set. A contained profile drops an ambient snapshot and
+refuses a caller-named config. A checkpoint or agent branch
+records the snapshot origin and path so resume reuses the same choice. A selector-less
+submitted resume takes no new snapshot: its job handle reports that the recorded choice will
+be replayed and leaves declared server names unknown. A flow resume refuses new MCP selectors
+and a new agent profile; an agent resume or continuation refuses server exclusions. Agent
+resumes can still explicitly name a config, disable MCP, or select a profile.
+
+Older records that name a file but lack an origin cannot prove whether the file was caller-named
+or a generated snapshot. Replay reads that file once: a valid file without snapshot metadata
+remains explicit, while a file with snapshot metadata, or an unreadable or malformed file,
+refuses the ambiguous replay and asks for a fresh run. Snapshot metadata is never used to grant
+ambient authority. A fresh caller-named file is still explicit even if it contains that metadata.
+
+A generated snapshot carries `lionagiSnapshotOf` and `lionagiSnapshotSearchedFrom` for reporting
+the original source and search directory. The snapshot path is the file the child reads; the
+original source and search directory are persisted in `mcp_config_source` and
+`mcp_config_searched_from`. A snapshot predating the search-directory key reports the child's
+own directory. When present on a carrier-selected snapshot, both metadata paths must be absolute.
+The child's own directory stays the one a relative `--mcp-config` name and a resume read from.
 
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
@@ -125,11 +135,16 @@ was launched with. A new branch records that choice once, in `branch.metadata` u
 `mcp_launch`: the config file on the command line as an absolute path (a submitted leg's
 snapshot included), the `--no-mcp-config` flag, and the launch directory. The resume resolves
 from the record, searching from the launch directory, so the directory the resume runs in does
-not decide what is found. A flag given on the resume is used for that leg instead of the record.
+not decide what is found. A flag given on the resume is used for that leg instead of the record,
+except that profile-origin `mcp: none` containment cannot be relaxed with `--mcp-config`; that
+combination is refused even when no profile is named on resume. Its `mcp_launch` record sets
+`no_mcp_config_source` to `profile`.
 Either way, a set resolved on the resume replaces the servers the earlier run was handed, on
 codex (whose servers are merged overrides) as on Claude, and the Claude strict flag goes with
-them: a non-empty set is handed to a resumed leg as it is to a new one, without
-`--strict-mcp-config`. A recorded config is read from the launch directory when its path is
+them. The set is handed to a resumed leg as it is to a new one: a set named by a config file,
+on the resume or in the record, is the whole set (Claude gets `--strict-mcp-config`, and codex
+is given only those servers), while a set found by searching the launch directory adds to the
+servers the provider finds for itself. A recorded config is read from the launch directory when its path is
 relative; one that is missing or can no longer be read refuses the resume, naming that config
 and the flags to resume with instead. A branch created before the choice was recorded resolves
 nothing new, and its request keeps the servers its earlier run was handed.
@@ -331,7 +346,13 @@ choice — the budget is still enforced on these ops, they're just never told
 about it, so this case logs a warning and returns no preambles rather than
 inventing a value.
 
-**`_hand_mcp_servers`** — the orchestrator is handed the set the run resolved.
+**`_hand_mcp_servers`** — the orchestrator is handed the set the run resolved,
+under the rule a single agent follows: a set named with `--mcp-config`, or an
+empty one (`--no-mcp-config`, or a named config listing no servers), is its whole
+set, so a Claude orchestrator is run with `--strict-mcp-config` and a codex one
+loads none of the servers its own config declares outside it (see the codex
+paragraph below for how), while a set found only by the `.mcp.json` lookup is
+added to what its CLI discovers. With no set resolved it is handed nothing.
 When the run resolved a set, leaf workers, nodes spawned while the flow runs
 and the fanout synthesis branch are handed an exact set: when the run's set
 came from discovery, lionagi's own job-control server (`li mcp`, `python -m
@@ -340,10 +361,11 @@ registered and behind a launcher such as `uv run` or `env`, recognised by
 `_is_job_control_server`; any program named `li` run with `mcp` is taken for
 it) is withheld and the rest of the found set reaches them, and a planned
 worker's system prompt names each withheld alias, so its absence is explained
-rather than met as a missing tool. Naming `--mcp-config` is the opt-in: it
-grants everything the file lists, job control included, for a worker meant to
-orchestrate in turn. A submission's snapshot is the exception: it is read as
-found even when named (above), so the policy still applies to it. Once a worker set exists it is the worker's whole set, handed over
+rather than met as a missing tool. Naming an unmarked file with `--mcp-config`
+opts in to everything the file lists, job control included, for a worker meant
+to orchestrate in turn. A named file carrying the snapshot marker remains
+explicit for the orchestrator but has job-control servers withheld from workers
+like an ambient snapshot. Once a worker set exists it is the worker's whole set, handed over
 exclusively: the Claude CLI is run with `--strict-mcp-config`, so it adds none
 of the servers it would discover itself. Every worker, a reactively spawned node included, is passed through
 `_isolate_worker_cli_config` before the hand-over, set or no set: a codex worker
@@ -366,7 +388,8 @@ so set it in the worker's `env` or in this process's environment. A
 `CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an absolute
 path is refused before either read or any process starts, from either
 environment. A worker therefore has none of the servers its CLI would load
-from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them.
+from `$CODEX_HOME/config.toml`, a withheld one included; an orchestrator handed a
+discovered set, or no set, keeps them.
 A Claude worker is not isolated here and keeps its settings sources, as an
 interactive run does, unless its role sets `contain_user_settings`
 (`_contain_claude_worker`): then the CLI loads no settings files for it, so the
@@ -398,7 +421,14 @@ neither can be read. An empty set whose allowlist names none of those servers
 carries `--ignore-user-config` instead, and nothing is disabled by name. If the
 request names a codex profile, or its config overrides select one (`profile`), its
 build is refused either way: the flag drops the profile, and the disables by name do
-not reach a server only the profile declares. A `codex/<name>` model string that
+not reach a server only the profile declares. Disabling by name keeps the user config
+loaded, and codex merges a config file's server with a forwarded server of the same name
+key by key, so a forwarded server whose name the system config, the user config, a named
+profile file or a project layer already declares is refused with a `ConfigurationError`
+(rename the forwarded server, or remove that entry from the file). The managed config
+(`managed_config.toml`), configuration delivered by device management and an enterprise
+cloud configuration bundle are layers this process cannot read, so a same-named server
+declared only there is not caught. A `codex/<name>` model string that
 names a profile file is read by lionagi before codex starts, so under the flag its
 model settings still apply (`model` and every key starting with `model_`, provider
 routing included), and a profile that sets anything else, `sandbox_mode` or
@@ -490,8 +520,13 @@ with `--no-mcp-config` keeps no servers across `li o flow --resume`, and a run
 started with no flag searches for `.mcp.json` from its original launch
 directory, rather than re-running `setup_orchestration` with today's defaults
 and re-discovering whatever `.mcp.json` happens to sit near the resuming
-directory. The search runs again at resume, so it reads that config as it is
-then. A checkpoint written before these fields existed (no `no_mcp_config`
+directory. An orchestrator profile's `mcp: none` is stored as the effective refusal and a
+profile-origin marker in the run configuration. Each planned worker's profile refusal and the
+profile name that caused it are stored in its plan entry; each reactive spawn stores whether it
+inherited a profile refusal. A retry preserves those recorded refusals even if a profile later
+removes them, while a current profile can add a new refusal. The search runs again at resume, so
+it reads that config as it is then. A recorded worker refusal is enforced on resume; a plan entry
+without one uses the current profile. A checkpoint written before these fields existed (no `no_mcp_config`
 key in its persisted `config`) has no record of that original decision, so
 `_resume_flow` fails closed: it treats the checkpoint as `no_mcp_config=True`
 and logs a warning, rather than defaulting to ambient discovery for a run
@@ -1003,7 +1038,7 @@ so other surfaces can await completion without shelling out; `run_wait()` is the
 that resolves argv, drives the poll loop with clean SIGINT/SIGTERM handling, and prints.
 
 **`_resolve_wait_target`** — any-kind resolver order: session, invocation, play
-(`_resolve_any_target`, which also falls back to a branch_id), then schedule_run.
+(`resolve_any_target` in `lionagi/cli/_inspection.py`, which also falls back to a branch_id), then schedule_run.
 Terminal-state definitions live in `TERMINAL_STATUSES_BY_ENTITY_TYPE`
 (`lionagi/state/db.py`, ADR-0035).
 
@@ -1348,6 +1383,12 @@ and `li o` report on one line with exit `1`.
 
 ## `kill.py`
 
+The process identity, signalling and recorded-worker cleanup helpers are defined in
+`lionagi/cli/_kill_service.py`. `kill.py` keeps the `li kill` parser, `_do_kill`, the
+`--all-stale` sweep and `run_kill`, and imports the helpers it uses from there under their
+public names. The Studio cancel path and `li state doctor` import `kill_one`,
+`list_running_children`, `check_pid_identity` and the related helpers from the new module.
+
 No standalone entries beyond the general ADR-0035 CAS-guard pattern documented under
 `_runs.py` / `status.py` — `li kill`'s `TransitionRejectedError` handling follows the same
 race-window discipline (the session may have gone terminal between resolution and the kill
@@ -1524,6 +1565,12 @@ generation, after the parent's drain and successful database close. Reopening a 
 installs a fresh generation in the same guarded status write.
 
 ## `mirror.py` — Claude transcript mirroring into StateDB
+
+The state, passes and `mirror_forever` described below are defined in
+`lionagi/cli/_mirror_service.py`, and the preview-size setting in
+`lionagi/cli/_mirror_settings.py`. `mirror.py` keeps the `li mirror` parser, its
+`_run` loop and `run_mirror`, and imports the service names back for callers that
+read them from `lionagi.cli.mirror`.
 
 **`_Lineage`** — cross-session conversation-lineage detection protocol. A continued
 conversation opens a fresh transcript whose first message points — via `parentUuid` — at the

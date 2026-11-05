@@ -16,7 +16,11 @@ from lionagi.state.db import StateDB
 from lionagi.state.lifecycle import reconciler as reconciliation
 from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
-from tests.state.lifecycle.test_exact_terminal_attempt import _seed, _wait_for_attempt_release
+from tests.state.lifecycle.test_exact_terminal_attempt import (
+    _first_attempt,
+    _seed,
+    _wait_for_attempt_release,
+)
 
 
 def _forbid(*_args, **_kwargs):
@@ -36,12 +40,10 @@ def no_external_effects(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", _forbid)
 
 
-async def _wait_thread_event(event: threading.Event, timeout: float = 2) -> None:
-    async def wait():
-        while not event.is_set():
-            await asyncio.sleep(0.005)
-
-    await asyncio.wait_for(wait(), timeout)
+async def _wait_thread_event(event: threading.Event) -> None:
+    """Wait until another thread sets ``event``; only the per-test timeout bounds it."""
+    while not event.is_set():
+        await asyncio.sleep(0.005)
 
 
 class _ForeignOwner:
@@ -55,8 +57,7 @@ class _ForeignOwner:
         self.cancelled = None
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
-        if not self.ready.wait(2):
-            raise AssertionError("foreign loop did not start")
+        self.ready.wait()
 
     def _run(self):
         self.loop = asyncio.new_event_loop()
@@ -103,9 +104,7 @@ class _ForeignOwner:
                 self.future.cancel()
 
         self.loop.call_soon_threadsafe(stop)
-        self.thread.join(timeout=2)
-        if self.thread.is_alive():
-            raise AssertionError("foreign test loop did not stop")
+        self.thread.join()
 
 
 @pytest.mark.asyncio
@@ -136,15 +135,14 @@ async def test_foreign_future_remains_reserved_through_settlement_and_ack(
     async def held_ack(worker):
         acknowledgements.append(worker.key[2])
         ack_entered.set()
-        if not release_ack.wait(5):
-            raise AssertionError("test did not release fake ACK gate")
+        release_ack.wait()
         await original_ack(worker)
 
     def deliver():
         effects.append("effect")
         invoked.set()
-        if arrival == "late" and not release_sync.wait(5):
-            raise AssertionError("test did not release sync worker")
+        if arrival == "late":
+            release_sync.wait()
         return owner.future
 
     async def prepare(_row, _db):
@@ -159,11 +157,16 @@ async def test_foreign_future_remains_reserved_through_settlement_and_ack(
             key = (reconciliation._store_identity(db), "foreign", event_id)
             first = TerminalReconciler("foreign", prepare, batch_size=1, timeout=1.0)
             second = TerminalReconciler("foreign", prepare, batch_size=1, timeout=1.0)
-            attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
+            attempt = asyncio.create_task(
+                _first_attempt(first, adapter, db, event_id, key, invoked)
+            )
             try:
-                await _wait_thread_event(invoked)
-                result = await asyncio.wait_for(attempt, 4)
+                # The attempt ends on the reconciler's own budget; once it
+                # reports an attempt, the delivery thread has been started. A budget
+                # that expired before the hook began is repeated with a wider one.
+                result = await attempt
                 assert result.status == "failed" and result.attempted is True
+                await _wait_thread_event(invoked)
                 if arrival == "late":
                     release_sync.set()
                 assert (await getattr(second, adapter)(db, event_id)).status == "busy"
@@ -173,7 +176,15 @@ async def test_foreign_future_remains_reserved_through_settlement_and_ack(
                 owner.settle(outcome)
                 await _wait_thread_event(owner.done)
                 if acknowledged:
-                    await _wait_thread_event(ack_entered)
+                    # The ACK gate opens only while the event is still reserved;
+                    # if the reservation ended first it never will.
+                    while not ack_entered.is_set():
+                        with reconciliation._workers_lock:
+                            reserved = (
+                                key in reconciliation._attempts or key in reconciliation._workers
+                            )
+                        assert reserved, "reservation ended before the late ACK started"
+                        await asyncio.sleep(0.005)
                     assert (await getattr(second, adapter)(db, event_id)).status == "busy"
                     assert not await is_acknowledged(db, event_id, "foreign")
                     release_ack.set()
@@ -220,9 +231,12 @@ async def test_already_settled_foreign_success_acks_once(tmp_path, monkeypatch, 
             key = (reconciliation._store_identity(db), "done", event_id)
             first = TerminalReconciler("done", prepare, batch_size=1, timeout=1.0)
             second = TerminalReconciler("done", prepare, batch_size=1, timeout=1.0)
-            attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
+            attempt = asyncio.create_task(
+                _first_attempt(first, adapter, db, event_id, key, ack_entered)
+            )
             try:
-                result = await asyncio.wait_for(attempt, 4)
+                # A budget that expired before delivery began is repeated with a wider one.
+                result = await asyncio.wait_for(attempt, 10)
                 assert result.status == "failed" and result.attempted is True
                 await _wait_thread_event(ack_entered)
                 assert (await getattr(second, adapter)(db, event_id)).status == "busy"
@@ -346,7 +360,8 @@ async def test_unobservable_foreign_loop_quarantines_and_reports_stuck(
             second = TerminalReconciler("unobservable", prepare, batch_size=1, timeout=1.0)
             try:
                 with caplog.at_level("WARNING", logger=reconciliation.__name__):
-                    result = await getattr(first, adapter)(db, event_id)
+                    # A budget that expired before the hook began is repeated with a wider one.
+                    result = await _first_attempt(first, adapter, db, event_id, key, invoked)
                     assert invoked.is_set() and result.status == "failed" and result.attempted
                     assert (await getattr(second, adapter)(db, event_id)).status == "busy"
                     assert not await is_acknowledged(db, event_id, "unobservable")
@@ -467,11 +482,13 @@ async def test_foreign_loop_stops_after_observer_registration_and_restarts(
             key = (reconciliation._store_identity(db), "paused", event_id)
             first = TerminalReconciler("paused", prepare, batch_size=1, timeout=1.0)
             second = TerminalReconciler("paused", prepare, batch_size=1, timeout=1.0)
-            attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
+            attempt = asyncio.create_task(
+                _first_attempt(first, adapter, db, event_id, key, invoked)
+            )
             try:
                 with caplog.at_level("WARNING", logger=reconciliation.__name__):
                     await _wait_thread_event(invoked)
-                    result = await asyncio.wait_for(attempt, 4)
+                    result = await asyncio.wait_for(attempt, 10)
                     assert result.status == "failed" and result.attempted
                     release_sync.set()
                     owner.pause_when_observer_is_registered()

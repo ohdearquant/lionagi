@@ -3875,7 +3875,7 @@ async def test_agent_setup_completes_on_a_compatibility_store(tmp_path, monkeypa
     monkeypatch.setattr(_runs, "_open_shared_db", compatibility_store)
     lookups = _record_shared_store_lookups(monkeypatch)
     monkeypatch.setattr(
-        "lionagi.cli.kill.current_pid_markers",
+        "lionagi.ln._proc.current_pid_markers",
         lambda: {
             "pid": 1,
             "pid_create_time": 0.0,
@@ -3926,7 +3926,7 @@ async def test_native_agent_setup_reaches_no_store_beside_its_own(tmp_path, monk
     monkeypatch.setattr(_runs, "_open_shared_db", native_store)
     lookups = _record_shared_store_lookups(monkeypatch)
     monkeypatch.setattr(
-        "lionagi.cli.kill.current_pid_markers",
+        "lionagi.ln._proc.current_pid_markers",
         lambda: {
             "pid": 1,
             "pid_create_time": 0.0,

@@ -22,11 +22,11 @@ root = Path(sys.argv[1]).resolve()
 # lionhub ships in the same distribution from lionhub/src; resolve this checkout's copy.
 sys.path.insert(0, str(root / "lionhub" / "src"))
 sys.path.insert(0, str(root))
-handlers_name = "lionagi.providers._agentic_handlers"
-providers_at_start = sorted(name for name in sys.modules if name.startswith("lionagi.providers"))
+handlers_name = "lionhub.providers._agentic_handlers"
+providers_at_start = sorted(name for name in sys.modules if name.startswith("lionhub.providers"))
 imodel = importlib.import_module("lionagi.service.imodel")
 loaded_before = handlers_name in sys.modules
-providers_after_imodel = sorted(name for name in sys.modules if name.startswith("lionagi.providers"))
+providers_after_imodel = sorted(name for name in sys.modules if name.startswith("lionhub.providers"))
 config = importlib.import_module("lionagi.service.connections.endpoint_config")
 handlers = importlib.import_module(handlers_name)
 modules = {"imodel": imodel, "config": config, "handlers": handlers}
@@ -57,9 +57,9 @@ importlib.import_module("lionagi.providers.anthropic.messages")
 
 
 def test_agentic_handlers_preserve_runtime_state_name_export():
-    from lionagi.providers import _agentic_handlers
-    from lionagi.providers._agentic_handlers import RUNTIME_STATE_NAMES
     from lionagi.service.connections import endpoint_config
+    from lionhub.providers import _agentic_handlers
+    from lionhub.providers._agentic_handlers import RUNTIME_STATE_NAMES
 
     assert RUNTIME_STATE_NAMES is endpoint_config.RUNTIME_STATE_NAMES
     assert _agentic_handlers.RUNTIME_STATE_NAMES is RUNTIME_STATE_NAMES
@@ -81,7 +81,7 @@ def test_fresh_imodel_import_reports_provider_handler_loading():
     expected = {
         "imodel": str(_IMODEL.resolve()),
         "config": str((ROOT / "lionagi/service/connections/endpoint_config.py").resolve()),
-        "handlers": str((ROOT / "lionagi/providers/_agentic_handlers.py").resolve()),
+        "handlers": str((ROOT / "lionhub/src/lionhub/providers/_agentic_handlers.py").resolve()),
     }
     assert report["files"] == expected
     assert report["specs"] == expected

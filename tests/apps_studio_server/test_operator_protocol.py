@@ -1850,8 +1850,8 @@ async def test_a_terminal_run_json_write_that_fails_is_logged(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_missing_claude_cli_finishes_with_public_provider_fix(tmp_path, monkeypatch):
-    from lionagi.providers.anthropic import claude_code
     from lionagi.studio.operator.engine import BranchOperatorEngine
+    from lionhub.providers.anthropic import claude_code
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2444,6 +2444,18 @@ async def test_provider_session_column_is_added_to_a_preexisting_conversation_st
     assert (await store.get_conversation(conversation_id))["providerSessionId"] == "session-xyz"
 
 
+def test_system_guidance_distinguishes_view_metadata_from_rendered_content():
+    from lionagi.studio.operator.engine import _SYSTEM_PROMPT
+
+    guidance = " ".join(_SYSTEM_PROMPT.lower().split())
+    assert "get_current_view" in guidance
+    assert "cannot see rendered content" in guidance
+    for missing in ("rows", "panel text", "banners", "pixels"):
+        assert missing in guidance
+    assert "never say you cannot tell" not in guidance
+    assert "structured equivalent" not in guidance
+
+
 def test_compiled_prompt_carries_the_view_the_human_is_looking_at():
     """The browser sends a view snapshot every turn; the prompt must show it.
 
@@ -2477,6 +2489,35 @@ def test_compiled_prompt_carries_the_view_the_human_is_looking_at():
     assert "advisor" in prompt
     # The instruction stays last so the model reads the view as background.
     assert prompt.endswith("which page am I on?")
+
+
+def test_compiled_prompt_describes_view_as_turn_time_metadata_not_screen_content():
+    from lionagi.studio.operator.engine import _compile_operator_prompt
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    async def request_permission(*_args):
+        raise AssertionError("prompt compilation cannot request permission")
+
+    prompt = _compile_operator_prompt(
+        OperatorEngineTurn(
+            conversation_id="conversation",
+            request_id="request",
+            instruction="What is visible on this page?",
+            context={"space": "library", "route": "/library", "selection": {"run": "run-1"}},
+            history=(),
+            request_permission=request_permission,
+        )
+    )
+    guidance = " ".join(prompt.lower().split())
+    assert "metadata" in guidance
+    assert "when this turn was submitted" in guidance
+    assert "get_current_view" in guidance
+    assert "rendered content" in guidance
+    assert "pixels" in guidance
+    assert "treat it as current fact" not in guidance
+    assert "- route: /library" in prompt
+    assert '"run":"run-1"' in prompt
+    assert prompt.endswith("What is visible on this page?")
 
 
 def test_compiled_prompt_bounds_an_oversized_filter_payload():

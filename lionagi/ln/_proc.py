@@ -21,6 +21,7 @@ from typing import Any, Literal, TypeVar
 from anyio.lowlevel import checkpoint_if_cancelled
 
 from .concurrency import move_on_after, shield, sleep
+from .concurrency.errors import shield_quietly
 
 # Two reads of a kernel tick clock for one process can differ in the last
 # place, so a recorded start time is compared to a live one within this. Two
@@ -227,6 +228,19 @@ def raw_create_time(proc) -> float:
     if _read_raw_create_time is None:
         _read_raw_create_time = _select_raw_create_time_reader()
     return _read_raw_create_time(proc)
+
+
+def current_pid_markers() -> dict[str, Any]:
+    """Host-scoped process identity for liveness and kill verification."""
+    import psutil
+
+    return {
+        "pid": os.getpid(),
+        "pid_create_time": raw_create_time(psutil.Process(os.getpid())),
+        "pid_host": socket.gethostname(),
+        "pid_boot_time": psutil.boot_time(),
+        "process_identity_mode": "local",
+    }
 
 
 def process_create_time(pid: int) -> tuple[str, float | None]:
@@ -1334,7 +1348,7 @@ async def communicate_in_process_group(
         # child's group. The done-callback kills the group once the handle arrives.
         spawn = asyncio.ensure_future(_spawn_in_group(argv, child_env, group_marker))
         try:
-            proc, leader_created = await asyncio.shield(spawn)
+            proc, leader_created = await shield_quietly(spawn)
         except BaseException:
             spawn.add_done_callback(partial(_end_abandoned_spawn, group_marker))
             raise

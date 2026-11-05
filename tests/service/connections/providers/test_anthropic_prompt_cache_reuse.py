@@ -12,11 +12,11 @@ from unittest.mock import patch
 import pytest
 
 from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers.anthropic import _prompt_cache as planner
 from lionagi.service import _prompt_cache as ledger_mod
 from lionagi.service._prompt_cache import PromptCacheCall, clone_ledger, ledger_for, settle
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
+from lionhub.providers.anthropic import _prompt_cache as planner
 
 MODEL = "claude-opus-5-5"
 SYSTEM = "You review pull requests."

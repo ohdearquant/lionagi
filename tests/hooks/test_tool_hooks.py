@@ -59,13 +59,18 @@ async def test_tool_pre_fires_before_invocation():
 
     from lionagi.operations.act.act import _act
 
-    with patch("lionagi.operations.act.act.uuid.uuid4", return_value="fixed-uuid"):
-        await _act(branch, {"function": "my_tool", "arguments": {"x": 1}})
+    arguments = {"x": "a" * 250}
+    with (
+        patch("lionagi.operations.act.act.uuid.uuid4", return_value="fixed-uuid"),
+        patch("lionagi.operations.act.act.logger.debug") as debug,
+    ):
+        await _act(branch, {"function": "my_tool", "arguments": arguments}, verbose_action=True)
 
     assert len(pre_calls) == 1
     assert pre_calls[0]["tool_name"] == "my_tool"
     assert pre_calls[0]["call_id"] == "fixed-uuid"
-    assert "x" in pre_calls[0]["args_summary"]
+    assert pre_calls[0]["args_summary"] == str(arguments)[:200]
+    debug.assert_any_call("Invoking action %s with %s.", "my_tool", str(arguments)[:50] + "...")
 
 
 async def test_tool_pre_fires_before_invoke_is_called():

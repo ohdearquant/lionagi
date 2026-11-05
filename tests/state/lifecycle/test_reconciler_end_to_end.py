@@ -143,7 +143,7 @@ async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_two_independent_reconcilers_can_deliver_same_event_once_each(tmp_path):
+async def test_two_reconcilers_share_capacity_for_the_same_event(tmp_path):
     path = tmp_path / "state.db"
     first_db, second_db = StateDB(path), StateDB(path)
     await first_db.open()
@@ -152,26 +152,32 @@ async def test_two_independent_reconcilers_can_deliver_same_event_once_each(tmp_
         transition_id = await _commit_offline_transition(first_db)
         await register_consumer(first_db, "concurrent", start="all")
         entered = []
-        both_entered = asyncio.Event()
+        started, release = asyncio.Event(), asyncio.Event()
 
         async def prepare(row, _db):
             async def deliver():
                 entered.append(row["transition_id"])
-                if len(entered) == 2:
-                    both_entered.set()
-                await asyncio.wait_for(both_entered.wait(), timeout=5)
+                started.set()
+                await release.wait()
                 return DeliveryOutcome.SUCCESS
 
             return PreparedDelivery(deliver)
 
-        first = TerminalReconciler("concurrent", prepare)
-        second = TerminalReconciler("concurrent", prepare)
-        outcomes = await asyncio.wait_for(
-            asyncio.gather(first.run_pass(first_db), second.run_pass(second_db)), timeout=10
-        )
-        assert entered == [transition_id, transition_id]
-        assert all(result["attempted"] == 1 for result in outcomes)
-        assert all(result["acknowledged"] == 1 for result in outcomes)
+        first = TerminalReconciler("concurrent", prepare, batch_size=1, timeout=5)
+        second = TerminalReconciler("concurrent", prepare, batch_size=1, timeout=5)
+        first_pass = asyncio.create_task(first.run_pass(first_db))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            blocked = await asyncio.wait_for(second.run_pass(second_db), timeout=2)
+            assert blocked["saturated"] == 1 and blocked["attempted"] == 0
+            assert entered == [transition_id]
+            release.set()
+            completed = await asyncio.wait_for(first_pass, timeout=2)
+            assert completed["attempted"] == completed["acknowledged"] == 1
+            assert (await second.run_pass(second_db))["attempted"] == 0
+        finally:
+            release.set()
+            await asyncio.gather(first_pass, return_exceptions=True)
         rows = await first_db.fetch_all(
             "SELECT transition_id FROM terminal_deliveries WHERE consumer = :consumer",
             {"consumer": "concurrent"},

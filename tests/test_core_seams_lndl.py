@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""The remaining LNDL imports and root compatibility catalog are bounded."""
+"""The core imports no LNDL module, and the root compatibility catalog is bounded."""
 
 from __future__ import annotations
 
@@ -18,10 +18,9 @@ def test_remaining_core_lndl_imports_are_exactly_the_allowed_sites():
     # Hits read "path:line: module"; the line is dropped so edits elsewhere in a file
     # do not move the boundary.
     sites = [(hit.split(":", 1)[0], hit.rsplit(": ", 1)[1]) for hit in actual]
-    assert sites == [
-        ("lionagi/__init__.py", "lionagi.lndl"),
-        ("lionagi/operations/lndl_middle/lndl_middle.py", "lionagi.lndl"),
-    ], actual
+    # The language and its Middle live in lionhub.lndl; the root's nine lazy exports name the
+    # old path through the compatibility table and are checked below, so no core file imports it.
+    assert sites == [], actual
 
 
 def test_nine_root_lazy_exports_are_the_explicit_compatibility_catalog():

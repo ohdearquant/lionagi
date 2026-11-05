@@ -217,12 +217,12 @@ def exit_code_for_view(
     sessions: list[dict[str, Any]],
 ) -> int:
     """Reuses the existing shared status vocabulary (cli/_util.py,
-    cli/status.py) rather than inventing a second exit-code table: 0 trusted
+    cli/_inspection.py) rather than inventing a second exit-code table: 0 trusted
     completion, 1 ordinary failure/completed_empty/skip, 2 unknown/no run, 3
     running, and the existing timeout/abort/cancel codes where a session or
     invocation status carries one."""
+    from lionagi.cli._inspection import EXIT_RUNNING, EXIT_UNKNOWN
     from lionagi.cli._util import EXIT_CODE_BY_STATUS
-    from lionagi.cli.status import EXIT_RUNNING, EXIT_UNKNOWN
 
     if run is None:
         return EXIT_UNKNOWN

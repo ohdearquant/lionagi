@@ -35,7 +35,7 @@ import type {
   WorkerLinkEdge,
 } from "./types";
 import { reportAccessRefused, reportConnectivityFailure } from "./connectivity";
-import { pairedBearer, pairedDecisionToken } from "./pairing";
+import { forgetPairedBearer, pairedBearer, pairedDecisionToken } from "./pairing";
 
 declare global {
   interface Window {
@@ -72,6 +72,25 @@ export function resolveAuthToken(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The bearer pairing gave this page, when `token` (what a request carried) is
+ * that bearer: a token the desktop shell injected is not the page's to drop, so
+ * it yields nothing.
+ */
+function pairedBearerSentWith(token: string | undefined): string | undefined {
+  return token && !window.__STUDIO_AUTH_TOKEN__ ? token : undefined;
+}
+
+/**
+ * A 401 on a request that carried a bearer: forget the bearer pairing gave this
+ * page, if that is what the request sent, so the page asks to be paired again,
+ * and tell the gate the daemon refused it.
+ */
+function refuseAccess(sentPairedBearer: string | undefined): void {
+  if (sentPairedBearer !== undefined) forgetPairedBearer(sentPairedBearer, API_BASE);
+  reportAccessRefused();
 }
 
 const API_OVERRIDE_STORAGE_KEY = "studio.apiBaseOverride";
@@ -244,11 +263,15 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     setHeader("Content-Type", "application/json");
   }
 
-  // Attach the desktop-shell bearer token when present.
+  // Attach the desktop-shell bearer token when present, or else the one this
+  // page was paired with.
   const token = resolveAuthToken();
   if (token) {
     setHeader("Authorization", `Bearer ${token}`);
   }
+  // A refusal drops the bearer from pairing, which the page can obtain again; a
+  // token the shell injected is not the page's to drop.
+  const sentPairedBearer = pairedBearerSentWith(token);
 
   let response: Response;
   try {
@@ -260,9 +283,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     reportConnectivityFailure();
     throw err;
   }
-  if (response.status === 401) {
-    reportAccessRefused();
-  }
+  if (response.status === 401) refuseAccess(sentPairedBearer);
   if (!response.ok) {
     // Preserve the backend `detail` field (FastAPI/Pydantic validation errors,
     // our structured 409 body, etc.) so callers can surface it to the operator.
@@ -346,6 +367,7 @@ function sseSubscribe(
     while (!closed) {
       try {
         const token = resolveAuthToken();
+        const sentPairedBearer = pairedBearerSentWith(token);
         const headers: Record<string, string> = { Accept: "text/event-stream" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
         onConnectionState?.("connecting");
@@ -355,6 +377,7 @@ function sseSubscribe(
           signal: controller.signal,
         });
         if (!response.ok) {
+          if (response.status === 401) refuseAccess(sentPairedBearer);
           if (onResponseError && (await onResponseError(response))) {
             close();
             break;
@@ -880,6 +903,7 @@ export function streamOperatorConversation(
         const query = new URLSearchParams({ after_sequence: String(cursor) });
         const headers: Record<string, string> = { Accept: "text/event-stream" };
         const token = resolveAuthToken();
+        const sentPairedBearer = pairedBearerSentWith(token);
         if (token) headers.Authorization = `Bearer ${token}`;
         const response = await withLivenessDeadline(
           fetch(
@@ -888,6 +912,7 @@ export function streamOperatorConversation(
           ),
         );
         if (!response.ok || !response.body) {
+          if (response.status === 401) refuseAccess(sentPairedBearer);
           const fatal =
             response.status < 500 &&
             response.status !== 408 &&
@@ -1077,6 +1102,7 @@ export async function getRunFile(runId: string, path: string): Promise<RunFileRe
   const query = new URLSearchParams({ path });
   const url = `${API_BASE}/api/runs/${encodeURIComponent(runId)}/file?${query.toString()}`;
   const token = resolveAuthToken();
+  const sentPairedBearer = pairedBearerSentWith(token);
   const headers: HeadersInit = {};
   if (token) (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
 
@@ -1088,6 +1114,7 @@ export async function getRunFile(runId: string, path: string): Promise<RunFileRe
     throw err;
   }
   if (!response.ok) {
+    if (response.status === 401) refuseAccess(sentPairedBearer);
     let detail: string | undefined;
     try {
       const body = (await response.json()) as { detail?: string };

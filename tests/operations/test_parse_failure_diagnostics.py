@@ -10,6 +10,7 @@ reformat retries do not reissue an identical request.
 """
 
 import copy
+import importlib
 import json
 import pickle
 from unittest.mock import patch
@@ -18,6 +19,10 @@ import pytest
 from pydantic import BaseModel
 
 from lionagi.operations._defaults import make_parse_param
+from lionagi.operations.communicate.communicate import (
+    communicate,
+    prepare_communicate_kw,
+)
 from lionagi.operations.parse import (
     ExtractionError,
     SchemaRejectedError,
@@ -342,3 +347,163 @@ class TestEmptyText:
         assert isinstance(unparsed, UnparsedResponse)
         assert unparsed.failure_kind == "extraction"
         assert unparsed.validation_error is None
+
+
+_CUT_OFF_TEXT = "Let me think about the transcript first. The student is A. Rivera and"
+
+# One reply text in each provider shape: as a response that stopped at its output token
+# limit, and as one that ended normally.
+_OUTPUT_LIMIT_REPLIES = {
+    "anthropic-max-tokens": lambda body: {
+        "type": "message",
+        "role": "assistant",
+        "stop_reason": "max_tokens",
+        "content": [{"type": "text", "text": body}],
+    },
+    "chat-completions-length": lambda body: {
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": body},
+            }
+        ]
+    },
+    "responses-incomplete": lambda body: {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": body}]}],
+    },
+}
+_ENDED_REPLIES = {
+    "anthropic-end-turn": lambda body: {
+        "type": "message",
+        "role": "assistant",
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": body}],
+    },
+    "chat-completions-stop": lambda body: {
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": body},
+            }
+        ]
+    },
+    "responses-completed": lambda body: {
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": body}]}],
+    },
+}
+
+
+async def _communicate_on(body: str, raw: dict, sent: list, *, mode: str = "raise", repair=None):
+    """Run communicate() on a first reply whose provider response is ``raw``.
+
+    The first turn and the repair request are stubbed. Each repair request sent is counted in
+    ``sent`` and answers with ``repair`` as its text; without ``repair`` it fails.
+    """
+    branch = Branch()
+
+    async def first_turn(branch_, instruction, chat_param, **_kw):
+        return (
+            branch_.msgs.create_instruction(instruction="extract the transcript"),
+            AssistantResponse(
+                role="assistant",
+                content={"assistant_response": body},
+                sender=branch_.id,
+                recipient=branch_.user,
+                metadata={"model_response": raw},
+            ),
+        )
+
+    async def repair_turn(*_a, **_kw):
+        sent.append(1)
+        if repair is None:
+            raise AssertionError("a repair request was sent")
+        return None, AssistantResponse(
+            role="assistant",
+            content={"assistant_response": repair},
+            sender=branch.id,
+            recipient=branch.user,
+        )
+
+    kw = prepare_communicate_kw(
+        branch,
+        "extract the transcript",
+        response_format=Transcript,
+        num_parse_retries=1,
+        fuzzy_match_kwargs={"handle_validation": mode},
+    )
+    chat_module = importlib.import_module("lionagi.operations.chat.chat")
+    with patch.object(chat_module, "chat", first_turn):
+        with patch.object(Branch, "chat", repair_turn):
+            return await communicate(branch, **kw)
+
+
+class TestReplyCutOffAtItsOutputLimit:
+    """A reply that stopped at its output token limit is not sent to a repair request.
+
+    The reply is incomplete, so asking a model to reformat it cannot recover the missing text.
+    The parse goes straight to its failure handling and says the reply stopped at its limit.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "make_reply", _OUTPUT_LIMIT_REPLIES.values(), ids=list(_OUTPUT_LIMIT_REPLIES)
+    )
+    async def test_no_repair_request_is_sent_and_the_reason_names_the_stop(self, make_reply):
+        sent: list = []
+
+        with pytest.raises(ValueError, match="stopped at its output token limit") as raised:
+            await _communicate_on(_CUT_OFF_TEXT, make_reply(_CUT_OFF_TEXT), sent)
+
+        assert sent == []
+        assert type(raised.value.__cause__) is ExtractionError
+
+    @pytest.mark.asyncio
+    async def test_return_none_gives_none_without_a_repair_request(self):
+        sent: list = []
+        raw = _OUTPUT_LIMIT_REPLIES["anthropic-max-tokens"](_CUT_OFF_TEXT)
+
+        outcome = await _communicate_on(_CUT_OFF_TEXT, raw, sent, mode="return_none")
+
+        assert sent == []
+        assert outcome is None
+
+    @pytest.mark.asyncio
+    async def test_return_value_gives_the_unparsed_text_without_a_repair_request(self):
+        sent: list = []
+        raw = _OUTPUT_LIMIT_REPLIES["anthropic-max-tokens"](_CUT_OFF_TEXT)
+
+        outcome = await _communicate_on(_CUT_OFF_TEXT, raw, sent, mode="return_value")
+
+        assert sent == []
+        assert isinstance(outcome, UnparsedResponse)
+        assert outcome == _CUT_OFF_TEXT
+        assert outcome.failure_kind == "extraction"
+        assert outcome.validation_error is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("make_reply", _ENDED_REPLIES.values(), ids=list(_ENDED_REPLIES))
+    async def test_a_reply_that_ended_normally_still_gets_the_repair_request(self, make_reply):
+        sent: list = []
+
+        outcome = await _communicate_on(
+            _CUT_OFF_TEXT, make_reply(_CUT_OFF_TEXT), sent, repair=FENCED_CONFORMANT
+        )
+
+        assert len(sent) == 1
+        assert isinstance(outcome, Transcript)
+
+    @pytest.mark.asyncio
+    async def test_a_complete_reply_cut_off_at_its_limit_still_parses(self):
+        # The stop only ends the repair; a reply that already parses is used as it is.
+        sent: list = []
+        raw = _OUTPUT_LIMIT_REPLIES["anthropic-max-tokens"](FENCED_CONFORMANT)
+
+        outcome = await _communicate_on(FENCED_CONFORMANT, raw, sent)
+
+        assert sent == []
+        assert isinstance(outcome, Transcript)

@@ -8,9 +8,9 @@ import sys
 
 import pytest
 
-from lionagi.providers.openai._config import OpenAIConfigs
-from lionagi.providers.openai.batch import OpenaiBatchEndpoint, OpenAIBatchRequest
 from lionagi.service.connections.match_endpoint import match_endpoint
+from lionhub.providers.openai._config import OpenAIConfigs
+from lionhub.providers.openai.batch import OpenaiBatchEndpoint, OpenAIBatchRequest
 
 
 def test_batch_config_exposes_request_schema():
@@ -30,9 +30,9 @@ def test_registry_loader_discovers_batch_without_provider_import():
             "-c",
             "import sys\n"
             "from lionagi.service.connections.match_endpoint import match_endpoint\n"
-            "assert 'lionagi.providers.openai.batch' not in sys.modules\n"
+            "assert 'lionhub.providers.openai.batch' not in sys.modules\n"
             "endpoint = match_endpoint('openai', 'batches')\n"
-            "assert type(endpoint).__module__ == 'lionagi.providers.openai.batch'\n"
+            "assert type(endpoint).__module__ == 'lionhub.providers.openai.batch'\n"
             "assert type(endpoint).__name__ == 'OpenaiBatchEndpoint'\n",
         ],
         capture_output=True,

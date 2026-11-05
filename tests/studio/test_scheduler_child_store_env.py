@@ -112,7 +112,7 @@ def test_an_mcp_terminal_notice_does_not_see_the_store(probe, tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_secrets_lookup_command_does_not_see_the_store(probe, tmp_path):
-    from lionagi.providers._secret_resolution import (
+    from lionagi.service.accounts._secret_resolution import (
         ResolvedSecretLookup,
         _run_lookup,
         lookup_one_name,

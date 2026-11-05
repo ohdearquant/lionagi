@@ -26,7 +26,7 @@ def configured_command_env_names(
     from lionagi._errors import ConfigurationError
     from lionagi._settings import load_settings
     from lionagi.config import settings
-    from lionagi.providers._secret_resolution import resolve_secret_lookup_config
+    from lionagi.service.accounts._secret_resolution import resolve_secret_lookup_config
     from lionagi.service.connections.registry import EndpointRegistry
 
     try:

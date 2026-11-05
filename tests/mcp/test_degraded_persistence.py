@@ -172,7 +172,7 @@ async def test_resume_with_unreadable_degradation_state_keeps_generic_error(
         return None
 
     monkeypatch.setattr("lionagi.state.db.StateDB", EmptyStateDB)
-    monkeypatch.setattr("lionagi.cli.status._resolve_any_target", unresolved)
+    monkeypatch.setattr("lionagi.cli._inspection.resolve_any_target", unresolved)
 
     with pytest.raises(FlowResumeError, match=r"No run, session, invocation, or play found"):
         await _checkpoint.resolve_checkpoint_target(run_id)

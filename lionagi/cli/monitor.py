@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import math
 import re
@@ -13,6 +14,7 @@ import time
 from functools import cache
 from pathlib import Path
 from typing import Any
+from unicodedata import category
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import parse_duration
@@ -20,7 +22,8 @@ from lionagi.ln.concurrency import sleep
 from lionagi.state.engine import mask_credentials
 
 from ._project import detect_project
-from ._runs import RUNS_ROOT
+from ._runs import _resolved_run_state_dir
+from ._schedule_parsing import _chain_action_with_usable_selected_kind
 from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
 from ._util import pid_alive as _pid_alive_int
 
@@ -279,6 +282,18 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
     return entity_type, row
 
 
+def _session_run_dir(session_id: str, run_id: Any) -> Path | None:
+    """Resolve the recorded run, using the session ID only for legacy rows."""
+    try:
+        return _resolved_run_state_dir(session_id if run_id is None else run_id)
+    except RuntimeError:
+        return None  # pathlib reports symlink loops as RuntimeError on Python < 3.13.
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None
+        raise
+
+
 def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
     """Return the last N lines from a stream buffer file."""
     buf_path = run_dir / "stream" / f"{branch_id}.buffer.jsonl"
@@ -287,19 +302,34 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
     try:
         import json as _json
 
-        lines = buf_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        tail = lines[-n_lines:]
+        with buf_path.open(encoding="utf-8", errors="replace", newline="") as stream:
+            data = stream.read()
+        tail = data.removesuffix("\n").split("\n")[-n_lines:] if data else []
+        if data and not data.endswith("\n"):
+            tail = tail[:-1]
         texts: list[str] = []
-        for line in tail:
+        for line in (line.removesuffix("\r") for line in tail):
             try:
                 obj = _json.loads(line)
-                # Claude stream chunks carry 'delta.text' or 'text'
-                text = (obj.get("delta") or {}).get("text") or obj.get("text") or ""
+                if obj.get("_lionagi_stream_chunk") is True:
+                    if obj.get("type") != "text":
+                        continue
+                    text = obj.get("content") if isinstance(obj.get("content"), str) else ""
+                else:
+                    # Older records use delta.text or text, sometimes with their own type.
+                    text = (obj.get("delta") or {}).get("text") or obj.get("text") or ""
                 if text:
                     texts.append(text[:120])
             except (ValueError, AttributeError):
                 texts.append(line[:120])
-        return texts
+        return [
+            "".join(
+                char
+                for char in text
+                if char == "\t" or category(char) not in {"Cc", "Cf", "Zl", "Zp"}
+            )
+            for text in texts
+        ]
     except OSError:
         return []
 
@@ -420,10 +450,32 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
         )
         lines.append(line)
 
+    quarantined = [
+        str(row.get("id", "")) for row in rows if row.get("unverifiable_quarantined") is True
+    ]
+    if quarantined:
+        lines.append("identity unverified, quarantined: " + ", ".join(quarantined))
+    for row in rows:
+        if row.get("_quarantine_record_unreadable") is True:
+            lines.append(f"quarantine record unreadable: {row['_quarantine_kind']} {row['id']}")
+
     return "\n".join(lines)
 
 
 # ── Entity row builders ───────────────────────────────────────────────────────
+
+
+def _is_unverifiable_quarantined(row: dict[str, Any]) -> bool:
+    """Show a running row's disposition only while its recorded identity matches."""
+    from lionagi.state._quarantine_identity import is_current_quarantine
+
+    return is_current_quarantine(row)
+
+
+def _has_unreadable_quarantine(row: dict[str, Any]) -> bool:
+    from lionagi.state._quarantine_identity import _is_unreadable_quarantine
+
+    return _is_unreadable_quarantine(row)
 
 
 def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
@@ -434,6 +486,9 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "type": sess.get("invocation_kind") or "session",
         "project": sess.get("project") or "-",
         "status": sess.get("status") or "?",
+        "unverifiable_quarantined": _is_unverifiable_quarantined(sess),
+        "_quarantine_record_unreadable": _has_unreadable_quarantine(sess),
+        "_quarantine_kind": "session",
         # Older terminal records can retain a phase from their live execution.
         "phase": (
             None if sess.get("status") in SESSION_TERMINAL_STATUSES else sess.get("current_phase")
@@ -478,6 +533,9 @@ def _invocation_to_row(inv: dict[str, Any]) -> dict[str, Any]:
         "type": _invocation_kind(inv),
         "project": "-",
         "status": inv.get("status") or "?",
+        "unverifiable_quarantined": _is_unverifiable_quarantined(inv),
+        "_quarantine_record_unreadable": _has_unreadable_quarantine(inv),
+        "_quarantine_kind": "invocation",
         "phase": inv.get("skill") or "-",
         "elapsed": _elapsed(
             inv.get("started_at"),
@@ -549,6 +607,10 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append(_bold(f"SESSION  {sess['id']}"))
     lines.append(f"  status:    {_colour_status(sess.get('status') or '?')}")
+    if _is_unverifiable_quarantined(sess):
+        lines.append("  quarantine: process identity unverified")
+    elif _has_unreadable_quarantine(sess):
+        lines.append(f"  quarantine record unreadable: session {sess['id']}")
     lines.append(f"  kind:      {sess.get('invocation_kind') or '-'}")
     if sess.get("playbook_name"):
         lines.append(f"  playbook:  {sess['playbook_name']}")
@@ -610,8 +672,8 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
         lines.append("")
         lines.extend(_render_branch_lines(branch_rows))
 
-    run_dir = RUNS_ROOT / sess["id"]
-    if run_dir.exists():
+    run_dir = _session_run_dir(sess["id"], sess.get("run_id"))
+    if run_dir is not None and run_dir.exists():
         branches_dir = run_dir / "branches"
         if branches_dir.exists():
             branch_files = sorted(
@@ -707,6 +769,10 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append(_bold(f"INVOCATION  {inv['id']}"))
     lines.append(f"  status:        {_colour_status(inv.get('status') or '?')}")
+    if _is_unverifiable_quarantined(inv):
+        lines.append("  quarantine:    process identity unverified")
+    elif _has_unreadable_quarantine(inv):
+        lines.append(f"  quarantine record unreadable: invocation {inv['id']}")
     lines.append(f"  kind:          {_invocation_kind(inv)}")
     lines.append(f"  skill:         {inv.get('skill') or '-'}")
     lines.append(f"  plugin:        {inv.get('plugin') or '-'}")
@@ -876,7 +942,7 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
     session_id = play.get("session_id")
     if session_id:
         srow = await db.fetch_one(
-            "SELECT status, model, provider, effort FROM sessions WHERE id = ?",
+            "SELECT status, model, provider, effort, run_id FROM sessions WHERE id = ?",
             (session_id,),
         )
         if srow:
@@ -893,8 +959,8 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
                 lines.append("")
                 lines.extend(_render_branch_lines(branch_rows, indent="    "))
 
-            run_dir = RUNS_ROOT / session_id
-            if run_dir.exists():
+            run_dir = _session_run_dir(session_id, srow["run_id"])
+            if run_dir is not None and run_dir.exists():
                 branches_dir = run_dir / "branches"
                 if branches_dir.exists():
                     branch_files = sorted(
@@ -971,10 +1037,16 @@ async def _gather_entities(
     plays: list[dict[str, Any]] = []
     if entity_type in (None, "play"):
         plays = await _query_running_plays(db, since=since, project=project)
-        # A play row is the canonical rendering of its backing session, so
-        # drop that session only when the play row itself is being shown.
+        # A play row is the canonical rendering of its backing session, unless
+        # that session has a quarantine disposition the play cannot represent.
         play_session_ids = {p["session_id"] for p in plays if p.get("session_id")}
-        sessions = [s for s in sessions if s["id"] not in play_session_ids]
+        sessions = [
+            s
+            for s in sessions
+            if s["id"] not in play_session_ids
+            or _is_unverifiable_quarantined(s)
+            or _has_unreadable_quarantine(s)
+        ]
 
     rows.extend(("session", s) for s in sessions)
 
@@ -1032,7 +1104,7 @@ _WATCH_READ_ATTEMPTS = 3
 
 async def _subagent_status() -> dict[str, Any]:
     from lionagi.ln.concurrency import run_sync as _run_sync
-    from lionagi.providers._subagent_admission import subagent_admission_status
+    from lionagi.service._subagent_admission import subagent_admission_status
 
     try:
         # Off the event loop: the read waits on each pool's admission lock.
@@ -1452,12 +1524,15 @@ async def _schedule_declares_chain_action(
     *,
     cache: dict[str, dict[str, Any] | None],
 ) -> bool:
-    """True if `schedule_id` declares an on_success/on_fail action matching
-    the outcome that just landed, i.e. a grace wait for the chain child is warranted."""
+    """Whether the action selected for this outcome has a usable kind.
+
+    A declared action with an unusable kind returns False, so it does not
+    warrant a grace wait for a chain child.
+    """
     if schedule_id not in cache:
         cache[schedule_id] = await db.get_schedule(schedule_id)
     sched = cache[schedule_id] or {}
-    return bool(sched.get("on_success")) if exit_code == 0 else bool(sched.get("on_fail"))
+    return _chain_action_with_usable_selected_kind(sched, exit_code == 0) is not None
 
 
 def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
@@ -2039,6 +2114,8 @@ def _machine_entity(kind: str, row: dict[str, Any]) -> dict[str, Any]:
         if field == "current_phase" and row.get("status") in SESSION_TERMINAL_STATUSES:
             value = None
         entity[field] = optional_flag(value) if field in _ENTITY_BOOL_FIELDS else value
+    if kind in ("session", "invocation"):
+        entity["unverifiable_quarantined"] = _is_unverifiable_quarantined(row)
     return entity
 
 

@@ -17,16 +17,32 @@ bytes in a multibyte encoding can stay silent.
 from __future__ import annotations
 
 import ast
+import functools
+import importlib.metadata
 import json
+import os
 import posixpath
 import re
+import shutil
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 import yaml
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 SWITCH = "vars.ADVISORY_PR_CHECKS != 'off' && !github.event.pull_request.draft"
 
@@ -1132,6 +1148,7 @@ CI_GATE_CONDITIONAL_GATES = {
     "studio-docker": "studio",
     "minimal-import": "imports",
     "no-eager-heavies": "imports",
+    "compat-deps": "compat",
     "lionrs": "lionrs",
     "lion1": "lion1",
 }
@@ -1168,6 +1185,17 @@ CI_CHANGES_FILTERS = {
         "uv.lock",
         ".github/workflows/ci.yml",
     ],
+    # The `lionagi/` entries of `compat` are not listed here: they are recomputed from
+    # the imports in the files the job runs (see the compat filter test further down).
+    "compat": [
+        "pyproject.toml",
+        "uv.lock",
+        "tests/conftest.py",
+        "tests/_shared_conftest.py",
+        "tests/state/conftest.py",
+        "tests/state/test_compatibility_*.py",
+        ".github/workflows/ci.yml",
+    ],
     "lionrs": ["lionrs/**", ".github/workflows/ci.yml"],
     "lion1": ["lion1/**", ".github/workflows/ci.yml"],
 }
@@ -1198,6 +1226,13 @@ def _changes_filters(workflows: Path = WORKFLOWS) -> dict:
     steps = _parse((workflows / "ci.yml").read_text())["jobs"]["changes"]["steps"]
     filter_step = next(step for step in steps if step.get("id") == "filter")
     return _parse(filter_step["with"]["filters"])
+
+
+def _pinned_changes_filters(workflows: Path = WORKFLOWS) -> dict:
+    """The filters as CI_CHANGES_FILTERS pins them: `compat` without its derived `lionagi/` entries."""
+    filters = _changes_filters(workflows)
+    filters["compat"] = [path for path in filters["compat"] if not path.startswith("lionagi/")]
+    return filters
 
 
 def _ci_gate_body(text: str) -> str:
@@ -1240,8 +1275,9 @@ def test_the_changes_job_keeps_its_path_filters() -> None:
     # Each filter decides whether a conditional job runs or skips. Dropping a path
     # from one makes that job report its inputs unchanged on the pull requests that
     # change only that path, so the job skips and the aggregate accepts the skip;
-    # the required check then passes with the job never run on its own paths.
-    assert _changes_filters() == CI_CHANGES_FILTERS
+    # the required check then passes with the job never run on its own paths. The
+    # `lionagi/` entries of `compat` are compared by the test that derives them.
+    assert _pinned_changes_filters() == CI_CHANGES_FILTERS
 
 
 def test_the_changes_job_keeps_its_outputs() -> None:
@@ -1281,8 +1317,9 @@ def test_a_repeated_filter_name_is_refused(tmp_path: Path) -> None:
         "            - 'uv.lock'\n",
         "            - 'docs/adr/**'\n",
         "            - 'lionrs/**'\n",
+        "            - 'tests/state/conftest.py'\n",
     ],
-    ids=["lion1", "studio", "imports", "adr", "lionrs"],
+    ids=["lion1", "studio", "imports", "adr", "lionrs", "compat"],
 )
 def test_the_changes_job_pin_refuses_a_dropped_path(path: str, tmp_path: Path) -> None:
     # One arm per filter, so dropping a path from any of them is caught: a path
@@ -1292,7 +1329,7 @@ def test_the_changes_job_pin_refuses_a_dropped_path(path: str, tmp_path: Path) -
     workflows = tmp_path / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "ci.yml").write_text(text)
-    assert _changes_filters(workflows) != CI_CHANGES_FILTERS
+    assert _pinned_changes_filters(workflows) != CI_CHANGES_FILTERS
 
 
 def _ci_gate_job_is_pinned(workflows: Path = WORKFLOWS) -> None:
@@ -1490,3 +1527,1485 @@ def test_a_conditional_job_that_is_not_success_fails_a_changed_run(
     outputs = {CI_GATE_CONDITIONAL_GATES[job]: "true"}
     rc, out = _run_ci_gate(_needs_context({job: result}, outputs), monkeypatch, capsys)
     assert rc == 1, out
+
+
+# The compat-deps job swaps the locked aiosqlite and SQLAlchemy for a matrix row's
+# versions and runs the compatibility tests on them. `_compat_deps_problems` reads
+# that job from the workflow, so a matrix row can be added or removed without
+# touching it.
+#
+# The text that decides whether the right tests run on the right versions is pinned
+# exactly: this file holds a copy of it, and changing it in ci.yml means changing the
+# copy here in the same commit. That refuses harmless edits as well, such as another
+# pytest option, or another version check that also compares both versions exactly.
+# Those edits have to touch this file too, which is the cost of an exact pin.
+#
+# Pinned exactly:
+#   - After the step named "Replace aiosqlite and SQLAlchemy with the matrix versions"
+#     there are exactly two steps, in this order: COMPAT_ASSERT_STEP, then
+#     COMPAT_PYTEST_STEP. Each step's `name` equals its constant, and its `run`, as
+#     YAML parses the value (so a block scalar and a quoted scalar with `\n` escapes
+#     that hold the same text are the same), equals COMPAT_ASSERT_RUN or
+#     COMPAT_PYTEST_RUN byte for byte. The only other key a step may have is
+#     `timeout-minutes`, which must then be a positive integer.
+#   - The job's `env` is exactly COMPAT_JOB_ENV: UV_PYTHON, EXPECTED_AIOSQLITE and
+#     EXPECTED_SQLALCHEMY, each taken from the matrix row.
+#   - The job's keys are among COMPAT_JOB_KEYS, so `container`, `services`, `defaults`,
+#     `continue-on-error` and any other key are refused. `strategy` holds only
+#     `fail-fast` and `matrix`, and `matrix` only `include`. The lowest SQLAlchemy and
+#     the lowest aiosqlite in the rows are the `>=` floors that pyproject.toml declares.
+#
+# Checked on every step of the job, the steps before the replacement included: no
+# `continue-on-error`, `if`, `shell` or `working-directory`, no step `env` that sets an
+# expected version, and no `run` text that mentions GITHUB_ENV.
+#
+# The version check is also run, in a test of its own. With the installed versions as the
+# expected ones, COMPAT_ASSERT_SCRIPT must exit 0. For each package it must exit non-zero
+# without a Python traceback when the expected version is any of five: 0.0.0, 999999.0,
+# the installed version with its last number raised by one, the installed version with
+# `.1` appended, or the installed version with its last number removed (0.22.1 becomes
+# 0.22). That tests the copy in this file, so it stays correct when someone edits it.
+#
+# Not read: the `run` text of the steps before the replacement and of the replacement
+# step (only their switches and GITHUB_ENV mention are read, as above); a write to
+# GITHUB_PATH in those steps (the uv install step writes one, and a later step's `uv`
+# resolves through PATH); the `with:` inputs of a `uses:` step; what a script file or an
+# action that a step calls does; and workflow-level `env:` and `defaults:`.
+COMPAT_AFTER_REPLACE_KEYS = {"name", "run", "timeout-minutes"}
+# Version strings handed to the assertion script as the expected ones, besides the
+# installed versions and three derived from them. 0.0.0 sorts below and 999999.0 above
+# every release as strings, so a check that compares with only `<` or only `>` passes
+# one of them. A string such as `not-1.0` sorts above every digit, which would hide a
+# `<` check.
+COMPAT_BELOW = "0.0.0"
+COMPAT_ABOVE = "999999.0"
+COMPAT_EXPECTED_VARIABLES = {"EXPECTED_AIOSQLITE": "aiosqlite", "EXPECTED_SQLALCHEMY": "sqlalchemy"}
+COMPAT_LOCK_STEP = "Install dependencies from the lock"
+COMPAT_REPLACE_STEP = "Replace aiosqlite and SQLAlchemy with the matrix versions"
+COMPAT_ASSERT_STEP = "Assert the interpreter has the matrix versions"
+COMPAT_PYTEST_STEP = "Run the compatibility-mode tests"
+
+
+def _compat_run(script: str) -> str:
+    """The `run` text that hands *script* to `python -` through a quoted heredoc."""
+    return f"uv run --no-sync python - <<'PY'\n{script}PY\n"
+
+
+# The script of the assertion step, and the two `run` texts the pin requires. The
+# script is a constant of its own so that a test can run it, and the step's `run` is
+# built from it; it may not hold a line that is exactly `PY`, which would end the
+# heredoc early in the shell.
+COMPAT_ASSERT_SCRIPT = """\
+import os
+from importlib.metadata import version
+
+expected = {
+    "aiosqlite": os.environ["EXPECTED_AIOSQLITE"],
+    "sqlalchemy": os.environ["EXPECTED_SQLALCHEMY"],
+}
+mismatched = []
+for name, wanted in expected.items():
+    found = version(name)
+    print(f"{name}: installed {found}, matrix {wanted}")
+    if found != wanted:
+        mismatched.append(f"{name} {found} (matrix {wanted})")
+if mismatched:
+    raise SystemExit("not the matrix versions: " + ", ".join(mismatched))
+"""
+COMPAT_ASSERT_RUN = _compat_run(COMPAT_ASSERT_SCRIPT)
+COMPAT_PYTEST_RUN = (
+    "uv run --no-sync pytest -n 0 --maxfail=0 "
+    '-m "not performance and not flaky_quarantine" '
+    "--disable-warnings tests/state/test_compatibility_*.py"
+)
+# The steps after the replacement: (name, the constant's name for messages, its `run` text).
+COMPAT_PINNED_STEPS = [
+    (COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN", COMPAT_ASSERT_RUN),
+    (COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN", COMPAT_PYTEST_RUN),
+]
+COMPAT_JOB_ENV = {
+    "UV_PYTHON": "${{ matrix.python-version }}",
+    "EXPECTED_AIOSQLITE": "${{ matrix.aiosqlite }}",
+    "EXPECTED_SQLALCHEMY": "${{ matrix.sqlalchemy }}",
+}
+COMPAT_JOB_KEYS = {"name", "needs", "if", "runs-on", "timeout-minutes", "strategy", "env", "steps"}
+COMPAT_STRATEGY_KEYS = {"fail-fast", "matrix"}
+
+
+def _compat_step_label(step: dict) -> str:
+    return repr(step.get("name") or step.get("uses") or "an unnamed step")
+
+
+def _compat_declared_floor(
+    pyproject: Path, package: str, extra: str | None
+) -> tuple[str, Version | None]:
+    """The core requirement for *package* in pyproject.toml, and the `>=` floor it declares."""
+    for text in tomllib.loads(pyproject.read_text())["project"]["dependencies"]:
+        requirement = Requirement(text)
+        if canonicalize_name(requirement.name) != package:
+            continue
+        if extra is not None and extra not in requirement.extras:
+            continue
+        floors = [Version(spec.version) for spec in requirement.specifier if spec.operator == ">="]
+        return text, (max(floors) if floors else None)
+    return package, None
+
+
+@functools.cache
+def _compat_run_check(body: str, aiosqlite: str, sqlalchemy: str) -> tuple[int, str]:
+    """Run a version-check script on this interpreter, with the two expected versions in its env."""
+    env = {**os.environ, "EXPECTED_AIOSQLITE": aiosqlite, "EXPECTED_SQLALCHEMY": sqlalchemy}
+    result = subprocess.run(
+        [sys.executable, "-I", "-"],
+        input=body,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return result.returncode, result.stderr.strip()
+
+
+def _compat_raise_last_number(version: str) -> str:
+    """*version* with its last run of digits raised by one: 0.22.1 becomes 0.22.2."""
+    return re.sub(r"\d+(?=\D*$)", lambda match: str(int(match[0]) + 1), version, count=1)
+
+
+def _compat_drop_last_number(version: str) -> str | None:
+    """*version* without its last dot-separated number: 0.22.1 becomes 0.22.
+
+    None when *version* has a single number, because nothing would be left to compare with.
+    """
+    shorter, dot, _ = version.rpartition(".")
+    return shorter if dot else None
+
+
+def _compat_probe_problems(script: str) -> list[str]:
+    """Why *script* cannot be relied on to stop a job on a version other than the expected one.
+
+    The script is run on this interpreter. It must exit 0 when the expected versions are
+    the installed ones. For each package, it must then exit non-zero, and without a Python
+    traceback, when that package's expected version is any of five versions that differ
+    from the installed one: one below every release, one above every release, the installed
+    version with its last number raised by one, the installed version with `.1` appended,
+    and the installed version with its last number removed. The last one catches a check
+    that accepts an expected version which the installed version starts with. When the
+    installed version has a single number that probe cannot be built, and that is reported.
+    """
+    installed = {name: importlib.metadata.version(name) for name in ("aiosqlite", "sqlalchemy")}
+    code, error = _compat_run_check(script, installed["aiosqlite"], installed["sqlalchemy"])
+    if code != 0:
+        return [
+            f"the script exited {code} when the expected versions were the installed ones: {error}"
+        ]
+    problems = []
+    for variable, package in COMPAT_EXPECTED_VARIABLES.items():
+        probes = [
+            (COMPAT_BELOW, "a version below every release"),
+            (COMPAT_ABOVE, "a version above every release"),
+            (
+                _compat_raise_last_number(installed[package]),
+                f"the installed {package} {installed[package]} with its last number raised by one",
+            ),
+            (
+                f"{installed[package]}.1",
+                f"the installed {package} {installed[package]} with .1 appended",
+            ),
+        ]
+        shorter = _compat_drop_last_number(installed[package])
+        if shorter is None:
+            problems.append(
+                f"the installed {package} {installed[package]} has a single number, so the probe "
+                "with its last number removed cannot be built"
+            )
+        else:
+            probes.append(
+                (
+                    shorter,
+                    f"the installed {package} {installed[package]} with its last number removed",
+                )
+            )
+        for wrong, described in probes:
+            expected = {**installed, package: wrong}
+            code, error = _compat_run_check(script, expected["aiosqlite"], expected["sqlalchemy"])
+            if code == 0:
+                problems.append(
+                    f"the script exited 0 with {variable}={wrong!r}, {described}, "
+                    f"so a wrong {package} version passes"
+                )
+            elif "Traceback" in error:
+                problems.append(
+                    f"the script ended in a Python Traceback with {variable}={wrong!r}, "
+                    f"{described}, instead of stopping with a message, so it crashes where it "
+                    f"should compare: {error.splitlines()[-1]}"
+                )
+    return problems
+
+
+def _compat_first_difference(found: str, pinned: str) -> str:
+    """Where *found* first departs from *pinned*, with a little of each text around it."""
+    at = next(
+        (n for n, (a, b) in enumerate(zip(found, pinned)) if a != b), min(len(found), len(pinned))
+    )
+    return f"they first differ at character {at}: found {found[at : at + 40]!r}, pinned {pinned[at : at + 40]!r}"
+
+
+def _compat_step_problems(steps: list[dict]) -> list[str]:
+    """Why the steps after the replacement are not the pinned assertion step and pytest step."""
+    replacing = [i for i, step in enumerate(steps) if step.get("name") == COMPAT_REPLACE_STEP]
+    if len(replacing) != 1:
+        return [
+            f"compat-deps must have exactly one step named {COMPAT_REPLACE_STEP!r}, "
+            f"but has {len(replacing)}"
+        ]
+    after = steps[replacing[0] + 1 :]
+    problems = []
+    if [step.get("name") for step in after] != [name for name, _, _ in COMPAT_PINNED_STEPS]:
+        found = ", ".join(_compat_step_label(step) for step in after) or "none"
+        problems.append(
+            f"the steps after {COMPAT_REPLACE_STEP!r} must be exactly {COMPAT_ASSERT_STEP!r} "
+            f"then {COMPAT_PYTEST_STEP!r}, but they are {found}"
+        )
+    pinned_runs = {name: (constant, run) for name, constant, run in COMPAT_PINNED_STEPS}
+    for step in after:
+        label = _compat_step_label(step)
+        extra = sorted(set(step) - COMPAT_AFTER_REPLACE_KEYS)
+        if extra:
+            problems.append(
+                f"step {label} has the keys {extra}; after {COMPAT_REPLACE_STEP!r} a step may "
+                "have only name, run and timeout-minutes"
+            )
+        timeout = step.get("timeout-minutes", 1)
+        if type(timeout) is not int or timeout < 1:
+            problems.append(
+                f"step {label} sets timeout-minutes to {timeout!r}; it must be a positive integer"
+            )
+        if step.get("name") not in pinned_runs:
+            continue
+        constant, pinned = pinned_runs[step["name"]]
+        run = step.get("run")
+        if not isinstance(run, str):
+            problems.append(f"step {label} has no run text, where {constant} pins one")
+        elif run != pinned:
+            problems.append(
+                f"step {label} has a run text other than {constant}, which this test pins byte "
+                f"for byte; {_compat_first_difference(run, pinned)}"
+            )
+    return problems
+
+
+def _compat_job_problems(job: dict) -> list[str]:
+    """Why the job's own keys, env or strategy are not the pinned ones."""
+    problems = []
+    extra = sorted(set(job) - COMPAT_JOB_KEYS)
+    if extra:
+        problems.append(
+            f"the compat-deps job has the keys {extra}; it may have only {sorted(COMPAT_JOB_KEYS)}, "
+            "so that nothing here changes where its steps run or whether a failure fails the job"
+        )
+    env = job.get("env")
+    if env != COMPAT_JOB_ENV:
+        if not isinstance(env, dict):
+            problems.append(f"the compat-deps env is {env!r}, not a mapping of three variables")
+        else:
+            for key in sorted(set(env) | set(COMPAT_JOB_ENV)):
+                found = repr(env[key]) if key in env else "unset"
+                wanted = repr(COMPAT_JOB_ENV[key]) if key in COMPAT_JOB_ENV else "unset"
+                if found != wanted:
+                    problems.append(
+                        f"the compat-deps env has {key} {found}, but this test pins it to {wanted}"
+                    )
+    strategy = job.get("strategy")
+    others = sorted(set(strategy) - COMPAT_STRATEGY_KEYS) if isinstance(strategy, dict) else []
+    if others:
+        problems.append(
+            f"the compat-deps strategy has the keys {others}; it may have only "
+            f"{sorted(COMPAT_STRATEGY_KEYS)}"
+        )
+    return problems
+
+
+def _compat_switch_problems(job: dict) -> list[str]:
+    """Step settings that let a step be skipped, fail unnoticed or change the later steps' environment."""
+    problems = []
+    for step in job["steps"]:
+        label = _compat_step_label(step)
+        if "continue-on-error" in step:
+            problems.append(
+                f"step {label} sets continue-on-error ({step['continue-on-error']!r}), "
+                "so it can fail without failing the job"
+            )
+        if "if" in step:
+            problems.append(
+                f"step {label} has an if: condition ({step['if']!r}), so it can be skipped"
+            )
+        for key in ("shell", "working-directory"):
+            if key in step:
+                problems.append(
+                    f"step {label} sets {key} ({step[key]!r}), which changes how or where its "
+                    "run text is run"
+                )
+        if "GITHUB_ENV" in str(step.get("run", "")):
+            problems.append(
+                f"step {label} mentions GITHUB_ENV, so it can change the expected versions "
+                "or the environment of the steps after it"
+            )
+        for variable in COMPAT_EXPECTED_VARIABLES:
+            if variable in (step.get("env") or {}):
+                problems.append(
+                    f"step {label} sets {variable} in its own env, so it can expect other "
+                    "versions than the matrix row's"
+                )
+    return problems
+
+
+def _compat_deps_problems(workflows: Path = WORKFLOWS, pyproject: Path = PYPROJECT) -> list[str]:
+    """What the compat-deps job has that the pin refuses.
+
+    Checks the job's keys and env, the strategy and matrix keys, the matrix floors, the
+    switches on every step, and that the two steps after the replacement are exactly the
+    pinned ones. It does not run the pinned version check; a test of its own does.
+    """
+    job = _parse((workflows / "ci.yml").read_text())["jobs"]["compat-deps"]
+    problems = _compat_job_problems(job)
+    problems.extend(_compat_switch_problems(job))
+    problems.extend(_compat_step_problems(job["steps"]))
+    matrix = job["strategy"]["matrix"]
+    others = sorted(set(matrix) - {"include"})
+    if others:
+        problems.append(
+            f"strategy.matrix has the keys {others}; this pin reads only `include`, so other "
+            "keys can run versions it does not check"
+        )
+    rows = matrix.get("include", [])
+    for key, extra, name in (
+        ("sqlalchemy", "asyncio", "SQLAlchemy"),
+        ("aiosqlite", None, "aiosqlite"),
+    ):
+        declared, floor = _compat_declared_floor(pyproject, key, extra)
+        lowest = min(Version(row[key]) for row in rows)
+        if floor is None:
+            problems.append(f"pyproject.toml declares no >= floor for {declared!r}")
+        elif lowest != floor:
+            problems.append(
+                f"the lowest {name} in the compat-deps matrix is {lowest}, but pyproject.toml "
+                f"declares {declared!r}, whose floor is {floor}"
+            )
+    return problems
+
+
+def test_the_compat_deps_job_tests_the_versions_it_installs() -> None:
+    problems = _compat_deps_problems()
+    assert not problems, "\n".join(problems)
+
+
+def _compat_step(workflow: dict, name: str) -> dict:
+    steps = workflow["jobs"]["compat-deps"]["steps"]
+    return next(step for step in steps if step.get("name", "").startswith(name))
+
+
+def _drop_no_sync(name: str):
+    def mutate(workflow: dict) -> None:
+        step = _compat_step(workflow, name)
+        edited = step["run"].replace("uv run --no-sync", "uv run")
+        assert edited != step["run"]
+        step["run"] = edited
+
+    return mutate
+
+
+def _delete_step(name: str):
+    def mutate(workflow: dict) -> None:
+        workflow["jobs"]["compat-deps"]["steps"].remove(_compat_step(workflow, name))
+
+    return mutate
+
+
+def _raise_the_lowest(key: str):
+    def mutate(workflow: dict) -> None:
+        rows = workflow["jobs"]["compat-deps"]["strategy"]["matrix"]["include"]
+        lowest = min(Version(row[key]) for row in rows)
+        for row in rows:
+            if Version(row[key]) == lowest:
+                row[key] = f"{lowest.major}.{lowest.minor}.{lowest.micro + 1}"
+
+    return mutate
+
+
+def _set_in_job(*path: str, value):
+    def mutate(workflow: dict) -> None:
+        node = workflow["jobs"]["compat-deps"]
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = value
+
+    return mutate
+
+
+def _set_in_step(name: str, *path: str, value):
+    def mutate(workflow: dict) -> None:
+        node = _compat_step(workflow, name)
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = value
+
+    return mutate
+
+
+def _add_step_after(name: str, step: dict):
+    def mutate(workflow: dict) -> None:
+        steps = workflow["jobs"]["compat-deps"]["steps"]
+        steps.insert(steps.index(_compat_step(workflow, name)) + 1, step)
+
+    return mutate
+
+
+def _swap_steps(first: str, second: str):
+    def mutate(workflow: dict) -> None:
+        steps = workflow["jobs"]["compat-deps"]["steps"]
+        i = steps.index(_compat_step(workflow, first))
+        j = steps.index(_compat_step(workflow, second))
+        steps[i], steps[j] = steps[j], steps[i]
+
+    return mutate
+
+
+def _append_to_run(name: str, text: str):
+    def mutate(workflow: dict) -> None:
+        step = _compat_step(workflow, name)
+        step["run"] = step["run"] + text
+
+    return mutate
+
+
+def _replace_in_run(name: str, old: str, new: str):
+    def mutate(workflow: dict) -> None:
+        step = _compat_step(workflow, name)
+        assert old in step["run"], old
+        step["run"] = step["run"].replace(old, new, 1)
+
+    return mutate
+
+
+# Replacement scripts for the version-check step. Each reads the installed versions.
+# The first three do not stop the job when one of them differs from the expected one,
+# and the fourth stops it even when they match.
+COMPAT_PRINT_ONLY = """\
+from importlib.metadata import version
+print(version('aiosqlite'), version('sqlalchemy'))
+"""
+COMPAT_CHECKS_SQLALCHEMY_ONLY = """\
+import os
+from importlib.metadata import version
+if version('sqlalchemy') != os.environ['EXPECTED_SQLALCHEMY']:
+    raise SystemExit('not the matrix versions')
+"""
+COMPAT_CHECKS_AIOSQLITE_ONLY = COMPAT_CHECKS_SQLALCHEMY_ONLY.replace(
+    "sqlalchemy", "aiosqlite"
+).replace("SQLALCHEMY", "AIOSQLITE")
+COMPAT_ONE_LINER = (
+    'uv run --no-sync python -c "from importlib.metadata import version; '
+    "print(version('aiosqlite'), version('sqlalchemy'))\"\n"
+)
+COMPAT_ALWAYS_FAILS = """\
+from importlib.metadata import version
+raise SystemExit('never matches ' + version('aiosqlite'))
+"""
+# These three exit 0 when the installed versions are the expected ones. The first two
+# compare version strings with an ordering operator, so each stops the job on one side
+# of the expected version only; the third stops it by raising a NameError, which is a
+# crash rather than a comparison.
+COMPAT_CHECKS_WITH_LESS_THAN = """\
+import os
+from importlib.metadata import version
+if (version('aiosqlite') < os.environ['EXPECTED_AIOSQLITE']
+        or version('sqlalchemy') < os.environ['EXPECTED_SQLALCHEMY']):
+    raise SystemExit('older than the matrix')
+"""
+COMPAT_CHECKS_WITH_GREATER_THAN = COMPAT_CHECKS_WITH_LESS_THAN.replace(" < ", " > ").replace(
+    "older", "newer"
+)
+COMPAT_CRASHES_ON_A_MISMATCH = """\
+import os
+from importlib.metadata import version
+if (version('aiosqlite') != os.environ['EXPECTED_AIOSQLITE']
+        or version('sqlalchemy') != os.environ['EXPECTED_SQLALCHEMY']):
+    not_the_matrix_versions
+"""
+# These three also exit 0 on the installed versions. The first compares only the major
+# and minor numbers, so a different patch release passes. The second tests whether the
+# expected version starts with the installed one, so the installed version followed by
+# more text passes. The third tests the other way round, whether the installed version
+# starts with the expected one, so a shorter expected version (0.22 for 0.22.1) passes.
+COMPAT_CHECKS_MAJOR_MINOR = """\
+import os
+from importlib.metadata import version
+for name in ('aiosqlite', 'sqlalchemy'):
+    found = version(name)
+    wanted = os.environ['EXPECTED_' + name.upper()]
+    if found.split('.')[:2] != wanted.split('.')[:2]:
+        raise SystemExit(f'{name} {found} is not the matrix version {wanted}')
+"""
+COMPAT_CHECKS_STARTSWITH = """\
+import os
+from importlib.metadata import version
+for name in ('aiosqlite', 'sqlalchemy'):
+    found = version(name)
+    wanted = os.environ['EXPECTED_' + name.upper()]
+    if not wanted.startswith(found):
+        raise SystemExit(f'{name} {found} is not the matrix version {wanted}')
+"""
+COMPAT_CHECKS_INSTALLED_STARTSWITH = """\
+import os
+from importlib.metadata import version
+for name in ('aiosqlite', 'sqlalchemy'):
+    found = version(name)
+    wanted = os.environ['EXPECTED_' + name.upper()]
+    if not found.startswith(wanted):
+        raise SystemExit(f'{name} {found} is not the matrix version {wanted}')
+"""
+# A script other than the one in ci.yml that compares both versions exactly and stops
+# with a message. It would do what the step is for, and the exact pin refuses it.
+COMPAT_ALTERNATIVE_CHECK = """\
+import os
+import sys
+from importlib import metadata
+
+wanted = {
+    'aiosqlite': os.environ['EXPECTED_AIOSQLITE'],
+    'sqlalchemy': os.environ['EXPECTED_SQLALCHEMY'],
+}
+wrong = [name for name, value in wanted.items() if metadata.version(name) != value]
+if wrong:
+    sys.exit('not the matrix versions: ' + ', '.join(wrong))
+"""
+
+# (id, edit applied to a copy of the workflow, the parts one reported problem must hold)
+COMPAT_ARMS = [
+    (
+        "pytest-step-syncs",
+        _drop_no_sync(COMPAT_PYTEST_STEP),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "assert-step-syncs",
+        _drop_no_sync(COMPAT_ASSERT_STEP),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "no-version-assert",
+        _delete_step(COMPAT_ASSERT_STEP),
+        ["must be exactly", f"but they are {COMPAT_PYTEST_STEP!r}"],
+    ),
+    ("sqlalchemy-floor-unreached", _raise_the_lowest("sqlalchemy"), ["lowest SQLAlchemy"]),
+    ("aiosqlite-floor-unreached", _raise_the_lowest("aiosqlite"), ["lowest aiosqlite"]),
+    (
+        "check-only-prints",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_PRINT_ONLY)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "check-skips-aiosqlite",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_SQLALCHEMY_ONLY)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "check-skips-sqlalchemy",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_AIOSQLITE_ONLY)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "check-fails-on-a-match",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_ALWAYS_FAILS)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "check-is-a-one-liner",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_ONE_LINER),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "expected-version-not-from-the-matrix",
+        _set_in_job("env", "EXPECTED_SQLALCHEMY", value="2.0.38"),
+        ["EXPECTED_SQLALCHEMY", "matrix.sqlalchemy"],
+    ),
+    (
+        "job-continue-on-error",
+        _set_in_job("continue-on-error", value=True),
+        ["job", "continue-on-error"],
+    ),
+    (
+        "step-continue-on-error",
+        _set_in_step(COMPAT_PYTEST_STEP, "continue-on-error", value=True),
+        [COMPAT_PYTEST_STEP, "continue-on-error"],
+    ),
+    (
+        "step-if",
+        _set_in_step(COMPAT_ASSERT_STEP, "if", value="github.event_name == 'push'"),
+        [COMPAT_ASSERT_STEP, "if:"],
+    ),
+    (
+        "step-env-overrides-an-expected-version",
+        _set_in_step(COMPAT_ASSERT_STEP, "env", value={"EXPECTED_SQLALCHEMY": "2.0.38"}),
+        [COMPAT_ASSERT_STEP, "EXPECTED_SQLALCHEMY"],
+    ),
+    (
+        "uv-sync-after-the-install",
+        _add_step_after(COMPAT_ASSERT_STEP, {"name": "Restore", "run": "uv sync --all-extras\n"}),
+        ["must be exactly", "'Restore'"],
+    ),
+    (
+        "uv-pip-after-the-install",
+        _add_step_after(
+            COMPAT_ASSERT_STEP,
+            {"name": "Pin", "run": "uv pip install --python .venv/bin/python aiosqlite==0.22.1\n"},
+        ),
+        ["must be exactly", "'Pin'"],
+    ),
+    (
+        "pip-after-the-install",
+        _add_step_after(
+            COMPAT_ASSERT_STEP, {"name": "Pin", "run": "pip install sqlalchemy==2.0.49\n"}
+        ),
+        ["must be exactly", "'Pin'"],
+    ),
+    (
+        "python-m-pip-after-the-install",
+        _add_step_after(
+            COMPAT_ASSERT_STEP, {"name": "Pin", "run": "python -m pip install sqlalchemy==2.0.49\n"}
+        ),
+        ["must be exactly", "'Pin'"],
+    ),
+    (
+        "matrix-key-other-than-include",
+        _set_in_job("strategy", "matrix", "sqlalchemy", value=["2.0.38", "2.1.6"]),
+        ["strategy.matrix", "sqlalchemy"],
+    ),
+    (
+        "a-check-with-less-than",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_WITH_LESS_THAN)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "b-check-with-greater-than",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_WITH_GREATER_THAN)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "c-check-that-raises-a-name-error",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CRASHES_ON_A_MISMATCH)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "d-a-prefix-before-the-heredoc-line",
+        _replace_in_run(
+            COMPAT_ASSERT_STEP,
+            "uv run --no-sync python - <<'PY'",
+            "uv run --no-sync touch prepared && uv run --no-sync python - <<'PY'",
+        ),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "e-pytest-through-uv-project",
+        _set_in_step(
+            COMPAT_PYTEST_STEP,
+            "run",
+            value="uv --project . run pytest -n 0 tests/state/test_compatibility_*.py",
+        ),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "f-pytest-through-uvx",
+        _set_in_step(
+            COMPAT_PYTEST_STEP,
+            "run",
+            value="uvx --with-editable . pytest -n 0 tests/state/test_compatibility_*.py",
+        ),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "g-pytest-step-with-a-second-line",
+        _append_to_run(COMPAT_PYTEST_STEP, "\nuv --color auto sync\n"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "h-a-step-after-pytest",
+        _add_step_after(COMPAT_PYTEST_STEP, {"name": "Pin", "run": "pip3.12 install x\n"}),
+        ["must be exactly", "'Pin'"],
+    ),
+    (
+        "i-a-command-after-the-heredoc-end",
+        _append_to_run(COMPAT_ASSERT_STEP, "python -mpip install x\n"),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "j-a-PY-line-inside-the-script",
+        _replace_in_run(COMPAT_ASSERT_STEP, "if mismatched:\n", "PY\nif mismatched:\n"),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "k-github-env-before-the-replacement",
+        _add_step_after(
+            COMPAT_LOCK_STEP,
+            {
+                "name": "Expect another",
+                "run": 'echo "EXPECTED_SQLALCHEMY=2.0.49" >> "$GITHUB_ENV"\n',
+            },
+        ),
+        ["'Expect another'", "GITHUB_ENV"],
+    ),
+    (
+        "l-shell-on-the-pytest-step",
+        _set_in_step(COMPAT_PYTEST_STEP, "shell", value="bash"),
+        [COMPAT_PYTEST_STEP, "shell"],
+    ),
+    (
+        "m-working-directory-on-the-assert-step",
+        _set_in_step(COMPAT_ASSERT_STEP, "working-directory", value="x"),
+        [COMPAT_ASSERT_STEP, "working-directory"],
+    ),
+    (
+        "n-assert-and-pytest-swapped",
+        _swap_steps(COMPAT_ASSERT_STEP, COMPAT_PYTEST_STEP),
+        ["must be exactly", f"but they are {COMPAT_PYTEST_STEP!r}, {COMPAT_ASSERT_STEP!r}"],
+    ),
+    (
+        "o-defaults-on-the-job",
+        _set_in_job("defaults", value={"run": {"shell": "bash", "working-directory": "x"}}),
+        ["defaults"],
+    ),
+    # A check that compares only the major and minor numbers lets a patch release
+    # through, and 0.0.0 and 999999.0 differ from every installed version in the first
+    # two numbers, so only a difference in the last number shows it.
+    (
+        "p-check-of-major-and-minor-only",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_MAJOR_MINOR)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    # The pytest options below leave the first four words alone and run no test, or
+    # run something other than the tests.
+    (
+        "q-pytest-that-only-collects-with-co",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "--co -q -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "r-pytest-that-only-collects",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "--collect-only -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "s-pytest-that-prints-help",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "--help -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "t-pytest-that-prints-its-version",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "--version -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "u-pytest-that-loads-a-plugin",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "-p some_plugin -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    # Both edits leave the job honest, and the exact pin refuses them all the same:
+    # changing either step's text means changing its constant in this file.
+    (
+        "v-another-check-that-compares-both-versions",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_ALTERNATIVE_CHECK)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "w-another-pytest-option",
+        _replace_in_run(COMPAT_PYTEST_STEP, "--disable-warnings", "--disable-warnings -q"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    # The job's env is exactly three variables.
+    (
+        "x-uv-python-fixed-to-one-version",
+        _set_in_job("env", "UV_PYTHON", value="3.14"),
+        ["UV_PYTHON", "matrix.python-version"],
+    ),
+    (
+        "y-an-extra-env-variable-on-the-job",
+        _set_in_job("env", "UV_NO_SYNC", value="0"),
+        ["UV_NO_SYNC", "unset"],
+    ),
+    (
+        "z-a-missing-env-variable-on-the-job",
+        lambda workflow: workflow["jobs"]["compat-deps"]["env"].pop("UV_PYTHON"),
+        ["UV_PYTHON", "unset"],
+    ),
+    # The job's keys are a fixed set.
+    (
+        "aa-container-on-the-job",
+        _set_in_job("container", value="python:3.12"),
+        ["container", "may have only"],
+    ),
+    (
+        "ab-services-on-the-job",
+        _set_in_job("services", value={"db": {"image": "postgres:16"}}),
+        ["services", "may have only"],
+    ),
+    (
+        "ac-a-strategy-key-other-than-fail-fast-and-matrix",
+        _set_in_job("strategy", "max-parallel", value=1),
+        ["strategy", "max-parallel"],
+    ),
+    # timeout-minutes on a step after the replacement is a positive integer or absent.
+    (
+        "ad-a-timeout-of-zero",
+        _set_in_step(COMPAT_PYTEST_STEP, "timeout-minutes", value=0),
+        [COMPAT_PYTEST_STEP, "timeout-minutes", "positive integer"],
+    ),
+    (
+        "ae-a-timeout-that-is-text",
+        _set_in_step(COMPAT_ASSERT_STEP, "timeout-minutes", value="5"),
+        [COMPAT_ASSERT_STEP, "timeout-minutes", "positive integer"],
+    ),
+    (
+        "af-a-timeout-that-is-true",
+        _set_in_step(COMPAT_ASSERT_STEP, "timeout-minutes", value=True),
+        [COMPAT_ASSERT_STEP, "timeout-minutes", "positive integer"],
+    ),
+]
+
+
+def _compat_problems_of_a_copy(workflow: dict, tmp_path: Path) -> list[str]:
+    """What the pin says about *workflow* written out as a scratch copy of ci.yml."""
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(yaml.safe_dump(workflow))
+    return _compat_deps_problems(workflows)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [pytest.param(mutate, expected, id=arm) for arm, mutate, expected in COMPAT_ARMS],
+)
+def test_the_compat_deps_pin_refuses_an_edit(mutate, expected: list[str], tmp_path: Path) -> None:
+    # Each edit leaves the job parsing and its tests green on whatever versions are
+    # installed; only the pin notices that they are no longer the matrix row's, that
+    # the check no longer stops the job, or that the matrix no longer reaches the
+    # declared floor. The unedited copy passes in `test_the_compat_deps_pin_accepts_
+    # these_edits`, which is the control that these messages come from the edit.
+    workflow = _load("ci.yml")
+    mutate(workflow)
+    problems = _compat_problems_of_a_copy(workflow, tmp_path)
+    assert any(all(part in problem for part in expected) for problem in problems), problems
+
+
+def _add_matrix_row(row: dict):
+    def mutate(workflow: dict) -> None:
+        workflow["jobs"]["compat-deps"]["strategy"]["matrix"]["include"].append(row)
+
+    return mutate
+
+
+# (id, edit applied to a copy of the workflow); the pin has nothing to say about any of them.
+COMPAT_ALLOWED_EDITS = [
+    ("an-unedited-copy", lambda workflow: None),
+    ("a-timeout-on-the-assert-step", _set_in_step(COMPAT_ASSERT_STEP, "timeout-minutes", value=5)),
+    (
+        "a-longer-timeout-on-the-pytest-step",
+        _set_in_step(COMPAT_PYTEST_STEP, "timeout-minutes", value=30),
+    ),
+    (
+        "steps-before-the-replacement-sync-freely",
+        _add_step_after(
+            COMPAT_LOCK_STEP,
+            {
+                "name": "Add a test plugin",
+                "run": "uv sync --all-extras\nuv pip install --python .venv/bin/python pytest-timeout\n",
+            },
+        ),
+    ),
+    (
+        "another-matrix-row-inside-the-range",
+        _add_matrix_row({"python-version": "3.12", "aiosqlite": "0.22.1", "sqlalchemy": "2.0.40"}),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "mutate", [pytest.param(mutate, id=edit) for edit, mutate in COMPAT_ALLOWED_EDITS]
+)
+def test_the_compat_deps_pin_accepts_these_edits(mutate, tmp_path: Path) -> None:
+    workflow = _load("ci.yml")
+    mutate(workflow)
+    assert _compat_problems_of_a_copy(workflow, tmp_path) == []
+
+
+def test_the_compat_pin_compares_the_text_the_yaml_parser_returns(tmp_path: Path) -> None:
+    # The pin compares each step's `run` as parsed, not as spelled. The workflow here
+    # holds the version check as one double-quoted scalar with `\n` escapes and the pytest
+    # command as another, in place of the block scalars of ci.yml.
+    text = (WORKFLOWS / "ci.yml").read_text()
+    check_block = re.compile(
+        r"      run: \|\n        uv run --no-sync python - <<'PY'\n(?:        .*\n|\n)*?        PY\n"
+    )
+    pytest_block = re.compile(
+        r"      run: >-\n        uv run --no-sync pytest\b(?:.*\n)*?"
+        r"        tests/state/test_compatibility_\*\.py\n"
+    )
+    text, checks = check_block.subn(lambda _: f"      run: {json.dumps(COMPAT_ASSERT_RUN)}\n", text)
+    text, pytests = pytest_block.subn(
+        lambda _: f"      run: {json.dumps(COMPAT_PYTEST_RUN)}\n", text
+    )
+    assert (checks, pytests) == (1, 1)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text)
+    assert _compat_deps_problems(workflows) == []
+
+
+def test_the_compat_assertion_script_stops_on_a_wrong_version() -> None:
+    # The step's text is pinned to COMPAT_ASSERT_RUN, which is the script below inside a
+    # heredoc. A `PY` line in the script would end that heredoc early in the shell, so the
+    # script run here would not be the script the job runs.
+    assert "PY" not in COMPAT_ASSERT_SCRIPT.splitlines()
+    problems = _compat_probe_problems(COMPAT_ASSERT_SCRIPT)
+    assert not problems, "\n".join(problems)
+
+
+# (id, a script, the parts one reported problem must hold). None of these stops the job
+# on every wrong version, and each is reported for the first version it lets through.
+COMPAT_PROBE_CASES = [
+    ("only-prints", COMPAT_PRINT_ONLY, ["exited 0", "EXPECTED_AIOSQLITE", "'0.0.0'"]),
+    (
+        "checks-sqlalchemy-only",
+        COMPAT_CHECKS_SQLALCHEMY_ONLY,
+        ["exited 0", "EXPECTED_AIOSQLITE", "'0.0.0'"],
+    ),
+    (
+        "checks-aiosqlite-only",
+        COMPAT_CHECKS_AIOSQLITE_ONLY,
+        ["exited 0", "EXPECTED_SQLALCHEMY", "'0.0.0'"],
+    ),
+    ("fails-on-a-match", COMPAT_ALWAYS_FAILS, ["exited 1", "were the installed ones"]),
+    ("less-than", COMPAT_CHECKS_WITH_LESS_THAN, ["exited 0", "'0.0.0'", "below every release"]),
+    (
+        "greater-than",
+        COMPAT_CHECKS_WITH_GREATER_THAN,
+        ["exited 0", "'999999.0'", "above every release"],
+    ),
+    ("crashes-on-a-mismatch", COMPAT_CRASHES_ON_A_MISMATCH, ["Traceback", "EXPECTED_AIOSQLITE"]),
+    (
+        "major-and-minor-only",
+        COMPAT_CHECKS_MAJOR_MINOR,
+        ["exited 0", "last number raised by one"],
+    ),
+    # The expected version starts with the installed one: only the `.1` probe gets through.
+    ("startswith", COMPAT_CHECKS_STARTSWITH, ["exited 0", ".1 appended"]),
+    # The installed version starts with the expected one: 0.0.0, 999999.0, the raised and
+    # the `.1` versions are all refused by this check, so only the shortened version
+    # passes it.
+    (
+        "installed-startswith-expected",
+        COMPAT_CHECKS_INSTALLED_STARTSWITH,
+        ["exited 0", "last number removed"],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [pytest.param(script, expected, id=case) for case, script, expected in COMPAT_PROBE_CASES],
+)
+def test_the_compat_probe_refuses_a_script_that_lets_a_wrong_version_pass(
+    script: str, expected: list[str]
+) -> None:
+    problems = _compat_probe_problems(script)
+    assert any(all(part in problem for part in expected) for problem in problems), problems
+
+
+def test_the_compat_probe_raises_the_last_number_of_a_version() -> None:
+    assert _compat_raise_last_number("0.22.1") == "0.22.2"
+    assert _compat_raise_last_number("2.0.49") == "2.0.50"
+    assert _compat_raise_last_number("2.1.9") == "2.1.10"
+    assert _compat_raise_last_number("2.1.0rc1") == "2.1.0rc2"
+
+
+def test_the_compat_probe_drops_the_last_number_of_a_version() -> None:
+    assert _compat_drop_last_number("0.22.1") == "0.22"
+    assert _compat_drop_last_number("2.0.52") == "2.0"
+    assert _compat_drop_last_number("2.1.0rc1") == "2.1"
+    assert _compat_drop_last_number("1.0") == "1"
+    assert _compat_drop_last_number("3") is None
+
+
+def test_the_compat_probe_reports_a_version_it_cannot_shorten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # aiosqlite is reported as installed at the single-number version 3. The script exits 0
+    # only for exactly these two expected versions, so every probe that can be built gets
+    # the non-zero exit it should, and the one that cannot be built is the only problem.
+    installed = {"aiosqlite": "3", "sqlalchemy": "2.0.52"}
+    monkeypatch.setattr(importlib.metadata, "version", installed.__getitem__)
+    script = (
+        "import os, sys\n"
+        "sys.exit(0 if (os.environ['EXPECTED_AIOSQLITE'], os.environ['EXPECTED_SQLALCHEMY'])"
+        " == ('3', '2.0.52') else 1)\n"
+    )
+    problems = _compat_probe_problems(script)
+    assert len(problems) == 1, problems
+    assert "aiosqlite 3 has a single number" in problems[0]
+    assert "cannot be built" in problems[0]
+
+
+@pytest.mark.parametrize(
+    ("package", "name"),
+    [(r"sqlalchemy\[asyncio\]", "SQLAlchemy"), ("aiosqlite", "aiosqlite")],
+)
+def test_the_compat_deps_pin_refuses_a_floor_the_matrix_does_not_reach(
+    package: str, name: str, tmp_path: Path
+) -> None:
+    text = PYPROJECT.read_text()
+    edited = re.sub(
+        rf'("{package}>=\d+\.\d+\.)(\d+)', lambda m: f"{m[1]}{int(m[2]) + 1}", text, count=1
+    )
+    assert edited != text
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(edited)
+    problems = _compat_deps_problems(pyproject=pyproject)
+    assert any(f"lowest {name} in" in problem for problem in problems), problems
+
+
+# The `lionagi/` entries of the `compat` filter are recomputed from the files the
+# job runs, so a new import in one of them cannot leave the job skipped for a change
+# to the file it imports. The files read are every .py file under lionagi/state and
+# the `tests/` files the filter names. An import statement counts wherever it sits
+# (inside a function, under TYPE_CHECKING, in a try block). `import lionagi.X` and
+# `from lionagi.X import ...` name X. `import lionagi` and `from lionagi import N`
+# name lionagi/__init__.py, and also N when lionagi/N is a package or lionagi/N.py a
+# module. A relative import counts when it resolves outside lionagi/state. A package
+# is listed as `lionagi/X/**` and a module as `lionagi/X.py`.
+#
+# Importing any lionagi module runs lionagi/__init__.py first, so what that file
+# imports when it loads counts as imported by every source above. For that one file
+# only the imports that run at module load are read: those under `if TYPE_CHECKING:`
+# and those inside a function (including a method) are not. The imports at module load
+# are named by the same rule as the rest.
+#
+# What any of those files import in turn is not followed, and a module named only in a
+# string (a `patch` target, an `import_module` argument) is not read.
+def _compat_lionagi_entry(names: dict[str, Path], name: str) -> str | None:
+    """The filter entry for the package or module of lionagi called *name*, if there is one.
+
+    *names* maps each entry of the lionagi directory to its path. Names are compared as
+    spelled, so a case-insensitive file system does not read `Session` as `session`.
+    """
+    if name in names and names[name].is_dir():
+        return f"lionagi/{name}/**"
+    if f"{name}.py" in names and names[f"{name}.py"].is_file():
+        return f"lionagi/{name}.py"
+    return None
+
+
+def _compat_is_type_checking(test: ast.expr) -> bool:
+    """Whether *test* is `TYPE_CHECKING` or `<module>.TYPE_CHECKING`."""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+
+def _compat_module_load_imports(tree: ast.AST) -> list[ast.Import | ast.ImportFrom]:
+    """The import statements of *tree* that run when its module loads.
+
+    The body of an `if TYPE_CHECKING:` and anything inside a function are left out; its
+    `else` branch, a class body and a `try` block are read.
+    """
+    found: list[ast.Import | ast.ImportFrom] = []
+    pending = list(ast.iter_child_nodes(tree))
+    while pending:
+        node = pending.pop(0)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            found.append(node)
+        elif isinstance(node, ast.If) and _compat_is_type_checking(node.test):
+            pending.extend(node.orelse)
+        else:
+            pending.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _compat_names_in(
+    source: Path, package: list[str] | None, names: dict[str, Path], at_load: bool = False
+) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """The filter entries the imports in *source* name, and the lionagi names that resolve to none.
+
+    *package* is the dotted package the file sits in, as a list, or None for a file whose
+    relative imports do not name lionagi. Both results carry the line of the import. Every
+    import statement counts, unless *at_load* is set: then only those that run when the
+    module loads do.
+    """
+    found: list[tuple[str, int]] = []
+    unresolved: list[tuple[str, int]] = []
+
+    def name(parts: list[str], imported: list[str], line: int) -> None:
+        if not parts or parts[0] != "lionagi":
+            return
+        if len(parts) == 1:
+            found.append(("lionagi/__init__.py", line))
+            for item in imported:
+                entry = _compat_lionagi_entry(names, item)
+                if entry:
+                    found.append((entry, line))
+            return
+        entry = _compat_lionagi_entry(names, parts[1])
+        if entry:
+            found.append((entry, line))
+        else:
+            unresolved.append((f"lionagi.{parts[1]}", line))
+
+    tree = ast.parse(source.read_text(), filename=str(source))
+    for node in _compat_module_load_imports(tree) if at_load else ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name(alias.name.split("."), [], node.lineno)
+        elif isinstance(node, ast.ImportFrom):
+            parts = node.module.split(".") if node.module else []
+            if node.level:
+                if package is None:
+                    continue
+                parts = package[: max(len(package) - (node.level - 1), 0)] + parts
+            name(parts, [alias.name for alias in node.names], node.lineno)
+    return found, unresolved
+
+
+def _compat_filter_problems(
+    workflows: Path = WORKFLOWS,
+    root: Path = REPO_ROOT,
+    state: Path | None = None,
+    init: Path | None = None,
+) -> list[str]:
+    """How the compat filter's `lionagi/` entries differ from what its sources import.
+
+    *state* is the directory read as lionagi/state, *init* the file read as
+    lionagi/__init__.py, and the `tests/` files come from the filter's own entries,
+    globbed under *root*.
+    """
+    state = state or root / "lionagi" / "state"
+    init = init or root / "lionagi" / "__init__.py"
+    listed = _changes_filters(workflows)["compat"]
+    names = {path.name: path for path in (root / "lionagi").iterdir()}
+    sources: list[tuple[str, Path, list[str] | None]] = []
+    for path in sorted(state.rglob("*.py")):
+        relative = path.relative_to(state)
+        sources.append(
+            (
+                f"lionagi/state/{relative.as_posix()}",
+                path,
+                ["lionagi", "state", *relative.parent.parts],
+            )
+        )
+    problems = []
+    for pattern in listed:
+        if not pattern.startswith("tests/"):
+            continue
+        matched = sorted(root.glob(pattern))
+        if not matched:
+            problems.append(f"the compat filter names {pattern!r}, which matches no file")
+        sources.extend((p.relative_to(root).as_posix(), p, None) for p in matched)
+    needed = {"lionagi/state/**": "the lionagi/state tree itself"}
+    for label, path, package in sources:
+        found, unresolved = _compat_names_in(path, package, names)
+        for entry, line in found:
+            needed.setdefault(entry, f"{label}:{line}")
+        for name, line in unresolved:
+            problems.append(
+                f"{label}:{line} imports {name}, which is neither a package nor a module of lionagi"
+            )
+    found, unresolved = _compat_names_in(init, ["lionagi"], names, at_load=True)
+    for entry, line in found:
+        needed.setdefault(entry, f"the module-load import at lionagi/__init__.py:{line}")
+    for name, line in unresolved:
+        problems.append(
+            f"lionagi/__init__.py:{line} imports {name}, which is neither a package nor a "
+            "module of lionagi"
+        )
+    present = {entry for entry in listed if entry.startswith("lionagi/")}
+    for entry in sorted(set(needed) - present):
+        problems.append(f"the compat filter lacks {entry!r}, which {needed[entry]} needs")
+    for entry in sorted(present - set(needed)):
+        problems.append(
+            f"the compat filter lists {entry!r}, which none of the {len(sources)} files read "
+            "for it import, and lionagi/__init__.py does not import at module load"
+        )
+    return problems
+
+
+def test_the_compat_filter_lists_what_its_sources_import() -> None:
+    problems = _compat_filter_problems()
+    assert not problems, "\n".join(problems)
+
+
+def _copy_the_state_tree(tmp_path: Path) -> Path:
+    state = tmp_path / "state"
+    shutil.copytree(
+        REPO_ROOT / "lionagi" / "state", state, ignore=shutil.ignore_patterns("__pycache__")
+    )
+    return state
+
+
+def test_the_compat_filter_pin_refuses_an_import_the_filter_lacks(tmp_path: Path) -> None:
+    # The same state tree, copied, passes; one more import in a copy of it, of a real
+    # package the filter does not list, is reported by name and by the file that has it.
+    package = "adapters"
+    assert (REPO_ROOT / "lionagi" / package / "__init__.py").is_file()
+    state = _copy_the_state_tree(tmp_path)
+    assert _compat_filter_problems(state=state) == []
+    with (state / "compat.py").open("a") as handle:
+        handle.write(f"\nimport lionagi.{package}\n")
+    problems = _compat_filter_problems(state=state)
+    assert any(
+        f"lacks 'lionagi/{package}/**'" in problem and "lionagi/state/compat.py:" in problem
+        for problem in problems
+    ), problems
+
+
+def test_the_compat_filter_pin_refuses_an_entry_nothing_imports(tmp_path: Path) -> None:
+    package = "tools"
+    old = "            - 'lionagi/testing/**'\n"
+    text = _ci_gate_text()
+    assert text.count(old) == 1
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(
+        text.replace(old, old + f"            - 'lionagi/{package}/**'\n")
+    )
+    problems = _compat_filter_problems(workflows)
+    assert any(f"lists 'lionagi/{package}/**'" in problem for problem in problems), problems
+
+
+def test_the_compat_filter_pin_refuses_a_dropped_entry(tmp_path: Path) -> None:
+    old = "            - 'lionagi/plugins/**'\n"
+    text = _ci_gate_text()
+    assert text.count(old) == 1
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text.replace(old, ""))
+    problems = _compat_filter_problems(workflows)
+    assert any("lacks 'lionagi/plugins/**'" in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize("entry", ["lionagi/_moved.py", "lionagi/version.py"])
+def test_the_compat_filter_pin_refuses_a_dropped_module_load_entry(
+    entry: str, tmp_path: Path
+) -> None:
+    # lionagi/__init__.py imports these when it loads, which happens before any other
+    # lionagi module runs, so the filter lists them although no source names them.
+    old = f"            - '{entry}'\n"
+    text = _ci_gate_text()
+    assert text.count(old) == 1
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text.replace(old, ""))
+    problems = _compat_filter_problems(workflows)
+    assert [problem for problem in problems if f"lacks {entry!r}" in problem] != [], problems
+    assert all("lionagi/__init__.py:" in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize(
+    ("placement", "refused"),
+    [
+        pytest.param("\nfrom . import utils as _utils\n", True, id="module-level"),
+        pytest.param(
+            "\ntry:\n    from . import utils as _utils\nexcept ImportError:\n    pass\n",
+            True,
+            id="in-a-try-block",
+        ),
+        pytest.param(
+            "\nif TYPE_CHECKING:\n    from . import utils as _utils\n",
+            False,
+            id="under-type-checking",
+        ),
+        pytest.param(
+            "\ndef _late():\n    from . import utils as _utils\n", False, id="inside-a-function"
+        ),
+    ],
+)
+def test_the_compat_filter_pin_reads_the_module_load_imports_of_the_package_init(
+    placement: str, refused: bool, tmp_path: Path
+) -> None:
+    # A copy of lionagi/__init__.py passes as it is. One more import of a real module the
+    # filter does not list is refused by that module's entry when it runs at module load,
+    # and is left alone under `if TYPE_CHECKING:` or inside a function.
+    module = "utils"
+    assert (REPO_ROOT / "lionagi" / f"{module}.py").is_file()
+    assert f"lionagi/{module}.py" not in _changes_filters(WORKFLOWS)["compat"]
+    init = tmp_path / "__init__.py"
+    shutil.copyfile(REPO_ROOT / "lionagi" / "__init__.py", init)
+    assert _compat_filter_problems(init=init) == []
+    with init.open("a") as handle:
+        handle.write(placement)
+    problems = _compat_filter_problems(init=init)
+    if refused:
+        assert len(problems) == 1, problems
+        assert f"lacks 'lionagi/{module}.py'" in problems[0], problems
+        assert "lionagi/__init__.py:" in problems[0], problems
+    else:
+        assert problems == []
+
+
+@pytest.mark.parametrize(
+    ("code", "package", "expected"),
+    [
+        pytest.param(
+            "import lionagi.ln.concurrency\n",
+            ["lionagi", "state"],
+            {"lionagi/ln/**"},
+            id="absolute-import",
+        ),
+        pytest.param(
+            "from lionagi._paths import HOME\n",
+            ["lionagi", "state"],
+            {"lionagi/_paths.py"},
+            id="absolute-from-a-module",
+        ),
+        pytest.param(
+            "import lionagi\n", ["lionagi", "state"], {"lionagi/__init__.py"}, id="bare-import"
+        ),
+        pytest.param(
+            "from lionagi import Branch\n", None, {"lionagi/__init__.py"}, id="from-lionagi-a-class"
+        ),
+        pytest.param(
+            "from lionagi import ln, _paths\n",
+            None,
+            {"lionagi/__init__.py", "lionagi/ln/**", "lionagi/_paths.py"},
+            id="from-lionagi-a-package-and-a-module",
+        ),
+        pytest.param(
+            "from lionagi import Session\n",
+            None,
+            {"lionagi/__init__.py"},
+            id="names-are-compared-as-spelled",
+        ),
+        pytest.param(
+            "def f():\n    from lionagi.hooks import x\n",
+            None,
+            {"lionagi/hooks/**"},
+            id="inside-a-function",
+        ),
+        pytest.param(
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from lionagi.hooks import x\n",
+            None,
+            {"lionagi/hooks/**"},
+            id="under-type-checking",
+        ),
+        pytest.param(
+            "from ...ln import x\n",
+            ["lionagi", "state", "sub"],
+            {"lionagi/ln/**"},
+            id="relative-leaving-state",
+        ),
+        pytest.param(
+            "from ... import _paths\n",
+            ["lionagi", "state", "sub"],
+            {"lionagi/__init__.py", "lionagi/_paths.py"},
+            id="relative-to-lionagi",
+        ),
+        pytest.param(
+            "from . import a\nfrom .. import b\nfrom ..db import c\n",
+            ["lionagi", "state", "sub"],
+            {"lionagi/state/**"},
+            id="relative-inside-state",
+        ),
+        pytest.param("from . import ln\n", None, set(), id="relative-in-a-test-file"),
+        pytest.param(
+            "import json\nfrom yaml import safe_load\n",
+            ["lionagi", "state"],
+            set(),
+            id="other-packages",
+        ),
+    ],
+)
+def test_the_compat_import_rule(code: str, package, expected: set[str], tmp_path: Path) -> None:
+    lionagi = tmp_path / "lionagi"
+    for directory in ("ln", "hooks", "session", "state"):
+        (lionagi / directory).mkdir(parents=True)
+        (lionagi / directory / "__init__.py").write_text("")
+    (lionagi / "_paths.py").write_text("")
+    source = tmp_path / "source.py"
+    source.write_text(code)
+    names = {path.name: path for path in lionagi.iterdir()}
+    found, unresolved = _compat_names_in(source, package, names)
+    assert {entry for entry, _ in found} == expected
+    assert unresolved == []
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        pytest.param("from ._paths import HOME\n", {"lionagi/_paths.py"}, id="module-level"),
+        pytest.param(
+            "from . import ln\n", {"lionagi/__init__.py", "lionagi/ln/**"}, id="package-by-from-dot"
+        ),
+        pytest.param("from .ln.types import Spec\n", {"lionagi/ln/**"}, id="inside-a-package"),
+        pytest.param("import logging\nimport yaml\n", set(), id="other-packages"),
+        pytest.param(
+            "try:\n    from ._paths import HOME\nexcept ImportError:\n    pass\n",
+            {"lionagi/_paths.py"},
+            id="in-a-try-block",
+        ),
+        pytest.param(
+            "class C:\n    from ._paths import HOME\n", {"lionagi/_paths.py"}, id="in-a-class"
+        ),
+        pytest.param(
+            "if not TYPE_CHECKING:\n    from ._paths import HOME\n",
+            {"lionagi/_paths.py"},
+            id="when-not-type-checking",
+        ),
+        pytest.param(
+            "if TYPE_CHECKING:\n    pass\nelse:\n    from ._paths import HOME\n",
+            {"lionagi/_paths.py"},
+            id="else-of-type-checking",
+        ),
+        pytest.param(
+            "if TYPE_CHECKING:\n    from ._paths import HOME\n", set(), id="under-type-checking"
+        ),
+        pytest.param(
+            "import typing\nif typing.TYPE_CHECKING:\n    from ._paths import HOME\n",
+            set(),
+            id="under-typing-type-checking",
+        ),
+        pytest.param(
+            "if TYPE_CHECKING:\n    if x:\n        from ._paths import HOME\n",
+            set(),
+            id="nested-under-type-checking",
+        ),
+        pytest.param("def f():\n    from ._paths import HOME\n", set(), id="inside-a-function"),
+        pytest.param(
+            "async def f():\n    from ._paths import HOME\n", set(), id="inside-an-async-function"
+        ),
+        pytest.param(
+            "class C:\n    def m(self):\n        from ._paths import HOME\n",
+            set(),
+            id="inside-a-method",
+        ),
+    ],
+)
+def test_the_compat_module_load_rule(code: str, expected: set[str], tmp_path: Path) -> None:
+    # For lionagi/__init__.py only the imports that run when the module loads count.
+    lionagi = tmp_path / "lionagi"
+    for directory in ("ln", "hooks", "session", "state"):
+        (lionagi / directory).mkdir(parents=True)
+        (lionagi / directory / "__init__.py").write_text("")
+    (lionagi / "_paths.py").write_text("")
+    source = tmp_path / "source.py"
+    source.write_text(code)
+    names = {path.name: path for path in lionagi.iterdir()}
+    found, unresolved = _compat_names_in(source, ["lionagi"], names, at_load=True)
+    assert {entry for entry, _ in found} == expected
+    assert unresolved == []
+
+
+def test_the_compat_import_rule_reports_a_name_that_is_not_in_lionagi(tmp_path: Path) -> None:
+    (tmp_path / "lionagi").mkdir()
+    source = tmp_path / "source.py"
+    source.write_text("import lionagi.nothing_here\n")
+    found, unresolved = _compat_names_in(source, None, {})
+    assert found == []
+    assert unresolved == [("lionagi.nothing_here", 1)]

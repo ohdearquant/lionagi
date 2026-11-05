@@ -27,7 +27,7 @@ async def _setup_run_persist(
     invocation_kind: str,
     extra_node_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from lionagi.cli.orchestrate._orchestration import register_branch_hook
+    from lionagi.cli._runs import register_branch_hook
     from lionagi.state.db import StateDB
 
     db = StateDB()
@@ -160,7 +160,7 @@ async def run_workflow_def(
         },
     )
 
-    from lionagi.cli.orchestrate._orchestration import register_branch_hook
+    from lionagi.cli._runs import register_branch_hook
 
     # ctx must exist before the "engine" operation is registered: engine
     # sub-agent branches are born mid-run and need the same on_branch_created

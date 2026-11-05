@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+from lionagi._provider_errors import _WorkerSpawnAdmissionError
 from lionagi.state.compat import Closure, CompatibilityProfile
 from tests.cli.test_agent_notify_without_persistence import _wire_agent_stubs
 

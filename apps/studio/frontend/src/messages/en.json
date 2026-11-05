@@ -1264,7 +1264,7 @@
     },
     "accessRequired": {
       "title": "This daemon needs an access token",
-      "body": "A lionagi daemon answered at {base}, but it refused this page. A daemon accepts a page on another origin only with an access token, and the li studio command gives this page one when it opens it. Reloading the page drops the token.",
+      "body": "A lionagi daemon answered at {base}, but it refused this page. A daemon accepts a page on another origin only with an access token, and the li studio command gives this page one when it opens it.",
       "fix": "Run this where the daemon runs to open Studio with access:",
       "command": "li studio"
     },

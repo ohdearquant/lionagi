@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lionagi.providers._cli_subprocess import (
+from lionhub.providers._cli_subprocess import (
     SpawnedProcess,
     ndjson_from_cli,
     spawned_create_time,
@@ -72,8 +72,8 @@ _ECHO_ENV = (
 _TEARDOWN_DEADLINE = 15.0
 
 _REQUEST_MODELS = [
-    "lionagi.providers.anthropic.claude_code:ClaudeCodeRequest",
-    "lionagi.providers.openai.codex:CodexCodeRequest",
+    "lionhub.providers.anthropic.claude_code:ClaudeCodeRequest",
+    "lionhub.providers.openai.codex:CodexCodeRequest",
 ]
 
 # The descendant these tests are actually about. It ignores SIGTERM, writes its
@@ -209,7 +209,7 @@ class TestSpawnObservation:
     @pytest.mark.asyncio
     async def test_observation_failure_reaps_the_created_child(self, monkeypatch):
         """An identity probe failure must not orphan the child it cannot publish."""
-        import lionagi.providers._cli_subprocess as subprocess_mod
+        import lionhub.providers._cli_subprocess as subprocess_mod
 
         created = []
         create_subprocess_exec = asyncio.create_subprocess_exec
@@ -356,7 +356,7 @@ class TestSpawnObservation:
 
     def test_observation_delegates_the_pre_spawn_marker(self, monkeypatch):
         """The provider cannot substitute an unmarked start-time lookup."""
-        import lionagi.providers._cli_subprocess as mod
+        import lionhub.providers._cli_subprocess as mod
 
         marker = "test-spawn-marker"
         observe_leader = MagicMock(return_value=100.0)
@@ -611,7 +611,7 @@ class TestRequestModelsCarryThem:
     arguments and nothing serialises them into a persisted request."""
 
     def test_claude_code_request_keeps_them_off_the_wire(self):
-        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hi", env={"A": "1"}, on_spawn=lambda spawned: None)
 
@@ -622,7 +622,7 @@ class TestRequestModelsCarryThem:
         assert req.as_cmd_args() == ClaudeCodeRequest(prompt="hi").as_cmd_args()
 
     def test_codex_request_keeps_them_off_the_wire(self):
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", env={"A": "1"}, on_spawn=lambda spawned: None)
 
@@ -645,12 +645,12 @@ class TestRequestModelsCarryThem:
         tokens. A scan passes for anything whose spelling the scan did not
         anticipate, including the environment's own values. This asserts the
         baseline is not vacuously equal to everything."""
-        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
         baseline = ClaudeCodeRequest(prompt="hi").as_cmd_args()
         assert baseline != ClaudeCodeRequest(prompt="hi", model="opus").as_cmd_args()
 
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         codex_baseline = CodexCodeRequest(prompt="hi", env={"B": "2"}).as_cmd_args()
         assert (
@@ -663,8 +663,8 @@ class TestRequestModelsCarryThem:
         environment normally carries credentials, and pydantic's default repr
         would print the whole mapping into any log line, f-string, or exception
         that happens to include the request."""
-        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         secret = "leaked-credential-value"
         for model in (ClaudeCodeRequest, CodexCodeRequest):
@@ -679,8 +679,8 @@ class TestRequestModelsCarryThem:
         """The error a bad environment raises is itself a disclosure channel:
         pydantic quotes the entire rejected input into a ValidationError, so a
         single wrongly typed entry would print every credential beside it."""
-        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         secret = "leaked-credential-value"
         for model in (ClaudeCodeRequest, CodexCodeRequest):
@@ -693,8 +693,8 @@ class TestRequestModelsCarryThem:
             assert "BROKEN" not in message
 
     def test_both_default_to_absent(self):
-        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         for req in (ClaudeCodeRequest(prompt="hi"), CodexCodeRequest(prompt="hi")):
             assert req.env is None
@@ -707,8 +707,8 @@ class TestRequestModelsCarryThem:
         serialises `request_options`, and a callable has no JSON schema at all
         — so a plain Callable field here fails every code path that persists a
         CLI request, none of which is in this module."""
-        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         for model in (ClaudeCodeRequest, CodexCodeRequest):
             schema = model.model_json_schema()
@@ -718,7 +718,7 @@ class TestRequestModelsCarryThem:
 
     @pytest.mark.asyncio
     async def test_claude_code_stream_hands_both_to_the_spawn_helper(self, monkeypatch):
-        import lionagi.providers.anthropic.claude_code as cc
+        import lionhub.providers.anthropic.claude_code as cc
 
         captured: dict = {}
 
@@ -740,7 +740,7 @@ class TestRequestModelsCarryThem:
 
     @pytest.mark.asyncio
     async def test_codex_stream_hands_both_to_the_spawn_helper(self, monkeypatch):
-        import lionagi.providers.openai.codex as cx
+        import lionhub.providers.openai.codex as cx
 
         captured: dict = {}
 
@@ -771,12 +771,12 @@ class TestEndpointsPreserveRuntimeState:
         "endpoint_path,request_path",
         [
             (
-                "lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
-                "lionagi.providers.anthropic.claude_code:ClaudeCodeRequest",
+                "lionhub.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+                "lionhub.providers.anthropic.claude_code:ClaudeCodeRequest",
             ),
             (
-                "lionagi.providers.openai.codex:CodexCLIEndpoint",
-                "lionagi.providers.openai.codex:CodexCodeRequest",
+                "lionhub.providers.openai.codex:CodexCLIEndpoint",
+                "lionhub.providers.openai.codex:CodexCodeRequest",
             ),
         ],
     )
@@ -800,12 +800,12 @@ class TestEndpointsPreserveRuntimeState:
         "endpoint_path,request_path",
         [
             (
-                "lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
-                "lionagi.providers.anthropic.claude_code:ClaudeCodeRequest",
+                "lionhub.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+                "lionhub.providers.anthropic.claude_code:ClaudeCodeRequest",
             ),
             (
-                "lionagi.providers.openai.codex:CodexCLIEndpoint",
-                "lionagi.providers.openai.codex:CodexCodeRequest",
+                "lionhub.providers.openai.codex:CodexCLIEndpoint",
+                "lionhub.providers.openai.codex:CodexCodeRequest",
             ),
         ],
     )
@@ -838,8 +838,8 @@ class TestEndpointsPreserveRuntimeState:
     @pytest.mark.parametrize(
         "endpoint_path",
         [
-            "lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
-            "lionagi.providers.openai.codex:CodexCLIEndpoint",
+            "lionhub.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+            "lionhub.providers.openai.codex:CodexCLIEndpoint",
         ],
     )
     def test_a_request_passed_as_a_dict_is_unaffected(self, endpoint_path):
@@ -939,8 +939,8 @@ class TestTheConfigRouteKeepsThemOutOfWhatIsSerialised:
     @pytest.mark.parametrize(
         "endpoint_path",
         [
-            "lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
-            "lionagi.providers.openai.codex:CodexCLIEndpoint",
+            "lionhub.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+            "lionhub.providers.openai.codex:CodexCLIEndpoint",
         ],
     )
     def test_a_supplied_config_still_notifies_the_original_supervisor(self, endpoint_path):
@@ -1228,8 +1228,8 @@ class TestAnEndpointTheCallerAlreadyBuilt:
     reads exactly like a working leg."""
 
     ENDPOINTS = [
-        "lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
-        "lionagi.providers.openai.codex:CodexCLIEndpoint",
+        "lionhub.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+        "lionhub.providers.openai.codex:CodexCLIEndpoint",
     ]
 
     @pytest.mark.parametrize("endpoint_path", ENDPOINTS)
@@ -1679,7 +1679,7 @@ class TestTheContinuationKeepsTheCallersOwnRecorder:
 
     @pytest.mark.asyncio
     async def test_auto_finish_notifies_the_supervisor_the_caller_passed(self, monkeypatch):
-        import lionagi.providers.anthropic.claude_code as cc
+        import lionhub.providers.anthropic.claude_code as cc
 
         class Supervisor:
             def __init__(self):
@@ -1723,7 +1723,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
 
     def test_returncode_none_without_a_witness_uses_direct_cleanup_only(self):
         """A child watcher may reap before it publishes the terminal returncode."""
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
 
@@ -1734,7 +1734,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
 
     def test_missing_sigkill_still_uses_direct_cleanup(self, monkeypatch):
         """A Windows-like signal module must not block direct-child cleanup."""
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
         signal_group = MagicMock()
@@ -1748,7 +1748,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
         proc.kill.assert_called_once()
 
     def test_a_group_signal_that_raises_still_kills_the_direct_child(self, monkeypatch):
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
         signal_group = MagicMock(side_effect=ValueError("identity read failed"))
@@ -1760,7 +1760,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
         proc.kill.assert_called_once()
 
     def test_a_frozen_witness_authorizes_the_synchronous_backstop(self, monkeypatch):
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
         witnesses = ((4242, 10.0),)
@@ -1781,7 +1781,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
         therefore cannot authorize a delayed signal without a witness frozen
         while the child still anchored the group.
         """
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=0, kill=MagicMock())
         signal_group = MagicMock(return_value=False)
@@ -1795,7 +1795,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
 
     def test_a_handle_without_returncode_cannot_claim_to_be_unreaped(self, monkeypatch):
         """Missing lifecycle state is unknown, never positive identity evidence."""
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, kill=MagicMock())
         signal_group = MagicMock(return_value=False)
@@ -1818,7 +1818,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
         the now-recyclable pid/pgid number, even when a fresh scan would report
         that number as occupied.
         """
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None)
 
@@ -1842,7 +1842,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
         """
         import logging
 
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None)
         spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)
@@ -1867,7 +1867,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
     async def test_a_live_child_with_a_group_witness_is_not_reported(self, monkeypatch, caplog):
         import logging
 
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None)
         spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)
@@ -1890,7 +1890,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
         reaps it, which a loaded host can take a while to do after the child
         exits. The teardown waits for that rather than reporting the group
         unconfirmed at the instant the child is gone."""
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None)
         spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)
@@ -1915,7 +1915,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
 
     @pytest.mark.asyncio
     async def test_a_member_that_stays_leaves_the_group_unconfirmed_after_grace(self, monkeypatch):
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None)
         spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)
@@ -1938,7 +1938,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
         """A spawn task can complete AND its child be reaped before the
         done-callback runs. The pid is then just a number, and this path has no
         witness captured while the child was alive."""
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=0, kill=MagicMock())
         spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=None)
@@ -1962,7 +1962,7 @@ class TestReapedAndUnreapedTeardownBoundaries:
 
     def test_an_abandoned_spawn_uses_the_observation_captured_by_the_spawn_task(self, monkeypatch):
         """The done callback must not derive identity after the task completed."""
-        import lionagi.providers._cli_subprocess as cs
+        import lionhub.providers._cli_subprocess as cs
 
         proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
         spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)

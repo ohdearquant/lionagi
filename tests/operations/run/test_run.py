@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import types
 from unittest.mock import AsyncMock, MagicMock
@@ -794,7 +795,7 @@ async def test_run_strips_timeout_from_create_event_kwargs():
 
 async def test_run_derives_gemini_print_timeout_from_caller_timeout():
     """The shared run seam forwards its deadline to buffered Gemini CLI requests."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -810,7 +811,7 @@ async def test_run_derives_gemini_print_timeout_from_caller_timeout():
 
 async def test_run_rejects_gemini_timeout_at_provider_ceiling():
     """Reject a caller deadline that cannot have a later agy backstop."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -831,7 +832,7 @@ async def test_run_rejects_gemini_timeout_at_provider_ceiling():
 
 async def test_run_preserves_explicit_gemini_print_timeout():
     """An explicit provider cap wins over the timeout-derived default."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -852,7 +853,7 @@ async def test_run_preserves_explicit_gemini_print_timeout():
 async def test_run_without_timeout_sets_configured_gemini_print_timeout(monkeypatch):
     """The shared run seam supplies the configured cap without an outer deadline."""
     import lionagi.config as config_module
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     configured_cap = 3600.0
     monkeypatch.setattr(
@@ -879,7 +880,7 @@ async def test_configured_gemini_print_timeout_stays_a_parseable_go_duration(mon
     error, which is the failure this whole path exists to stop producing.
     """
     import lionagi.config as config_module
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     monkeypatch.setattr(
         config_module,
@@ -902,7 +903,7 @@ async def test_configured_gemini_print_timeout_stays_a_parseable_go_duration(mon
 
 async def test_run_preserves_explicit_gemini_print_timeout_without_timeout():
     """An explicit provider cap also wins when no outer deadline is configured."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -916,7 +917,7 @@ async def test_run_preserves_explicit_gemini_print_timeout_without_timeout():
 
 async def test_run_preserves_endpoint_gemini_print_timeout_without_timeout():
     """Endpoint configuration is explicit and must not receive a request default."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -937,7 +938,7 @@ async def test_run_preserves_endpoint_gemini_print_timeout_with_caller_timeout()
     above. This is the one where a derived value exists and could plausibly
     overwrite an explicit one, so it is the cell most worth pinning down.
     """
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -953,7 +954,7 @@ async def test_run_preserves_endpoint_gemini_print_timeout_with_caller_timeout()
 
 async def test_gemini_timeout_arms_produce_distinct_caps():
     """A caller deadline receives headroom; the configured default is the cap."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     async def captured_cap(imodel_kw):
         model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
@@ -1236,7 +1237,7 @@ async def test_run_liveness_watchdog_raises_after_exhausting_retries():
     """A worker that never produces a first chunk is retried once, then
     fails loud with WorkerLivenessError — the operation must be able to
     transition to FAILED instead of hanging forever."""
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list = []
     model = _make_hanging_cli_model(create_event_calls)
@@ -1274,7 +1275,7 @@ async def test_the_liveness_error_names_the_worker_that_stalled(monkeypatch):
     in leaves every log line exactly as unattributed as before, and that
     failure looks identical to a working one from the helper's own tests.
     """
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     class NeverYields:
         def __aiter__(self):
@@ -1408,7 +1409,7 @@ async def test_run_liveness_watchdog_disabled_by_zero():
 async def test_run_liveness_watchdog_uses_configured_default_when_absent(monkeypatch):
     """When the caller omits liveness_timeout, run() falls back to LIONAGI_WORKER_LIVENESS_TIMEOUT (monkeypatched small here) for an endpoint that declares streams_first_output_early."""
     import lionagi.config as config_module
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list = []
     model = _make_hanging_cli_model(create_event_calls)
@@ -1500,7 +1501,7 @@ async def test_run_liveness_watchdog_default_path_skips_buffered_endpoint(monkey
 
 async def test_run_liveness_watchdog_explicit_timeout_enforced_on_buffered_endpoint():
     """An explicitly-passed liveness_timeout is always honored, even for a buffered endpoint -- the caller opted in deliberately, so the watchdog still retries then raises WorkerLivenessError on a worker that never produces output."""
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list = []
     model = _make_hanging_cli_model(create_event_calls, streams_first_output_early=False)
@@ -1517,7 +1518,7 @@ async def test_run_liveness_watchdog_explicit_timeout_enforced_on_buffered_endpo
 async def test_run_idle_watchdog_fails_after_partial_output_without_retry(monkeypatch):
     """A worker that emits once then stalls fails distinctly and is not rerun."""
     import lionagi.config as config_module
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list[dict] = []
     model = _make_scheduled_cli_model(
@@ -1586,7 +1587,7 @@ async def test_run_idle_watchdog_resets_after_every_chunk():
 
 async def test_run_idle_watchdog_yields_to_tighter_overall_deadline():
     """The caller's total-stream budget retains ownership when it expires first."""
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list[dict] = []
     model = _make_scheduled_cli_model(
@@ -2027,3 +2028,428 @@ def test_accumulate_result_meta_keeps_a_split_that_covers_each_chunks_total():
     assert collected["cache_write_5m_tokens"] == 200
     assert collected["cache_write_1h_tokens"] == 50
     assert collected["usage_valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_branch_restored_from_a_snapshot_resumes_the_cli_session(tmp_path, monkeypatch):
+    """After two turns the branch is written out and read back, as a new process does, and
+    the next turn resumes the CLI's own session and sends only the new instruction."""
+    import lionhub.providers.anthropic.claude_code as cc
+
+    session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+    spawned: list[list[str]] = []
+    prompts: list[str | None] = []
+
+    async def fake_cli(cmd, **kwargs):
+        spawned.append(list(cmd))
+        prompts.append(kwargs.get("stdin_data"))
+        answer = f"answer {len(spawned)}"
+        yield {
+            "type": "system",
+            "subtype": "init",
+            "session_id": session_id,
+            "model": "claude-sonnet-5-5",
+        }
+        yield {
+            "type": "assistant",
+            "message": {"id": f"m{len(spawned)}", "content": [{"type": "text", "text": answer}]},
+        }
+        yield {
+            "type": "result",
+            "subtype": "success",
+            "result": answer,
+            "is_error": False,
+            "session_id": session_id,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cc, "resolve_claude_cli", lambda: "claude")
+    monkeypatch.setattr(cc, "ndjson_from_cli", fake_cli)
+
+    branch = Branch(
+        chat_model=iModel(provider="claude_code", model="claude-sonnet-5-5", api_key="test-key")
+    )
+    for instruction in ("first instruction", "second instruction"):
+        await _collect(run(branch, instruction, RunParam()))
+
+    # Inside the process that ran them, the second turn resumed the first.
+    assert "--resume" not in spawned[0]
+    assert spawned[1][spawned[1].index("--resume") + 1] == session_id
+
+    restored = Branch.from_dict(json.loads(json.dumps(branch.to_dict(mode="json"))))
+    await _collect(run(restored, "third instruction", RunParam()))
+
+    argv = spawned[2]
+    assert argv[argv.index("--resume") + 1] == session_id
+    prompt = prompts[2]
+    assert "third instruction" in prompt
+    for earlier in ("first instruction", "second instruction", "answer 1", "answer 2"):
+        assert earlier not in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_restored_session_id_counts_as_reported_only_once_the_stream_reports_one(
+    tmp_path, monkeypatch
+):
+    """The restored id is what the turn resumes, but only a session event of this process
+    makes it the process's own engine session, whether it repeats the restored id or not."""
+    import lionhub.providers.anthropic.claude_code as cc
+
+    stored_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+    new_id = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+    reports = [new_id, stored_id]
+    spawned: list[list[str]] = []
+    reported_at_spawn: list[str | None] = []
+    holder: dict[str, Branch] = {}
+
+    async def fake_cli(cmd, **kwargs):
+        spawned.append(list(cmd))
+        reported_at_spawn.append(holder["branch"].chat_model.endpoint.reported_session_id)
+        session_id = reports[len(spawned) - 1]
+        yield {"type": "system", "subtype": "init", "session_id": session_id}
+        yield {
+            "type": "assistant",
+            "message": {"id": f"m{len(spawned)}", "content": [{"type": "text", "text": "ok"}]},
+        }
+        yield {
+            "type": "result",
+            "subtype": "success",
+            "result": "ok",
+            "is_error": False,
+            "session_id": session_id,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cc, "resolve_claude_cli", lambda: "claude")
+    monkeypatch.setattr(cc, "ndjson_from_cli", fake_cli)
+
+    saved = Branch(
+        chat_model=iModel(provider="claude_code", model="claude-sonnet-5-5", api_key="test-key")
+    )
+    saved.chat_model.endpoint.session_id = stored_id
+    restored = Branch.from_dict(json.loads(json.dumps(saved.to_dict(mode="json"))))
+    holder["branch"] = restored
+    endpoint = restored.chat_model.endpoint
+
+    assert restored.chat_model.provider_session_id == stored_id
+    assert endpoint.reported_session_id is None
+
+    await _collect(run(restored, "first instruction", RunParam()))
+
+    argv = spawned[0]
+    assert argv[argv.index("--resume") + 1] == stored_id
+    assert reported_at_spawn[0] is None
+    assert endpoint.reported_session_id == new_id
+
+    # A restored id the stream repeats is reported too.
+    again = Branch.from_dict(json.loads(json.dumps(saved.to_dict(mode="json"))))
+    holder["branch"] = again
+    await _collect(run(again, "second instruction", RunParam()))
+
+    assert reported_at_spawn[1] is None
+    assert again.chat_model.endpoint.reported_session_id == stored_id
+
+
+_HELD_SESSION = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+_NEW_SESSION = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+
+
+def _cli_that_can_lose_a_session(
+    spawned: list[list[str]], state: dict, how: str, refused_usage: dict | None = None
+):
+    """A stand-in for the CLI's subprocess boundary.
+
+    Until ``state["lost"]`` is set it holds the session ``_HELD_SESSION``. Afterwards it does not,
+    and resuming that id fails the way the CLI does, in the form ``how`` names: ``stderr`` (nonzero
+    exit, text on stderr), ``result`` (an error result event, then a clean end) or ``result-exit``
+    (an error result event, then a nonzero exit). The error result carries ``refused_usage`` when
+    that is given. A run that resumes nothing starts the session ``_NEW_SESSION``. Each command
+    line is appended to ``spawned`` and the prompt written to the child's stdin to
+    ``state["prompts"]``, at the same position.
+    """
+
+    async def fake_cli(cmd, **kwargs):
+        spawned.append(list(cmd))
+        state.setdefault("prompts", []).append(kwargs.get("stdin_data"))
+        resumed = cmd[cmd.index("--resume") + 1] if "--resume" in cmd else None
+        if state.get("lost") and resumed == _HELD_SESSION:
+            said = f"No conversation found with session ID: {_HELD_SESSION}"
+            if how == "stderr":
+                raise RuntimeError(said)
+            yield {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "errors": [said],
+                **({"usage": refused_usage} if refused_usage else {}),
+            }
+            if how == "result-exit":
+                raise RuntimeError("CLI subprocess exited with code 1 and wrote nothing to stderr")
+            return
+        if state.get("failure") is not None:
+            raise RuntimeError(state["failure"])
+        session_id = _NEW_SESSION if state.get("lost") else _HELD_SESSION
+        answer = f"answer {len(spawned)}"
+        yield {"type": "system", "subtype": "init", "session_id": session_id}
+        yield {
+            "type": "assistant",
+            "message": {"id": f"m{len(spawned)}", "content": [{"type": "text", "text": answer}]},
+        }
+        yield {
+            "type": "result",
+            "subtype": "success",
+            "result": answer,
+            "is_error": False,
+            "session_id": session_id,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+    return fake_cli
+
+
+async def _branch_after_two_turns(
+    spawned, state, how, monkeypatch, tmp_path, refused_usage=None, watch=None
+):
+    """A branch that has run two turns in this process, so the CLI reported its session. The
+    CLI loses that session afterwards. ``watch``, when given, is called with each command line
+    just before the CLI stand-in answers it."""
+    import lionhub.providers.anthropic.claude_code as cc
+
+    fake_cli = _cli_that_can_lose_a_session(spawned, state, how, refused_usage)
+
+    async def watched_cli(cmd, **kwargs):
+        if watch is not None:
+            watch(list(cmd))
+        async for obj in fake_cli(cmd, **kwargs):
+            yield obj
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cc, "resolve_claude_cli", lambda: "claude")
+    monkeypatch.setattr(cc, "ndjson_from_cli", watched_cli)
+
+    branch = Branch(
+        chat_model=iModel(provider="claude_code", model="claude-sonnet-5-5", api_key="test-key")
+    )
+    for instruction in ("first instruction", "second instruction"):
+        await _collect(run(branch, instruction, RunParam()))
+    state["lost"] = True
+    return branch
+
+
+async def _branch_restored_after_two_turns(
+    spawned, state, how, monkeypatch, tmp_path, refused_usage=None, watch=None
+):
+    branch = await _branch_after_two_turns(
+        spawned, state, how, monkeypatch, tmp_path, refused_usage, watch
+    )
+    return Branch.from_dict(json.loads(json.dumps(branch.to_dict(mode="json"))))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["stderr", "result", "result-exit"])
+async def test_a_restored_session_the_cli_no_longer_holds_is_sent_again_in_full(
+    tmp_path, monkeypatch, how
+):
+    """The CLI keeps its sessions on its own disk, which a saved branch outlives. A turn that
+    resumes an id the CLI no longer holds is sent once more with no id and the whole history,
+    and the session the CLI starts for it is the one the branch resumes from then on."""
+    spawned: list[list[str]] = []
+    state: dict = {}
+    restored = await _branch_restored_after_two_turns(spawned, state, how, monkeypatch, tmp_path)
+    assert restored.chat_model.provider_session_id == _HELD_SESSION
+
+    sent = await _collect(run(restored, "third instruction", RunParam()))
+
+    assert len(spawned) == 4
+    refused, again = spawned[2], spawned[3]
+    assert refused[refused.index("--resume") + 1] == _HELD_SESSION
+    assert "--resume" not in again
+    prompt = state["prompts"][3]
+    for earlier in (
+        "first instruction",
+        "second instruction",
+        "answer 1",
+        "answer 2",
+        "third instruction",
+    ):
+        assert earlier in prompt
+    assert [m.content.assistant_response for m in sent if isinstance(m, AssistantResponse)] == [
+        "answer 4"
+    ]
+
+    endpoint = restored.chat_model.endpoint
+    assert endpoint.provider_session_id == _NEW_SESSION
+    assert endpoint.reported_session_id == _NEW_SESSION
+    assert restored.chat_model.to_dict()["endpoint"]["session_id"] == _NEW_SESSION
+
+    await _collect(run(restored, "fourth instruction", RunParam()))
+
+    assert len(spawned) == 5
+    assert spawned[4][spawned[4].index("--resume") + 1] == _NEW_SESSION
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_turn_that_fails_for_another_reason_is_not_sent_again(
+    tmp_path, monkeypatch
+):
+    """Only a session the CLI does not hold is worth sending again without its id."""
+    spawned: list[list[str]] = []
+    state: dict = {}
+    restored = await _branch_restored_after_two_turns(
+        spawned, state, "stderr", monkeypatch, tmp_path
+    )
+    state["lost"] = False
+    state["failure"] = "the CLI hit an unexpected error"
+
+    with pytest.raises(ValueError, match="unexpected error"):
+        await _collect(run(restored, "third instruction", RunParam()))
+
+    assert len(spawned) == 3
+    assert restored.chat_model.provider_session_id == _HELD_SESSION
+
+
+@pytest.mark.asyncio
+async def test_a_turn_sent_again_without_its_session_id_is_not_sent_a_third_time(
+    tmp_path, monkeypatch
+):
+    """The second send carries no id, so a failure of that send is the turn's own failure."""
+    spawned: list[list[str]] = []
+    state: dict = {}
+    restored = await _branch_restored_after_two_turns(
+        spawned, state, "stderr", monkeypatch, tmp_path
+    )
+    state["failure"] = "No conversation found with session ID: another"
+
+    with pytest.raises(ValueError, match="No conversation found"):
+        await _collect(run(restored, "third instruction", RunParam()))
+
+    assert len(spawned) == 4
+    assert "--resume" not in spawned[3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["stderr", "result", "result-exit"])
+async def test_a_session_this_process_saw_reported_is_not_sent_again_when_the_cli_refuses_it(
+    tmp_path, monkeypatch, how
+):
+    """Only an id restored from a snapshot may have gone missing from the CLI unseen. A session
+    the CLI reported in this process and then refuses is a failure of the turn: it is raised
+    with no second send."""
+    spawned: list[list[str]] = []
+    state: dict = {}
+    branch = await _branch_after_two_turns(spawned, state, how, monkeypatch, tmp_path)
+    assert branch.chat_model.endpoint.reported_session_id == _HELD_SESSION
+
+    with pytest.raises((ValueError, RuntimeError), match="No conversation found"):
+        await _collect(run(branch, "third instruction", RunParam()))
+
+    assert len(spawned) == 3
+    assert spawned[2][spawned[2].index("--resume") + 1] == _HELD_SESSION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["result", "result-exit"])
+async def test_nothing_of_a_refused_attempt_reaches_the_turn(tmp_path, monkeypatch, how):
+    """A refusal can follow a usage ``result`` event. That event belongs to the attempt the CLI
+    refused: the chunks the run reads, the turn's response and the live stream buffer hold only
+    what the second send produced."""
+    import importlib
+
+    run_mod = importlib.import_module("lionagi.operations.run.run")
+    refused_usage = {"input_tokens": 777, "output_tokens": 7}
+    stream_dir = tmp_path / "stream"
+    stream_dir.mkdir()
+
+    # The run writes a chunk to the buffer only when it can serialize itself, which StreamChunk
+    # does not do on its own; give it that here so the buffer is written and can be read.
+    monkeypatch.setattr(StreamChunk, "to_dict", dataclasses.asdict, raising=False)
+
+    read_by_run: list = []
+    real_resend = run_mod._stream_resending_unheld_session
+
+    async def recording_resend(*args, **kwargs):
+        async for chunk in real_resend(*args, **kwargs):
+            read_by_run.append(chunk)
+            yield chunk
+
+    monkeypatch.setattr(run_mod, "_stream_resending_unheld_session", recording_resend)
+
+    written: list[dict] = []
+    real_append = run_mod._append_chunk
+
+    async def recording_append(buffer_path, chunk):
+        written.append(chunk.to_dict())
+        await real_append(buffer_path, chunk)
+
+    monkeypatch.setattr(run_mod, "_append_chunk", recording_append)
+
+    spawned: list[list[str]] = []
+    state: dict = {}
+    buffer_when_sent_again: list[str] = []
+
+    def watch(cmd: list[str]) -> None:
+        # What the live buffer file holds the moment the second send starts. The file is named
+        # for the branch and ends in ``.buffer``.
+        if state.get("lost") and "--resume" not in cmd:
+            buffer_when_sent_again.extend(p.read_text() for p in stream_dir.glob("*.buffer*"))
+
+    restored = await _branch_restored_after_two_turns(
+        spawned, state, how, monkeypatch, tmp_path, refused_usage=refused_usage, watch=watch
+    )
+    read_by_run.clear()
+    written.clear()
+
+    param = RunParam(stream_persist=True, persist_dir=stream_dir, snapshot_dir=stream_dir)
+    sent = await _collect(run(restored, "third instruction", param))
+
+    assert len(spawned) == 4
+    assert "--resume" not in spawned[3]
+
+    # The caller's chunks: the second send's, from its first event on.
+    assert [c.type for c in read_by_run][0] == "system"
+    assert "777" not in json.dumps([c.to_dict() for c in read_by_run], default=str)
+    assert any(c.type == "result" for c in read_by_run)
+
+    # The branch's messages: one response, stamped with the second send's usage alone.
+    responses = [m for m in restored.messages if isinstance(m, AssistantResponse)]
+    final = responses[-1]
+    assert final.content.assistant_response == "answer 4"
+    assert final.metadata["model_response"]["usage"] == {"input_tokens": 10, "output_tokens": 5}
+    assert [m for m in sent if isinstance(m, AssistantResponse)] == [final]
+
+    # The stream buffer: nothing of the refused attempt was in the file when the second send
+    # started, and the chunks written during the turn are the second send's.
+    assert "".join(buffer_when_sent_again).strip() == ""
+    assert written, "the stream buffer was never written, so this test proves nothing"
+    assert "777" not in json.dumps(written, default=str)
+    assert written[0]["type"] == "system"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["stderr", "result"])
+async def test_a_resume_the_caller_names_is_not_sent_again_when_the_cli_refuses_it(
+    tmp_path, monkeypatch, how
+):
+    """A session the caller asked to resume is the caller's to account for: the model holds no
+    restored id, so the refusal is raised with no second send."""
+    import lionhub.providers.anthropic.claude_code as cc
+
+    spawned: list[list[str]] = []
+    state: dict = {"lost": True}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cc, "resolve_claude_cli", lambda: "claude")
+    monkeypatch.setattr(cc, "ndjson_from_cli", _cli_that_can_lose_a_session(spawned, state, how))
+    branch = Branch(
+        chat_model=iModel(provider="claude_code", model="claude-sonnet-5-5", api_key="test-key")
+    )
+    assert branch.chat_model.provider_session_id is None
+
+    with pytest.raises((ValueError, RuntimeError), match="No conversation found"):
+        await _collect(
+            run(branch, "first instruction", RunParam(imodel_kw={"resume": _HELD_SESSION}))
+        )
+
+    assert len(spawned) == 1
+    assert spawned[0][spawned[0].index("--resume") + 1] == _HELD_SESSION

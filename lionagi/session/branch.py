@@ -109,6 +109,7 @@ class Branch(Element, Relational):
     # Set by a context fold: whether the request being compiled skips its end-of-turn cache mark.
     _prompt_cache_tail_skip: Any = PrivateAttr(None)
     _hooks: Any = PrivateAttr(None)
+    _persist_message_update: Any = PrivateAttr(None)
     _pending_hook_bus_entries: list = PrivateAttr(default_factory=list)
     _hook_bus_synced_to: Any = PrivateAttr(None)
     _hook_bus_synced_count: int = PrivateAttr(0)
@@ -1235,7 +1236,6 @@ class Branch(Element, Relational):
                 response_kwargs=response_kwargs,
                 return_analysis=return_analysis,
                 analysis_model=analysis_model,
-                verbose_action=verbose,
                 verbose_analysis=verbose,
                 verbose_length=verbose_length,
                 interpret_model=interpret_model,

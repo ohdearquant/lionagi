@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.agent.factory import (
-    _CODEX_MCP_PROFILE_PREFIX,
-    _write_codex_mcp_secret_profile,
+from lionagi.agent.factory import _write_codex_mcp_secret_profile
+from lionhub.providers.openai._codex_profile import (
+    CODEX_MCP_PROFILE_PREFIX as _CODEX_MCP_PROFILE_PREFIX,
 )
 
 SECRET_FIELDS = {"khive": {"env": {"KHIVE_TOKEN": "x"}}}

@@ -2,7 +2,7 @@
 
 Terse, per-module reference for invariants, protocol contracts, and non-obvious design
 rationale that used to live as long-form docstrings/comments in the runtime source
-(`lionagi/state/`, `lionagi/service/`, `lionagi/providers/`, `lionagi/tools/`,
+(`lionagi/state/`, `lionagi/service/`, `lionhub/src/lionhub/providers/`, `lionagi/tools/`,
 `lionagi/agent/`, `lionagi/testing/`, `lionhub/src/lionhub/orchestration/dispatch/`, `lionagi/hooks/`). The source
 now carries a 1-2 line pointer; this file carries the substance. Organized by module path.
 
@@ -1012,6 +1012,32 @@ basename denial fails identically against every root and always surfaces over a 
 denial. `guard_paths` validation is check-time only — a TOCTOU race (swapping a validated file
 for a symlink after the check passes) is explicitly out of scope.
 
+`guard_email_in_headers()` checks bash commands, editor write content and the resulting text of an
+editor edit for an email address in an outbound HTTP header. An existing header can therefore block
+an unrelated edit, while an edit that removes the address can pass. Documentation-domain examples
+pass by default. It examines raw text, so a quoted example may be refused. Dynamically assembled
+headers and static forms outside the token list may not be detected. If the guard cannot read or
+decode the file, or cannot prepare the edit, it allows the call and the editor reports its own error
+when it reads and prepares the edit. The edit check resolves and reads the file before the editor reads and
+writes it; a concurrent change can occur between those operations, and the read is not an atomic
+no-follow read. For toolkit edits, the guard runs before the read-before-edit check; when both
+would refuse, the guard's refusal is reported. Tools registered outside the agent factory do not
+receive this guard. Wrapping the email guard in another hook prevents the factory from binding it;
+an unbound guard refuses every edit without inspecting the file. CLI-backed providers such as Claude
+Code, Codex, Gemini and Antigravity execute their own tools; their tool calls do not pass through
+this guard.
+Additional allowed addresses and an optional refusal note come from the global settings file:
+
+```yaml
+guards:
+  email_in_headers:
+    allow: [contact@project.example]
+    note: Use the approved contact only when necessary.
+```
+
+Project settings cannot add allowed addresses or change this note.
+The global settings file is not protected from the agent's own commands.
+
 ### `agent/nudge.py`
 
 `NudgeEngine.evaluate()`/`_merge()` — firing bookkeeping (once/cooldown state) is committed
@@ -1090,7 +1116,7 @@ stamps the status itself, as before. Related: `persist_session_start`'s explicit
 transition avoids tripping a deprecation shim that would otherwise raise and get swallowed by
 the bus, silently dropping all the provenance fields passed alongside it.
 
-## lionagi/providers/
+## lionhub/src/lionhub/providers/
 
 ### `_cli_subprocess.py`
 

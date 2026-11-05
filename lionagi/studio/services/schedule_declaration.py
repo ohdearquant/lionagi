@@ -149,7 +149,7 @@ class Budget(BaseModel):
         # Reuse the service-boundary checks rather than forking them, and run
         # them on the RAW values: pydantic coercion would otherwise admit
         # bool/whole-float/numeric-string tokens the shared validator rejects.
-        from lionagi.studio.services.schedules import (
+        from lionagi.studio.services._schedule_validation import (
             _svc_validate_budget_tokens,
             _svc_validate_budget_usd,
         )
@@ -383,7 +383,7 @@ def _resolve_trigger(trigger: Trigger) -> dict[str, Any]:
         dt = _parse_at(trigger.at)
         return {"kind": "at", "at": dt.isoformat(), "epoch": dt.timestamp()}
     if trigger.github is not None:
-        from lionagi.studio.services.schedules import (
+        from lionagi.studio.services._schedule_validation import (
             _svc_validate_github_filter,
             _svc_validate_github_repo,
         )
@@ -479,7 +479,7 @@ def _resolve_agent_target(target: AgentTarget, cwd: Path) -> dict[str, Any]:
 
 
 def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, Any]:
-    from lionagi.studio.services.schedules import _validate_flow_yaml_spec
+    from lionagi.studio.services._schedule_validation import _validate_flow_yaml_spec
 
     if target.inputs:
         # The flow_yaml launch path (li o flow -f <snapshot>) takes no
@@ -531,7 +531,7 @@ def _resolve_command_target(target: CommandTarget) -> dict[str, Any]:
         _validate_action_command,
         _validate_command_allowlisted,
     )
-    from lionagi.studio.services.schedules import _svc_validate_command_args
+    from lionagi.studio.services._schedule_validation import _svc_validate_command_args
 
     _validate_action_command(target.executable)
     _validate_command_allowlisted(target.executable)

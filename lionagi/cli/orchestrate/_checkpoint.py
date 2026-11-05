@@ -112,6 +112,7 @@ class CheckpointWriter:
         context: Any | None = None,
         emitter_workload: str | None = None,
         emitter_contains_user_settings: bool = False,
+        profile_mcp_disabled: bool = False,
     ) -> None:
         """Record one reactively spawned node's outcome, keyed by its own node id.
 
@@ -147,6 +148,8 @@ class CheckpointWriter:
                 entry["emitter_workload"] = emitter_workload
             if emitter_contains_user_settings:
                 entry["emitter_contains_user_settings"] = True
+            if profile_mcp_disabled:
+                entry["profile_mcp_disabled"] = True
             for i, existing in enumerate(self.spawned):
                 if existing.get("node_id") == node_id:
                     self.spawned[i] = entry
@@ -235,15 +238,15 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
             return run_dir, load_checkpoint(run_dir.checkpoint_path)
         _raise_if_persistence_degraded(run_dir)
 
-    from lionagi.cli.status import _resolve_any_target, _resolve_primary_session
+    from lionagi.cli._inspection import resolve_any_target, resolve_primary_session
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        resolved = await _resolve_any_target(db, target)
+        resolved = await resolve_any_target(db, target)
         if resolved is None:
             raise FlowResumeError(f"No run, session, invocation, or play found for {target!r}.")
         entity_type, row = resolved
-        session_row = await _resolve_primary_session(db, entity_type, row)
+        session_row = await resolve_primary_session(db, entity_type, row)
         if session_row is None:
             raise FlowResumeError(f"No backing session found for {target!r}.")
         node_meta = session_row.get("node_metadata") or {}

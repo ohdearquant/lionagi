@@ -16,7 +16,7 @@ _OTHER_GENERATION = "c06b1529-665f-4ee4-9ff1-c85d5fb2d9da"
 
 @pytest.fixture
 def api():
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.cli_workers import (
         _consume_worker_spawn_continuation,
         _prepare_worker_spawn_continuation,

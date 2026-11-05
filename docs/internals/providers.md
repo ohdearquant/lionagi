@@ -1,7 +1,7 @@
 # Internals Reference — operations, providers, engines
 
 Design rationale, protocol contracts, and measured facts pulled out of
-inline comments in `lionagi/operations/`, `lionagi/providers/`, and
+inline comments in `lionagi/operations/`, `lionhub/src/lionhub/providers/`, and
 `lionhub/src/lionhub/orchestration/engines/`. Inline comments in those packages stay to one sentence;
 anything longer lives here. Source pointers back to here read
 `# See docs/internals/providers.md#<anchor>`.

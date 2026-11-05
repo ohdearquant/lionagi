@@ -19,8 +19,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lionagi._errors import ConfigurationError
+from lionagi._errors import CLIInputRefusedError, ConfigurationError, InputTokenCapError
+from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi.agent import AgentSpec, create_agent
+from lionagi.agent.factory import _AgentSettingError
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import Semaphore, gather, move_on_after, sleep
 from lionagi.ln.concurrency._compat import (
@@ -28,6 +30,7 @@ from lionagi.ln.concurrency._compat import (
     get_exception_group_exceptions,
     is_exception_group,
 )
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.ln.types import RoleFilter, TypeFilter
 from lionagi.protocols._concepts import Observable
 from lionagi.session.observer import SessionObserver
@@ -36,11 +39,18 @@ from lionagi.session.signal import Signal
 
 if TYPE_CHECKING:
     from lionagi.protocols.generic.pile import Pile
-    from lionagi.providers._cli_subprocess import SpawnedProcess
     from lionagi.session.branch import Branch
+    from lionhub.providers._cli_subprocess import SpawnedProcess
 
 logger = logging.getLogger("lionagi.engines")
 EventCallback = Callable[[dict[str, Any]], Any]
+
+_JUDGE_REFUSALS = (
+    CLIInputRefusedError,
+    InputTokenCapError,
+    NestedAgentRefusedError,
+    _AgentSettingError,
+)
 
 # Sentinel used by Engine.run() to distinguish "partial export produced a
 # result" from "partial export returned None intentionally".
@@ -421,7 +431,12 @@ def emission_keys(emits: tuple[type, ...]) -> str:
     from lionagi.casts.emission import field_name_for
 
     names = ", ".join(f"'{field_name_for(m)}'" for m in emits)
-    return f"Expected top-level key(s): {names}." if names else ""
+    if not names:
+        return ""
+    return (
+        f"Expected top-level key(s): {names}. Each key holds one object; to report "
+        "several, emit one object per finding, or a list of objects under the key."
+    )
 
 
 def _namespaced_injection(injection: Any, namespace: str) -> Any:
@@ -1176,7 +1191,7 @@ class EngineRun:
         still ours, but the direct child is killed through its own handle.
         """
 
-        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import (  # noqa: PLC0415
             _end_group_with_evidence,
             _witnesses_for_spawn,
         )
@@ -1204,7 +1219,7 @@ class EngineRun:
         can end the survivors ever ran. The group's own membership is therefore
         what decides: no surviving witness means there is nothing left to end.
         """
-        from lionagi.providers._cli_subprocess import _witnesses_for_spawn  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import _witnesses_for_spawn  # noqa: PLC0415
 
         live: list[_TrackedCLIProcess] = []
         dead: list[int] = []
@@ -1240,7 +1255,7 @@ class EngineRun:
         exited on its own.
         """
 
-        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import (  # noqa: PLC0415
             _ChildGroupCleanup,
             end_child_group,
         )
@@ -1840,6 +1855,60 @@ class EngineResult(str):
 _JUDGE_CHAIN_LIMIT = 100
 
 
+def _judge_refusal(
+    error: BaseException,
+) -> tuple[BaseException | None, BaseException | None, bool]:
+    """Find a request refusal while preserving the existing containment precedence."""
+    from lionagi._errors import (  # noqa: PLC0415
+        ContainmentRefusedError,
+        _ExclusiveMcpSelectionError,
+    )
+
+    # Retain the first request or policy refusal while looking for a containment or
+    # exclusive-selection refusal, whose existing precedence must be preserved.
+    # Follow whatever each link holds, nearest first. Keep each visited object
+    # alive until the walk ends so a link built on a later read cannot reuse its id.
+    pending: deque[object] = deque([error])
+    seen: dict[int, object] = {}
+    refusal = None
+    visited = 0
+    while pending and visited < _JUDGE_CHAIN_LIMIT:
+        cause = pending.popleft()
+        visited += 1
+        if id(cause) in seen:
+            continue
+        seen[id(cause)] = cause
+        if issubclass(type(cause), (ContainmentRefusedError, _ExclusiveMcpSelectionError)):
+            return cause, None, True
+        if refusal is None and issubclass(type(cause), _JUDGE_REFUSALS):
+            refusal = cause
+        for name in ("__context__", "__cause__"):
+            # A read that fails ends that branch. An interrupt, an exit or a cancellation
+            # raised by the read is not caught.
+            try:
+                link = getattr(cause, name, None)
+            except Exception:  # noqa: S112
+                continue
+            if link is not None and visited + len(pending) < _JUDGE_CHAIN_LIMIT:
+                pending.append(link)
+        try:
+            if is_exception_group(cause):
+                members = iter(get_exception_group_exceptions(cause))
+                while visited + len(pending) < _JUDGE_CHAIN_LIMIT:
+                    try:
+                        pending.append(next(members))
+                    except StopIteration:
+                        break
+        except Exception:  # noqa: S110 — unreadable group members are skipped
+            pass
+    if refusal is not None:
+        try:
+            return refusal, refusal.__cause__, False
+        except Exception:  # noqa: BLE001 — unreadable links are skipped
+            return refusal, None, False
+    return None, None, False
+
+
 def check_max_tokens(name: str, value: Any) -> int:
     """*value* as an output-token limit: a positive int (a bool is not one)."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -1982,16 +2051,16 @@ class Engine:
         """Return whether to expand an item, or raise when the judge cannot be trusted.
 
         With no judge configured this returns True; budget exhaustion returns False.
-        Judge failures fail open except for settings errors, a containment refusal on
-        the bounded exception chain, and failures under account containment. An
+        Judge failures fail open except for request or policy refusals on the bounded
+        exception chain, and failures under account containment. An
         ordinary error reporting a denial does not change that denial; an unreadable
         callback error chain or a containment or settings refusal still raises.
         """
         from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
-        from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
         if not self.judge_model:
             return True
+        refusal = None
         try:
             async with run._sem:
                 agent = await run.make_agent(
@@ -2020,38 +2089,25 @@ class Engine:
         except _AgentSettingError:
             raise
         except Exception as exc:
-            # The model layer wraps a provider's refusal in its own error, so the refusal is
-            # found on the error's chain: its cause, or its context when a wrapper raised
-            # without `from`. It refuses every call this judge makes; read as a pass, it would
-            # turn the gate off for the whole run. Whatever a link holds is followed, an object
-            # that is not an exception included, and every link read is kept until the walk
-            # ends, so a link an error builds on each read cannot take a visited one's address.
-            # Links are read nearest first, so a long branch cannot spend the limit before a
-            # refusal one link away is read.
-            pending: deque[object] = deque([exc])
-            seen: dict[int, object] = {}
-            while pending and len(seen) < _JUDGE_CHAIN_LIMIT:
-                cause = pending.popleft()
-                if cause is None or id(cause) in seen:
-                    continue
-                seen[id(cause)] = cause
-                if issubclass(type(cause), ContainmentRefusedError):
-                    raise cause from cause.__cause__
-                for name in ("__context__", "__cause__"):
-                    # A read that fails ends that branch. An interrupt, an exit or a cancellation
-                    # raised by the read is not caught.
-                    try:
-                        pending.append(getattr(cause, name, None))
-                    except Exception:  # noqa: S112
-                        continue
-            # No refusal on the chain. A chain that loops back on itself, or one longer than
-            # the limit, lands here too, instead of walking forever. Under containment the
-            # refusal can arrive as any error type (an unreadable directory, a config the
-            # request model rejects), so an error is never read as a pass.
-            run.notify("judge_error", eid=eid, error=str(exc))
-            if self.contain_account_integrations:
-                raise
-            return True
+            # Request and policy refusals recur for the same input and must not be
+            # mistaken for an ordinary infrastructure failure. Keep the traversal in a
+            # separate frame so this traceback does not retain the outer error's links.
+            refusal, refusal_cause, containment_refusal = _judge_refusal(exc)
+            if containment_refusal:
+                raise refusal from refusal.__cause__
+            if refusal is None:
+                # No refusal on the chain. A chain that loops back on itself, or one longer than
+                # the limit, lands here too, instead of walking forever. Under containment the
+                # refusal can arrive as any error type (an unreadable directory, a config the
+                # request model rejects), so an error is never read as a pass.
+                run.notify("judge_error", eid=eid, error=str(exc))
+                if self.contain_account_integrations:
+                    raise
+                return True
+
+        # Raise after the handler so the outer error is not attached as context.
+        if refusal is not None:
+            raise refusal from refusal_cause
 
         if not allow:
             try:
@@ -2110,10 +2166,10 @@ class Engine:
         # work burns tokens past budget exhaustion (no-op if _active is empty).
         if run._active or run._live_cli_processes():
             await run.cancel_active()
-        # asyncio.shield keeps the export running outside the cancelled scope;
+        # shield_quietly keeps the export running outside the cancelled scope;
         # the hard timeout bounds it so a hung synthesis call can't extend the run.
         partial_coro = self._partial_export(run, *args, **kwargs)
-        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import (  # noqa: PLC0415
             _observe_run_cli_spawns,
         )
 
@@ -2121,7 +2177,7 @@ class Engine:
             partial_task = asyncio.ensure_future(partial_coro)
         try:
             return await asyncio.wait_for(
-                asyncio.shield(partial_task),
+                shield_quietly(partial_task),
                 timeout=_PARTIAL_EXPORT_TIMEOUT_S,
             )
         except asyncio.CancelledError:
@@ -2180,7 +2236,7 @@ class Engine:
             watchdog = asyncio.ensure_future(run._deadline_watchdog())
         # Wrapping _run() in a task lets the deadline bound *all* in-flight work —
         # sequential awaits inside _run(), not just spawned background tasks.
-        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import (  # noqa: PLC0415
             _observe_run_cli_spawns,
         )
 
@@ -2246,7 +2302,7 @@ class Engine:
                 if run._active or run._live_cli_processes():
                     drain = asyncio.ensure_future(run.cancel_active())
                     try:
-                        await asyncio.shield(drain)
+                        await shield_quietly(drain)
                     except asyncio.CancelledError:
                         if drain.cancelled():
                             raise
@@ -2254,7 +2310,7 @@ class Engine:
                         # repeat cancels) so no run-owned task outlives run().
                         while not drain.done():
                             try:
-                                await asyncio.shield(drain)
+                                await shield_quietly(drain)
                             except asyncio.CancelledError:
                                 continue
                         if not drain.cancelled() and drain.exception() is not None:
@@ -2274,7 +2330,7 @@ class Engine:
         return self._wrap_result(result, run, degrade_reason=degrade_reason)
 
     async def _partial_export(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
-        """Called under asyncio.shield after budget cancellation; override in subclasses to return a partial result. Default returns None."""
+        """Called under shield_quietly after budget cancellation; override in subclasses to return a partial result. Default returns None."""
         return None
 
     async def _run(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:

@@ -602,7 +602,7 @@ class TestTeardownReasonResolution:
         """A terminal ProviderError subclass must carry a reason code that
         distinguishes retryable from non-retryable — the rank-2 reliability
         cohort's classification requirement (ADR-0057 vocabulary)."""
-        import lionagi.providers._provider_errors as provider_errors
+        import lionagi._provider_errors as provider_errors
         from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
 
         error_cls = getattr(provider_errors, cls_name)
@@ -620,8 +620,8 @@ class TestTeardownReasonResolution:
     def test_a_provider_error_wrapped_by_the_model_stream_keeps_its_reason(self):
         """iModel re-raises every stream failure as a ValueError; the provider's typed error
         rides as its cause and decides the reason."""
+        from lionagi._provider_errors import ProviderQuotaError
         from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
-        from lionagi.providers._provider_errors import ProviderQuotaError
 
         try:
             try:

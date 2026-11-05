@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from lionagi.providers._provider_errors import (
+from lionagi._provider_errors import (
     ProviderAdapterError,
     ProviderError,
     ProviderPermissionError,
@@ -26,7 +26,7 @@ from lionagi.providers._provider_errors import (
 )
 from lionhub.serve.mcp._terminal_cause import allowed_cause_classes, read_terminal_cause
 
-# Verbatim from lionagi/providers/google/gemini_code.py, where it is raised.
+# Verbatim from lionhub/src/lionhub/providers/google/gemini_code.py, where it is raised.
 AUTO_DENY = (
     "agy reported status=SUCCESS with no response content. "
     "A tool call was most likely auto-denied, because headless "
@@ -77,7 +77,7 @@ class TestTheBranchOrderIsWhatMakesItReachable:
         """
         both = "agy returned status=SUCCESS — a tool call was auto-denied"
 
-        from lionagi.providers import _provider_errors as mod
+        from lionagi import _provider_errors as mod
 
         assert any(p.search(both) for p in mod._PERMISSION_PATTERNS)
         assert any(p.search(both) for p in mod._ADAPTER_PATTERNS)
@@ -145,7 +145,7 @@ class TestTheHierarchyStaysWhereTheRecordCanSeeIt:
         list is what the derivation was written to avoid, since a class added
         without a second edit there would silently read back as 'unknown'.
         """
-        import lionagi.providers._provider_errors as owner
+        import lionagi._provider_errors as owner
 
         def walk(cls: type) -> set[type]:
             found = {cls}

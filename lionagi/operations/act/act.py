@@ -12,6 +12,7 @@ from lionagi.ln import AlcallParams
 from lionagi.protocols.action.tool_hooks import ActionGovernanceDeniedError
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.messages import ActionRequest, ActionResponse
+from lionagi.protocols.messages.action_response import _OUTPUT_TOO_DEEP
 from lionagi.service._api_telemetry import record_guard_refusal
 
 from .._defaults import get_default_action_call as _get_default_call_params
@@ -22,6 +23,22 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
+
+
+def _argument_text(arguments: object) -> str:
+    """Render observational text without rejecting recursive argument structures."""
+    try:
+        return str(arguments)
+    except RecursionError:
+        return "<arguments too deeply nested>"
+
+
+def _result_text(result: object) -> str:
+    """Render a tool result without losing a completed call to recursion."""
+    try:
+        return str(result)
+    except RecursionError:
+        return _OUTPUT_TOO_DEEP
 
 
 async def _act(
@@ -156,7 +173,7 @@ async def _act(
 
     _hooks = branch._hooks
     _tool_name = _request["function"]
-    _args_summary = str(_request["arguments"])[:200]
+    _args_summary = _argument_text(_request["arguments"])[:200]
 
     if _hooks is not None:
         from lionagi.hooks.bus import HookPoint
@@ -171,7 +188,7 @@ async def _act(
     func_call = None
     try:
         if verbose_action:
-            args_ = str(_request["arguments"])
+            args_ = _argument_text(_request["arguments"])
             args_ = args_[:50] + "..." if len(args_) > 50 else args_
             logger.debug("Invoking action %s with %s.", _request["function"], args_)
 
@@ -193,7 +210,7 @@ async def _act(
         if _hooks is not None:
             from lionagi.hooks.bus import HookPoint
 
-            _result_summary = str(func_call.response)[:200]
+            _result_summary = _result_text(func_call.response)[:200]
             await _hooks.emit(
                 HookPoint.TOOL_POST,
                 call_id=_call_id,

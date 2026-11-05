@@ -12,6 +12,8 @@ from contextlib import suppress
 from dataclasses import replace
 from typing import Any
 
+import anyio
+
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import sleep
 
@@ -53,6 +55,17 @@ _log = logging.getLogger(__name__)
 _ENGINE_CHILD_NAME = "Operator · engine transcript"
 _ENGINE_LINK_RETRIES = 10
 _ENGINE_LINK_RETRY_INTERVAL = 3.0
+_SETUP_RECOVERY_TIMEOUT_SECONDS = 2.0
+
+
+async def _recover_setup_session(run_id: str) -> tuple[bool, dict[str, Any] | None]:
+    """Try recovery with a deadline, distinguishing an absent row from a timeout."""
+    from lionagi.cli import _runs as cli_runs
+
+    session = None
+    with anyio.move_on_after(_SETUP_RECOVERY_TIMEOUT_SECONDS) as scope:
+        session = await cli_runs.find_incomplete_session_for_run(run_id)
+    return not scope.cancel_called, session
 
 
 async def _link_engine_child(db: Any, session_uid: str, *, parent_run_id: str) -> bool:
@@ -709,14 +722,32 @@ class OperatorCoordinator:
 
             refusal = refusal_in(exc)
             orphaned_session = None
+            recovery_complete = run_dir is None
+            recovery_cancelled = None
             # A refused setup was writing to a store in compatibility mode, which refuses this
             # recovery (ADR-0128 A.1), so its rows are left as they stand.
             if live is None and run_dir is not None and refusal is None:
+                # cancel() uses Task.cancel(), which bypasses an AnyIO shield in this
+                # task. Own the bounded recovery task and hold cancellation while it
+                # settles so its observation cannot outlive the terminal record.
+                recovery = asyncio.create_task(_recover_setup_session(run_dir.run_id))
+                while not recovery.done():
+                    try:
+                        await asyncio.wait((recovery,))
+                    except asyncio.CancelledError as cancel_exc:
+                        recovery_cancelled = recovery_cancelled or cancel_exc
                 try:
-                    orphaned_session = await cli_runs.find_incomplete_session_for_run(
-                        run_dir.run_id
-                    )
+                    recovery_complete, orphaned_session = recovery.result()
+                    if not recovery_complete:
+                        _log.warning("Operator turn %s: setup recovery timed out", request_id)
+                except asyncio.CancelledError:
+                    recovery_complete = False
+                    _log.warning("Operator turn %s: setup recovery was cancelled", request_id)
                 except Exception as recovery_exc:  # noqa: BLE001
+                    recovery_complete = False
+                    _log.warning(
+                        "Operator turn %s: setup recovery failed", request_id, exc_info=True
+                    )
                     from lionagi.state.db import (
                         ForeignLineageError,
                         SchemaTooNewError,
@@ -740,9 +771,12 @@ class OperatorCoordinator:
                 run_id = orphaned_session["id"]
                 evidence = f"open the run at /runs/{run_id} for its status and history"
                 details = {"runId": run_id, "href": f"/runs/{run_id}"}
-            else:
+            elif recovery_complete:
                 evidence = "no run was recorded for this turn before it failed"
                 details = {"runId": None}
+            else:
+                evidence = "run recovery did not complete"
+                details = {}
             if refusal is not None:
                 # The store refused a write in compatibility mode (ADR-0128 D6), including
                 # one of the setup writes themselves, or refused the recovery's native open as
@@ -752,7 +786,11 @@ class OperatorCoordinator:
                     "failed",
                     {
                         "code": "store_refused",
-                        "message": str(refusal),
+                        "message": (
+                            f"{refusal}; run recovery did not complete"
+                            if not recovery_complete and refusal is not refusal_in(exc)
+                            else str(refusal)
+                        ),
                         "retryable": False,
                         "details": details,
                     },
@@ -769,6 +807,8 @@ class OperatorCoordinator:
                         "details": details,
                     },
                 )
+            if recovery_cancelled is not None:
+                raise recovery_cancelled from exc
         finally:
             # An exception handler may itself be interrupted before it records an
             # outcome (for example while recovering a partially created run).
@@ -1080,6 +1120,17 @@ class OperatorCoordinator:
         if not proposal.get("_claimedExecution"):
             return self._proposal_result(proposal)
 
+        if proposal["commandType"] == "cancel":
+            from .cancel_run import _await_deferred_cancel
+
+            return await _await_deferred_cancel(
+                self._execute_claimed_proposal(conversation_id, proposal_id, proposal)
+            )
+        return await self._execute_claimed_proposal(conversation_id, proposal_id, proposal)
+
+    async def _execute_claimed_proposal(
+        self, conversation_id: str, proposal_id: str, proposal: dict[str, Any]
+    ) -> Any:
         try:
             # Re-fingerprint after the durable execution claim and immediately
             # before invoking the application service. A changed or removed
@@ -1104,6 +1155,32 @@ class OperatorCoordinator:
         try:
             result = await self.command_executor(proposal["commandType"], proposal["command"])
         except Exception as exc:  # noqa: BLE001
+            if proposal["commandType"] == "cancel":
+                from lionagi.cli._kill_service import _CancelPersistenceError
+
+                if isinstance(exc, _CancelPersistenceError):
+                    from .cancel_run import _DeferredCancelResult
+
+                    try:
+                        proposal = await self.store.complete_proposal(
+                            proposal_id,
+                            status="failed",
+                            error_code="cancel_state_write_failed",
+                            result={
+                                "status": "indeterminate",
+                                "reason": "cancel_state_write_failed",
+                                "message": str(exc),
+                                "signal_sent": exc.signal_sent,
+                                "failed_entity_kind": exc.entity_type,
+                                "run_untouched": None,
+                            },
+                            audit=True,
+                        )
+                    except Exception as persist_exc:  # noqa: BLE001
+                        raise OperatorAuditUnavailableError(
+                            "Command outcome is indeterminate; reconciliation is required"
+                        ) from persist_exc
+                    return _DeferredCancelResult(self._proposal_result(proposal), exc)
             # A launch that failed before recording an invocation has nothing
             # durable to point at; one that failed after has an invocation_id
             # attached by _execute_application_command.
@@ -1187,6 +1264,8 @@ class OperatorCoordinator:
                     "message": (
                         "The approved target changed before execution"
                         if proposal.get("errorCode") == "stale_context"
+                        else "Cancellation state could not be recorded; the outcome is indeterminate"
+                        if proposal.get("errorCode") == "cancel_state_write_failed"
                         else "Permission was not granted"
                     ),
                     "retryable": False,

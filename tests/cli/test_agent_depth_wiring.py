@@ -16,11 +16,11 @@ import os
 
 import pytest
 
+from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi.cli import _agent_depth as depth_mod
 from lionagi.cli._agent_depth import DEPTH_ENV
 from lionagi.ln._proc import _PROCESS_GROUP_MARKER
-from lionagi.providers import _subagent_admission as admission
-from lionagi.providers._provider_errors import NestedAgentRefusedError
+from lionagi.service import _subagent_admission as admission
 
 
 class _StopEarly(Exception):
@@ -151,7 +151,7 @@ async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
     variable stamped here reaches the child with zero endpoint changes."""
     import asyncio
 
-    from lionagi.providers._cli_subprocess import ndjson_from_cli
+    from lionhub.providers._cli_subprocess import ndjson_from_cli
 
     # As a run inside an agent inherits it from that agent's process group.
     monkeypatch.setenv(_PROCESS_GROUP_MARKER, "inherited-group-token")

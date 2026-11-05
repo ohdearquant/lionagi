@@ -51,7 +51,7 @@ async def test_unknown_effort_provider_is_refused():
 
 
 def test_known_reasoning_model_remains_reasoning_across_repeated_requests():
-    from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
+    from lionagi.service.connections._chat_schemas import OpenAIChatCompletionsRequest
 
     for model in ("gpt-5", "o3", "gpt-5"):
         payload = OpenAIChatCompletionsRequest(
@@ -61,7 +61,7 @@ def test_known_reasoning_model_remains_reasoning_across_repeated_requests():
 
 
 def test_chat_request_drops_effort_only_for_listed_non_reasoning_models():
-    from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
+    from lionagi.service.connections._chat_schemas import OpenAIChatCompletionsRequest
 
     def dumped(model):
         return OpenAIChatCompletionsRequest(

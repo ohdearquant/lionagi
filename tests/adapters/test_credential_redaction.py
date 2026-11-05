@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.adapters._base import AdapterError, _redact_url
+from lionagi.adapters._base import AdapterError, _redact_details, _redact_url
 
 
 class TestRedactUrlQueryCredentials:
@@ -265,3 +265,62 @@ class TestDetailKeyClassifierParity:
         rendered = str(err)
         assert "pg" in rendered
         assert "users" in rendered
+
+
+class TestCredentialNamedUrlValues:
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("token", "https://example.test/hooks/path-value"),
+            ("api_key", "https://example.test/endpoint?data=query-value"),
+            ("accessKey", "https://example.test/path/folded-value"),
+            ("token_url", "https://example.test/path/location-like-value"),
+        ],
+    )
+    def test_credential_named_url_is_entirely_withheld(self, name, value):
+        assert _redact_details({name: value}) == {name: "***"}
+        assert value not in str(AdapterError("failure", details={name: value}))
+
+    def test_list_under_credential_name_withholds_every_url(self):
+        values = ["https://example.test/first", "custom://host/second"]
+
+        assert _redact_details({"token": values}) == {"token": ["***", "***"]}
+
+    def test_non_string_and_nested_credential_values_keep_their_shape(self):
+        details = {"token": {"path": "visible", "nested": [1, 2]}, "api_key": 42}
+
+        assert _redact_details(details) == {
+            "token": {"path": "***", "nested": "***"},
+            "api_key": "***",
+        }
+
+
+class TestLocationUrlControls:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "url",
+            "uri",
+            "dsn",
+            "connection_string",
+            "connection_url",
+            "database_url",
+            "db_url",
+            "endpoint",
+        ],
+    )
+    def test_location_and_other_url_keep_noncredential_components(self, name):
+        value = "https://example.test/path?view=plain"
+
+        assert _redact_details({name: value}) == {name: value}
+
+    @pytest.mark.parametrize("name", ["url", "dsn", "endpoint"])
+    def test_location_and_other_url_redact_embedded_credentials(self, name):
+        value = "https://user:example-password@example.test/path?token=example-token&view=plain"
+        expected = "https://user:***@example.test/path?token=***&view=plain"
+
+        assert _redact_details({name: value}) == {name: expected}
+
+    @pytest.mark.parametrize("name", ["url", "dsn"])
+    def test_location_name_without_scheme_stays_withheld(self, name):
+        assert _redact_details({name: "opaque-location"}) == {name: "***"}

@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import BaseModel
 
+from lionagi._provider_errors import ProviderContextError
 from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
 from lionagi.protocols.messages import ActionResponse
-from lionagi.providers._provider_errors import ProviderContextError
 from lionagi.testing import LionAGIMockFactory
 from lionagi.testing import TestBranch as ScriptedBranch
 

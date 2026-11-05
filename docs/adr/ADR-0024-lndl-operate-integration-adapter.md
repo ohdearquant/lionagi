@@ -1,10 +1,31 @@
 # ADR-0024: LNDL operate integration adapter
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-31 (see Amendment 1)
 - **Kind**: Retrospective
 - **Area**: operations
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0087; extends ADR-0021 and ADR-0022
+
+## Amendment 1 (2026-10-31) — the Middle moved to `lionhub.lndl.middle`
+
+The Middle moved with the language (ADR-0136 Amendment 1 A3; ADR-0051 Amendment 1). The files this
+record names are now:
+
+- `lionhub/src/lionhub/lndl/middle/__init__.py` and `lionhub/src/lionhub/lndl/middle/lndl_middle.py`,
+  formerly `lionagi/operations/lndl_middle/`;
+- `extract.py`, `normalize.py`, `lexer.py`, `parser.py`, `assembler.py`, `types.py`,
+  `round_outcome.py` and `prompt.py` under `lionhub/src/lionhub/lndl/`, formerly under `lionagi/lndl/`;
+- `lionagi/operations/act/act.py`, unchanged, in the core.
+
+`lionhub.lndl.middle` exports exactly `DEFAULT_ROUND_BUDGET`, `build_lndl_middle` and `lndl_middle`.
+The old path `lionagi.operations.lndl_middle` returns the same module until 2.0.0, warning once, so
+`from lionagi.operations.lndl_middle import build_lndl_middle, lndl_middle` keeps working through 1.x.
+The Middle imports the operations types and helpers it uses from the core by absolute path
+(`lionagi.operations.types`, `lionagi.operations._defaults`, `lionagi.operations._turn_origin` and
+`lionagi.operations.chat._prepare`). How the root's lazy LNDL exports warn at the caller's line, and
+the control that shows it, is recorded in ADR-0051 Amendment 1.
+
+Paths below name the files where they were when this record was written.
 
 ## Context
 

@@ -160,10 +160,15 @@ def _track_mutable(value: Any, touch: Callable[[], None] | None) -> Any:
     elif isinstance(value, _TrackedDict):
         value = dict(value)
 
-    if isinstance(value, list):
-        return _TrackedList(value, touch)
-    if isinstance(value, dict):
-        return _TrackedDict(value, touch)
+    try:
+        if isinstance(value, list):
+            return _TrackedList(value, touch)
+        if isinstance(value, dict):
+            return _TrackedDict(value, touch)
+    except RecursionError:
+        # Nesting deeper than the interpreter stack allows: keep this level
+        # as a plain container (untracked) rather than fail message creation.
+        return value
     return value
 
 

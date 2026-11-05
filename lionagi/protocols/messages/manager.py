@@ -87,6 +87,10 @@ class MessageManager(Manager):
         self.system = system
         if self.system:
             self.add_message(system=self.system)
+        else:
+            # A pile restored from storage already holds its system message; without this the
+            # manager reports none and requests built from it leave the system prompt out.
+            self.system = next((m for m in self.messages if isinstance(m, System)), None)
 
     @property
     def progression(self) -> Progression:

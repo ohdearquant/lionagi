@@ -138,8 +138,8 @@ class TestMCPConnectionPoolGetClient:
     async def test_get_client_with_server_reference_not_found(self):
         server_config = {"server": "unknown_server"}
 
-        with patch.object(MCPConnectionPool, "load_config") as mock_load:
-            mock_load.return_value = None  # Config still empty after load
+        with patch.object(MCPConnectionPool, "_load_config_snapshot") as mock_load:
+            mock_load.return_value = {}  # Config still empty after load
 
             with pytest.raises(ValueError, match="Unknown MCP server"):
                 await MCPConnectionPool.get_client(server_config)
@@ -180,10 +180,7 @@ class TestMCPConnectionPoolGetClient:
         # Pre-populate pool with connected client
         mock_client = MagicMock()
         mock_client.is_connected.return_value = True
-        sec_fp = MCPConnectionPool._security_fingerprint(
-            MCPConnectionPool._effective_security(None)
-        )
-        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}:sec:{sec_fp}"
+        _, _, cache_key = MCPConnectionPool._resolve_identity(inline_config)
         MCPConnectionPool._clients[cache_key] = mock_client
 
         with patch.object(MCPConnectionPool, "_create_client") as mock_create:
@@ -197,10 +194,7 @@ class TestMCPConnectionPoolGetClient:
         # Pre-populate pool with disconnected client
         stale_client = MagicMock()
         stale_client.is_connected.return_value = False
-        sec_fp = MCPConnectionPool._security_fingerprint(
-            MCPConnectionPool._effective_security(None)
-        )
-        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}:sec:{sec_fp}"
+        _, _, cache_key = MCPConnectionPool._resolve_identity(inline_config)
         MCPConnectionPool._clients[cache_key] = stale_client
 
         new_client = AsyncMock()

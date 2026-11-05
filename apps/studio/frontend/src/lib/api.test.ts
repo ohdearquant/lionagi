@@ -1410,9 +1410,30 @@ describe("the shell token does not follow a ?api= override to another daemon", (
 });
 
 describe("a page paired by `li studio`", () => {
+  // jsdom's `window.localStorage` has no Storage methods in this vitest
+  // environment, so the page's storage is a working in-memory one that, like a
+  // browser's, keeps what it is given across the module reloads these tests do.
+  let localStorageStub: Storage;
+
   beforeEach(() => {
     delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
     vi.unstubAllGlobals();
+    const data = new Map<string, string>();
+    localStorageStub = {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        data.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        data.delete(key);
+      },
+      clear: () => data.clear(),
+      key: () => null,
+      get length() {
+        return data.size;
+      },
+    } as Storage;
+    vi.stubGlobal("localStorage", localStorageStub);
     vi.resetModules();
     window.history.replaceState(null, "", "/");
   });
@@ -1430,7 +1451,11 @@ describe("a page paired by `li studio`", () => {
     pairing.takePairingCodeFromLocation();
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(new Response(JSON.stringify({ token }), { status: 200 }))),
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ token, token_source: "launch" }), { status: 200 }),
+        ),
+      ),
     );
     expect(await pairing.redeemPairingCode(api.API_BASE)).toBe("paired");
     return api;
@@ -1507,7 +1532,11 @@ describe("a page paired by `li studio`", () => {
     window.history.replaceState(null, "", `/?api=${destination}#pair=one-time-code`);
     pairing.takePairingCodeFromLocation();
     const redeem = vi.fn((_url: string, _init?: RequestInit) =>
-      Promise.resolve(new Response(JSON.stringify({ token: "launch-bearer" }), { status: 200 })),
+      Promise.resolve(
+        new Response(JSON.stringify({ token: "launch-bearer", token_source: "launch" }), {
+          status: 200,
+        }),
+      ),
     );
     vi.stubGlobal("fetch", redeem);
     expect(await pairing.redeemPairingCode(api.API_BASE)).toBe("paired");
@@ -1529,4 +1558,228 @@ describe("a page paired by `li studio`", () => {
     const headers = captured[0]?.headers as Record<string, string> | undefined;
     expect(headers?.["Authorization"]).toBe("Bearer launch-bearer");
   });
+
+  it("keeps sending the paired bearer after the page reloads", async () => {
+    await pairedModules("launch-bearer");
+    vi.resetModules();
+    const api = await import("./api");
+    const captured: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        captured.push(init ?? {});
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      }),
+    );
+
+    expect(api.resolveAuthToken()).toBe("launch-bearer");
+    await api.getStats();
+
+    const headers = captured[0]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Authorization"]).toBe("Bearer launch-bearer");
+  });
+
+  it("forgets the paired bearer when the daemon refuses it", async () => {
+    const api = await pairedModules("launch-bearer");
+    const pairing = await import("./pairing");
+    const { onAccessRefused } = await import("./connectivity");
+    let bearerWhenReported: string | undefined = "not reported";
+    const refused = vi.fn(() => {
+      bearerWhenReported = pairing.pairedBearer(api.API_BASE);
+    });
+    const unsubscribe = onAccessRefused(refused);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify({ detail: "Unauthorized" }), { status: 401 })),
+      ),
+    );
+
+    await expect(api.getStats()).rejects.toThrow();
+
+    // The listener already finds the bearer gone, so the gate that names the
+    // remedy never sees a page that still holds the refused bearer.
+    expect(refused).toHaveBeenCalledTimes(1);
+    expect(bearerWhenReported).toBeUndefined();
+    expect(localStorageStub.getItem("studio.pairedBearer")).toBeNull();
+    expect(api.resolveAuthToken()).toBeUndefined();
+    unsubscribe();
+
+    vi.resetModules();
+    const reloaded = await import("./api");
+    expect(reloaded.resolveAuthToken()).toBeUndefined();
+  });
+
+  it("keeps the paired bearer when a request that carried an injected token is refused", async () => {
+    const api = await pairedModules("launch-bearer");
+    (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ = "shell-token";
+    const captured: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        captured.push(init ?? {});
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: "Unauthorized" }), { status: 401 }),
+        );
+      }),
+    );
+
+    await expect(api.getStats()).rejects.toThrow();
+
+    const headers = captured[0]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Authorization"]).toBe("Bearer shell-token");
+    expect(localStorageStub.getItem("studio.pairedBearer")).not.toBeNull();
+    delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
+    expect(api.resolveAuthToken()).toBe("launch-bearer");
+  });
+
+  // The requests other than fetchJson that carry the bearer: the event streams
+  // behind the show, session and signal views, the operator stream, and the
+  // run-file read. Each runs one request, waits for the daemon's answer to be
+  // handled, and returns what that path hands back to its caller.
+  type Api = typeof import("./api");
+  const BEARER_REQUESTS: Array<{
+    name: string;
+    run: (api: Api) => Promise<unknown>;
+    // What the path does with the answer besides reacting to a refusal.
+    keepsReporting: (outcome: unknown, status: number) => void;
+  }> = [
+    {
+      name: "an event stream",
+      run: async (api) => {
+        vi.useFakeTimers();
+        try {
+          const close = api.streamSignals("session-1", vi.fn());
+          // Long enough for a retry to show: a permanent client error stops the loop.
+          await vi.advanceTimersByTimeAsync(10_000);
+          close();
+        } finally {
+          vi.useRealTimers();
+        }
+        return undefined;
+      },
+      keepsReporting: () => {},
+    },
+    {
+      name: "the operator stream",
+      run: async (api) => {
+        const onError = vi.fn();
+        const close = api.streamOperatorConversation("conversation-1", 0, {
+          onFrame: vi.fn(),
+          onError,
+        });
+        await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+        close();
+        return onError;
+      },
+      keepsReporting: (outcome, status) => {
+        const onError = outcome as ReturnType<typeof vi.fn>;
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(onError.mock.calls[0]?.[0]).toEqual(
+          new Error(`Operator stream request failed: ${status}`),
+        );
+        expect(onError.mock.calls[0]?.[1]).toBe(true);
+      },
+    },
+    {
+      name: "a run file read",
+      run: (api) => api.getRunFile("run-1", "out.txt"),
+      keepsReporting: (outcome, status) => {
+        expect(outcome).toMatchObject({ ok: false, status });
+      },
+    },
+  ];
+
+  async function answerWith(api: Api, status: number, run: (api: Api) => Promise<unknown>) {
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response(JSON.stringify({ detail: "No" }), { status })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = await run(api);
+    // One request: a refusal is not retried, and the bearer went out on it.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    return { fetchMock, outcome };
+  }
+
+  function sentAuthorization(fetchMock: ReturnType<typeof vi.fn<typeof fetch>>) {
+    return new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("Authorization");
+  }
+
+  it.each(BEARER_REQUESTS)(
+    "forgets the paired bearer and reports a refusal when $name is refused",
+    async ({ run, keepsReporting }) => {
+      const api = await pairedModules("launch-bearer");
+      const pairing = await import("./pairing");
+      const { onAccessRefused } = await import("./connectivity");
+      let bearerWhenReported: string | undefined = "not reported";
+      const refused = vi.fn(() => {
+        bearerWhenReported = pairing.pairedBearer(api.API_BASE);
+      });
+      const unsubscribe = onAccessRefused(refused);
+
+      const { fetchMock, outcome } = await answerWith(api, 401, run);
+      unsubscribe();
+
+      expect(sentAuthorization(fetchMock)).toBe("Bearer launch-bearer");
+      // The listener already finds the bearer gone, as it does after a refused
+      // fetchJson request, so the gate never sees a page still holding it.
+      expect(refused).toHaveBeenCalledTimes(1);
+      expect(bearerWhenReported).toBeUndefined();
+      expect(localStorageStub.getItem("studio.pairedBearer")).toBeNull();
+      expect(api.resolveAuthToken()).toBeUndefined();
+      keepsReporting(outcome, 401);
+    },
+  );
+
+  it.each(BEARER_REQUESTS)(
+    "keeps the paired bearer and reports no refusal when $name fails with a 404",
+    async ({ run, keepsReporting }) => {
+      const api = await pairedModules("launch-bearer");
+      const { onAccessRefused } = await import("./connectivity");
+      const refused = vi.fn();
+      const unsubscribe = onAccessRefused(refused);
+
+      const { fetchMock, outcome } = await answerWith(api, 404, run);
+      unsubscribe();
+
+      expect(sentAuthorization(fetchMock)).toBe("Bearer launch-bearer");
+      expect(refused).not.toHaveBeenCalled();
+      expect(JSON.parse(String(localStorageStub.getItem("studio.pairedBearer")))).toMatchObject({
+        token: "launch-bearer",
+      });
+      expect(api.resolveAuthToken()).toBe("launch-bearer");
+      keepsReporting(outcome, 404);
+    },
+  );
+
+  // The injected value equal to the stored bearer is the arm a check that only
+  // compared values would get wrong.
+  it.each(
+    BEARER_REQUESTS.flatMap((request) =>
+      ["shell-token", "launch-bearer"].map((injected) => ({ ...request, injected })),
+    ),
+  )(
+    "keeps the stored bearer when $name carried the injected token $injected and is refused",
+    async ({ run, injected }) => {
+      const api = await pairedModules("launch-bearer");
+      (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ = injected;
+      const { onAccessRefused } = await import("./connectivity");
+      const refused = vi.fn();
+      const unsubscribe = onAccessRefused(refused);
+
+      const { fetchMock } = await answerWith(api, 401, run);
+      unsubscribe();
+
+      expect(sentAuthorization(fetchMock)).toBe(`Bearer ${injected}`);
+      // The refusal is still reported, as for fetchJson; the shell's token is
+      // not the page's to drop, and the stored bearer is not what was refused.
+      expect(refused).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(localStorageStub.getItem("studio.pairedBearer")))).toMatchObject({
+        token: "launch-bearer",
+      });
+      expect(window.__STUDIO_AUTH_TOKEN__).toBe(injected);
+      delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
+      expect(api.resolveAuthToken()).toBe("launch-bearer");
+    },
+  );
 });

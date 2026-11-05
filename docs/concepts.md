@@ -183,7 +183,7 @@ Keep API and CLI providers distinct:
   from the prefix.
 
 Provider packages are organized by implementation owner, not always by public
-alias: Gemini endpoints live in `lionagi/providers/google/`, while users select
+alias: Gemini endpoints live in `lionhub/src/lionhub/providers/google/`, while users select
 `provider="gemini"` or `provider="gemini_code"`.
 
 → [`iModel` reference](api/imodel.md) · [Provider matrix](reference/providers.md)

@@ -394,7 +394,11 @@ def _flag_properties(parser: argparse.ArgumentParser) -> dict[str, str]:
     """Every flag spelling *parser* accepts, mapped to the property it becomes."""
     out: dict[str, str] = {}
     for action in parser._actions:
-        if isinstance(action, _META_ACTIONS) or action.dest == argparse.SUPPRESS:
+        if (
+            isinstance(action, _META_ACTIONS)
+            or action.dest == argparse.SUPPRESS
+            or action.dest == "mcp_submit_snapshot"
+        ):
             continue
         for option in action.option_strings:
             out[option] = action.dest
@@ -482,7 +486,7 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
     for action in parser._actions:
         if isinstance(action, _META_ACTIONS):
             continue
-        if action.dest == argparse.SUPPRESS:
+        if action.dest in {argparse.SUPPRESS, "mcp_submit_snapshot"}:
             continue
         properties[action.dest] = _rewrite_descriptions(
             _project_action(path, parser, action), flags

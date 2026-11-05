@@ -36,7 +36,7 @@ def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path) -> None:
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
-    monkeypatch.setattr("lionagi.cli.kill.psutil.boot_time", lambda: 1_700_000_000.0)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil.boot_time", lambda: 1_700_000_000.0)
 
 
 async def _empty_branch_run(self, *_args, **_kwargs):
@@ -588,7 +588,7 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
     perfectly runnable Codex or Gemini turn whenever the machine happens to have
     no Claude CLI installed.
     """
-    import lionagi.providers.anthropic.claude_code as claude_mod
+    import lionhub.providers.anthropic.claude_code as claude_mod
     from lionagi import Branch
     from lionagi.studio.operator.engine import (
         BranchOperatorEngine,
@@ -633,8 +633,8 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
     # branch construction was reached, and it saw the selected Codex pair.
     # With no codex binary the turn stops before the CLI would start, so the
     # test never runs the real codex installed on the machine.
-    import lionagi.providers.openai.codex as codex_mod
     import lionagi.studio.operator.engine as engine_mod
+    import lionhub.providers.openai.codex as codex_mod
 
     monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
 
@@ -675,8 +675,8 @@ async def test_the_preflight_gates_on_the_resolved_provider_not_the_live_env(tmp
     codex, the environment has since moved to claude_code, and there is no
     Claude CLI. Re-resolving refuses a turn that would have run fine.
     """
-    import lionagi.providers.anthropic.claude_code as claude_mod
     import lionagi.studio.operator.engine as engine_mod
+    import lionhub.providers.anthropic.claude_code as claude_mod
     from lionagi import Branch
     from lionagi.studio.operator.engine import (
         BranchOperatorEngine,

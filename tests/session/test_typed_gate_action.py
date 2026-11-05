@@ -112,7 +112,7 @@ async def test_typed_gate_controls_tool_execution_and_denial_record(is_async, ve
     denial = {"error": "denied by governance gate", "function": "add"}
     assert result.output == denial
     assert len(denials) == 1
-    assert denials[0].data == invocation
+    assert denials[0].data is None
     requests = [message for message in branch.messages if isinstance(message, ActionRequest)]
     responses = [message for message in branch.messages if isinstance(message, ActionResponse)]
     assert len(requests) == len(responses) == 1
@@ -152,4 +152,4 @@ async def test_typed_rewrite_is_rejected_when_values_compare_equal(is_async):
     assert type(gate_calls[0].arguments["value"]) is int
     assert tool_calls == []
     assert result.output == {"error": "denied by governance gate", "function": "observe"}
-    assert [item.data for item in session.observer.by_type(GateDenied)] == gate_calls
+    assert [item.data for item in session.observer.by_type(GateDenied)] == [None]

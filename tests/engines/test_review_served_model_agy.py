@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.providers.google.gemini_code import GeminiCLIEndpoint, GeminiCodeRequest
 from lionagi.service.imodel import iModel
 from lionhub.orchestration.engines.review import ReviewEngine, ReviewVerdict
+from lionhub.providers.google.gemini_code import GeminiCLIEndpoint, GeminiCodeRequest
 
-AGY_SEAM = "lionagi.providers.google.gemini_code.stream_gemini_cli_events"
+AGY_SEAM = "lionhub.providers.google.gemini_code.stream_gemini_cli_events"
 REQUESTED = "gemini-3.8-flash"
 
 

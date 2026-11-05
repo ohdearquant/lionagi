@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for lionagi/providers/_provider_errors.py.
+"""Unit tests for lionagi/_provider_errors.py.
 
 classify_provider_error matches quota/auth/context/capacity/unsupported-model/
 safety/stream-disconnect/adapter patterns case-insensitively; unmatched text
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.providers._provider_errors import (
+from lionagi._provider_errors import (
     EmissionError,
     ProviderAdapterError,
     ProviderAuthError,

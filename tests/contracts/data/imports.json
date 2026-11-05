@@ -181,7 +181,7 @@
     },
     "InvalidConstructorError": {
       "type": "type",
-      "module": "lionagi.lndl.errors",
+      "module": "lionhub.lndl.errors",
       "qualname": "InvalidConstructorError"
     },
     "JsonAdapter": {
@@ -191,12 +191,12 @@
     },
     "LNDLError": {
       "type": "type",
-      "module": "lionagi.lndl.errors",
+      "module": "lionhub.lndl.errors",
       "qualname": "LNDLError"
     },
     "LNDLOutput": {
       "type": "type",
-      "module": "lionagi.lndl.types",
+      "module": "lionhub.lndl.types",
       "qualname": "LNDLOutput"
     },
     "MemoryItem": {
@@ -221,12 +221,12 @@
     },
     "MissingFieldError": {
       "type": "type",
-      "module": "lionagi.lndl.errors",
+      "module": "lionhub.lndl.errors",
       "qualname": "MissingFieldError"
     },
     "MissingLvarError": {
       "type": "type",
-      "module": "lionagi.lndl.errors",
+      "module": "lionhub.lndl.errors",
       "qualname": "MissingLvarError"
     },
     "Node": {
@@ -286,7 +286,7 @@
     },
     "TypeMismatchError": {
       "type": "type",
-      "module": "lionagi.lndl.errors",
+      "module": "lionhub.lndl.errors",
       "qualname": "TypeMismatchError"
     },
     "Undefined": {
@@ -311,12 +311,12 @@
     },
     "extract_lndl_blocks": {
       "type": "function",
-      "module": "lionagi.lndl.extract",
+      "module": "lionhub.lndl.extract",
       "qualname": "extract_lndl_blocks"
     },
     "get_lndl_system_prompt": {
       "type": "function",
-      "module": "lionagi.lndl.prompt",
+      "module": "lionhub.lndl.prompt",
       "qualname": "get_lndl_system_prompt"
     },
     "iModel": {
@@ -351,7 +351,7 @@
     },
     "normalize_lndl_text": {
       "type": "function",
-      "module": "lionagi.lndl.normalize",
+      "module": "lionhub.lndl.normalize",
       "qualname": "normalize_lndl_text"
     },
     "to_dict": {
