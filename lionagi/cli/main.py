@@ -325,6 +325,8 @@ def _run(argv: list[str] | None = None) -> int:
     if _catalog_import_error is not None:
         raise _catalog_import_error
 
+    # Defer setup so missing dependencies reach the environment-fault wrapper,
+    # while any saved catalog fault takes precedence.
     from ._logging import configure_cli_logging
 
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).

@@ -346,6 +346,7 @@ def test_configuration_precedes_real_machine_output_and_keeps_the_core_emitter(
         cli_main = import_main()
         from lionagi._log_channels import log_error
         assert cli_main.log_error is log_error
+        assert 'lionagi.cli._logging' not in sys.modules
         console_file = str(root / 'lionagi/cli/_logging.py')
         machine_file = str(root / 'lionagi/cli/machine.py')
         events = []
@@ -371,6 +372,7 @@ def test_configuration_precedes_real_machine_output_and_keeps_the_core_emitter(
         finally:
             sys.setprofile(None)
         assert code == 0
+        assert 'lionagi.cli._logging' in sys.modules
         assert events == ['configured', 'dispatch', 'emit']
         assert not external_attempts
         from lionagi.cli import _util
