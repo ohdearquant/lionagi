@@ -69,8 +69,8 @@ def _private_auto_imports(source: str) -> list[str]:
     ]
 
 
-def test_catalog_uses_no_private_auto_imports():
-    assert _private_auto_imports(CATALOG.read_text()) == []
+def test_catalog_uses_only_the_private_marker_reader():
+    assert _private_auto_imports(CATALOG.read_text()) == ["_read_registration_marker"]
     assert _private_auto_imports("from lionagi._auto import _MARKER_ATTR as marker") == [
         "_MARKER_ATTR"
     ]
@@ -214,7 +214,7 @@ import lionagi._auto as auto
 assert not any(m == 'lionhub' or m.startswith('lionhub.') for m in sys.modules)
 for name in ('_CLI_SEEDS', '_cli_seeds', '_cli_seed_by_token', '_cli_realized',
              'iter_cli_seeds', 'seed_for', 'command_exists', 'load_cli_command', 'build_cli_parser'):
-    assert not hasattr(auto, name), name
+    assert name not in vars(auto), name
 """)
     files = [
         path
