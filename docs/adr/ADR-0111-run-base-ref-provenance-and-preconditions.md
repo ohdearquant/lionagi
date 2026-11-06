@@ -58,7 +58,7 @@ than a zero that reads as agreement.
 `li doctor`, `li --machine`, the MCP dispatch surface, the MCP server and the
 Studio admin surface all consume it, through the module's own
 `code_identity()` and `snapshot_git_position()` wrappers — `git_identity` has
-no caller outside `diagnostics.py`. `lionagi/cli/_runs.py` and
+no caller outside `diagnostics.py`. `lionhub/src/lionhub/orchestration/runs.py` and
 `lionagi/cli/orchestrate/` consume it by neither route. So `li doctor` will
 tell an operator exactly where their checkout sits, while a nineteen-agent run
 beside it records no such thing.

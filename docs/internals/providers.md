@@ -601,7 +601,7 @@ that capacity for a command known not to be executable.
 `__cause__` is the provider's error. `li agent` walks that chain: a refusal
 anywhere in it prints the refusal itself and exits `75`, and the MCP terminal
 cause records the provider error's class rather than `unknown`, the same walk the
-run row's reason takes in `cli/_runs.py`.
+run row's reason takes in `lionhub/src/lionhub/orchestration/runs.py`.
 
 `subagent_admission_status()` writes no slot: it counts each pool under its
 admission lock, as an admission does. `li monitor` shows it as one line under

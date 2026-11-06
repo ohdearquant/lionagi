@@ -75,7 +75,7 @@ Other writers also have no lifetime ceiling. Resume reuses existing progression 
 (`lionagi/cli/_runs.py:2236-2237`); flow branches share a session progression
 (`lionagi/cli/orchestrate/_orchestration.py:2268`, `lionagi/cli/_runs.py:1922`); run import creates complete
 unbounded orders (`lionagi/cli/state.py:507`, `lionagi/cli/state.py:555`, `lionagi/cli/state.py:560`). The small current population justifies a
-staged rollout, not a permanent assumption that these histories remain small.
+staged rollout, not a permanent assumption that these histories remain small. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 
 Read amplification persists for idle histories. A detail page loads entire arrays before taking
 a tail window (`lionagi/studio/services/sessions.py:1469`, `lionagi/studio/services/sessions.py:1502`), counts expand JSON (`lionagi/studio/services/sessions.py:672`),
@@ -92,7 +92,7 @@ immediate performance return on migrating every stored progression.
 The column is also a published read surface. Direct readers include retention code that protects
 messages referenced by surviving progressions (`lionagi/studio/services/db_maintenance.py:555`;
 `lionagi/cli/state.py:1231`). Freezing JSON without migrating these readers can hide references
-and affect deletion correctness, not merely display stale counts.
+and affect deletion correctness, not merely display stale counts. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 
 ## Teardown of the previous premises
 
@@ -405,7 +405,7 @@ Keeping that column current would retain the performance defect.
    `lionagi/studio/services/admin.py:993`, and full-list counts at `lionagi/cli/state.py:659`
    with cached membership counts. Preserve branch aggregation versus session-order semantics.
    Role counts and surviving-message counts remain distinct and must not be replaced by the
-   membership count (`lionagi/studio/services/sessions.py:1541`).
+   membership count (`lionagi/studio/services/sessions.py:1541`). The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 3. **Timestamp streaming.** `lionagi/studio/services/sessions.py:1760` orders by message time,
    message ID and branch ID, not ordinal. Preserve that cursor contract. Replace JSON expansion
    with relational membership and a timestamp-seeking query. A messages-driven seek on a
@@ -421,7 +421,7 @@ Keeping that column current would retain the performance defect.
 5. **Deletion and shared references.** Adapt `lionagi/state/db.py:4283`, `lionagi/state/db.py:4315`,
    `lionagi/studio/services/db_maintenance.py:393`, `lionagi/studio/services/db_maintenance.py:555` and `lionagi/cli/state.py:1226`, `lionagi/cli/state.py:1231`
    before any JSON freeze. Candidate and survivor reference checks must include target-only
-   tail items, including shared progressions and retained references to absent message rows.
+   tail items, including shared progressions and retained references to absent message rows. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 6. **Other direct readers.** Publish a versioned complete-reader contract for SQL clients,
    including phase interpretation and equivalent queries on both backends. A compatibility
    helper or view may assemble complete JSON on demand at full-read cost; it must not maintain

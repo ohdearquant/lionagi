@@ -495,7 +495,7 @@ way from its own recorded `status`. Nothing on either path reads or re-checks
 the declared artifact set. The artifact root the resumed run reads is not the
 original run's: without `--save`, `allocate_run` gives it a fresh
 `<state_root>/artifacts` directory, and with `--save` it is the path `--save`
-names (`lionagi/cli/_runs.py:617-620`), neither read from the original `RunDir`
+names (`lionhub/src/lionhub/orchestration/runs.py:617-620`), neither read from the original `RunDir`
 that `resolve_checkpoint_target` returned. What a result-verifying resume would
 need — reading the persisted `artifact_contract_json`, checking the declared
 set, the completion-time digest for contract-less nodes, the byte-level check,
@@ -1132,8 +1132,8 @@ flagged as degraded.
 
 **`_audit_degraded`** — known coverage gap: `setup_orchestration_persist()`
 (`cli/orchestrate/_orchestration.py`) never populates a singular `ctx["branch"]` for multi-leg
-DAG sessions (it tracks per-leg branches via `ctx["hooks"]` instead — see `_runs.py` below), so
-`teardown_persist()`'s `if _branch is not None` guard (`cli/_runs.py`) always skips
+DAG sessions (it tracks per-leg branches via `ctx["hooks"]` instead — see `lionhub/src/lionhub/orchestration/runs.py` below), so
+`teardown_persist()`'s `if _branch is not None` guard (`lionhub/src/lionhub/orchestration/runs.py`) always skips
 `_collect_branch_usage()` for `invocation_kind IN ('play', 'flow')` — `num_turns`/`duration_ms`/
 tokens/cost are therefore never recorded for ANY such session, healthy or not. Until that's
 fixed, a 100% (or near-100%) `sessions_degraded` rate reflects this detector-coverage gap, not
@@ -1200,7 +1200,7 @@ the current profile.
 **`_run_agent` auto-resume terminal-status guard** — known before teardown runs: an auto-resume
 leg is about to fire on this same session, so this leg's teardown must not stamp a terminal
 status the resumed leg would then be blocked from overwriting by the ADR-0035 terminal guard
-(see `_runs.py` `_teardown_common` defer_terminal, below).
+(see `lionhub/src/lionhub/orchestration/runs.py` `_teardown_common` defer_terminal, below).
 
 The continuation is an in-process, single-use capability, created only after the
 parent's worker owner has drained and its exact database handle has closed.
@@ -1384,17 +1384,17 @@ and `li o` report on one line with exit `1`.
 ## `kill.py`
 
 The process identity, signalling and recorded-worker cleanup helpers are defined in
-`lionagi/cli/_kill_service.py`. `kill.py` keeps the `li kill` parser, `_do_kill`, the
+`lionhub/src/lionhub/orchestration/kill.py`. `kill.py` keeps the `li kill` parser, `_do_kill`, the
 `--all-stale` sweep and `run_kill`, and imports the helpers it uses from there under their
 public names. The Studio cancel path and `li state doctor` import `kill_one`,
 `list_running_children`, `check_pid_identity` and the related helpers from the new module.
 
 No standalone entries beyond the general ADR-0035 CAS-guard pattern documented under
-`_runs.py` / `status.py` — `li kill`'s `TransitionRejectedError` handling follows the same
+`lionhub/src/lionhub/orchestration/runs.py` / `status.py` — `li kill`'s `TransitionRejectedError` handling follows the same
 race-window discipline (the session may have gone terminal between resolution and the kill
 signal reaching it).
 
-## `_runs.py` — agent session setup/teardown (ADR-0035)
+## `lionhub/src/lionhub/orchestration/runs.py` — agent session setup/teardown (ADR-0035)
 
 **Persisted worker ownership** — fresh setup writes and verifies a new execution
 generation before emitting lifecycle hooks. A terminal resume uses the adopted
