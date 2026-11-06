@@ -66,10 +66,10 @@ the exact cost at the observed 3,483-ID maximum.
 ### Why a storage decision is still needed
 
 Mirroring is a supported recurring feature. It has a standalone loop and historical catch-up
-mode (`lionagi/cli/mirror.py:40`, `lionagi/cli/mirror.py:52`, `lionagi/cli/mirror.py:167`), and Studio starts an embedded task
+mode (`lionagi/cli/mirror.py:39`, `lionagi/cli/mirror.py:51`, `lionagi/cli/mirror.py:166`), and Studio starts an embedded task
 (`lionagi/studio/app.py:225`, `lionagi/studio/app.py:390`). Mirroring is enabled by default when the profile has eligible
 sources (`lionagi/studio/config.py:663`, `lionagi/studio/config.py:719`, `lionagi/studio/config.py:727`). A process-name search cannot rule out
-the embedded task. A recent-file window does not cap an active transcript's lifetime length.
+the embedded task. A recent-file window does not cap an active transcript's lifetime length. These line numbers are at `317e6b4cfd4bb8f05d2bfc6a947d9fc1dcd28add`.
 
 Other writers also have no lifetime ceiling. Resume reuses existing progression IDs
 (`lionagi/cli/_runs.py:2236-2237`); flow branches share a session progression

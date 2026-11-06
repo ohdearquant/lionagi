@@ -92,7 +92,7 @@ That allocation conflates two parsers. At `4af5b0a9`, the scheduler derives rese
 
 ## Amendment 3 (2026-11-03) — relocate the in-place inspection module as one module
 
-**Context.** D2 assigns the status constants and entity-resolution helpers in `lionagi/cli/status.py` to `lionhub.orchestration.inspection`, keeping presentation and command handling in the CLI adapter (`docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md:265`, `2a0253b1`). At this revision the in-place extraction is already complete: `lionagi/cli/_inspection.py:23`–`:38` owns the status values and exit codes, and `:44`–`:265` owns the resolution helpers. `lionagi/cli/status.py:17`–`:29` imports the shared names and retains the status command implementation from `:41` onward. This amendment changes the relocation unit, not those behaviors or the ownership allocation.
+**Context.** D2 assigns the status constants and entity-resolution helpers in `lionagi/cli/status.py` to `lionhub.orchestration.inspection`, keeping presentation and command handling in the CLI adapter (`docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md:265`, `2a0253b1`). At this revision the in-place extraction is already complete: `lionagi/cli/_inspection.py:23`–`:38` owns the status values and exit codes, and `:44`–`:265` owns the resolution helpers. `lionagi/cli/status.py:17`–`:29` imports the shared names and retains the status command implementation from `:41` onward. This amendment changes the relocation unit, not those behaviors or the ownership allocation. The line numbers are at `8ed68552b364819efe66ba96f047294d746998bf`.
 
 **Decision.**
 
@@ -293,7 +293,7 @@ boundaries, and step 6 moves the remaining CLI
 
 **Seventeen complete source modules move during step 3:**
 
-| Source at this HEAD | Step-3 destination | Scope |
+| Source before relocation (line numbers are at `5aaacb6d9bc4f95535c8761951ed404718df5c0b`) | Step-3 destination | Scope |
 | --- | --- | --- |
 | `lionagi/cli/_argtypes.py:23` | `lionhub.orchestration.arguments` | Entire module, including both argument classes. |
 | `lionagi/cli/_code_identity.py:55` | `lionhub.serve.diagnostics` | Entire module, including its snapshot and diagnostic helpers. |
@@ -359,7 +359,7 @@ The shared dependency closure is part of step 3:
   the current configuration value and defaults rather than importing application
   configuration (`lionagi/cli/_mirror_settings.py:16`;
   `lionagi/cli/_mirror_service.py:28`;
-  `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:168`).
+  `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:168`). The line numbers are at `95b97d21f3ef78b69f8232ee23280dc6da911bce`.
 - Shared parser construction must not import execution handlers. At `1717674a`, the scheduler
   reaches the full orchestration adapter for this parser
   (`lionagi/studio/scheduler/subprocess.py:279`,
