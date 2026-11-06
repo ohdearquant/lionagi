@@ -332,7 +332,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
-    assert "lionagi/cli/_runs.py:1719" in flat
+    assert "lionhub/src/lionhub/orchestration/runs.py:1719" in flat
     assert "lionagi/studio/services/workflow_run.py:110" in flat
 
 
@@ -444,7 +444,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:2141-2186" in flat
+    assert "lionagi/cli/orchestrate/flow.py:2145-2190" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 
