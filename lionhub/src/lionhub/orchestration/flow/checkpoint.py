@@ -20,8 +20,7 @@ from lionagi._errors import LionError
 from lionagi._paths import RUNS_ROOT
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionhub.orchestration.job import AmbiguousIdError
-
-from .._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
+from lionhub.orchestration.runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
 
 __all__ = (
     "CHECKPOINT_VERSION",

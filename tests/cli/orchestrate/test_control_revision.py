@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 from sqlalchemy import event
 
-from lionagi.cli._runs import teardown_persist
 from lionagi.cli.monitor import _session_to_row
 from lionagi.cli.orchestrate import flow
 from lionagi.cli.orchestrate._control import _enqueue_control_inner
@@ -24,6 +23,7 @@ from lionagi.cli.status import EXIT_UNKNOWN
 from lionagi.ln.concurrency import move_on_after
 from lionagi.state import engine as state_engine
 from lionagi.state.db import StateDB
+from lionhub.orchestration.runs import teardown_persist
 from tests.cli._worker_fixtures import create_worker_session
 from tests.cli.orchestrate.test_control_poller import _FakeExecutor, _make_session, _queue_control
 from tests.cli.orchestrate.test_control_poller_lifecycle import _plan_and_dag

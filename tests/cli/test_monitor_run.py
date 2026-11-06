@@ -1604,7 +1604,7 @@ def test_cli_monitor_help_still_shows_dashboard_usage():
 async def _make_agent_session(db: StateDB, *, status: str = "completed") -> str:
     """A minimal 'sessions' row shaped like a li agent run, bypassing schedule_runs."""
     from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
 
     branch = Branch(name="b1")
     ctx = await setup_agent_persist(branch, agent_name="implementer")
@@ -1674,7 +1674,7 @@ async def test_dispatch_wait_agent_session_still_running_returns_exit_running(
     report EXIT_RUNNING, not hang forever or silently succeed."""
     async with StateDB() as db:
         from lionagi import Branch
-        from lionagi.cli._runs import setup_agent_persist
+        from lionhub.orchestration.runs import setup_agent_persist
 
         branch = Branch(name="b1")
         ctx = await setup_agent_persist(branch, agent_name="implementer")
@@ -1701,8 +1701,8 @@ async def test_dispatch_wait_follows_linked_engine_session_to_completion(
     engine row's status, not hang on its own frozen 'running' column."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderError
-    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
     from lionagi.state.claude_mirror import mirror_session
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333333"
     async with StateDB() as db:
@@ -1767,8 +1767,8 @@ async def test_dispatch_wait_persists_reconciled_status_to_profile_row(
     """`li monitor run` resolving a profile session via its linked engine row must PERSIST the reconciled terminal status through StateDB.update_status(), not just synthesize it in memory for this one call, so the profile session's own DB row doesn't stay stuck at 'running' forever."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderError
-    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
     from lionagi.state.claude_mirror import mirror_session, session_db_id
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333334"
     async with StateDB() as db:
@@ -1826,8 +1826,8 @@ async def test_dispatch_wait_reconciliation_never_flips_an_already_terminal_row(
     rejected transition."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderError
-    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
     from lionagi.state.claude_mirror import mirror_session, session_db_id
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333335"
     async with StateDB() as db:
@@ -1937,8 +1937,8 @@ async def test_effective_session_status_cas_mismatch_reports_persisted_status(
     status; it must re-read and report the persisted row instead."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderError
-    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
     from lionagi.state.claude_mirror import mirror_session, session_db_id
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333336"
     async with StateDB() as db:
@@ -2001,7 +2001,7 @@ async def test_dispatch_wait_max_wait_bounds_a_stuck_session(temp_db_path: Path)
     must give up after max_wait seconds and report EXIT_RUNNING."""
     async with StateDB() as db:
         from lionagi import Branch
-        from lionagi.cli._runs import setup_agent_persist
+        from lionhub.orchestration.runs import setup_agent_persist
 
         branch = Branch(name="b1")
         ctx = await setup_agent_persist(branch, agent_name="implementer")
@@ -2028,7 +2028,7 @@ async def test_dispatch_wait_default_max_wait_bounds_a_stuck_session_without_cal
 
     async with StateDB() as db:
         from lionagi import Branch
-        from lionagi.cli._runs import setup_agent_persist
+        from lionhub.orchestration.runs import setup_agent_persist
 
         branch = Branch(name="b1")
         ctx = await setup_agent_persist(branch, agent_name="implementer")

@@ -88,8 +88,8 @@ async def test_current_quarantine_is_consistent_across_views_and_resolvers(
     signal = Mock(side_effect=AssertionError("resolution must not signal"))
     terminate = Mock(side_effect=AssertionError("resolution must not terminate"))
     cleanup = Mock(side_effect=AssertionError("resolution must not run worker cleanup"))
-    monkeypatch.setattr("lionagi.cli._kill_service.os.kill", signal)
-    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", terminate)
+    monkeypatch.setattr("lionhub.orchestration.kill.os.kill", signal)
+    monkeypatch.setattr("lionhub.orchestration.kill._terminate_pid", terminate)
     monkeypatch.setattr(kill_cli, "_try_recorded_worker_cleanup", cleanup)
 
     async with StateDB() as db:

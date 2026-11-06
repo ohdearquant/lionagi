@@ -267,7 +267,7 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
         _line("lionagi/cli/orchestrate/_orchestration.py", 1746)
     )
     assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1782)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2141)
+    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2145)
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:

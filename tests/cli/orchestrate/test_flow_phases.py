@@ -2350,7 +2350,6 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
     exists for, now that the spawned node is told its artifact dir up front."""
     from lionagi import Branch, Session
     from lionagi.casts.pattern import Role
-    from lionagi.cli._runs import allocate_run
     from lionagi.cli.orchestrate._orchestration import (
         OrchestrationEnv,
         start_live_persist,
@@ -2358,13 +2357,14 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
     )
     from lionagi.state.db import StateDB
     from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.orchestration.runs import allocate_run
 
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
     # `save_dir` only moves the artifact root; the run's state dirs still land
     # under the module-level runs root, which is the user's real one. Redirect
     # it so the test allocates entirely inside tmp_path.
-    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(save_dir=str(tmp_path / "artifacts"))
 
     env = OrchestrationEnv(
@@ -2467,7 +2467,6 @@ async def test_execute_dag_segment_writer_merges_into_real_statedb(
     import asyncio
 
     from lionagi import Branch, Session
-    from lionagi.cli._runs import allocate_run
     from lionagi.cli.orchestrate._orchestration import (
         OrchestrationEnv,
         start_live_persist,
@@ -2475,12 +2474,13 @@ async def test_execute_dag_segment_writer_merges_into_real_statedb(
     from lionagi.session.signal import NodeCompleted, NodeStarted
     from lionagi.state.db import StateDB
     from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.orchestration.runs import allocate_run
 
     orc_branch = Branch(name="orchestrator")
     worker_branch = Branch(name="researcher")
     session = Session(default_branch=orc_branch)
     session.include_branches(worker_branch)
-    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(save_dir=str(tmp_path / "artifacts"))
 
     env = OrchestrationEnv(

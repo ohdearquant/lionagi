@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli._runs import RunDir
+from lionhub.orchestration.runs import RunDir
 
 
 class TestAgentArtifactDirContainment:

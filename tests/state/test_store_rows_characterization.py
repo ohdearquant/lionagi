@@ -53,12 +53,12 @@ from pydantic import BaseModel
 
 import lionagi.state.db as db_mod
 from lionagi import Branch
-from lionagi.cli._runs import setup_agent_persist
 from lionagi.hooks.bus import HookPoint
 from lionagi.operations.act.act import _act
 from lionagi.session.control import ToolInvocation
 from lionagi.session.signal import GateDenied
 from lionagi.testing._legacy import LionAGIMockFactory
+from lionhub.orchestration.runs import setup_agent_persist
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _HEX_RE = re.compile(r"^[0-9a-f]{32}$")

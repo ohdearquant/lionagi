@@ -9,12 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli import _kill_service, _runs
 from lionagi.cli import kill as kill_mod
 from lionagi.cli import state as state_mod
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
 from lionhub.orchestration import job as _util
+from lionhub.orchestration import kill as _kill_service
+from lionhub.orchestration import runs as _runs
 
 pytestmark = pytest.mark.asyncio
 

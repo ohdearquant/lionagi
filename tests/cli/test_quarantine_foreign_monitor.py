@@ -48,7 +48,7 @@ async def test_foreign_scope_is_not_a_corrupt_quarantine(
     entity_id = await seed(kind, metadata=metadata)
     before = await fetch_row(kind, entity_id)
     signal = Mock(side_effect=AssertionError("must not signal"))
-    monkeypatch.setattr("lionagi.cli._kill_service.os.kill", signal)
+    monkeypatch.setattr("lionhub.orchestration.kill.os.kill", signal)
     monkeypatch.setattr(kill_cli, "check_pid_identity", lambda *_args, **_kwargs: "unverifiable")
 
     assert monitor._is_unverifiable_quarantined(before) is False

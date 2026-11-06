@@ -153,7 +153,7 @@ async def test_do_kill_all_stale_sweeps_play_with_dead_session(
     """A play whose linked session is terminal gets cancelled by --all-stale."""
     patched_pid_alive = lambda pid: False
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -185,10 +185,10 @@ async def test_do_kill_all_stale_does_not_sweep_play_with_live_session(
     # reject it -- here it stands in for a live, identity-matching session.
     patched_pid_alive = lambda pid: pid == own_pid
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     patched_check_pid_identity = lambda *a, **kw: "ours"
     monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", patched_check_pid_identity)
-    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionhub.orchestration.kill.check_pid_identity", patched_check_pid_identity)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -224,7 +224,7 @@ async def test_do_kill_all_stale_does_not_sweep_play_without_session(
     """A play with no session_id is NOT swept even if old."""
     patched_pid_alive = lambda pid: False
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -246,7 +246,7 @@ async def test_do_kill_all_stale_sweeps_show_with_all_terminal_plays(
     """A show whose plays are all terminal gets aborted by --all-stale."""
     patched_pid_alive = lambda pid: False
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -273,7 +273,7 @@ async def test_do_kill_all_stale_does_not_sweep_show_with_active_play(
     """A show with at least one active play is NOT swept."""
     patched_pid_alive = lambda pid: False
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -299,7 +299,7 @@ async def test_do_kill_all_stale_does_not_sweep_show_with_no_plays(
     """A show with no plays is NOT swept (not yet started)."""
     patched_pid_alive = lambda pid: False
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -323,7 +323,7 @@ async def test_do_kill_all_stale_dry_run_child_derived(
     """--dry-run must not write any rows for child-derived stale plays."""
     patched_pid_alive = lambda pid: False
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:

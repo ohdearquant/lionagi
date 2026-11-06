@@ -74,7 +74,7 @@ async def test_hostname_failure_is_reported_without_state_change(
     errors = []
     signal = Mock(side_effect=AssertionError("must not signal"))
     monkeypatch.setattr(kill_cli, "log_error", errors.append)
-    monkeypatch.setattr("lionagi.cli._kill_service.os.kill", signal)
+    monkeypatch.setattr("lionhub.orchestration.kill.os.kill", signal)
     with monkeypatch.context() as scoped:
         scoped.setattr(socket, "gethostname", hostname)
         assert (

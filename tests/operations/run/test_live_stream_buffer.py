@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.cli._runs import RunDir
 from lionagi.operations.run.run import RunParam, _append_chunk, run
 from lionagi.protocols.messages import Instruction
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.session.branch import Branch
+from lionhub.orchestration.runs import RunDir
 
 
 @pytest.fixture(autouse=True)

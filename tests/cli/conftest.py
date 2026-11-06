@@ -9,28 +9,14 @@ import toml
 
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 from tests._engine_loader_support import engine_import_package  # noqa: F401
+from tests._kill_scope_test_support import (
+    _guard_runner_probes_in_kill_tests as _guard_runner_probes_in_kill_tests,
+)
 
 # Loggers mutated by lionhub.orchestration.console.configure_cli_logging(). Tests that
 # drive main() end-to-end trigger that call, which sets propagate=False and
 # attaches stderr handlers — breaking caplog for any test that runs later in
 # the same worker (e.g. tests/cli/orchestrate/test_flow_spec_file.py).
-
-
-@pytest.fixture(autouse=True)
-def _guard_runner_probes_in_kill_tests(request, monkeypatch):
-    """Kill tests must explicitly supply every runner PID observation."""
-    if request.path.name not in {
-        "test_kill.py",
-        "test_kill_recorded_workers.py",
-        "test_kill_degraded_run.py",
-        "test_smart_staleness.py",
-    }:
-        return
-
-    def unexpected_runner(pid):
-        raise AssertionError(f"unconfigured runner process probe: {pid}")
-
-    monkeypatch.setattr("lionagi.cli._kill_service._runner_process_create_time", unexpected_runner)
 
 
 @dataclass

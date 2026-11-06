@@ -323,7 +323,7 @@ def test_a_run_listing_wraps_every_read_it_makes(capfd, monkeypatch, tmp_path):
     (runs_root / "20260725T000000-aaaaaa" / "run.json").write_text("{}")
     # No artifacts directory: the producer always creates one, so its absence is
     # a read that did not establish an answer rather than a count of zero.
-    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", runs_root)
 
     assert cli_main.main(["runs", "--machine"]) == 0
     envelope = _one_object(capfd.readouterr().out)
@@ -338,7 +338,7 @@ def test_a_run_listing_wraps_every_read_it_makes(capfd, monkeypatch, tmp_path):
 
 
 def test_no_runs_at_all_is_an_established_answer(capfd, monkeypatch, tmp_path):
-    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", tmp_path / "never-created")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "never-created")
 
     assert cli_main.main(["runs", "--machine"]) == 0
     envelope = _one_object(capfd.readouterr().out)

@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli.orchestrate import _checkpoint
+from lionhub.orchestration.flow import checkpoint as _checkpoint
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 @pytest.mark.parametrize("operation", ["record", "record_spawned", "flush"])

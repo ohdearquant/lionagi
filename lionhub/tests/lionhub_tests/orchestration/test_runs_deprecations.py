@@ -8,7 +8,8 @@ from __future__ import annotations
 import inspect
 import warnings
 
-from lionagi.cli._runs import teardown_orchestration_persist, teardown_persist
+from lionhub.orchestration.runs import teardown_orchestration_persist, teardown_persist
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 class TestTeardownOrchestrationPersistDeprecation:

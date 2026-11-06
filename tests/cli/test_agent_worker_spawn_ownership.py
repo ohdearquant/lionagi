@@ -53,8 +53,8 @@ async def store(monkeypatch, tmp_path):
 async def test_fresh_generation_is_admitted_before_setup_hook_work(store, monkeypatch):
     from lionagi import Branch
     from lionagi._cli_worker_context import _get_cli_worker_recorder
-    from lionagi.cli import _runs
     from lionagi.hooks.bus import HookBus, HookPoint
+    from lionhub.orchestration import runs as _runs
 
     entered, release = asyncio.Event(), asyncio.Event()
     original_record = store.StateDB.register_cli_worker_spawn
@@ -109,7 +109,7 @@ async def test_fresh_generation_is_admitted_before_setup_hook_work(store, monkey
 @pytest.mark.asyncio(loop_scope="function")
 async def test_terminal_resume_uses_the_adopted_key_and_new_atomic_generation(store):
     from lionagi import Branch
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     branch = Branch()
     first = await _runs.setup_agent_persist(branch, share_db=False, run_id="parent")
@@ -137,7 +137,7 @@ async def test_terminal_resume_uses_the_adopted_key_and_new_atomic_generation(st
 async def test_independent_running_resume_preserves_the_first_bound_handle(store, same_object):
     from lionagi import Branch
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     branch = Branch()
     first = await _runs.setup_agent_persist(branch, run_id="first")
@@ -161,8 +161,8 @@ async def test_independent_running_resume_preserves_the_first_bound_handle(store
 async def test_fresh_session_key_collision_cannot_borrow_an_existing_owner(store, monkeypatch):
     from lionagi import Branch
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.cli import _runs
     from lionagi.session import session as session_module
+    from lionhub.orchestration import runs as _runs
 
     branch = Branch()
     first = await _runs.setup_agent_persist(branch, run_id="first")
@@ -191,8 +191,8 @@ async def test_fresh_session_key_collision_cannot_borrow_an_existing_owner(store
 async def test_bound_close_failure_cannot_be_a_continuation_witness(store, monkeypatch):
     from lionagi import Branch
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.cli import _runs
     from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
+    from lionhub.orchestration import runs as _runs
 
     branch = Branch()
     ctx = await _runs.setup_agent_persist(branch, share_db=False)
@@ -218,7 +218,7 @@ async def test_bound_close_failure_cannot_be_a_continuation_witness(store, monke
 @pytest.mark.asyncio(loop_scope="function")
 async def test_unfinished_drain_error_blocks_terminal_work_and_bound_close(store, monkeypatch):
     from lionagi import Branch
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     branch = Branch()
     ctx = await _runs.setup_agent_persist(branch, share_db=False)

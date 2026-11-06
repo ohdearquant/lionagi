@@ -330,6 +330,9 @@ MOVED_MODULES = (
     ("lionagi.cli._orchestrate_parsing", "lionhub.orchestration.flow.parsing"),
     ("lionagi.cli._schedule_parsing", "lionhub.orchestration.schedule.parsing"),
     ("lionagi.cli._mirror_service", "lionhub.serve.mirror"),
+    ("lionagi.cli._runs", "lionhub.orchestration.runs"),
+    ("lionagi.cli._kill_service", "lionhub.orchestration.kill"),
+    ("lionagi.cli.orchestrate._checkpoint", "lionhub.orchestration.flow.checkpoint"),
 )
 _MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
 
@@ -351,6 +354,38 @@ def test_an_old_module_name_warns_once_and_is_the_new_module(old, new):
 # What each moved module offers its callers. Naming some of it keeps the identity check
 # below from passing on a module that defines nothing.
 MOVED_MODULE_PUBLIC_NAMES = {
+    "lionhub.orchestration.runs": {
+        "RunDir",
+        "active_run_id",
+        "allocate_run",
+        "current_run_id",
+        "find_branch",
+        "find_incomplete_session_for_run",
+        "list_runs",
+        "load_last_branch",
+        "lost_terminal_write",
+        "register_branch_hook",
+        "resolve_run_reason",
+        "save_last_branch_pointer",
+        "setup_agent_persist",
+        "teardown_orchestration_persist",
+        "teardown_persist",
+    },
+    "lionhub.orchestration.kill": {
+        "check_pid_identity",
+        "imported_degraded_process_is_live",
+        "kill_one",
+        "list_running_children",
+        "read_pid_from_entity",
+        "unaddressable_pid_reason",
+    },
+    "lionhub.orchestration.flow.checkpoint": {
+        "CheckpointWriter",
+        "FlowResumeError",
+        "UnsupportedFlowCheckpointVersionError",
+        "load_checkpoint",
+        "resolve_checkpoint_target",
+    },
     "lionhub.orchestration.spawn": {
         "AgentProfile",
         "AgentProfileNotFoundError",
@@ -459,6 +494,62 @@ MOVED_MODULE_PUBLIC_NAMES = {
 }
 
 MOVED_MODULE_PRIVATE_NAMES = {
+    "lionhub.orchestration.runs": {
+        "_TerminalStatus",
+        "_atomic_write_json",
+        "_branch_dirs",
+        "_branch_end_is_this_runs",
+        "_carry_earliest_time",
+        "_drop_a_time_that_is_not_one",
+        "_flush_pending_message_events",
+        "_has_assistant_output_evidence",
+        "_is_time",
+        "_linked_engine_session",
+        "_live_message_dict",
+        "_make_message_handler",
+        "_manifest_run_id_matches",
+        "_new_run_id",
+        "_open_shared_db",
+        "_record_persistence_degraded",
+        "_reopen_session_for_resume",
+        "_resolve_project",
+        "_resolved_run_state_dir",
+        "_run_manifest_lock",
+        "_run_may_clear_current_phase",
+        "_signal_persist_refusal",
+        "_signal_window_marker",
+        "_store_error_in",
+        "_teardown_common",
+        "_teardown_write",
+        "_terminal_status_extra_fields",
+        "_unroute_message_hooks",
+        "_validate_manifest_run_id",
+        "_write_signal_persistence_degraded_at",
+        "_write_terminal_session_status",
+        "_write_terminal_write_lost",
+    },
+    "lionhub.orchestration.kill": {
+        "_CancelPersistenceError",
+        "_WorkerCleanup",
+        "_cmdline_is_lionagi",
+        "_degraded_run",
+        "_imported_degraded_process_identity",
+        "_kill_degraded_run",
+        "_persist_cancel",
+        "_pid_addressability",
+        "_pid_is_zombie",
+        "_run_manifest_path",
+        "_runner_process_create_time",
+        "_same_cleanup_session",
+        "_settle_degraded_run",
+        "_signal_degraded_process",
+        "_terminate_pid",
+        "_try_recorded_worker_cleanup",
+    },
+    "lionhub.orchestration.flow.checkpoint": {
+        "_find_run_dir_by_id",
+        "_raise_if_persistence_degraded",
+    },
     "lionhub.orchestration.spawn": {
         "_add_claude_tool_kwargs",
         "_add_codex_account_integration_kwargs",
@@ -560,6 +651,36 @@ MOVED_MODULE_PRIVATE_NAMES = {
     "lionhub.orchestration.engine_definitions": {"_is_registered_engine_kind"},
 }
 MOVED_MODULE_SHARED_VALUES = {
+    "lionhub.orchestration.runs": {
+        "LIONAGI_HOME",
+        "PERSISTENCE_DEGRADED_REASON_FIELD",
+        "RUNS_ROOT",
+        "SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD",
+        "TERMINAL_WRITE_LOST_FIELD",
+        "_ALLOCATED_RUN_ID",
+        "_LAST_BRANCH_POINTER",
+        "_LEGACY_AGENTS_ROOT",
+        "_RUN_ID_ENV_VAR",
+        "_SETUP_RECOVERY_TIMEOUT_SECONDS",
+        "_log",
+        "teardown_agent_persist",
+    },
+    "lionhub.orchestration.kill": {
+        "BOOT_TIME_TOLERANCE",
+        "NOT_JUDGEABLE_HERE",
+        "NOT_STOPPED_SIGNALS",
+        "_BOOT_TIME_TOLERANCE",
+        "_IdentityVerdict",
+        "_LOCALLY_SIGNALLABLE_MODES",
+        "_REFUSED_SIGNAL_REASONS",
+        "_STALE_SWEEP_ORDER",
+    },
+    "lionhub.orchestration.flow.checkpoint": {
+        "CHECKPOINT_VERSION",
+        "PERSISTENCE_DEGRADED_REASON_FIELD",
+        "RUNS_ROOT",
+        "RunDir",
+    },
     "lionhub.orchestration.spawn": {
         "BACKENDS",
         "CLI_PROVIDERS",
@@ -833,6 +954,50 @@ if new == "lionhub.orchestration.schedule.parsing":
             assert second._warned_api_suffix is True
             assert second._base_url() == "http://localhost:8765"
             warning.assert_called_once()
+
+if new == "lionhub.orchestration.runs":
+    legacy, canonical = sys.modules[old], sys.modules[new]
+    saved = canonical._ALLOCATED_RUN_ID
+    try:
+        legacy._ALLOCATED_RUN_ID = "first-run"
+        assert canonical.active_run_id() == "first-run"
+        canonical._ALLOCATED_RUN_ID = "second-run"
+        assert legacy.active_run_id() == "second-run"
+        with patch(new + "._ALLOCATED_RUN_ID", None), patch(old + ".current_run_id", return_value="inherited-run"):
+            assert canonical.active_run_id() == "inherited-run"
+    finally:
+        canonical._ALLOCATED_RUN_ID = saved
+
+if new == "lionhub.orchestration.kill":
+    import asyncio
+
+    legacy, canonical = sys.modules[old], sys.modules[new]
+    saved = canonical._REFUSED_SIGNAL_REASONS["foreign_mode"]
+    try:
+        with patch(new + ".unaddressable_pid_reason", return_value="foreign_mode"), patch(new + ".warn") as warning:
+            with patch(new + ".read_pid_from_entity", side_effect=AssertionError("unexpected pid read")):
+                for writer, reader, text in ((legacy, canonical, "first refusal"), (canonical, legacy, "second refusal")):
+                    writer._REFUSED_SIGNAL_REASONS["foreign_mode"] = text
+                    outcome = asyncio.run(reader.kill_one(None, "invocation", "sample", {}, user_reason="test"))
+                    assert outcome["signal"] == "foreign_mode" and outcome["pid"] is None
+                    warning.assert_called_with("  invocation sample: " + text)
+    finally:
+        canonical._REFUSED_SIGNAL_REASONS["foreign_mode"] = saved
+
+if new == "lionhub.orchestration.flow.checkpoint":
+    from pathlib import Path
+
+    legacy, canonical = sys.modules[old], sys.modules[new]
+    legacy_writer = legacy.CheckpointWriter(Path("unused-checkpoint"), "session", "prompt", [], {})
+    canonical_writer = canonical.CheckpointWriter(Path("unused-checkpoint"), "session", "prompt", [], {})
+    version = canonical.CHECKPOINT_VERSION
+    with patch(old + ".CHECKPOINT_VERSION", version + 1):
+        assert canonical_writer.to_dict()["version"] == version + 1
+    with patch(new + ".CHECKPOINT_VERSION", version + 2):
+        assert legacy_writer.to_dict()["version"] == version + 2
+    legacy_writer.ops["sample"] = {"status": "done"}
+    assert legacy_writer.to_dict()["ops"] is legacy_writer.ops
+    assert legacy_writer.to_dict.__func__ is canonical.CheckpointWriter.to_dict
 
 assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
 assert first.__spec__.name == new and first.__name__ == new
@@ -1198,6 +1363,14 @@ def _module_of(path: Path) -> str | None:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
+_RETAINED_DEPRECATION_MESSAGES = {
+    "lionhub.orchestration.runs": {
+        "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
+        "use lionagi.cli._runs.teardown_persist instead."
+    }
+}
+
+
 def _old_references(path: Path, source: str | None = None) -> list[str]:
     if source is None:
         source = path.read_text(encoding="utf-8")
@@ -1232,12 +1405,55 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
                         and (own == new or own.startswith(new + "."))
                     )
                 ]
+            # The original deprecation text names its old callable without importing it.
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "warnings"
+                and func.attr == "warn"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Name)
+                and node.args[1].id == "DeprecationWarning"
+            ):
+                retained = _RETAINED_DEPRECATION_MESSAGES.get(_module_of(path), set())
+                names = [
+                    arg.value
+                    for index, arg in enumerate(node.args)
+                    if isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and not (index == 0 and arg.value in retained)
+                ]
         found += [
             f"{path.relative_to(ROOT)}:{node.lineno}: {name}"
             for name in names
             if _moved.resolve(name) is not None
         ]
     return found
+
+
+def test_reference_check_preserves_only_the_original_own_deprecation_text():
+    path = SOURCE_ROOTS[1] / "orchestration" / "runs.py"
+    other = path.with_name("_probe.py")
+    message = (
+        "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
+        "use lionagi.cli._runs.teardown_persist instead."
+    )
+    warning = f"warnings.warn({message!r}, DeprecationWarning)\n"
+    changed_message = message + " "
+    assert _old_references(path, warning) == []
+    assert _old_references(other, warning)
+    for source in (
+        f"warnings.warn({message!r}, RuntimeWarning)\n",
+        f"other.warn({message!r}, DeprecationWarning)\n",
+        f"warnings.warn({changed_message!r}, DeprecationWarning)\n",
+        f"importlib.import_module({message!r})\n",
+        f"warnings.warn('safe', DeprecationWarning, {message!r})\n",
+    ):
+        assert _old_references(path, source), source
+    repeated = f"warnings.warn({message!r}, DeprecationWarning, {message!r})\n"
+    assert len(_old_references(path, repeated)) == 1
+    imports = "import lionagi.cli._runs\nimportlib.import_module('lionagi.cli._runs')\n"
+    assert len(_old_references(path, warning + imports)) == 2
 
 
 def test_no_source_file_imports_an_old_name():

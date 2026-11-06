@@ -24,9 +24,10 @@ import time
 import pytest
 
 import lionagi.ln.concurrency.utils as cu
-from lionagi.cli._runs import resolve_run_reason
 from lionagi.ln.concurrency.utils import SigtermInterrupt
 from lionagi.state.reasons import RunReasons
+from lionhub.orchestration.runs import resolve_run_reason
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +102,7 @@ def test_reason_code_shape():
 _SUBPROCESS_SCRIPT = textwrap.dedent("""\
     import sys
     import anyio as _anyio
-    from lionagi.cli._runs import resolve_run_reason
+    from lionhub.orchestration.runs import resolve_run_reason
     from lionagi.ln.concurrency.utils import SigtermInterrupt, run_async, sigterm_received
 
     SENTINEL = sys.argv[1]

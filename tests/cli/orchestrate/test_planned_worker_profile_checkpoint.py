@@ -10,11 +10,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lionagi.casts.emission import TaskAssignment
-from lionagi.cli._runs import RunDir
-from lionagi.cli.orchestrate import _checkpoint, flow
 from lionagi.cli.orchestrate import _orchestration as orch
-from lionagi.cli.orchestrate._checkpoint import CheckpointWriter, load_checkpoint
+from lionagi.cli.orchestrate import flow
 from lionhub.orchestration import spawn as _providers
+from lionhub.orchestration.flow import checkpoint as _checkpoint
+from lionhub.orchestration.flow.checkpoint import CheckpointWriter, load_checkpoint
+from lionhub.orchestration.runs import RunDir
 
 
 @pytest.mark.parametrize("initial,updated", [("none", None), (None, "none")])

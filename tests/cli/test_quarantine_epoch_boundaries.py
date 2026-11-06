@@ -7,9 +7,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from lionagi.cli import _kill_service
 from lionagi.cli import kill as kill_cli
 from lionagi.state.db import StateDB
+from lionhub.orchestration import kill as _kill_service
 from tests.cli.quarantine_helpers import fetch_row, isolated_store, seed, sweep  # noqa: F401
 
 

@@ -14,13 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli._runs import (
+from lionagi.state.reasons import RunReasons
+from lionhub.orchestration.runs import (
     TERMINAL_WRITE_LOST_FIELD,
     RunDir,
     lost_terminal_write,
     resolve_run_reason,
 )
-from lionagi.state.reasons import RunReasons
 from tests.cli.test_agent_context_from import _wire_agent_stubs
 from tests.providers._refusal_fixture import REFUSAL
 
@@ -566,7 +566,7 @@ async def test_a_teardown_that_failed_before_deciding_records_the_status_it_was_
     write that teardown never reached."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderQuotaError
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path)
     monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
@@ -719,7 +719,7 @@ async def test_a_leg_that_defers_its_end_to_an_auto_resume_records_no_lost_write
     none for the store to refuse, even when the store then failed teardown and left the row
     running."""
     from lionagi import Branch
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path)
     monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
@@ -951,7 +951,7 @@ def _store_error_cases():
     ],
 )
 def test_a_store_error_is_found_where_teardown_can_carry_one(error, expected):
-    from lionagi.cli._runs import _store_error_in
+    from lionhub.orchestration.runs import _store_error_in
 
     assert _store_error_in(error) is expected
 
@@ -976,7 +976,7 @@ class _CauseCycle(RuntimeError):
 def test_a_cause_cycle_without_a_store_error_ends():
     """Two errors that name each other as their cause: the search visits each once and finds
     nothing."""
-    from lionagi.cli._runs import _store_error_in
+    from lionhub.orchestration.runs import _store_error_in
 
     first, second = _CauseCycle("a"), _CauseCycle("b")
     first.partner, second.partner = second, first
@@ -1117,8 +1117,8 @@ async def test_a_sigterm_run_whose_teardown_failed_before_deciding_records_the_s
     import threading
 
     from lionagi import Branch
-    from lionagi.cli import _runs
     from lionagi.ln.concurrency import utils as cu
+    from lionhub.orchestration import runs as _runs
 
     monkeypatch.setattr(cu, "_SIGTERM_RECEIVED", threading.Event())
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path)

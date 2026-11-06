@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lionagi.cli.orchestrate import flow
-from lionagi.cli.orchestrate._checkpoint import FlowResumeError
 from lionhub.orchestration import mcp_config as _mcp_resolve
+from lionhub.orchestration.flow.checkpoint import FlowResumeError
 from tests.cli.orchestrate.test_no_mcp_config_handoff import tmp_run
 
 
@@ -197,8 +197,8 @@ async def test_malformed_recorded_flag_never_falls_back_to_discovery(monkeypatch
 @pytest.mark.asyncio
 async def test_named_marked_config_survives_flow_start_and_resume(tmp_run, monkeypatch):  # noqa: F811
     """A named file remains caller-owned even when it has a snapshot marker."""
-    from lionagi.cli.orchestrate import _checkpoint
-    from lionagi.cli.orchestrate._checkpoint import CheckpointWriter, load_checkpoint
+    from lionhub.orchestration.flow import checkpoint as _checkpoint
+    from lionhub.orchestration.flow.checkpoint import CheckpointWriter, load_checkpoint
 
     recorded = tmp_run / "named.json"
     recorded.write_text(

@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 
 from lionagi import Branch, Session
-from lionagi.cli._runs import register_branch_hook as _register_branch_hook
 from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
     setup_orchestration_persist,
@@ -20,9 +19,9 @@ from lionagi.cli.orchestrate._orchestration import (
     stop_live_persist,
 )
 from lionagi.state.db import StateDB
+from lionhub.orchestration.runs import register_branch_hook as _register_branch_hook
 from tests.cli._aiosqlite_threads import aiosqlite_threads, settled_new_aiosqlite_threads
 from tests.cli._import_guard import (
-    COMMAND_IMPORT_PROBES,
     command_module_imports,
     resolved_imports,
     source_with_line,
@@ -153,7 +152,7 @@ async def test_start_live_persist_stashes_explicit_project_verbatim(
 async def test_orchestration_manifest_tracks_start_and_terminal_status(
     temp_db_path: Path, tmp_path: Path
 ):
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     resolved_cwd = (tmp_path / "workspace").resolve()
     resolved_cwd.mkdir()
@@ -379,8 +378,8 @@ async def test_exhausted_sqlite_admission_records_one_reason_and_cleans_handle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from lionagi.cli._runs import RunDir, _record_persistence_degraded
     from lionagi.cli.orchestrate import _orchestration
+    from lionhub.orchestration.runs import RunDir, _record_persistence_degraded
 
     errors = [sqlite3.OperationalError("database is locked") for _ in range(3)]
     db = _ScriptedAdmissionDB(dialect="sqlite", create_session_errors=errors)
@@ -504,17 +503,26 @@ async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_even
 def test_register_branch_hook_lives_in_the_runs_module():
     """The hook is defined beside the message handler it calls, the orchestration module re-exports
     the same object, and the runs module imports no command module."""
-    from lionagi.cli import _runs
     from lionagi.cli.orchestrate import _orchestration
+    from lionhub.orchestration import runs as _runs
 
-    assert _runs.register_branch_hook.__module__ == "lionagi.cli._runs"
+    assert _runs.register_branch_hook.__module__ == "lionhub.orchestration.runs"
     assert _orchestration.register_branch_hook is _runs.register_branch_hook
 
-    imported = resolved_imports(_runs.__file__, "lionagi.cli")
+    imported = resolved_imports(_runs.__file__, "lionhub.orchestration")
     assert command_module_imports(imported) == set()
 
 
-@pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
+@pytest.mark.parametrize(
+    "probe",
+    (
+        "from lionagi.cli.status import _x",
+        "from lionagi.cli import status",
+        "import lionagi.cli.status",
+        "from lionagi.cli.orchestrate import _x",
+        "from lionagi.cli import orchestrate",
+    ),
+)
 def test_register_branch_hook_guard_rejects_a_command_import(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str
 ):
@@ -522,7 +530,7 @@ def test_register_branch_hook_guard_rejects_a_command_import(
     of the orchestrate package, whether the import is absolute, relative or by name."""
     import importlib
 
-    module = importlib.import_module("lionagi.cli._runs")
+    module = importlib.import_module("lionhub.orchestration.runs")
     monkeypatch.setattr(module, "__file__", str(source_with_line(module.__file__, probe, tmp_path)))
     with pytest.raises(AssertionError):
         test_register_branch_hook_lives_in_the_runs_module()
@@ -2247,8 +2255,8 @@ async def test_reconciled_linked_engine_completed_with_output_stays_completed(
     progression carries no assistant output — the linked engine session's own
     progression (real answer text) is legitimate completion evidence too."""
     from lionagi._provider_errors import ProviderError
-    from lionagi.cli._runs import teardown_persist
     from lionagi.state.claude_mirror import mirror_session, session_db_id
+    from lionhub.orchestration.runs import teardown_persist
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -3581,11 +3589,11 @@ async def test_flow_timeout_shields_completed_branch_status_until_commit(
 ):
     from lionagi._errors import TimeoutError as LionTimeoutError
     from lionagi.casts.emission import TaskAssignment
-    from lionagi.cli._runs import register_branch_hook
     from lionagi.cli.orchestrate import flow as flow_module
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeCompleted
     from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.orchestration.runs import register_branch_hook
 
     env = _minimal_env()
     env.run.run_id = "timeout-status-drain"

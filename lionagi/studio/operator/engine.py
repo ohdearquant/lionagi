@@ -337,7 +337,7 @@ async def write_resumable_operator_snapshot(branch: Any, snapshot_dir: str | Pat
     preserves messages and provider state while making resumed gated work fail
     closed through the CLI's ordinary permission mode.
     """
-    from lionagi.cli._runs import _atomic_write_json
+    from lionhub.orchestration.runs import _atomic_write_json
 
     kwargs = branch.chat_model.endpoint.config.kwargs
     original = dict(kwargs)

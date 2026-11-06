@@ -105,11 +105,11 @@ def real_launch_harness(tmp_path: Path, monkeypatch: Any):
     leaves launch_detached_argv/_spawn_detached real; only the OS-level
     subprocess spawn is stubbed, driven by the checkpoint actually on disk so
     the refusal text is genuinely computed from the plan, not hardcoded."""
-    import lionagi.cli.orchestrate._checkpoint as ckmod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.scheduler.subprocess as subprocess_mod
     import lionagi.studio.services.invocations as invocations_svc
     import lionagi.studio.services.run_resume as resume_svc
+    import lionhub.orchestration.flow.checkpoint as ckmod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

@@ -10,9 +10,9 @@ from lionagi import Branch, iModel
 from lionagi._errors import CLIInputRefusedError
 from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate import flow
-from lionagi.cli.orchestrate._checkpoint import CheckpointWriter
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.types import EventStatus
+from lionhub.orchestration.flow.checkpoint import CheckpointWriter
 
 
 @pytest.mark.asyncio

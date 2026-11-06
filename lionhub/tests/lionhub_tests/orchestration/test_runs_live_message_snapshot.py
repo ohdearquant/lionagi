@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.cli._runs import _make_message_handler
+from lionhub.orchestration.runs import _make_message_handler
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 @pytest.mark.parametrize("role", ("user", "system"))

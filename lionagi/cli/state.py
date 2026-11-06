@@ -15,8 +15,7 @@ from lionagi.ln import coerce_created_at, short_id
 from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
 from lionagi.state.session_naming import resolve_display_name
 from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
-
-from ._runs import RUNS_ROOT, _manifest_run_id_matches
+from lionhub.orchestration.runs import RUNS_ROOT, _manifest_run_id_matches
 
 __all__ = [
     # import helpers
@@ -1470,14 +1469,14 @@ async def _doctor(
 
     from sqlalchemy import text
 
-    from lionagi.cli._kill_service import (
+    from lionhub.orchestration.job import pid_alive
+    from lionhub.orchestration.kill import (
         NOT_JUDGEABLE_HERE,
         check_pid_identity,
         imported_degraded_process_is_live,
         read_pid_from_entity,
         unaddressable_pid_reason,
     )
-    from lionhub.orchestration.job import pid_alive
 
     async with StateDB() as db:
         async with db._read() as conn:

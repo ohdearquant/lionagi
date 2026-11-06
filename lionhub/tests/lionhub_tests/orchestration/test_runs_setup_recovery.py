@@ -11,12 +11,14 @@ from uuid import uuid4
 
 import pytest
 
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
+
 
 @pytest.fixture
 def isolated_setup(monkeypatch):
-    from lionagi.cli import _runs
     from lionagi.session import session as session_module
     from lionagi.state import cli_workers, compat, provenance
+    from lionhub.orchestration import runs as _runs
 
     class Session:
         def __init__(self, *, name, default_branch):

@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import anyio
 import pytest
 
-import lionagi.cli._runs as runs_mod
+import lionhub.orchestration.runs as runs_mod
 from lionagi.state.compat import Closure, CompatibilityProfile, StateCompatibilityRefused
 from lionagi.studio.operator import coordinator as coordinator_mod
 from lionagi.studio.operator.coordinator import OperatorCoordinator

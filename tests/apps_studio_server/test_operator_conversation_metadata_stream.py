@@ -18,9 +18,9 @@ async def test_metadata_tool_has_only_the_provider_result_in_stream_and_history(
     tmp_path, monkeypatch, provider_fails
 ):
     import lionagi._paths as paths_module
-    import lionagi.cli._runs as runs_module
     import lionagi.state.db as state_db_module
     import lionagi.studio.services.operator as operator_service
+    import lionhub.orchestration.runs as runs_module
     import lionhub.providers.anthropic.claude_code as claude_module
     from lionagi.session.branch import Branch
     from lionagi.studio.operator.application_mcp import _dispatch

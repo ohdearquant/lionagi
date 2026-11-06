@@ -90,7 +90,7 @@ async def test_other_openai_shapes_do_not_claim_chat_usage(monkeypatch, path):
 
 @pytest.mark.asyncio
 async def test_counts_outside_signed_64_bit_range_stay_serializable(monkeypatch, tmp_path):
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     endpoint = _endpoint("openai")
     responses = iter([2**63 - 1, 2**63, 10**5000])

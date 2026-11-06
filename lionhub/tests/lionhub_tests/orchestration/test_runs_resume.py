@@ -23,10 +23,11 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli._runs import _reopen_session_for_resume
 from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 from lionagi.state.reasons import RunReasons
+from lionhub.orchestration.runs import _reopen_session_for_resume
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 @pytest.fixture
@@ -328,7 +329,7 @@ async def test_a_resumed_leg_links_its_session_to_its_own_invocation(temp_db_pat
     session it drove.
     """
     from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
 
     branch = Branch(name="resumed")
     async with StateDB() as db:
@@ -373,7 +374,7 @@ async def test_a_resume_whose_session_is_pruned_mid_setup_still_records_itself(
     instead, the same way a branch nobody has seen before does.
     """
     from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
 
     branch = Branch(name="resumed")
     async with StateDB() as db:

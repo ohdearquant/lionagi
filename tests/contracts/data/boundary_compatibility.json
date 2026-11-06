@@ -12,9 +12,6 @@
     "lionagi/cli/_agent_depth.py": [
       "os.environ.get:SEAT_PROFILES_ENV"
     ],
-    "lionagi/cli/_runs.py": [
-      "os.environ.get:_RUN_ID_ENV_VAR"
-    ],
     "lionagi/cli/agent.py": [
       "os.environ.get:JOB_MARKER_ENV_VAR",
       "os.environ.get:_API_ACCOUNT_ENV"
@@ -235,7 +232,7 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._project\", \"lionhub.orchestration.project\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mcp_resolve\", \"lionhub.orchestration.mcp_config\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._team_service\", \"lionhub.orchestration.team\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._engine_definitions\",\n        \"lionhub.orchestration.engine_definitions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._util\", \"lionhub.orchestration.job\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._inspection\", \"lionhub.orchestration.inspection\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._providers\", \"lionhub.orchestration.spawn\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._orchestrate_parsing\", \"lionhub.orchestration.flow.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.cli._schedule_parsing\", \"lionhub.orchestration.schedule.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.cli._mirror_service\", \"lionhub.serve.mirror\", \"0.38.0\", \"2.0.0\"),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._project\", \"lionhub.orchestration.project\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mcp_resolve\", \"lionhub.orchestration.mcp_config\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._team_service\", \"lionhub.orchestration.team\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._engine_definitions\",\n        \"lionhub.orchestration.engine_definitions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._util\", \"lionhub.orchestration.job\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._inspection\", \"lionhub.orchestration.inspection\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._providers\", \"lionhub.orchestration.spawn\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._orchestrate_parsing\", \"lionhub.orchestration.flow.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.cli._schedule_parsing\", \"lionhub.orchestration.schedule.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.cli._mirror_service\", \"lionhub.serve.mirror\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._runs\", \"lionhub.orchestration.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._kill_service\", \"lionhub.orchestration.kill\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli.orchestrate._checkpoint\",\n        \"lionhub.orchestration.flow.checkpoint\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -391,9 +388,6 @@
       "__all__ = (\"main\",)",
       "def __getattr__(name: str):\n    # Lazy: importing lionagi.studio.cli (which main.py imports at module\n    # level) must not re-enter main.py through this package init.\n    if name == \"main\":\n        return lazy_import(name, {\"main\": (\"main\", \"main\")}, __name__, globals())\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
     ],
-    "lionagi/cli/_runs.py": [
-      "__all__ = (\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"RunDir\",\n    \"allocate_run\",\n    \"find_branch\",\n    \"load_last_branch\",\n    \"save_last_branch_pointer\",\n    \"list_runs\",\n    \"current_run_id\",\n    \"active_run_id\",\n    \"resolve_run_reason\",\n    \"setup_agent_persist\",\n    \"find_incomplete_session_for_run\",\n    \"teardown_persist\",\n    \"teardown_agent_persist\",\n    \"teardown_orchestration_persist\",\n)"
-    ],
     "lionagi/cli/dispatch.py": [
       "__all__ = (\n    \"add_dispatch_subparser\",\n    \"run_dispatch\",\n    \"machine_result\",\n)"
     ],
@@ -429,15 +423,12 @@
       "from lionagi.ln.concurrency import is_cancelled, run_async",
       "from lionagi.service._subagent_admission import refuse_nested_agent",
       "from lionhub.orchestration.console import hint, log_error",
+      "from lionhub.orchestration.flow.checkpoint import FlowResumeError",
       "from lionhub.orchestration.flow.parsing import _add_mcp_config_args as _add_mcp_config_args",
       "from lionhub.orchestration.flow.parsing import (\n    add_orchestrate_subparser as add_orchestrate_subparser,\n)",
       "from lionhub.orchestration.job import EXIT_CODE_BY_STATUS",
-      "from ._checkpoint import FlowResumeError",
       "from .fanout import FanoutPlanError, _run_fanout",
       "from .flow import FlowPlanError, _resume_flow, _run_flow, _validate_flow_invocation"
-    ],
-    "lionagi/cli/orchestrate/_checkpoint.py": [
-      "__all__ = (\n    \"CHECKPOINT_VERSION\",\n    \"CheckpointWriter\",\n    \"FlowResumeError\",\n    \"UnsupportedFlowCheckpointVersionError\",\n    \"load_checkpoint\",\n    \"resolve_checkpoint_target\",\n)"
     ],
     "lionagi/cli/orchestrate/_control.py": [
       "__all__ = (\n    \"run_ctl_pause\",\n    \"run_ctl_resume\",\n    \"run_ctl_msg\",\n    \"run_ctl_resolve\",\n)"
@@ -1508,36 +1499,11 @@
       "resolve_and_build_context_block",
       "resolve_context_refs"
     ],
-    "lionagi/cli/_kill_service.py": [
-      "check_pid_identity",
-      "imported_degraded_process_is_live",
-      "kill_one",
-      "list_running_children",
-      "read_pid_from_entity",
-      "unaddressable_pid_reason"
-    ],
     "lionagi/cli/_notify_outcomes.py": [
       "DurableRunRecorder"
     ],
     "lionagi/cli/_pid_quarantine.py": [
       "quarantine_identity"
-    ],
-    "lionagi/cli/_runs.py": [
-      "RunDir",
-      "active_run_id",
-      "allocate_run",
-      "current_run_id",
-      "find_branch",
-      "find_incomplete_session_for_run",
-      "list_runs",
-      "load_last_branch",
-      "lost_terminal_write",
-      "register_branch_hook",
-      "resolve_run_reason",
-      "save_last_branch_pointer",
-      "setup_agent_persist",
-      "teardown_orchestration_persist",
-      "teardown_persist"
     ],
     "lionagi/cli/agent.py": [
       "add_agent_subparser",
@@ -1628,13 +1594,6 @@
       "inject_playbook_schema_into_parser",
       "list_playbooks",
       "run_orchestrate"
-    ],
-    "lionagi/cli/orchestrate/_checkpoint.py": [
-      "CheckpointWriter",
-      "FlowResumeError",
-      "UnsupportedFlowCheckpointVersionError",
-      "load_checkpoint",
-      "resolve_checkpoint_target"
     ],
     "lionagi/cli/orchestrate/_common.py": [
       "bare_worker_system",

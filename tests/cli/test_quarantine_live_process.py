@@ -63,7 +63,7 @@ async def test_live_session_does_not_clear_invocation_with_different_evidence(
     elif difference == "host":
         meta["pid_host"] = socket.gethostname()
     else:
-        from lionagi.cli import _kill_service
+        from lionhub.orchestration import kill as _kill_service
 
         monkeypatch.setattr(_kill_service.psutil, "boot_time", lambda: 2000.0)
         meta["pid_boot_time"] = 2000.0

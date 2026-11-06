@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lionagi.cli import orchestrate
-from lionagi.cli.orchestrate import _checkpoint, _orchestration, flow
-from lionagi.cli.orchestrate._checkpoint import CheckpointWriter, load_checkpoint
+from lionagi.cli.orchestrate import _orchestration, flow
+from lionhub.orchestration.flow import checkpoint as _checkpoint
+from lionhub.orchestration.flow.checkpoint import CheckpointWriter, load_checkpoint
 from lionhub.orchestration.flow.parsing import add_orchestrate_subparser
 from tests.cli.orchestrate.test_no_mcp_config_handoff import _cli_args, _setup, tmp_run
 

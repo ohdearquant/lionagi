@@ -23,8 +23,7 @@ from lionhub.orchestration.console import log_error, warn
 from lionhub.orchestration.job import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from lionhub.orchestration.job import pid_alive as _pid_alive
 from lionhub.orchestration.job import resolve_entity as _resolve_entity
-
-from ._kill_service import (
+from lionhub.orchestration.kill import (
     _REFUSED_SIGNAL_REASONS,
     _STALE_SWEEP_ORDER,
     NOT_JUDGEABLE_HERE,
@@ -42,6 +41,7 @@ from ._kill_service import (
     read_pid_from_entity,
     unaddressable_pid_reason,
 )
+
 from ._pid_quarantine import quarantine_identity
 
 
