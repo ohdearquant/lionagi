@@ -1,7 +1,9 @@
 """Every module that moved out of lionagi keeps its old import path until its removal release.
 
-The table is ``lionagi._moved.MOVED``. For every module under each moved package these
-tests check that the old name imports, that it is the same module object as the new
+The table is ``lionagi._moved.MOVED``; ``CONTRACTS`` (tests/_moved_contracts_test_support.py)
+declares the same rows by hand, and a test compares the two. What each row promises (names,
+shared values, state read through either name, cold import orders) is read from its contract.
+For every module under each moved package these tests check that the old name imports, that it is the same module object as the new
 name, that it warns once and points the warning at the importing code, that the
 removal release is still ahead of this version, that data naming a moved Element
 class by either path loads in a fresh process and saves under the new path, that the
@@ -21,12 +23,27 @@ import re
 import subprocess
 import sys
 import warnings
+from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from lionagi import _moved
 from lionagi.version import __version__
+from tests._moved_contracts_test_support import (
+    COLD_ORDERS,
+    CONTRACTS,
+    MoveContract,
+    assert_cold_ok,
+    assert_contracts_match_moved,
+    contract_for,
+    own_public_callables,
+    public_name_gaps,
+    readme_gaps,
+    readme_rows,
+    run_cold_case,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -40,19 +57,18 @@ def _release(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in match.groups())
 
 
-def _inner_rows(row: _moved.Moved) -> list[_moved.Moved]:
-    """Rows whose new package sits inside ``row``'s new package."""
-    return [other for other in _moved.MOVED if other.new.startswith(row.new + ".")]
+def _inner_rows(row: MoveContract) -> list[MoveContract]:
+    """Contracts whose new package sits inside ``row``'s new package."""
+    return [other for other in CONTRACTS if other.new.startswith(row.new + ".")]
 
 
 def _module_pairs() -> list[tuple[str, str]]:
     pairs = []
-    for row in _moved.MOVED:
+    for row in CONTRACTS:
         package = importlib.import_module(row.new)
         names = [row.new]
-        search_path = getattr(package, "__path__", None)  # a lone module has no submodules
-        if search_path is not None:
-            names += [info.name for info in pkgutil.walk_packages(search_path, row.new + ".")]
+        if row.kind == "package":  # a lone module has no submodules
+            names += [info.name for info in pkgutil.walk_packages(package.__path__, row.new + ".")]
         # A package moved inside this one is paired under its own row, by the name it had.
         inner = tuple(other.new for other in _inner_rows(row))
         names = [n for n in names if not any(n == p or n.startswith(p + ".") for p in inner)]
@@ -62,21 +78,73 @@ def _module_pairs() -> list[tuple[str, str]]:
 
 PAIRS = _module_pairs()
 
-# These whole modules deliberately export values rather than pickleable definitions.
-# Any other row without a callable subject still fails the population check.
-CONSTANT_ONLY_MOVED_MODULES = {
-    "lionagi.cli._mirror_settings": (
-        "lionhub.serve.mirror_settings",
-        {"MIRROR_PREVIEW_CHARS": 37},
-    ),
-}
-
 
 def test_the_table_has_moves_and_every_package_has_modules():
-    assert _moved.MOVED
-    for row in _moved.MOVED:
+    assert CONTRACTS
+    for row in CONTRACTS:
         assert any(new == row.new for _, new in PAIRS), row
-    assert len(PAIRS) > len(_moved.MOVED)
+    assert len(PAIRS) > len(CONTRACTS)
+
+
+def test_the_contracts_declare_exactly_the_moved_rows():
+    assert_contracts_match_moved(CONTRACTS, _moved.MOVED)
+
+
+def test_the_row_comparison_fails_for_a_missing_or_an_extra_contract():
+    # Local copies only: the real contracts and the real table are never changed.
+    contracts = list(CONTRACTS)
+    assert_contracts_match_moved(contracts, _moved.MOVED)
+
+    dropped = contracts.pop()
+    with pytest.raises(AssertionError, match="with no contract") as missing:
+        assert_contracts_match_moved(contracts, _moved.MOVED)
+    assert dropped.old in str(missing.value)
+
+    contracts.append(dropped)
+    extra = replace(dropped, old="lionagi.invented", new="lionhub.invented")
+    with pytest.raises(AssertionError, match="no row in MOVED") as surplus:
+        assert_contracts_match_moved([*contracts, extra], _moved.MOVED)
+    assert extra.old in str(surplus.value)
+
+    # A row whose new name differs is both at once: its pair has no contract, and the
+    # contract's pair has no row.
+    changed = replace(dropped, new=dropped.new + "_elsewhere")
+    with pytest.raises(AssertionError, match="with no contract"):
+        assert_contracts_match_moved([*contracts[:-1], changed], _moved.MOVED)
+
+    with pytest.raises(AssertionError, match="more than one contract"):
+        assert_contracts_match_moved([*contracts, dropped], _moved.MOVED)
+
+
+def test_each_contract_kind_describes_its_new_module():
+    for contract in CONTRACTS:
+        module = importlib.import_module(contract.new)
+        assert hasattr(module, "__path__") == (contract.kind == "package"), contract.old
+        if contract.kind == "value-only":
+            assert own_public_callables(module, contract.new) == [], contract.old
+
+
+README = ROOT / "lionhub" / "README.md"
+
+
+def test_the_readme_tables_agree_with_the_contracts():
+    text = README.read_text(encoding="utf-8")
+    assert readme_rows(text), "the README lists no moved import"
+    assert readme_gaps(text, CONTRACTS) == []
+
+
+@pytest.mark.parametrize("column", ["old", "current"])
+def test_the_readme_check_fails_when_one_cell_is_stale(column):
+    text = README.read_text(encoding="utf-8")
+    old, new = readme_rows(text)[-1]
+    line = f"| `{old}` | `{new}` |"
+    assert text.count(line) == 1
+    stale = f"| `{old}x` | `{new}` |" if column == "old" else f"| `{old}` | `{new}x` |"
+    changed = text.replace(line, stale)
+    assert changed != text
+    assert readme_gaps(text, CONTRACTS) == []
+    gaps = readme_gaps(changed, CONTRACTS)
+    assert len(gaps) == 1 and old in gaps[0], gaps
 
 
 @pytest.mark.parametrize(("old", "new"), PAIRS, ids=[old for old, _ in PAIRS])
@@ -119,7 +187,7 @@ def test_import_statement_warning_points_at_the_importing_line():
 
 
 def test_objects_are_shared_and_pickles_naming_the_old_path_load():
-    checked = {row.old: 0 for row in _moved.MOVED}
+    checked = {row.old: 0 for row in CONTRACTS}
     for old, new in PAIRS:
         importlib.import_module(old)
         assert sys.modules[old] is sys.modules[new]
@@ -133,15 +201,18 @@ def test_objects_are_shared_and_pickles_naming_the_old_path_load():
             payload = pickle.dumps(obj, protocol=0).replace(new.encode(), old.encode())
             assert old.encode() in payload
             assert pickle.loads(payload) is obj  # noqa: S301
-            checked[_moved._row(old).old] += 1
-    rows = {row.old: row.new for row in _moved.MOVED}
-    for old, (new, values) in CONSTANT_ONLY_MOVED_MODULES.items():
-        assert rows.get(old) == new, (old, new, rows.get(old))
-        assert set(values) <= vars(importlib.import_module(new)).keys()
-    assert all(count for old, count in checked.items() if old not in CONSTANT_ONLY_MOVED_MODULES), (
+            checked[contract_for(old, CONTRACTS).old] += 1
+    # A value-only module deliberately exports values rather than pickleable definitions.
+    # Any other row without a callable subject still fails this population check.
+    value_only = [row for row in CONTRACTS if row.kind == "value-only"]
+    for row in value_only:
+        assert {name for name, _ in row.expected_values} <= vars(
+            importlib.import_module(row.new)
+        ).keys()
+    assert all(count for old, count in checked.items() if old not in {r.old for r in value_only}), (
         checked
     )
-    assert all(checked[old] == 0 for old in CONSTANT_ONLY_MOVED_MODULES), checked
+    assert all(checked[row.old] == 0 for row in value_only), checked
 
 
 def _moved_element_classes() -> list[tuple[str, type]]:
@@ -309,36 +380,19 @@ def test_the_allow_list_adds_only_the_moved_packages_to_lionagi():
 # A module that moved on its own (one file, not a package) is a row of the table too. Its old
 # name sits inside a package that stays in lionagi/, so the finder must serve it while that
 # package is still on disk.
-MOVED_CORE_MODULES = (
-    ("lionagi.providers._provider_errors", "lionagi._provider_errors"),
-    ("lionagi.providers._secret_resolution", "lionagi.service.accounts._secret_resolution"),
-    ("lionagi.providers._subagent_admission", "lionagi.service._subagent_admission"),
-    ("lionagi.providers.openai._chat_schemas", "lionagi.service.connections._chat_schemas"),
-)
-MOVED_MODULES = (
-    *MOVED_CORE_MODULES,
-    ("lionagi.cli._argtypes", "lionhub.orchestration.arguments"),
-    ("lionagi.cli._code_identity", "lionhub.serve.diagnostics"),
-    ("lionagi.cli._logging", "lionhub.orchestration.console"),
-    ("lionagi.cli._project", "lionhub.orchestration.project"),
-    ("lionagi.cli._mcp_resolve", "lionhub.orchestration.mcp_config"),
-    ("lionagi.cli._team_service", "lionhub.orchestration.team"),
-    ("lionagi.cli._engine_definitions", "lionhub.orchestration.engine_definitions"),
-    ("lionagi.cli._util", "lionhub.orchestration.job"),
-    ("lionagi.cli._inspection", "lionhub.orchestration.inspection"),
-    ("lionagi.cli._providers", "lionhub.orchestration.spawn"),
-    ("lionagi.cli._orchestrate_parsing", "lionhub.orchestration.flow.parsing"),
-    ("lionagi.cli._schedule_parsing", "lionhub.orchestration.schedule.parsing"),
-    ("lionagi.cli._mirror_service", "lionhub.serve.mirror"),
-    ("lionagi.cli._runs", "lionhub.orchestration.runs"),
-    ("lionagi.cli._kill_service", "lionhub.orchestration.kill"),
-    ("lionagi.cli.orchestrate._checkpoint", "lionhub.orchestration.flow.checkpoint"),
-)
-_MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
+MODULE_CONTRACTS = tuple(row for row in CONTRACTS if row.kind == "module")
+# The modules that moved into the core, not into lionhub.
+CORE_MODULE_CONTRACTS = tuple(row for row in MODULE_CONTRACTS if row.new.startswith("lionagi."))
+VALUE_ONLY_CONTRACTS = tuple(row for row in CONTRACTS if row.kind == "value-only")
 
 
-@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
-def test_an_old_module_name_warns_once_and_is_the_new_module(old, new):
+def _old_name(contract: MoveContract) -> str:
+    return contract.old
+
+
+@pytest.mark.parametrize("contract", MODULE_CONTRACTS, ids=_old_name)
+def test_an_old_module_name_warns_once_and_is_the_new_module(contract):
+    old, new = contract.old, contract.new
     sys.modules.pop(old, None)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -351,422 +405,15 @@ def test_an_old_module_name_warns_once_and_is_the_new_module(old, new):
     assert sys.modules[old] is module
 
 
-# What each moved module offers its callers. Naming some of it keeps the identity check
-# below from passing on a module that defines nothing.
-MOVED_MODULE_PUBLIC_NAMES = {
-    "lionhub.orchestration.runs": {
-        "RunDir",
-        "active_run_id",
-        "allocate_run",
-        "current_run_id",
-        "find_branch",
-        "find_incomplete_session_for_run",
-        "list_runs",
-        "load_last_branch",
-        "lost_terminal_write",
-        "register_branch_hook",
-        "resolve_run_reason",
-        "save_last_branch_pointer",
-        "setup_agent_persist",
-        "teardown_orchestration_persist",
-        "teardown_persist",
-    },
-    "lionhub.orchestration.kill": {
-        "check_pid_identity",
-        "imported_degraded_process_is_live",
-        "kill_one",
-        "list_running_children",
-        "read_pid_from_entity",
-        "unaddressable_pid_reason",
-    },
-    "lionhub.orchestration.flow.checkpoint": {
-        "CheckpointWriter",
-        "FlowResumeError",
-        "UnsupportedFlowCheckpointVersionError",
-        "load_checkpoint",
-        "resolve_checkpoint_target",
-    },
-    "lionhub.orchestration.spawn": {
-        "AgentProfile",
-        "AgentProfileNotFoundError",
-        "add_common_cli_args",
-        "build_agent_profile_catalog",
-        "build_chat_model",
-        "build_deadline_preamble",
-        "build_imodel_from_spec",
-        "list_agents",
-        "load_agent_profile",
-        "profile_config",
-        "resolve_persisted_effort",
-    },
-    "lionhub.orchestration.flow.parsing": {
-        "add_orchestrate_subparser",
-    },
-    "lionhub.orchestration.schedule.parsing": {
-        "add_schedule_subparser",
-        "build_create_body",
-        "normalize_host",
-        "suggest_schedule_flag",
-    },
-    "lionhub.serve.mirror": {
-        "mirror_forever",
-    },
-    "lionagi._provider_errors": {"ProviderError", "EmissionError"},
-    "lionagi.service.accounts._secret_resolution": {
-        "SecretLookupResolution",
-        "fill_declared_secrets",
-        "lookup_one_name",
-        "resolve_secret_lookup_config",
-    },
-    "lionagi.service._subagent_admission": {
-        "SubagentLease",
-        "admit_subagent",
-        "child_agent_depth",
-        "refuse_nested_agent",
-    },
-    "lionhub.orchestration.arguments": {"BoundedInt", "JsonArgument"},
-    "lionhub.serve.diagnostics": {
-        "code_identity",
-        "git_identity",
-        "loaded_package_path",
-        "snapshot_git_position",
-    },
-    "lionhub.orchestration.console": {"configure_cli_logging"},
-    "lionhub.orchestration.project": {"detect_project"},
-    "lionhub.orchestration.mcp_config": {
-        "McpConfigError",
-        "LegacyMcpReplayError",
-        "McpResolution",
-        "discover_mcp_config",
-        "explicit_mcp_config_path",
-        "resolve_spawn_mcp_servers",
-    },
-    "lionhub.orchestration.team": {"read_team_json"},
-    "lionhub.orchestration.engine_definitions": {"import_engine_class"},
-    "lionhub.orchestration.job": {
-        "AmbiguousIdError",
-        "mark_run_allocated",
-        "begin_invocation",
-        "end_invocation",
-        "clear_run_allocation",
-        "run_was_allocated",
-        "validate_cwd_exists",
-        "classify_exception",
-        "pid_alive",
-        "recorded_pid_is_foreign",
-        "recorded_identity_mode",
-        "fetch_unique_row",
-        "resolve_entity",
-    },
-    "lionhub.orchestration.inspection": {
-        "fetch_by_id",
-        "run_id_candidates",
-        "resolve_agent_target",
-        "resolve_play_target",
-        "resolve_any_target",
-        "resolve_primary_session",
-    },
-    # The request model, every class it is built from, and the developer-message helper.
-    "lionagi.service.connections._chat_schemas": {
-        "AssistantMessage",
-        "ChatRole",
-        "DeveloperMessage",
-        "FunctionCall",
-        "FunctionDef",
-        "FunctionTool",
-        "ImageURLObject",
-        "ImageURLPart",
-        "JSONSchemaFormat",
-        "OpenAIChatCompletionsRequest",
-        "ResponseFormatJSONObject",
-        "ResponseFormatJSONSchema",
-        "ResponseFormatText",
-        "StreamOptions",
-        "SystemMessage",
-        "TextPart",
-        "ToolCall",
-        "ToolCallFunction",
-        "ToolChoiceFunction",
-        "ToolMessage",
-        "UserMessage",
-        "uses_developer_messages",
-    },
-}
-
-MOVED_MODULE_PRIVATE_NAMES = {
-    "lionhub.orchestration.runs": {
-        "_TerminalStatus",
-        "_atomic_write_json",
-        "_branch_dirs",
-        "_branch_end_is_this_runs",
-        "_carry_earliest_time",
-        "_drop_a_time_that_is_not_one",
-        "_flush_pending_message_events",
-        "_has_assistant_output_evidence",
-        "_is_time",
-        "_linked_engine_session",
-        "_live_message_dict",
-        "_make_message_handler",
-        "_manifest_run_id_matches",
-        "_new_run_id",
-        "_open_shared_db",
-        "_record_persistence_degraded",
-        "_reopen_session_for_resume",
-        "_resolve_project",
-        "_resolved_run_state_dir",
-        "_run_manifest_lock",
-        "_run_may_clear_current_phase",
-        "_signal_persist_refusal",
-        "_signal_window_marker",
-        "_store_error_in",
-        "_teardown_common",
-        "_teardown_write",
-        "_terminal_status_extra_fields",
-        "_unroute_message_hooks",
-        "_validate_manifest_run_id",
-        "_write_signal_persistence_degraded_at",
-        "_write_terminal_session_status",
-        "_write_terminal_write_lost",
-    },
-    "lionhub.orchestration.kill": {
-        "_CancelPersistenceError",
-        "_WorkerCleanup",
-        "_cmdline_is_lionagi",
-        "_degraded_run",
-        "_imported_degraded_process_identity",
-        "_kill_degraded_run",
-        "_persist_cancel",
-        "_pid_addressability",
-        "_pid_is_zombie",
-        "_run_manifest_path",
-        "_runner_process_create_time",
-        "_same_cleanup_session",
-        "_settle_degraded_run",
-        "_signal_degraded_process",
-        "_terminate_pid",
-        "_try_recorded_worker_cleanup",
-    },
-    "lionhub.orchestration.flow.checkpoint": {
-        "_find_run_dir_by_id",
-        "_raise_if_persistence_degraded",
-    },
-    "lionhub.orchestration.spawn": {
-        "_add_claude_tool_kwargs",
-        "_add_codex_account_integration_kwargs",
-        "_add_workload_kwarg",
-        "_check_profile_mcp_frontmatter",
-        "_contain_flag_of",
-        "_contain_flag_values",
-        "_is_light_codex",
-        "_keys_like_the_contain_flag",
-        "_parse_profile",
-        "_parse_profile_account_connectors",
-        "_parse_profile_contain_account_integrations",
-        "_parse_profile_contain_user_settings",
-        "_parse_profile_mcp",
-        "_parse_profile_resume_on_timeout",
-        "_parse_profile_timeout",
-        "_parse_profile_workload",
-        "_plugin_agent_profiles",
-        "_profile_path_candidates",
-        "_profile_tool_settings",
-        "_resolve_plugin_profile_path",
-        "_settings_of_unread_frontmatter",
-        "_validate_bare_name",
-        "_warn_if_shadowing_plugin_profile",
-    },
-    "lionhub.orchestration.flow.parsing": {
-        "_add_mcp_config_args",
-    },
-    "lionhub.orchestration.schedule.parsing": {
-        "_base_url",
-        "_chain_action_with_usable_selected_kind",
-        "_effective_chain_kind",
-        "_is_schedule_request_timeout",
-        "_merge_chain_action",
-        "_normalize_schedule_reason",
-        "_parse_chain_action",
-        "_schedule_request_timeout_message",
-        "_selected_chain_kind",
-        "_url_authority",
-        "_validate_chain_action_node",
-        "_validate_chain_kinds",
-        "_validate_identifier",
-        "_validate_reachable_chain_actions",
-        "_warn_if_cron_far_out",
-    },
-    "lionhub.serve.mirror": {
-        "_FileState",
-        "_Lineage",
-        "_absorb_backfill",
-        "_attribute_idle",
-        "_attribute_idle_codex",
-        "_codex_pass",
-        "_derive_codex_metadata",
-        "_derive_metadata",
-        "_display_path",
-        "_fallback_project",
-        "_first_codex_prompt",
-        "_first_prompt",
-        "_load_states",
-        "_mirror_one",
-        "_mirror_one_codex",
-        "_needs_status_reconciliation",
-        "_one_pass",
-        "_parse_window",
-        "_peek_codex_head",
-        "_peek_head",
-        "_read_new_events",
-        "_recent_tool_names",
-        "_resolve_project_for_mirror",
-        "_save_states",
-        "_seed_lineage",
-        "_since_window",
-    },
-    "lionhub.orchestration.job": {
-        "_like_prefix_pattern",
-        "_fetch_exact_row",
-        "_fetch_prefix_rows",
-    },
-    "lionhub.orchestration.inspection": {
-        "_latest_session",
-        "_resolve_session_by_branch_id",
-        "_resolve_session_by_run_id",
-    },
-    "lionhub.orchestration.console": {"_ErrorFormatter", "_LazyStderrHandler"},
-    "lionhub.orchestration.project": {
-        "_from_config_toml",
-        "_read_project_from_toml",
-        "_from_global_overrides",
-        "_git_remote_slug",
-        "_parse_remote_url",
-    },
-    "lionhub.orchestration.mcp_config": {
-        "_reject_json_constant",
-        "_read_servers",
-        "_read_config",
-        "_snapshot_path",
-        "_format_recorded_mcp_path",
-    },
-    "lionhub.orchestration.engine_definitions": {"_is_registered_engine_kind"},
-}
-MOVED_MODULE_SHARED_VALUES = {
-    "lionhub.orchestration.runs": {
-        "LIONAGI_HOME",
-        "PERSISTENCE_DEGRADED_REASON_FIELD",
-        "RUNS_ROOT",
-        "SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD",
-        "TERMINAL_WRITE_LOST_FIELD",
-        "_ALLOCATED_RUN_ID",
-        "_LAST_BRANCH_POINTER",
-        "_LEGACY_AGENTS_ROOT",
-        "_RUN_ID_ENV_VAR",
-        "_SETUP_RECOVERY_TIMEOUT_SECONDS",
-        "_log",
-        "teardown_agent_persist",
-    },
-    "lionhub.orchestration.kill": {
-        "BOOT_TIME_TOLERANCE",
-        "NOT_JUDGEABLE_HERE",
-        "NOT_STOPPED_SIGNALS",
-        "_BOOT_TIME_TOLERANCE",
-        "_IdentityVerdict",
-        "_LOCALLY_SIGNALLABLE_MODES",
-        "_REFUSED_SIGNAL_REASONS",
-        "_STALE_SWEEP_ORDER",
-    },
-    "lionhub.orchestration.flow.checkpoint": {
-        "CHECKPOINT_VERSION",
-        "PERSISTENCE_DEGRADED_REASON_FIELD",
-        "RUNS_ROOT",
-        "RunDir",
-    },
-    "lionhub.orchestration.spawn": {
-        "BACKENDS",
-        "CLI_PROVIDERS",
-        "EFFORT_LEVELS",
-        "MAX_TIMEOUT_SECONDS",
-        "PROVIDERS_EFFORT_VIA_MODEL_NAME",
-        "PROVIDERS_NO_EFFORT",
-        "PROVIDER_BYPASS_KWARGS",
-        "PROVIDER_EFFORT_KWARG",
-        "PROVIDER_FAST_KWARGS",
-        "PROVIDER_TO_ALIAS",
-        "PROVIDER_YOLO_KWARGS",
-        "_CONTAIN_KEY",
-        "_DASHES",
-        "_FLAG_KEY_LINE",
-        "_PROFILE_TOOL_FIELDS",
-    },
-    "lionhub.orchestration.flow.parsing": {
-        "add_common_cli_args",
-    },
-    "lionhub.orchestration.schedule.parsing": {
-        "_ALIAS_ACTION_KINDS",
-        "_ALL_SCHEDULE_FLAGS",
-        "_CHAIN_ACTION_ALLOWED_KEYS",
-        "_IDENT_RE",
-        "_MAX_CHAIN_DEPTH",
-        "_MODEL_RE",
-        "_SCHEDULE_FLAG_SYNONYMS",
-        "_VALID_ACTION_KINDS",
-        "_warned_api_suffix",
-    },
-    "lionhub.serve.mirror": {
-        "CLAUDE_PROJECTS_DIR",
-        "CODEX_SESSIONS_DIR",
-        "_COMMAND_NOISE",
-        "_DEFAULT_LIVE_WINDOW",
-        "_LEGACY_TOOL_NAMES_KEEP",
-        "_OFFSETS_PATH",
-        "_log",
-    },
-    "lionhub.orchestration.job": {
-        "EXIT_CODE_BY_STATUS",
-        "EXIT_CODE_ENVIRONMENT_ERROR",
-        "EXIT_CODE_SUBAGENT_REFUSED",
-        "UNRECOGNIZED_IDENTITY_MODE",
-        "BOOT_TIME_TOLERANCE",
-        "_allocation_lock",
-        "_invocations_in_flight",
-        "_run_allocated",
-        "_SEARCH_ORDER",
-        "_TABLE_TO_ENTITY_TYPE",
-        "_CANDIDATES_SHOWN",
-    },
-    "lionhub.orchestration.inspection": {
-        "_SESSION_SUCCESS",
-        "_SESSION_FAILURE",
-        "_PLAY_SUCCESS",
-        "_PLAY_FAILURE",
-        "EXIT_RUNNING",
-        "EXIT_UNKNOWN",
-        "_DB_BUSY_TIMEOUT_S",
-        "RUN_ID_THROUGH_T",
-    },
-    "lionhub.orchestration.project": {
-        "_SOURCE_CONFIG_TOML",
-        "_SOURCE_GLOBAL_OVERRIDE",
-        "_SOURCE_GIT_REMOTE",
-    },
-    "lionhub.orchestration.mcp_config": {
-        "MCP_CONFIG_FILENAME",
-        "SNAPSHOT_SOURCE_KEY",
-        "SNAPSHOT_SEARCHED_FROM_KEY",
-    },
-    "lionhub.orchestration.engine_definitions": {"KIND_META"},
-}
-
-
-@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
-def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_name(old, new):
+@pytest.mark.parametrize("contract", MODULE_CONTRACTS, ids=_old_name)
+def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_name(contract):
+    old, new = contract.old, contract.new
     module = importlib.import_module(new)
-    public = [
-        name
-        for name, obj in vars(module).items()
-        if not name.startswith("_") and callable(obj) and getattr(obj, "__module__", None) == new
-    ]
-    assert MOVED_MODULE_PUBLIC_NAMES[new] <= set(public)
+    public = own_public_callables(module, new)
+    # Naming some of what the module offers keeps this check from passing on a module that
+    # defines nothing; every public callable the module does define is checked below.
+    assert contract.public_names
+    assert public_name_gaps(contract, module) == []
     for name in public:
         namespace: dict = {}
         with warnings.catch_warnings():
@@ -780,10 +427,9 @@ def test_a_moved_module_keeps_the_logger_name_it_had():
     assert module.logger.name == "lionagi.providers._secret_resolution"
 
 
-@pytest.mark.parametrize(
-    ("old", "new"), MOVED_CORE_MODULES, ids=[old for old, _ in MOVED_CORE_MODULES]
-)
-def test_a_module_moved_into_the_core_keeps_its_own_row_after_its_package_moved(old, new):
+@pytest.mark.parametrize("contract", CORE_MODULE_CONTRACTS, ids=_old_name)
+def test_a_module_moved_into_the_core_keeps_its_own_row_after_its_package_moved(contract):
+    old, new = contract.old, contract.new
     # The package around each of these modules later moved to lionhub as a whole. The longer,
     # module-level row still wins for the module's own name, and only for it.
     assert not _moved.still_on_disk("lionagi.providers")
@@ -838,254 +484,174 @@ def _run_fresh(code: str, env: dict[str, str] | None = None) -> str:
     return proc.stdout
 
 
-_MOVED_MODULE_COLD_IDENTITY = """
-import importlib, pickle, sys, warnings
-from unittest.mock import patch
-
-def alias_deprecations(items):
-    return [
-        item for item in items
-        if issubclass(item.category, DeprecationWarning)
-        and str(item.message).startswith(old + " moved to ")
-    ]
-
-assert old not in sys.modules and new not in sys.modules
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter("always")
-    first = importlib.import_module(old if old_first else new)
-    second = importlib.import_module(new if old_first else old)
-    again = importlib.import_module(old)
-
-assert first is second is again is sys.modules[old] is sys.modules[new]
-assert first.__spec__.name == new and first.__name__ == new
-deprecations = alias_deprecations(caught)
-assert len(deprecations) == 1, [str(item.message) for item in deprecations]
-assert old in str(deprecations[0].message) and new in str(deprecations[0].message)
-assert deprecations[0].filename == "<string>"
-
-sys.modules.pop(old)
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter("always")
-    for name in names:
-        obj = getattr(first, name)
-        assert obj is getattr(second, name)
-        payload = pickle.dumps(obj, protocol=0)
-        assert new.encode() in payload
-        payload = payload.replace(new.encode(), old.encode())
-        assert old.encode() in payload
-        assert pickle.loads(payload) is obj
-assert len(alias_deprecations(caught)) == 1
-
-sentinel = object()
-with patch(old + "." + names[0], sentinel):
-    assert getattr(sys.modules[new], names[0]) is sentinel
-
-for name in value_names:
-    value = getattr(first, name)
-    assert value is getattr(second, name)
-    with patch(old + "." + name, sentinel):
-        assert getattr(sys.modules[new], name) is sentinel
-    assert getattr(first, name) is value
-    with patch(new + "." + name, sentinel):
-        assert getattr(sys.modules[old], name) is sentinel
-    assert getattr(second, name) is value
-
-if new == "lionhub.orchestration.job":
-    legacy = sys.modules[old]
-    canonical = sys.modules[new]
-    legacy.clear_run_allocation()
-    try:
-        legacy._invocations_in_flight = 3
-        assert canonical._invocations_in_flight == 3
-        canonical._invocations_in_flight = 0
-        assert legacy._invocations_in_flight == 0
-        legacy._run_allocated = True
-        assert canonical.run_was_allocated()
-        canonical._run_allocated = False
-        assert not legacy.run_was_allocated()
-
-        legacy.begin_invocation()
-        assert canonical._invocations_in_flight == 1
-        canonical.mark_run_allocated()
-        assert legacy.run_was_allocated()
-        canonical.end_invocation()
-        assert legacy._invocations_in_flight == 0
-        canonical.begin_invocation()
-        assert legacy._invocations_in_flight == 1
-        assert not legacy.run_was_allocated()
-        legacy.end_invocation()
-        assert canonical._invocations_in_flight == 0
-
-        consumer = importlib.import_module("lionagi.cli.main")
-        assert consumer.run_was_allocated is canonical.run_was_allocated
-        with patch(old + "._run_allocated", True):
-            assert consumer.run_was_allocated()
-        with patch(old + "._run_allocated", False):
-            assert not consumer.run_was_allocated()
-    finally:
-        canonical.clear_run_allocation()
-
-if new == "lionhub.orchestration.spawn":
-    from types import SimpleNamespace
-
-    profile = SimpleNamespace(
-        name="example", extra={"tools": ["Read"], "allowed_tools": ["Read"]}
-    )
-    with patch(old + "._PROFILE_TOOL_FIELDS", ("tools",)):
-        assert second._profile_tool_settings(profile) == {"tools": "Read"}
-    with patch(new + "._PROFILE_TOOL_FIELDS", ("allowed_tools",)):
-        assert first._profile_tool_settings(profile) == {"allowed_tools": ["Read"]}
-
-if new == "lionhub.serve.mirror":
-    entries = {"earlier": "read", "middle": "write", "latest": "search"}
-    with patch(old + "._LEGACY_TOOL_NAMES_KEEP", 1):
-        assert second._recent_tool_names(entries) == {"latest": "search"}
-    with patch(new + "._LEGACY_TOOL_NAMES_KEEP", 2):
-        assert first._recent_tool_names(entries) == {"middle": "write", "latest": "search"}
-    assert first._log is second._log
-    assert first._log.name == "lionagi.cli.mirror"
-
-if new == "lionhub.orchestration.schedule.parsing":
-    import os
-
-    with patch.dict(os.environ, {"LIONAGI_STUDIO_URL": "http://localhost:8765/api"}):
-        with patch(new + "._warned_api_suffix", False), patch(old + ".warn") as warning:
-            assert first._base_url() == "http://localhost:8765"
-            assert second._warned_api_suffix is True
-            assert second._base_url() == "http://localhost:8765"
-            warning.assert_called_once()
-
-if new == "lionhub.orchestration.runs":
-    legacy, canonical = sys.modules[old], sys.modules[new]
-    saved = canonical._ALLOCATED_RUN_ID
-    try:
-        legacy._ALLOCATED_RUN_ID = "first-run"
-        assert canonical.active_run_id() == "first-run"
-        canonical._ALLOCATED_RUN_ID = "second-run"
-        assert legacy.active_run_id() == "second-run"
-        with patch(new + "._ALLOCATED_RUN_ID", None), patch(old + ".current_run_id", return_value="inherited-run"):
-            assert canonical.active_run_id() == "inherited-run"
-    finally:
-        canonical._ALLOCATED_RUN_ID = saved
-
-if new == "lionhub.orchestration.kill":
-    import asyncio
-
-    legacy, canonical = sys.modules[old], sys.modules[new]
-    saved = canonical._REFUSED_SIGNAL_REASONS["foreign_mode"]
-    try:
-        with patch(new + ".unaddressable_pid_reason", return_value="foreign_mode"), patch(new + ".warn") as warning:
-            with patch(new + ".read_pid_from_entity", side_effect=AssertionError("unexpected pid read")):
-                for writer, reader, text in ((legacy, canonical, "first refusal"), (canonical, legacy, "second refusal")):
-                    writer._REFUSED_SIGNAL_REASONS["foreign_mode"] = text
-                    outcome = asyncio.run(reader.kill_one(None, "invocation", "sample", {}, user_reason="test"))
-                    assert outcome["signal"] == "foreign_mode" and outcome["pid"] is None
-                    warning.assert_called_with("  invocation sample: " + text)
-    finally:
-        canonical._REFUSED_SIGNAL_REASONS["foreign_mode"] = saved
-
-if new == "lionhub.orchestration.flow.checkpoint":
-    from pathlib import Path
-
-    legacy, canonical = sys.modules[old], sys.modules[new]
-    legacy_writer = legacy.CheckpointWriter(Path("unused-checkpoint"), "session", "prompt", [], {})
-    canonical_writer = canonical.CheckpointWriter(Path("unused-checkpoint"), "session", "prompt", [], {})
-    version = canonical.CHECKPOINT_VERSION
-    with patch(old + ".CHECKPOINT_VERSION", version + 1):
-        assert canonical_writer.to_dict()["version"] == version + 1
-    with patch(new + ".CHECKPOINT_VERSION", version + 2):
-        assert legacy_writer.to_dict()["version"] == version + 2
-    legacy_writer.ops["sample"] = {"status": "done"}
-    assert legacy_writer.to_dict()["ops"] is legacy_writer.ops
-    assert legacy_writer.to_dict.__func__ is canonical.CheckpointWriter.to_dict
-
-assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
-assert first.__spec__.name == new and first.__name__ == new
-assert all(getattr(first, name) is getattr(second, name) for name in names)
-assert all(getattr(first, name) is getattr(second, name) for name in value_names)
-print("ok")
-"""
-
-
-@pytest.mark.parametrize("old_first", [True, False], ids=["old-first", "new-first"])
-@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
-def test_a_moved_module_keeps_its_identity_in_either_cold_import_order(old, new, old_first):
-    names = MOVED_MODULE_PUBLIC_NAMES[new] | MOVED_MODULE_PRIVATE_NAMES.get(new, set())
-    value_names = MOVED_MODULE_SHARED_VALUES.get(new, set())
-    setup = (
-        f"old, new, old_first = {old!r}, {new!r}, {old_first!r}\n"
-        f"names = {sorted(names)!r}\nvalue_names = {sorted(value_names)!r}\n"
-    )
-    assert _run_fresh(setup + _MOVED_MODULE_COLD_IDENTITY).strip() == "ok"
-
-
-@pytest.mark.parametrize("old_first", [True, False], ids=["old-first", "new-first"])
-@pytest.mark.parametrize("old", CONSTANT_ONLY_MOVED_MODULES)
-def test_a_constant_only_module_keeps_values_and_patches_in_either_cold_order(
-    old, old_first, tmp_path
-):
-    new, values = CONSTANT_ONLY_MOVED_MODULES[old]
-    environment = {
-        **_isolated_environment(tmp_path),
-        "LIONAGI_HOME": str(tmp_path / "lionagi"),
-        "TMPDIR": str(tmp_path),
-        "LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS": "37",
-    }
-    program = f"""
-import importlib, sys, warnings
-from pathlib import Path
-from unittest.mock import patch
-
-root = Path({str(ROOT)!r}).resolve()
-sys.path[:0] = [str(root), str(root / 'lionhub/src')]
-old, new, old_first = {old!r}, {new!r}, {old_first!r}
-expected = {values!r}
-assert old not in sys.modules and new not in sys.modules
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter('always')
-    first = importlib.import_module(old if old_first else new)
-    second = importlib.import_module(new if old_first else old)
-    again = importlib.import_module(old)
-
-assert first is second is again is sys.modules[old] is sys.modules[new]
-assert first.__name__ == first.__spec__.name == new
-assert Path(first.__file__).resolve() == root / 'lionhub/src/lionhub/serve/mirror_settings.py'
-deprecations = [
-    item for item in caught
-    if issubclass(item.category, DeprecationWarning)
-    and str(item.message).startswith(old + ' moved to ')
+_COLD_CASES = [
+    pytest.param(contract, order, id=f"{contract.old}-{order}")
+    for contract in MODULE_CONTRACTS
+    for order in contract.cold_orders
 ]
-assert len(deprecations) == 1
-assert deprecations[0].filename == '<string>'
-assert {{name for name in vars(first) if name.isupper()}} == set(expected)
-for name, value in expected.items():
-    assert type(getattr(first, name)) is int
-    assert getattr(first, name) == value
-    sentinel = object()
-    with patch(old + '.' + name, sentinel):
-        assert getattr(sys.modules[new], name) is sentinel
-    assert getattr(first, name) == value
-assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
-assert all(getattr(first, name) == value for name, value in expected.items())
-print('ok')
-"""
-    process = subprocess.run(  # noqa: S603 -- this interpreter and a fixed test program
-        [sys.executable, "-I", "-c", program],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=60,
+_VALUE_ONLY_COLD_CASES = [
+    pytest.param(contract, order, id=f"{contract.old}-{order}")
+    for contract in VALUE_ONLY_CONTRACTS
+    for order in contract.cold_orders
+]
+
+
+def _cold_environment(home: Path) -> dict[str, str]:
+    """The isolated environment of a value-only run, with its state directories under ``home``."""
+    return {
+        **_isolated_environment(home),
+        "LIONAGI_HOME": str(home / "lionagi"),
+        "TMPDIR": str(home),
+    }
+
+
+@pytest.mark.parametrize(("contract", "order"), _COLD_CASES)
+def test_a_moved_module_keeps_its_identity_in_either_cold_import_order(contract, order):
+    assert_cold_ok(run_cold_case(contract, order, root=ROOT))
+
+
+@pytest.mark.parametrize(("contract", "order"), _VALUE_ONLY_COLD_CASES)
+def test_a_constant_only_module_keeps_values_and_patches_in_either_cold_order(
+    contract, order, tmp_path
+):
+    result = run_cold_case(
+        contract,
+        order,
+        root=ROOT,
+        workdir=tmp_path,
+        base_environment=_cold_environment(tmp_path),
     )
-    assert process.returncode == 0, process.stdout[-2000:] + process.stderr[-2000:]
-    assert process.stdout.strip() == "ok"
+    assert_cold_ok(result)
+
+
+# A value-only module written under a temporary directory, with a row of its own that the
+# child interpreter adds to the table, so the general runner is driven without a real move.
+_SYNTHETIC_CONSTANTS = (
+    "import os\n\n"
+    'SYNTHETIC_LIMIT: int = int(os.environ["SYNTHETIC_LIMIT_CHARS"])\n'
+    'SYNTHETIC_LABEL: str = "alpha"\n'
+)
+
+
+def _synthetic_value_only(tmp_path: Path) -> tuple[MoveContract, Path]:
+    site = tmp_path / "site"
+    package = site / "synthetic_hub"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "constants.py").write_text(_SYNTHETIC_CONSTANTS, encoding="utf-8")
+    contract = MoveContract(
+        old="lionagi._synthetic_constants",
+        new="synthetic_hub.constants",
+        kind="value-only",
+        expected_values=(("SYNTHETIC_LABEL", "alpha"), ("SYNTHETIC_LIMIT", 41)),
+        environment=(("SYNTHETIC_LIMIT_CHARS", "41"),),
+    )
+    return contract, site
+
+
+def _run_synthetic(contract, site, order, tmp_path, **options):
+    return run_cold_case(
+        contract,
+        order,
+        root=ROOT,
+        workdir=tmp_path,
+        base_environment=_cold_environment(tmp_path),
+        extra_roots=(site,),
+        register_row=True,
+        **options,
+    )
+
+
+@pytest.mark.parametrize("order", COLD_ORDERS)
+def test_a_synthetic_value_only_contract_passes_the_general_runner_in_both_orders(order, tmp_path):
+    contract, site = _synthetic_value_only(tmp_path)
+    assert contract.cold_orders == COLD_ORDERS
+    assert_cold_ok(_run_synthetic(contract, site, order, tmp_path))
+
+
+# Each case breaks one thing the runner checks, so a pass above is not a pass of nothing.
+_SYNTHETIC_FAILURES = {
+    "changed-value": (
+        lambda c: replace(c, expected_values=(c.expected_values[0], ("SYNTHETIC_LIMIT", 42))),
+        "'value'",
+    ),
+    "changed-type": (
+        lambda c: replace(c, expected_values=(c.expected_values[0], ("SYNTHETIC_LIMIT", "41"))),
+        "'type'",
+    ),
+    # The module still defines SYNTHETIC_LIMIT; the contract no longer declares it.
+    "deleted-declaration": (
+        lambda c: replace(c, expected_values=c.expected_values[:1]),
+        "'constants'",
+    ),
+    # The contract declares a constant the module does not define.
+    "undefined-declaration": (
+        lambda c: replace(c, expected_values=(*c.expected_values, ("SYNTHETIC_MISSING", 1))),
+        "'constants'",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", _SYNTHETIC_FAILURES)
+def test_the_general_runner_fails_a_synthetic_value_only_contract_that_is_wrong(case, tmp_path):
+    contract, site = _synthetic_value_only(tmp_path)
+    broken, marker = _SYNTHETIC_FAILURES[case]
+    result = _run_synthetic(broken(contract), site, "old-first", tmp_path)
+    assert result.returncode != 0
+    assert "AssertionError" in result.stderr and marker in result.stderr, result.stderr[-1500:]
+
+
+def test_the_general_runner_fails_a_module_that_comes_from_another_source_file(tmp_path):
+    contract, site = _synthetic_value_only(tmp_path)
+    decoy = tmp_path / "decoy" / "constants.py"
+    decoy.parent.mkdir()
+    decoy.write_text(_SYNTHETIC_CONSTANTS, encoding="utf-8")
+    result = _run_synthetic(contract, site, "old-first", tmp_path, origin=decoy)
+    assert result.returncode != 0
+    assert "AssertionError" in result.stderr and "'origin'" in result.stderr, result.stderr[-1500:]
+
+
+def test_a_declared_public_name_the_module_does_not_define_is_a_gap():
+    module = ModuleType("synthetic_hub.definitions")
+
+    def kept():
+        """Defined by the module."""
+
+    def dropped():
+        """Defined by the module until it is deleted."""
+
+    kept.__module__ = dropped.__module__ = module.__name__
+    module.kept, module.dropped = kept, dropped
+    contract = MoveContract(
+        old="lionagi._synthetic_definitions",
+        new=module.__name__,
+        kind="module",
+        public_names=frozenset({"kept", "dropped"}),
+    )
+    assert public_name_gaps(contract, module) == []
+
+    del module.dropped
+    assert public_name_gaps(contract, module) == ["dropped"]
+
+    # A name the module only imports is not one it defines.
+    module.dropped = json.dumps
+    assert public_name_gaps(contract, module) == ["dropped"]
+
+
+def test_a_contract_cannot_be_emptied_into_a_run_that_checks_nothing():
+    contract = next(row for row in MODULE_CONTRACTS if row.public_names)
+    emptied = replace(contract, public_names=frozenset())
+    with pytest.raises(ValueError, match="declares nothing"):
+        run_cold_case(emptied, "old-first", root=ROOT)
+    with pytest.raises(ValueError, match="value-only"):
+        replace(VALUE_ONLY_CONTRACTS[0], expected_values=())
 
 
 # `python -m <old name>` runs a package's __main__ without importing it, through the
 # loader's code (runpy, as `-m` does). MCP client configs start the server this way.
 _SCRIPT_ROWS = [
     row
-    for row in _moved.MOVED
+    for row in CONTRACTS
     if (ROOT / "lionhub" / "src" / Path(*row.new.split(".")) / "__main__.py").is_file()
 ]
 
@@ -1305,7 +871,7 @@ def test_a_package_moved_inside_another_has_one_module_under_every_name():
     # prefix also names the engines ("lionagi.orchestration.engines"), a name that never
     # existed. It imports as the same module object: left to the normal import system it
     # would load a second copy of the engines from the aliased parent package's path.
-    nested = [(outer, inner) for outer in _moved.MOVED for inner in _inner_rows(outer)]
+    nested = [(outer, inner) for outer in CONTRACTS for inner in _inner_rows(outer)]
     assert nested
     for outer, inner in nested:
         name = outer.old + inner.new[len(outer.new) :]
