@@ -26,7 +26,7 @@ def submission(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "li_command", lambda: ["echo"])
     monkeypatch.setattr(config, "child_actor_suffix", lambda: None)
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda _: None)
-    monkeypatch.setattr("lionagi.cli._providers._plugin_agent_profiles", lambda: {})
+    monkeypatch.setattr("lionhub.orchestration.spawn._plugin_agent_profiles", lambda: {})
     cwd = tmp_path / "work"
     cwd.mkdir()
     monkeypatch.chdir(cwd)

@@ -7,48 +7,13 @@ from pathlib import Path
 import pytest
 import toml
 
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 from tests._engine_loader_support import engine_import_package  # noqa: F401
 
 # Loggers mutated by lionhub.orchestration.console.configure_cli_logging(). Tests that
 # drive main() end-to-end trigger that call, which sets propagate=False and
 # attaches stderr handlers — breaking caplog for any test that runs later in
 # the same worker (e.g. tests/cli/orchestrate/test_flow_spec_file.py).
-_CLI_LOGGERS = (
-    "lionagi.cli.progress",
-    "lionagi.cli.hint",
-    "lionagi.cli.warn",
-    "lionagi.cli.error",
-    "claude-cli",
-    "codex-cli",
-    "pi-cli",
-    "gemini-cli",
-    "lionagi",
-)
-
-
-@pytest.fixture(autouse=True)
-def _restore_cli_logging():
-    """Snapshot and restore CLI logger state around every test."""
-    saved = {}
-    for name in _CLI_LOGGERS:
-        logger = logging.getLogger(name)
-        saved[name] = (
-            logger.level,
-            logger.propagate,
-            list(logger.handlers),
-            getattr(logger, "_lionagi_cli_fallback_level", None),
-        )
-    yield
-    for name, (level, propagate, handlers, fallback_level) in saved.items():
-        logger = logging.getLogger(name)
-        logger.setLevel(level)
-        logger.propagate = propagate
-        logger.handlers[:] = handlers
-        if fallback_level is None:
-            if hasattr(logger, "_lionagi_cli_fallback_level"):
-                del logger._lionagi_cli_fallback_level
-        else:
-            logger._lionagi_cli_fallback_level = fallback_level
 
 
 @pytest.fixture(autouse=True)

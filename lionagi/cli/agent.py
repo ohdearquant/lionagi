@@ -62,16 +62,7 @@ from lionhub.orchestration.mcp_config import (
     explicit_mcp_config_path,
     resolve_spawn_mcp_servers,
 )
-from lionhub.serve.mcp.config import JOB_MARKER_ENV_VAR
-
-from ._agent_depth import stamp_agent_depth
-from ._api_usage import APIUsageCollector
-from ._context_from import (
-    DEFAULT_CONTEXT_BUDGET_TOKENS,
-    ContextFromError,
-    resolve_and_build_context_block,
-)
-from ._providers import (
+from lionhub.orchestration.spawn import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
     MAX_TIMEOUT_SECONDS,
@@ -92,6 +83,15 @@ from ._providers import (
     load_agent_profile,
     normalize_effort,
     resolve_persisted_effort,
+)
+from lionhub.serve.mcp.config import JOB_MARKER_ENV_VAR
+
+from ._agent_depth import stamp_agent_depth
+from ._api_usage import APIUsageCollector
+from ._context_from import (
+    DEFAULT_CONTEXT_BUDGET_TOKENS,
+    ContextFromError,
+    resolve_and_build_context_block,
 )
 from ._runs import (
     SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
@@ -3359,7 +3359,7 @@ def _resolve_model_and_prompt(args: argparse.Namespace) -> tuple[str | None, str
 def run_agent(args: argparse.Namespace) -> int:
     """Dispatch agent command."""
     if getattr(args, "list_profiles", False):
-        from lionagi.cli._providers import build_agent_profile_catalog
+        from lionhub.orchestration.spawn import build_agent_profile_catalog
 
         print(json.dumps(build_agent_profile_catalog(), indent=2, sort_keys=True))
         return 0

@@ -24,9 +24,9 @@ from lionhub.orchestration import plan
 from lionhub.orchestration.console import log_error, progress, warn
 from lionhub.orchestration.job import classify_exception
 from lionhub.orchestration.prompts import SYNTHESIS_INSTRUCTION
+from lionhub.orchestration.spawn import parse_model_spec
 
 from .._agent_depth import stamp_worker_depth
-from .._providers import parse_model_spec
 from ._common import (
     _build_worker_operate_node,
     _create_fanout_team,

@@ -17,11 +17,6 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from lionagi.cli._schedule_parsing import (
-    _MAX_CHAIN_DEPTH,
-    _chain_action_with_usable_selected_kind,
-    _merge_chain_action,
-)
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.ln.concurrency import ExceptionGroup, current_time
 from lionagi.ln.concurrency import sleep as _sleep
@@ -53,6 +48,11 @@ from lionagi.studio.services.scheduler_state import (
     default_scheduler_state,
     flush_run_telemetry,
     resolve_invocation_terminal,
+)
+from lionhub.orchestration.schedule.parsing import (
+    _MAX_CHAIN_DEPTH,
+    _chain_action_with_usable_selected_kind,
+    _merge_chain_action,
 )
 
 _log = logging.getLogger(__name__)

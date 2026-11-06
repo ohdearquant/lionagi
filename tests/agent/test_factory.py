@@ -441,8 +441,8 @@ async def test_post_hook_registered_on_tool():
 
 
 async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeypatch):
-    import lionagi.cli._providers as providers_mod
     import lionagi.service.imodel as imodel_mod
+    import lionhub.orchestration.spawn as providers_mod
 
     monkeypatch.setitem(providers_mod.PROVIDER_EFFORT_KWARG, "openai", "reasoning_effort")
     monkeypatch.setitem(providers_mod.PROVIDER_YOLO_KWARGS, "openai", {"stream": True})

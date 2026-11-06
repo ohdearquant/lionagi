@@ -326,6 +326,10 @@ MOVED_MODULES = (
     ("lionagi.cli._engine_definitions", "lionhub.orchestration.engine_definitions"),
     ("lionagi.cli._util", "lionhub.orchestration.job"),
     ("lionagi.cli._inspection", "lionhub.orchestration.inspection"),
+    ("lionagi.cli._providers", "lionhub.orchestration.spawn"),
+    ("lionagi.cli._orchestrate_parsing", "lionhub.orchestration.flow.parsing"),
+    ("lionagi.cli._schedule_parsing", "lionhub.orchestration.schedule.parsing"),
+    ("lionagi.cli._mirror_service", "lionhub.serve.mirror"),
 )
 _MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
 
@@ -347,6 +351,31 @@ def test_an_old_module_name_warns_once_and_is_the_new_module(old, new):
 # What each moved module offers its callers. Naming some of it keeps the identity check
 # below from passing on a module that defines nothing.
 MOVED_MODULE_PUBLIC_NAMES = {
+    "lionhub.orchestration.spawn": {
+        "AgentProfile",
+        "AgentProfileNotFoundError",
+        "add_common_cli_args",
+        "build_agent_profile_catalog",
+        "build_chat_model",
+        "build_deadline_preamble",
+        "build_imodel_from_spec",
+        "list_agents",
+        "load_agent_profile",
+        "profile_config",
+        "resolve_persisted_effort",
+    },
+    "lionhub.orchestration.flow.parsing": {
+        "add_orchestrate_subparser",
+    },
+    "lionhub.orchestration.schedule.parsing": {
+        "add_schedule_subparser",
+        "build_create_body",
+        "normalize_host",
+        "suggest_schedule_flag",
+    },
+    "lionhub.serve.mirror": {
+        "mirror_forever",
+    },
     "lionagi._provider_errors": {"ProviderError", "EmissionError"},
     "lionagi.service.accounts._secret_resolution": {
         "SecretLookupResolution",
@@ -430,6 +459,79 @@ MOVED_MODULE_PUBLIC_NAMES = {
 }
 
 MOVED_MODULE_PRIVATE_NAMES = {
+    "lionhub.orchestration.spawn": {
+        "_add_claude_tool_kwargs",
+        "_add_codex_account_integration_kwargs",
+        "_add_workload_kwarg",
+        "_check_profile_mcp_frontmatter",
+        "_contain_flag_of",
+        "_contain_flag_values",
+        "_is_light_codex",
+        "_keys_like_the_contain_flag",
+        "_parse_profile",
+        "_parse_profile_account_connectors",
+        "_parse_profile_contain_account_integrations",
+        "_parse_profile_contain_user_settings",
+        "_parse_profile_mcp",
+        "_parse_profile_resume_on_timeout",
+        "_parse_profile_timeout",
+        "_parse_profile_workload",
+        "_plugin_agent_profiles",
+        "_profile_path_candidates",
+        "_profile_tool_settings",
+        "_resolve_plugin_profile_path",
+        "_settings_of_unread_frontmatter",
+        "_validate_bare_name",
+        "_warn_if_shadowing_plugin_profile",
+    },
+    "lionhub.orchestration.flow.parsing": {
+        "_add_mcp_config_args",
+    },
+    "lionhub.orchestration.schedule.parsing": {
+        "_base_url",
+        "_chain_action_with_usable_selected_kind",
+        "_effective_chain_kind",
+        "_is_schedule_request_timeout",
+        "_merge_chain_action",
+        "_normalize_schedule_reason",
+        "_parse_chain_action",
+        "_schedule_request_timeout_message",
+        "_selected_chain_kind",
+        "_url_authority",
+        "_validate_chain_action_node",
+        "_validate_chain_kinds",
+        "_validate_identifier",
+        "_validate_reachable_chain_actions",
+        "_warn_if_cron_far_out",
+    },
+    "lionhub.serve.mirror": {
+        "_FileState",
+        "_Lineage",
+        "_absorb_backfill",
+        "_attribute_idle",
+        "_attribute_idle_codex",
+        "_codex_pass",
+        "_derive_codex_metadata",
+        "_derive_metadata",
+        "_display_path",
+        "_fallback_project",
+        "_first_codex_prompt",
+        "_first_prompt",
+        "_load_states",
+        "_mirror_one",
+        "_mirror_one_codex",
+        "_needs_status_reconciliation",
+        "_one_pass",
+        "_parse_window",
+        "_peek_codex_head",
+        "_peek_head",
+        "_read_new_events",
+        "_recent_tool_names",
+        "_resolve_project_for_mirror",
+        "_save_states",
+        "_seed_lineage",
+        "_since_window",
+    },
     "lionhub.orchestration.job": {
         "_like_prefix_pattern",
         "_fetch_exact_row",
@@ -458,6 +560,46 @@ MOVED_MODULE_PRIVATE_NAMES = {
     "lionhub.orchestration.engine_definitions": {"_is_registered_engine_kind"},
 }
 MOVED_MODULE_SHARED_VALUES = {
+    "lionhub.orchestration.spawn": {
+        "BACKENDS",
+        "CLI_PROVIDERS",
+        "EFFORT_LEVELS",
+        "MAX_TIMEOUT_SECONDS",
+        "PROVIDERS_EFFORT_VIA_MODEL_NAME",
+        "PROVIDERS_NO_EFFORT",
+        "PROVIDER_BYPASS_KWARGS",
+        "PROVIDER_EFFORT_KWARG",
+        "PROVIDER_FAST_KWARGS",
+        "PROVIDER_TO_ALIAS",
+        "PROVIDER_YOLO_KWARGS",
+        "_CONTAIN_KEY",
+        "_DASHES",
+        "_FLAG_KEY_LINE",
+        "_PROFILE_TOOL_FIELDS",
+    },
+    "lionhub.orchestration.flow.parsing": {
+        "add_common_cli_args",
+    },
+    "lionhub.orchestration.schedule.parsing": {
+        "_ALIAS_ACTION_KINDS",
+        "_ALL_SCHEDULE_FLAGS",
+        "_CHAIN_ACTION_ALLOWED_KEYS",
+        "_IDENT_RE",
+        "_MAX_CHAIN_DEPTH",
+        "_MODEL_RE",
+        "_SCHEDULE_FLAG_SYNONYMS",
+        "_VALID_ACTION_KINDS",
+        "_warned_api_suffix",
+    },
+    "lionhub.serve.mirror": {
+        "CLAUDE_PROJECTS_DIR",
+        "CODEX_SESSIONS_DIR",
+        "_COMMAND_NOISE",
+        "_DEFAULT_LIVE_WINDOW",
+        "_LEGACY_TOOL_NAMES_KEEP",
+        "_OFFSETS_PATH",
+        "_log",
+    },
     "lionhub.orchestration.job": {
         "EXIT_CODE_BY_STATUS",
         "EXIT_CODE_ENVIRONMENT_ERROR",
@@ -623,6 +765,9 @@ for name in value_names:
     with patch(old + "." + name, sentinel):
         assert getattr(sys.modules[new], name) is sentinel
     assert getattr(first, name) is value
+    with patch(new + "." + name, sentinel):
+        assert getattr(sys.modules[old], name) is sentinel
+    assert getattr(second, name) is value
 
 if new == "lionhub.orchestration.job":
     legacy = sys.modules[old]
@@ -658,6 +803,36 @@ if new == "lionhub.orchestration.job":
             assert not consumer.run_was_allocated()
     finally:
         canonical.clear_run_allocation()
+
+if new == "lionhub.orchestration.spawn":
+    from types import SimpleNamespace
+
+    profile = SimpleNamespace(
+        name="example", extra={"tools": ["Read"], "allowed_tools": ["Read"]}
+    )
+    with patch(old + "._PROFILE_TOOL_FIELDS", ("tools",)):
+        assert second._profile_tool_settings(profile) == {"tools": "Read"}
+    with patch(new + "._PROFILE_TOOL_FIELDS", ("allowed_tools",)):
+        assert first._profile_tool_settings(profile) == {"allowed_tools": ["Read"]}
+
+if new == "lionhub.serve.mirror":
+    entries = {"earlier": "read", "middle": "write", "latest": "search"}
+    with patch(old + "._LEGACY_TOOL_NAMES_KEEP", 1):
+        assert second._recent_tool_names(entries) == {"latest": "search"}
+    with patch(new + "._LEGACY_TOOL_NAMES_KEEP", 2):
+        assert first._recent_tool_names(entries) == {"middle": "write", "latest": "search"}
+    assert first._log is second._log
+    assert first._log.name == "lionagi.cli.mirror"
+
+if new == "lionhub.orchestration.schedule.parsing":
+    import os
+
+    with patch.dict(os.environ, {"LIONAGI_STUDIO_URL": "http://localhost:8765/api"}):
+        with patch(new + "._warned_api_suffix", False), patch(old + ".warn") as warning:
+            assert first._base_url() == "http://localhost:8765"
+            assert second._warned_api_suffix is True
+            assert second._base_url() == "http://localhost:8765"
+            warning.assert_called_once()
 
 assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
 assert first.__spec__.name == new and first.__name__ == new
@@ -1292,11 +1467,6 @@ PROVIDER_INTERIM_EDGES = {
     # ``_MANIFEST_MODULE`` in the compatibility loader: the hub's manifest module, imported on
     # the first call that needs the default provider catalog.
     "service/connections/_provider_compat.py": ["lionhub.providers.manifest"],
-    # The codex profile import is at module level; the Gemini ones are inside functions.
-    "cli/_providers.py": [
-        "lionhub.providers.openai._codex_profile",
-        *["lionhub.providers.google.gemini_code"] * 2,
-    ],
     "cli/agent.py": ["lionhub.providers.google.gemini_code"],
     "cli/orchestrate/_orchestration.py": ["lionhub.providers.openai._codex_profile"],
     "studio/operator/engine.py": [

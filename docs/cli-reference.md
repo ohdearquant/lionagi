@@ -67,7 +67,7 @@ for minimal templates of each.
 
 ## Shared run flags
 
-Available on `li agent`, `li o fanout`, `li o flow`. Source: `cli/_providers.py`
+Available on `li agent`, `li o fanout`, `li o flow`. Source: `lionhub/src/lionhub/orchestration/spawn.py`
 
 | Flag | Default | Notes |
 |------|---------|-------|
@@ -1282,6 +1282,6 @@ li agent -c "continue most recent"
 
 ---
 
-*Sources: `cli/agent.py` · `cli/team.py` · `cli/orchestrate/__init__.py` · `cli/orchestrate/fanout.py` · `cli/orchestrate/flow.py` · `cli/_providers.py` · `cli/_runs.py`*
+*Sources: `cli/agent.py` · `cli/team.py` · `cli/orchestrate/__init__.py` · `cli/orchestrate/fanout.py` · `cli/orchestrate/flow.py` · `lionhub/src/lionhub/orchestration/spawn.py` · `cli/_runs.py`*
 
 Next: [Python API reference](api/index.md)

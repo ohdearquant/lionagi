@@ -158,7 +158,7 @@ def _handle_play_check(argv: list[str]) -> int:
     agent_name = spec.get("agent")
     if agent_name:
         try:
-            from lionagi.cli._providers import load_agent_profile
+            from lionhub.orchestration.spawn import load_agent_profile
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
@@ -480,7 +480,7 @@ def _run(argv: list[str] | None = None) -> int:
             return _load_studio().run_schedule_quick_create(_argv[2], _argv[3:])
         ns, extras = schedule_parser.parse_known_args(_argv[1:])
         if extras:
-            from lionagi.cli._schedule_parsing import suggest_schedule_flag
+            from lionhub.orchestration.schedule.parsing import suggest_schedule_flag
 
             # Did-you-mean only applies to dash-prefixed tokens; a bare
             # positional has no "real flag" to guess.

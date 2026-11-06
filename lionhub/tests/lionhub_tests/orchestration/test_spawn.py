@@ -1,12 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.cli._providers — parse_model_spec, build_imodel_from_spec,
+"""Tests for lionhub.orchestration.spawn — parse_model_spec, build_imodel_from_spec,
 and resolve_persisted_effort."""
 
 import pytest
 
-from lionagi.cli._providers import build_imodel_from_spec, parse_model_spec
+from lionhub.orchestration.spawn import build_imodel_from_spec, parse_model_spec
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 def test_parse_model_spec_folds_effort_suffix_for_gemini_code():
@@ -55,7 +56,7 @@ def test_parse_model_spec_leaves_a_bare_claude_name_alone_under_another_provider
 
 def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch):
     """build_imodel_from_spec passes correct kwargs to iModel for codex+xhigh+yolo."""
-    import lionagi.cli._providers as pmod
+    import lionhub.orchestration.spawn as pmod
     from lionagi.testing import IModelKwargCaptor
 
     captor = IModelKwargCaptor.fresh()
@@ -80,7 +81,7 @@ def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch
 
 def test_resolve_persisted_effort_gemini_returns_none():
     """Gemini + effort='high' must resolve to None regardless of chat_model type (gemini returns str)."""
-    from lionagi.cli._providers import (
+    from lionhub.orchestration.spawn import (
         PROVIDER_EFFORT_KWARG,
         PROVIDERS_NO_EFFORT,
         build_chat_model,
@@ -107,7 +108,7 @@ def test_resolve_persisted_effort_gemini_returns_none():
 def test_resolve_persisted_effort_codex_max_clamps_to_xhigh():
     """codex + effort='max' resolves to 'xhigh' (build_chat_model clamps max→xhigh in the iModel kwargs)."""
     from lionagi import iModel
-    from lionagi.cli._providers import (
+    from lionhub.orchestration.spawn import (
         PROVIDER_EFFORT_KWARG,
         PROVIDERS_NO_EFFORT,
         build_chat_model,
@@ -135,7 +136,7 @@ def test_resolve_persisted_effort_codex_max_clamps_to_xhigh():
 
 def test_resolve_persisted_effort_no_effort_wins_over_imodel():
     """PROVIDERS_NO_EFFORT overrides even an iModel with an effort kwarg (defence-in-depth)."""
-    from lionagi.cli._providers import resolve_persisted_effort
+    from lionhub.orchestration.spawn import resolve_persisted_effort
 
     class _FakeEndpointConfig:
         kwargs = {"reasoning_effort": "xhigh"}
@@ -148,7 +149,7 @@ def test_resolve_persisted_effort_no_effort_wins_over_imodel():
         endpoint = _FakeEndpoint()
 
     # Patch PROVIDERS_NO_EFFORT for the duration of this call only.
-    import lionagi.cli._providers as pmod
+    import lionhub.orchestration.spawn as pmod
 
     original = pmod.PROVIDERS_NO_EFFORT
     try:
@@ -164,7 +165,7 @@ def test_resolve_persisted_effort_no_effort_wins_over_imodel():
 
 def test_module_invariant_sets_are_disjoint():
     """PROVIDERS_NO_EFFORT and PROVIDER_EFFORT_KWARG must be disjoint (re-checked for a readable failure message)."""
-    from lionagi.cli._providers import PROVIDER_EFFORT_KWARG, PROVIDERS_NO_EFFORT
+    from lionhub.orchestration.spawn import PROVIDER_EFFORT_KWARG, PROVIDERS_NO_EFFORT
 
     overlap = PROVIDERS_NO_EFFORT & PROVIDER_EFFORT_KWARG.keys()
     assert not overlap, (
@@ -177,7 +178,7 @@ def test_module_invariant_three_way_disjoint_including_effort_via_model_name():
     """PROVIDERS_NO_EFFORT, PROVIDER_EFFORT_KWARG, and PROVIDERS_EFFORT_VIA_MODEL_NAME
     must be pairwise disjoint (providers.py raises RuntimeError at import time if
     not; this re-checks for a readable failure message at the test layer)."""
-    from lionagi.cli._providers import (
+    from lionhub.orchestration.spawn import (
         PROVIDER_EFFORT_KWARG,
         PROVIDERS_EFFORT_VIA_MODEL_NAME,
         PROVIDERS_NO_EFFORT,
@@ -199,7 +200,7 @@ def test_module_invariant_three_way_disjoint_including_effort_via_model_name():
 def test_gemini_code_no_longer_in_no_effort_but_bare_gemini_still_is():
     """The four agy-backed aliases moved out of PROVIDERS_NO_EFFORT into
     PROVIDERS_EFFORT_VIA_MODEL_NAME; bare 'gemini' (the API provider) stays."""
-    from lionagi.cli._providers import PROVIDERS_EFFORT_VIA_MODEL_NAME, PROVIDERS_NO_EFFORT
+    from lionhub.orchestration.spawn import PROVIDERS_EFFORT_VIA_MODEL_NAME, PROVIDERS_NO_EFFORT
 
     for alias in ("gemini_code", "gemini-code", "gemini_cli", "gemini-cli"):
         assert alias not in PROVIDERS_NO_EFFORT
@@ -211,7 +212,7 @@ def test_gemini_code_no_longer_in_no_effort_but_bare_gemini_still_is():
 def test_build_chat_model_folds_effort_into_gemini_code_model_name():
     """--effort high for gemini-code folds into the agy model-name suffix
     (agy has no effort kwarg) instead of being silently dropped."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     chat_model = build_chat_model(
         "gemini-code", "gemini-3.5-flash", False, False, None, "high", False
@@ -222,7 +223,7 @@ def test_build_chat_model_folds_effort_into_gemini_code_model_name():
 
 def test_build_chat_model_folds_max_effort_to_high_for_gemini_code():
     """--effort max clamps to agy's High tier (agy has no 'max')."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     chat_model = build_chat_model(
         "gemini-code", "gemini-3.5-flash", False, False, None, "max", False
@@ -232,7 +233,7 @@ def test_build_chat_model_folds_max_effort_to_high_for_gemini_code():
 
 def test_build_chat_model_folds_medium_effort_to_high_for_gemini_pro():
     """Gemini 3.1 Pro has no Medium tier — medium clamps to High."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     chat_model = build_chat_model(
         "gemini-code", "gemini-3.1-pro", False, False, None, "medium", False
@@ -243,7 +244,7 @@ def test_build_chat_model_folds_medium_effort_to_high_for_gemini_pro():
 def test_build_chat_model_explicit_qualified_model_wins_over_effort():
     """An explicit (...)-qualified model name is already a concrete agy
     display name — it wins over --effort rather than being reinterpreted."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     chat_model = build_chat_model(
         "gemini-code", "Gemini 3.5 Flash (Low)", False, False, None, "high", False
@@ -255,7 +256,7 @@ def test_build_chat_model_no_effort_leaves_gemini_model_unresolved():
     """No --effort given: build_chat_model does not eagerly resolve through
     resolve_agy_model (unchanged from pre-effort-folding behavior) — the bare
     spec passes through and is resolved lazily in GeminiCodeRequest.as_cmd_args()."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     chat_model = build_chat_model(
         "gemini-code", "gemini-3.5-flash", False, False, None, None, False
@@ -267,7 +268,7 @@ def test_resolve_persisted_effort_gemini_code_keeps_requested_effort():
     """Unlike bare 'gemini', gemini-code now persists the requested effort
     instead of forcing None — it consumes effort via model-name resolution,
     not a PROVIDER_EFFORT_KWARG entry (there still isn't one for gemini-code)."""
-    from lionagi.cli._providers import (
+    from lionhub.orchestration.spawn import (
         PROVIDER_EFFORT_KWARG,
         build_chat_model,
         resolve_persisted_effort,
@@ -301,7 +302,7 @@ def test_normalize_effort_lowercases_and_passes_through_none():
 def test_build_chat_model_mixed_case_effort_folds_correct_gemini_tier():
     """--effort High (capitalized) must fold to the High agy tier, not
     silently misclamp to Medium via a lowercase-keyed dict miss."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     chat_model = build_chat_model(
         "gemini-code", "gemini-3.5-flash", False, False, None, "High", False
@@ -312,7 +313,7 @@ def test_build_chat_model_mixed_case_effort_folds_correct_gemini_tier():
 
 
 def test_build_chat_model_mixed_case_effort_matches_lowercase_equivalent():
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     mixed = build_chat_model("gemini-code", "gemini-3.5-flash", False, False, None, "HIGH", False)
     lower = build_chat_model("gemini-code", "gemini-3.5-flash", False, False, None, "high", False)
@@ -322,7 +323,7 @@ def test_build_chat_model_mixed_case_effort_matches_lowercase_equivalent():
 def test_build_imodel_from_spec_mixed_case_max_clamps_codex_to_xhigh(monkeypatch):
     """--effort Max (mixed case) must still clamp to xhigh for codex, not
     pass through raw as "Max"."""
-    import lionagi.cli._providers as pmod
+    import lionhub.orchestration.spawn as pmod
     from lionagi.testing import IModelKwargCaptor
 
     captor = IModelKwargCaptor.fresh()
@@ -337,7 +338,7 @@ def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypat
     """--effort XHigh on a Claude model with no xhigh tier must clamp to
     'high', matching the lowercase 'xhigh' behavior (case must not bypass the
     clamp). This older Sonnet release has no xhigh tier."""
-    import lionagi.cli._providers as pmod
+    import lionhub.orchestration.spawn as pmod
     from lionagi.testing import IModelKwargCaptor
 
     captor = IModelKwargCaptor.fresh()
@@ -427,7 +428,7 @@ def test_codex_code_request_clamps_effort_when_model_kwarg_omitted():
 
 def test_build_imodel_from_spec_codex_sol_keeps_max(monkeypatch):
     """gpt-5.6-sol supports max natively — no clamp to xhigh."""
-    import lionagi.cli._providers as pmod
+    import lionhub.orchestration.spawn as pmod
     from lionagi.testing import IModelKwargCaptor
 
     captor = IModelKwargCaptor.fresh()
@@ -441,7 +442,7 @@ def test_build_imodel_from_spec_codex_sol_keeps_max(monkeypatch):
 def test_build_imodel_from_spec_codex_sol_ultra_suffix_parses_and_passes(monkeypatch):
     """The -ultra effort suffix parses off the spec and reaches codex intact
     on a model that supports it."""
-    import lionagi.cli._providers as pmod
+    import lionhub.orchestration.spawn as pmod
     from lionagi.testing import IModelKwargCaptor
 
     captor = IModelKwargCaptor.fresh()
@@ -454,7 +455,7 @@ def test_build_imodel_from_spec_codex_sol_ultra_suffix_parses_and_passes(monkeyp
 
 def test_build_imodel_from_spec_codex_old_model_clamps_ultra(monkeypatch):
     """A model without max/ultra support clamps both down to xhigh."""
-    import lionagi.cli._providers as pmod
+    import lionhub.orchestration.spawn as pmod
     from lionagi.testing import IModelKwargCaptor
 
     captor = IModelKwargCaptor.fresh()
@@ -475,7 +476,7 @@ def test_claude_ultra_clamps_to_max(monkeypatch):
 
 def test_gemini_ultra_folds_to_high():
     """agy has no ultra tier: ultra folds onto the High model suffix."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     chat_model = build_chat_model(
         "gemini-code", "gemini-3.5-flash", False, False, None, "ultra", False
@@ -503,7 +504,7 @@ def test_find_lionagi_dirs_reruns_git_probe_every_call(monkeypatch, tmp_path):
 def test_slash_profile_miss_skips_directory_scan(monkeypatch, tmp_path):
     """A slash-token miss must not trigger the list_agents() directory scan (still expensive),
     but must still populate the Available listing from the already-computed plugin profiles."""
-    import lionagi.cli._providers as providers
+    import lionhub.orchestration.spawn as providers
 
     find_calls: list = []
     monkeypatch.setattr(
@@ -528,7 +529,7 @@ def test_slash_profile_miss_skips_directory_scan(monkeypatch, tmp_path):
 def test_slash_profile_miss_includes_available_plugin_profiles(monkeypatch, tmp_path):
     """A typo'd '<plugin>/<name>' token still gets an 'Available:' hint listing the
     resolvable plugin-namespaced profiles, without paying for a directory scan."""
-    import lionagi.cli._providers as providers
+    import lionhub.orchestration.spawn as providers
 
     monkeypatch.setattr(providers, "_find_lionagi_dirs", lambda: [tmp_path / ".lionagi"])
     monkeypatch.setattr(providers, "_resolve_plugin_profile_path", lambda _name: None)
@@ -577,7 +578,7 @@ def test_parse_model_spec_still_splits_a_plain_model_name():
 
 @pytest.mark.parametrize("fence", ["```", "~~~"])
 def test_profile_frontmatter_examples_in_fences_are_silent(monkeypatch, fence):
-    from lionagi.cli._providers import _parse_profile
+    from lionhub.orchestration.spawn import _parse_profile
 
     warnings = []
     monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
@@ -592,7 +593,7 @@ def test_profile_frontmatter_examples_in_fences_are_silent(monkeypatch, fence):
 
 @pytest.mark.parametrize("fence", ["```", "~~~"])
 def test_profile_real_block_after_a_longer_matching_fence_warns_once(monkeypatch, fence):
-    from lionagi.cli._providers import _parse_profile
+    from lionhub.orchestration.spawn import _parse_profile
 
     warnings = []
     monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
@@ -610,7 +611,7 @@ def test_profile_real_block_after_a_longer_matching_fence_warns_once(monkeypatch
 
 @pytest.mark.parametrize("opening,closing", [("```", ""), ("````", "```"), ("~~~", "```")])
 def test_profile_unclosed_or_mismatched_fence_keeps_examples_silent(monkeypatch, opening, closing):
-    from lionagi.cli._providers import _parse_profile
+    from lionhub.orchestration.spawn import _parse_profile
 
     warnings = []
     monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
@@ -629,7 +630,7 @@ def test_profile_unclosed_or_mismatched_fence_keeps_examples_silent(monkeypatch,
     "prose", ["Use ```yaml inline.", "Use ~~~yaml inline.", "```yaml``` is inline."]
 )
 def test_profile_inline_fence_text_does_not_hide_a_real_block(monkeypatch, prose):
-    from lionagi.cli._providers import _parse_profile
+    from lionhub.orchestration.spawn import _parse_profile
 
     warnings = []
     monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
@@ -643,7 +644,7 @@ def test_profile_inline_fence_text_does_not_hide_a_real_block(monkeypatch, prose
 
 @pytest.mark.parametrize("value", [True, False])
 def test_profile_actual_frontmatter_keeps_its_containment_flag(monkeypatch, value):
-    from lionagi.cli._providers import _parse_profile
+    from lionhub.orchestration.spawn import _parse_profile
 
     warnings = []
     monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)

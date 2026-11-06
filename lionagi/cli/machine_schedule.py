@@ -35,7 +35,7 @@ _RUNS_LIMIT_MAX = 200
 
 
 def _studio_url() -> str:
-    from lionagi.cli._schedule_parsing import _base_url
+    from lionhub.orchestration.schedule.parsing import _base_url
 
     return _base_url()
 
@@ -70,7 +70,7 @@ def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) 
         detail = exc.read().decode(errors="replace")[:2000]
         raise MachineError(_error_kind(exc.code), _http_message(exc.code, detail)) from exc
     except OSError as exc:
-        from lionagi.cli._schedule_parsing import (
+        from lionhub.orchestration.schedule.parsing import (
             _is_schedule_request_timeout,
             _schedule_request_timeout_message,
         )
@@ -133,7 +133,7 @@ def _http_message(code: int, detail: str) -> str:
 
 
 def _schedule_subparsers() -> dict[str, argparse.ArgumentParser]:
-    from lionagi.cli._schedule_parsing import add_schedule_subparser
+    from lionhub.orchestration.schedule.parsing import add_schedule_subparser
 
     root = argparse.ArgumentParser(prog="li", add_help=False)
     schedule = add_schedule_subparser(root.add_subparsers(dest="command"))
@@ -440,7 +440,7 @@ def _create(argv: list[str]) -> dict[str, Any]:
     trigger next resolves at ``resolved_next_fire``. It does not mean a
     scheduler is running to fire it.
     """
-    from lionagi.cli._schedule_parsing import build_create_body
+    from lionhub.orchestration.schedule.parsing import build_create_body
 
     _refuse_inside_an_agent()
     known = _parse("create", argv, unhonoured={})
@@ -512,7 +512,7 @@ def _enable(argv: list[str]) -> dict[str, Any]:
 
 
 def _disable(argv: list[str]) -> dict[str, Any]:
-    from lionagi.cli._schedule_parsing import _normalize_schedule_reason
+    from lionhub.orchestration.schedule.parsing import _normalize_schedule_reason
 
     known = _parse("disable", argv, unhonoured={})
     body = None

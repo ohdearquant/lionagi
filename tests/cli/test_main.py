@@ -324,7 +324,7 @@ def test_play_check_separates_a_missing_module_from_a_bad_profile(
 
     monkeypatch.setattr(_orch, "_resolve_playbook_path", fake_resolve)
     monkeypatch.setattr("lionagi.cli.main._resolve_playbook_path", fake_resolve, raising=False)
-    monkeypatch.setattr("lionagi.cli._providers.load_agent_profile", fake_load)
+    monkeypatch.setattr("lionhub.orchestration.spawn.load_agent_profile", fake_load)
 
     with caplog.at_level("ERROR"):
         result = _handle_play_shortcut(["play", "check", "withagent"])
@@ -390,7 +390,7 @@ def test_play_check_names_what_is_missing_then_gives_the_guidance(
     reported: list[str] = []
     monkeypatch.setattr(_orch, "_resolve_playbook_path", fake_resolve)
     monkeypatch.setattr("lionagi.cli.main._resolve_playbook_path", fake_resolve, raising=False)
-    monkeypatch.setattr("lionagi.cli._providers.load_agent_profile", fake_load)
+    monkeypatch.setattr("lionhub.orchestration.spawn.load_agent_profile", fake_load)
     monkeypatch.setattr("lionagi.cli.main.log_error", reported.append)
 
     assert _handle_play_shortcut(["play", "check", "withagent"]) == EXIT_CODE_ENVIRONMENT_ERROR

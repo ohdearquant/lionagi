@@ -1046,7 +1046,7 @@ server's point of view, exactly like a stale revision against an active row.
 **`_is_protected_system`** — True only when frontmatter carries a present,
 *truthy* `lion_system` key (any YAML/Python-truthy value, not just `True`),
 matching the runtime's own `bool(frontmatter.get("lion_system", True))`
-check in `lionagi/cli/_providers.py`. An absent key does not count as
+check in `lionhub/src/lionhub/orchestration/spawn.py`. An absent key does not count as
 protected — treating a missing key as protected would lock down every
 pre-feature agent file (plain markdown with no frontmatter is common).
 Agents created through the Studio API stamp `lion_system: false` explicitly

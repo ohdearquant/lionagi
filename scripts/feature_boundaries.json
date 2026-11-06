@@ -512,40 +512,20 @@
       "owner": "cli",
       "target_owner": "lionhub.orchestration.kill"
     },
-    "lionagi.cli._mirror_service": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.serve.mirror"
-    },
     "lionagi.cli._notify_outcomes": {
       "layer": "root",
       "owner": "cli",
       "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli._orchestrate_parsing": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.flow.parsing"
     },
     "lionagi.cli._pid_quarantine": {
       "layer": "root",
       "owner": "cli",
       "target_owner": "pending the CLI location decision (ADR-0139 D1)"
     },
-    "lionagi.cli._providers": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.spawn"
-    },
     "lionagi.cli._runs": {
       "layer": "root",
       "owner": "cli",
       "target_owner": "lionhub.orchestration.runs"
-    },
-    "lionagi.cli._schedule_parsing": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.schedule"
     },
     "lionagi.cli.agent": {
       "layer": "root",

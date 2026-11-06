@@ -75,7 +75,7 @@ class TestSpecValidationRejectsBadTypes:
         assert "effort" in err
 
     def test_effort_accepts_all_provider_levels(self):
-        # Spec validation must match cli/_providers.py EFFORT_LEVELS so
+        # Spec validation must match lionhub.orchestration.spawn EFFORT_LEVELS so
         # playbooks can't be rejected for values the CLI itself accepts.
         for level in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
             assert _validate_spec_fields({"effort": level}) is None, level

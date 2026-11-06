@@ -10,8 +10,8 @@ import pytest
 
 import lionagi.cli.orchestrate._orchestration as orch_mod
 from lionagi.casts.emission import TaskAssignment
-from lionagi.cli._providers import AgentProfile
 from lionagi.cli.orchestrate import fanout as fanout_mod
+from lionhub.orchestration.spawn import AgentProfile
 
 from .test_no_mcp_config_handoff import _codex_cli_args, _setup
 from .test_no_mcp_config_handoff import tmp_run as tmp_run

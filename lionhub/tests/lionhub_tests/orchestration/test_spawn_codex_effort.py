@@ -12,7 +12,8 @@ themselves and emit it clamped to the resolved model.
 
 import pytest
 
-from lionagi.cli._providers import build_chat_model, build_imodel_from_spec
+from lionhub.orchestration.spawn import build_chat_model, build_imodel_from_spec
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 @pytest.fixture
@@ -192,7 +193,7 @@ class TestGlobalEffortIsClampedToTheResolvedModel:
 
     def test_build_imodel_from_spec_clamps_the_same_way(self, codex_home, monkeypatch):
         _write_global(codex_home, 'model_reasoning_effort = "ultra"\n')
-        import lionagi.cli._providers as pmod
+        import lionhub.orchestration.spawn as pmod
         from lionagi.testing import IModelKwargCaptor
 
         captor = IModelKwargCaptor.fresh()

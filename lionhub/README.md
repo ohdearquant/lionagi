@@ -47,6 +47,10 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.cli._engine_definitions` | `lionhub.orchestration.engine_definitions` |
 | `lionagi.cli._util` | `lionhub.orchestration.job` |
 | `lionagi.cli._inspection` | `lionhub.orchestration.inspection` |
+| `lionagi.cli._providers` | `lionhub.orchestration.spawn` |
+| `lionagi.cli._orchestrate_parsing` | `lionhub.orchestration.flow.parsing` |
+| `lionagi.cli._schedule_parsing` | `lionhub.orchestration.schedule.parsing` |
+| `lionagi.cli._mirror_service` | `lionhub.serve.mirror` |
 
 ## Tests
 

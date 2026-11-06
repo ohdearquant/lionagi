@@ -36,7 +36,7 @@ def test_a_snapshot_reports_the_directory_its_search_began_in(tmp_path):
 def test_only_the_claude_lane_receives_the_server_set():
     """The other CLI providers read a user-level config; handing them a server
     set here would drop it silently, so the builder does not."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     claude = build_chat_model("claude_code", "opus", False, False, None, mcp_servers=SERVERS)
     assert claude.endpoint.config.kwargs["mcp_servers"] == SERVERS

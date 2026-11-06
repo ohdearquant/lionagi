@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from lionagi.cli._providers import _parse_profile
+from lionhub.orchestration.spawn import _parse_profile
 
 
 class TestProfileArtifactDefaults:

@@ -37,9 +37,7 @@ from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
 from lionhub.orchestration.console import hint, warn
 from lionhub.orchestration.job import validate_cwd_exists
-
-from .. import team as _team_module
-from .._providers import (
+from lionhub.orchestration.spawn import (
     AgentProfile,
     AgentProfileNotFoundError,
     _is_light_codex,
@@ -50,6 +48,8 @@ from .._providers import (
     parse_model_spec,
     resolve_persisted_effort,
 )
+
+from .. import team as _team_module
 from .._runs import (
     RunDir,
     _open_shared_db,

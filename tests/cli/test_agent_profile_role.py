@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.cli._providers import _parse_profile
+from lionhub.orchestration.spawn import _parse_profile
 from tests.cli._worker_fixtures import WorkerSetup
 
 # Shared stub wiring (mirrors tests/cli/test_agent_profile_timeout.py)

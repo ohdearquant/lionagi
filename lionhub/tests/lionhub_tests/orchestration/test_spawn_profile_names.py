@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli._providers import (
+from lionhub.orchestration.spawn import (
     AmbiguousProfileNameError,
     _resolve_profile_path,
     load_agent_profile,

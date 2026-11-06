@@ -162,6 +162,6 @@ def test_chain_patch_reports_invalid_untouched_sibling(edited, stored_sibling, m
     ],
 )
 def test_chain_merge_preserves_selected_kind_spelling(parent, action, expected):
-    from lionagi.cli._schedule_parsing import _merge_chain_action
+    from lionhub.orchestration.schedule.parsing import _merge_chain_action
 
     assert _merge_chain_action({"action_kind": parent}, action)["action_kind"] == expected

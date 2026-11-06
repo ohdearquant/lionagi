@@ -219,8 +219,8 @@ async def test_a_branch_whose_transcript_is_past_the_limit_starts_nothing_and_ga
     The transcript alternates turns as a real one does: instructions with no reply between them
     are not all sent, so stacking them would test a shorter input than it seems to."""
     from lionagi import Branch
-    from lionagi.cli._providers import build_imodel_from_spec
     from lionagi.protocols.messages import Instruction
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("the Codex CLI was started")

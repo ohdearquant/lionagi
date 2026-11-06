@@ -51,13 +51,13 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A minimal .lionagi/agents/reviewer.md discoverable via cwd.
 
-    lionagi.cli._providers imports find_lionagi_dirs by value at module load
+    lionhub.orchestration.spawn imports find_lionagi_dirs by value at module load
     time, so a global home directory that happens to declare its own
     same-named profiles (e.g. a real ~/.lionagi/agents/reviewer.md) can
     shadow-merge with this fixture's directory. Pin the module's resolved
     dirs list directly so this test only ever sees its own tmp_path.
     """
-    import lionagi.cli._providers as providers_mod
+    import lionhub.orchestration.spawn as providers_mod
 
     agents_dir = tmp_path / ".lionagi" / "agents"
     agents_dir.mkdir(parents=True)
@@ -1755,7 +1755,7 @@ def test_a_declared_agent_records_the_profile_its_execution_root_sees(tmp_path, 
     """The launched child reads its profile from the execution root, so the
     declaration records that profile wherever the apply runs from."""
     from lionagi._paths import find_lionagi_dirs
-    from lionagi.cli._providers import load_agent_profile
+    from lionhub.orchestration.spawn import load_agent_profile
 
     home = tmp_path / "home"
     home.mkdir()

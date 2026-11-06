@@ -21,11 +21,12 @@ import logging
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.cli._providers import (
+from lionhub.orchestration.spawn import (
     build_chat_model,
     build_imodel_from_spec,
     resolve_codex_config_profile,
 )
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 @pytest.fixture
@@ -485,7 +486,7 @@ class TestAProviderAliasBuildsAsItsProvider:
 
     @pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
     def test_the_persisted_effort_is_the_one_the_endpoint_runs(self, codex_home, alias):
-        from lionagi.cli._providers import resolve_persisted_effort
+        from lionhub.orchestration.spawn import resolve_persisted_effort
 
         imodel = build_imodel_from_spec(f"{alias}/gpt-5.5", effort_override="ultra")
 

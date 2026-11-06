@@ -737,7 +737,7 @@ def _refuse_unknown_profile(
     name = args.get("agent") or default_name
     if not name:
         return None
-    from lionagi.cli._providers import (
+    from lionhub.orchestration.spawn import (
         AgentProfileNotFoundError,
         AmbiguousProfileNameError,
         load_agent_profile,
