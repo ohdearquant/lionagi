@@ -31,8 +31,8 @@ from lionagi.ln._proc import (
 from lionagi.ln._proc import start_time_matches as _start_time_matches
 from lionagi.ln.concurrency import current_time, effective_deadline, fail_after, sleep
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
+from lionhub.orchestration.console import log_error, warn
 
-from ._logging import log_error, warn
 from ._util import BOOT_TIME_TOLERANCE
 from ._util import pid_alive as _pid_alive
 from ._util import recorded_identity_mode as _recorded_identity_mode

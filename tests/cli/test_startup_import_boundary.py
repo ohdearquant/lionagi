@@ -242,7 +242,7 @@ def test_configuration_import_environment_fault_is_reported_before_a_run(
 
         class RefuseConfiguration:
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == 'lionagi.cli._logging':
+                if fullname == 'lionhub.orchestration.console':
                     refused.append(fullname)
                     if {error_kind!r} == 'feature':
                         from lionagi._feature_errors import MissingFeatureError
@@ -263,7 +263,7 @@ def test_configuration_import_environment_fault_is_reported_before_a_run(
         from lionagi._log_channels import log_error
         assert cli_main.log_error is log_error
         code = cli_main.main(['doctor'])
-        assert refused == ['lionagi.cli._logging']
+        assert refused == ['lionhub.orchestration.console']
         assert_no_startup_effects()
         sys.exit(code)
         """,
@@ -282,7 +282,7 @@ def test_configuration_import_error_is_not_a_missing_environment(tmp_path: Path)
 
         class RefuseConfiguration:
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == 'lionagi.cli._logging':
+                if fullname == 'lionhub.orchestration.console':
                     refused.append(fullname)
                     raise ImportError('startup-console-import-marker')
                 return None
@@ -292,7 +292,7 @@ def test_configuration_import_error_is_not_a_missing_environment(tmp_path: Path)
             cli_main = import_main()
             cli_main.main(['doctor'])
         except ImportError:
-            assert refused == ['lionagi.cli._logging']
+            assert refused == ['lionhub.orchestration.console']
             assert_no_startup_effects()
             raise
         else:
@@ -320,7 +320,7 @@ def test_saved_catalog_fault_precedes_configuration_import(tmp_path: Path) -> No
                         "No module named 'startup_catalog_dependency'",
                         name='startup_catalog_dependency',
                     )
-                if fullname == 'lionagi.cli._logging':
+                if fullname == 'lionhub.orchestration.console':
                     refused.append('configuration')
                     raise AssertionError('configuration imported after a saved catalog fault')
                 return None
@@ -329,7 +329,7 @@ def test_saved_catalog_fault_precedes_configuration_import(tmp_path: Path) -> No
         cli_main = import_main()
         code = cli_main.main(['doctor'])
         assert refused == ['catalog']
-        assert 'lionagi.cli._logging' not in sys.modules
+        assert 'lionhub.orchestration.console' not in sys.modules
         assert_no_startup_effects()
         sys.exit(code)
         """,
@@ -346,8 +346,8 @@ def test_configuration_precedes_real_machine_output_and_keeps_the_core_emitter(
         cli_main = import_main()
         from lionagi._log_channels import log_error
         assert cli_main.log_error is log_error
-        assert 'lionagi.cli._logging' not in sys.modules
-        console_file = str(root / 'lionagi/cli/_logging.py')
+        assert 'lionhub.orchestration.console' not in sys.modules
+        console_file = str(root / 'lionhub/src/lionhub/orchestration/console.py')
         machine_file = str(root / 'lionagi/cli/machine.py')
         events = []
 
@@ -372,7 +372,8 @@ def test_configuration_precedes_real_machine_output_and_keeps_the_core_emitter(
         finally:
             sys.setprofile(None)
         assert code == 0
-        assert 'lionagi.cli._logging' in sys.modules
+        assert 'lionhub.orchestration.console' in sys.modules
+        assert 'lionagi.cli._logging' not in sys.modules
         assert events == ['configured', 'dispatch', 'emit']
         assert not external_attempts
         from lionagi.cli import _util

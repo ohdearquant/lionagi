@@ -33,6 +33,7 @@ from lionagi.cli._util import (
 cli_main = importlib.import_module("lionagi.cli.main")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_PATH = os.pathsep.join([str(REPO_ROOT), str(REPO_ROOT / "lionhub" / "src")])
 
 
 @pytest.fixture(autouse=True)
@@ -164,7 +165,7 @@ def test_nothing_else_reaches_stdout(capfd, monkeypatch):
     descriptor write stands in for a spawned child that inherited stdout. All of
     them corrupt the result identically if any one is missed.
     """
-    from lionagi.cli._logging import configure_cli_logging, hint, log_error, progress, warn
+    from lionhub.orchestration.console import configure_cli_logging, hint, log_error, progress, warn
 
     configure_cli_logging(verbose=False)
 
@@ -257,7 +258,7 @@ def test_one_object_on_stdout_end_to_end():
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
         timeout=120,
     )
 
@@ -430,7 +431,7 @@ def test_78_survives_end_to_end_under_the_machine_flag():
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
         timeout=120,
     )
 
@@ -460,7 +461,7 @@ def _sigpipe_disposition_after(*argv: str) -> str:
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
         timeout=120,
     )
     assert proc.returncode == 0, proc.stderr

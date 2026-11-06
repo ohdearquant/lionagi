@@ -2002,8 +2002,7 @@ def run_state(args: argparse.Namespace) -> int:
 
     if args.state_command == "terminal-consumer":
         from lionagi.state.lifecycle.consumer_inspection import ConsumerInspectionBackendError
-
-        from ._logging import log_error
+        from lionhub.orchestration.console import log_error
 
         try:
             result = run_async(_terminal_consumer_list_data())

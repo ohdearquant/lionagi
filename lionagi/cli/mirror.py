@@ -8,8 +8,7 @@ import argparse
 from pathlib import Path
 
 from lionagi._auto import CliDeclaration, auto_register
-
-from ._logging import hint, progress, warn
+from lionhub.orchestration.console import hint, progress, warn
 
 # The loop below uses some of these; the rest stay importable from this module for its callers.
 from ._mirror_service import (  # noqa: F401

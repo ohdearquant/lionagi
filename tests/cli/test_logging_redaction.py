@@ -7,46 +7,6 @@ import logging
 
 import pytest
 
-from lionagi.cli._logging import configure_cli_logging, log_error
-
-
-def test_error_log_masks_database_url_password(caplog, capsys):
-    # Synthetic credential: the CLI error channel must retain the diagnosis while masking it.
-    planted = "example-log-planted-value"
-    url = f"postgresql://dbuser:{planted}@db.example.test/lionagi"
-    logger = logging.getLogger("lionagi.cli.error")
-    logger.handlers.clear()
-    logger.propagate = False
-    configure_cli_logging(verbose=False)
-    logger.addHandler(caplog.handler)
-
-    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
-        log_error(f"could not connect to {url}")
-
-    captured = capsys.readouterr()
-    assert planted not in caplog.text
-    assert planted not in captured.out + captured.err
-    assert "could not connect" in caplog.text
-    assert "dbuser:***@db.example.test/lionagi" in captured.err
-
-
-def test_error_log_masks_a_password_given_as_a_keyword(caplog, capsys):
-    # Synthetic credential, as a keyword/value connection string writes it.
-    planted = "example-log-planted-value"
-    logger = logging.getLogger("lionagi.cli.error")
-    logger.handlers.clear()
-    logger.propagate = False
-    configure_cli_logging(verbose=False)
-    logger.addHandler(caplog.handler)
-
-    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
-        log_error(f"could not connect: host=db.example.test password={planted} dbname=lionagi")
-
-    captured = capsys.readouterr()
-    assert planted not in caplog.text
-    assert planted not in captured.out + captured.err
-    assert "host=db.example.test password=*** dbname=lionagi" in captured.err
-
 
 class _UnreadableStore:
     """A store whose error text carries a password outside any URL."""

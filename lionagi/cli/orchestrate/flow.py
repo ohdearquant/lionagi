@@ -33,10 +33,10 @@ from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
+from lionhub.orchestration.console import progress
+from lionhub.orchestration.console import warn as _warn
 
 from .._agent_depth import stamp_worker_depth
-from .._logging import progress
-from .._logging import warn as _warn
 from .._providers import _PROFILE_TOOL_FIELDS, _is_light_codex, parse_model_spec
 from .._util import classify_exception
 from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
@@ -3448,7 +3448,7 @@ async def _run_flow(
                 else _bind_cli_worker_recorder(None)
             )
             if env._live_persist is not None:
-                from .._logging import hint
+                from lionhub.orchestration.console import hint
 
                 session_id = env._live_persist["session_id"]
                 hint(f"Session: {session_id}  →  li o ctl status {session_id[:8]}")

@@ -35,9 +35,9 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
+from lionhub.orchestration.console import hint, warn
 
 from .. import team as _team_module
-from .._logging import hint, warn
 from .._providers import (
     AgentProfile,
     AgentProfileNotFoundError,

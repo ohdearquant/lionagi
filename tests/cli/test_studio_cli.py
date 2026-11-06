@@ -826,13 +826,13 @@ def test_await_vite_ready_url_uses_the_first_of_multiple_network_lines(caplog):
 
 def test_studio_cli_uses_core_log_channel_emitters():
     from lionagi import _log_channels
-    from lionagi.cli import _logging
     from lionagi.studio import cli as studio_cli
+    from lionhub.orchestration import console
 
     assert studio_cli.log_error is _log_channels.log_error
     assert studio_cli.warn is _log_channels.warn
-    assert _logging.log_error is _log_channels.log_error
-    assert _logging.warn is _log_channels.warn
+    assert console.log_error is _log_channels.log_error
+    assert console.warn is _log_channels.warn
 
 
 def test_launch_vite_dev_passes_host_through_to_argv_and_returns_the_bound_url(

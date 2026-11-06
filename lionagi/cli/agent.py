@@ -47,6 +47,7 @@ from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
 from lionhub.orchestration.arguments import BoundedInt
+from lionhub.orchestration.console import hint, log_error
 from lionhub.serve.mcp.config import JOB_MARKER_ENV_VAR
 
 from ._agent_depth import stamp_agent_depth
@@ -56,7 +57,6 @@ from ._context_from import (
     ContextFromError,
     resolve_and_build_context_block,
 )
-from ._logging import hint, log_error
 from ._mcp_resolve import (
     LegacyMcpReplayError,
     McpConfigError,
@@ -1240,7 +1240,7 @@ def _report_mcp_resolution(
     all is worth a word, since a search that found nothing has nothing to
     forward and would otherwise be reported by no caller at all.
     """
-    from lionagi.cli._logging import warn
+    from lionhub.orchestration.console import warn
 
     if resolution.declared_empty:
         return  # --no-mcp-config or a named config listing no servers: chosen, not degraded
@@ -1320,7 +1320,7 @@ async def _drain_pending_steers(
         return None
     import time as _time
 
-    from lionagi.cli._logging import hint, log_error, warn
+    from lionhub.orchestration.console import hint, log_error, warn
 
     db = live.get("db")
     if db is None:
@@ -1680,7 +1680,7 @@ async def _run_agent(
             if (getattr(profile, "extra", None) or {}).get("hooks"):
                 # A saved guard the leg silently does not run is worse than no
                 # guard: say so at launch until CLI runs consume the assembly.
-                from lionagi.cli._logging import warn
+                from lionhub.orchestration.console import warn
 
                 warn(
                     f"agent profile {agent_name!r} declares a hooks assembly; "
@@ -1940,7 +1940,7 @@ async def _run_agent(
             # Codex blocks tool calls until file access is enabled. Surface this
             # even without verbose output; CLI or profile approval flags suppress it.
             if canonical == "codex" and not yolo and not bypass:
-                from lionagi.cli._logging import warn
+                from lionhub.orchestration.console import warn
 
                 warn(
                     "codex models need file access enabled or the agent may hang "
@@ -2200,7 +2200,7 @@ async def _run_agent(
                 cfg.update(candidate)
             if model_str is not None:
                 if model != old_model:
-                    from lionagi.cli._logging import warn
+                    from lionhub.orchestration.console import warn
 
                     warn(f"resume model override: {old_model} → {model}")
                 cfg["model"] = model
@@ -2532,8 +2532,8 @@ async def _run_agent(
             # monitor` lists under that row's own id; nothing here prints it), so the run id names no
             # row: the run records its own process on run.json, where `li kill <run id>` reads it, and
             # says how to stop it (ADR-0104 Amendment 2).
-            from lionagi.cli._logging import warn
             from lionagi.ln._proc import current_pid_markers
+            from lionhub.orchestration.console import warn
 
             run_manifest.update(current_pid_markers())
             _write_run_manifest(run_manifest)
@@ -2785,7 +2785,7 @@ async def _run_agent(
             # looked at and was not a provider error; no record at all says nobody
             # looked, and a reader cannot tell those apart after the fact.
             write_terminal_cause(exc)
-            from lionagi.cli._logging import warn
+            from lionhub.orchestration.console import warn
 
             warn(f"agent timed out after {timeout}s")
             last = branch.msgs.last_response
@@ -3016,7 +3016,7 @@ async def _run_agent(
         session_id = live.get("session_id") if live else None
 
         if _terminal_status == "timed_out" and resume_on_timeout and not _auto_resumed:
-            from lionagi.cli._logging import warn
+            from lionhub.orchestration.console import warn
 
             # Deliberately keyed on this branch rather than on the `will_auto_resume`
             # the teardown computed: that one is read before the effective status is
@@ -3469,7 +3469,7 @@ def run_agent(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         return EXIT_CODE_BY_STATUS["aborted"]
     except SigtermInterrupt as exc:
-        from lionagi.cli._logging import warn
+        from lionhub.orchestration.console import warn
 
         warn(f"agent terminated by SIGTERM: {exc}")
         return EXIT_CODE_BY_STATUS["cancelled"]

@@ -522,11 +522,6 @@
       "owner": "cli",
       "target_owner": "lionhub.orchestration.kill"
     },
-    "lionagi.cli._logging": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
     "lionagi.cli._mcp_resolve": {
       "layer": "root",
       "owner": "cli",
@@ -536,11 +531,6 @@
       "layer": "root",
       "owner": "cli",
       "target_owner": "lionhub.serve.mirror"
-    },
-    "lionagi.cli._mirror_settings": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.serve.mirror_settings"
     },
     "lionagi.cli._notify_outcomes": {
       "layer": "root",

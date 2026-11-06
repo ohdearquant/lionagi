@@ -49,7 +49,7 @@ Each reader below is listed with what it does with the list and what it does wit
 | # | Reader | What it does with the list | Unknown kind | Reached by schedule-run refs |
 |---|--------|----------------------------|--------------|------------------------------|
 | R1 | `lionagi/cli/monitor.py:662-672` | Prints each entry as `label`, else `kind`, for completed session rows | Printed by kind name | No: session rows only |
-| R2 | `lionagi/cli/status.py:219`, `:372-379` | Prints `label` or `kind`, then `path`, `id` or `ref` | Printed as `kind: ref`; the new element prints as `chain_decision: on_fail` | No: `resolve_any_target` (`lionagi/cli/_inspection.py:193-250`) has no schedule-run lookup; only `wait.py:44-52` adds one, and `li wait` does not print refs |
+| R2 | `lionagi/cli/status.py:220`, `:373-380` | Prints `label` or `kind`, then `path`, `id` or `ref` | Printed as `kind: ref`; the new element prints as `chain_decision: on_fail` | No: `resolve_any_target` (`lionagi/cli/_inspection.py:193-250`) has no schedule-run lookup; only `wait.py:44-52` adds one, and `li wait` does not print refs |
 | R3 | `lionagi/cli/monitor.py` wait path | None today | n/a | Yes, by design (D4) |
 | R4 | `lionagi/state/db.py:6875-6888`, `:6965-6978` | Tests for the reaper's `kind == "invocation"` entry | Ignored (the predicate tests one kind) | No: reads the `invocations` table only |
 | R5 | `lionagi/state/db.py:9024-9059` | Decodes JSON text into a list. No interpretation | Passed through as a dict | Yes, pass-through |
@@ -133,7 +133,7 @@ Exact semantics:
 - Dispatched recovery: unchanged. `if not written: continue` already applies (`engine.py:1318-1319`).
 - Setup failure: unchanged. It returns before any chain (`engine.py:3155`).
 - Cancellation: unchanged. The cancellation handler never launches a follow-up.
-- The invocation write does not gate the chain. An invocation-side loss with a schedule_run win still chains. The schedule_run row is the one the monitor reads (`lionagi/cli/monitor.py:1485-1491`).
+- The invocation write does not gate the chain. An invocation-side loss with a schedule_run win still chains. The schedule_run row is the one the monitor reads (`lionagi/cli/monitor.py:1484-1490`).
 
 Why this way: a lost compare-and-set means another finalizer owns the row's follow-on effects. Recovery already encodes that rule (`engine.py:1299-1301`). The normal path applies it too, which removes P3.
 
@@ -149,7 +149,7 @@ A row created in a terminal state carries the `none` element in the first write 
 
 Exact semantics: the element is `{"kind": "chain_decision", "v": 1, "ref": "none"}`. These rows launch no follow-up before or after this change.
 
-Why this way: D4 makes the monitor return at once on `none`. Today these rows already resolve at once, because the monitor skips `cancelled` and `skipped` rows and rows without an exit code (`lionagi/cli/monitor.py:1580-1593`). That rule is a status list. The element makes the same outcome a property of the row.
+Why this way: D4 makes the monitor return at once on `none`. Today these rows already resolve at once, because the monitor skips `cancelled` and `skipped` rows and rows without an exit code (`lionagi/cli/monitor.py:1579-1592`). That rule is a status list. The element makes the same outcome a property of the row.
 
 ### D4: The monitor follows the recorded selection
 
@@ -162,7 +162,7 @@ def _recorded_selection(row: dict[str, Any]) -> str | None:
 
 Input: `row["status_evidence_refs"]` as a list, or as JSON text. `get_schedule_run` decodes the column (`lionagi/state/db.py:7086-7098`, `:9024-9059`). The monitor already accepts both forms for session rows (`monitor.py:652-665`).
 
-A ref is usable only when all of these hold: it is a dict, `kind == "chain_decision"`, `v` is the integer `1` (not a boolean), and `ref` is one of the three values. Any other `v`, or a malformed element, is treated as no ref. The monitor writes one warning line for each affected row per wait, naming the run id and the reason. The CLI logging module re-exports `warn` (`lionagi/cli/_logging.py:12-20`, `:23-28`; `lionagi/_log_channels.py:43-45`). The implementation chooses the channel. The one-line requirement is fixed.
+A ref is usable only when all of these hold: it is a dict, `kind == "chain_decision"`, `v` is the integer `1` (not a boolean), and `ref` is one of the three values. Any other `v`, or a malformed element, is treated as no ref. The monitor writes one warning line for each affected row per wait, naming the run id and the reason. The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py:12-20`, `:23-28`; `lionagi/_log_channels.py:43-45`). The implementation chooses the channel. The one-line requirement is fixed.
 
 Cases in `_advance_chains` (`lionagi/cli/monitor.py:1560-1645`), applied to a row that has become terminal, in this order:
 
@@ -227,12 +227,12 @@ Existing tests that must stay unchanged, because their fixtures carry no ref and
 - **A dedicated `schedule_runs.chain_decision` column, with a schema version bump and a mutable admission receipt.** The receipt would move through pending, admitted, refused and unknown, and would be written together with the child insert. It would buy the monitor a way to tell a refused child from a late one, and a crash in the window from a grace expiry. It is rejected for this change, for two reasons. A version bump makes readers below the new version refuse the store (`lionagi/state/db.py:1804-1806`, `:1881`). The receipt also ties the parent row's update to the child's insert, which the scheduler does not do today. The disagreements in P1, P2 and P3 all arise when the parent row becomes terminal, before any grace window opens, so recording the decision in that write removes them; the receipt's extra states address a slow or lost child insert, which Consequences 1 to 3 record as limitations.
 - **Keep inferring from `exit_code` and the stored schedule.** Rejected. This is P1 and P2. An exit-0 child whose invocation is `completed_empty` produces a branch disagreement (`engine.py:3291-3296`, `monitor.py:1526-1541`). An edit after the run changes the monitor's answer and nothing else.
 - **Gate only the chain on the compare-and-set and keep inferring afterwards.** This is the smallest diff, and it is D2 alone. It removes P3 but leaves P1 and P2. The monitor still derives the branch from status and the stored schedule.
-- **Record the choice on the invocation row.** Rejected. The monitor reads the schedule_run (`lionagi/cli/monitor.py:1485-1491`). The invocation's terminal write is a separate compare-and-set (`engine.py:3333-3344`) whose outcome is not tied to the schedule_run's. A choice on the invocation row could be absent, or could disagree with the schedule_run the monitor reads.
+- **Record the choice on the invocation row.** Rejected. The monitor reads the schedule_run (`lionagi/cli/monitor.py:1484-1490`). The invocation's terminal write is a separate compare-and-set (`engine.py:3333-3344`) whose outcome is not tied to the schedule_run's. A choice on the invocation row could be absent, or could disagree with the schedule_run the monitor reads.
 - **Lengthen the grace window.** Rejected. A longer wait hides the disagreement without removing it. The status-versus-exit-code and edit cases return the wrong answer at any grace length. The bound is part of the wait's contract (`lionagi/cli/monitor.py:1289`).
 
 ## Open questions
 
-1. **Warning channel.** The CLI logging module re-exports `warn` (`lionagi/cli/_logging.py:12-20`, `:23-28`; `lionagi/_log_channels.py:43-45`). The channel for the D4 warning remains an implementation choice.
+1. **Warning channel.** The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py:12-20`, `:23-28`; `lionagi/_log_channels.py:43-45`). The channel for the D4 warning remains an implementation choice.
 
 ## Notes
 

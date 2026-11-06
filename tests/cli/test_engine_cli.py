@@ -145,7 +145,7 @@ def test_engine_run_accepts_model_and_depth_flags():
 
 async def test_coding_without_test_cmd_returns_1(monkeypatch):
     """'coding' kind without --test-cmd must return exit code 1."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
 
@@ -161,8 +161,8 @@ async def test_coding_without_test_cmd_returns_1(monkeypatch):
 
 async def test_successful_engine_run_returns_0(monkeypatch, capsys):
     """A mocked engine that returns a string → exit 0 + JSON on stdout."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -190,8 +190,8 @@ async def test_successful_engine_run_returns_0(monkeypatch, capsys):
 
 async def test_engine_failure_returns_1(monkeypatch):
     """A mocked engine that raises → exit 1."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -216,8 +216,8 @@ async def test_engine_failure_returns_1(monkeypatch):
 
 async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
     """CodingEngine's CodeResultRecorded shape is serialized correctly; no crash when export_dir is absent."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -265,9 +265,9 @@ async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
 
 async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
     """--export-dir is written to the DB for 'coding' (CodeResultRecorded has no export_dir field)."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -336,9 +336,9 @@ async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
 
 async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
     """--export-dir is written to the DB for 'hypothesis' (engine returns a plain string)."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -396,9 +396,9 @@ async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
 
 async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
     """No --export-dir → export_dir=None in the DB update (not a stale string)."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -459,9 +459,9 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
 
 async def test_cancelled_error_marks_row_cancelled(monkeypatch):
     """asyncio.CancelledError → row status='cancelled', db closed, error re-raised."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -518,9 +518,9 @@ async def test_cancelled_error_marks_row_cancelled(monkeypatch):
 
 async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
     """KeyboardInterrupt → row status='cancelled', db closed, re-raised."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -575,9 +575,9 @@ async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
 
 async def test_db_insert_called_on_success(monkeypatch, capsys):
     """With no_persist=False, insert_engine_run and update_engine_run are called."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -630,9 +630,9 @@ async def test_db_insert_called_on_success(monkeypatch, capsys):
 
 async def test_no_persist_skips_db(monkeypatch, capsys):
     """--no-persist flag means no DB calls are made."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -667,9 +667,9 @@ async def test_no_persist_skips_db(monkeypatch, capsys):
 
 async def test_import_failure_closes_db(monkeypatch):
     """When import_engine_class raises, the open DB handle must still be closed."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -719,8 +719,8 @@ async def test_import_failure_closes_db(monkeypatch):
 
 def test_run_engine_dispatches_run_subcommand(monkeypatch):
     """run_engine with engine_command='run' calls _do_engine_run via run_async."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
+    import lionhub.orchestration.console as log_mod
 
     called_with = []
 
@@ -746,7 +746,7 @@ def test_run_engine_dispatches_run_subcommand(monkeypatch):
 
 def test_run_engine_unknown_subcommand_returns_1(monkeypatch):
     """Unknown engine subcommand → exit 1."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
 
@@ -764,7 +764,7 @@ def test_run_engine_unknown_subcommand_returns_1(monkeypatch):
 
 def test_main_routes_engine_command(monkeypatch):
     """main() routes 'engine run ...' to run_engine."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "configure_cli_logging", lambda *a: None)
 
@@ -858,9 +858,9 @@ async def test_engine_run_skips_signal_binding_on_session_id_collision(
     import functools
     import uuid as uuid_mod
 
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
     from lionagi.state.db import StateDB
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)

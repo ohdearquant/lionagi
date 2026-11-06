@@ -327,7 +327,7 @@ def _run(argv: list[str] | None = None) -> int:
 
     # Defer setup so missing dependencies reach the environment-fault wrapper,
     # while any saved catalog fault takes precedence.
-    from ._logging import configure_cli_logging
+    from lionhub.orchestration.console import configure_cli_logging
 
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).
     _argv = argv if argv is not None else sys.argv[1:]

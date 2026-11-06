@@ -34,7 +34,7 @@ CI tests Python 3.10-3.14 on PRs and `main`/`develop` pushes; only the manual `e
 - `lionagi/service/` — iModel, provider connections, rate limiting
 - `lionagi/ln/` — concurrency utils (alcall, bcall), fuzzy JSON, sentinels
 - `lionagi/tools/` — tool interfaces and built-ins
-- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `cli/_runs.py` (RunDir); `cli/_logging.py`; `cli/team.py`; `cli/_project.py` (project detection). `li studio` / `li schedule` live in `lionagi/studio/cli.py`.
+- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `cli/_runs.py` (RunDir); `cli/team.py`; `cli/_project.py` (project detection). `li studio` / `li schedule` live in `lionagi/studio/cli.py`. CLI console output helpers live in `lionhub.orchestration.console`.
 - `tests/` — mirrors package structure
 - `benchmarks/` — micro-benchmark runners and baselines
 

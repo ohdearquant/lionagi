@@ -191,8 +191,8 @@ def test_run_agent_outer_logs_failed_exception_before_reraising(monkeypatch):
 
 def test_run_agent_outer_handles_sigterm_interrupt(monkeypatch):
     """SigtermInterrupt from run_async() must warn + exit 'cancelled' (143), not raise."""
-    import lionagi.cli._logging as logging_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.console as logging_mod
     from lionagi.cli._util import EXIT_CODE_BY_STATUS
     from lionagi.ln.concurrency import SigtermInterrupt
 
@@ -218,8 +218,8 @@ def test_run_agent_outer_handles_sigterm_interrupt(monkeypatch):
 
 def test_run_agent_outer_sigterm_not_caught_as_generic_failure(monkeypatch):
     """SigtermInterrupt must be dispatched by its own branch, not fall into the failed-bucket log."""
-    import lionagi.cli._logging as logging_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.console as logging_mod
     from lionagi.ln.concurrency import SigtermInterrupt
 
     errors_emitted: list[str] = []

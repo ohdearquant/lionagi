@@ -1883,7 +1883,7 @@ async def test_do_kill_play_leaves_workers_running_and_exits_non_zero(
     """
     import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
-    from lionagi.cli._logging import configure_cli_logging
+    from lionhub.orchestration.console import configure_cli_logging
 
     configure_cli_logging(verbose=False)
 
@@ -1961,7 +1961,7 @@ async def test_do_kill_play_with_recorded_session_reaps_the_worker_chain(
     """
     import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
-    from lionagi.cli._logging import configure_cli_logging
+    from lionhub.orchestration.console import configure_cli_logging
 
     configure_cli_logging(verbose=False)
 
@@ -2060,7 +2060,7 @@ async def test_do_kill_recursive_show_does_not_reap_play_workers(
 ):
     """--recursive is a documented no-op boundary for shows (ADR-0104): the
     show row goes terminal, but its plays/workers are left untouched."""
-    from lionagi.cli._logging import configure_cli_logging
+    from lionhub.orchestration.console import configure_cli_logging
 
     configure_cli_logging(verbose=False)
     signalled_pids: list[int] = []
@@ -2438,7 +2438,7 @@ async def test_do_kill_all_stale_reports_plays_it_could_not_assess(
     would read as an observation about that row rather than the structural fact
     it is.
     """
-    from lionagi.cli._logging import configure_cli_logging
+    from lionhub.orchestration.console import configure_cli_logging
 
     configure_cli_logging(verbose=False)
     patched_pid_alive = lambda pid: False
@@ -2475,7 +2475,7 @@ async def test_do_kill_all_stale_sweeps_play_whose_worker_session_is_terminal(
     worker session has already gone terminal. The persisted status is `blocked`
     — the word a play takes — not the `cancelled` a session takes.
     """
-    from lionagi.cli._logging import configure_cli_logging
+    from lionhub.orchestration.console import configure_cli_logging
 
     configure_cli_logging(verbose=False)
     patched_pid_alive = lambda pid: False

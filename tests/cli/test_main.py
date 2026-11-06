@@ -196,7 +196,7 @@ def test_handle_play_shortcut_resume_passthrough():
 
 def test_handle_play_shortcut_rejects_flag_before_name(monkeypatch):
     """play --bad returns exit code 1 because flag comes before name."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
     result = _handle_play_shortcut(["play", "--bad"])
@@ -462,7 +462,7 @@ def test_cli_package_init_is_lazy():
     """Importing lionagi.cli (or any submodule of it, e.g. via
     lionagi.studio.cli) must not pull in lionagi.cli.main — main.py imports
     lionagi.studio.cli at module level, so an eager package init would make
-    every studio->cli._logging import re-enter a partially-initialized
+    every studio import of a CLI submodule re-enter a partially-initialized
     module. `from lionagi.cli import main` still resolves to the callable
     via the package's lazy __getattr__ re-export."""
     import subprocess

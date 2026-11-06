@@ -93,7 +93,7 @@ Every run: `~/.lionagi/runs/{run_id}/` (`YYYYMMDDTHHMMSS-{uuid6}`).
 - `run.json` — manifest · `branches/{id}.json` — snapshots · `stream/{id}.buffer.jsonl` — live chunks
 - `artifacts/` when `--save` not provided · `find_branch(id)` scans `~/.lionagi/runs/` manifests
 
-### CLI Logging (`lionagi/cli/_logging.py`)
+### CLI Logging (`lionhub.orchestration.console`)
 
 `configure_cli_logging(verbose)`. Never `print(..., file=sys.stderr)` in CLI code:
 `progress()` (silenced when verbose) · `hint()` (post-run) · `warn()` (warning prefix) · `log_error()` (error prefix)

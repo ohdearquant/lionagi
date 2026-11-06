@@ -175,8 +175,8 @@ async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path):
 
     warnings_emitted: list[str] = []
 
-    import lionagi.cli._logging as logging_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.console as logging_mod
 
     def capture_warn(msg):
         warnings_emitted.append(msg)
@@ -206,7 +206,7 @@ async def test_run_agent_codex_profile_approval_flag_suppresses_warning(
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
     warnings_emitted: list[str] = []
-    import lionagi.cli._logging as logging_mod
+    import lionhub.orchestration.console as logging_mod
 
     monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
 
@@ -240,7 +240,7 @@ async def test_run_agent_codex_with_bypass_no_warning(monkeypatch, tmp_path):
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
     warnings_emitted: list[str] = []
-    import lionagi.cli._logging as logging_mod
+    import lionhub.orchestration.console as logging_mod
 
     monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
 
@@ -263,7 +263,7 @@ async def test_run_agent_codex_with_yolo_no_warning(monkeypatch, tmp_path):
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
     warnings_emitted: list[str] = []
-    import lionagi.cli._logging as logging_mod
+    import lionhub.orchestration.console as logging_mod
 
     monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
 

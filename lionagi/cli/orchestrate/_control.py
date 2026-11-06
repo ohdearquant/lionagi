@@ -16,6 +16,8 @@ import asyncio
 import json
 from typing import Any
 
+from lionhub.orchestration.console import log_error
+
 from .._inspection import (
     EXIT_UNKNOWN,
     RUN_ID_THROUGH_T,
@@ -23,7 +25,6 @@ from .._inspection import (
     resolve_primary_session,
     run_id_candidates,
 )
-from .._logging import log_error
 from .._util import AmbiguousIdError
 
 __all__ = (

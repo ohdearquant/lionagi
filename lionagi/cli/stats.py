@@ -179,8 +179,7 @@ def add_stats_subparser(subparsers: argparse._SubParsersAction) -> None:
 def run_stats(args: argparse.Namespace) -> int:
     """Dispatch `li stats` subcommand."""
     from lionagi.ln.concurrency import run_async
-
-    from ._logging import log_error
+    from lionhub.orchestration.console import log_error
 
     if args.stats_command != "runs":
         return 1
