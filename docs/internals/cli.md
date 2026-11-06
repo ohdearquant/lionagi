@@ -495,7 +495,7 @@ way from its own recorded `status`. Nothing on either path reads or re-checks
 the declared artifact set. The artifact root the resumed run reads is not the
 original run's: without `--save`, `allocate_run` gives it a fresh
 `<state_root>/artifacts` directory, and with `--save` it is the path `--save`
-names (`lionhub/src/lionhub/orchestration/runs.py:617-620`), neither read from the original `RunDir`
+names (`lionhub/src/lionhub/orchestration/runs.py:631-634`), neither read from the original `RunDir`
 that `resolve_checkpoint_target` returned. What a result-verifying resume would
 need — reading the persisted `artifact_contract_json`, checking the declared
 set, the completion-time digest for contract-less nodes, the byte-level check,
