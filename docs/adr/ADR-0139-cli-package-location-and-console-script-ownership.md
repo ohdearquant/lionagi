@@ -448,7 +448,7 @@ The move-test enumerator accepts a module target without `__path__`
 (`tests/test_moved_modules.py:65`–`:75`).
 The `_mirror_settings` row needs a data-only accommodation in the pickle-coverage
 test because the module defines no picklable object; keep pickle coverage unchanged
-for every other row (`tests/test_moved_modules.py:112`–`:128`).
+for every other row (`tests/test_moved_modules.py:189`–`:213`).
 Enumerate every specific row and the residual package, test each import order,
 and retain stale-file detection. This does not permit replacing the alias loader
 or weakening identity requirements.
@@ -459,7 +459,7 @@ Preserve logger names when implementations move. The source includes
 The existing source checker admits old logger strings only when its resolved
 destination contains the current module; split destinations require a narrow
 original-logger-ownership check, not renaming the logger or ignoring arbitrary
-old strings (`tests/test_moved_modules.py:814`).
+old strings (`tests/test_moved_modules.py:960`).
 
 **Failure tests:** `test_step3_shared_dependency_closure`,
 `test_move_table_handles_module_and_package_rows`,
@@ -564,7 +564,7 @@ sets and path-tail comparison are at
 `lionagi/cli/orchestrate/_orchestration.py:681`.
 Old spellings retained solely for recognition are compatibility data, never import
 or launch targets. The existing old-reference checker distinguishes imports/call
-arguments from set data (`tests/test_moved_modules.py:794`); keep canonical
+arguments from set data (`tests/test_moved_modules.py:940`); keep canonical
 execution targets and test both recognition forms explicitly.
 
 The D2 exemption is exactly `{cli, studio}` before step 6, `{studio}` afterward
@@ -801,7 +801,7 @@ catalog suites.
    version, unknown arguments, sentinel cases and deterministic machine commands.
    Check stdout, stderr, exit status, package-relative imports and environment paths.
    The existing alias test uses `run_name="not_main"`, so it is not this proof
-   (`tests/test_moved_modules.py:522`).
+   (`tests/test_moved_modules.py:660`).
 
 2. **Shared closure, identity and rows (D2):**
    `test_step3_shared_dependency_closure`,
