@@ -2,7 +2,7 @@
 
 - **Status**: Proposed; D1 is adopted with the CLI at `lionhub.cli`; D5 and the 2.0 release date stay Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: partial — the command catalog has moved to `lionhub.cli.catalog`, with five lazy forwards in `lionagi._auto`; argument types and diagnostics have moved to `lionhub.orchestration.arguments` and `lionhub.serve.diagnostics`, with their old import paths in `lionagi._moved`; console logging and mirror settings have moved to `lionhub.orchestration.console` and `lionhub.serve.mirror_settings`, with their old import paths in `lionagi._moved`; the other step-3 modules, D5, the console-script move, and the 2.0 date remain open
+- **Implementation-status**: partial — the command catalog has moved to `lionhub.cli.catalog`, with five lazy forwards in `lionagi._auto`; argument types and diagnostics have moved to `lionhub.orchestration.arguments` and `lionhub.serve.diagnostics`, with their old import paths in `lionagi._moved`; console logging and mirror settings have moved to `lionhub.orchestration.console` and `lionhub.serve.mirror_settings`, with their old import paths in `lionagi._moved`; project detection, MCP configuration, the team reader, and engine definitions have moved to `lionhub.orchestration.project`, `lionhub.orchestration.mcp_config`, `lionhub.orchestration.team`, and `lionhub.orchestration.engine_definitions`, with their old import paths in `lionagi._moved`; the other step-3 modules, D5, the console-script move, and the 2.0 date remain open
 - **Area**: cli-surface
 - **Date**: 2026-10-26
 - **Relations**: resolves the CLI decisions deferred by ADR-0136 D7; amends its A4 item 6, B2 step 6 and D7 layout; amends the location references in ADR-0062 D1–D5; specializes the optional base-launcher choice in ADR-0122 D8; complements ADR-0138.
@@ -346,9 +346,9 @@ The shared dependency closure is part of step 3:
 
 - `_runs` uses the moved MCP resolution type, project resolver, job utilities
   and shared process-identity helper
-  (`lionagi/cli/_runs.py:24`, `lionagi/cli/_runs.py:36`,
+  (`lionagi/cli/_runs.py:24`, `lionagi/cli/_runs.py:37`,
   `lionagi/cli/_runs.py:1499`, `lionagi/cli/_runs.py:2053`,
-  `lionagi/cli/_runs.py:2273`).
+  `lionagi/cli/_runs.py:2273`). The line numbers are at `5cb3b391bbd5f1256e2d9a1e80b6eef81fbbaf4c`.
 - Checkpoint resolution uses public inspection services instead of the retained
   status adapter (`lionagi/cli/orchestrate/_checkpoint.py:241`).
 - Shared code and Studio use the existing neutral log emitters. Their identity

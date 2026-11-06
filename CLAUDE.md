@@ -78,7 +78,7 @@ Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. 
 
 - `cli/agent.py` — `li agent`: one-shot or resumed turn
 - `cli/team.py` — `li team`: inbox (`~/.lionagi/teams/{id}.json`), concurrent writes via `fcntl.flock`
-- `cli/_project.py` — `detect_project(cwd)`: returns `(project_name, project_source)` via detection cascade (see ADR-0026)
+- `lionhub.orchestration.project` — `detect_project(cwd)`: returns `(project_name, project_source)` via detection cascade (see ADR-0026)
 - `cli/orchestrate/` — `li o fanout` / `li o flow`:
   - `flow.py` — DAG planning (`plan()`), reactive expansion (`SpawnRequest`), `FlowPlanError`. `--team-mode` enables `li team` routing mid-pipeline.
   - `_common.py` — `BARE_WORKER_SYSTEM` / `TEAM_WORKER_SYSTEM` / `TEAM_COORD_SECTION` prompt templates

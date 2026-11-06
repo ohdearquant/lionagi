@@ -1110,7 +1110,7 @@ a different count) so the dashboard matches the Runs list page.
 `LIONAGI_HOME/mcp_servers.json` (full configs including secret env values,
 enable state, last connection status), and derives the CLI-facing
 `LIONAGI_HOME/.mcp.json` from it on every write, containing only enabled
-servers in the `{"mcpServers": {...}}` shape `lionagi/cli/_mcp_resolve.py`
+servers in the `{"mcpServers": {...}}` shape `lionhub/src/lionhub/orchestration/mcp_config.py`
 parses. A disabled server is simply absent from the derived file, not
 flagged — a run pointed at `--mcp-config ~/.lionagi/.mcp.json` never sees
 one. The registry is kept separate from the derived file (not a passthrough
