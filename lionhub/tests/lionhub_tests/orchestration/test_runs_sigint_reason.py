@@ -5,7 +5,19 @@
 
 from __future__ import annotations
 
+import threading
+
+import pytest
+
+import lionagi.ln.concurrency.utils as cu
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
+
+
+@pytest.fixture(autouse=True)
+def _fresh_sigterm_latch(monkeypatch):
+    """Isolate the process-wide SIGTERM latch: a latch left set by another test
+    in the same worker would turn a plain cancellation into a SIGTERM one."""
+    monkeypatch.setattr(cu, "_SIGTERM_RECEIVED", threading.Event())
 
 
 def test_resolve_run_reason_aborted_returns_cancelled_sigint():
