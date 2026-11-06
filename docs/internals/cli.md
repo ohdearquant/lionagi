@@ -865,7 +865,7 @@ multiple refs, the total budget is a hard ceiling: any ref that can't fit even i
 marker overhead is dropped (and everything after it, since the reserved budget only shrinks).
 If even the first ref can't fit, injection is skipped entirely.
 
-## `_providers.py` — agent profile parsing
+## `lionhub/src/lionhub/orchestration/spawn.py` — agent profile parsing
 
 **`_parse_profile_timeout`** — agent profile timeout field validation. Only a genuine positive
 int is accepted — YAML booleans (`True`/`False` are ints in Python) and floats (which `int()`
@@ -1567,7 +1567,7 @@ installs a fresh generation in the same guarded status write.
 ## `mirror.py` — Claude transcript mirroring into StateDB
 
 The state, passes and `mirror_forever` described below are defined in
-`lionagi/cli/_mirror_service.py`, and the preview-size setting in
+`lionhub/src/lionhub/serve/mirror.py`, and the preview-size setting in
 `lionhub.serve.mirror_settings`. `mirror.py` keeps the `li mirror` parser, its
 `_run` loop and `run_mirror`, and imports the service names back for callers that
 read them from `lionagi.cli.mirror`.
