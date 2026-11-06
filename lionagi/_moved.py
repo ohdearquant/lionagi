@@ -84,6 +84,8 @@ MOVED: tuple[Moved, ...] = (
         "0.38.0",
         "2.0.0",
     ),
+    Moved("lionagi.cli._util", "lionhub.orchestration.job", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._inspection", "lionhub.orchestration.inspection", "0.38.0", "2.0.0"),
 )
 
 

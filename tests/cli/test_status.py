@@ -16,11 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.cli._inspection import (
-    resolve_agent_target,
-    resolve_any_target,
-    resolve_play_target,
-)
 from lionagi.cli.status import (
     EXIT_RUNNING,
     EXIT_UNKNOWN,
@@ -37,6 +32,22 @@ from lionagi.cli.status import (
 )
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
+from lionhub.orchestration.inspection import (
+    resolve_agent_target,
+    resolve_any_target,
+    resolve_play_target,
+)
+from tests._status_test_support import (
+    _make_branch,
+    _make_invocation,
+    _make_play,
+    _make_session,
+    _make_show,
+    _seed_session_with_id,
+)
+from tests._status_test_support import (
+    temp_db_path as temp_db_path,  # noqa: F401
+)
 from tests.cli._import_guard import (
     COMMAND_IMPORT_PROBES,
     command_module_imports,
@@ -48,125 +59,11 @@ from tests.cli._import_guard import (
 
 
 @pytest.fixture
-def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Per-test temp DB; patch DEFAULT_DB_PATH so StateDB() opens it.
-
-    Also neutralizes LIONAGI_STATE_DB_URL, which StateDB prefers over
-    DEFAULT_DB_PATH — a host env pointing at a real DB would otherwise
-    bypass the patch entirely. AppSettings is frozen, so swap the module
-    reference rather than mutating the instance.
-    """
-    db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(
-        "lionagi.state.db.settings",
-        SimpleNamespace(LIONAGI_STATE_DB_URL=None),
-    )
-    return db_path
-
-
-@pytest.fixture
 def no_project(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force detect_project() to (None, None) so default-latest resolution
     isn't accidentally scoped to whatever project the test runner's own cwd
     happens to resolve to."""
     monkeypatch.setattr("lionagi.cli.status.detect_project", lambda cwd: (None, None))
-
-
-async def _make_session(
-    db: StateDB,
-    *,
-    status: str = "running",
-    project: str | None = None,
-    invocation_kind: str | None = "agent",
-    model: str | None = "claude-3-5-sonnet",
-    provider: str | None = "anthropic",
-    invocation_id: str | None = None,
-    source_kind: str | None = None,
-) -> str:
-    sid = uuid.uuid4().hex[:12]
-    pid = uuid.uuid4().hex
-    await db.create_progression(pid)
-    await db.create_session(
-        {
-            "id": sid,
-            "progression_id": pid,
-            "status": status,
-            "invocation_kind": invocation_kind,
-            "project": project,
-            "model": model,
-            "provider": provider,
-            "started_at": time.time(),
-            "invocation_id": invocation_id,
-            "source_kind": source_kind,
-        }
-    )
-    return sid
-
-
-async def _make_invocation(db: StateDB, *, status: str = "running", skill: str = "show") -> str:
-    inv_id = uuid.uuid4().hex[:12]
-    await db.create_invocation(
-        {
-            "id": inv_id,
-            "skill": skill,
-            "started_at": time.time(),
-            "status": status,
-        }
-    )
-    return inv_id
-
-
-async def _make_show(db: StateDB, *, status: str = "active", topic: str = "test-topic") -> str:
-    show_id = uuid.uuid4().hex[:12]
-    await db.create_show(
-        {
-            "id": show_id,
-            "topic": topic,
-            "status": status,
-            "show_dir": "/tmp/show",
-        }
-    )
-    return show_id
-
-
-async def _make_play(
-    db: StateDB,
-    show_id: str,
-    *,
-    status: str = "running",
-    name: str = "play-1",
-    session_id: str | None = None,
-) -> str:
-    play_id = uuid.uuid4().hex[:12]
-    await db.create_play(
-        {
-            "id": play_id,
-            "show_id": show_id,
-            "name": name,
-            "status": status,
-            "started_at": time.time(),
-            "session_id": session_id,
-        }
-    )
-    return play_id
-
-
-async def _make_branch(db: StateDB, session_id: str, *, branch_id: str | None = None) -> str:
-    """Create a branch row tied to *session_id* — the resume token surfaced
-    as `branch_id` in the status view and printed in `li agent -r` hints."""
-    bid = branch_id or str(uuid.uuid4())
-    pid = uuid.uuid4().hex
-    await db.create_progression(pid)
-    await db.create_branch(
-        {
-            "id": bid,
-            "session_id": session_id,
-            "progression_id": pid,
-            "model": "claude-3-5-sonnet",
-        }
-    )
-    return bid
 
 
 async def _set_fields(db: StateDB, table: str, id_: str, **fields) -> None:
@@ -297,119 +194,6 @@ def test_detect_degraded_play_success_scoped_to_backing_session():
 
 
 # Integration: entity resolution
-
-
-@pytest.mark.asyncio
-async def test_resolve_agent_target_by_id(temp_db_path: Path):
-    async with StateDB() as db:
-        sid = await _make_session(db)
-        result = await resolve_agent_target(db, sid, None)
-    assert result is not None
-    entity_type, row = result
-    assert entity_type == "session"
-    assert row["id"] == sid
-
-
-@pytest.mark.asyncio
-async def test_resolve_agent_target_prefix_match(temp_db_path: Path):
-    async with StateDB() as db:
-        sid = await _make_session(db)
-        result = await resolve_agent_target(db, sid[:6], None)
-    assert result is not None
-    assert result[1]["id"] == sid
-
-
-@pytest.mark.asyncio
-async def test_resolve_agent_target_falls_back_to_invocation(temp_db_path: Path):
-    async with StateDB() as db:
-        inv_id = await _make_invocation(db)
-        result = await resolve_agent_target(db, inv_id, None)
-    assert result is not None
-    assert result[0] == "invocation"
-
-
-@pytest.mark.asyncio
-async def test_resolve_agent_target_explicit_id_ignores_kind_scoping(temp_db_path: Path):
-    """An explicit id is honoured regardless of invocation_kind — only the
-    no-id 'latest' default is kind-scoped."""
-    async with StateDB() as db:
-        sid = await _make_session(db, invocation_kind="play")
-        result = await resolve_agent_target(db, sid, None)
-    assert result is not None
-    assert result[1]["id"] == sid
-
-
-@pytest.mark.asyncio
-async def test_resolve_play_target_falls_back_to_play_table(temp_db_path: Path):
-    async with StateDB() as db:
-        show_id = await _make_show(db)
-        play_id = await _make_play(db, show_id)
-        result = await resolve_play_target(db, play_id, None)
-    assert result is not None
-    assert result[0] == "play"
-
-
-@pytest.mark.asyncio
-async def test_resolve_any_target_no_kind_scoping(temp_db_path: Path):
-    async with StateDB() as db:
-        sid = await _make_session(db, invocation_kind="play")
-        result = await resolve_any_target(db, sid)
-    assert result is not None
-    assert result[1]["id"] == sid
-
-
-@pytest.mark.asyncio
-async def test_resolve_unknown_id_returns_none(temp_db_path: Path):
-    async with StateDB() as db:
-        result = await resolve_agent_target(db, "0" * 40, None)
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_agent_target_falls_back_to_branch_id(temp_db_path: Path):
-    """The id `li agent`'s post-run hint prints (`-r <branch_id>`) is a
-    branches.id, not a sessions.id — `li agent status <branch_id>` must
-    still resolve, to the branch's owning session."""
-    async with StateDB() as db:
-        sid = await _make_session(db)
-        branch_id = await _make_branch(db, sid)
-        result = await resolve_agent_target(db, branch_id, None)
-    assert result is not None
-    entity_type, row = result
-    assert entity_type == "session"
-    assert row["id"] == sid
-
-
-@pytest.mark.asyncio
-async def test_resolve_agent_target_branch_id_prefix_match(temp_db_path: Path):
-    async with StateDB() as db:
-        sid = await _make_session(db)
-        branch_id = await _make_branch(db, sid)
-        result = await resolve_agent_target(db, branch_id[:8], None)
-    assert result is not None
-    assert result[1]["id"] == sid
-
-
-@pytest.mark.asyncio
-async def test_resolve_any_target_falls_back_to_branch_id(temp_db_path: Path):
-    async with StateDB() as db:
-        sid = await _make_session(db)
-        branch_id = await _make_branch(db, sid)
-        result = await resolve_any_target(db, branch_id)
-    assert result is not None
-    assert result[0] == "session"
-    assert result[1]["id"] == sid
-
-
-@pytest.mark.asyncio
-async def test_resolve_agent_target_unknown_branch_shaped_id_returns_none(temp_db_path: Path):
-    """A well-formed-but-unknown id must still miss cleanly through the new
-    branch_id fallback, not raise or false-positive match."""
-    async with StateDB() as db:
-        sid = await _make_session(db)
-        await _make_branch(db, sid)
-        result = await resolve_agent_target(db, str(uuid.uuid4()), None)
-    assert result is None
 
 
 # Integration: the mandated scenarios
@@ -1023,39 +807,11 @@ def test_main_o_ctl_status_unknown_flag_is_argparse_error(temp_db_path: Path) ->
 # shared resolver, so a prefix matching two rows is reported, never guessed.
 
 
-async def _seed_session_with_id(db: StateDB, sid: str) -> str:
-    prog_id = str(uuid.uuid4())
-    await db.create_progression(prog_id)
-    await db.create_session(
-        {
-            "id": sid,
-            "progression_id": prog_id,
-            "status": "running",
-            "invocation_kind": "agent",
-            "started_at": time.time(),
-        }
-    )
-    return sid
-
-
-async def test_fetch_by_id_rejects_ambiguous_prefix(temp_db_path: Path) -> None:
-    from lionagi.cli._inspection import fetch_by_id
-    from lionagi.cli._util import AmbiguousIdError
-
-    async with StateDB() as db:
-        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001")
-        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002")
-
-        with pytest.raises(AmbiguousIdError) as excinfo:
-            await fetch_by_id(db, "sessions", "abcde")
-
-    assert set(excinfo.value.candidates) == {first, second}
-
-
 def test_resolution_helpers_live_in_inspection_not_status() -> None:
     """The shared resolvers live in `_inspection`; `status` keeps no copies under
     the old names, and still re-exports the exit codes other modules import."""
-    from lionagi.cli import _inspection, status
+    from lionagi.cli import status
+    from lionhub.orchestration import inspection as _inspection
 
     for name in (
         "_resolve_any_target",
@@ -1070,27 +826,23 @@ def test_resolution_helpers_live_in_inspection_not_status() -> None:
     assert status.EXIT_RUNNING == _inspection.EXIT_RUNNING == 3
     assert status.EXIT_UNKNOWN == _inspection.EXIT_UNKNOWN == 2
 
+    for name in (
+        "_DB_BUSY_TIMEOUT_S",
+        "_PLAY_FAILURE",
+        "_PLAY_SUCCESS",
+        "_SESSION_FAILURE",
+        "_SESSION_SUCCESS",
+        "EXIT_RUNNING",
+        "EXIT_UNKNOWN",
+        "resolve_agent_target",
+        "resolve_any_target",
+        "resolve_play_target",
+        "resolve_primary_session",
+    ):
+        assert getattr(status, name) is getattr(_inspection, name), name
+    from lionhub.orchestration.job import AmbiguousIdError
 
-def test_inspection_imports_no_command_module() -> None:
-    """`_inspection` is the shared layer under the commands, so it must not
-    import any of them."""
-    from lionagi.cli import _inspection
-
-    assert command_module_imports(resolved_imports(_inspection.__file__, "lionagi.cli")) == set()
-
-
-@pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
-def test_inspection_guard_rejects_a_command_import(
-    probe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The layering guard fails when `_inspection` imports a command module, whether the import
-    is absolute, relative or by name."""
-    from lionagi.cli import _inspection
-
-    patched = source_with_line(_inspection.__file__, probe, tmp_path)
-    monkeypatch.setattr(_inspection, "__file__", str(patched))
-    with pytest.raises(AssertionError):
-        test_inspection_imports_no_command_module()
+    assert status.AmbiguousIdError is AmbiguousIdError
 
 
 @pytest.mark.parametrize("command", ["agent", "play", "ctl"])

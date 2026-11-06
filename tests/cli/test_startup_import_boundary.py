@@ -70,7 +70,7 @@ def assert_no_startup_effects():
     assert not external_attempts, external_attempts
     assert 'lionagi.cli.doctor' not in sys.modules
     assert 'lionagi.cli.machine' not in sys.modules
-    util = sys.modules.get('lionagi.cli._util')
+    util = sys.modules.get('lionhub.orchestration.job')
     if util is not None:
         assert not util.run_was_allocated()
         assert util._invocations_in_flight == 0
@@ -376,7 +376,7 @@ def test_configuration_precedes_real_machine_output_and_keeps_the_core_emitter(
         assert 'lionagi.cli._logging' not in sys.modules
         assert events == ['configured', 'dispatch', 'emit']
         assert not external_attempts
-        from lionagi.cli import _util
+        from lionhub.orchestration import job as _util
         assert not _util.run_was_allocated()
         assert _util._invocations_in_flight == 0
         assert_checkout_origins()
@@ -389,3 +389,109 @@ def test_configuration_precedes_real_machine_output_and_keeps_the_core_emitter(
     envelope = json.loads(lines[0])
     assert envelope["ok"] is False
     assert envelope["error"]["kind"] == "invalid_input"
+
+
+@pytest.mark.parametrize("argv", [["doctor"], ["doctor", "--machine"]], ids=["human", "machine"])
+def test_missing_job_dependency_keeps_the_pre_run_environment_exit(tmp_path, argv):
+    process = _run_fresh(
+        tmp_path,
+        f"""
+        refused = []
+
+        class RefuseJobDependency:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == 'lionhub.orchestration.job':
+                    refused.append(fullname)
+                    raise ModuleNotFoundError(
+                        "No module named 'startup_job_dependency'", name='startup_job_dependency'
+                    )
+                return None
+
+        sys.meta_path.insert(0, RefuseJobDependency())
+        cli_main = import_main()
+        code = cli_main.main({argv!r})
+        assert refused == ['lionhub.orchestration.job']
+        assert 'lionhub.orchestration.job' not in sys.modules
+        assert_no_startup_effects()
+        sys.exit(code)
+        """,
+    )
+    _assert_environment_refusal(process, "startup_job_dependency")
+
+
+@pytest.mark.parametrize("error_type", ["ImportError", "RuntimeError"])
+def test_broken_job_import_is_not_reported_as_a_missing_environment(tmp_path, error_type):
+    marker = "job import failed deliberately"
+    process = _run_fresh(
+        tmp_path,
+        f"""
+        refused = []
+
+        class BrokenJob:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == 'lionhub.orchestration.job':
+                    refused.append(fullname)
+                    raise {error_type}({marker!r})
+                return None
+
+        sys.meta_path.insert(0, BrokenJob())
+        try:
+            import_main()
+        except {error_type}:
+            assert refused == ['lionhub.orchestration.job']
+            assert_no_startup_effects()
+            raise
+        else:
+            raise AssertionError('broken job unexpectedly imported')
+        """,
+    )
+    assert process.returncode == 1, process.stderr
+    assert process.stdout == ""
+    assert process.stderr.splitlines()[-1] == f"{error_type}: {marker}"
+    assert "No run was started" not in process.stderr
+    assert "cannot start:" not in process.stderr
+
+
+def test_saved_catalog_fault_precedes_job_import(tmp_path):
+    process = _run_fresh(
+        tmp_path,
+        """
+        refused = []
+
+        class RefuseStartup:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == 'lionhub.cli.catalog':
+                    refused.append('catalog')
+                    raise ModuleNotFoundError(
+                        "No module named 'startup_catalog_dependency'",
+                        name='startup_catalog_dependency',
+                    )
+                if fullname == 'lionhub.orchestration.job':
+                    refused.append('job')
+                    raise AssertionError('job imported after a saved catalog fault')
+                return None
+
+        sys.meta_path.insert(0, RefuseStartup())
+        cli_main = import_main()
+        code = cli_main.main(['doctor'])
+        assert refused == ['catalog']
+        assert 'lionhub.orchestration.job' not in sys.modules
+        assert_no_startup_effects()
+        sys.exit(code)
+        """,
+    )
+    _assert_environment_refusal(process, "startup_catalog_dependency")
+
+
+def test_startup_environment_exit_matches_the_canonical_job_constant(tmp_path):
+    process = _run_fresh(
+        tmp_path,
+        """
+        cli_main = import_main()
+        from lionhub.orchestration import job
+        assert cli_main._STARTUP_ENVIRONMENT_EXIT == job.EXIT_CODE_ENVIRONMENT_ERROR
+        assert_no_startup_effects()
+        """,
+    )
+    assert process.returncode == 0, process.stderr
+    assert process.stdout == ""

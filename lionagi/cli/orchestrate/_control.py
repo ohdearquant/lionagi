@@ -17,15 +17,14 @@ import json
 from typing import Any
 
 from lionhub.orchestration.console import log_error
-
-from .._inspection import (
+from lionhub.orchestration.inspection import (
     EXIT_UNKNOWN,
     RUN_ID_THROUGH_T,
     resolve_any_target,
     resolve_primary_session,
     run_id_candidates,
 )
-from .._util import AmbiguousIdError
+from lionhub.orchestration.job import AmbiguousIdError
 
 __all__ = (
     "run_ctl_pause",

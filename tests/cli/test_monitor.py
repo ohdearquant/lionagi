@@ -2029,7 +2029,7 @@ async def _make_session_with_id(db: StateDB, sid: str) -> str:
 
 @pytest.mark.asyncio
 async def test_find_entity_rejects_ambiguous_prefix(temp_db_path: Path) -> None:
-    from lionagi.cli._util import AmbiguousIdError
+    from lionhub.orchestration.job import AmbiguousIdError
 
     async with StateDB() as db:
         first = await _make_session_with_id(db, "abcde01")
@@ -2043,8 +2043,8 @@ async def test_find_entity_rejects_ambiguous_prefix(temp_db_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_session_run_rejects_ambiguous_prefix(temp_db_path: Path) -> None:
-    from lionagi.cli._util import AmbiguousIdError
     from lionagi.cli.monitor import _resolve_session_run
+    from lionhub.orchestration.job import AmbiguousIdError
 
     async with StateDB() as db:
         await _make_session_with_id(db, "abcde01")
@@ -2058,7 +2058,7 @@ async def test_resolve_session_run_rejects_ambiguous_prefix(temp_db_path: Path) 
 async def test_run_detail_propagates_ambiguous_prefix(temp_db_path: Path) -> None:
     """_run_detail's broad `except Exception` must not swallow the ambiguity
     into a rendered detail body — the caller has to set the exit code."""
-    from lionagi.cli._util import AmbiguousIdError
+    from lionhub.orchestration.job import AmbiguousIdError
 
     async with StateDB() as db:
         await _make_session_with_id(db, "abcde01")
@@ -2101,8 +2101,8 @@ def test_watch_loop_ambiguous_prefix_exits_unknown(
 ) -> None:
     """Watch mode can't refresh its way out of an ambiguous id — it stops."""
     import lionagi.cli.monitor as monitor_mod
-    from lionagi.cli._util import AmbiguousIdError
     from lionagi.cli.status import EXIT_UNKNOWN
+    from lionhub.orchestration.job import AmbiguousIdError
 
     monkeypatch.setattr(monitor_mod, "_clear_screen", lambda: None)
 

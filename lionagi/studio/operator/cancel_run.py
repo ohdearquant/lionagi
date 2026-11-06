@@ -186,7 +186,7 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
     it and hide a match behind them. See docs/internals/studio.md
     ("Resolving a run reference").
     """
-    from lionagi.cli._util import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
+    from lionhub.orchestration.job import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
 
     ref = ref.strip()
     if not ref:

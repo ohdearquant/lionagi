@@ -45,6 +45,8 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.cli._mcp_resolve` | `lionhub.orchestration.mcp_config` |
 | `lionagi.cli._team_service` | `lionhub.orchestration.team` |
 | `lionagi.cli._engine_definitions` | `lionhub.orchestration.engine_definitions` |
+| `lionagi.cli._util` | `lionhub.orchestration.job` |
+| `lionagi.cli._inspection` | `lionhub.orchestration.inspection` |
 
 ## Tests
 

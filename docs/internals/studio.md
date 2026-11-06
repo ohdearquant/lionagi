@@ -1595,7 +1595,7 @@ many runs across its life.
 `_resolve_run` both accept the same reference vocabulary: an exact run/session
 id, an id prefix, a label, name or playbook substring (minimum 3
 characters), or the literal `"current"`. Id/prefix resolution reuses
-`lionagi.cli._util.fetch_unique_row`, the same primitive `li kill` uses, so
+`lionhub.orchestration.job.fetch_unique_row`, the same primitive `li kill` uses, so
 a reference this tool accepts resolves identically to one typed at the CLI.
 When the turn names a project, each arm checks that project from the stored
 turn context rather than accepting it as a tool argument, and prefix resolution

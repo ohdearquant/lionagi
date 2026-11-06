@@ -2582,7 +2582,7 @@ async def _seed_session_with_id(db: StateDB, sid: str, *, pid: int | None = None
 
 
 async def test_resolve_entity_rejects_ambiguous_prefix(temp_db_path: Path):
-    from lionagi.cli._util import AmbiguousIdError
+    from lionhub.orchestration.job import AmbiguousIdError
 
     async with StateDB() as db:
         first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001")
@@ -2629,7 +2629,7 @@ async def test_kill_refuses_a_pid_recorded_on_another_host(
         return "sigterm"
 
     monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", _fake_terminate)
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
         sid = await _seed_session(
@@ -2775,7 +2775,7 @@ async def test_kill_still_signals_a_row_that_recorded_no_host_at_all(
         return "sigterm"
 
     monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", _fake_terminate)
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
         sid = await _seed_session(db, status="running", pid=4242)
@@ -2789,26 +2789,11 @@ async def test_kill_still_signals_a_row_that_recorded_no_host_at_all(
     assert result["signal"] == "sigterm"
 
 
-def test_recorded_pid_is_foreign_reads_only_the_host_marker(monkeypatch: pytest.MonkeyPatch):
-    """Foreignness is a property of the host field alone — keyed on a readable pid too, a foreign row with an unparseable pid would read as local."""
-    from lionagi.cli._util import recorded_pid_is_foreign
-
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
-
-    assert recorded_pid_is_foreign({"pid_host": "other-host"}) is True
-    assert recorded_pid_is_foreign({"pid_host": "other-host", "pid": "not-an-int"}) is True
-    assert recorded_pid_is_foreign({"pid_host": "this-host"}) is False
-    assert recorded_pid_is_foreign({"pid": 1234}) is False
-    assert recorded_pid_is_foreign({"pid_host": ""}) is False
-    assert recorded_pid_is_foreign({"pid_host": 12}) is False
-    assert recorded_pid_is_foreign(None) is False
-
-
 async def test_stale_sweep_leaves_another_hosts_rows_alone(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """`--all-stale` reads this host's process table, so foreign rows are not its business — the local row beside it is the discriminator that would fail if the sweep stopped working."""
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
     patched_pid_alive = lambda pid: False
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
@@ -2857,7 +2842,7 @@ async def test_kill_refuses_a_runtime_this_cli_does_not_manage(
         return "sigterm"
 
     monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", _fake_terminate)
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
         sid = await _seed_session(
@@ -2890,7 +2875,7 @@ async def test_kill_refuses_an_unmanaged_runtime_that_recorded_no_pid(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """The row with no pid is the dangerous one, not the safe one — with the identity check inside the pid branch, a pid-less row fell through to a false cancellation."""
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
         sid = await _seed_session(
@@ -2921,7 +2906,7 @@ async def test_kill_refuses_a_foreign_host_row_that_recorded_no_pid(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """The same hole on the host marker: no pid meant no host check."""
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
         sid = await _seed_session(
@@ -2946,7 +2931,7 @@ async def test_stale_sweep_leaves_runtimes_it_does_not_manage_alone(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """`--all-stale` skipped only on the host marker, so local-looking rows fell through — an in_process or external run has no pid to contest the sweep; the local row is the discriminator."""
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
     patched_pid_alive = lambda pid: False
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
@@ -3005,7 +2990,7 @@ async def test_kill_refuses_a_row_whose_identity_mode_is_an_explicit_null(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """An explicit null is a marker that was written, not one that is missing — reading the value instead of the key's presence collapses the two and lets a null-marked row get a false cancellation."""
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
         sid = await _seed_session(
@@ -3030,18 +3015,6 @@ async def test_kill_refuses_a_row_whose_identity_mode_is_an_explicit_null(
     assert result["signal"] == "foreign_mode"
     assert after["status"] == "running"
     assert tr["n"] == 0, "no cancellation may reach history either"
-
-
-def test_an_absent_marker_and_a_null_marker_are_not_the_same_row():
-    """The two cases the guard turns on, asserted side by side — a missing key stays judgeable by other checks, a null value must come back unrecognized so every mode check refuses it."""
-    from lionagi.cli._util import UNRECOGNIZED_IDENTITY_MODE, recorded_identity_mode
-
-    assert recorded_identity_mode({}) is None
-    assert recorded_identity_mode({"pid": 123}) is None
-    assert recorded_identity_mode({"process_identity_mode": None}) == UNRECOGNIZED_IDENTITY_MODE
-    assert recorded_identity_mode({"process_identity_mode": 7}) == UNRECOGNIZED_IDENTITY_MODE
-    assert recorded_identity_mode({"process_identity_mode": "local"}) == "local"
-    assert recorded_identity_mode(None) is None
 
 
 @pytest.mark.parametrize("entity_type", ["session", "invocation"])

@@ -208,7 +208,7 @@ def test_an_unreadable_identity_mode_is_unknown_not_local():
 def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
     """Clock jitter must not read as a reboot on the liveness path either — boot time is re-derived from the clock each read, so it needs its own, looser tolerance than process create time."""
     import lionagi.studio.services.admin as admin_mod
-    from lionagi.cli._util import BOOT_TIME_TOLERANCE
+    from lionhub.orchestration.job import BOOT_TIME_TOLERANCE
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
     drift = BOOT_TIME_TOLERANCE / 2

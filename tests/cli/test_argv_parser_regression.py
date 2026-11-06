@@ -185,8 +185,8 @@ class TestFanoutTerminalStatusExitCode:
 
         import lionagi.cli.orchestrate as orch_mod
         import lionagi.cli.orchestrate.fanout as fanout_mod
-        from lionagi.cli._util import EXIT_CODE_BY_STATUS
         from lionagi.cli.main import main
+        from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 
         monkeypatch.setattr(fanout_mod, "_run_fanout", _fake_run_fanout_empty)
         monkeypatch.setattr(orch_mod, "_run_fanout", _fake_run_fanout_empty)

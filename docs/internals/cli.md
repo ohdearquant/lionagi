@@ -871,7 +871,7 @@ If even the first ref can't fit, injection is skipped entirely.
 int is accepted — YAML booleans (`True`/`False` are ints in Python) and floats (which `int()`
 would silently truncate) are rejected rather than coerced.
 
-## `_util.py` — exit-code and exception classification
+## `lionhub/src/lionhub/orchestration/job.py` — exit-code and exception classification
 
 **`EXIT_CODE_BY_STATUS["completed_empty"]`** — completion-trust gate exit code. Loop exited
 clean but no commits ahead of base and no artifacts were produced. Exits non-zero so scripts,
@@ -1038,7 +1038,7 @@ so other surfaces can await completion without shelling out; `run_wait()` is the
 that resolves argv, drives the poll loop with clean SIGINT/SIGTERM handling, and prints.
 
 **`_resolve_wait_target`** — any-kind resolver order: session, invocation, play
-(`resolve_any_target` in `lionagi/cli/_inspection.py`, which also falls back to a branch_id), then schedule_run.
+(`resolve_any_target` in `lionhub/src/lionhub/orchestration/inspection.py`, which also falls back to a branch_id), then schedule_run.
 Terminal-state definitions live in `TERMINAL_STATUSES_BY_ENTITY_TYPE`
 (`lionagi/state/db.py`, ADR-0035).
 
@@ -1107,7 +1107,7 @@ echoed as `branch_id` in the status view).
 sessions/invocations share one vocabulary (`VALID_SESSION_STATUSES`); plays have their own
 (`_PLAY_STATUSES`). `"cancelled"` is a real terminal non-success status and lands in FAILURE by
 elimination (neither success nor still-running). `"completed_empty"` (the completion-trust
-gate — see `_util.py` above) reads as a failure here too: a verified-empty run is not something
+gate — see `lionhub/src/lionhub/orchestration/job.py` above) reads as a failure here too: a verified-empty run is not something
 an operator or a schedule chain should treat as a trustworthy success.
 
 **`_DB_BUSY_TIMEOUT_S`** — why a status read has a bounded timeout. `StateDB.open()` always
@@ -1808,7 +1808,7 @@ child at or past this depth, so a grace window here would just burn ticks waitin
 that is never coming.
 
 **`_resolve_schedule_run`** — id-format note: exact match then prefix match. `schedule_run` ids
-are 12-char hex, not 36-char UUIDs, so `_util.py`'s length-36 prefix heuristic doesn't apply.
+are 12-char hex, not 36-char UUIDs, so `lionhub/src/lionhub/orchestration/job.py`'s length-36 prefix heuristic doesn't apply.
 
 **`_effective_session_status`** — session-status reconciliation contract (ADR-0035). Reconciles
 a profile session's status against its linked engine session

@@ -70,7 +70,7 @@ def test_the_guard_tracks_the_classifier_rather_than_a_second_list():
     new exception type is ever given its own terminal status, this holds without
     anyone remembering to add it here.
     """
-    from lionagi.cli._util import classify_exception
+    from lionhub.orchestration.job import classify_exception
 
     for exc in (KeyboardInterrupt(), LionTimeoutError("x"), RuntimeError("x")):
         relabelled = True

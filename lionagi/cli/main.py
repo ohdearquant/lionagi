@@ -22,12 +22,19 @@ else:
 
 from lionagi._log_channels import log_error
 
-from ._util import (
-    EXIT_CODE_ENVIRONMENT_ERROR,
-    begin_invocation,
-    end_invocation,
-    run_was_allocated,
-)
+# The canonical exit constant lives in the module whose absence this startup path reports.
+_STARTUP_ENVIRONMENT_EXIT = 78
+_job_import_error: ModuleNotFoundError | None = None
+if _catalog_import_error is None:
+    try:
+        from lionhub.orchestration.job import (
+            EXIT_CODE_ENVIRONMENT_ERROR,
+            begin_invocation,
+            end_invocation,
+            run_was_allocated,
+        )
+    except ModuleNotFoundError as exc:
+        _job_import_error = exc
 
 # The errors that mean the installation lacks something the command needs: the union for
 # annotations, the tuple for ``except`` clauses. The tuple is read from the union, so adding a
@@ -497,7 +504,7 @@ def _run(argv: list[str] | None = None) -> int:
     return 1
 
 
-def _report_broken_environment(exc: _EnvironmentFault) -> int:
+def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int) -> int:
     """Report a missing import as an environment fault, not a failed run.
 
     A ``ModuleNotFoundError`` reaching the top of the CLI means some import
@@ -523,7 +530,7 @@ def _report_broken_environment(exc: _EnvironmentFault) -> int:
         "No run was started, so this is an unusable environment rather than a "
         f"failed run. Install the missing dependency, then re-run.{guidance}"
     )
-    return EXIT_CODE_ENVIRONMENT_ERROR
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -538,13 +545,21 @@ def main(argv: list[str] | None = None) -> int:
     allocation marker decides, and once a run exists the error is left to
     propagate and be reported the way any other failure during a run is.
     """
+    startup_error = (
+        _catalog_import_error if _catalog_import_error is not None else _job_import_error
+    )
+    if startup_error is not None:
+        try:
+            raise startup_error
+        except _ENVIRONMENT_FAULTS as exc:
+            return _report_broken_environment(exc, exit_code=_STARTUP_ENVIRONMENT_EXIT)
     begin_invocation()
     try:
         return _run(argv)
     except _ENVIRONMENT_FAULTS as exc:
         if run_was_allocated():
             raise
-        return _report_broken_environment(exc)
+        return _report_broken_environment(exc, exit_code=EXIT_CODE_ENVIRONMENT_ERROR)
     finally:
         end_invocation()
 

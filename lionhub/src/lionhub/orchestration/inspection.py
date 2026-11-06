@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ._util import (
+from lionhub.orchestration.job import (
     _CANDIDATES_SHOWN,
     AmbiguousIdError,
     _like_prefix_pattern,

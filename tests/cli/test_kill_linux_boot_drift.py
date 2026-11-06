@@ -907,7 +907,8 @@ async def test_boot_disagreement_without_live_pid_keeps_legacy_sweep(tmp_path, m
 async def test_doctor_boot_disagreement_checks_pid_liveness(
     tmp_path, monkeypatch, alive, expected_status
 ):
-    from lionagi.cli import _util, state
+    from lionagi.cli import state
+    from lionhub.orchestration import job as _util
 
     path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", path)

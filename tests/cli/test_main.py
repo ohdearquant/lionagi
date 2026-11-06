@@ -10,9 +10,9 @@ import pytest
 import yaml
 
 from lionagi._feature_errors import MissingFeatureError
-from lionagi.cli._util import EXIT_CODE_ENVIRONMENT_ERROR
 from lionagi.cli.main import _handle_play_shortcut, main
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 
 
 def test_main_resolves_notify_settings_project_dir_from_cwd_flag(monkeypatch):

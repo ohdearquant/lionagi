@@ -57,7 +57,7 @@ def _grading_session(sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
     A run with exactly one session grades identically to before; the behaviour
     changes only where there is more than one session to disagree about.
     """
-    from lionagi.cli._util import EXIT_CODE_BY_STATUS
+    from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 
     if not sessions:
         return None
@@ -221,8 +221,8 @@ def exit_code_for_view(
     completion, 1 ordinary failure/completed_empty/skip, 2 unknown/no run, 3
     running, and the existing timeout/abort/cancel codes where a session or
     invocation status carries one."""
-    from lionagi.cli._inspection import EXIT_RUNNING, EXIT_UNKNOWN
-    from lionagi.cli._util import EXIT_CODE_BY_STATUS
+    from lionhub.orchestration.inspection import EXIT_RUNNING, EXIT_UNKNOWN
+    from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 
     if run is None:
         return EXIT_UNKNOWN

@@ -20,6 +20,9 @@ from lionagi.state._quarantine_identity import (
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 from lionhub.orchestration.console import log_error, warn
+from lionhub.orchestration.job import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
+from lionhub.orchestration.job import pid_alive as _pid_alive
+from lionhub.orchestration.job import resolve_entity as _resolve_entity
 
 from ._kill_service import (
     _REFUSED_SIGNAL_REASONS,
@@ -40,9 +43,6 @@ from ._kill_service import (
     unaddressable_pid_reason,
 )
 from ._pid_quarantine import quarantine_identity
-from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
-from ._util import pid_alive as _pid_alive
-from ._util import resolve_entity as _resolve_entity
 
 
 def _same_process_scope(left: dict[str, Any], right: dict[str, Any]) -> bool:

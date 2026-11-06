@@ -36,6 +36,7 @@ from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
 from lionhub.orchestration.console import hint, warn
+from lionhub.orchestration.job import validate_cwd_exists
 
 from .. import team as _team_module
 from .._providers import (
@@ -62,7 +63,6 @@ from .._runs import (
 from .._runs import (
     active_run_id as _active_run_id,
 )
-from .._util import validate_cwd_exists
 
 __all__ = (
     "OrchestrationEnv",
@@ -1397,7 +1397,7 @@ def attribute_worker_build_failure(exc: BaseException, *, agent_id: str, role: s
     would be recorded as a failure, which is a worse trade than losing the
     worker's name on a run that was deliberately stopped.
     """
-    from .._util import classify_exception
+    from lionhub.orchestration.job import classify_exception
 
     if classify_exception(exc) != "failed":
         return
