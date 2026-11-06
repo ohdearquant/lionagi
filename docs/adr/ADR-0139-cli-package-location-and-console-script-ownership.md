@@ -445,7 +445,7 @@ specs (`lionagi/_moved.py::_row`, and the comment in `lionagi/_moved.py::_MovedF
 that begins "Describe the old name the way the new module is described").
 
 The move-test enumerator accepts a module target without `__path__`
-(`tests/test_moved_modules.py:48`–`:59`).
+(`tests/test_moved_modules.py:65`–`:75`).
 The `_mirror_settings` row needs a data-only accommodation in the pickle-coverage
 test because the module defines no picklable object; keep pickle coverage unchanged
 for every other row (`tests/test_moved_modules.py:112`–`:128`).
