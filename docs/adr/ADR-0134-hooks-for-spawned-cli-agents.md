@@ -472,7 +472,7 @@ through it" into a type error for the path that does not.
   engine discovers none on its own, so a repository's `.mcp.json`, whose stdio servers are
   commands, reaches an agent only through lionagi. `li agent` passes one: without `--mcp-config` or
   `--no-mcp-config` it resolves the nearest `.mcp.json` at or above the directory it was launched
-  from (`resolve_spawn_mcp_servers`, `lionagi/cli/_mcp_resolve.py`) and passes its servers, so
+  from (`resolve_spawn_mcp_servers`, `lionhub/src/lionhub/orchestration/mcp_config.py`) and passes its servers, so
   under `li agent` a repository's stdio servers start, as on `main`, and `--no-mcp-config` is how a
   run declines them. That resolution is an explicit lionagi input, and this record keeps it. Under a
   redaction entry the servers lionagi passes, these included, are reached through the run's proxies
