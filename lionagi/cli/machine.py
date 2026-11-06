@@ -785,7 +785,7 @@ def dispatch_machine(argv: list[str]) -> int:
     disk it is an ordinary failure of that run and gets an envelope like any
     other.
     """
-    from ._util import run_was_allocated
+    from lionhub.orchestration.job import run_was_allocated
 
     with reserve_stdout() as channel:
         try:

@@ -324,6 +324,8 @@ MOVED_MODULES = (
     ("lionagi.cli._mcp_resolve", "lionhub.orchestration.mcp_config"),
     ("lionagi.cli._team_service", "lionhub.orchestration.team"),
     ("lionagi.cli._engine_definitions", "lionhub.orchestration.engine_definitions"),
+    ("lionagi.cli._util", "lionhub.orchestration.job"),
+    ("lionagi.cli._inspection", "lionhub.orchestration.inspection"),
 )
 _MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
 
@@ -377,6 +379,29 @@ MOVED_MODULE_PUBLIC_NAMES = {
     },
     "lionhub.orchestration.team": {"read_team_json"},
     "lionhub.orchestration.engine_definitions": {"import_engine_class"},
+    "lionhub.orchestration.job": {
+        "AmbiguousIdError",
+        "mark_run_allocated",
+        "begin_invocation",
+        "end_invocation",
+        "clear_run_allocation",
+        "run_was_allocated",
+        "validate_cwd_exists",
+        "classify_exception",
+        "pid_alive",
+        "recorded_pid_is_foreign",
+        "recorded_identity_mode",
+        "fetch_unique_row",
+        "resolve_entity",
+    },
+    "lionhub.orchestration.inspection": {
+        "fetch_by_id",
+        "run_id_candidates",
+        "resolve_agent_target",
+        "resolve_play_target",
+        "resolve_any_target",
+        "resolve_primary_session",
+    },
     # The request model, every class it is built from, and the developer-message helper.
     "lionagi.service.connections._chat_schemas": {
         "AssistantMessage",
@@ -405,6 +430,16 @@ MOVED_MODULE_PUBLIC_NAMES = {
 }
 
 MOVED_MODULE_PRIVATE_NAMES = {
+    "lionhub.orchestration.job": {
+        "_like_prefix_pattern",
+        "_fetch_exact_row",
+        "_fetch_prefix_rows",
+    },
+    "lionhub.orchestration.inspection": {
+        "_latest_session",
+        "_resolve_session_by_branch_id",
+        "_resolve_session_by_run_id",
+    },
     "lionhub.orchestration.console": {"_ErrorFormatter", "_LazyStderrHandler"},
     "lionhub.orchestration.project": {
         "_from_config_toml",
@@ -423,6 +458,29 @@ MOVED_MODULE_PRIVATE_NAMES = {
     "lionhub.orchestration.engine_definitions": {"_is_registered_engine_kind"},
 }
 MOVED_MODULE_SHARED_VALUES = {
+    "lionhub.orchestration.job": {
+        "EXIT_CODE_BY_STATUS",
+        "EXIT_CODE_ENVIRONMENT_ERROR",
+        "EXIT_CODE_SUBAGENT_REFUSED",
+        "UNRECOGNIZED_IDENTITY_MODE",
+        "BOOT_TIME_TOLERANCE",
+        "_allocation_lock",
+        "_invocations_in_flight",
+        "_run_allocated",
+        "_SEARCH_ORDER",
+        "_TABLE_TO_ENTITY_TYPE",
+        "_CANDIDATES_SHOWN",
+    },
+    "lionhub.orchestration.inspection": {
+        "_SESSION_SUCCESS",
+        "_SESSION_FAILURE",
+        "_PLAY_SUCCESS",
+        "_PLAY_FAILURE",
+        "EXIT_RUNNING",
+        "EXIT_UNKNOWN",
+        "_DB_BUSY_TIMEOUT_S",
+        "RUN_ID_THROUGH_T",
+    },
     "lionhub.orchestration.project": {
         "_SOURCE_CONFIG_TOML",
         "_SOURCE_GLOBAL_OVERRIDE",
@@ -565,6 +623,41 @@ for name in value_names:
     with patch(old + "." + name, sentinel):
         assert getattr(sys.modules[new], name) is sentinel
     assert getattr(first, name) is value
+
+if new == "lionhub.orchestration.job":
+    legacy = sys.modules[old]
+    canonical = sys.modules[new]
+    legacy.clear_run_allocation()
+    try:
+        legacy._invocations_in_flight = 3
+        assert canonical._invocations_in_flight == 3
+        canonical._invocations_in_flight = 0
+        assert legacy._invocations_in_flight == 0
+        legacy._run_allocated = True
+        assert canonical.run_was_allocated()
+        canonical._run_allocated = False
+        assert not legacy.run_was_allocated()
+
+        legacy.begin_invocation()
+        assert canonical._invocations_in_flight == 1
+        canonical.mark_run_allocated()
+        assert legacy.run_was_allocated()
+        canonical.end_invocation()
+        assert legacy._invocations_in_flight == 0
+        canonical.begin_invocation()
+        assert legacy._invocations_in_flight == 1
+        assert not legacy.run_was_allocated()
+        legacy.end_invocation()
+        assert canonical._invocations_in_flight == 0
+
+        consumer = importlib.import_module("lionagi.cli.main")
+        assert consumer.run_was_allocated is canonical.run_was_allocated
+        with patch(old + "._run_allocated", True):
+            assert consumer.run_was_allocated()
+        with patch(old + "._run_allocated", False):
+            assert not consumer.run_was_allocated()
+    finally:
+        canonical.clear_run_allocation()
 
 assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
 assert first.__spec__.name == new and first.__name__ == new

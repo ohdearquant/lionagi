@@ -21,8 +21,7 @@ else:
     _catalog_import_error = None
 
 from lionagi._log_channels import log_error
-
-from ._util import (
+from lionhub.orchestration.job import (
     EXIT_CODE_ENVIRONMENT_ERROR,
     begin_invocation,
     end_invocation,

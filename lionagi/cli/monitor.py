@@ -20,12 +20,12 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import parse_duration
 from lionagi.ln.concurrency import sleep
 from lionagi.state.engine import mask_credentials
+from lionhub.orchestration.job import AmbiguousIdError, fetch_unique_row, resolve_entity
+from lionhub.orchestration.job import pid_alive as _pid_alive_int
 from lionhub.orchestration.project import detect_project
 
 from ._runs import _resolved_run_state_dir
 from ._schedule_parsing import _chain_action_with_usable_selected_kind
-from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
-from ._util import pid_alive as _pid_alive_int
 
 __all__ = (
     "add_monitor_subparser",
@@ -1766,7 +1766,7 @@ def _dispatch_wait(
 
         resolved_roots = chain_state["resolved_roots"]
         chain_tail_exit = chain_state["chain_tail_exit"]
-        from ._util import EXIT_CODE_BY_STATUS
+        from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 
         session_ok = all(EXIT_CODE_BY_STATUS.get(r["status"], 1) == 0 for r in session_done)
         if unresolved:

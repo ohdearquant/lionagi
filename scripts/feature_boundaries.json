@@ -507,11 +507,6 @@
       "owner": "cli",
       "target_owner": "pending the CLI location decision (ADR-0139 D1)"
     },
-    "lionagi.cli._inspection": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.inspection"
-    },
     "lionagi.cli._kill_service": {
       "layer": "root",
       "owner": "cli",
@@ -551,11 +546,6 @@
       "layer": "root",
       "owner": "cli",
       "target_owner": "lionhub.orchestration.schedule"
-    },
-    "lionagi.cli._util": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.job"
     },
     "lionagi.cli.agent": {
       "layer": "root",

@@ -186,7 +186,7 @@ async def _active_resume_for_branch(branch_id: str) -> dict[str, Any] | None:
 async def _ensure_branch_snapshot_available(branch_id: str) -> None:
     """Require the exact branch snapshot that ``li agent -r`` will reopen."""
     from lionagi.cli._runs import find_branch
-    from lionagi.cli._util import AmbiguousIdError
+    from lionhub.orchestration.job import AmbiguousIdError
 
     try:
         _snapshot_run_id, snapshot_path = await asyncio.to_thread(find_branch, branch_id)
@@ -398,12 +398,12 @@ async def _resolve_flow_checkpoint(target: str) -> tuple[Any, dict[str, Any]]:
     checkpoint" answer and a CLI "no checkpoint" answer can never disagree
     about the same target. Raises RunResumeCheckpointError, never launches.
     """
-    from lionagi.cli._util import AmbiguousIdError
     from lionagi.cli.orchestrate._checkpoint import (
         FlowResumeError,
         UnsupportedFlowCheckpointVersionError,
         resolve_checkpoint_target,
     )
+    from lionhub.orchestration.job import AmbiguousIdError
 
     try:
         run_dir, checkpoint = await resolve_checkpoint_target(target)

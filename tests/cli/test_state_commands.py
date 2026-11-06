@@ -944,8 +944,8 @@ async def test_doctor_create_time_mismatch_is_platform_specific(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, linux: bool
 ):
     import lionagi.cli._kill_service as kill_service
-    from lionagi.cli import _util
     from lionagi.cli import kill as kill_mod
+    from lionhub.orchestration import job as _util
 
     monkeypatch.setattr(psutil, "LINUX", linux)
     monkeypatch.setattr(psutil, "Process", lambda _pid: object())
@@ -1182,7 +1182,7 @@ async def test_doctor_skips_runtimes_it_cannot_judge(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """`state doctor` asks this host's process table, so it may only judge rows about it — a shared-process or unmanaged-runtime row has no pid to contest the sweep and was wrongly marked aborted."""
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
 
     old = time.time() - (48 * 3600)
     async with StateDB() as db:

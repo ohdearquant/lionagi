@@ -35,10 +35,10 @@ from lionagi.tools.communication.messenger import LionMessenger
 from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionhub.orchestration.console import progress
 from lionhub.orchestration.console import warn as _warn
+from lionhub.orchestration.job import classify_exception
 
 from .._agent_depth import stamp_worker_depth
 from .._providers import _PROFILE_TOOL_FIELDS, _is_light_codex, parse_model_spec
-from .._util import classify_exception
 from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
 from ._common import (
     _build_worker_operate_node,

@@ -194,7 +194,7 @@ def test_invalid_identity_never_displays_quarantine(identity) -> None:
 def test_quarantine_rechecks_local_scope_without_boot_probe(
     scope, expected, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "test-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "test-host")
 
     def refuse_boot_probe():
         raise AssertionError("monitor must not probe boot time")

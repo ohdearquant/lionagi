@@ -70,7 +70,7 @@ def assert_no_startup_effects():
     assert not external_attempts, external_attempts
     assert 'lionagi.cli.doctor' not in sys.modules
     assert 'lionagi.cli.machine' not in sys.modules
-    util = sys.modules.get('lionagi.cli._util')
+    util = sys.modules.get('lionhub.orchestration.job')
     if util is not None:
         assert not util.run_was_allocated()
         assert util._invocations_in_flight == 0
@@ -376,7 +376,7 @@ def test_configuration_precedes_real_machine_output_and_keeps_the_core_emitter(
         assert 'lionagi.cli._logging' not in sys.modules
         assert events == ['configured', 'dispatch', 'emit']
         assert not external_attempts
-        from lionagi.cli import _util
+        from lionhub.orchestration import job as _util
         assert not _util.run_was_allocated()
         assert _util._invocations_in_flight == 0
         assert_checkout_origins()

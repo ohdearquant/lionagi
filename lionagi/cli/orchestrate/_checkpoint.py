@@ -19,9 +19,9 @@ from lionagi._checkpoint_version import (
 from lionagi._errors import LionError
 from lionagi._paths import RUNS_ROOT
 from lionagi.ln._json_dump import raise_if_non_finite
+from lionhub.orchestration.job import AmbiguousIdError
 
 from .._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
-from .._util import AmbiguousIdError
 
 __all__ = (
     "CHECKPOINT_VERSION",
@@ -238,8 +238,8 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
             return run_dir, load_checkpoint(run_dir.checkpoint_path)
         _raise_if_persistence_degraded(run_dir)
 
-    from lionagi.cli._inspection import resolve_any_target, resolve_primary_session
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.inspection import resolve_any_target, resolve_primary_session
 
     async with StateDB() as db:
         resolved = await resolve_any_target(db, target)

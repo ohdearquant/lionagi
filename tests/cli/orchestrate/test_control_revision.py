@@ -1082,7 +1082,7 @@ async def test_a_run_id_prefix_short_of_the_t_cannot_control_a_run(db_path, enti
     start of an entity id. It acts on no run, while read-only status keeps the
     broader lookup.
     """
-    from lionagi.cli import _inspection
+    from lionhub.orchestration import inspection as _inspection
 
     async with StateDB(db_path) as db:
         sid = await _named_session(db, "run-backed-session")
@@ -1108,8 +1108,8 @@ async def test_a_run_id_prefix_through_the_t_controls_its_run(db_path):
 
 async def test_a_branch_prefix_that_also_begins_a_run_is_refused(db_path):
     """The branch fallback refuses a cross-space match, as the entity search does."""
-    from lionagi.cli import _inspection
-    from lionagi.cli._util import AmbiguousIdError
+    from lionhub.orchestration import inspection as _inspection
+    from lionhub.orchestration.job import AmbiguousIdError
 
     async with StateDB(db_path) as db:
         branch_owner = await _named_session(db, "branch-owner-session")

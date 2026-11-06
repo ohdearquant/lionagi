@@ -198,7 +198,7 @@ async def test_drop_legacy_check_is_idempotent(tmp_path: Path):
 
 
 def test_cli_exit_code_map_matches_adr0025():
-    from lionagi.cli._util import EXIT_CODE_BY_STATUS as _EXIT_CODE_BY_TERMINAL_STATUS
+    from lionhub.orchestration.job import EXIT_CODE_BY_STATUS as _EXIT_CODE_BY_TERMINAL_STATUS
 
     # The table is 0 / 1 / 124 / 130 / 143. completed_empty (the
     # completion-trust gate) shares exit code 1 with failed — both are

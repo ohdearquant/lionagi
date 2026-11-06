@@ -2291,7 +2291,7 @@ async def test_cancel_run_id_prefix_candidates_cap_at_the_listing_size(tmp_path,
     reports candidates the same way the read-only resolver does -- at most the
     CLI helper's listing size, with truncation true because more rows matched
     than are returned."""
-    from lionagi.cli._util import _CANDIDATES_SHOWN
+    from lionhub.orchestration.job import _CANDIDATES_SHOWN
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2326,7 +2326,7 @@ async def test_cancel_run_id_prefix_exactly_the_listing_size_is_not_truncated(
 ):
     """Exactly the listing size of in-scope runs share an id prefix: every
     match is returned, so nothing was dropped and truncation is false."""
-    from lionagi.cli._util import _CANDIDATES_SHOWN
+    from lionhub.orchestration.job import _CANDIDATES_SHOWN
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
