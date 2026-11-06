@@ -242,7 +242,7 @@ def test_terminate_pid_reports_an_unreaped_process_dead_with_no_identity_to_chec
 def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
     """An unrelated process that only *mentions* lionagi in a path arg is rejected.
 
-    The reported false positive: ``vim /Users/lion/projects/lionagi/README.md``.
+    The reported false positive: ``vim /workspace/lionagi/README.md``.
     A substring match would signal this recycled PID; an exact-token match must not.
 
     ``expected_create_time`` is required and matched to the fake process's
@@ -252,7 +252,7 @@ def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
     """
     kill_calls = _mock_psutil(
         monkeypatch,
-        cmdline=["/usr/bin/vim", "/Users/lion/projects/lionagi/README.md"],
+        cmdline=["/usr/bin/vim", "/workspace/lionagi/README.md"],
     )
     result = _terminate_pid(
         42, grace_seconds=0.1, expected_cmd="lionagi", expected_create_time=100.0
@@ -364,7 +364,7 @@ def test_identity_absent_marker_rejects_nonlionagi_cmdline(monkeypatch: pytest.M
     """
     _mock_psutil(
         monkeypatch,
-        cmdline=["/usr/bin/vim", "/Users/lion/projects/lionagi/README.md"],
+        cmdline=["/usr/bin/vim", "/workspace/lionagi/README.md"],
         environ={},
         create_time=500.0,
     )
