@@ -33,8 +33,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from lionagi import Branch
-    from lionagi.cli._mcp_resolve import McpResolution
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.mcp_config import McpResolution
 
 __all__ = (
     "LIONAGI_HOME",
@@ -1496,7 +1496,7 @@ async def _has_assistant_output_evidence(db: StateDB, message_ids: list[str]) ->
 def _resolve_project(project: str | None) -> tuple[str | None, str | None]:
     if project:
         return project, "explicit"
-    from lionagi.cli._project import detect_project
+    from lionhub.orchestration.project import detect_project
 
     return detect_project()
 

@@ -463,7 +463,7 @@ def test_synced_mcp_json_is_readable_by_mcp_resolve_contract(tmp_path, monkeypat
     """The file Studio writes must be exactly what
     lionagi/cli/_mcp_resolve.py's own reader expects — this is the contract
     the CLI's spawn resolution depends on."""
-    from lionagi.cli._mcp_resolve import _read_servers
+    from lionhub.orchestration.mcp_config import _read_servers
 
     _, synced_path = _point_registry_at(tmp_path, monkeypatch)
     mcp_mod.register_server("myserver", STDIO_CONFIG)

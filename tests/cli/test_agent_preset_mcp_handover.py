@@ -266,7 +266,7 @@ async def test_named_marked_antigravity_config_refuses_malformed_snapshot_metada
 ):
     """The snapshot metadata is validated even when its carrier is explicit."""
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     snapshot = tmp_path / "marked.json"
     config = {
@@ -684,8 +684,8 @@ async def test_no_mcp_config_is_not_reported_as_servers_handed_over(spawn, codex
 @pytest.mark.asyncio
 async def test_named_mcp_config_that_does_not_exist_still_refuses_the_spawn(spawn, tmp_path):
     """An explicitly named config that cannot be used stays a loud failure."""
-    from lionagi.cli._mcp_resolve import McpConfigError
     from lionagi.cli.agent import _run_agent
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     with pytest.raises(McpConfigError):
         await _run_agent(
@@ -700,8 +700,8 @@ async def test_named_mcp_config_that_does_not_exist_still_refuses_the_spawn(spaw
 
 @pytest.mark.asyncio
 async def test_named_mcp_config_that_does_not_parse_still_refuses_the_spawn(spawn, tmp_path):
-    from lionagi.cli._mcp_resolve import McpConfigError
     from lionagi.cli.agent import _run_agent
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     broken = tmp_path / "broken.json"
     broken.write_text("{not json")

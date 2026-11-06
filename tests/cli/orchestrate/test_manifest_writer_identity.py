@@ -17,11 +17,11 @@ import pytest
 
 from lionagi import Branch
 from lionagi.cli import _runs, _util
-from lionagi.cli._mcp_resolve import McpResolution
 from lionagi.cli.orchestrate import _orchestration as orch
 from lionagi.cli.orchestrate import fanout, flow
 from lionagi.state import db as db_mod
 from lionagi.state.lifecycle import callbacks, notify_settings
+from lionhub.orchestration.mcp_config import McpResolution
 
 
 @pytest.mark.asyncio
@@ -61,7 +61,7 @@ async def test_orchestration_entrypoints_keep_manifest_directory_identity(
     monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {})
     monkeypatch.setattr(orch, "_resolve_project", lambda _project: ("fixture/project", "explicit"))
     monkeypatch.setattr(
-        "lionagi.cli._mcp_resolve.resolve_spawn_mcp_servers",
+        "lionhub.orchestration.mcp_config.resolve_spawn_mcp_servers",
         lambda *_args, **_kwargs: McpResolution(
             servers=None, reason="no_mcp_config_found", source=None, searched_from=tmp_path
         ),

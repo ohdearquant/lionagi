@@ -304,7 +304,7 @@ def test_flow_checkpoint_replays_snapshot_origin_and_refusal(submitted, monkeypa
             assert second_config["mcp_config_origin"] == "submit_snapshot"
             assert second_config["mcp_submit_snapshot"] == handle["mcp_config"]
             Path(handle["mcp_config"]).unlink()
-            from lionagi.cli._mcp_resolve import McpConfigError
+            from lionhub.orchestration.mcp_config import McpConfigError
 
             with pytest.raises(McpConfigError, match="mcp-submit-snapshot"):
                 await flow._resume_flow("original", retry_failed=True)
@@ -316,8 +316,8 @@ def test_flow_checkpoint_replays_snapshot_origin_and_refusal(submitted, monkeypa
 
 
 def test_submitted_agent_carries_ambient_snapshot_as_discovered(submitted):
-    from lionagi.cli._mcp_resolve import resolve_spawn_mcp_servers
     from lionagi.cli.agent import add_agent_subparser
+    from lionhub.orchestration.mcp_config import resolve_spawn_mcp_servers
 
     cwd, source, spawned = submitted
     handle = _submit("agent.submit", {"agent": "ordinary", "prompt": "work", "cwd": str(cwd)})

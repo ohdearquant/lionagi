@@ -34,7 +34,7 @@ CI tests Python 3.10-3.14 on PRs and `main`/`develop` pushes; only the manual `e
 - `lionagi/service/` — iModel, provider connections, rate limiting
 - `lionagi/ln/` — concurrency utils (alcall, bcall), fuzzy JSON, sentinels
 - `lionagi/tools/` — tool interfaces and built-ins
-- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `cli/_runs.py` (RunDir); `cli/team.py`; `cli/_project.py` (project detection). `li studio` / `li schedule` live in `lionagi/studio/cli.py`. CLI console output helpers live in `lionhub.orchestration.console`.
+- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `cli/_runs.py` (RunDir); `cli/team.py`; `lionhub.orchestration.project` (project detection). `li studio` / `li schedule` live in `lionagi/studio/cli.py`. CLI console output helpers live in `lionhub.orchestration.console`.
 - `tests/` — mirrors package structure
 - `benchmarks/` — micro-benchmark runners and baselines
 
@@ -171,7 +171,7 @@ name = "lionagi"
 github = "ohdearquant/lionagi"
 ```
 
-This is separate from `settings.yaml` (which is gitignored/local). The detection cascade at session creation (`lionagi/cli/_project.py`):
+This is separate from `settings.yaml` (which is gitignored/local). The detection cascade at session creation (`lionhub/src/lionhub/orchestration/project.py`):
 
 1. Walk up from cwd → read `.lionagi/config.toml` → `[project].name`
 2. Check `project_overrides` in `~/.lionagi/settings.yaml` (key = `org/repo` remote or absolute path prefix)

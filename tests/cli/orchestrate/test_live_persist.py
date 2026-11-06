@@ -117,7 +117,7 @@ async def test_start_live_persist_stashes_resolved_project_not_raw_arg(
     escalation-mirror-link hook) would see the unresolved raw value —- None
     here — instead of what the session row actually recorded."""
     monkeypatch.setattr(
-        "lionagi.cli._project.detect_project",
+        "lionhub.orchestration.project.detect_project",
         lambda cwd=None: ("acme/widget", "git_remote"),
     )
 

@@ -129,7 +129,7 @@ def patched_env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
-    import lionagi.cli._engine_definitions as cli_engine
+    import lionhub.orchestration.engine_definitions as cli_engine
 
     monkeypatch.setitem(
         cli_engine.KIND_META,

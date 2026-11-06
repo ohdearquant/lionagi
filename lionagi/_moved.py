@@ -75,6 +75,15 @@ MOVED: tuple[Moved, ...] = (
     Moved("lionagi.cli._code_identity", "lionhub.serve.diagnostics", "0.38.0", "2.0.0"),
     Moved("lionagi.cli._logging", "lionhub.orchestration.console", "0.38.0", "2.0.0"),
     Moved("lionagi.cli._mirror_settings", "lionhub.serve.mirror_settings", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._project", "lionhub.orchestration.project", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._mcp_resolve", "lionhub.orchestration.mcp_config", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._team_service", "lionhub.orchestration.team", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.cli._engine_definitions",
+        "lionhub.orchestration.engine_definitions",
+        "0.38.0",
+        "2.0.0",
+    ),
 )
 
 

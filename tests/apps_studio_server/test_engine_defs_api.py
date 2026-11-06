@@ -869,7 +869,7 @@ async def test_unknown_or_unreadable_legacy_kind_is_read_only(patched_app, kind)
 async def test_create_and_kind_update_follow_registry_addition_and_removal(
     patched_app, monkeypatch
 ):
-    import lionagi.cli._engine_definitions as registry
+    import lionhub.orchestration.engine_definitions as registry
 
     _, db_path, client = patched_app
     def_id = await _seed_engine_def(db_path, name="registry-target", kind="review")
@@ -904,7 +904,7 @@ async def test_create_and_kind_update_follow_registry_addition_and_removal(
 async def test_write_options_follow_registry_option_addition_without_changing_legacy_wrapper(
     patched_app, monkeypatch
 ):
-    import lionagi.cli._engine_definitions as registry
+    import lionhub.orchestration.engine_definitions as registry
     from lionagi.studio.services.engine_defs import _validate_options
 
     meta = dict(registry.KIND_META["hypothesis"])
@@ -940,7 +940,7 @@ async def test_write_options_follow_registry_option_addition_without_changing_le
 async def test_write_required_flags_follow_registry_without_changing_legacy_wrapper(
     patched_app, monkeypatch
 ):
-    import lionagi.cli._engine_definitions as registry
+    import lionhub.orchestration.engine_definitions as registry
     from lionagi.studio.services.engine_defs import _validate_kind_options
 
     meta = dict(registry.KIND_META["coding"])

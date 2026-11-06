@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 import toml
 
+from tests._engine_loader_support import engine_import_package  # noqa: F401
+
 # Loggers mutated by lionhub.orchestration.console.configure_cli_logging(). Tests that
 # drive main() end-to-end trigger that call, which sets propagate=False and
 # attaches stderr handlers — breaking caplog for any test that runs later in

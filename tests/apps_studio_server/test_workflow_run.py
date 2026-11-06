@@ -117,7 +117,7 @@ def patched_env(tmp_path: Path, monkeypatch):
     # constant, not re-read per call) — both attrs need patching, matching the
     # convention already established in test_admin.py.
 
-    import lionagi.cli._engine_definitions as cli_engine
+    import lionhub.orchestration.engine_definitions as cli_engine
 
     monkeypatch.setitem(
         cli_engine.KIND_META,
@@ -192,7 +192,7 @@ async def test_workflow_run_all_agents_failed_reports_failed_not_completed(
     'failed', not silently report 'completed' with an empty result."""
     wf_svc, engine_defs_svc = patched_env
 
-    import lionagi.cli._engine_definitions as cli_engine
+    import lionhub.orchestration.engine_definitions as cli_engine
 
     monkeypatch.setitem(
         cli_engine.KIND_META,

@@ -71,7 +71,7 @@ takes stdout away from everything except the envelope at the file-descriptor lev
 the result; `dispatch_machine` runs one machine command and turns any failure into an envelope
 rather than a traceback.
 
-## `_mcp_resolve.py` — MCP server resolution at submit time
+## `lionhub/src/lionhub/orchestration/mcp_config.py` — MCP server resolution at submit time
 
 A CLI-backed agent otherwise discovers MCP servers by walking up from its own working
 directory, making its tool surface a property of *where it was told to work* rather than of the

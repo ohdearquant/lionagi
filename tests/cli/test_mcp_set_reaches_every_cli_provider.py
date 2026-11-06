@@ -1330,7 +1330,7 @@ async def test_resumed_leg_whose_search_finds_nothing_keeps_the_previous_runs_se
     leaves a new leg to what its CLI finds, and disables none of codex's own."""
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
-    from lionagi.cli._mcp_resolve import McpResolution
+    from lionhub.orchestration.mcp_config import McpResolution
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
     branch_id = _wire_resume_stubs(
@@ -1488,7 +1488,7 @@ async def test_a_resume_whose_recorded_config_is_gone_names_it(monkeypatch, tmp_
     """The caller passed no --mcp-config, so the refusal names the config the
     branch was launched with and says to start a fresh run."""
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
     gone = tmp_path / "gone" / ".mcp.json"
@@ -1519,7 +1519,7 @@ async def test_a_recorded_config_that_cannot_even_be_read_is_refused_by_name(
     resume in its own words, before anything is spawned."""
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
     if kind == "not_utf8":
@@ -1560,7 +1560,7 @@ async def test_a_recorded_config_that_can_no_longer_be_used_names_it(monkeypatch
     """The file is there but no longer reads as a config. The refusal still names
     the recorded config without exposing malformed contents, and says to start a fresh run."""
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
     broken = tmp_path / "broken" / ".mcp.json"
@@ -1627,7 +1627,7 @@ async def test_a_resume_naming_a_removed_generated_codex_profile_is_refused(
     instead. While the file is there, the leg keeps it."""
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     if profile_on_disk:
         (codex_home.path / f"{_GENERATED_PROFILE}.config.toml").write_text(

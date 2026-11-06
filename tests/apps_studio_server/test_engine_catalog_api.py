@@ -62,7 +62,7 @@ def _encode_bytes(raw: bytes) -> str:
 
 
 async def test_blueprints_describe_registered_runtime_inputs_and_options(catalog_app):
-    from lionagi.cli._engine_definitions import KIND_META
+    from lionhub.orchestration.engine_definitions import KIND_META
 
     _, client = catalog_app
     async with client as ac:

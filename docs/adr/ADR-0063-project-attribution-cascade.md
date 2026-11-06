@@ -67,7 +67,7 @@ This ADR deliberately does **not** decide:
 The detector contract is the actual Python signature:
 
 ```python
-# lionagi/cli/_project.py
+# lionhub/src/lionhub/orchestration/project.py
 def detect_project(
     cwd: Path | None = None,
 ) -> tuple[str | None, str | None]: ...
@@ -113,7 +113,7 @@ project_source  TEXT
 - An explicit project is recognized by truthiness. An empty string is not stored as
   `explicit`; it falls through to detection.
 - Detector-produced project names are strings, but no identifier grammar is enforced
-  in `_project.py` itself.
+  in `project.py` itself.
 - `project_source` is meaningful only with a project. `StateDB.set_session_provenance`
   writes the two together when `project is not None`.
 - The database column is not constrained to the detector vocabulary. Other ingestion
@@ -191,7 +191,7 @@ the explanation singular and cheap.
 The source helpers are:
 
 ```python
-# lionagi/cli/_project.py
+# lionhub/src/lionhub/orchestration/project.py
 def _from_config_toml(cwd: Path) -> tuple[str | None, str | None]: ...
 def _read_project_from_toml(path: Path) -> str | None: ...
 def _from_global_overrides(
@@ -350,7 +350,7 @@ Only the label enters the schedule request body; the detector source is discarde
 
 - Mirror catches every detector exception before applying its fallback.
 - An existing directory's final path component becomes the fallback project name; it
-  is not normalized or registered through `_project.py`.
+  is not normalized or registered through `project.py`.
 - A missing mirror directory is grouped under the literal project `others`.
 - Explicit schedule project input bypasses detection.
 - Auto-detected schedule input is validated with the scheduler's identifier rule;

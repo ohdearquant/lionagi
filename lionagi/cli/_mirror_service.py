@@ -150,7 +150,7 @@ def _fallback_project(cwd: str) -> tuple[str, str]:
 
 def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
     """Project + source for a cwd: detect_project, else the folder-name fallback."""
-    from ._project import detect_project
+    from lionhub.orchestration.project import detect_project
 
     try:
         project, source = detect_project(Path(cwd))

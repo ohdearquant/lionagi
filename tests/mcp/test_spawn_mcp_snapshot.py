@@ -13,7 +13,11 @@ import json
 
 import pytest
 
-from lionagi.cli._mcp_resolve import McpConfigError, discover_mcp_config, resolve_spawn_mcp_servers
+from lionhub.orchestration.mcp_config import (
+    McpConfigError,
+    discover_mcp_config,
+    resolve_spawn_mcp_servers,
+)
 from lionhub.serve.mcp import config, dispatch, jobs
 
 
@@ -227,7 +231,9 @@ def test_dispatch_refuses_an_exclusion_when_no_server_set_resolves(
 ):
     """Nothing resolved means nothing to remove, so the exclusion cannot be honoured."""
     if declared is None:
-        monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+        monkeypatch.setattr(
+            "lionhub.orchestration.mcp_config.discover_mcp_config", lambda start: None
+        )
     else:
         (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": declared}))
     spawned: list = []
@@ -256,7 +262,7 @@ def test_no_config_anywhere_is_reported_not_raised(sandbox, submit_dir, monkeypa
     """Nothing configured is a choice, not a failure — the run still starts and
     the handle says why it has no servers."""
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc())
-    monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+    monkeypatch.setattr("lionhub.orchestration.mcp_config.discover_mcp_config", lambda start: None)
 
     handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
     assert handle["mcp_config"] is None
@@ -267,7 +273,7 @@ def test_no_config_anywhere_is_reported_not_raised(sandbox, submit_dir, monkeypa
 def test_the_exclusion_is_recorded_as_asked(sandbox, submit_dir, monkeypatch, asked, recorded):
     """null says no exclusion was asked for; an empty list says one was asked for and named none."""
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc())
-    monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+    monkeypatch.setattr("lionhub.orchestration.mcp_config.discover_mcp_config", lambda start: None)
 
     handle = jobs.submit(
         "agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir), exclude_mcp_servers=asked

@@ -36,6 +36,16 @@ Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0.
 | `lionagi.providers._subagent_admission` | `lionagi.service._subagent_admission` |
 | `lionagi.providers.openai._chat_schemas` | `lionagi.service.connections._chat_schemas` |
 
+The shared CLI leaf modules below are deprecated at their old paths in 0.38.0
+and are scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.cli._project` | `lionhub.orchestration.project` |
+| `lionagi.cli._mcp_resolve` | `lionhub.orchestration.mcp_config` |
+| `lionagi.cli._team_service` | `lionhub.orchestration.team` |
+| `lionagi.cli._engine_definitions` | `lionhub.orchestration.engine_definitions` |
+
 ## Tests
 
 From the repository root, install the project dependencies and run:
@@ -48,7 +58,8 @@ uv run pytest lionhub/tests
 Some integration tests exercise optional dependencies or local subprocesses.
 Tests that also cover core behavior remain under the repository's `tests/` tree.
 The LionHub tests currently depend on the repository's `tests/` package: they
-share `tests/_shared_conftest.py` and use helpers from `tests/providers/` and
-`tests/mcp/`. Run them from a complete repository checkout with both test trees
+share `tests/_shared_conftest.py` and supporting fixtures and helpers under
+`tests/`, including `tests/providers/` and `tests/mcp/`. Run them from a complete
+repository checkout with both test trees
 available. A separately distributed LionHub test suite will need those shared
 fixtures and helpers supplied or moved with it.

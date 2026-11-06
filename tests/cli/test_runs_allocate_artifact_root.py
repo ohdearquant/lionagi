@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 import lionagi.cli._runs as runs_mod
-from lionagi.cli._mcp_resolve import McpResolution
 from lionagi.cli._runs import allocate_run
+from lionhub.orchestration.mcp_config import McpResolution
 
 
 def test_allocate_run_creates_artifact_root_default(tmp_path, monkeypatch):

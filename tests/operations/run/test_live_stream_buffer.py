@@ -25,7 +25,7 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.delenv("LIONAGI_STATE_DB_URL", raising=False)
     monkeypatch.setattr("lionagi._paths._find_git_root", lambda _cwd: None)
-    monkeypatch.setattr("lionagi.cli._project._find_git_root", lambda _cwd: None)
+    monkeypatch.setattr("lionhub.orchestration.project._find_git_root", lambda _cwd: None)
 
 
 def _run_dir(tmp_path):

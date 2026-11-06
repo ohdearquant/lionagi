@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ADR-0063 project detection (lionagi/cli/_project.py)."""
+"""Project detection from configuration, remotes, and overrides."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from lionagi import _paths
-from lionagi.cli._project import (
+from lionhub.orchestration.project import (
     _parse_remote_url,
     _read_project_from_toml,
     detect_project,
@@ -114,7 +114,7 @@ class TestDetectProject:
 
     def test_lionagi_repo_detection(self):
         """Smoke test: detect_project from the actual lionagi repo should find config.toml."""
-        repo_root = Path(__file__).resolve().parents[2]
+        repo_root = Path(__file__).resolve().parents[4]
         config_toml = repo_root / ".lionagi" / "config.toml"
         if not config_toml.exists():
             pytest.skip(".lionagi/config.toml not present in checkout")

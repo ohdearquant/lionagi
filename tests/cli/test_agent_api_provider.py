@@ -1562,7 +1562,7 @@ async def test_the_run_record_of_a_refused_turn_carries_the_stop_reason(leg, tmp
 
     # Keep project discovery offline while retaining the real run allocator.
     monkeypatch.setattr("lionagi._paths._find_git_root", lambda _cwd: None)
-    monkeypatch.setattr("lionagi.cli._project._find_git_root", lambda _cwd: None)
+    monkeypatch.setattr("lionhub.orchestration.project._find_git_root", lambda _cwd: None)
     monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {"pid": 4242})
     allocated = []
     allocate = agent_mod.allocate_run

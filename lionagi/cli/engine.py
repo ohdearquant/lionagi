@@ -17,8 +17,7 @@ from lionagi._cli_worker_context import _bind_cli_worker_recorder
 from lionagi._provider_errors import _WorkerSpawnAdmissionError
 from lionagi.ln import compute_hash
 from lionhub.orchestration.console import log_error, progress, warn
-
-from ._engine_definitions import KIND_META, import_engine_class
+from lionhub.orchestration.engine_definitions import KIND_META, import_engine_class
 
 if TYPE_CHECKING:
     from lionagi.state.cli_workers import _WorkerSpawnOwner

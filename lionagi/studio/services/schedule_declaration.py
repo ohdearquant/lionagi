@@ -1129,7 +1129,7 @@ async def _adopt_project_pair(
         if root[1] is None:
             return ("unknown",), "detected from the scheduler working directory"
         try:
-            from lionagi.cli._project import detect_project
+            from lionhub.orchestration.project import detect_project
 
             project, _source = detect_project(Path(root[1]))
         except (OSError, RuntimeError, ValueError):
