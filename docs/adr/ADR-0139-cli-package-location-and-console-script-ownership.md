@@ -2,7 +2,7 @@
 
 - **Status**: Proposed; D1 is adopted with the CLI at `lionhub.cli`; D5 and the 2.0 release date stay Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: partial — the command catalog has moved to `lionhub.cli.catalog`, with five lazy forwards in `lionagi._auto`; argument types and diagnostics have moved to `lionhub.orchestration.arguments` and `lionhub.serve.diagnostics`, with their old import paths in `lionagi._moved`; console logging and mirror settings have moved to `lionhub.orchestration.console` and `lionhub.serve.mirror_settings`, with their old import paths in `lionagi._moved`; project detection, MCP configuration, the team reader, and engine definitions have moved to `lionhub.orchestration.project`, `lionhub.orchestration.mcp_config`, `lionhub.orchestration.team`, and `lionhub.orchestration.engine_definitions`, with their old import paths in `lionagi._moved`; the other step-3 modules, D5, the console-script move, and the 2.0 date remain open
+- **Implementation-status**: partial — the command catalog has moved to `lionhub.cli.catalog`, with five lazy forwards in `lionagi._auto`; argument types and diagnostics have moved to `lionhub.orchestration.arguments` and `lionhub.serve.diagnostics`, with their old import paths in `lionagi._moved`; console logging and mirror settings have moved to `lionhub.orchestration.console` and `lionhub.serve.mirror_settings`, with their old import paths in `lionagi._moved`; project detection, MCP configuration, the team reader, and engine definitions have moved to `lionhub.orchestration.project`, `lionhub.orchestration.mcp_config`, `lionhub.orchestration.team`, and `lionhub.orchestration.engine_definitions`, with their old import paths in `lionagi._moved`; invocation state and shared inspection helpers have moved to `lionhub.orchestration.job` and `lionhub.orchestration.inspection`, with their old import paths in `lionagi._moved`; the other step-3 modules, D5, the console-script move, and the 2.0 date remain open
 - **Area**: cli-surface
 - **Date**: 2026-10-26
 - **Relations**: resolves the CLI decisions deferred by ADR-0136 D7; amends its A4 item 6, B2 step 6 and D7 layout; amends the location references in ADR-0062 D1–D5; specializes the optional base-launcher choice in ADR-0122 D8; complements ADR-0138.
@@ -73,7 +73,7 @@ The D2 whole-module table repeats that ownership (`docs/adr/ADR-0139-cli-package
 
 > | `lionagi/cli/_schedule_parsing.py:1` (created by the in-place preparation; absent at 04e03ffe) | `lionhub.orchestration.schedule.parsing` | Entire module: flow-option declarations, create-request builder, schedule subparser, base-URL resolution, timeout wording, schedule reason normalization and flag suggestion. Imports no execution handler. |
 
-That allocation conflates two parsers. At `4af5b0a9`, the scheduler derives reserved **`li o flow`** option strings by importing `add_orchestrate_subparser` from `lionagi.cli._orchestrate_parsing` and selecting its flow parser (`lionagi/studio/scheduler/subprocess.py:237`–`:261`). `lionagi/cli/_schedule_parsing.py` has no reference to `_orchestrate_parsing`, `add_orchestrate_subparser`, or `_reserved_flow_flags` at this revision. The orchestration parser and MCP option helper are already in a separate in-place file (`lionagi/cli/_orchestrate_parsing.py:7`, `:10`, `:41`, `:174`, `:398`–`:399`). The retained orchestration adapter reexports both helpers (`lionagi/cli/orchestrate/__init__.py:26`–`:27`).
+That allocation conflates two parsers. At `4af5b0a9`, the scheduler derives reserved **`li o flow`** option strings by importing `add_orchestrate_subparser` from `lionagi.cli._orchestrate_parsing` and selecting its flow parser (`lionagi/studio/scheduler/subprocess.py:237`–`:261`). `lionagi/cli/_schedule_parsing.py` has no reference to `_orchestrate_parsing`, `add_orchestrate_subparser`, or `_reserved_flow_flags` at this revision. The orchestration parser and MCP option helper are already in a separate in-place file (`lionagi/cli/_orchestrate_parsing.py:7`, `:10`, `:41`, `:174`, `:398`–`:399`). The retained orchestration adapter reexports both helpers (`lionagi/cli/orchestrate/__init__.py:26`–`:27`). The line numbers are at `4af5b0a9d16f20ea3328ef4555926af6b66b71ad`.
 
 **Decision.**
 
@@ -331,7 +331,7 @@ This historical extraction has already happened in place: at the citation refere
 `register_branch_hook` is defined in `lionagi/cli/_runs.py:1922` and imported by the
 orchestration adapter (`lionagi/cli/orchestrate/_orchestration.py:58`). It moves with the
 whole `_runs` module above, not as a second extraction or a duplicate implementation.
-The retained adapter keeps its binding to the same function after the move.
+The retained adapter keeps its binding to the same function after the move. The line numbers are at `95b97d21f3ef78b69f8232ee23280dc6da911bce`.
 
 The table fixes ownership and the source groups, not new command semantics.
 Extraction introduces public service names for private helpers used across the
@@ -350,7 +350,7 @@ The shared dependency closure is part of step 3:
   `lionagi/cli/_runs.py:1499`, `lionagi/cli/_runs.py:2053`,
   `lionagi/cli/_runs.py:2273`). The line numbers are at `8c2134d5a821a66c6cfb23cf6f754980a3f67ff8`.
 - Checkpoint resolution uses public inspection services instead of the retained
-  status adapter (`lionagi/cli/orchestrate/_checkpoint.py:241`).
+  status adapter (`lionagi/cli/orchestrate/_checkpoint.py:242`). The line numbers are at `4cb34cb94f0a11ea0c0989ee722f6ab5c0650bb8`.
 - Shared code and Studio use the existing neutral log emitters. Their identity
   already comes from `lionagi._log_channels`. The formatter configuration in
   `lionagi/cli/_logging.py` (lines 10 and 91 at 04e03ffe) moves whole to
@@ -367,7 +367,7 @@ The shared dependency closure is part of step 3:
   At the citation reference it imports the in-place orchestration parser directly
   (`lionagi/studio/scheduler/subprocess.py:251`); the parser and MCP argument helper live in
   `lionagi/cli/_orchestrate_parsing.py:42` and `:10`, and the adapter reexports them at
-  `lionagi/cli/orchestrate/__init__.py:26-27`. The scheduler continues to derive its reserved
+  `lionagi/cli/orchestrate/__init__.py:27-28` at `4cb34cb94f0a11ea0c0989ee722f6ab5c0650bb8`. The scheduler continues to derive its reserved
   flow flags from that parser, and the retained adapter keeps those same function bindings.
 
 In step 3, after catalog creation, extract the wheel-owned adapters
