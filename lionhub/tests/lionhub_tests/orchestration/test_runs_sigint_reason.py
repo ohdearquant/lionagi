@@ -5,13 +5,25 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
+
+import lionagi.ln.concurrency.utils as cu
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
+
+
+@pytest.fixture(autouse=True)
+def _fresh_sigterm_latch(monkeypatch):
+    """Isolate the process-wide SIGTERM latch: a latch left set by another test
+    in the same worker would turn a plain cancellation into a SIGTERM one."""
+    monkeypatch.setattr(cu, "_SIGTERM_RECEIVED", threading.Event())
 
 
 def test_resolve_run_reason_aborted_returns_cancelled_sigint():
     """Status "aborted" (KeyboardInterrupt / SIGINT) → CANCELLED_SIGINT."""
-    from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
     from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration.runs import resolve_run_reason as _resolve_run_reason
 
     code, summary, evidence = _resolve_run_reason(status="aborted", exception=None)
     assert code == RunReasons.CANCELLED_SIGINT, (
@@ -22,8 +34,8 @@ def test_resolve_run_reason_aborted_returns_cancelled_sigint():
 
 def test_resolve_run_reason_aborted_not_aborted_user():
     """ABORTED_USER must NOT be written for SIGINT — it is reserved for other user aborts."""
-    from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
     from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration.runs import resolve_run_reason as _resolve_run_reason
 
     code, _, _ = _resolve_run_reason(status="aborted", exception=None)
     assert code != RunReasons.ABORTED_USER, (
@@ -41,8 +53,8 @@ def test_resolve_run_reason_cancelled_sigint_is_defined():
 
 def test_resolve_run_reason_other_statuses_unaffected():
     """Non-aborted statuses must still resolve to their existing reason codes."""
-    from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
     from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration.runs import resolve_run_reason as _resolve_run_reason
 
     code, _, _ = _resolve_run_reason(status="completed", exception=None)
     assert code == RunReasons.COMPLETED_OK

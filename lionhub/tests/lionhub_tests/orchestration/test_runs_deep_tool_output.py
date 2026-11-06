@@ -12,7 +12,6 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
-from lionagi.cli._runs import _make_message_handler
 from lionagi.protocols.messages.action_request import ActionRequest, ActionRequestContent
 from lionagi.protocols.messages.action_response import (
     _OUTPUT_TOO_DEEP,
@@ -21,6 +20,8 @@ from lionagi.protocols.messages.action_response import (
 )
 from lionagi.state.compat import StateCompatibilityRefused
 from lionagi.state.db import StateDB
+from lionhub.orchestration.runs import _make_message_handler
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 pytestmark = pytest.mark.asyncio
 

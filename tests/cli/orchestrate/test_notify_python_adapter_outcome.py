@@ -26,8 +26,8 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._notify import deliver_flow_notify_now
+from lionhub.orchestration.runs import RunDir
 
 _ADAPTER_MODULE = "_lionagi_test_notify_adapter"
 

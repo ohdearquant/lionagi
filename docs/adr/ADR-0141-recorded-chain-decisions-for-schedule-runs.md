@@ -64,7 +64,7 @@ Each reader below is listed with what it does with the list and what it does wit
 | R14 | `apps/vscode/src/api/types.ts:29`, `:78`; `apps/vscode/src/runs/runDetailPanel.ts:313`, `:329-345`, `:357-372` | Typed as records. The run and invocation banner payloads copy the list | Passed through | No: run and invocation detail |
 | R15 | `apps/vscode/media/runDetail.js:328-336` | Shows the count of entries as "N evidence ref(s)" | Counted as evidence. Misleading | No: run and invocation banners |
 
-Skipped writers: `lionagi/studio/scheduler/engine.py` (the terminal, selection and setup-failure writes), `lionagi/studio/services/scheduler_state.py:398-589`, `lionagi/studio/services/admin.py:93`, `:1162-1400` (it reads only the list its caller passes and appends its own kinds), `lionagi/studio/services/lifecycle.py:150-777`, `lionagi/cli/_runs.py:1079-1373`, `:1438`, `lionagi/cli/orchestrate/flow.py:705-863`, `:3614`, `lionagi/cli/_kill_service.py:529`, `lionagi/studio/services/shows.py:533-723`, `lionagi/studio/services/launches.py:321`, `:362`, `lionagi/state/_mirror_common.py:349`, `lionagi/state/transitions.py:33`, `:111`, `lionagi/state/lifecycle/models.py:59`, `lionagi/state/lifecycle/service.py:343-353`, `:354-367`, `:1111-1160`, the writes in `lionagi/state/db.py`, the schema declarations in `lionagi/state/schema.sql`, `lionagi/state/schema_meta.py` and `lionagi/state/schema_migrations.py`, and `lionagi/casts/emission.py:170`, whose `evidence_refs` is an unrelated `list[str]` field.
+Skipped writers: `lionagi/studio/scheduler/engine.py` (the terminal, selection and setup-failure writes), `lionagi/studio/services/scheduler_state.py:398-589`, `lionagi/studio/services/admin.py:93`, `:1162-1400` (it reads only the list its caller passes and appends its own kinds), `lionagi/studio/services/lifecycle.py:150-777`, `lionhub/src/lionhub/orchestration/runs.py:1079-1373`, `lionhub/src/lionhub/orchestration/runs.py:1438`, `lionagi/cli/orchestrate/flow.py:709-867`, `:3618`, `lionhub/src/lionhub/orchestration/kill.py:529`, `lionagi/studio/services/shows.py:533-723`, `lionagi/studio/services/launches.py:321`, `:362`, `lionagi/state/_mirror_common.py:349`, `lionagi/state/transitions.py:33`, `:111`, `lionagi/state/lifecycle/models.py:59`, `lionagi/state/lifecycle/service.py:343-353`, `:354-367`, `:1111-1160`, the writes in `lionagi/state/db.py`, the schema declarations in `lionagi/state/schema.sql`, `lionagi/state/schema_meta.py` and `lionagi/state/schema_migrations.py`, and `lionagi/casts/emission.py:170`, whose `evidence_refs` is an unrelated `list[str]` field.
 
 No reader breaks on an unknown kind. R15 would count the element as evidence if it ever received a schedule-run list; it is not reached by schedule-run rows today, and D1 does not change that. R7 is reached: the list, element included, passes through to HTTP API clients, and the Studio client declares no field for it.
 
@@ -133,7 +133,7 @@ Exact semantics:
 - Dispatched recovery: unchanged. `if not written: continue` already applies (`engine.py:1318-1319`).
 - Setup failure: unchanged. It returns before any chain (`engine.py:3155`).
 - Cancellation: unchanged. The cancellation handler never launches a follow-up.
-- The invocation write does not gate the chain. An invocation-side loss with a schedule_run win still chains. The schedule_run row is the one the monitor reads (`lionagi/cli/monitor.py:1484-1490`).
+- The invocation write does not gate the chain. An invocation-side loss with a schedule_run win still chains. The schedule_run row is the one the monitor reads (`lionagi/cli/monitor.py:1484-1490` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)).
 
 Why this way: a lost compare-and-set means another finalizer owns the row's follow-on effects. Recovery already encodes that rule (`engine.py:1299-1301`). The normal path applies it too, which removes P3.
 
@@ -149,7 +149,7 @@ A row created in a terminal state carries the `none` element in the first write 
 
 Exact semantics: the element is `{"kind": "chain_decision", "v": 1, "ref": "none"}`. These rows launch no follow-up before or after this change.
 
-Why this way: D4 makes the monitor return at once on `none`. Today these rows already resolve at once, because the monitor skips `cancelled` and `skipped` rows and rows without an exit code (`lionagi/cli/monitor.py:1579-1592`). That rule is a status list. The element makes the same outcome a property of the row.
+Why this way: D4 makes the monitor return at once on `none`. Today these rows already resolve at once, because the monitor skips `cancelled` and `skipped` rows and rows without an exit code (`lionagi/cli/monitor.py:1579-1592` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)). That rule is a status list. The element makes the same outcome a property of the row.
 
 ### D4: The monitor follows the recorded selection
 
@@ -227,8 +227,8 @@ Existing tests that must stay unchanged, because their fixtures carry no ref and
 - **A dedicated `schedule_runs.chain_decision` column, with a schema version bump and a mutable admission receipt.** The receipt would move through pending, admitted, refused and unknown, and would be written together with the child insert. It would buy the monitor a way to tell a refused child from a late one, and a crash in the window from a grace expiry. It is rejected for this change, for two reasons. A version bump makes readers below the new version refuse the store (`lionagi/state/db.py:1804-1806`, `:1881`). The receipt also ties the parent row's update to the child's insert, which the scheduler does not do today. The disagreements in P1, P2 and P3 all arise when the parent row becomes terminal, before any grace window opens, so recording the decision in that write removes them; the receipt's extra states address a slow or lost child insert, which Consequences 1 to 3 record as limitations.
 - **Keep inferring from `exit_code` and the stored schedule.** Rejected. This is P1 and P2. An exit-0 child whose invocation is `completed_empty` produces a branch disagreement (`engine.py:3291-3296`, `monitor.py:1526-1541`). An edit after the run changes the monitor's answer and nothing else.
 - **Gate only the chain on the compare-and-set and keep inferring afterwards.** This is the smallest diff, and it is D2 alone. It removes P3 but leaves P1 and P2. The monitor still derives the branch from status and the stored schedule.
-- **Record the choice on the invocation row.** Rejected. The monitor reads the schedule_run (`lionagi/cli/monitor.py:1484-1490`). The invocation's terminal write is a separate compare-and-set (`engine.py:3333-3344`) whose outcome is not tied to the schedule_run's. A choice on the invocation row could be absent, or could disagree with the schedule_run the monitor reads.
-- **Lengthen the grace window.** Rejected. A longer wait hides the disagreement without removing it. The status-versus-exit-code and edit cases return the wrong answer at any grace length. The bound is part of the wait's contract (`lionagi/cli/monitor.py:1289`).
+- **Record the choice on the invocation row.** Rejected. The monitor reads the schedule_run (`lionagi/cli/monitor.py:1483-1489`). The invocation's terminal write is a separate compare-and-set (`engine.py:3333-3344`) whose outcome is not tied to the schedule_run's. A choice on the invocation row could be absent, or could disagree with the schedule_run the monitor reads.
+- **Lengthen the grace window.** Rejected. A longer wait hides the disagreement without removing it. The status-versus-exit-code and edit cases return the wrong answer at any grace length. The bound is part of the wait's contract (`lionagi/cli/monitor.py:1288`).
 
 ## Open questions
 
@@ -236,5 +236,5 @@ Existing tests that must stay unchanged, because their fixtures carry no ref and
 
 ## Notes
 
-- `lionagi/cli/monitor.py:1290-1291` repeats `_MAX_CHAIN_DEPTH` from `lionhub/src/lionhub/orchestration/schedule/parsing.py:83` at `19cc2240b0ed76c4211b41441a36d547fcd6301f`. The existing rule still uses the copy (`monitor.py:1583-1584`). This ADR does not remove it.
+- `lionagi/cli/monitor.py:1289-1290` repeats `_MAX_CHAIN_DEPTH` from `lionhub/src/lionhub/orchestration/schedule/parsing.py:83` at `19cc2240b0ed76c4211b41441a36d547fcd6301f`. The existing rule still uses the copy (`monitor.py:1583-1584`). This ADR does not remove it.
 - The cap in D1 is `_MAX_CHAIN_DEPTH = 10`, which ADR-0070 D4 describes as a safety cap with no measured basis.

@@ -62,6 +62,22 @@ from lionhub.orchestration.mcp_config import (
     explicit_mcp_config_path,
     resolve_spawn_mcp_servers,
 )
+from lionhub.orchestration.runs import (
+    SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
+    TERMINAL_WRITE_LOST_FIELD,
+    RunDir,
+    _signal_window_marker,
+    _write_signal_persistence_degraded_at,
+    _write_terminal_write_lost,
+    allocate_run,
+    find_branch,
+    load_last_branch,
+    lost_terminal_write,
+    resolve_run_reason,
+    save_last_branch_pointer,
+    setup_agent_persist,
+    teardown_agent_persist,
+)
 from lionhub.orchestration.spawn import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
@@ -92,22 +108,6 @@ from ._context_from import (
     DEFAULT_CONTEXT_BUDGET_TOKENS,
     ContextFromError,
     resolve_and_build_context_block,
-)
-from ._runs import (
-    SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
-    TERMINAL_WRITE_LOST_FIELD,
-    RunDir,
-    _signal_window_marker,
-    _write_signal_persistence_degraded_at,
-    _write_terminal_write_lost,
-    allocate_run,
-    find_branch,
-    load_last_branch,
-    lost_terminal_write,
-    resolve_run_reason,
-    save_last_branch_pointer,
-    setup_agent_persist,
-    teardown_agent_persist,
 )
 
 # Preset names supported by --preset.

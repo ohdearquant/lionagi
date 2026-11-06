@@ -20,9 +20,10 @@ from pathlib import Path
 
 import pytest
 
-import lionagi.cli._runs as runs_mod
-from lionagi.cli._runs import allocate_run
+import lionhub.orchestration.runs as runs_mod
 from lionhub.orchestration.mcp_config import McpResolution
+from lionhub.orchestration.runs import allocate_run
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 def test_allocate_run_creates_artifact_root_default(tmp_path, monkeypatch):
@@ -128,7 +129,7 @@ def test_allocate_run_records_resolved_cwd_and_mcp_discovery_provenance(tmp_path
 
 
 def test_path_resolved_run_preserves_execution_provenance(tmp_path, monkeypatch):
-    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+    import lionhub.orchestration.flow.checkpoint as checkpoint_mod
 
     runs_root = tmp_path / "runs"
     launch_dir = tmp_path / "workspace"
@@ -165,7 +166,7 @@ def test_a_manifest_that_cannot_be_read_stops_the_write_instead_of_dropping_prov
 ):
     if os.geteuid() == 0:
         pytest.skip("root reads a file whose mode denies it, so the case cannot be set up")
-    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+    import lionhub.orchestration.flow.checkpoint as checkpoint_mod
 
     runs_root = tmp_path / "runs"
     launch_dir = tmp_path / "workspace"
@@ -370,7 +371,7 @@ def test_binding_provenance_holds_the_manifest_lock_across_its_read_and_rewrite(
 def test_a_manifest_that_cannot_be_decoded_stops_the_write_instead_of_dropping_provenance(
     tmp_path, monkeypatch
 ):
-    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+    import lionhub.orchestration.flow.checkpoint as checkpoint_mod
 
     runs_root = tmp_path / "runs"
     launch_dir = tmp_path / "workspace"

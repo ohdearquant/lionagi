@@ -483,10 +483,10 @@ def test_route_delete_ordinary_agent_is_200(tmp_path, monkeypatch):
 
 
 def _make_definitions_client(tmp_path, monkeypatch):
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.agents as agents_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()

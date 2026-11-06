@@ -9,9 +9,10 @@ import uuid
 
 import pytest
 
-from lionagi.cli import _runs, monitor
+from lionagi.cli import monitor
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
+from lionhub.orchestration import runs as _runs
 
 
 def _write_live_buffer(run_dir, branch_id, chunks):

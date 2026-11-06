@@ -75,7 +75,7 @@ async def test_resolution_reports_probe_failure_separately_without_mutation(
 
     monkeypatch.setattr(kill_cli, "check_pid_identity", probe)
     signal = Mock(side_effect=AssertionError("signal must not be sent"))
-    monkeypatch.setattr("lionagi.cli._kill_service.os.kill", signal)
+    monkeypatch.setattr("lionhub.orchestration.kill.os.kill", signal)
     assert await kill_cli._resolve_quarantine(entity_id, target="failed", reason="reviewed") == 1
     assert await _snapshot(kind, entity_id) == before
     signal.assert_not_called()

@@ -1559,7 +1559,7 @@ resolution time would let a race during that gap either write to a run that
 changed ownership or silently no-op in a way the caller couldn't
 distinguish from success.
 
-`cancel_run` additionally reuses `lionagi.cli._kill_service`'s exact primitives
+`cancel_run` additionally reuses `lionhub.orchestration.kill`'s exact primitives
 (`kill_one`, `list_running_children`) so a cancellation from the Operator
 is indistinguishable from one issued through `li kill --recursive`: running
 children are signalled deepest-first so none are orphaned, and
@@ -1715,7 +1715,7 @@ A **branch id** (`claim_branch_id`) is a different, longer-lived identity:
 the id every turn of a conversation builds its in-process `Branch` with.
 Before this existed, every turn constructed a brand-new `Branch()` with a
 fresh random id, so the CLI's own persistence path
-(`setup_agent_persist` in `lionagi/cli/_runs.py`) saw a never-before-seen
+(`setup_agent_persist` in `lionhub/src/lionhub/orchestration/runs.py`) saw a never-before-seen
 id each time and created a new `sessions` row per turn instead of one row
 per conversation. Feeding back the same claimed id lets that existing
 "resume" logic run instead — it looks up the id in the `branches` table

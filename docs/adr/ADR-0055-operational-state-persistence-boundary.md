@@ -60,7 +60,7 @@ This ADR deliberately does **not** decide:
   ADR-0058 defines its target consolidation.
 - An immutable file-evidence or blob-retention design. No such contract is shipped; the first delta
   below identifies the required follow-up.
-- Filesystem run-layout persistence in `lionagi/cli/_runs.py`. That layout is a CLI concern and is
+- Filesystem run-layout persistence in `lionhub/src/lionhub/orchestration/runs.py`. That layout is a CLI concern and is
   not an alternate implementation of `StateDB`.
 
 ## Decision

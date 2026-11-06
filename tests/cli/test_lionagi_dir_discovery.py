@@ -25,7 +25,7 @@ import lionagi._paths as paths
 def test_save_last_branch_pointer_visible_to_discovery(monkeypatch, tmp_path):
     """`save_last_branch_pointer()` creates `~/.lionagi` on first use; a
     prior empty-result call must not shadow it."""
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
 
     lionagi_home = tmp_path / ".lionagi"
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -46,7 +46,7 @@ def test_run_dir_ensure_state_dirs_visible_to_discovery(monkeypatch, tmp_path):
     """`RunDir.ensure_state_dirs()` (the first directory write of a normal
     `li agent` invocation, via `allocate_run()`) creates `~/.lionagi/runs/{run_id}/`
     before `save_last_branch_pointer()` ever runs; discovery must see it too."""
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
 
     lionagi_home = tmp_path / ".lionagi"
     monkeypatch.setenv("HOME", str(tmp_path))

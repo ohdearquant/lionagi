@@ -1239,7 +1239,7 @@ profile already carries its own complete system prompt).
 
 Task-producing `agent`, fan-out, flow, and playbook invocations allocate a run
 directory. Administrative commands such as `doctor` and `monitor` do not. Run
-IDs use the format `YYYYMMDDTHHMMSS-{6hex}`. Source: `cli/_runs.py`.
+IDs use the format `YYYYMMDDTHHMMSS-{6hex}`. Source: `lionhub/src/lionhub/orchestration/runs.py`.
 
 ```text
 ~/.lionagi/runs/{run_id}/
@@ -1269,7 +1269,7 @@ li agent -c "continue most recent"
 
 | Variable | Purpose | Source |
 |----------|---------|--------|
-| `LIONAGI_RUN_ID` | When explicitly set for a task-producing child process, reuse the supplied run ID | `cli/_runs.py` |
+| `LIONAGI_RUN_ID` | When explicitly set for a task-producing child process, reuse the supplied run ID | `lionhub/src/lionhub/orchestration/runs.py` |
 | `LIONAGI_HOME` | Override `~/.lionagi/` base dir | `lionagi/utils.py` |
 | `LIONAGI_WORKER_LIVENESS_TIMEOUT` | Seconds `run()` waits for a CLI worker's first stream chunk before retrying once, then raising `WorkerLivenessError`; default `120`, `0` disables. Applied by default only to endpoints that stream output early (`claude_code`, `codex`) — buffered endpoints (`gemini-cli`, `pi`) are unaffected unless `liveness_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
 | `LIONAGI_WORKER_IDLE_TIMEOUT` | Maximum silence between chunks from an early-streaming CLI worker; resets per chunk, defaults to `600`, and `0` disables. A miss after partial output raises `WorkerLivenessError` (`worker.stream_idle`) without retry. Buffered endpoints are unaffected unless `idle_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
@@ -1282,6 +1282,6 @@ li agent -c "continue most recent"
 
 ---
 
-*Sources: `cli/agent.py` · `cli/team.py` · `cli/orchestrate/__init__.py` · `cli/orchestrate/fanout.py` · `cli/orchestrate/flow.py` · `lionhub/src/lionhub/orchestration/spawn.py` · `cli/_runs.py`*
+*Sources: `cli/agent.py` · `cli/team.py` · `cli/orchestrate/__init__.py` · `cli/orchestrate/fanout.py` · `cli/orchestrate/flow.py` · `lionhub/src/lionhub/orchestration/spawn.py` · `lionhub/src/lionhub/orchestration/runs.py`*
 
 Next: [Python API reference](api/index.md)

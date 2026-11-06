@@ -199,7 +199,7 @@ def test_quarantine_rechecks_local_scope_without_boot_probe(
     def refuse_boot_probe():
         raise AssertionError("monitor must not probe boot time")
 
-    monkeypatch.setattr("lionagi.cli._kill_service.psutil.boot_time", refuse_boot_probe)
+    monkeypatch.setattr("lionhub.orchestration.kill.psutil.boot_time", refuse_boot_probe)
     row = {
         "id": "sample",
         "status": "running",

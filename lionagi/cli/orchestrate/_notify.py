@@ -31,7 +31,7 @@ from lionagi.state.lifecycle.notify_settings import (
 )
 
 if TYPE_CHECKING:
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
 __all__ = (
     "deliver_flow_notify_now",

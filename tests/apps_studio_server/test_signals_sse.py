@@ -532,12 +532,12 @@ async def test_setup_agent_persist_wires_signal_bind(tmp_path, monkeypatch):
 
     monkeypatch.setattr(db_mod, "StateDB", _PatchedStateDB)
     # Also patch the import inside _runs.py (function-local import).
-    import lionagi.cli._runs as persist_mod
+    import lionhub.orchestration.runs as persist_mod
 
     monkeypatch.setattr(persist_mod, "StateDB", _PatchedStateDB, raising=False)
 
-    from lionagi.cli._runs import setup_agent_persist, teardown_persist
     from lionagi.session.signal import RunStart
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_persist
 
     try:
         from lionagi import Branch

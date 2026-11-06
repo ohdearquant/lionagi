@@ -23,8 +23,8 @@ class _Process:
 
 @pytest.fixture
 def submitted(tmp_path, monkeypatch):
-    from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.orchestration.runs import RunDir
 
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
@@ -237,7 +237,7 @@ def test_flow_checkpoint_replays_snapshot_origin_and_refusal(submitted, monkeypa
     from lionagi._errors import ConfigurationError
     from lionagi.cli.orchestrate import _orchestration as orch
     from lionagi.cli.orchestrate import flow
-    from lionagi.cli.orchestrate._checkpoint import CheckpointWriter, load_checkpoint
+    from lionhub.orchestration.flow.checkpoint import CheckpointWriter, load_checkpoint
 
     cwd, source, spawned = submitted
     args = {"agent": "ordinary", "prompt": "work", "cwd": str(cwd)}

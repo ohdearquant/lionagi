@@ -23,8 +23,8 @@ import pytest
 
 import lionagi.cli.orchestrate._orchestration as orch_mod
 from lionagi._errors import ConfigurationError
-from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
+from lionhub.orchestration.runs import RunDir
 from lionhub.orchestration.spawn import AgentProfile
 from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 from lionhub.providers.openai import _codex_project_layers as project_layers
@@ -319,7 +319,7 @@ async def test_setup_persists_execution_provenance(tmp_run, monkeypatch, tmp_pat
     from types import SimpleNamespace
 
     import lionagi.casts.catalog as catalog
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
 
     target_dir = tmp_path / "target"

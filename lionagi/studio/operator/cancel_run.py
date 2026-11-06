@@ -492,8 +492,8 @@ async def _await_deferred_cancel(operation):
 
 
 async def _execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
-    from lionagi.cli._kill_service import NOT_STOPPED_SIGNALS, kill_one, list_running_children
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+    from lionhub.orchestration.kill import NOT_STOPPED_SIGNALS, kill_one, list_running_children
 
     run_id = command.get("session_id")
     if not isinstance(run_id, str) or not run_id:

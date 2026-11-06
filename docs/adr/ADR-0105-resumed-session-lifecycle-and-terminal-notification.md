@@ -24,7 +24,7 @@ an inbox notice to the submitting seat.
 Resume legs do neither. The leg finishes, and nothing announces it.
 
 **P1 — A resumed leg's terminal callback never fires.** `setup_agent_persist`
-(`lionagi/cli/_runs.py`) creates a session row with `"status": "running"` on the
+(`lionhub/src/lionhub/orchestration/runs.py`) creates a session row with `"status": "running"` on the
 new-branch path. On the resume path it looks up `existing_branch`, adopts its
 `session_id`, and never touches the session's status. That session was already
 terminalized to `completed` by the leg that created it. At teardown the resumed leg
@@ -270,9 +270,9 @@ decision. Results:
 | `studio/services/sessions.py` `is_session_stream_done` (callers in the same file) | Re-evaluated each poll; a closed stream stays closed, a stream opened during the window stays open | unaffected |
 | `studio/services/run_view.py` `build_outcome` | Falls through to invocation/occurrence while running, self-corrects when the leg closes | transient only |
 | `studio/services/run_view.py` `exit_code_for_view` | Returns the running exit code during the window, which is what is true | unaffected |
-| `cli/_runs.py` linked-engine phantom-failure suppression | Does not fire mid-window; falls back to today's behaviour | unaffected |
-| `cli/_runs.py` teardown terminal-skip guard | **Changes**: see below | intended |
-| `cli/_runs.py` `BRANCH_END` emission | Reads a local `final_status`, not the row | unaffected |
+| `lionhub/src/lionhub/orchestration/runs.py` linked-engine phantom-failure suppression | Does not fire mid-window; falls back to today's behaviour | unaffected |
+| `lionhub/src/lionhub/orchestration/runs.py` teardown terminal-skip guard | **Changes**: see below | intended |
+| `lionhub/src/lionhub/orchestration/runs.py` `BRANCH_END` emission | Reads a local `final_status`, not the row | unaffected |
 | `cli/monitor.py` `_effective_session_status` | Early-returns on terminal, reconciles while running | unaffected |
 | `cli/monitor.py` `_poll_pending_sessions_once` | Completed sessions leave the pending set and are never re-added | unaffected |
 | `cli/wait.py` terminal-status waits | A waiter started mid-window waits for the resume leg, which is the leg it cares about | unaffected |
@@ -286,7 +286,7 @@ decision. Results:
 
 No consumer breaks. Four findings need stating; two of them needed a fix.
 
-**The teardown terminal-skip guard starts working.** `cli/_runs.py` skips its status
+**The teardown terminal-skip guard starts working.** `lionhub/src/lionhub/orchestration/runs.py` skips its status
 write when the session was already terminal at teardown start, logging that the earlier
 terminal record is protected. Before D1 that meant a resumed leg's outcome was silently
 dropped. After D1 the session is `running` at teardown, so the write lands and the

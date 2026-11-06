@@ -30,8 +30,8 @@ from lionagi.studio.operator.store import OperatorStore
 
 
 def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
-    import lionagi.cli._runs as runs_mod
     import lionagi.state.db as state_db_mod
+    import lionhub.orchestration.runs as runs_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
@@ -96,8 +96,8 @@ def test_failed_proposal_does_not_claim_untouched_without_evidence():
 
 @pytest.mark.parametrize("degraded", [False, True])
 async def test_cancel_signal_wait_does_not_block_event_loop(tmp_path, monkeypatch, degraded):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -136,8 +136,8 @@ async def test_cancel_signal_wait_does_not_block_event_loop(tmp_path, monkeypatc
 
 
 async def test_degraded_manifest_settlement_does_not_block_event_loop(tmp_path, monkeypatch):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -173,8 +173,8 @@ async def test_degraded_manifest_settlement_does_not_block_event_loop(tmp_path, 
 async def test_cancel_wait_defers_task_cancellation_until_proposal_is_persisted(
     tmp_path, monkeypatch
 ):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -238,8 +238,8 @@ async def test_cancel_wait_defers_task_cancellation_until_proposal_is_persisted(
 async def test_direct_cancel_waits_for_signal_and_persistence_before_cancellation(
     tmp_path, monkeypatch, degraded
 ):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -289,7 +289,7 @@ async def test_direct_cancel_waits_for_signal_and_persistence_before_cancellatio
 def test_termination_does_not_escalate_on_reused_pid(monkeypatch):
     from types import SimpleNamespace
 
-    from lionagi.cli import _kill_service
+    from lionhub.orchestration import kill as _kill_service
 
     signals = []
     verdicts = iter(["ours", "not_ours"])
@@ -311,7 +311,7 @@ def test_termination_does_not_escalate_on_reused_pid(monkeypatch):
 def test_signal_recorder_records_each_successful_signal(monkeypatch):
     from types import SimpleNamespace
 
-    from lionagi.cli import _kill_service
+    from lionhub.orchestration import kill as _kill_service
 
     signals = []
     recorded = []
@@ -336,7 +336,7 @@ def test_signal_recorder_records_each_successful_signal(monkeypatch):
 
 
 def test_degraded_cli_signal_helper_remains_synchronous(monkeypatch):
-    from lionagi.cli import _kill_service
+    from lionhub.orchestration import kill as _kill_service
 
     caller_thread = threading.get_ident()
     invoked = []
@@ -360,7 +360,7 @@ def test_degraded_cli_signal_helper_remains_synchronous(monkeypatch):
 def test_signal_recorder_does_not_count_unsuccessful_signals(monkeypatch, error):
     from types import SimpleNamespace
 
-    from lionagi.cli import _kill_service
+    from lionhub.orchestration import kill as _kill_service
 
     def refuse(_pid, _signal):
         raise error
@@ -378,9 +378,9 @@ def test_signal_recorder_does_not_count_unsuccessful_signals(monkeypatch, error)
 
 
 async def test_cancel_does_not_hide_failed_proposal_persistence(tmp_path, monkeypatch):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
     from lionagi.studio.operator.coordinator import OperatorAuditUnavailableError
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -436,8 +436,8 @@ async def test_cancel_does_not_hide_failed_proposal_persistence(tmp_path, monkey
 
 
 async def test_cancel_during_child_signal_finishes_child_then_session(tmp_path, monkeypatch):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -516,9 +516,9 @@ async def test_cancel_during_child_signal_finishes_child_then_session(tmp_path, 
 async def test_cancel_reports_session_persistence_failure(
     tmp_path, monkeypatch, coordinated, cancelled, audit_fails, signal_case
 ):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
     from lionagi.studio.operator.coordinator import OperatorAuditUnavailableError
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -665,10 +665,10 @@ async def test_cancel_reports_session_persistence_failure(
 
 
 async def test_resume_during_studio_signal_wait_keeps_new_generation(tmp_path, monkeypatch):
-    from lionagi.cli import _kill_service
-    from lionagi.cli._runs import _reopen_session_for_resume
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration import kill as _kill_service
+    from lionhub.orchestration.runs import _reopen_session_for_resume
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -736,8 +736,8 @@ async def test_resume_during_studio_signal_wait_keeps_new_generation(tmp_path, m
 async def test_rejected_session_update_is_not_reported_terminal(
     tmp_path, monkeypatch, cancel_status
 ):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -760,8 +760,8 @@ async def test_rejected_session_update_is_not_reported_terminal(
 
 
 async def test_terminal_reread_from_new_generation_is_not_old_run_success(tmp_path, monkeypatch):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -787,8 +787,8 @@ async def test_terminal_reread_from_new_generation_is_not_old_run_success(tmp_pa
 
 
 async def test_child_state_write_is_not_untouched_after_parent_rejection(tmp_path, monkeypatch):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -825,8 +825,8 @@ async def test_child_state_write_is_not_untouched_after_parent_rejection(tmp_pat
 
 
 async def test_session_write_is_not_untouched_after_new_generation_reread(tmp_path, monkeypatch):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -854,8 +854,8 @@ async def test_session_write_is_not_untouched_after_new_generation_reread(tmp_pa
 
 
 async def test_degraded_manifest_write_is_not_untouched(tmp_path, monkeypatch):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -883,8 +883,8 @@ async def test_degraded_manifest_write_is_not_untouched(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("signal_case", ["sigterm", "already_dead", "no_pid"])
 async def test_missing_session_generation_is_a_nonwrite_refusal(tmp_path, monkeypatch, signal_case):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -931,8 +931,8 @@ async def test_missing_session_generation_is_a_nonwrite_refusal(tmp_path, monkey
 
 
 async def test_missing_generation_refusal_preserves_observed_signal(tmp_path, monkeypatch):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -959,10 +959,10 @@ async def test_missing_generation_refusal_preserves_observed_signal(tmp_path, mo
 async def test_runner_cancelled_same_generation_reports_command_outcome(
     tmp_path, monkeypatch, sent_signal
 ):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
     from lionagi.studio.operator.cancel_run import _redacted_cancel_result
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1008,8 +1008,8 @@ async def test_runner_cancelled_same_generation_reports_command_outcome(
 
 @pytest.mark.parametrize("coordinated", [False, True])
 async def test_parent_write_failure_reports_prior_child_signal(tmp_path, monkeypatch, coordinated):
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1092,8 +1092,8 @@ async def test_parent_write_failure_remembers_term_before_child_identity_mismatc
 ):
     from types import SimpleNamespace
 
-    from lionagi.cli import _kill_service
     from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as _kill_service
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1709,8 +1709,8 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
             "pid": row.get("node_metadata", {}).get("pid"),
         }
 
-    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
+    import lionhub.orchestration.kill as kill_service
 
     monkeypatch.setattr(kill_mod, "kill_one", fake_kill_one)
     monkeypatch.setattr(kill_service, "kill_one", fake_kill_one)
@@ -1787,8 +1787,8 @@ async def test_execute_cancel_command_terminalized_during_approval_is_not_cancel
         )
         return await real_kill_one(db, entity_type, entity_id, row, **kwargs)
 
-    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
+    import lionhub.orchestration.kill as kill_service
 
     real_kill_one = kill_mod.kill_one
     monkeypatch.setattr(kill_mod, "kill_one", racing_kill_one)
@@ -1822,8 +1822,8 @@ async def test_cancel_run_allow_path_identity_mismatch_reports_not_cancelled(tmp
             "pid": row.get("node_metadata", {}).get("pid"),
         }
 
-    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
+    import lionhub.orchestration.kill as kill_service
 
     monkeypatch.setattr(kill_mod, "kill_one", fake_kill_one)
     monkeypatch.setattr(kill_service, "kill_one", fake_kill_one)

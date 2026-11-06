@@ -265,8 +265,8 @@ async def test_a_resumed_turn_failing_before_the_cli_reports_a_session_stays_fai
     has reported. A provider error before any session event must not be settled by the status
     of the previous turn's session, which is already completed in the store; once the stream
     has reported the session, the run is settled by that session as before."""
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch, iModel
     from lionagi._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session

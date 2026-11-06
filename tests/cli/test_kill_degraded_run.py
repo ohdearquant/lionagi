@@ -27,90 +27,21 @@ from unittest.mock import AsyncMock
 import psutil
 import pytest
 
-from lionagi.cli._kill_service import _settle_degraded_run
-from lionagi.cli._runs import (
+from lionagi.cli.kill import _do_kill, _do_kill_all_stale
+from lionagi.ln._proc import raw_create_time
+from lionhub.orchestration.kill import _settle_degraded_run
+from lionhub.orchestration.runs import (
     PERSISTENCE_DEGRADED_REASON_FIELD,
     _record_persistence_degraded,
     _run_manifest_lock,
-    allocate_run,
 )
-from lionagi.cli.kill import _do_kill, _do_kill_all_stale
-from lionagi.ln._proc import raw_create_time
-
-RUN_ID = "20261005T030000-abc123"
-
-
-@pytest.fixture(autouse=True)
-def stable_boot_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep host-scoped process identity checks deterministic."""
-    monkeypatch.setattr(psutil, "boot_time", lambda: 1_700_000_000.0)
-
-
-@pytest.fixture
-def runs_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
-    root = tmp_path / "runs"
-    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", root)
-    return root
-
-
-@pytest.fixture
-def leg(tmp_path: Path):
-    """A process `li kill` identifies as a lionagi CLI: a script named `li`, run by its shebang."""
-    script = tmp_path / "bin" / "li"
-    script.parent.mkdir()
-    script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(300)\n")
-    script.chmod(0o755)
-    proc = subprocess.Popen([str(script)])  # noqa: S603
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:  # the shebang has to have replaced the image first
-        try:
-            if os.path.basename(psutil.Process(proc.pid).cmdline()[-1]) == "li":
-                break
-        except (psutil.NoSuchProcess, psutil.AccessDenied, IndexError):
-            pass
-        time.sleep(0.05)
-    yield proc
-    if proc.poll() is None:
-        proc.kill()
-    proc.wait()
-
-
-def _markers(pid: int) -> dict:
-    return {
-        "pid": pid,
-        "pid_create_time": raw_create_time(psutil.Process(pid)),
-        "pid_host": socket.gethostname(),
-        "pid_boot_time": psutil.boot_time(),
-        "process_identity_mode": "local",
-    }
-
-
-def _write_run(root: Path, manifest: dict, run_id: str = RUN_ID) -> Path:
-    path = root / run_id / "run.json"
-    path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"run_id": run_id, **manifest}))
-    return path
-
-
-def _degraded(pid: int, **extra) -> dict:
-    return {
-        "status": "running",
-        PERSISTENCE_DEGRADED_REASON_FIELD: "OperationalError('database is locked')",
-        **_markers(pid),
-        **extra,
-    }
-
-
-def _assert_manifest_lock_is_held(state_root: Path, flock) -> None:
-    import fcntl
-
-    fd = os.open(state_root / ".run.json.lock", os.O_RDWR)
-    try:
-        with pytest.raises(BlockingIOError):
-            flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    finally:
-        os.close(fd)
+from tests._kill_degraded_run_test_support import RUN_ID as RUN_ID
+from tests._kill_degraded_run_test_support import _degraded as _degraded
+from tests._kill_degraded_run_test_support import _markers as _markers
+from tests._kill_degraded_run_test_support import _write_run as _write_run
+from tests._kill_degraded_run_test_support import leg as leg
+from tests._kill_degraded_run_test_support import runs_root as runs_root
+from tests._kill_degraded_scope_test_support import stable_boot_time as stable_boot_time
 
 
 @pytest.mark.asyncio
@@ -219,131 +150,6 @@ async def test_a_run_id_another_invocation_now_records_is_left_to_it(
         proc.wait()
 
 
-def test_a_record_written_while_the_kill_settles_waits_for_it_and_is_kept(
-    runs_root, leg, monkeypatch
-):
-    """The kill reads run.json again and writes under the run's manifest lock, which every run.json
-    writer takes. Another invocation sharing the run id that records itself after that read waits
-    for the kill's write, and its record is the one left."""
-    import lionagi.cli._kill_service as kill_service
-    import lionagi.cli.kill as kill_mod
-
-    run = allocate_run(run_id=RUN_ID)
-    stopped = {"run_id": RUN_ID, **_degraded(leg.pid)}
-    run.manifest_path.write_text(json.dumps(stopped))
-    other = {"status": "running", "pid": os.getpid(), "pid_create_time": 1.0}
-    writer_started = threading.Event()
-    writer_finished = threading.Event()
-    lock_attempted = threading.Event()
-    writer = None
-    import fcntl
-
-    actual_flock = fcntl.flock
-
-    def observe_flock(fd, operation):
-        if threading.current_thread() is writer:
-            lock_attempted.set()
-        return actual_flock(fd, operation)
-
-    def write_next_manifest():
-        writer_started.set()
-        run.write_manifest(other)
-        writer_finished.set()
-
-    writer = threading.Thread(target=write_next_manifest)
-
-    def read_then_record(text):
-        current = json.loads(text)
-        writer.start()  # the other invocation records itself after the kill's read
-        assert writer_started.wait(timeout=10)
-        assert lock_attempted.wait(timeout=10)
-        _assert_manifest_lock_is_held(run.state_root, actual_flock)
-        return current
-
-    monkeypatch.setattr(fcntl, "flock", observe_flock)
-    monkeypatch.setattr(kill_service, "json", SimpleNamespace(loads=read_then_record))
-    _settle_degraded_run(run.manifest_path, stopped)
-    writer.join(10)
-
-    assert not writer.is_alive()
-    assert writer_finished.is_set()
-    final = json.loads(run.manifest_path.read_text())
-    assert (final["status"], final["pid"]) == ("running", os.getpid())
-
-
-@pytest.mark.parametrize("writer", ["write_manifest", "degradation record"])
-def test_every_run_json_writer_waits_for_the_manifest_lock(runs_root, monkeypatch, writer):
-    import fcntl
-
-    run = allocate_run(run_id=RUN_ID)
-    write = {
-        "write_manifest": lambda: run.write_manifest({"status": "running", "pid": 1}),
-        "degradation record": lambda: _record_persistence_degraded(RuntimeError("locked"), run=run),
-    }[writer]
-    before = run.manifest_path.read_text()
-    writer_started = threading.Event()
-    writer_finished = threading.Event()
-    lock_attempted = threading.Event()
-    thread = None
-    actual_flock = fcntl.flock
-
-    def observe_flock(fd, operation):
-        if threading.current_thread() is thread:
-            lock_attempted.set()
-        return actual_flock(fd, operation)
-
-    def write_manifest():
-        writer_started.set()
-        write()
-        writer_finished.set()
-
-    thread = threading.Thread(target=write_manifest)
-    with _run_manifest_lock(run.state_root):
-        monkeypatch.setattr(fcntl, "flock", observe_flock)
-        thread.start()
-        assert writer_started.wait(timeout=10)
-        assert lock_attempted.wait(timeout=10)
-        _assert_manifest_lock_is_held(run.state_root, actual_flock)
-        assert run.manifest_path.read_text() == before
-    thread.join(10)
-    assert not thread.is_alive()
-    assert writer_finished.is_set()
-    assert run.manifest_path.read_text() != before
-
-
-def test_a_run_json_whose_lock_cannot_be_taken_is_left_as_it_is(runs_root, leg, caplog):
-    path = _write_run(runs_root, _degraded(leg.pid))
-    before = path.read_text()
-    (path.parent / ".run.json.lock").mkdir()  # an open for writing fails on a directory
-
-    with caplog.at_level(logging.WARNING):
-        _settle_degraded_run(path, json.loads(before))
-
-    assert path.read_text() == before
-    assert "run.json lock could not be taken" in caplog.text
-
-
-@pytest.mark.parametrize("writer", ["write_manifest", "degradation record"])
-def test_a_writer_that_cannot_take_the_lock_still_writes(runs_root, writer, caplog):
-    """A run's own writes do not depend on the lock: one that cannot be taken (here a directory in
-    its place) is written without it, with a warning, as before the lock existed."""
-    run = allocate_run(run_id=RUN_ID)
-    lock = run.state_root / ".run.json.lock"
-    lock.unlink()  # allocating the run wrote its placeholder, and so made the lock file
-    lock.mkdir()
-    write = {
-        "write_manifest": lambda: run.write_manifest({"status": "running", "pid": 1}),
-        "degradation record": lambda: _record_persistence_degraded(RuntimeError("locked"), run=run),
-    }[writer]
-    before = run.manifest_path.read_text()
-
-    with caplog.at_level(logging.WARNING):
-        write()
-
-    assert run.manifest_path.read_text() != before
-    assert "written without its lock" in caplog.text
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("unreadable", ["half written", "removed"])
 @pytest.mark.parametrize("reached", ["by its run id", "through an imported row"])
@@ -448,7 +254,7 @@ async def test_a_recycled_pid_is_not_signalled(runs_root, leg, caplog, monkeypat
 async def test_create_time_mismatch_refuses_degraded_kill_on_each_platform(
     runs_root, monkeypatch, caplog, linux, expected_message
 ):
-    import lionagi.cli._kill_service as kill_service
+    import lionhub.orchestration.kill as kill_service
     from lionagi.cli import kill as kill_mod
 
     monkeypatch.setattr(psutil, "LINUX", linux)
@@ -612,11 +418,11 @@ async def test_an_id_that_is_not_one_path_component_is_no_run_id(runs_root, leg,
 
 def _wire_agent(monkeypatch, tmp_path: Path):
     """`li agent` with its model and teardown stood in, its run directory and persistence setup real."""
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
-    from lionagi.cli._runs import allocate_run
     from lionagi.service.manager import iModelManager
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
@@ -652,7 +458,7 @@ def _wire_agent(monkeypatch, tmp_path: Path):
 async def test_a_run_whose_persistence_setup_fails_records_its_process_and_says_how_to_stop_it(
     monkeypatch, tmp_path, caplog
 ):
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
 
     run = _wire_agent(monkeypatch, tmp_path)
 
@@ -829,8 +635,8 @@ async def test_an_orchestration_that_degrades_says_it_has_no_kill_handle(
     runs_root, monkeypatch, caplog
 ):
     from lionagi import Session
-    from lionagi.cli._runs import allocate_run
     from lionagi.cli.orchestrate import _orchestration
+    from lionhub.orchestration.runs import allocate_run
 
     async def locked():
         raise sqlite3.OperationalError("database is locked")

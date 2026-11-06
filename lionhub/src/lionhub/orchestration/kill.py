@@ -783,7 +783,7 @@ async def kill_one(
 
 def _run_manifest_path(run_id: str) -> Path | None:
     """Return the run.json path a run id names, or None when the id is not safe to join."""
-    from ._runs import _resolved_run_state_dir
+    from lionhub.orchestration.runs import _resolved_run_state_dir
 
     # a run id names one directory under RUNS_ROOT: anything that is not a single path
     # component is no run id, and is never joined onto the path
@@ -800,7 +800,7 @@ def _run_manifest_path(run_id: str) -> Path | None:
 
 def _degraded_run(run_id: str) -> tuple[Path, dict[str, Any]] | None:
     """Return a degraded run's readable manifest without following links."""
-    from ._runs import PERSISTENCE_DEGRADED_REASON_FIELD
+    from lionhub.orchestration.runs import PERSISTENCE_DEGRADED_REASON_FIELD
 
     path = _run_manifest_path(run_id)
     if path is None:
@@ -951,7 +951,7 @@ def _settle_degraded_run(
     with a warning, and where `fcntl` does not exist (Windows) nothing is held and the record is settled
     unlocked, last writer wins (ADR-0104 Amendment 2, Limits).
     """
-    from ._runs import _atomic_write_json, _run_manifest_lock
+    from lionhub.orchestration.runs import _atomic_write_json, _run_manifest_lock
 
     with contextlib.ExitStack() as held:
         try:

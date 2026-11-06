@@ -8,8 +8,9 @@ import json
 
 import pytest
 
-import lionagi.cli._runs as runs_mod
+import lionhub.orchestration.runs as runs_mod
 from lionhub.orchestration.mcp_config import McpResolution
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 @pytest.fixture

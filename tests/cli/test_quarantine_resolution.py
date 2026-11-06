@@ -85,8 +85,8 @@ def _assert_no_signals(monkeypatch):
     terminate = Mock(side_effect=AssertionError("unexpected signal path"))
     cleanup = Mock(side_effect=AssertionError("unexpected worker cleanup"))
     os_kill = Mock(side_effect=AssertionError("unexpected os.kill"))
-    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", terminate)
-    monkeypatch.setattr("lionagi.cli._kill_service.os.kill", os_kill)
+    monkeypatch.setattr("lionhub.orchestration.kill._terminate_pid", terminate)
+    monkeypatch.setattr("lionhub.orchestration.kill.os.kill", os_kill)
     monkeypatch.setattr(kill_cli, "_try_recorded_worker_cleanup", cleanup)
     return terminate, cleanup, os_kill
 

@@ -86,7 +86,7 @@ Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. 
 
 Project detection runs at every session creation site (`cli/agent.py`, `cli/orchestrate/_orchestration.py`, `cli/state.py`). The resolved `project` and `project_source` columns are written to the `sessions` table and displayed in Studio.
 
-### Persistence (`lionagi/cli/_runs.py`)
+### Persistence (`lionhub/src/lionhub/orchestration/runs.py`)
 
 Every run: `~/.lionagi/runs/{run_id}/` (`YYYYMMDDTHHMMSS-{uuid6}`).
 

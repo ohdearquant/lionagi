@@ -8,8 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import lionagi.cli._kill_service as kill_service
-import lionagi.cli.kill as kill_module
+import lionhub.orchestration.kill as kill_module
+import lionhub.orchestration.kill as kill_service
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 def _fake_process(monkeypatch, *, create_time=100.0, environ=None):

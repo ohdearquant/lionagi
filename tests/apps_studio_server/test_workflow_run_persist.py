@@ -76,13 +76,13 @@ async def test_flow_clone_branch_transcript_persists(patched_env):
     """
     db_path = patched_env
 
-    from lionagi.cli._runs import register_branch_hook
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.session import Session
     from lionagi.studio.services.workflow_run import (
         _setup_run_persist,
         _teardown_run_persist,
     )
+    from lionhub.orchestration.runs import register_branch_hook
 
     mock_branch = _mock_chat_branch()
     session = Session(default_branch=mock_branch)

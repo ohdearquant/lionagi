@@ -22,9 +22,9 @@ async def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
     insert a row, then write the file.  It must NOT return success without a
     row in the definitions table.
     """
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     # Redirect LIONAGI_HOME → tmp dirs so no real agent/playbook dirs are needed
     fake_home = tmp_path / "lionagi_home"
@@ -79,9 +79,9 @@ async def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_save_definition_increments_version(tmp_path, monkeypatch):
     """Calling save_definition() twice for the same (kind, name) must increment version."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -110,10 +110,10 @@ async def test_save_new_playbook_definition_lands_in_playbook_catalog(tmp_path, 
     """Creating a new playbook via save_definition() must write a
     *.playbook.yaml file so it shows up in playbooks.list_playbooks(), not a
     *.md file that the playbook catalog never scans."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
     import lionagi.studio.services.playbooks as pb_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -149,9 +149,9 @@ async def test_save_new_playbook_definition_lands_in_playbook_catalog(tmp_path, 
 async def test_save_definition_rejects_unknown_role_by_default(tmp_path, monkeypatch):
     """The direct save_definition() entry point validates role/mode by default --
     the same guard the /definitions/agent/{name} route relies on."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -184,9 +184,9 @@ async def test_rollback_definition_succeeds_for_already_invalid_historical_versi
     validate=False, e.g. by snapshot_current) must still be reachable by
     rollback -- the validator added to guard the direct save door must not
     make an already-malformed historical version un-restorable."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -222,8 +222,8 @@ async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
     dedicated path (see test_skills_service.py), so a genuinely unknown kind
     stands in here instead.
     """
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -244,9 +244,9 @@ async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
 
 def _make_patched_client(tmp_path, monkeypatch):
     """Return a TestClient with definitions service redirected to tmp_path."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -348,9 +348,9 @@ def test_rollback_definition_rejects_unsafe_name(encoded_name, tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
     """Normal safe names must not be rejected by the validation layer."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -376,9 +376,9 @@ async def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
     """Valid kind values ('agent', 'playbook') must pass the validation gate."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -411,9 +411,9 @@ async def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypat
     """
     import asyncio
 
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -467,9 +467,9 @@ async def test_save_definition_db_failure_does_not_write_file(tmp_path, monkeypa
     """When StateDB.save_definition() raises, the service must NOT write the
     disk file and must propagate the exception (so the router can return 500).
     """
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -503,9 +503,9 @@ async def test_save_definition_db_failure_does_not_write_file(tmp_path, monkeypa
 
 def test_save_definition_db_failure_returns_500_from_router(tmp_path, monkeypatch):
     """The router must surface a DB failure as HTTP 500 (not 200)."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -553,9 +553,9 @@ async def test_get_definition_follows_symlink(tmp_path, monkeypatch):
     Fix: security is maintained by validate_name_component() on the route
     parameter, not by resolving symlink targets.
     """
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     # Set up an "external" target directory (simulates firm/agents/)
     external_dir = tmp_path / "firm" / "agents"
@@ -597,9 +597,9 @@ async def test_save_definition_writes_through_symlink(tmp_path, monkeypatch):
     already exists, _find_definition_file returns it, and write_text follows
     symlinks by default on POSIX).
     """
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     external_dir = tmp_path / "firm" / "agents"
     external_dir.mkdir(parents=True)
@@ -679,9 +679,9 @@ async def test_get_definition_finds_nested_dir_listed_by_list_definitions(tmp_pa
     containing directory (agents/team/profile.md -> "team"), so get_definition()
     with that listed name must resolve, not return None.
     """
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     agents_dir = fake_home / "agents"
@@ -716,9 +716,9 @@ async def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
     FileNotFoundError in the slow-path iterdir.  After the fix, it returns None
     and falls back to the default disk_file path, then creates the directory.
     """
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -744,9 +744,9 @@ async def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
 async def test_a_saved_playbook_reads_back_under_its_own_kind(tmp_path, monkeypatch):
     """The save response and the read both name the definition's own kind, and
     the read joins the disk content with the version the save recorded."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     agents_dir = fake_home / "agents"

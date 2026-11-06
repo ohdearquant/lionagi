@@ -17,7 +17,7 @@ export/evidence source and cannot independently terminalize the canonical Run.
 
 CLI execution persists two different kinds of state. StateDB holds sessions,
 progressions, terminal status, reason codes, evidence, artifact expectations, and
-verification results. `RunDir` in `lionagi/cli/_runs.py` holds branch snapshots, stream
+verification results. `RunDir` in `lionhub/src/lionhub/orchestration/runs.py` holds branch snapshots, stream
 buffers, an optional manifest, an optional flow checkpoint, and the default artifact
 directory. A process return code is derived from execution state but is not itself the
 durable source of truth.

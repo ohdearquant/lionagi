@@ -13,7 +13,7 @@ from threading import Barrier
 import pytest
 
 from lionagi.cli._notify_outcomes import DurableRunRecorder
-from lionagi.cli._runs import RunDir
+from lionhub.orchestration.runs import RunDir
 
 
 @pytest.fixture

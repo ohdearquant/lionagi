@@ -60,7 +60,7 @@ _SETUP_RECOVERY_TIMEOUT_SECONDS = 2.0
 
 async def _recover_setup_session(run_id: str) -> tuple[bool, dict[str, Any] | None]:
     """Try recovery with a deadline, distinguishing an absent row from a timeout."""
-    from lionagi.cli import _runs as cli_runs
+    from lionhub.orchestration import runs as cli_runs
 
     session = None
     with anyio.move_on_after(_SETUP_RECOVERY_TIMEOUT_SECONDS) as scope:
@@ -543,7 +543,7 @@ class OperatorCoordinator:
             )
             run_branch = build_operator_branch(engine_turn, execution_root=execution_root)
             engine_turn = replace(engine_turn, runtime_branch=run_branch)
-            from lionagi.cli import _runs as cli_runs
+            from lionhub.orchestration import runs as cli_runs
 
             file_run_id = f"operator-{short_id(12)}"
             run_dir = cli_runs.RunDir(
@@ -888,7 +888,7 @@ class OperatorCoordinator:
                                 last_link.exception(),
                             )
                 if live is not None:
-                    from lionagi.cli._runs import teardown_agent_persist
+                    from lionhub.orchestration.runs import teardown_agent_persist
 
                     # Teardown runs to its end through a cancel, held like the checkpoint's:
                     # interrupted, it would leave the session and run.json as they stood and
@@ -1156,7 +1156,7 @@ class OperatorCoordinator:
             result = await self.command_executor(proposal["commandType"], proposal["command"])
         except Exception as exc:  # noqa: BLE001
             if proposal["commandType"] == "cancel":
-                from lionagi.cli._kill_service import _CancelPersistenceError
+                from lionhub.orchestration.kill import _CancelPersistenceError
 
                 if isinstance(exc, _CancelPersistenceError):
                     from .cancel_run import _DeferredCancelResult

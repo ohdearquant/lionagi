@@ -140,7 +140,7 @@ async def test_unbound_fallback_identity_warns_without_quarantine_or_signal(
     warnings = []
     monkeypatch.setattr(kill_cli, "warn", warnings.append)
     os_kill = Mock(side_effect=AssertionError("unexpected signal"))
-    monkeypatch.setattr("lionagi.cli._kill_service.os.kill", os_kill)
+    monkeypatch.setattr("lionhub.orchestration.kill.os.kill", os_kill)
     await sweep(monkeypatch, ["unverifiable"] if fallback == "pid_file" else [])
     row = await fetch_row("session", entity_id)
     assert row["status"] == "running"

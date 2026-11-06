@@ -16,9 +16,10 @@ from unittest import mock
 import pytest
 
 from lionagi import Branch
-from lionagi.cli._runs import setup_agent_persist as _setup_live_persist
-from lionagi.cli._runs import teardown_agent_persist as _teardown_live_persist
 from lionagi.state.db import StateDB
+from lionhub.orchestration.runs import setup_agent_persist as _setup_live_persist
+from lionhub.orchestration.runs import teardown_agent_persist as _teardown_live_persist
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 from tests.cli._aiosqlite_threads import (
     aiosqlite_threads,
     new_aiosqlite_threads,
@@ -1144,7 +1145,7 @@ async def test_failed_setup_releases_branch_claim(
 ):
     """Setup failing AFTER the wrapper session claims the branch must release
     the claim, so a retry (or a later run) can wrap the branch again."""
-    import lionagi.cli._runs as _runs_mod
+    import lionhub.orchestration.runs as _runs_mod
 
     async def boom():
         raise RuntimeError("simulated db-open failure")

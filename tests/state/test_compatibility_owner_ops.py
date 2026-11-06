@@ -2162,8 +2162,8 @@ async def test_every_update_a_live_message_makes_carries_the_owner(db, store):
 
 async def test_a_refused_setup_stops_the_run(store, monkeypatch):
     """A refusal at setup is raised, not turned into a run without persistence (ADR-0128 D6)."""
-    from lionagi.cli import _runs
     from lionagi.session.branch import Branch
+    from lionhub.orchestration import runs as _runs
 
     profile = _profile(store, operations=_OPERATIONS - {"create_session"})
     handle = StateDB(store, compatibility=profile, owner="principal:a")
@@ -2191,9 +2191,9 @@ def _dump(store: Path) -> list[str]:
 async def test_a_refused_signal_write_fails_the_teardown_with_it(db, store):
     """A signal the store refused is not a dropped one to read past: the run fails with the
     refusal, and the drop counter does not absorb it (ADR-0128 D6)."""
-    from lionagi.cli import _runs
     from lionagi.session.session import Session
     from lionagi.session.signal import Signal
+    from lionhub.orchestration import runs as _runs
 
     await _setup_run(db)
     session = Session()
@@ -2227,9 +2227,9 @@ async def test_a_refused_signal_write_fails_the_teardown_with_it(db, store):
 async def test_a_signal_emitted_during_teardown_that_is_refused_fails_the_run(db, store):
     """The same refusal raised while teardown itself runs, after the signal sink's own emit, also
     fails the run rather than reading back a status the store could not take with it."""
-    from lionagi.cli import _runs
     from lionagi.session.session import Session
     from lionagi.session.signal import Signal
+    from lionhub.orchestration import runs as _runs
 
     await _setup_run(db)
     session = Session()
@@ -2261,7 +2261,7 @@ async def test_a_signal_emitted_during_teardown_that_is_refused_fails_the_run(db
 async def test_a_teardown_reason_names_the_operations_that_already_committed(db, store):
     """A refusal from a later write says nothing committed, because each operation opens its own
     scope. The run's reason names what this teardown did commit (ADR-0128 D6)."""
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     await _setup_run(db)
     original = db.update_artifact_verification
@@ -2289,7 +2289,7 @@ async def test_a_teardown_reason_names_the_operations_that_already_committed(db,
 
 async def test_a_teardown_reason_without_a_commit_names_none(db, store):
     """The first write refused leaves the reason as it was: nothing to name."""
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     await _setup_run(db)
     _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
@@ -2607,7 +2607,7 @@ class _Message:
 
 async def test_the_runs_live_hook_raises_a_refusal(db, store):
     """The CLI's live hook lets a refusal through instead of logging it (ADR-0128 D6)."""
-    from lionagi.cli._runs import _make_message_handler
+    from lionhub.orchestration.runs import _make_message_handler
 
     await _setup_run(db)
     _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
@@ -2623,11 +2623,11 @@ async def test_the_runs_live_hook_raises_a_refusal(db, store):
 
 async def test_a_refused_teardown_fails_the_run_with_the_refusal(db, store):
     """Teardown neither swallows a refusal nor reads back a status it could not write."""
-    from lionagi.cli._runs import _make_message_handler, teardown_persist
     from lionagi.hooks import route_message_persistence
     from lionagi.hooks.bus import HookPoint
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
+    from lionhub.orchestration.runs import _make_message_handler, teardown_persist
 
     await _setup_run(db)
     _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
@@ -2671,7 +2671,7 @@ class _FlushQueue:
 
 
 async def test_teardown_flushes_every_queue_before_it_raises_a_refusal():
-    from lionagi.cli._runs import _flush_pending_message_events
+    from lionhub.orchestration.runs import _flush_pending_message_events
 
     first, second = _FlushQueue(refuse=True), _FlushQueue(refuse=False)
 
@@ -2690,7 +2690,7 @@ class _RefusingFlushQueue:
 
 
 async def test_teardown_logs_every_refusal_after_the_one_it_raises(caplog):
-    from lionagi.cli._runs import _flush_pending_message_events
+    from lionhub.orchestration.runs import _flush_pending_message_events
 
     queues = [_RefusingFlushQueue("messages@1"), _RefusingFlushQueue("messages@2")]
 
@@ -2791,10 +2791,10 @@ async def test_a_refused_setup_finishes_the_runs_record(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.service.manager import iModelManager
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
@@ -2888,7 +2888,7 @@ async def test_an_operator_turn_records_the_status_its_teardown_decided_in_compa
 
     import anyio
 
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.state.compat import Closure
     from lionagi.studio.operator.coordinator import OperatorCoordinator
     from lionagi.studio.operator.store import OperatorStore
@@ -3862,8 +3862,8 @@ async def test_agent_setup_completes_on_a_compatibility_store(tmp_path, monkeypa
     """A fresh agent run's setup is served by the base profile: the session and branch rows are
     written through the run's own handle, and the setup handlers, handed that handle, reach no
     other store and write nothing more."""
-    from lionagi.cli import _runs
     from lionagi.session.branch import Branch
+    from lionhub.orchestration import runs as _runs
 
     store = await _managed_store(tmp_path / "managed.db")
     handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
@@ -3914,8 +3914,8 @@ async def test_agent_setup_completes_on_a_compatibility_store(tmp_path, monkeypa
 async def test_native_agent_setup_reaches_no_store_beside_its_own(tmp_path, monkeypatch, share_db):
     """Natively the setup handlers, handed the run's handle, open no process-wide store either,
     and the rows carry the same provenance and started reason as before."""
-    from lionagi.cli import _runs
     from lionagi.session.branch import Branch
+    from lionhub.orchestration import runs as _runs
 
     handle = StateDB(tmp_path / "native.db")
     await handle.open()

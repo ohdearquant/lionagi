@@ -51,6 +51,9 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.cli._orchestrate_parsing` | `lionhub.orchestration.flow.parsing` |
 | `lionagi.cli._schedule_parsing` | `lionhub.orchestration.schedule.parsing` |
 | `lionagi.cli._mirror_service` | `lionhub.serve.mirror` |
+| `lionagi.cli._runs` | `lionhub.orchestration.runs` |
+| `lionagi.cli._kill_service` | `lionhub.orchestration.kill` |
+| `lionagi.cli.orchestrate._checkpoint` | `lionhub.orchestration.flow.checkpoint` |
 
 ## Tests
 

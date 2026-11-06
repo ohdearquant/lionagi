@@ -15,7 +15,7 @@ import tempfile
 import threading
 from typing import Literal
 
-from lionagi.cli._runs import RunDir
+from lionhub.orchestration.runs import RunDir
 
 logger = logging.getLogger(__name__)
 

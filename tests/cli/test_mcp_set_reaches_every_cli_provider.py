@@ -1685,7 +1685,7 @@ async def test_resumed_antigravity_leg_rejects_an_explicit_server_set(monkeypatc
 def flow_run(monkeypatch, tmp_path):
     """A run launched from a directory whose .mcp.json is the run's server set."""
     import lionagi.cli.orchestrate._orchestration as orch_mod
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     launch_dir = tmp_path / "launch"
     launch_dir.mkdir()

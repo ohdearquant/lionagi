@@ -3800,8 +3800,8 @@ def _persistence_seam_env(tmp_path):
     unlike the generic tests/cli/orchestrate/test_live_persist.py fixture,
     the tests below never call start_live_persist directly."""
     from lionagi import Branch, Session
-    from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
+    from lionhub.orchestration.runs import RunDir
 
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
@@ -4027,7 +4027,7 @@ async def test_synthesize_calls_execution_engine_with_builder_graph(tmp_path):
 async def test_resume_flow_calls_run_flow_with_resolved_checkpoint(tmp_path):
     import json as _json
 
-    import lionagi.cli.orchestrate._checkpoint as ckmod
+    import lionhub.orchestration.flow.checkpoint as ckmod
     from lionagi.cli.orchestrate import flow as flow_mod
 
     runs_root = tmp_path / "runs"

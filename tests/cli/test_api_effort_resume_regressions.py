@@ -13,7 +13,7 @@ from tests.cli.test_agent_api_provider import leg as leg
 @pytest.mark.asyncio
 async def test_profile_effort_drop_removes_persisted_effort_from_resumed_payload(leg, monkeypatch):
     from lionagi import Branch
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
     from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
@@ -84,7 +84,7 @@ async def test_profile_effort_drop_removes_persisted_effort_from_resumed_payload
 )
 async def test_anthropic_resume_reclamps_persisted_effort(leg, new_model, expected, same_model):
     from lionagi import Branch
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
     from tests.cli.test_agent_api_provider import _answer, _last_round
 
     profile = _profile(api_tools="read")
@@ -124,7 +124,7 @@ async def test_openai_resume_on_non_reasoning_model_handles_stored_effort(
 ):
     from lionagi import Branch
     from lionagi._errors import ConfigurationError
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
     from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
