@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli._providers import _resolve_profile_path, list_agents, load_agent_profile
+from lionhub.orchestration.spawn import _resolve_profile_path, list_agents, load_agent_profile
 
 
 def test_resolver_prefers_directory_layout(tmp_path: Path) -> None:

@@ -267,7 +267,7 @@ def test_delete_explicit_system_agent_refused(tmp_path, monkeypatch):
 
 def test_delete_quoted_truthy_lion_system_is_protected(tmp_path, monkeypatch):
     """YAML permits ``lion_system: "true"`` (a quoted string) as well as the bare
-    boolean. The runtime (lionagi/cli/_providers.py) treats both as system-owned via
+    boolean. The runtime (lionhub.orchestration.spawn) treats both as system-owned via
     bool(...), so the delete guard must refuse both too, not just the unquoted form."""
     from lionagi.studio.services.agents import AgentProtectedError, delete_agent
 

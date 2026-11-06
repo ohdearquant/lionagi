@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.cli._providers import _validate_bare_name, load_agent_profile
+from lionhub.orchestration.spawn import _validate_bare_name, load_agent_profile
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 class TestValidateBareName:
@@ -92,7 +93,7 @@ class TestLoadAgentProfileValidation:
         assert not isinstance(exc_info.value, ValueError)
 
     def test_broken_profile_symlink_reports_unreadable_target(self, monkeypatch, tmp_path):
-        import lionagi.cli._providers as providers
+        import lionhub.orchestration.spawn as providers
 
         lionagi_dir = tmp_path / ".lionagi"
         agents_dir = lionagi_dir / "agents"

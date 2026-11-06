@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import lionagi.cli._providers as providers_mod
 import lionhub.orchestration.engines.engine as engine_mod
+import lionhub.orchestration.spawn as providers_mod
 from lionagi.tools.khive_injection import KhiveInjectionProvider
 from lionhub.orchestration.engines.engine import Engine
 

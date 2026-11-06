@@ -7,7 +7,8 @@ from __future__ import annotations
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.cli._providers import AgentProfile, _parse_profile, profile_config
+from lionhub.orchestration.spawn import AgentProfile, _parse_profile, profile_config
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 def test_profile_mcp_none_is_a_recognized_runtime_setting():

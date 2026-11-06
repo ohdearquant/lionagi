@@ -185,7 +185,7 @@ def test_codex_spawn_that_does_not_forward_still_says_so():
 def test_build_chat_model_still_sets_the_server_kwarg_for_claude_only():
     """The request-field question is narrower than the capability question:
     the codex request model has no such field, so nothing is set there."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     servers = {"khive": {"command": "kkernel"}}
 

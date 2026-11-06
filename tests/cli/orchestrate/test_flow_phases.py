@@ -760,9 +760,9 @@ async def test_a_reactively_spawned_codex_node_runs_without_the_user_config(tmp_
     planned worker is isolated, and the emitter's own model keeps its settings."""
     spec, user_key, user_value = "codex/gpt-5", "profile", "work"
     flag_key, flag_value = "ignore_user_config", True
-    from lionagi.cli._providers import build_imodel_from_spec
     from lionagi.session.branch import Branch
     from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     env = _make_env(tmp_path)
     plan_result = _PlanResult(
@@ -813,9 +813,9 @@ async def test_a_spawn_cloned_from_the_orchestrator_drops_its_derived_effort(tmp
     A node cloned from it no longer loads that config, so it runs at what a planned
     worker with no role effort gets; a clone of a worker keeps that worker's effort,
     and a run-wide effort the caller asked for is kept."""
-    from lionagi.cli._providers import build_imodel_from_spec
     from lionagi.session.branch import Branch
     from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
     spec = "codex/gpt-5.3-codex-spark"
@@ -891,7 +891,7 @@ async def test_a_reactive_run_refuses_a_set_a_codex_orchestrator_clone_cannot_ta
     before any worker is built, as a planned codex worker's build refuses it,
     rather than failing when such a node spawns."""
     from lionagi._errors import ConfigurationError
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     codex_home.write_config({})
     env = _make_env(tmp_path)
@@ -932,7 +932,7 @@ async def test_a_reactive_run_refuses_a_codex_orchestrator_profile_its_clone_can
     names that sets the sandbox or the approval policy is refused before any worker
     is built, as a planned worker's build refuses it."""
     from lionagi._errors import ConfigurationError
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     codex_home.write_config({})
     (codex_home.path / "wide.config.toml").write_text(

@@ -779,7 +779,7 @@ def test_a_provider_without_a_transport_reports_that_it_carried_nothing():
 
 
 def test_plain_leg_hands_a_codex_request_the_resolved_set(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({})
     model = build_chat_model("codex", "gpt-5.3-codex", False, False, None, mcp_servers=SERVERS)
@@ -791,7 +791,7 @@ def test_plain_leg_hands_a_codex_request_the_resolved_set(codex_home):
 
 
 def test_plain_leg_still_hands_a_claude_request_the_resolved_set():
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     model = build_chat_model(
         "claude_code", "claude-opus-4-5", False, False, None, mcp_servers=SERVERS
@@ -800,7 +800,7 @@ def test_plain_leg_still_hands_a_claude_request_the_resolved_set():
 
 
 def test_plain_leg_hands_nothing_to_a_provider_without_a_transport():
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     model = build_chat_model(
         "gemini_code", "gemini-3.5-flash", False, False, None, mcp_servers=SERVERS
@@ -811,7 +811,7 @@ def test_plain_leg_hands_nothing_to_a_provider_without_a_transport():
 
 @pytest.mark.asyncio
 async def test_plain_leg_keeps_codex_secret_fields_off_the_command_line(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({})
     model = build_chat_model(
@@ -824,7 +824,7 @@ async def test_plain_leg_keeps_codex_secret_fields_off_the_command_line(codex_ho
 
 
 def test_plain_leg_empty_set_is_the_whole_set_on_both_transports(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
 
@@ -840,7 +840,7 @@ def test_plain_leg_empty_set_is_the_whole_set_on_both_transports(codex_home):
 def test_plain_leg_with_a_declared_empty_set_is_contained_on_both_transports(codex_home):
     """`--no-mcp-config` reaches build_chat_model as a null map; the caller says
     it was declared, so the request is the whole (empty) set."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
 
@@ -859,7 +859,7 @@ def test_plain_leg_with_a_declared_empty_set_is_contained_on_both_transports(cod
 
 @pytest.mark.asyncio
 async def test_plain_leg_empty_set_reaches_the_codex_command_line(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
     from lionhub.providers.openai.codex import _plain_request
 
     codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
@@ -874,7 +874,7 @@ async def test_plain_leg_empty_set_reaches_the_codex_command_line(codex_home):
 def test_plain_leg_derives_no_effort_from_a_user_config_it_ignores(codex_home):
     """The derived default keeps the user config's own effort under the model's
     ceiling; a leg that does not load that config has no such value."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     (codex_home.path / "config.toml").write_text('model_reasoning_effort = "ultra"\n')
 
@@ -888,7 +888,7 @@ def test_plain_leg_derives_no_effort_from_a_user_config_it_ignores(codex_home):
 
 
 def test_plain_leg_with_no_set_and_no_declaration_is_left_alone(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
     model = build_chat_model("codex", "gpt-5.3-codex", False, False, None, mcp_servers=None)

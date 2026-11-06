@@ -21,7 +21,7 @@ import anyio
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.cli._providers import AgentProfile
+from lionhub.orchestration.spawn import AgentProfile
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 
 MODEL = "anthropic/claude-haiku-5-5"

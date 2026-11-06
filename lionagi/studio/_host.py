@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import ipaddress
 
-from lionagi.cli._schedule_parsing import normalize_host
+from lionhub.orchestration.schedule.parsing import normalize_host
 
 __all__ = ("admitted_host_names", "is_unspecified_host", "normalize_host")
 

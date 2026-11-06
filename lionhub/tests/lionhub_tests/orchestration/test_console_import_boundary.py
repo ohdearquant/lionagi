@@ -26,7 +26,7 @@ _ROOT = Path(__file__).resolve().parents[4]
         (
             "lionhub.serve.mirror_settings",
             "lionhub/src/lionhub/serve/mirror_settings.py",
-            ("lionagi.cli._mirror_service", "lionagi.studio"),
+            ("lionhub.serve.mirror", "lionagi.studio"),
         ),
     ],
     ids=["console", "mirror-settings"],

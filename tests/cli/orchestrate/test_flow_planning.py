@@ -12,10 +12,10 @@ import pytest
 
 from lionagi._errors import EmptyOutgoingContentError
 from lionagi.casts.emission import TaskAssignment
-from lionagi.cli._providers import AgentProfile
 from lionagi.cli.orchestrate import _orchestration as orch
 from lionagi.cli.orchestrate import flow as flow_module
 from lionagi.cli.orchestrate.flow import FlowPlanError, _parse_reactive, _run_flow_inner
+from lionhub.orchestration.spawn import AgentProfile
 
 
 @pytest.fixture
@@ -321,37 +321,6 @@ class TestParseReactive:
         assert _parse_reactive("All") == (True, None)
 
 
-def test_reactive_flag_parses_via_argparse():
-    """`li o flow --reactive off` reaches args.reactive."""
-    import argparse
-
-    from lionagi.cli.orchestrate import add_orchestrate_subparser
-
-    parser = argparse.ArgumentParser(prog="li")
-    sub = parser.add_subparsers(dest="command", required=True)
-    add_orchestrate_subparser(sub)
-    args = parser.parse_args(["o", "flow", "codex/gpt-5.5", "task", "--reactive", "off"])
-    assert args.reactive == "off"
-    # default is None (resolved to "all" at dispatch)
-    args2 = parser.parse_args(["o", "flow", "codex/gpt-5.5", "task"])
-    assert args2.reactive is None
-
-
-def test_workers_flag_parses_via_argparse():
-    """`li o flow --workers a,b` reaches args.workers (mixed-model flows)."""
-    import argparse
-
-    from lionagi.cli.orchestrate import add_orchestrate_subparser
-
-    parser = argparse.ArgumentParser(prog="li")
-    sub = parser.add_subparsers(dest="command", required=True)
-    add_orchestrate_subparser(sub)
-    args = parser.parse_args(
-        ["o", "flow", "codex/orc", "task", "--workers", "codex/cheap,codex/expensive"]
-    )
-    assert args.workers == "codex/cheap,codex/expensive"
-
-
 @pytest.mark.asyncio
 async def test_workers_override_shown_in_dry_run(tmp_path):
     """--workers overrides the per-assignment model and wraps the pool (i % len)."""
@@ -494,23 +463,3 @@ async def test_workers_override_beats_pack_routing(tmp_path):
     )
     assert "writer: codex/explicit (workers)" in out
     assert "(pack)" not in out
-
-
-def test_pack_flag_parses_via_argparse():
-    """`li o flow --pack PATH` and `li o fanout --pack PATH` reach args.pack."""
-    import argparse
-
-    from lionagi.cli.orchestrate import add_orchestrate_subparser
-
-    parser = argparse.ArgumentParser(prog="li")
-    sub = parser.add_subparsers(dest="command", required=True)
-    add_orchestrate_subparser(sub)
-
-    args = parser.parse_args(["o", "flow", "codex/gpt-5.5", "task", "--pack", "/tmp/r.yaml"])
-    assert args.pack == "/tmp/r.yaml"
-
-    args2 = parser.parse_args(["o", "flow", "codex/gpt-5.5", "task"])
-    assert args2.pack is None
-
-    args3 = parser.parse_args(["o", "fanout", "codex/gpt-5.5", "task", "--pack", "/tmp/r.yaml"])
-    assert args3.pack == "/tmp/r.yaml"

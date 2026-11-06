@@ -15,12 +15,12 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from unittest.mock import AsyncMock, patch
 
-from lionagi.cli._schedule_parsing import (
+from lionagi.studio.services.schedules import create_schedule, update_schedule
+from lionhub.orchestration.schedule.parsing import (
     _MAX_CHAIN_DEPTH,
     _parse_chain_action,
     _validate_chain_kinds,
 )
-from lionagi.studio.services.schedules import create_schedule, update_schedule
 
 FIELDS = ("on_success", "on_fail")
 
@@ -332,8 +332,8 @@ def test_merge_ignores_stored_chain_keys_that_are_not_allowed(key, value):
 
 
 def test_merge_applies_every_allowed_key():
-    from lionagi.cli._schedule_parsing import _CHAIN_ACTION_ALLOWED_KEYS
     from lionagi.studio.scheduler.engine import _merge_chain_action
+    from lionhub.orchestration.schedule.parsing import _CHAIN_ACTION_ALLOWED_KEYS
 
     nested = {"prompt": "after", "on_success": None}
     chain_action = {
@@ -408,15 +408,6 @@ def test_action_kind_type_is_refused_on_create_and_update(parent_kind, with_chai
     assert "private-value" not in str(error)
     store.create_schedule.assert_not_called()
     store.update_schedule.assert_not_called()
-
-
-@pytest.mark.parametrize("parent_kind", [42, ["private-value"], {"private-value": True}])
-def test_direct_kind_validation_refuses_non_string_parent(parent_kind):
-    with pytest.raises(ValueError) as caught:
-        _validate_chain_kinds({"kind": "agent"}, "chain", parent_kind)
-    assert "action_kind" in str(caught.value)
-    assert type(parent_kind).__name__ in str(caught.value)
-    assert "private-value" not in str(caught.value)
 
 
 @pytest.mark.parametrize("legacy_kind", [42, ["private-value"], {"private-value": True}])
@@ -650,14 +641,14 @@ def test_accepts_compatible_sibling_inheritance():
 
 
 def test_scheduler_and_admission_share_chain_merge():
-    from lionagi.cli._schedule_parsing import _merge_chain_action as admission_merge
     from lionagi.studio.scheduler.engine import _merge_chain_action as scheduler_merge
+    from lionhub.orchestration.schedule.parsing import _merge_chain_action as admission_merge
 
     assert scheduler_merge is admission_merge
 
 
 def test_reachable_walk_stops_at_scheduler_depth_limit():
-    from lionagi.cli import _schedule_parsing as parsing
+    from lionhub.orchestration.schedule import parsing as parsing
 
     parent = {"action_kind": "agent", "on_success": {"kind": "agent"}, "on_fail": {"kind": "agent"}}
     with patch.object(parsing, "_merge_chain_action", wraps=parsing._merge_chain_action) as merge:

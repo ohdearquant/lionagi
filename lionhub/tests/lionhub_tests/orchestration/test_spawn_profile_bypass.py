@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-from lionagi.cli._providers import _parse_profile
+from lionhub.orchestration.spawn import _parse_profile
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 def _profile_text(frontmatter: str) -> str:

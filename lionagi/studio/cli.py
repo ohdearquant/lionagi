@@ -24,7 +24,9 @@ from typing import Any
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._log_channels import log_error, warn
 from lionagi._paths import ensure_lionagi_dir
-from lionagi.cli._schedule_parsing import (
+from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
+from lionagi.studio._host import admitted_host_names, is_unspecified_host, normalize_host
+from lionhub.orchestration.schedule.parsing import (
     _base_url,
     _is_schedule_request_timeout,
     _normalize_schedule_reason,
@@ -34,8 +36,6 @@ from lionagi.cli._schedule_parsing import (
     build_create_body,
     suggest_schedule_flag,  # noqa: F401 -- still importable from here for existing callers
 )
-from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
-from lionagi.studio._host import admitted_host_names, is_unspecified_host, normalize_host
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"

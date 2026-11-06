@@ -237,7 +237,7 @@ def _svc_validate_chain_action(value: Any, field: str, parent_kind: str) -> None
     line reports them, so the label is the flag spelling (``--on-success``)."""
     if value is None:
         return
-    from lionagi.cli._schedule_parsing import _MAX_CHAIN_DEPTH, _validate_chain_action_node
+    from lionhub.orchestration.schedule.parsing import _MAX_CHAIN_DEPTH, _validate_chain_action_node
 
     err = _validate_chain_action_node(
         value,
@@ -252,7 +252,7 @@ def _svc_validate_chain_action(value: Any, field: str, parent_kind: str) -> None
 
 
 def _svc_validate_reachable_chains(schedule: dict[str, Any]) -> None:
-    from lionagi.cli._schedule_parsing import _validate_reachable_chain_actions
+    from lionhub.orchestration.schedule.parsing import _validate_reachable_chain_actions
 
     def validate_effective(child: dict[str, Any], label: str) -> str | None:
         # Normalize for value checks without altering the schedule's stored spelling.

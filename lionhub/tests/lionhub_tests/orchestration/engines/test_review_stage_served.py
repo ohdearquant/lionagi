@@ -19,8 +19,8 @@ import anyio
 import pytest
 import yaml
 
-import lionagi.cli._providers as providers_mod
 import lionhub.orchestration.engines.engine as engine_mod
+import lionhub.orchestration.spawn as providers_mod
 from lionagi.testing._endpoint import ENV_SCRIPT_PATH
 from lionhub.orchestration.engines.review import (
     IssueFound,

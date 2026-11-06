@@ -34,8 +34,8 @@ def test_specific_synthetic_move_beats_parent_in_either_order(monkeypatch, speci
     rows = (specific, parent) if specific_first else (parent, specific)
     monkeypatch.setattr(_moved, "MOVED", rows)
 
-    # resolve() is pure table resolution, not an import: the old module is
-    # deliberately still on disk and the destination does not exist yet.
+    # resolve() is pure table resolution, not an import: module locations are
+    # irrelevant to this synthetic table-resolution check.
     assert _moved.resolve(_OLD) == _NEW
     assert _moved.resolve(_PARENT) == _PLACEHOLDER
     assert _moved.resolve(_OLD + "_extra") == _PLACEHOLDER + "._orchestrate_parsing_extra"

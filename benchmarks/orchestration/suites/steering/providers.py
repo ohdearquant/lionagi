@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from lionagi import iModel
-from lionagi.cli._providers import build_imodel_from_spec
+from lionhub.orchestration.spawn import build_imodel_from_spec
 
 # CLI-subprocess families resolve through the CLI provider table
 # (build_imodel_from_spec -> endpoint="query_cli"); "api" is a plain iModel

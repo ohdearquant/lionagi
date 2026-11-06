@@ -274,7 +274,7 @@ def role_profile_route(role: str) -> tuple[str | None, str | None]:
     if key in _ROLE_PROFILE_CACHE:
         return _ROLE_PROFILE_CACHE[key]
     try:
-        from lionagi.cli._providers import load_agent_profile  # noqa: PLC0415
+        from lionhub.orchestration.spawn import load_agent_profile  # noqa: PLC0415
 
         prof = load_agent_profile(role)
     except FileNotFoundError:
@@ -304,7 +304,7 @@ def role_profile_injection(role: str) -> Any:
     if key in _ROLE_INJECTION_CACHE:
         return _ROLE_INJECTION_CACHE[key]
     try:
-        from lionagi.cli._providers import load_agent_profile  # noqa: PLC0415
+        from lionhub.orchestration.spawn import load_agent_profile  # noqa: PLC0415
 
         value = getattr(load_agent_profile(role), "khive_injection", None)
     except FileNotFoundError:

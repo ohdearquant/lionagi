@@ -47,7 +47,7 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A minimal .lionagi/agents/reviewer.md discoverable via cwd; see
     test_schedule_declaration.py for the identical fixture rationale."""
-    import lionagi.cli._providers as providers_mod
+    import lionhub.orchestration.spawn as providers_mod
 
     agents_dir = tmp_path / ".lionagi" / "agents"
     agents_dir.mkdir(parents=True)

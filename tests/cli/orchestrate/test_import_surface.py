@@ -4,7 +4,7 @@
 """Regression: names that must stay importable at lionagi.cli.orchestrate module level.
 
 Covers the validate_path_component re-export and the parser builders, which are defined in
-lionagi.cli._orchestrate_parsing and re-exported here.
+lionhub.orchestration.flow.parsing and re-exported here.
 """
 
 from __future__ import annotations
@@ -81,19 +81,51 @@ def test_orchestrate_parser_construction_lives_in_the_parsing_module() -> None:
 
     from lionagi.cli import orchestrate
 
-    parsing = importlib.import_module("lionagi.cli._orchestrate_parsing")
-    providers = importlib.import_module("lionagi.cli._providers")
+    parsing = importlib.import_module("lionhub.orchestration.flow.parsing")
+    providers = importlib.import_module("lionhub.orchestration.spawn")
 
-    assert parsing.add_orchestrate_subparser.__module__ == "lionagi.cli._orchestrate_parsing"
-    assert parsing._add_mcp_config_args.__module__ == "lionagi.cli._orchestrate_parsing"
+    assert parsing.add_orchestrate_subparser.__module__ == "lionhub.orchestration.flow.parsing"
+    assert parsing._add_mcp_config_args.__module__ == "lionhub.orchestration.flow.parsing"
     assert orchestrate.add_orchestrate_subparser is parsing.add_orchestrate_subparser
     assert orchestrate._add_mcp_config_args is parsing._add_mcp_config_args
 
-    parsing_imports = _resolved_imports(parsing.__file__, "lionagi.cli")
+    parsing_imports = _resolved_imports(parsing.__file__, "lionhub.orchestration.flow")
     # The walk resolved the relative import, so the check below is not vacuous.
-    assert "lionagi.cli._providers" in parsing_imports
+    assert "lionhub.orchestration.spawn" in parsing_imports
     assert not _orchestrate_or_command_imports(parsing_imports)
 
-    providers_imports = _resolved_imports(providers.__file__, "lionagi.cli")
+    providers_imports = _resolved_imports(providers.__file__, "lionhub.orchestration")
     assert providers_imports, "expected the module to import something"
     assert not _orchestrate_or_command_imports(providers_imports)
+
+
+def test_scheduler_reserved_flags_come_from_the_canonical_flow_parser(monkeypatch):
+    """A parser option added at the shared builder is reserved without a second flag table."""
+    from lionagi.studio.scheduler import subprocess as scheduler_subprocess
+    from lionhub.orchestration.flow import parsing
+
+    original = parsing.add_orchestrate_subparser
+    expected = []
+
+    def record(subparsers):
+        parsers = original(subparsers)
+        flow = parsers["flow"]
+        flow.add_argument("--example-scheduler-option")
+        expected.append(
+            frozenset(
+                option
+                for action in flow._actions
+                for option in action.option_strings
+                if option.startswith("--")
+            )
+        )
+        return parsers
+
+    monkeypatch.setattr(parsing, "add_orchestrate_subparser", record)
+    monkeypatch.setattr(scheduler_subprocess, "_RESERVED_FLOW_FLAGS", None)
+    actual = scheduler_subprocess._reserved_flow_flags()
+    assert len(expected) == 1
+    assert actual == expected[0]
+    assert "--example-scheduler-option" in actual
+    assert scheduler_subprocess._reserved_flow_flags() is actual
+    assert len(expected) == 1

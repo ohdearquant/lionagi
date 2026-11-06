@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from ._providers import add_common_cli_args
+from lionhub.orchestration.spawn import add_common_cli_args
 
 
 def _add_mcp_config_args(parser: argparse.ArgumentParser) -> None:

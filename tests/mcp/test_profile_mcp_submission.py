@@ -28,7 +28,7 @@ def submission(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "li_command", lambda: ["echo"])
     monkeypatch.setattr(config, "child_actor_suffix", lambda: None)
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda _run_id: None)
-    monkeypatch.setattr("lionagi.cli._providers._plugin_agent_profiles", lambda: {})
+    monkeypatch.setattr("lionhub.orchestration.spawn._plugin_agent_profiles", lambda: {})
     cwd = tmp_path / "work"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
@@ -138,9 +138,9 @@ def test_noncontained_profile_still_receives_ambient_snapshot(submission, op):
 
 
 def test_flow_contained_orchestrator_matches_cli_worker_servers(submission, monkeypatch, tmp_path):
-    from lionagi.cli._orchestrate_parsing import add_orchestrate_subparser
     from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.orchestration.flow.parsing import add_orchestrate_subparser
 
     cwd, spawned = submission
     result = _submit("flow.submit", {"agent": "isolated", "prompt": "work", "cwd": str(cwd)})
@@ -195,9 +195,9 @@ def test_flow_contained_orchestrator_matches_cli_worker_servers(submission, monk
 
 
 def test_flow_default_contained_orchestrator_matches_cli(submission, monkeypatch, tmp_path):
-    from lionagi.cli._orchestrate_parsing import add_orchestrate_subparser
     from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.orchestration.flow.parsing import add_orchestrate_subparser
 
     cwd, spawned = submission
     (cwd / ".lionagi" / "agents" / "orchestrator.md").write_text(
@@ -406,9 +406,9 @@ def test_submitted_worker_profile_distinguishes_named_and_snapshotted_config(
     submission, monkeypatch, tmp_path, op, named_config
 ):
     from lionagi._errors import ConfigurationError
-    from lionagi.cli._orchestrate_parsing import add_orchestrate_subparser
     from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.orchestration.flow.parsing import add_orchestrate_subparser
 
     cwd, spawned = submission
     args = {"agent": "ordinary", "prompt": "do work", "cwd": str(cwd)}
