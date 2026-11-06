@@ -117,7 +117,7 @@ async def test_cli_engine_persists_canonical_lineage_and_bounded_outcome(
 
 
 async def test_workflow_engine_nodes_return_distinct_span_ids(monkeypatch) -> None:
-    import lionagi.cli._engine_definitions as engine_mod
+    import lionhub.orchestration.engine_definitions as engine_mod
     from lionagi.studio.services.workflow_compile import make_engine_operation
     from lionhub.orchestration.engines.engine import EngineResult
 

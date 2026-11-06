@@ -369,20 +369,6 @@ class TestSignalWriters:
 
 
 class TestReadTeamJson:
-    def test_reads_valid_file(self):
-        _make_team("r1", ["orchestrator", "alice"])
-        path = team._teams_dir() / "r1.json"
-        data = team.read_team_json(path)
-        assert data["id"] == "r1"
-
-    def test_missing_file_returns_none(self, tmp_path):
-        assert team.read_team_json(tmp_path / "nope.json") is None
-
-    def test_corrupt_json_returns_none(self):
-        path = team._teams_dir() / "corrupt.json"
-        path.write_text("{not json")
-        assert team.read_team_json(path) is None
-
     def test_load_team_raises_file_not_found_for_missing(self):
         with pytest.raises(FileNotFoundError):
             team._load_team("nonexistent")
@@ -405,7 +391,7 @@ class TestReadTeamJson:
         else from lionagi), so other layers can read team files without it."""
         import ast
 
-        from lionagi.cli import _team_service
+        from lionhub.orchestration import team as _team_service
 
         assert team.read_team_json is _team_service.read_team_json
 
@@ -424,7 +410,7 @@ class TestReadTeamJson:
     def test_reader_guard_rejects_a_command_import(self, probe, tmp_path, monkeypatch):
         """The layering guard fails when the team-service module imports a command module,
         whether the import is absolute, relative or by name."""
-        from lionagi.cli import _team_service
+        from lionhub.orchestration import team as _team_service
 
         patched = source_with_line(_team_service.__file__, probe, tmp_path)
         monkeypatch.setattr(_team_service, "__file__", str(patched))

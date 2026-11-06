@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
+from lionhub.orchestration.mcp_config import McpConfigError, resolve_spawn_mcp_servers
 
 
 @pytest.mark.parametrize("marker", ["/tmp/original", None, {"unexpected": True}])
@@ -39,7 +39,7 @@ def test_fresh_named_marker_remains_explicit(tmp_path):
 
 
 def test_legacy_check_and_use_the_same_read(tmp_path, monkeypatch):
-    from lionagi.cli import _mcp_resolve
+    from lionhub.orchestration import mcp_config as _mcp_resolve
 
     path = tmp_path / "recorded.json"
     path.write_text(json.dumps({"mcpServers": {"before": {"command": "echo"}}}))

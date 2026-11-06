@@ -320,6 +320,10 @@ MOVED_MODULES = (
     ("lionagi.cli._argtypes", "lionhub.orchestration.arguments"),
     ("lionagi.cli._code_identity", "lionhub.serve.diagnostics"),
     ("lionagi.cli._logging", "lionhub.orchestration.console"),
+    ("lionagi.cli._project", "lionhub.orchestration.project"),
+    ("lionagi.cli._mcp_resolve", "lionhub.orchestration.mcp_config"),
+    ("lionagi.cli._team_service", "lionhub.orchestration.team"),
+    ("lionagi.cli._engine_definitions", "lionhub.orchestration.engine_definitions"),
 )
 _MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
 
@@ -362,6 +366,17 @@ MOVED_MODULE_PUBLIC_NAMES = {
         "snapshot_git_position",
     },
     "lionhub.orchestration.console": {"configure_cli_logging"},
+    "lionhub.orchestration.project": {"detect_project"},
+    "lionhub.orchestration.mcp_config": {
+        "McpConfigError",
+        "LegacyMcpReplayError",
+        "McpResolution",
+        "discover_mcp_config",
+        "explicit_mcp_config_path",
+        "resolve_spawn_mcp_servers",
+    },
+    "lionhub.orchestration.team": {"read_team_json"},
+    "lionhub.orchestration.engine_definitions": {"import_engine_class"},
     # The request model, every class it is built from, and the developer-message helper.
     "lionagi.service.connections._chat_schemas": {
         "AssistantMessage",
@@ -387,6 +402,38 @@ MOVED_MODULE_PUBLIC_NAMES = {
         "UserMessage",
         "uses_developer_messages",
     },
+}
+
+MOVED_MODULE_PRIVATE_NAMES = {
+    "lionhub.orchestration.console": {"_ErrorFormatter", "_LazyStderrHandler"},
+    "lionhub.orchestration.project": {
+        "_from_config_toml",
+        "_read_project_from_toml",
+        "_from_global_overrides",
+        "_git_remote_slug",
+        "_parse_remote_url",
+    },
+    "lionhub.orchestration.mcp_config": {
+        "_reject_json_constant",
+        "_read_servers",
+        "_read_config",
+        "_snapshot_path",
+        "_format_recorded_mcp_path",
+    },
+    "lionhub.orchestration.engine_definitions": {"_is_registered_engine_kind"},
+}
+MOVED_MODULE_SHARED_VALUES = {
+    "lionhub.orchestration.project": {
+        "_SOURCE_CONFIG_TOML",
+        "_SOURCE_GLOBAL_OVERRIDE",
+        "_SOURCE_GIT_REMOTE",
+    },
+    "lionhub.orchestration.mcp_config": {
+        "MCP_CONFIG_FILENAME",
+        "SNAPSHOT_SOURCE_KEY",
+        "SNAPSHOT_SEARCHED_FROM_KEY",
+    },
+    "lionhub.orchestration.engine_definitions": {"KIND_META"},
 }
 
 
@@ -501,7 +548,9 @@ with warnings.catch_warnings(record=True) as caught:
     for name in names:
         obj = getattr(first, name)
         assert obj is getattr(second, name)
-        payload = pickle.dumps(obj, protocol=0).replace(new.encode(), old.encode())
+        payload = pickle.dumps(obj, protocol=0)
+        assert new.encode() in payload
+        payload = payload.replace(new.encode(), old.encode())
         assert old.encode() in payload
         assert pickle.loads(payload) is obj
 assert len(alias_deprecations(caught)) == 1
@@ -510,9 +559,17 @@ sentinel = object()
 with patch(old + "." + names[0], sentinel):
     assert getattr(sys.modules[new], names[0]) is sentinel
 
+for name in value_names:
+    value = getattr(first, name)
+    assert value is getattr(second, name)
+    with patch(old + "." + name, sentinel):
+        assert getattr(sys.modules[new], name) is sentinel
+    assert getattr(first, name) is value
+
 assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
 assert first.__spec__.name == new and first.__name__ == new
 assert all(getattr(first, name) is getattr(second, name) for name in names)
+assert all(getattr(first, name) is getattr(second, name) for name in value_names)
 print("ok")
 """
 
@@ -520,10 +577,12 @@ print("ok")
 @pytest.mark.parametrize("old_first", [True, False], ids=["old-first", "new-first"])
 @pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
 def test_a_moved_module_keeps_its_identity_in_either_cold_import_order(old, new, old_first):
-    names = MOVED_MODULE_PUBLIC_NAMES[new]
-    if new == "lionhub.orchestration.console":
-        names = names | {"_ErrorFormatter", "_LazyStderrHandler"}
-    setup = f"old, new, old_first = {old!r}, {new!r}, {old_first!r}\nnames = {sorted(names)!r}\n"
+    names = MOVED_MODULE_PUBLIC_NAMES[new] | MOVED_MODULE_PRIVATE_NAMES.get(new, set())
+    value_names = MOVED_MODULE_SHARED_VALUES.get(new, set())
+    setup = (
+        f"old, new, old_first = {old!r}, {new!r}, {old_first!r}\n"
+        f"names = {sorted(names)!r}\nvalue_names = {sorted(value_names)!r}\n"
+    )
     assert _run_fresh(setup + _MOVED_MODULE_COLD_IDENTITY).strip() == "ok"
 
 

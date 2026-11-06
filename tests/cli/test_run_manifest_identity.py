@@ -9,7 +9,7 @@ import json
 import pytest
 
 import lionagi.cli._runs as runs_mod
-from lionagi.cli._mcp_resolve import McpResolution
+from lionhub.orchestration.mcp_config import McpResolution
 
 
 @pytest.fixture

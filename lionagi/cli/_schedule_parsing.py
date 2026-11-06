@@ -480,7 +480,7 @@ def build_create_body(args: argparse.Namespace) -> tuple[dict[str, Any] | None, 
         # Best-effort: auto-capture the project from cwd (ADR-0063 detection
         # cascade). Any failure here must never block schedule creation.
         with contextlib.suppress(Exception):
-            from lionagi.cli._project import detect_project
+            from lionhub.orchestration.project import detect_project
 
             detected, _source = detect_project(Path.cwd())
             if detected:

@@ -1640,8 +1640,7 @@ async def _import_teams() -> dict[str, int]:
     from sqlalchemy import JSON, bindparam, text
 
     from lionagi.state.db import StateDB
-
-    from ._team_service import read_team_json
+    from lionhub.orchestration.team import read_team_json
 
     teams_dir = (RUNS_ROOT.parent / "teams").resolve()
     counts = {"teams": 0, "messages": 0, "skipped_teams": 0, "errors": 0}

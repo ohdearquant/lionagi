@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli import _mcp_resolve
 from lionagi.ln import _proc
+from lionhub.orchestration import mcp_config as _mcp_resolve
 from lionhub.serve.mcp import _notify_hook, config, jobs
 
 

@@ -48,6 +48,14 @@ from lionagi.state.artifact_verifier import resolve_artifact_contract
 from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
 from lionhub.orchestration.arguments import BoundedInt
 from lionhub.orchestration.console import hint, log_error
+from lionhub.orchestration.mcp_config import (
+    LegacyMcpReplayError,
+    McpConfigError,
+    McpResolution,
+    _format_recorded_mcp_path,
+    explicit_mcp_config_path,
+    resolve_spawn_mcp_servers,
+)
 from lionhub.serve.mcp.config import JOB_MARKER_ENV_VAR
 
 from ._agent_depth import stamp_agent_depth
@@ -56,14 +64,6 @@ from ._context_from import (
     DEFAULT_CONTEXT_BUDGET_TOKENS,
     ContextFromError,
     resolve_and_build_context_block,
-)
-from ._mcp_resolve import (
-    LegacyMcpReplayError,
-    McpConfigError,
-    McpResolution,
-    _format_recorded_mcp_path,
-    explicit_mcp_config_path,
-    resolve_spawn_mcp_servers,
 )
 from ._providers import (
     _CLAUDE_PROVIDER_NAMES,

@@ -841,7 +841,7 @@ def test_a_submit_into_a_child_config_it_would_not_mint_is_refused_and_leaves_it
     target.write_text(target.read_text() + '\n[extra]\nkey = "value"\n')
     before = target.read_bytes()
     monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
-    monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+    monkeypatch.setattr("lionhub.orchestration.mcp_config.discover_mcp_config", lambda start: None)
 
     with pytest.raises(ChildActorError, match="refusing to overwrite"):
         jobs.submit(
@@ -863,7 +863,7 @@ def test_a_submit_refused_after_its_reservation_takes_back_the_config_it_minted(
 ):
     _submitter, child, spawned = submit_sandbox
     monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
-    monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+    monkeypatch.setattr("lionhub.orchestration.mcp_config.discover_mcp_config", lambda start: None)
 
     with pytest.raises(jobs.SubmitInputError, match="not declared"):
         jobs.submit(

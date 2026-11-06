@@ -2096,8 +2096,8 @@ def run_schedule_quick_create(kind: str, argv: list[str]) -> int:
     # path; any failure here must never block schedule creation.
     project: str | None = None
     with contextlib.suppress(Exception):
-        from lionagi.cli._project import detect_project
         from lionagi.studio.scheduler.subprocess import _validate_identifier
+        from lionhub.orchestration.project import detect_project
 
         detected, _source = detect_project(cwd)
         if detected:

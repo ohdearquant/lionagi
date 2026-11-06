@@ -251,7 +251,7 @@ async def test_worker_profile_refuses_explicit_config_before_model_build(tmp_run
 
 @pytest.mark.asyncio
 async def test_orchestrator_profile_refuses_explicit_config_before_discovery(tmp_run, monkeypatch):
-    import lionagi.cli._mcp_resolve as mcp_mod
+    import lionhub.orchestration.mcp_config as mcp_mod
 
     profile = AgentProfile(name="isolated", model="codex/gpt-5", mcp="none")
     monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)

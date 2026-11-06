@@ -20,8 +20,8 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import parse_duration
 from lionagi.ln.concurrency import sleep
 from lionagi.state.engine import mask_credentials
+from lionhub.orchestration.project import detect_project
 
-from ._project import detect_project
 from ._runs import _resolved_run_state_dir
 from ._schedule_parsing import _chain_action_with_usable_selected_kind
 from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity

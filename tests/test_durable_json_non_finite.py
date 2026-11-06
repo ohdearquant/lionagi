@@ -192,37 +192,6 @@ def test_job_record_refuses_non_finite(tmp_path, monkeypatch):
     assert json.loads(target.read_text())["pid_create_time"] is None
 
 
-@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
-def test_mcp_config_read_refuses_non_standard_json_constants(tmp_path, token):
-    """The three tokens cannot enter the resolved server map at all.
-
-    ``json.loads`` accepts them by default — they are a Python extension, not
-    JSON — so a config carrying one would otherwise resolve to a Python float and
-    be re-emitted into the snapshot the child is handed. The refusal names the
-    file an operator wrote, and happens before anything is spawned.
-    """
-    from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
-
-    (tmp_path / ".mcp.json").write_text(
-        f'{{"mcpServers": {{"x": {{"command": "y", "timeout": {token}}}}}}}'
-    )
-
-    resolution = resolve_spawn_mcp_servers(launch_dir=tmp_path)
-    assert resolution.servers is None
-    assert resolution.reason.startswith("mcp_config_unusable:")
-    assert token in resolution.reason
-
-    with pytest.raises(McpConfigError, match="not valid JSON"):
-        resolve_spawn_mcp_servers(tmp_path / ".mcp.json", launch_dir=tmp_path)
-
-    # Control: the same config with a finite timeout resolves and keeps its value.
-    (tmp_path / ".mcp.json").write_text(
-        '{"mcpServers": {"x": {"command": "y", "timeout": 1.5, "retries": null}}}'
-    )
-    ok = resolve_spawn_mcp_servers(launch_dir=tmp_path)
-    assert ok.servers == {"x": {"command": "y", "timeout": 1.5, "retries": None}}
-
-
 def test_mcp_server_snapshot_refuses_non_finite(tmp_path):
     """And the write refuses too, for a server map that reached it some other way."""
     from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot

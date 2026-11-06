@@ -1035,8 +1035,8 @@ async def setup_orchestration(
     mcp_launch_dir: str | None = None,
 ) -> OrchestrationEnv:
     """Resolve orchestrator config, allocate run, build branch+session."""
-    from lionagi.cli._mcp_resolve import resolve_spawn_mcp_servers
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
+    from lionhub.orchestration.mcp_config import resolve_spawn_mcp_servers
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory. Forward the tilde-expanded path (providers never expand `~`).
@@ -1164,7 +1164,7 @@ async def setup_orchestration(
     if isinstance(run, RunDir):
         provenance = mcp_resolution
         if mcp_launch_dir_unrecorded and not no_mcp_config:
-            from lionagi.cli._mcp_resolve import _format_recorded_mcp_path
+            from lionhub.orchestration.mcp_config import _format_recorded_mcp_path
 
             resolution = (mcp_resolution.reason or "resolved").partition(":")[0]
             provenance = replace(

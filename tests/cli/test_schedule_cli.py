@@ -1261,7 +1261,7 @@ def test_schedule_create_explicit_project_skips_auto_detect(monkeypatch):
     """--project given: used as-is, detect_project is never consulted."""
     detect_calls = []
     monkeypatch.setattr(
-        "lionagi.cli._project.detect_project",
+        "lionhub.orchestration.project.detect_project",
         lambda cwd=None: detect_calls.append(cwd) or ("should-not-be-used", "git_remote"),
     )
 
@@ -1275,7 +1275,7 @@ def test_schedule_create_explicit_project_skips_auto_detect(monkeypatch):
 def test_schedule_create_without_project_auto_detects_valid(monkeypatch):
     """No --project: a valid detect_project() result populates action_project."""
     monkeypatch.setattr(
-        "lionagi.cli._project.detect_project",
+        "lionhub.orchestration.project.detect_project",
         lambda cwd=None: ("lionagi/lionagi", "git_remote"),
     )
 
@@ -1287,7 +1287,9 @@ def test_schedule_create_without_project_auto_detects_valid(monkeypatch):
 
 def test_schedule_create_without_project_no_detection_omits_field(monkeypatch):
     """No --project and detect_project finds nothing: action_project is simply absent."""
-    monkeypatch.setattr("lionagi.cli._project.detect_project", lambda cwd=None: (None, None))
+    monkeypatch.setattr(
+        "lionhub.orchestration.project.detect_project", lambda cwd=None: (None, None)
+    )
 
     outcome = _run_create(monkeypatch, [])
 
@@ -1299,7 +1301,7 @@ def test_schedule_create_auto_detect_invalid_identifier_silently_skipped(monkeyp
     """A detected name that fails identifier validation (leading '-') must never
     break `create` — it is silently dropped, not surfaced as an error."""
     monkeypatch.setattr(
-        "lionagi.cli._project.detect_project",
+        "lionhub.orchestration.project.detect_project",
         lambda cwd=None: ("-not-a-valid-flag-name", "git_remote"),
     )
 
@@ -1315,7 +1317,7 @@ def test_schedule_create_auto_detect_exception_silently_skipped(monkeypatch):
     def _boom(cwd=None):
         raise RuntimeError("cwd detection blew up")
 
-    monkeypatch.setattr("lionagi.cli._project.detect_project", _boom)
+    monkeypatch.setattr("lionhub.orchestration.project.detect_project", _boom)
 
     outcome = _run_create(monkeypatch, [])
 
@@ -1330,7 +1332,7 @@ def test_schedule_create_explicit_cwd_used_as_is(monkeypatch, tmp_path):
     """--cwd given: resolved and sent as action_cwd, action_project auto-
     detection is skipped entirely because it takes priority."""
     monkeypatch.setattr(
-        "lionagi.cli._project.detect_project",
+        "lionhub.orchestration.project.detect_project",
         lambda cwd=None: ("should-not-be-used", "git_remote"),
     )
 
@@ -1356,7 +1358,9 @@ def test_schedule_create_without_cwd_or_project_falls_back_to_cli_cwd(monkeypatc
     """Neither --cwd nor a resolvable action_project: the CLI's own
     invocation directory is sent as action_cwd so the schedule still gets a
     stable execution root."""
-    monkeypatch.setattr("lionagi.cli._project.detect_project", lambda cwd=None: (None, None))
+    monkeypatch.setattr(
+        "lionhub.orchestration.project.detect_project", lambda cwd=None: (None, None)
+    )
 
     outcome = _run_create(monkeypatch, [])
 
@@ -1370,7 +1374,7 @@ def test_schedule_create_with_resolved_project_omits_cwd_fallback(monkeypatch):
     cwd fallback never fires -- action_project's registered path wins at
     creation time (see services/schedules.create_schedule)."""
     monkeypatch.setattr(
-        "lionagi.cli._project.detect_project",
+        "lionhub.orchestration.project.detect_project",
         lambda cwd=None: ("lionagi/lionagi", "git_remote"),
     )
 

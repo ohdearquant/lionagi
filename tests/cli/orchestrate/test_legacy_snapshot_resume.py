@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.cli import _mcp_resolve
 from lionagi.cli.orchestrate import flow
 from lionagi.cli.orchestrate._checkpoint import FlowResumeError
+from lionhub.orchestration import mcp_config as _mcp_resolve
 from tests.cli.orchestrate.test_no_mcp_config_handoff import tmp_run
 
 

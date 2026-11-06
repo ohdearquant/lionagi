@@ -423,7 +423,7 @@ def _write_mcp_server_snapshot(
     the submission searched from, which the child records as its provenance in
     place of its own directory.
     """
-    from lionagi.cli._mcp_resolve import SNAPSHOT_SEARCHED_FROM_KEY, SNAPSHOT_SOURCE_KEY
+    from lionhub.orchestration.mcp_config import SNAPSHOT_SEARCHED_FROM_KEY, SNAPSHOT_SOURCE_KEY
 
     document = {
         "mcpServers": servers,
@@ -1490,7 +1490,7 @@ def submit(
         elif replay_mcp_choice:
             mcp_config_reason = "mcp_replayed_from_recorded_run"
         else:
-            from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
+            from lionhub.orchestration.mcp_config import McpConfigError, resolve_spawn_mcp_servers
 
             launch_dir = os.getcwd()
             resolution = resolve_spawn_mcp_servers(launch_dir=launch_dir)

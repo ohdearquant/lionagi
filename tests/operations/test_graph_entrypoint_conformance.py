@@ -246,7 +246,7 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="li-engine-run-planning",
-        symbol="lionagi.cli._engine_definitions.KIND_META['planning']",
+        symbol="lionhub.orchestration.engine_definitions.KIND_META['planning']",
         location=None,
         role="alias",
         expected_target="PlanningEngine.run",
@@ -3393,7 +3393,7 @@ def test_manifest_keys_and_symbols_are_unique():
     [
         "lionagi.session.session.Session.flow",
         "lionagi.cli.orchestrate.flow._resume_flow",
-        "lionagi.cli._engine_definitions.KIND_META['planning']",
+        "lionhub.orchestration.engine_definitions.KIND_META['planning']",
         "lionagi.operations.builder.OperationGraphBuilder",
     ],
 )
@@ -3410,7 +3410,7 @@ def test_symbol_resolves_accepts_real_symbols(symbol):
         "lionagi.session.session.Session.nonexistent_method",
         "lionagi.session.session.NonexistentClass.flow",
         "lionagi.nonexistent.module.thing",
-        "lionagi.cli._engine_definitions.KIND_META['nonexistent_kind']",
+        "lionhub.orchestration.engine_definitions.KIND_META['nonexistent_kind']",
         "not a symbol at all",
     ],
 )
@@ -3545,7 +3545,7 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
 
 
 def test_engine_kind_planning_is_the_only_registered_graph_kind():
-    from lionagi.cli._engine_definitions import KIND_META
+    from lionhub.orchestration.engine_definitions import KIND_META
 
     assert KIND_META["planning"]["cls_path"] == ("lionhub.orchestration.engines", "PlanningEngine")
 
@@ -4136,7 +4136,7 @@ async def test_run_workflow_def_delegates_to_session_flow_with_progress_wrapper(
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
-    import lionagi.cli._engine_definitions as cli_engine
+    import lionhub.orchestration.engine_definitions as cli_engine
     from tests.apps_studio_server.test_workflow_run import _FakeEngine, _mock_chat_branch, _spec
 
     monkeypatch.setitem(

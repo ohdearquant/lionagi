@@ -3425,8 +3425,8 @@ def test_checkpoint_freezes_a_relative_mcp_config_to_the_file_the_run_read(
     to store and shows it really does load the other file, so the assertion
     above is pinned to the canonicalization and not to the fixture being inert.
     """
-    from lionagi.cli._mcp_resolve import resolve_spawn_mcp_servers
     from lionagi.cli.orchestrate.flow import _canonical_mcp_config
+    from lionhub.orchestration.mcp_config import resolve_spawn_mcp_servers
 
     launched_from = tmp_path / "launched-from"
     resumed_from = tmp_path / "resumed-from"

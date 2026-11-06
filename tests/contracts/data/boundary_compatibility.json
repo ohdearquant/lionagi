@@ -243,7 +243,7 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._project\", \"lionhub.orchestration.project\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mcp_resolve\", \"lionhub.orchestration.mcp_config\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._team_service\", \"lionhub.orchestration.team\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._engine_definitions\",\n        \"lionhub.orchestration.engine_definitions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -398,9 +398,6 @@
       "from lionagi.ln import lazy_import",
       "__all__ = (\"main\",)",
       "def __getattr__(name: str):\n    # Lazy: importing lionagi.studio.cli (which main.py imports at module\n    # level) must not re-enter main.py through this package init.\n    if name == \"main\":\n        return lazy_import(name, {\"main\": (\"main\", \"main\")}, __name__, globals())\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
-    ],
-    "lionagi/cli/_mcp_resolve.py": [
-      "__all__ = (\n    \"MCP_CONFIG_FILENAME\",\n    \"McpConfigError\",\n    \"McpResolution\",\n    \"SNAPSHOT_SEARCHED_FROM_KEY\",\n    \"SNAPSHOT_SOURCE_KEY\",\n    \"discover_mcp_config\",\n    \"explicit_mcp_config_path\",\n    \"resolve_spawn_mcp_servers\",\n)"
     ],
     "lionagi/cli/_providers.py": [
       "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"EFFORT_LEVELS\",\n    \"MAX_TIMEOUT_SECONDS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"normalize_effort\",\n    \"add_common_cli_args\",\n    \"build_chat_model\",\n    \"build_imodel_from_spec\",\n    \"parse_model_spec\",\n    \"resolve_codex_config_profile\",\n    \"resolve_persisted_effort\",\n    \"AgentProfile\",\n    \"AgentProfileNotFoundError\",\n    \"AmbiguousProfileNameError\",\n    \"build_agent_profile_catalog\",\n    \"build_deadline_preamble\",\n    \"list_agents\",\n    \"load_agent_profile\",\n    \"profile_config\",\n    \"_parse_profile\",\n    \"_resolve_profile_path\",\n    \"_validate_bare_name\",\n)"
@@ -1522,9 +1519,6 @@
       "resolve_and_build_context_block",
       "resolve_context_refs"
     ],
-    "lionagi/cli/_engine_definitions.py": [
-      "import_engine_class"
-    ],
     "lionagi/cli/_inspection.py": [
       "fetch_by_id",
       "resolve_agent_target",
@@ -1541,14 +1535,6 @@
       "read_pid_from_entity",
       "unaddressable_pid_reason"
     ],
-    "lionagi/cli/_mcp_resolve.py": [
-      "LegacyMcpReplayError",
-      "McpConfigError",
-      "McpResolution",
-      "discover_mcp_config",
-      "explicit_mcp_config_path",
-      "resolve_spawn_mcp_servers"
-    ],
     "lionagi/cli/_mirror_service.py": [
       "mirror_forever"
     ],
@@ -1560,9 +1546,6 @@
     ],
     "lionagi/cli/_pid_quarantine.py": [
       "quarantine_identity"
-    ],
-    "lionagi/cli/_project.py": [
-      "detect_project"
     ],
     "lionagi/cli/_providers.py": [
       "AgentProfile",
@@ -1599,9 +1582,6 @@
       "build_create_body",
       "normalize_host",
       "suggest_schedule_flag"
-    ],
-    "lionagi/cli/_team_service.py": [
-      "read_team_json"
     ],
     "lionagi/cli/_util.py": [
       "AmbiguousIdError",

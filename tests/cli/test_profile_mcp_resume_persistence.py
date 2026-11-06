@@ -202,7 +202,7 @@ async def test_agent_resume_replays_submitted_snapshot_origin(monkeypatch, tmp_p
 )
 async def test_resume_refuses_invalid_recorded_snapshot_origin(monkeypatch, tmp_path, record):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(agent_mod, "stamp_agent_depth", lambda _name: None)
@@ -229,7 +229,7 @@ async def test_resume_refuses_ambiguous_legacy_snapshot_before_discovery(
     monkeypatch, tmp_path, kind
 ):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(agent_mod, "stamp_agent_depth", lambda _name: None)
@@ -395,7 +395,7 @@ async def test_replay_rejects_relative_recorded_launch_dir_before_any_lookup(
     monkeypatch, tmp_path, origin
 ):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(agent_mod, "stamp_agent_depth", lambda _name: None)
@@ -422,7 +422,7 @@ async def test_replay_rejects_relative_recorded_launch_dir_before_any_lookup(
 @pytest.mark.parametrize("recorded", [{"secret": "do-not-echo-secret"}, "bad\nline\u202eevil"])
 async def test_legacy_record_error_safely_formats_malformed_path(monkeypatch, tmp_path, recorded):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(agent_mod, "stamp_agent_depth", lambda _name: None)
@@ -445,7 +445,7 @@ async def test_legacy_record_error_safely_formats_malformed_path(monkeypatch, tm
 @pytest.mark.asyncio
 async def test_replay_refuses_relative_submit_snapshot_before_lookup(monkeypatch, tmp_path):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(agent_mod, "stamp_agent_depth", lambda _name: None)
@@ -475,7 +475,7 @@ async def test_replay_refuses_non_boolean_legacy_mcp_disabled_before_lookup(
     monkeypatch, tmp_path, disabled
 ):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(agent_mod, "stamp_agent_depth", lambda _name: None)
@@ -560,7 +560,7 @@ async def test_legacy_record_with_path_but_no_launch_dir_is_refused_before_looku
     monkeypatch, tmp_path, config
 ):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(agent_mod, "stamp_agent_depth", lambda _name: None)

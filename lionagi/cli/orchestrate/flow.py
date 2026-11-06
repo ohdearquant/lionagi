@@ -4032,7 +4032,7 @@ async def _resume_flow(
     # as authorizations or provenance claims in the checkpoint itself.
     config.pop("reject_legacy_mcp_snapshot", None)
     config.pop("mcp_launch_dir_unrecorded", None)
-    from lionagi.cli._mcp_resolve import LegacyMcpReplayError, _format_recorded_mcp_path
+    from lionhub.orchestration.mcp_config import LegacyMcpReplayError, _format_recorded_mcp_path
 
     origin = config.get("mcp_config_origin")
     snapshot = config.get("mcp_submit_snapshot")

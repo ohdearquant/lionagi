@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
+from lionhub.orchestration.mcp_config import McpConfigError, resolve_spawn_mcp_servers
 
 
 def test_undecodable_discovered_config_is_reported_as_unusable_naming_the_file(tmp_path):

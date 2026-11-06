@@ -2457,7 +2457,7 @@ async def test_adopt_reads_a_repeated_notify_status_as_one(
 async def test_adopt_offers_no_member_edit_for_a_value_no_member_can_declare(
     temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch, column, override
 ):
-    from lionagi.cli import _project
+    from lionhub.orchestration import project as _project
 
     monkeypatch.setattr(_project, "detect_project", lambda path: (None, "none"))
     doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
@@ -2479,7 +2479,7 @@ async def test_adopt_names_no_null_project_edit_for_a_row_of_a_kind_without_a_pr
 ):
     """A play row takes no project argument, so its project effect reads "none" for a
     reason ``project: null`` on an agent member does not close: the kinds differ."""
-    from lionagi.cli import _project
+    from lionhub.orchestration import project as _project
 
     monkeypatch.setattr(_project, "detect_project", lambda path: (None, "none"))
     doc = parse_schedule_set(
@@ -2510,7 +2510,7 @@ async def test_adopt_names_the_null_project_edit_for_a_row_running_without_one(
     an explicit ``project: null`` on the member declares. The refusal is therefore a
     difference a member edit can close, and it names that edit rather than calling
     the value one no member can declare."""
-    from lionagi.cli import _project
+    from lionhub.orchestration import project as _project
 
     monkeypatch.setattr(_project, "detect_project", lambda path: (None, "none"))
     doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
@@ -2774,7 +2774,8 @@ async def test_adopt_refusal_describes_changed_project_attribution(
 ):
     doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
     monkeypatch.setattr(
-        "lionagi.cli._project.detect_project", lambda cwd=None: ("other-project", "config_toml")
+        "lionhub.orchestration.project.detect_project",
+        lambda cwd=None: ("other-project", "config_toml"),
     )
     async with StateDB() as db:
         await db.create_schedule(

@@ -7,8 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.cli import _mcp_resolve, orchestrate
+from lionagi.cli import orchestrate
 from lionagi.cli.orchestrate import flow
+from lionhub.orchestration import mcp_config as _mcp_resolve
 from lionhub.serve.mcp import jobs
 from tests.mcp.test_resume_mcp_policy import _request, submission
 

@@ -15,7 +15,7 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
-import lionagi.cli._engine_definitions as _engine_registry
+import lionhub.orchestration.engine_definitions as _engine_registry
 from lionagi.ln import short_id
 from lionagi.state.db import (
     StateDB,

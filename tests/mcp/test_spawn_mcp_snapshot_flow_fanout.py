@@ -19,7 +19,7 @@ import json
 
 import pytest
 
-from lionagi.cli._mcp_resolve import resolve_spawn_mcp_servers
+from lionhub.orchestration.mcp_config import resolve_spawn_mcp_servers
 from lionhub.serve.mcp import config, dispatch, jobs
 
 ORCHESTRATION_KINDS = ("flow", "fanout")

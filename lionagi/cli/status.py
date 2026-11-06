@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from lionhub.orchestration.console import log_error
+from lionhub.orchestration.project import detect_project
 
 from ._inspection import (
     _DB_BUSY_TIMEOUT_S,
@@ -29,7 +30,6 @@ from ._inspection import (
     resolve_play_target,
     resolve_primary_session,
 )
-from ._project import detect_project
 from ._util import AmbiguousIdError
 
 __all__ = (

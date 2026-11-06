@@ -554,7 +554,7 @@ def make_engine_operation(
         engine_workspace: str | None = None,
         **_ignored: Any,
     ) -> Any:
-        from lionagi.cli._engine_definitions import KIND_META, import_engine_class
+        from lionhub.orchestration.engine_definitions import KIND_META, import_engine_class
 
         meta = KIND_META.get(engine_kind)
         if meta is None:
