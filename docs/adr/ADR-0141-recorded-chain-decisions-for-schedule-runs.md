@@ -162,7 +162,7 @@ def _recorded_selection(row: dict[str, Any]) -> str | None:
 
 Input: `row["status_evidence_refs"]` as a list, or as JSON text. `get_schedule_run` decodes the column (`lionagi/state/db.py:7086-7098`, `:9024-9059`). The monitor already accepts both forms for session rows (`monitor.py:652-665`).
 
-A ref is usable only when all of these hold: it is a dict, `kind == "chain_decision"`, `v` is the integer `1` (not a boolean), and `ref` is one of the three values. Any other `v`, or a malformed element, is treated as no ref. The monitor writes one warning line for each affected row per wait, naming the run id and the reason. The CLI logging module re-exports `warn` (`lionagi/cli/_logging.py:12-20`, `:23-28`; `lionagi/_log_channels.py:43-45`). The implementation chooses the channel. The one-line requirement is fixed.
+A ref is usable only when all of these hold: it is a dict, `kind == "chain_decision"`, `v` is the integer `1` (not a boolean), and `ref` is one of the three values. Any other `v`, or a malformed element, is treated as no ref. The monitor writes one warning line for each affected row per wait, naming the run id and the reason. The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py:12-20`, `:23-28`; `lionagi/_log_channels.py:43-45`). The implementation chooses the channel. The one-line requirement is fixed.
 
 Cases in `_advance_chains` (`lionagi/cli/monitor.py:1560-1645`), applied to a row that has become terminal, in this order:
 

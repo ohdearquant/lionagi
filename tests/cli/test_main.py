@@ -462,7 +462,7 @@ def test_cli_package_init_is_lazy():
     """Importing lionagi.cli (or any submodule of it, e.g. via
     lionagi.studio.cli) must not pull in lionagi.cli.main — main.py imports
     lionagi.studio.cli at module level, so an eager package init would make
-    every studio->cli._logging import re-enter a partially-initialized
+    every studio import of a CLI submodule re-enter a partially-initialized
     module. `from lionagi.cli import main` still resolves to the callable
     via the package's lazy __getattr__ re-export."""
     import subprocess
