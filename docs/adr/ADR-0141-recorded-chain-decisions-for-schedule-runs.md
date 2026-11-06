@@ -232,7 +232,7 @@ Existing tests that must stay unchanged, because their fixtures carry no ref and
 
 ## Open questions
 
-1. **Warning channel.** The CLI logging module re-exports `warn` (`lionagi/cli/_logging.py:12-20`, `:23-28`; `lionagi/_log_channels.py:43-45`). The channel for the D4 warning remains an implementation choice.
+1. **Warning channel.** The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py:12-20`, `:23-28`; `lionagi/_log_channels.py:43-45`). The channel for the D4 warning remains an implementation choice.
 
 ## Notes
 
