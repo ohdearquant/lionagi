@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-SERVERS = {"khive": {"command": "kkernel", "args": ["mcp"]}}
+SERVERS = {"example": {"command": "example-mcp", "args": ["mcp"]}}
 
 
 def _write_config(directory, servers=SERVERS):
