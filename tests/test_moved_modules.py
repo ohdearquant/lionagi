@@ -522,7 +522,14 @@ print("ok")
 def test_a_moved_module_keeps_its_identity_in_either_cold_import_order(old, new, old_first):
     names = MOVED_MODULE_PUBLIC_NAMES[new]
     if new == "lionhub.orchestration.console":
-        names = names | {"_ErrorFormatter", "_LazyStderrHandler"}
+        names = names | {
+            "_ErrorFormatter",
+            "_LazyStderrHandler",
+            "progress",
+            "hint",
+            "warn",
+            "log_error",
+        }
     setup = f"old, new, old_first = {old!r}, {new!r}, {old_first!r}\nnames = {sorted(names)!r}\n"
     assert _run_fresh(setup + _MOVED_MODULE_COLD_IDENTITY).strip() == "ok"
 
