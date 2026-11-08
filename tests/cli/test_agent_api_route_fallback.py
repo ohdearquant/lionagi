@@ -169,31 +169,6 @@ async def test_a_read_set_run_continues_with_only_the_read_tools(
     assert record["sandbox_dropped"] is False
 
 
-@pytest.mark.asyncio
-async def test_a_profile_that_names_its_own_tools_keeps_them_on_the_subscription_route(
-    leg, subscription, monkeypatch, tmp_path
-):
-    """The API route refuses a profile's `tools` when the run launches, so the first model is let
-    through here to reach the switch with the profile's own list in hand."""
-    import lionagi.cli.agent as agent_mod
-
-    build_chat_model = agent_mod.build_chat_model
-
-    def launch_then_switch(provider_name, *args, **kwargs):
-        if provider_name == "anthropic":
-            kwargs["tool_settings"] = None
-        return build_chat_model(provider_name, *args, **kwargs)
-
-    monkeypatch.setattr(agent_mod, "build_chat_model", launch_then_switch)
-    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
-    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
-
-    await leg.run(_PROFILE(api_tools="read", tools=["Read", "Grep"]))
-
-    (turn,) = subscription.calls
-    assert turn.cli_tools == "Read,Grep"
-
-
 @pytest.fixture
 def seatbelt(monkeypatch, tmp_path):
     """The macOS sandbox the write set needs is reported available, as on a Mac."""
@@ -335,6 +310,70 @@ async def test_the_sandbox_clause_names_the_network_only_when_the_sandbox_denied
 
     (note,) = _fallback_notes(console_warnings)
     assert clause in note
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("api_tools", "named"),
+    [("write", True), ("read", False)],
+)
+async def test_the_warning_names_the_command_checks_only_a_write_set_run_loses(
+    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path, api_tools, named
+):
+    """The write set's bash ran under the check that refuses destructive commands and its bash and
+    editor under the check that refuses email addresses in outbound headers; Claude Code's tools
+    run under neither. The read set has no bash or editor, so its warning names neither."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools=api_tools))
+
+    (note,) = _fallback_notes(console_warnings)
+    assert "\n" not in note
+    assert ("refuse destructive commands" in note) is named
+    assert ("email addresses in outbound headers" in note) is named
+    if named:
+        assert "without the API route's checks that refuse destructive commands" in note
+
+
+def test_every_api_tool_set_has_a_subscription_tool_list():
+    """A set with no entry in the subscription table cannot be switched, so the two tables must
+    name the same sets."""
+    import lionagi.cli.agent as agent_mod
+
+    assert set(agent_mod._SUBSCRIPTION_API_SET_TOOLS) == set(agent_mod._API_TOOL_SETS)
+
+
+@pytest.mark.asyncio
+async def test_a_run_whose_api_set_has_no_subscription_tools_fails_with_the_routing_error(
+    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path
+):
+    """The subscription CLI has every built-in tool unless the request names some. A set with no
+    tool list to name does not switch: the run fails with the routing error, nothing is sent on
+    the subscription route, and the branch keeps its API model."""
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(
+        agent_mod,
+        "_SUBSCRIPTION_API_SET_TOOLS",
+        {k: v for k, v in agent_mod._SUBSCRIPTION_API_SET_TOOLS.items() if k != "write"},
+    )
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="write"))
+
+    assert isinstance(info.value.__cause__, AccountRoutingError)
+    assert info.value.__cause__.code is RouterErrorCode.BUDGET_EXHAUSTED
+    assert subscription.calls == []
+    assert len(leg.payloads) == 1
+    manifest = _manifest(tmp_path)
+    assert (manifest["provider"], manifest["model"]) == ("anthropic", provider.MODEL)
+    assert manifest["status"] == "failed"
+    assert "subscription_fallback" not in manifest
+    assert _fallback_notes(console_warnings) == []
+    assert leg.branch.chat_model.endpoint.config.provider == "anthropic"
 
 
 @pytest.mark.asyncio

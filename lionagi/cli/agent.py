@@ -2798,18 +2798,19 @@ async def _run_agent(
                     refusal = _first_request_route_refusal(refused, branch, _api_usage)
                     if refusal is None or is_resumed_branch or canonical != "anthropic":
                         raise
+                    # The CLI has every built-in tool unless the request names some, so the
+                    # run names the tools of the set it ran with on the API route. A set with
+                    # no entry has no tools to name, so the run does not switch: it fails with
+                    # the routing error instead of gaining tools its API set did not have.
+                    # This is decided before the branch's model or anything else is changed.
+                    set_tools = _SUBSCRIPTION_API_SET_TOOLS.get(api_launch["tools"])
+                    if set_tools is None:
+                        raise
                     from lionagi.service.imodel import iModel
                     from lionhub.orchestration.console import warn
 
                     original_spec = f"{provider}/{model}"
                     fallback_spec = f"{_SUBSCRIPTION_FALLBACK_PROVIDER}/{model}"
-                    # The CLI has every built-in tool unless the request names some, so the
-                    # run names the tools of the set it ran with on the API route; a
-                    # profile's own `tools` list stays what it declared.
-                    fallback_tool_settings = dict(tool_settings)
-                    set_tools = _SUBSCRIPTION_API_SET_TOOLS.get(api_launch["tools"])
-                    if set_tools is not None and "tools" not in fallback_tool_settings:
-                        fallback_tool_settings["tools"] = set_tools
                     # Only the API route's editor and bash run under the macOS sandbox, which
                     # confines file writes and, unless the profile set `api_network`, network
                     # access; Claude Code has no filesystem sandbox of its own and nothing here
@@ -2838,7 +2839,7 @@ async def _run_agent(
                         account_connectors=account_connectors,
                         contain_account_integrations=contain_account_integrations,
                         workload=workload,
-                        tool_settings=fallback_tool_settings,
+                        tool_settings={"tools": set_tools},
                     )
                     if isinstance(subscription_model, str):
                         subscription_model = iModel(model=subscription_model)
@@ -2910,13 +2911,17 @@ async def _run_agent(
                         "Claude Code's tools are not confined to the working directory the "
                         "way the API route's tools were"
                     )
+                    # The write set's bash also ran under `guard_destructive`, and its bash and
+                    # editor under `guard_email_in_headers`, both wired by `_wire_secure_guards`;
+                    # Claude Code's Bash, Edit and Write tools run under neither here.
                     if left_sandbox:
                         warning.append(
                             "The write set's editor and bash ran under the macOS sandbox on the "
                             "API route; Claude Code has no filesystem sandbox, so on this route "
                             "its commands run without the file-write"
                             + (" and network" if left_network_confinement else "")
-                            + " confinement"
+                            + " confinement, and without the API route's checks that refuse "
+                            "destructive commands and email addresses in outbound headers"
                         )
                     warn(". ".join(warning))
             if _api_turn is None:
