@@ -11,11 +11,11 @@ Line citations to `lionagi/cli/machine.py` (also written `cli/machine.py`) witho
 ## Context
 
 The transcript mirrors write a session's status from a silence window.
-`reconcile_status` (`lionagi/state/_mirror_common.py:273-372`) computes
+`reconcile_status` (`lionagi/state/_mirror_common.py::reconcile_status`) computes
 `live = (now - last_message_at) <= live_window`, wants `running` when live and
 `completed` when not, and takes an override write on the way back out of a
 terminal status. `live_window` defaults to 300 seconds
-(`lionagi/cli/mirror.py:42`).
+(`lionhub/src/lionhub/serve/mirror.py::_DEFAULT_LIVE_WINDOW`).
 
 So `completed` on a mirrored session means "no transcript line for five
 minutes". It does not mean the transcript ended. An agent that thinks for six
@@ -29,7 +29,7 @@ meanings, which is the same failure ADR-0105 fixed one column over.
 ### Three consequences
 
 **1. Consumers read a live agent as finished.** Verified at
-`lionagi/studio/services/sessions.py:1844-1852`: `is_session_stream_done` closes a
+`lionagi/studio/services/sessions.py::is_session_stream_done`: `is_session_stream_done` closes a
 session's live stream once the status is terminal and has been stable for
 `SESSION_DONE_STABLE_SECS`. A mirrored session that goes quiet for five minutes
 is marked `completed`, and sixty seconds later the Studio stops following it.
@@ -46,10 +46,10 @@ mirror makes reopening routine, so the channel built to make it legible is now
 mostly noise. This erodes the property the override was chosen to protect.
 
 **3. The terminal-delivery ledger is contaminated, latently.** `session` is in
-`EXECUTION_ENTITY_KINDS` (`lionagi/state/lifecycle/callbacks.py:45`), so each
+`EXECUTION_ENTITY_KINDS` (`lionagi/state/lifecycle/callbacks.py::EXECUTION_ENTITY_KINDS`), so each
 idle-to-completed write is a terminal transition on an execution entity and
 joins the population `reconcile_unacknowledged` returns
-(`lionagi/state/lifecycle/deliveries.py:317-363`), which is the durable
+(`lionagi/state/lifecycle/deliveries.py::reconcile_unacknowledged`), which is the durable
 cross-process ledger rather than the in-process fire-and-forget registry.
 
 This one is **latent under the default configuration, and live under a
@@ -60,11 +60,11 @@ settled. What is actually true: both processes that host a mirror install a
 process-wide terminal callback if, and only if, `notify.on_terminal` resolves
 to a handler. The CLI entry point calls `register_settings_terminal_callback`
 before dispatching any subcommand, `li mirror` included
-(`lionagi/cli/main.py:365-367`, inside `_run` and ahead of argparse dispatch),
-and Studio service startup calls it as well (`lionagi/studio/app.py:372-374`,
+(`lionagi/cli/main.py::_run`, inside `_run` and ahead of argparse dispatch),
+and Studio service startup calls it as well (`lionagi/studio/app.py::lifespan`,
 the same module that starts the in-process mirror); the
 function registers when the setting resolves and unregisters when it does not
-(`lionagi/state/lifecycle/notify_settings.py:666-680`). So with no
+(`lionagi/state/lifecycle/notify_settings.py::register_settings_terminal_callback`). So with no
 `notify.on_terminal` configured, `emit` is a no-op and this consequence is
 latent; with one configured that permits sessions, an `idle → completed` write
 reaches a live handler.
@@ -253,9 +253,9 @@ the difference decides what the mechanism is worth.** It is a check against
 *accident*: code that writes a session's status without meaning to claim it is a
 mirrored transcript. It is not, and at this layer cannot be, a check against
 *impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
-caller-supplied strings (`lionagi/state/db.py:5402-5413`) and they arrive at the
+caller-supplied strings (`lionagi/state/db.py::StateDB.update_status`) and they arrive at the
 lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
-(`lionagi/state/lifecycle/models.py:49-52`). Any caller in the process can pass
+(`lionagi/state/lifecycle/models.py::ActorRecord`). Any caller in the process can pass
 `actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
 field. There is no privilege boundary between callers of a Python module, so no
 rule expressed in this layer can create one. Read the restriction accordingly:
@@ -270,22 +270,22 @@ service reject a non-mirror actor. **That is wrong, and the way it is wrong is
 worth recording, because it would have handed an implementer a false premise.**
 Three things block it, each read at the source:
 
-- `EdgePolicy` (`lionagi/state/lifecycle/models.py:100-105`) carries
+- `EdgePolicy` (`lionagi/state/lifecycle/models.py::EdgePolicy`) carries
   `actor_types`, not an allow-list of actor identities. Both reconcilers write
   as `system`, so an actor-type rule admits every system writer and restricts
   nothing that matters here.
 - The mirror does not write through the edge-enforcing path at all. It calls
-  `StateDB.update_status` (`lionagi/state/_mirror_common.py:343-371`), which the
+  `StateDB.update_status` (`lionagi/state/_mirror_common.py::reconcile_status`), which the
   compatibility adapter routes to `service._transition`
-  (`lionagi/state/lifecycle/adapters.py:95-100`) without passing
+  (`lionagi/state/lifecycle/adapters.py::run_update_status`) without passing
   `enforce_edges`. That parameter defaults to `False`
-  (`lionagi/state/lifecycle/service.py:433`), and at
-  `service.py:561` the declared edges are read as an empty tuple when it is
+  (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`), and at
+  `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition` the declared edges are read as an empty tuple when it is
   false. So the declared-edge policy, `actor_types` included, is never
   inspected on the only path that writes a mirrored session's status.
-- A reason prefix is not an authorization: `lionagi/state/reasons.py:224-232`
+- A reason prefix is not an authorization: `lionagi/state/reasons.py::validate_reason_code`
   validates exact registered codes, and the session policy admits the whole
-  `session` prefix (`lionagi/state/lifecycle/policy.py:185-196`). Registering
+  `session` prefix (`lionagi/state/lifecycle/policy.py::build_default_registry`). Registering
   `session.idle.*` binds no code to either reconciler.
 
 So the restriction is a requirement this ADR states and a capability the
@@ -311,11 +311,11 @@ mirror uses. That is true only *before* step 2. Step 2 moves the mirror off that
 path, and before step 2 that path cannot reject the transition under test:
 `StateDB.update_status` routes through `run_update_status`, which calls
 `LifecycleService._transition` without `enforce_edges`
-(`lionagi/state/lifecycle/adapters.py:95-100`), so the parameter takes its
-default of `False` (`lionagi/state/lifecycle/service.py:433`) and the declared
-edge graph is never consulted (`service.py:561`). That path can still reject two
+(`lionagi/state/lifecycle/adapters.py::run_update_status`), so the parameter takes its
+default of `False` (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`) and the declared
+edge graph is never consulted (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`). That path can still reject two
 things — a same-status move where the policy says `reject`, and leaving a
-terminal status without an override (`service.py:602-603`, `service.py:616-620`) — but
+terminal status without an override (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`) — but
 `running → idle` is neither, so it falls through to the unrestricted write. The
 requirement therefore asked for a test that is impossible before the change and
 irrelevant after it. The requirement is therefore not "the current
@@ -338,27 +338,27 @@ was not. Population: 548 Python files under `lionagi/` (instrument armed by
 confirming `_mirror_common.py` is inside it). Files naming
 `SESSION_TERMINAL_STATUSES`: 13. Two of those are excluded from the table
 below, and the reason is not that they fail to read the constant. `state/db.py`
-defines it. `state/_mirror_common.py:299` reads it, to decide whether a terminal
+defines it. `lionagi/state/_mirror_common.py::reconcile_status` reads it, to decide whether a terminal
 status may be left, but it is the reconciler doing the writing this note is
 about, so it is the subject of the change rather than a downstream reader of
 it. That leaves the **11 downstream consumer files** enumerated below. Read
 "11" as a description of the table and not as a count of everything in the tree
 that reads the constant: the reconciler reads it, and `state/db.py` derives a
-second name from it at `lionagi/state/db.py:488`.
+second name from it at `lionagi/state/db.py::_BRANCH_TERMINAL_STATUSES`.
 
 | Site | Reachable from a mirrored row? | Basis |
 | --- | --- | --- |
-| `studio/services/sessions.py:1844` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
-| `studio/services/run_resume.py:245` | **Yes if resume is offered on a mirrored row** | read at the source: `queued = source_status not in SESSION_TERMINAL_STATUSES`, so a falsely-terminal session launches a resume immediately instead of queueing it behind live work. **Whether the Studio offers resume for a mirrored session is UNVERIFIED and is the first thing to check.** |
-| `studio/services/run_view.py:64` | Likely, display only | not driven |
-| `studio/services/artifact_verification.py:74` | Unverified | not driven |
-| `studio/services/run_resume_worker.py:72` | Unverified | not driven |
-| `cli/monitor.py:1288,1302,1360` | Unverified | not driven |
-| `cli/machine.py:538` | Unverified, display flag | not driven |
-| `lionhub/src/lionhub/orchestration/runs.py:1146,1407,1616,2057` | **Yes, by construction** | read at the source: `_linked_engine_session` (`lionhub/src/lionhub/orchestration/runs.py:870-896`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `lionhub/src/lionhub/orchestration/runs.py:1146` branches on that row's terminal status while `lionhub/src/lionhub/orchestration/runs.py:1165` handles it being `running`. `lionhub/src/lionhub/orchestration/runs.py:1407` is different: it is the terminal guard in `_write_terminal_session_status` (`lionhub/src/lionhub/orchestration/runs.py:1389`), its `observed_status` is the run's own session row (`lionhub/src/lionhub/orchestration/runs.py:1385`, `lionhub/src/lionhub/orchestration/runs.py:1651-1653`), and that row is a mirror row only when a resumed branch adopts the mirror session (`lionhub/src/lionhub/orchestration/runs.py:2221`), through the reopen path named at the end of this cell. `lionhub/src/lionhub/orchestration/runs.py:1616` tests the status `_teardown_common` returned to `teardown_persist` (`lionhub/src/lionhub/orchestration/runs.py:1551`), which is the one `lionhub/src/lionhub/orchestration/runs.py:1146` resolved, so it follows that branch. `lionhub/src/lionhub/orchestration/runs.py:2057` is the reopen check in `_reopen_session_for_resume` (`lionhub/src/lionhub/orchestration/runs.py:2031`): the row it reads is a mirror row only when the resumed branch adopted the mirror session, and any status outside the terminal set, `idle` included, reads there as a live leg that is not reopened. The resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionhub/src/lionhub/orchestration/runs.py:885`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py:78-80`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, the ADR-0105 reopen path at `lionhub/src/lionhub/orchestration/runs.py:2193-2212` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
-| `cli/agent.py:1345,2701` | Probably not: own run's session | not driven |
-| `cli/orchestrate/_orchestration.py:2404` | Probably not: own run's session | not driven |
-| `hooks/builtins.py:71,131` | Probably not: own run's session | not driven |
+| `lionagi/studio/services/sessions.py::is_session_stream_done` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
+| `lionagi/studio/services/run_resume.py::_require_resumable_snapshot` | **Yes if resume is offered on a mirrored row** | read at the source: `queued = source_status not in SESSION_TERMINAL_STATUSES`, so a falsely-terminal session launches a resume immediately instead of queueing it behind live work. **Whether the Studio offers resume for a mirrored session is UNVERIFIED and is the first thing to check.** |
+| `lionagi/studio/services/run_view.py::_grading_session` | Likely, display only | not driven |
+| `lionagi/studio/services/artifact_verification.py::resolve_artifact_verification` | Unverified | not driven |
+| `lionagi/studio/services/run_resume_worker.py::_wait_for_terminal` | Unverified | not driven |
+| `lionagi/cli/monitor.py::_DEFAULT_MAX_WAIT_SECONDS`, `lionagi/cli/monitor.py::_split_watched_ids`, `lionagi/cli/monitor.py::_effective_session_status` | Unverified | not driven |
+| `lionagi/cli/machine.py::_lifecycle_summary` | Unverified, display flag | not driven |
+| `lionhub/src/lionhub/orchestration/runs.py::_teardown_common`, `lionhub/src/lionhub/orchestration/runs.py::_write_terminal_session_status`, `lionhub/src/lionhub/orchestration/runs.py::teardown_persist`, `lionhub/src/lionhub/orchestration/runs.py::_reopen_session_for_resume` | **Yes, by construction** | read at the source: `_linked_engine_session` (`lionhub/src/lionhub/orchestration/runs.py::_linked_engine_session`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `lionhub/src/lionhub/orchestration/runs.py::_teardown_common` branches on that row's terminal status while `lionhub/src/lionhub/orchestration/runs.py::_teardown_common` handles it being `running`. `lionhub/src/lionhub/orchestration/runs.py::_write_terminal_session_status` is different: it is the terminal guard in `_write_terminal_session_status` (`lionhub/src/lionhub/orchestration/runs.py::_write_terminal_session_status`), its `observed_status` is the run's own session row (`lionhub/src/lionhub/orchestration/runs.py::_teardown_common`, `lionhub/src/lionhub/orchestration/runs.py::teardown_persist`), and that row is a mirror row only when a resumed branch adopts the mirror session (`lionhub/src/lionhub/orchestration/runs.py::setup_agent_persist`), through the reopen path named at the end of this cell. `lionhub/src/lionhub/orchestration/runs.py::teardown_persist` tests the status `_teardown_common` returned to `teardown_persist` (`lionhub/src/lionhub/orchestration/runs.py::teardown_persist`), which is the one `lionhub/src/lionhub/orchestration/runs.py::_teardown_common` resolved, so it follows that branch. `lionhub/src/lionhub/orchestration/runs.py::_reopen_session_for_resume` is the reopen check in `_reopen_session_for_resume` (`lionhub/src/lionhub/orchestration/runs.py::_reopen_session_for_resume`): the row it reads is a mirror row only when the resumed branch adopted the mirror session, and any status outside the terminal set, `idle` included, reads there as a live leg that is not reopened. The resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionhub/src/lionhub/orchestration/runs.py::_linked_engine_session`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py::_NS`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, the ADR-0105 reopen path at `lionhub/src/lionhub/orchestration/runs.py::setup_agent_persist` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
+| `lionagi/cli/agent.py::_drain_pending_steers`, `lionagi/cli/agent.py::_run_agent._api_turn` | Probably not: own run's session | not driven |
+| `lionagi/cli/orchestrate/_orchestration.py::stop_live_persist` | Probably not: own run's session | not driven |
+| `lionagi/hooks/builtins.py::persist_session_start`, `lionagi/hooks/builtins.py::persist_session_end` | Probably not: own run's session | not driven |
 
 The unverified rows are not a claim that they are safe. Each must be driven
 before this lands, because the entire point of the change is that these

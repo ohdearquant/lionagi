@@ -26,12 +26,12 @@ counts, the numeric P1 inventory figures below have not been reverified at `bb57
    lines and declares 34 tables, 408 directly declared columns and 93 named `Index(...)` objects
    in a SQLAlchemy `MetaData`. Its own docstring calls it the "single source of truth for schema
    DDL". It is what production creates from: `await conn.run_sync(metadata.create_all)` at
-   `state/db.py:1941`.
+   `lionagi/state/db.py::StateDB._apply_schema`.
 2. At `bb57cc9619765bd03e7dd2b3369725335d48af21`, `lionagi/state/schema.sql` has 1,102
    lines and contains 34 `CREATE TABLE` and 97 `CREATE [UNIQUE] INDEX` statements describing the
    schema in DDL text.
    Its header line reads `-- lionagi state schema v1` while line 22 seeds `version` `'6'`.
-   It is bound to `_SCHEMA_PATH` (`state/db.py:174`) and read only by tests; production open
+   It is bound to `_SCHEMA_PATH` (`lionagi/state/db.py::_SCHEMA_PATH`) and read only by tests; production open
    never executes it.
 3. 16 hand-written `CREATE TABLE` statements across 6 files in 3 packages that bypass both, of
    three distinct kinds: 3 rebuild targets in `state/db.py` (`sessions_new`, `invocations_new`,
@@ -49,7 +49,7 @@ counts, the numeric P1 inventory figures below have not been reverified at `bb57
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
    The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
    thing and are not part of this five.
-6. `ALL_TABLES` in `tests/state/test_engine_schema.py:280`: a hand-typed set of 34 table names
+6. `ALL_TABLES` in `tests/state/test_engine_schema.py::ALL_TABLES`: a hand-typed set of 34 table names
    at `bb57cc9619765bd03e7dd2b3369725335d48af21`. The metadata table-name assertion compares
    the whole created table set to it; the column-name parity assertion iterates over it. A
    table omitted from both the set and the metadata population is not discovered by that
@@ -79,10 +79,10 @@ membership and key direction. Two divergences are present at
   `idx_sessions_run_id`. The recorded 2026-08-15 totals of 87 and 83 have not been reverified.
 - At `79c9772930`, `schema.sql` declared 15 indexes with a `DESC` key, while `schema_meta.py`
   declared none with `.desc()`. At `bb57cc9619765bd03e7dd2b3369725335d48af21`, the respective
-  source counts are 17 and one, `idx_engine_runs_started_id` (`schema_meta.py:1029`). These are
+  source counts are 17 and one, `idx_engine_runs_started_id` (`lionagi/state/schema_meta.py` `Index("idx_engine_runs_started_id", engine_runs.c.started_at.desc(),`). These are
   source counts, not a count of mismatched definitions. For example, `idx_sessions_updated` and
   `idx_sessions_recent_visible` use descending SQL keys (`schema.sql:203-208`) but ascending
-  metadata keys (`schema_meta.py:239-243`). Physical catalog state and query-plan consequences
+  metadata keys (`lionagi/state/schema_meta.py` `Index("idx_sessions_updated", sessions.c.updated_at)`). Physical catalog state and query-plan consequences
   require separate measurement.
 
 A guard that passes while its two subjects disagree is worse than no guard, because it is
@@ -102,7 +102,7 @@ reaches into `run_tags` for its private `_ensure_table` before a tag filter can 
 store that has never been tagged has no `run_tags` table. Separately, studio opens the store
 directly — 38
 `async with _open_db(...)` contexts across 9 files — rather than going through `StateDB`. The
-path those contexts open is chosen by `studio/services/_db.py:27-32`, whose own docstring records
+path those contexts open is chosen by `lionagi/studio/services/_db.py::store_path`, whose own docstring records
 that for a server-backed store it falls back to the default SQLite file and is "equally wrong
 for that deployment". `require_file_store` exists as the guard against exactly that case and is
 referenced 37 times, but `services/shows.py`, `services/signals.py` and `services/stats.py`
@@ -122,18 +122,18 @@ fixed tuple, or enum check. This conclusion is no stronger than the inventory be
 not reverified at `bb57cc96` either. The
 weakness is that each guard is re-established by hand at each site, and at least one path has
 none: `LifecyclePolicy.table` and `patch_fields` are plain `str`/`frozenset[str]`
-(`state/lifecycle/models.py:108-120`), the registry does not validate them as identifiers, and
-they are interpolated into SQL at `state/lifecycle/service.py:260,1124-1137` and elsewhere.
+(`lionagi/state/lifecycle/models.py::LifecyclePolicy`), the registry does not validate them as identifiers, and
+they are interpolated into SQL at `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.initialize_in_transaction`, `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write` and elsewhere.
 
 **P5 — migration is an additive ledger, and the version is not a shape identity.** Schema
 evolution uses `MIGRATION_COLUMNS` at startup plus bespoke `*_new` copy-and-rename rebuilds
 for changes SQLite's `ALTER TABLE` cannot express. `_reconcile_columns` inspects table and
-column presence and raises on inspection failures (`state/db.py:2016-2048`); the open
+column presence and raises on inspection failures (`lionagi/state/db.py::StateDB._reconcile_columns`); the open
 sequence runs that reconciliation before writing `SCHEMA_VERSION`
-(`state/db.py:1916-1918,1966-1971`). This hardening does not make the version integer
+(`lionagi/state/db.py::StateDB._apply_schema`). This hardening does not make the version integer
 a fingerprint of the complete physical catalog. The schedules rebuilds already derive their
 target table from `schema_meta.py` via `to_metadata`
-(`state/db.py:2601,2689,2773`), and so does the definitions rebuild (`:3187`), so that generated
+(`lionagi/state/db.py::StateDB._drop_legacy_action_kind_check`, `lionagi/state/db.py::StateDB._drop_legacy_schedules_command_check`, `lionagi/state/db.py::StateDB._drop_legacy_schedules_trigger_type_check`), and so does the definitions rebuild (`lionagi/state/db.py::StateDB._drop_legacy_definitions_kind_check`), so that generated
 path already exists on SQLite.
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
@@ -423,7 +423,7 @@ used to bypass ownership.
 
 The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
 copy statement's column list from catalog-read names and re-executing index DDL strings taken from
-`sqlite_master` (`state/db.py:2432-2443`, `:2534-2539`, and the same shape in the six other rebuild paths).
+`sqlite_master` (`lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table`, `lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table._rebuild`, and the same shape in the six other rebuild paths).
 That preserves catalog index DDL replayed by those paths, including objects nothing declares, so
 a rebuild can carry drift forward instead of resolving it. It is also the one place where
 identifiers reach SQL from a source no allow-list covers.
@@ -601,7 +601,7 @@ owns exactly one code prefix: `RunReasons` → `run.` (33 codes), `SessionReason
 and the per-entity `reason_prefixes` in the lifecycle policy — is keyed on *entity type*. The
 two keyings do not line up, and every mismatch is load-bearing somewhere:
 
-- `run` is the largest domain and is not an entity at all. `reasons.py:23-25` declares it a
+- `run` is the largest domain and is not an entity at all. `lionagi/state/reasons.py::ENTITY_ROUTE_ALIASES` declares it a
   frontend route alias for `session`, because `/runs/<id>` renders a session.
 - `invocation` is a canonical entity type with no domain of its own; invocation rows carry
   `run.` codes.
@@ -983,7 +983,7 @@ the next five rows are unverified estimates, not measured current totals.
 | Where | Declares schema | Issues DDL | Builds SQL | Notes |
 |---|---|---|---|---|
 | `state/schema_meta.py` | 34 tables, 408 direct columns, 93 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21` | via `create_all` | — | what production builds from; PK, FK, CHECK, unique, partial-index and server-default counts need a fresh same-pin inventory — Phase 1 compares generated objects and Phase 2 compares physical catalogs |
-| `state/schema.sql` | 34 tables, 97 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21`; pragma and seed totals require a fresh inventory | tests only | — | `_SCHEMA_PATH` at `db.py:174`; not executed by writable open |
+| `state/schema.sql` | 34 tables, 97 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21`; pragma and seed totals require a fresh inventory | tests only | — | `_SCHEMA_PATH` at `lionagi/state/db.py::_SCHEMA_PATH`; not executed by writable open |
 | `state/schema_migrations.py` | 127 additive column declarations over 14 tables | 10 indexes per dialect | — | the two dialect tuples are textually identical |
 | `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 9,539 lines and 73 physical lines containing `S608` at `bb57cc96` (see scan below); 5 `_*_COLUMNS` allow-lists |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |

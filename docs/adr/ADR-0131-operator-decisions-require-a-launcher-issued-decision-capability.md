@@ -28,20 +28,20 @@ the capability is recorded unattributed.
 ## Context
 
 **P1 — the decision routes check no principal.** `confirm_operator_proposal` and
-`decide_operator_proposal` (`lionagi/studio/services/operator.py:335-397`) call the coordinator's
-`decide()` (`lionagi/studio/operator/coordinator.py:1016`), which claims the proposal in the store
-(`lionagi/studio/operator/store.py:2172`). The proposal's hash and version bind what is decided, not
+`decide_operator_proposal` (`lionagi/studio/services/operator.py::confirm_operator_proposal`, `lionagi/studio/services/operator.py::decide_operator_proposal`) call the coordinator's
+`decide()` (`lionagi/studio/operator/coordinator.py::OperatorCoordinator.decide`), which claims the proposal in the store
+(`lionagi/studio/operator/store.py::OperatorStore.decide_proposal`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
-no `Sec-Fetch-Site` (`lionagi/studio/app.py:77`, `:123`), so a command-line client, a script and a
+no `Sec-Fetch-Site` (`lionagi/studio/app.py::_origin_accepted_without_token`, `lionagi/studio/app.py::_fetch_site_accepted_without_origin`), so a command-line client, a script and a
 tool's HTTP request are all admitted.
 
 **P2 — a code that paired a page could be minted by any such request.** `POST
-/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:28-46`) minted a 120-second code
-(`lionagi/studio/launch_access.py:33`, `:49`) for a request without browser provenance, and `POST
-/api/studio/pair` (`pairing.py:48`) redeemed it for the daemon's one process-wide bearer
-(`launch_access.py:43`, `:63`). A test pinned that the command line could mint and that the minted
-code redeemed (`tests/studio/test_hosted_hardening.py:967`). The CLI used that route to pair a page
-with a daemon that was already running (`lionagi/studio/cli.py:274`). So pairing was not a boundary:
+/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py::create_pairing_code_route`) minted a 120-second code
+(`lionagi/studio/launch_access.py::PAIRING_CODE_TTL_S`, `lionagi/studio/launch_access.py:49@124b1419`) for a request without browser provenance, and `POST
+/api/studio/pair` (`lionagi/studio/services/pairing.py::redeem_pairing_code_route`) redeemed it for the daemon's one process-wide bearer
+(`lionagi/studio/launch_access.py::launch_bearer`, `lionagi/studio/launch_access.py:63@124b1419`). A test pinned that the command line could mint and that the minted
+code redeemed (`tests/studio/test_hosted_hardening.py:967@124b1419`). The CLI used that route to pair a page
+with a daemon that was already running (`lionagi/studio/cli.py:274@124b1419`). So pairing was not a boundary:
 a tool that could send HTTP could mint, redeem with a forged `Origin`, and decide. This paragraph
 describes the daemon before the HTTP mint route was retired (its line numbers are at `124b14193`).
 
@@ -152,7 +152,7 @@ rule and the token's narrower meaning.
   stays pending, the bridge never sees `allow`, and nothing executes. A paired page's decision is the
   positive control. Repeated for an application proposal and for an already-decided one.
 - Mint: 410 for every header combination and for the admission token; the test that pins the
-  command-line mint today (`tests/studio/test_hosted_hardening.py:967`, line numbers at `124b14193`)
+  command-line mint today (`tests/studio/test_hosted_hardening.py:967@124b1419`, line numbers at `124b14193`)
   is replaced by this one.
 - Codes: unknown, expired, wrong origin, replayed and from a previous daemon start are refused; two
   concurrent redemptions of one code yield one capability; a refused wrong-origin attempt does not

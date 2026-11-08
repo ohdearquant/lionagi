@@ -30,7 +30,7 @@ line. A root lazy export reaches the loader through two frames, the root `__geta
 treats exactly that pair as import machinery, matched by file and function name, and no other code
 in those two files. ADR-0136 Amendment 1 A3 names the lazy-import helper; the root `__getattr__` that
 calls it is the other frame on the same path. The control: with the pair not skipped, the warning that a fresh process raises
-for `lionagi.LNDLOutput` on line 6 of its program points at `lionagi/ln/_lazy_init.py:51` instead of
+for `lionagi.LNDLOutput` on line 6 of its program points at `lionagi/ln/_lazy_init.py::lazy_import` instead of
 line 6 (`test_a_root_lndl_export_is_the_moved_object_and_warns_at_the_callers_line` in
 `tests/test_moved_modules.py`).
 

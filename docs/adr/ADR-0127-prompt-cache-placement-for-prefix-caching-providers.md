@@ -414,8 +414,8 @@ is a separate characterization, distinct from the acceptance tests in D7):
 
 **P1: no request in a tool loop is a prefix of the next.** Each pair of consecutive requests first
 differs at the previous round's instruction. While an instruction is current it renders its
-`Tools`, `ResponseSchema` and `ResponseFormat` sections (`protocols/messages/instruction.py:210-215` at `54176709`);
-once it is history it is re-rendered without them (`operations/chat/_prepare.py:317-323` at `54176709`). Rounds 0 to
+`Tools`, `ResponseSchema` and `ResponseFormat` sections (`lionagi/protocols/messages/instruction.py::InstructionContent._format_text_content` at `54176709`);
+once it is history it is re-rendered without them (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs` at `54176709`). Rounds 0 to
 1 differ at message 0, 1 to 2 at message 2, 2 to 3 at message 4. The current instruction is about
 3,170 characters of `json.dumps` of the whole message object, role wrapper included (3,141 of the
 content alone), almost all of it those sections, sent uncached on every call.
@@ -432,14 +432,14 @@ with request 0 at all (the two message 0 values share the folded system line, 46
 text, before the injected block makes them differ).
 
 **P4: the Anthropic adapter places one five-minute mark, and whether the flag that asks for it
-reaches the mark code depends on the endpoint.** `providers/anthropic/messages.py:198-228` at `54176709` marks only
+reaches the mark code depends on the endpoint.** `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` at `54176709` marks only
 the last message's last block, with no lifetime choice, and lifts a native `system` field only when
 the first message has role `system`, which the fold never produces. The `cache_control` flag reaches
 that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`service/connections/endpoint.py:150-153` at `54176709`) before `messages.py:209` at `54176709` looks for it. Building that
+  (`lionagi/service/connections/endpoint.py::Endpoint.create_payload` at `54176709`) before `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` at `54176709` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — a model
@@ -449,12 +449,12 @@ that code on one of two paths, and the two paths differ:
   out, so the flag reaches the mark code and one ephemeral five-minute mark lands on the last
   message's last block.
 
-`iModel` then pops the same flag from the request (`service/imodel.py:623` at `9a03f175`) and, in `Endpoint.call`,
+`iModel` then pops the same flag from the request (`lionagi/service/imodel.py::iModel.create_api_calling` at `9a03f175`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
-(`service/connections/endpoint.py:713`, `:786-805` at `9a03f175`), a different feature.
+(`lionagi/service/connections/endpoint.py::Endpoint.call` at `9a03f175`), a different feature.
 
 **P5: the run record cannot show what caching saved.** `RunEnd` carries `cached_tokens` and
-`cache_write_tokens` (`session/signal.py:66-67` at `54176709`) without the lifetime of the write, and ADR-0126's
+`cache_write_tokens` (`lionagi/session/signal.py::RunEnd` at `54176709`) without the lifetime of the write, and ADR-0126's
 ledger needs read and write counts per lifetime to price a run in its own sense of the word.
 
 | Concern | Decision |
@@ -481,11 +481,11 @@ native system block and caches by prompt prefix (D3 names the declaration) **and
 configuration turns prompt caching on. The option is `prompt_caching` (bool, default False), off
 unless set (D5). With the option off, every provider's compiled request is byte-identical to today's
 on every path, with no exception: the Anthropic adapter's `cache_control`-triggered last-message mark
-(`lionhub/src/lionhub/providers/anthropic/messages.py:1343-1369` at `9a03f175`) stays exactly as today wherever it fires today.
+(`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` at `9a03f175`) stays exactly as today wherever it fires today.
 
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — a dict-configured model
-(`service/connections/endpoint.py:571-602` at `9a03f175`) — the flag reaches the mark code and one five-minute mark
+(`lionagi/service/connections/endpoint.py::Endpoint.create_payload` at `9a03f175`) — the flag reaches the mark code and one five-minute mark
 lands on the last message. With the option on and the declaration present, this record's placement
 replaces that mark. For a provider without the declaration the request is unchanged whatever the
 option says. There is no ungated change.
@@ -517,7 +517,7 @@ run record counts it (D6).
 A **history rewrite** is a turn-segment change, not a new class. It is allowed; it breaks the prefix
 from the rewritten message on, so every later request in the conversation is a cache miss from
 there; and the run record counts it (D6). Today's rewrites are the hide, show and summarize
-directives of ADR-0125 step 2 (`operations/chat/_prepare.py:258-344`).
+directives of ADR-0125 step 2 (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`).
 
 ### D2: tools render once; an instruction renders the same everywhere
 
@@ -527,7 +527,7 @@ Amends ADR-0007 D1 (the tool definitions' lifetime and the transient set), its D
 instruction and render once in the stable segment, as a section of the system block (D3). They are
 the conversation's tool set — the tools the Branch exposes to the operation — not the per-call
 `action_param`. A call that requests no action, such as `ReAct`'s final answer
-(`operations/ReAct/ReAct.py:619` sets `action_param` None), still carries the same tool section in
+(`lionagi/operations/ReAct/ReAct.py::ReActStream` sets `action_param` None), still carries the same tool section in
 the stable segment; its turn content says that no action is requested. A plain `operate()` whose
 tool set differs from the previous call's is therefore a counted stable-segment change (D6).
 
@@ -535,18 +535,18 @@ Rendering the tools from the conversation's tool set rather than from the call's
 what keeps the stable segment stable: `action_param` is None on ReAct's final call, so a tool
 section built from it would drop out of that request and rewrite the stable block, paying the
 one-hour write price again — the defect this decision removes. Reaching for `branch.acts` instead is
-not a new dependency: `operations/operate/operate.py:200-204` already builds the tool schemas from
+not a new dependency: `lionagi/operations/operate/operate.py::operate` already builds the tool schemas from
 the Branch's action manager when a call passes `tools=True`.
 
 The provider's native `tools` field is out of scope: it is not written until a record maps the
 `tool_use` and `tool_result` blocks a native-tools reply carries back to action requests and
-responses, which today's parser does not do (`protocols/messages/assistant_response.py:33-37`).
+responses, which today's parser does not do (`lionagi/protocols/messages/assistant_response.py::parse_assistant_response`).
 
 **Every response schema and response format renders in the turn segment.** The rendered schema is
 the `ResponseSchema` of the request operative: it includes the fields lionagi adds on top of the
-caller's model — `reason` when the call asks for it (`operations/operate/step.py:92-94`) and
+caller's model — `reason` when the call asks for it (`lionagi/operations/operate/step.py::Step.request_operative`) and
 `action_required`, `action_requests` and `action_responses` when the call passes actions
-(`operations/operate/step.py:96-99`), which `operations/operate/operate.py:218-223` requests
+(`lionagi/operations/operate/step.py::Step.request_operative`), which `lionagi/operations/operate/operate.py::operate` requests
 through `Step.request_operative`. It renders there as part of the instruction that asks for it, and
 it renders the same bytes whether it is current or history, instead of appearing in the one request
 and vanishing from the next. A format that changes between turns therefore renders in the turn
@@ -593,8 +593,8 @@ handed.
 
 Placing a second block in the system field is an adapter change, not a compiler-only one. The
 Anthropic adapter today lifts at most one leading system-role message out of the messages and wraps
-that one string in a single-element `system` list (`providers/anthropic/messages.py:1112-1117` and
-`:1180-1182`), so a request carrying two system messages is rejected as an invalid payload. The
+that one string in a single-element `system` list (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` and
+`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload`), so a request carrying two system messages is rejected as an invalid payload. The
 compiler therefore hands the adapter the ordered lists it needs — the stable blocks and the
 conversation blocks — and the adapter must accept an ordered list of system blocks and mark the end
 of each segment, rather than lifting a single message. ADR-0027 D4 owns that boundary: provider
@@ -642,7 +642,7 @@ The option is `prompt_caching` (bool, default False), a field of the endpoint co
 adapter reads it from that configuration before the request-option filter runs, so a filtered
 endpoint cannot drop it, and it is never written into the request body. With the option off every
 provider's compiled request is byte-identical to today's on every path, the adapter's
-`cache_control`-triggered last-message mark (`lionhub/src/lionhub/providers/anthropic/messages.py:1343-1369` at `9a03f175`) included
+`cache_control`-triggered last-message mark (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` at `9a03f175`) included
 wherever it fires today. The mark code only runs when the option is on and the provider declares that
 it accepts a native system block and caches by prefix (D3); marks come only from this option. With
 the option on and the declaration present, this decision's placement replaces that one
@@ -654,11 +654,11 @@ receive, and the adapter's own last-message mark is not placed on top of it. The
 
 Each model call records, side by side: uncached input tokens, cache-read tokens, cache-write tokens
 per lifetime, and output tokens. The write counts are the provider's own per-lifetime fields. As
-lionagi's extractor reads them (`session/signal.py:317-323`), those are `cache_read_input_tokens`
+lionagi's extractor reads them (`lionagi/session/signal.py::_extract_usage_dims`), those are `cache_read_input_tokens`
 and `cache_creation_input_tokens`, the total cache-creation count, so the extractor drops the
 per-lifetime split. This record extends it to carry both, in the per-lifetime shape the provider
 reports and lion1's backend already reads: `ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`
-under `cache_creation` (`lion1/hub/backend/anthropic.py:498-501`). The run record sums each field per
+under `cache_creation` (`lion1/hub/backend/anthropic.py::_split`). The run record sums each field per
 conversation and counts segment changes, including a history rewrite (D1). Billing consumers
 (ADR-0126) price from these fields. These fields land with the first merged change under this record,
 before any caching default changes.

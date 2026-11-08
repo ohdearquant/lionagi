@@ -272,7 +272,7 @@ decision. Results:
 | `studio/services/run_view.py` `exit_code_for_view` | Returns the running exit code during the window, which is what is true | unaffected |
 | `lionhub/src/lionhub/orchestration/runs.py` linked-engine phantom-failure suppression | Does not fire mid-window; falls back to today's behaviour | unaffected |
 | `lionhub/src/lionhub/orchestration/runs.py` teardown terminal-skip guard | **Changes**: see below | intended |
-| `lionhub/src/lionhub/orchestration/runs.py` `BRANCH_END` emission | Reads a local `final_status`, not the row | unaffected |
+| `lionhub/src/lionhub/orchestration/runs.py::teardown_persist` emission | Reads a local `final_status`, not the row | unaffected |
 | `cli/monitor.py` `_effective_session_status` | Early-returns on terminal, reconciles while running | unaffected |
 | `cli/monitor.py` `_poll_pending_sessions_once` | Completed sessions leave the pending set and are never re-added | unaffected |
 | `cli/wait.py` terminal-status waits | A waiter started mid-window waits for the resume leg, which is the leg it cares about | unaffected |
