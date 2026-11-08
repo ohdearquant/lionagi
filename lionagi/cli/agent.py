@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -117,6 +119,107 @@ _PRESET_CHOICES = ("coding",)
 # in lionagi/config.py), so a mixed-case value or one containing "sk-ant" is refused. This field
 # also refuses one starting "sk-", which that rule admits.
 _API_ACCOUNT_ENV = "LIONAGI_API_ACCOUNT"
+# The provider an Anthropic API run moves to when the account router refuses its first request:
+# the Claude subscription route, which takes the same model id.
+_SUBSCRIPTION_FALLBACK_PROVIDER = "claude_code"
+# The Claude Code built-in tools that stand for an API tool set's own, for the sets that move to
+# the subscription route. Only the read set moves: its `reader` is Read, and its `search` greps
+# (Grep) and finds files by name (Glob); its `context` tool manages the API model's own window
+# and has no built-in counterpart. The write set's editor and bash ran under the macOS sandbox
+# and the API route's command checks, which Claude Code has no counterpart for, so a write-set
+# run does not move.
+_SUBSCRIPTION_API_SET_TOOLS: dict[str, str] = {
+    "read": "Read,Grep,Glob",
+}
+# The one variable a run that moves to the subscription route keeps although its name matches a
+# sensitive-name pattern: Claude Code's own login token, which a run authenticating that way reads
+# from its environment. Every API key name is removed from the switched child's environment, so
+# that no key is billed in place of the subscription.
+_SUBSCRIPTION_ENV_ALLOWLIST: tuple[str, ...] = ("CLAUDE_CODE_OAUTH_TOKEN",)
+# A workspace root a Claude Code permission rule can carry literally: an absolute path of
+# letters, digits, `.`, `_`, `-` and `/` only. Any other character (a glob character, a
+# parenthesis, whitespace) would change what the rule matches or how it parses, so a run
+# whose root has one does not move.
+_SUBSCRIPTION_RULE_ROOT = re.compile(r"/[A-Za-z0-9._/-]+")
+
+
+@functools.cache
+def _case_folds() -> dict[str, frozenset[str]]:
+    """Each string some character case-folds to, mapped to the characters that fold to it
+    (``s`` to ``s``, ``S`` and ``ſ``; ``ss`` to ``ß`` and ``ẞ``)."""
+    folds: dict[str, set[str]] = {}
+    for point in range(sys.maxunicode + 1):
+        char = chr(point)
+        folded = char.casefold()
+        if folded != char:
+            folds.setdefault(folded, set()).add(char)
+    return {folded: frozenset(chars) for folded, chars in folds.items()}
+
+
+def _any_case(name: str) -> list[str]:
+    """Rule patterns that together match every name that case-folds to *name*'s fold, which
+    is how the API reader compares a name with the protected ones: a case-insensitive file
+    system opens ``.ENV`` as ``.env``, and ``id_rſa`` folds to ``id_rsa``. Each character
+    becomes a class of every character folding to it, and each run of characters one
+    character folds to (``ss`` in ``.htpasswd``, from ``ß``) may also be that character."""
+    folds = _case_folds()
+    target = name.casefold()
+
+    def one(char: str) -> str:
+        chars = sorted({char} | folds.get(char, frozenset()))
+        return chars[0] if len(chars) == 1 else f"[{''.join(chars)}]"
+
+    def spell(start: int) -> list[str]:
+        if start == len(target):
+            return [""]
+        spelled = [one(target[start]) + rest for rest in spell(start + 1)]
+        for folded, chars in folds.items():
+            if len(folded) > 1 and target.startswith(folded, start):
+                whole = f"[{''.join(sorted(chars))}]"
+                spelled += [whole + rest for rest in spell(start + len(folded))]
+        return spelled
+
+    return spell(0)
+
+
+def _subscription_read_rules(
+    tools: str, cwd: str | None
+) -> tuple[str, list[str], list[str]] | None:
+    """The run's workspace root, the permission rules that grant each of *tools* (a
+    ``--tools`` value) only under it, and the rules that deny each of them the protected
+    names under it; None when the root cannot be written as a rule or holds a protected name.
+
+    The root is the one the API read set's ``guard_paths`` holds its reader to: *cwd*, or the
+    process's working directory, resolved. ``//`` begins an absolute path in a Claude Code
+    rule, and ``/**`` matches everything below it. The API reader also refuses a protected
+    name (``.env``, a private key) inside the root, in any letter case, and a deny rule wins
+    over a grant, so each of those names is denied at any depth.
+    """
+    from lionagi.libs.path_safety import DENIED_NAMES, is_protected_name
+
+    resolved = Path(cwd if cwd else Path.cwd()).expanduser().resolve(strict=False)
+    root = str(resolved)
+    if not _SUBSCRIPTION_RULE_ROOT.fullmatch(root):
+        return None
+    # The API search leaves out every result whose path holds a protected name in any
+    # component, the root's own included, and no rule below the root can say that, so a run
+    # whose root holds one does not move.
+    if any(is_protected_name(part) for part in resolved.parts):
+        return None
+    names = tools.split(",")
+    grants = [f"{tool}(/{root}/**)" for tool in names]
+    # The API search also leaves out everything below a directory with a protected name, so
+    # each name is denied as a file and as a directory's contents.
+    denials = [
+        f"{tool}(/{root}/**/{pattern}{below})"
+        for tool in names
+        for protected in sorted(DENIED_NAMES)
+        for pattern in _any_case(protected)
+        for below in ("", "/**")
+    ]
+    return root, grants, denials
+
+
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
 _NO_PERSISTED_EXECUTION = object()
@@ -135,6 +238,10 @@ _API_TOOL_SETS: dict[str, tuple[str, ...]] = {
 _API_CONFINED_TOOL_SETS = ("write",)
 # The tool set and round bound an API branch was launched with, read again on resume.
 _API_LAUNCH_KEY = "api_launch"
+# Set on a branch the subscription fallback moved to the Claude Code route. The child environment
+# that route was handed is runtime state and is not saved with the branch, so a restored branch
+# would spawn Claude Code with this process's whole environment; such a branch is not resumed.
+_SUBSCRIPTION_SWITCH_KEY = "subscription_switch"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
 _API_DEFAULT_MAX_EXTENSIONS = 10
 # The tool loops an API leg can run (`api_loop`): ReAct, the default, batched LNDL rounds
@@ -1488,6 +1595,83 @@ def _admission_refusal(exc: BaseException) -> SubagentAdmissionRefusedError | No
     return None
 
 
+def _first_request_route_refusal(exc: BaseException, branch, usage) -> Exception | None:
+    """The account router's refusal when *exc* is or wraps one that ended the run's first
+    request before it left the process, else None.
+
+    The router refuses a request with ``budget_exhausted`` or ``account_blocked`` when every
+    configured account is out of budget or blocked, and the Branch re-raises the failed call
+    as an ``ExecutionError`` caused by that refusal. The code alone does not say nothing was
+    sent, because settling a response can also raise ``budget_exhausted``. So the refusal
+    counts only when the run's usage record shows no request ever had an account selected
+    and the branch holds no provider reply: no request reached the provider, and no earlier
+    reply exists whose conversation would have to move with it.
+
+    Whether a refusal that qualifies here moves the run is decided by
+    ``_subscription_switch_objection``.
+    """
+    from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+
+    refusal: AccountRoutingError | None = None
+    cause: BaseException | None = exc
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        if isinstance(cause, AccountRoutingError):
+            refusal = cause
+            break
+        seen.add(id(cause))
+        cause = cause.__cause__
+    if refusal is None or refusal.code not in (
+        RouterErrorCode.BUDGET_EXHAUSTED,
+        RouterErrorCode.ACCOUNT_BLOCKED,
+    ):
+        return None
+    if usage is None or any(row["selected_attempts"] for row in usage.snapshot()["requests"]):
+        return None
+    if any(isinstance(m, AssistantResponse) for m in branch.msgs.messages):
+        return None
+    return refusal
+
+
+async def _subscription_switch_objection(refusal, api_account: str | None) -> str | None:
+    """The warning to print when a refused first request must not move the run to the
+    subscription route, or None when it may move.
+
+    A refusal moves the run only when it is about spend. A run pinned to an account with
+    ``LIONAGI_API_ACCOUNT`` asked for that account and no other route, so it never moves.
+    ``budget_exhausted`` is a spend refusal. ``account_blocked`` carries no reason of its
+    own, so the ledger's status is read at the time of the refusal: the run moves only when
+    at least one account is blocked and every blocked account is blocked for
+    ``ceiling_exceeded``. A block for any other reason (a settlement conflict, an
+    authentication failure, a block set by hand) is not a spend problem the subscription
+    route solves, and a status that cannot be read, or that shows no blocked account, leaves
+    the run where it is. The warning names accounts and block reasons only, never key
+    material.
+    """
+    from lionagi.service.accounts._types import RouterErrorCode
+
+    not_moving = "not moving to the subscription route because"
+    if api_account is not None:
+        return f"{not_moving} LIONAGI_API_ACCOUNT pins it to account {api_account}"
+    if refusal.code == RouterErrorCode.BUDGET_EXHAUSTED:
+        return None
+    try:
+        from lionagi.service.accounts._router import get_router
+
+        statuses = await get_router().ledger.status("anthropic")
+    except Exception as exc:  # noqa: BLE001 — a status that cannot be read ends the decision
+        return f"{not_moving} the blocked accounts could not be read ({type(exc).__name__})"
+    blocked = [(s.name, s.block_reason) for s in statuses if s.block_reason]
+    if not blocked:
+        return f"{not_moving} no account is reported blocked"
+    other = [(name, reason) for name, reason in blocked if reason != "ceiling_exceeded"]
+    if not other:
+        return None
+    names = ", ".join(sorted(name for name, _ in other))
+    reasons = ", ".join(sorted({reason for _, reason in other}))
+    return f"{not_moving} account(s) {names} are blocked for {reasons}"
+
+
 def _read_api_account() -> str | None:
     """The account name in ``LIONAGI_API_ACCOUNT`` (ADR-0126 Amendment 4), None when it is unset.
 
@@ -1757,6 +1941,13 @@ async def _run_agent(
         # Capture before the new-branch block below reassigns `branch`: the only
         # reliable "reopened existing" vs "minting new" signal once that block runs.
         is_resumed_branch = branch is not None
+
+        if is_resumed_branch and branch.metadata.get(_SUBSCRIPTION_SWITCH_KEY):
+            raise ConfigurationError(
+                "this branch moved from the Anthropic API route to the subscription route, and "
+                "the reduced environment its Claude Code process ran with is not saved with the "
+                "branch; it cannot be resumed. Start a new branch."
+            )
 
         if is_resumed_branch and mcp_config is not None:
             launched = branch.metadata.get(_MCP_LAUNCH_KEY)
@@ -2742,8 +2933,240 @@ async def _run_agent(
                 )
                 if _write_run_manifest is not None:
                     _write_run_manifest(run_manifest)
-                res = await _api_turn(prompt, timeout)
-            else:
+                try:
+                    res = await _api_turn(prompt, timeout)
+                except Exception as refused:
+                    # The router refused the run's first request before anything was sent, so
+                    # the same model is asked on the subscription route, at most once. Every
+                    # other failure, and a refusal after a reply, ends the run as it did.
+                    refusal = _first_request_route_refusal(refused, branch, _api_usage)
+                    if refusal is None or is_resumed_branch or canonical != "anthropic":
+                        raise
+                    from lionhub.orchestration.console import warn
+
+                    # Only a refusal about spend moves the run, and never one pinned to an
+                    # account: the run prints why it stays and fails with the routing error.
+                    objection = await _subscription_switch_objection(refusal, api_account)
+                    if objection is not None:
+                        warn(objection)
+                        raise
+                    # The CLI has every built-in tool unless the request names some, so the
+                    # run names the tools of the set it ran with on the API route. A set with
+                    # no entry (the write set among them) does not move: the run prints why and
+                    # fails with the routing error instead of gaining what its API set lacked.
+                    # This is decided before the branch's model or anything else is changed.
+                    set_tools = _SUBSCRIPTION_API_SET_TOOLS.get(api_launch["tools"])
+                    if set_tools is None:
+                        warn(
+                            "not moving to the subscription route because only a read-set run "
+                            f"moves, and this run has the {api_launch['tools']} set"
+                        )
+                        raise
+                    # The API read set's reader is held to the workspace root, while Claude
+                    # Code's Read, Grep and Glob read anywhere this account can. The switched
+                    # run is granted each tool only under that root, and `dontAsk` refuses every
+                    # call no rule grants. A root that a rule cannot carry literally does not move.
+                    read_grant = _subscription_read_rules(set_tools, cwd)
+                    if read_grant is None:
+                        warn(
+                            "not moving to the subscription route because the working "
+                            "directory's path cannot be written as a Claude Code permission rule "
+                            "or holds a protected name"
+                        )
+                        raise
+                    workspace_root, read_rules, read_denials = read_grant
+                    from lionagi.service.imodel import iModel
+
+                    original_spec = f"{provider}/{model}"
+                    fallback_spec = f"{_SUBSCRIPTION_FALLBACK_PROVIDER}/{model}"
+                    # The CLI child inherits this whole process's environment unless the request
+                    # carries one. It is handed this environment without the credential names the
+                    # API route's write-set commands went without (the declared names, the shared
+                    # sensitive name patterns and the shell startup names), so that no API key
+                    # reaches Claude Code, where an
+                    # `ANTHROPIC_API_KEY` would be billed in place of the subscription. Only Claude
+                    # Code's own login token is kept. The names come from the API model's key
+                    # reference, read before the branch's model is replaced.
+                    from lionagi._command_env import scrub_command_env
+                    from lionagi._command_env_metadata import configured_command_env_names
+
+                    # A settings file that cannot be read leaves the names to remove unknown, so
+                    # the run does not move; it fails with the routing error.
+                    env_failure: str | None = None
+                    try:
+                        api_key_reference = branch.chat_model.endpoint.config.api_key_env
+                        parent_env = dict(os.environ)
+                        child_env = scrub_command_env(
+                            parent_env,
+                            declared_names=configured_command_env_names(
+                                active_reference_names=(api_key_reference,)
+                                if api_key_reference is not None
+                                else (),
+                            ),
+                            command_env_allowlist=_SUBSCRIPTION_ENV_ALLOWLIST,
+                        )
+                        # Names only, never values.
+                        env_removed = sorted(set(parent_env) - set(child_env))
+                        # At spawn, the configured secret lookup fills each name it declares that the
+                        # child's environment lacks, which would put a removed credential back. Every
+                        # name the lookup declares is skipped for this child except Claude Code's own
+                        # login token, so the lookup adds nothing the API route's commands lacked.
+                        from lionagi.service.accounts._secret_resolution import (
+                            resolve_secret_lookup_config,
+                        )
+
+                        lookup = resolve_secret_lookup_config().lookup
+                        kept = {name.upper() for name in _SUBSCRIPTION_ENV_ALLOWLIST}
+                        secret_fill_skip = frozenset(
+                            name
+                            for name in (() if lookup is None else lookup.names)
+                            if name.upper() not in kept
+                        )
+                    except Exception as env_exc:  # noqa: BLE001 — the run stays where it is
+                        env_failure = type(env_exc).__name__
+                    if env_failure is not None:
+                        warn(
+                            "not moving to the subscription route because the credential names "
+                            f"to remove from its environment could not be read ({env_failure})"
+                        )
+                        raise
+                    subscription_model = build_chat_model(
+                        _SUBSCRIPTION_FALLBACK_PROVIDER,
+                        model,
+                        # Read, Grep and Glob need no approval, so the request carries no
+                        # permission bypass whatever the run's `yolo` and `bypass` were.
+                        False,
+                        verbose,
+                        theme,
+                        requested_effort,
+                        fast,
+                        False,
+                        # The API leg was handed no MCP server, so this one gets none either:
+                        # an empty set that is the whole set keeps the CLI from loading any
+                        # config of its own.
+                        mcp_servers={},
+                        mcp_exclusive=True,
+                        account_connectors=account_connectors,
+                        contain_account_integrations=contain_account_integrations,
+                        workload=workload,
+                        # No user, project or local Claude Code settings are read, so their
+                        # hooks, permission rules and plugins do not reach the switched leg, and
+                        # the only rules it runs under are the workspace grants.
+                        tool_settings={
+                            "tools": set_tools,
+                            "allowed_tools": read_rules,
+                            "disallowed_tools": read_denials,
+                            "permission_mode": "dontAsk",
+                            "setting_sources": "",
+                        },
+                        env=child_env,
+                        secret_fill_skip=secret_fill_skip,
+                    )
+                    if isinstance(subscription_model, str):
+                        subscription_model = iModel(model=subscription_model)
+                    # The endpoint says whether it took the environment: one with no child process
+                    # would leave it unread, and the CLI would then inherit this process's whole
+                    # environment. The run does not switch; it fails with the routing error.
+                    # The same holds for the lookup's skip set: left unread, the lookup would fill
+                    # the removed names back in.
+                    taken = getattr(subscription_model.endpoint, "_runtime_state", {})
+                    if "env" not in taken or (
+                        secret_fill_skip and taken.get("secret_fill_skip") != secret_fill_skip
+                    ):
+                        warn(
+                            "not moving to the subscription route because the Claude Code "
+                            "request did not take the child environment"
+                        )
+                        raise
+                    # Without `dontAsk` and the workspace grants, the CLI's own defaults would
+                    # decide where its reads reach, so the run does not switch.
+                    granted = subscription_model.endpoint.config.kwargs
+                    if (
+                        granted.get("permission_mode") != "dontAsk"
+                        or list(granted.get("allowed_tools") or ()) != read_rules
+                        or not set(read_denials) <= set(granted.get("disallowed_tools") or ())
+                    ):
+                        warn(
+                            "not moving to the subscription route because the Claude Code "
+                            "request did not take the workspace permission rules"
+                        )
+                        raise
+                    api_model = branch.chat_model
+                    parse_follows_chat = branch.parse_model is api_model
+                    branch.chat_model = subscription_model
+                    if parse_follows_chat:
+                        branch.parse_model = subscription_model
+                    # The branch now runs a CLI provider, which carries no API tool-loop record.
+                    branch.metadata.pop(_API_LAUNCH_KEY, None)
+                    branch.metadata[_SUBSCRIPTION_SWITCH_KEY] = {"from": original_spec}
+                    # The API turn saved the branch before this move; save it again, so that the
+                    # branch a resume would read already records the move.
+                    from lionagi.operations.run.run import _write_branch_snapshot
+
+                    await _write_branch_snapshot(branch, str(run.branches_dir))
+                    await api_model.close()
+                    provider = _SUBSCRIPTION_FALLBACK_PROVIDER
+                    effort = resolve_persisted_effort(
+                        provider, subscription_model, requested_effort
+                    )
+                    resolved_model_spec = _provenance.resolve_model_spec(provider, model)
+                    for api_only in ("prompt_caching", "tool_result_max_chars", "context_fold"):
+                        run_manifest.pop(api_only, None)
+                    switched_kwargs = subscription_model.endpoint.config.kwargs
+                    run_manifest.update(
+                        provider=provider,
+                        model=resolved_model_spec,
+                        subscription_fallback={
+                            "original_model": original_spec,
+                            "model_used": fallback_spec,
+                            "refusal_code": refusal.code.value,
+                            # The `--tools` value the switched leg runs with; null when it
+                            # runs with every built-in tool.
+                            "tools": switched_kwargs.get("tools"),
+                            # The rules granting those tools under the workspace root, and the
+                            # permission mode that refuses every call they do not grant.
+                            "allowed_tools": switched_kwargs.get("allowed_tools"),
+                            "disallowed_tools": switched_kwargs.get("disallowed_tools"),
+                            "permission_mode": switched_kwargs.get("permission_mode"),
+                            # The sorted names, never the values, of the variables this process
+                            # held that the switched child's environment does not carry.
+                            "env_removed": env_removed,
+                            # The names the configured secret lookup may not fill into it.
+                            "env_fill_skipped": sorted(secret_fill_skip),
+                        },
+                    )
+                    if _write_run_manifest is not None:
+                        _write_run_manifest(run_manifest)
+                    if live is not None and live.get("db") is not None:
+                        try:
+                            await live["db"].update_session(
+                                live["session_id"],
+                                model=resolved_model_spec,
+                                provider=provider,
+                                effort=effort,
+                            )
+                            await live["db"].update_branch(
+                                branch_id, model=resolved_model_spec, provider=provider
+                            )
+                        except Exception as record_exc:  # noqa: BLE001 — the run goes on
+                            log_error(
+                                f"could not record the subscription route on the session: "
+                                f"{record_exc!r}"
+                            )
+                    # The code after this block needs these three None: the `if _api_turn is None:`
+                    # turn, the steer routing (`run_turn=_api_turn`) and the context-fold
+                    # manifest write.
+                    api_launch = _api_turn = _api_fold = None
+                    warning = [
+                        f"the Anthropic API route refused the first request "
+                        f"({refusal.code.value}); continuing on {fallback_spec}"
+                    ]
+                    warning.append(
+                        f"Claude Code's {', '.join(set_tools.split(','))} are granted only under "
+                        f"{workspace_root}, and every other tool call is refused"
+                    )
+                    warn(". ".join(warning))
+            if _api_turn is None:
                 res = await branch.operate(
                     instruction=prompt,
                     stream_persist=True,

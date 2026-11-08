@@ -61,7 +61,10 @@ from lionagi.service._subagent_admission import (
     child_agent_depth,
     refuse_nested_agent,
 )
-from lionagi.service.accounts._secret_resolution import fill_declared_secrets_and_names
+from lionagi.service.accounts._secret_resolution import (
+    _routed_account_key_names,
+    fill_declared_secrets_and_names,
+)
 
 log = logging.getLogger("lionagi.providers._cli_subprocess")
 
@@ -1302,6 +1305,7 @@ async def ndjson_from_cli(
     on_spawn: Callable[[SpawnedProcess], None | Awaitable[None]] | None = None,
     engine: str | None = None,
     workload: str = DEFAULT_WORKLOAD,
+    secret_fill_skip: frozenset[str] = frozenset(),
     _prepare_argv: Callable[[dict[str, str]], list[str]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
@@ -1312,7 +1316,9 @@ async def ndjson_from_cli(
     propagates through the teardown below, which ends the child's group.
     Before the spawn the agent takes a machine-wide slot for ``engine`` and
     ``workload`` (see ``lionagi.service._subagent_admission``), held until the child's group
-    has ended. See docs/internals/providers.md#cli-subprocess-lifecycle.
+    has ended. ``secret_fill_skip`` names variables the configured secret lookup
+    must not fill into this child, on top of the routed account key names; empty
+    leaves the fill as it is. See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # An agent lionagi started cannot start another through lionagi, by its shell or by an
     # MCP server it was given; refused here, before any slot is waited for.
@@ -1331,7 +1337,15 @@ async def ndjson_from_cli(
     # One config read for both: re-resolving after the fill's await would let a
     # settings edit in that window hand the child a value the redactor is not
     # told to remove.
-    child_env, declared = await fill_declared_secrets_and_names(env)
+    # A name in ``secret_fill_skip`` is never looked up for this child. Only the
+    # fill's skip set changes: ``declared`` still holds every configured name, so
+    # the redactor covers a value the child inherits under one of them.
+    if secret_fill_skip:
+        child_env, declared = await fill_declared_secrets_and_names(
+            env, account_key_names=_routed_account_key_names() | secret_fill_skip
+        )
+    else:
+        child_env, declared = await fill_declared_secrets_and_names(env)
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env, spawn_marker = prepare_process_group_env(child_env)
