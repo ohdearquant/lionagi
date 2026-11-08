@@ -38,6 +38,7 @@ ClaudeCodeConfigs._PROVIDER_ALIASES = ["claude-code", "claude"]
 
 ANTHROPIC_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5-1": 1_000_000,
+    "claude-mythos-5-1": 1_000_000,
     "claude-opus-5-5": 1_000_000,
     "claude-sonnet-5-5": 1_000_000,
     "claude-haiku-5-5": 1_000_000,
@@ -54,6 +55,7 @@ ANTHROPIC_CONTEXT_WINDOWS: dict[str, int] = {
 
 CLAUDE_CODE_CONTEXT_WINDOWS: dict[str, int] = {
     "fable-5-1": 1_000_000,
+    "mythos-5-1": 1_000_000,
     "opus-5-5": 1_000_000,
     "sonnet-5-5": 1_000_000,
     "haiku-5-5": 1_000_000,
