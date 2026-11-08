@@ -138,6 +138,7 @@ async def test_a_first_request_refusal_continues_on_the_subscription_route(
         "model_used": FALLBACK_MODEL,
         "refusal_code": code.value,
         "tools": "Read,Grep,Glob",
+        "permission_mode": None,
         "sandbox_dropped": False,
     }
     assert not {"prompt_caching", "tool_result_max_chars", "context_fold"} & set(manifest)
@@ -237,6 +238,103 @@ async def test_a_write_set_run_is_told_the_subscription_route_has_no_sandbox(
     (note,) = _fallback_notes(console_warnings)
     assert FALLBACK_MODEL in note
     assert "macOS sandbox" in note and "no filesystem sandbox" in note
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", ["yolo", "bypass"])
+async def test_a_read_set_run_switches_without_a_permission_bypass(
+    leg, subscription, console_warnings, monkeypatch, tmp_path, flag
+):
+    """Claude Code's Read, Grep and Glob need no approval, so the read set's switch carries no
+    permission bypass even when the run was started with `yolo` or `bypass`."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="read"), **{flag: True})
+
+    (turn,) = subscription.calls
+    assert "--dangerously-skip-permissions" not in turn.cli_args
+    assert "--permission-mode" not in turn.cli_args
+    assert _manifest(tmp_path)["subscription_fallback"]["permission_mode"] is None
+    (note,) = _fallback_notes(console_warnings)
+    assert "without asking" not in note
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", ["yolo", "bypass"])
+async def test_a_write_set_run_keeps_its_permission_bypass_on_the_switch(
+    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path, flag
+):
+    """Claude Code in print mode cannot approve Edit, Write or Bash, so the write set's switch
+    keeps the run's own `yolo` or `bypass`; run.json records the mode and the one warning line
+    says the tools run without asking."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="write"), **{flag: True})
+
+    (turn,) = subscription.calls
+    assert "--dangerously-skip-permissions" in turn.cli_args
+    record = _manifest(tmp_path)["subscription_fallback"]
+    assert record["permission_mode"] == "bypassPermissions"
+    (note,) = _fallback_notes(console_warnings)
+    assert "runs its tools without asking" in note
+
+
+@pytest.mark.asyncio
+async def test_a_write_set_run_without_yolo_or_bypass_is_not_told_it_runs_without_asking(
+    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path
+):
+    """The warning follows the request that was built: with no bypass on it, nothing is said about
+    tools running without asking and run.json records no permission mode."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="write"))
+
+    (turn,) = subscription.calls
+    assert "--dangerously-skip-permissions" not in turn.cli_args
+    assert _manifest(tmp_path)["subscription_fallback"]["permission_mode"] is None
+    (note,) = _fallback_notes(console_warnings)
+    assert "without asking" not in note
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_tools", ["read", "write"])
+async def test_the_warning_says_the_tools_are_not_confined_to_the_working_directory(
+    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path, api_tools
+):
+    """The API route's reader, editor and search paths are held to the workspace root; Claude Code's
+    tools are not, and every switched run is told so."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools=api_tools))
+
+    (note,) = _fallback_notes(console_warnings)
+    assert "not confined to the working directory" in note
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("api_network", "clause"),
+    [
+        (False, "run without the file-write and network confinement"),
+        (True, "run without the file-write confinement"),
+    ],
+)
+async def test_the_sandbox_clause_names_the_network_only_when_the_sandbox_denied_it(
+    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path, api_network, clause
+):
+    """The write set's macOS sandbox denies network unless the profile sets `api_network`, so the
+    warning names the network confinement only for a profile that left it off."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="write", api_network=api_network))
+
+    (note,) = _fallback_notes(console_warnings)
+    assert clause in note
 
 
 @pytest.mark.asyncio

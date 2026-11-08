@@ -2810,18 +2810,26 @@ async def _run_agent(
                     set_tools = _SUBSCRIPTION_API_SET_TOOLS.get(api_launch["tools"])
                     if set_tools is not None and "tools" not in fallback_tool_settings:
                         fallback_tool_settings["tools"] = set_tools
-                    # Only the API route's editor and bash run under the macOS sandbox;
-                    # Claude Code has no filesystem sandbox of its own and nothing here adds one.
+                    # Only the API route's editor and bash run under the macOS sandbox, which
+                    # confines file writes and, unless the profile set `api_network`, network
+                    # access; Claude Code has no filesystem sandbox of its own and nothing here
+                    # adds one. `api_launch` is cleared below, so the network switch is read now.
                     left_sandbox = api_launch["tools"] in _API_CONFINED_TOOL_SETS
+                    left_network_confinement = left_sandbox and not api_launch["network"]
+                    # `yolo` and `bypass` make a claude_code request skip permission prompts. The
+                    # read set's Read, Grep and Glob need no approval, so a read-set run switches
+                    # with neither. The write set's Edit, Write and Bash cannot be approved in
+                    # print mode, so a write-set run keeps the run's own flags.
+                    read_set = api_launch["tools"] == "read"
                     subscription_model = build_chat_model(
                         _SUBSCRIPTION_FALLBACK_PROVIDER,
                         model,
-                        yolo,
+                        yolo and not read_set,
                         verbose,
                         theme,
                         requested_effort,
                         fast,
-                        bypass,
+                        bypass and not read_set,
                         # The API leg was handed no MCP server, so this one gets none either:
                         # an empty set that is the whole set keeps the CLI from loading any
                         # config of its own.
@@ -2849,6 +2857,8 @@ async def _run_agent(
                     resolved_model_spec = _provenance.resolve_model_spec(provider, model)
                     for api_only in ("prompt_caching", "tool_result_max_chars", "context_fold"):
                         run_manifest.pop(api_only, None)
+                    switched_kwargs = subscription_model.endpoint.config.kwargs
+                    switched_permission_mode = switched_kwargs.get("permission_mode")
                     run_manifest.update(
                         provider=provider,
                         model=resolved_model_spec,
@@ -2858,7 +2868,10 @@ async def _run_agent(
                             "refusal_code": refusal.code.value,
                             # The `--tools` value the switched leg runs with; null when it
                             # runs with every built-in tool.
-                            "tools": subscription_model.endpoint.config.kwargs.get("tools"),
+                            "tools": switched_kwargs.get("tools"),
+                            # The permission mode the switched request carries; null when it
+                            # carries none.
+                            "permission_mode": switched_permission_mode,
                             "sandbox_dropped": left_sandbox,
                         },
                     )
@@ -2884,17 +2897,28 @@ async def _run_agent(
                     # turn, the steer routing (`run_turn=_api_turn`) and the context-fold
                     # manifest write.
                     api_launch = _api_turn = _api_fold = None
-                    warn(
+                    warning = [
                         f"the Anthropic API route refused the first request "
                         f"({refusal.code.value}); continuing on {fallback_spec}"
-                        + (
-                            ". The write set's editor and bash ran under the macOS sandbox on the "
-                            "API route; Claude Code has no filesystem sandbox, so on this route "
-                            "its commands run without that confinement"
-                            if left_sandbox
-                            else ""
-                        )
+                    ]
+                    if switched_permission_mode == "bypassPermissions":
+                        warning.append("Claude Code runs its tools without asking")
+                    # The API route's reader and editor paths are held to the workspace root by
+                    # `guard_paths` and by each tool's own path resolution, and its search tool
+                    # by that resolution; Claude Code's tools are held to no such root here.
+                    warning.append(
+                        "Claude Code's tools are not confined to the working directory the "
+                        "way the API route's tools were"
                     )
+                    if left_sandbox:
+                        warning.append(
+                            "The write set's editor and bash ran under the macOS sandbox on the "
+                            "API route; Claude Code has no filesystem sandbox, so on this route "
+                            "its commands run without the file-write"
+                            + (" and network" if left_network_confinement else "")
+                            + " confinement"
+                        )
+                    warn(". ".join(warning))
             if _api_turn is None:
                 res = await branch.operate(
                     instruction=prompt,
