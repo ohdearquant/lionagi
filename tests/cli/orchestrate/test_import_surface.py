@@ -122,10 +122,12 @@ def test_scheduler_reserved_flags_come_from_the_canonical_flow_parser(monkeypatc
         return parsers
 
     monkeypatch.setattr(parsing, "add_orchestrate_subparser", record)
-    monkeypatch.setattr(scheduler_subprocess, "_RESERVED_FLOW_FLAGS", None)
-    actual = scheduler_subprocess._reserved_flow_flags()
+    from lionagi.studio.services import schedule_action_validation
+
+    monkeypatch.setattr(schedule_action_validation, "_RESERVED_FLOW_FLAGS", None)
+    actual = schedule_action_validation._reserved_flow_flags()
     assert len(expected) == 1
     assert actual == expected[0]
     assert "--example-scheduler-option" in actual
-    assert scheduler_subprocess._reserved_flow_flags() is actual
+    assert schedule_action_validation._reserved_flow_flags() is actual
     assert len(expected) == 1

@@ -69,7 +69,7 @@ def _validate_request(data: dict[str, Any]) -> None:
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
     _svc_validate_extra_args(data.get("action_extra_args"))
     if data.get("action_playbook_args"):
-        from lionagi.studio.scheduler.subprocess import _validate_playbook_args
+        from lionagi.studio.services.schedule_action_validation import _validate_playbook_args
 
         _validate_playbook_args(data["action_playbook_args"])
         if kind != "play":
@@ -88,7 +88,7 @@ def _validate_request(data: dict[str, Any]) -> None:
             "action_flow_yaml (the inline flow spec) is required for flow_yaml launches"
         )
     if kind == "command":
-        from lionagi.studio.scheduler.subprocess import (
+        from lionagi.studio.services.schedule_action_validation import (
             _validate_action_command,
             _validate_command_allowlisted,
         )

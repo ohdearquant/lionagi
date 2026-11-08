@@ -125,7 +125,9 @@ def client(monkeypatch):
     monkeypatch.setattr(github_module, "_get_gh_token", token)
     monkeypatch.setattr(github_module, "_get_client", lambda: client)
     monkeypatch.setattr(github_module, "_PER_PAGE", 2)
-    monkeypatch.setattr(github_module, "_MERGED_MODE_MAX_PAGES", 1)
+    from lionagi.studio.services import _schedule_validation
+
+    monkeypatch.setattr(_schedule_validation, "_MERGED_MODE_MAX_PAGES", 1)
     return client
 
 
@@ -414,7 +416,9 @@ async def test_raised_limit_recovers_ordered_events_after_restart(
     db, _, reader = stores
     cursor = github_module._cursor_for("2026-10-24T10:00:00Z", 0)
     await _schedule(db, streak=0, github_cursor=cursor)
-    monkeypatch.setattr(github_module, "_MERGED_MODE_MAX_PAGES", 5)
+    from lionagi.studio.services import _schedule_validation
+
+    monkeypatch.setattr(_schedule_validation, "_MERGED_MODE_MAX_PAGES", 5)
     pages = []
     for index in range(5):
         items = []
@@ -711,7 +715,9 @@ async def test_fresh_pagination_error_releases_no_events_or_held_batch(
 
     db, _, reader = stores
     await _schedule(db)
-    monkeypatch.setattr(github_module, "_MERGED_MODE_MAX_PAGES", 2)
+    from lionagi.studio.services import _schedule_validation
+
+    monkeypatch.setattr(_schedule_validation, "_MERGED_MODE_MAX_PAGES", 2)
     client.responses = [
         _Response([_pr(1), _pr(2, safe=False)], more=True),
         _Response(status=status),

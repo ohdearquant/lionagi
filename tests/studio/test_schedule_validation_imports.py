@@ -31,6 +31,97 @@ def test_router_reexports_the_same_validation_objects(name):
     assert getattr(schedules, name) is getattr(_schedule_validation, name)
 
 
+@pytest.mark.parametrize(
+    ("old_module", "new_module", "names"),
+    [
+        (
+            "lionagi.studio.scheduler.admit",
+            "lionagi.studio.services._schedule_validation",
+            ("validate_rate_limit",),
+        ),
+        (
+            "lionagi.studio.scheduler.github",
+            "lionagi.studio.services._schedule_validation",
+            (
+                "_validate_github_repo",
+                "merged_page_limit",
+                "_MERGED_MODE_MAX_PAGES",
+                "_GITHUB_OWNER_MAX",
+                "_GITHUB_REPO_MAX",
+                "_GITHUB_OWNER_RE",
+                "_GITHUB_REPO_NAME_RE",
+                "_GITHUB_REPO_TRAVERSAL",
+            ),
+        ),
+        (
+            "lionagi.studio.scheduler.subprocess",
+            "lionagi.studio.services.schedule_action_validation",
+            (
+                "_PLAY_SUBCOMMANDS",
+                "_validate_action_model",
+                "_validate_extra_args",
+                "_ENGINE_OPTION_KEYS",
+                "_ENGINE_OPT_VALUE_RE",
+                "_validate_engine_options",
+                "_COMMAND_RE",
+                "_COMMAND_ALLOWLIST_ENV",
+                "_validate_action_command",
+                "_command_allowlist",
+                "_validate_command_allowlisted",
+                "_reserved_flow_flags",
+                "_playbook_args",
+                "_validate_playbook_args",
+                "_validate_prompt",
+                "_sends_prompt",
+                "validate_launch_fields",
+            ),
+        ),
+    ],
+)
+def test_scheduler_modules_reexport_the_owned_validation_objects(old_module, new_module, names):
+    import importlib
+
+    old = importlib.import_module(old_module)
+    new = importlib.import_module(new_module)
+    assert all(getattr(old, name) is getattr(new, name) for name in names)
+
+
+def test_service_validators_import_without_scheduler_runtime_modules():
+    program = textwrap.dedent(
+        """
+        import importlib
+        import sys
+
+        forbidden = {
+            "lionagi.studio.scheduler.subprocess",
+            "lionagi.studio.scheduler.github",
+            "lionagi.studio.scheduler.admit",
+            "lionagi.studio.scheduler.engine",
+            "fastapi",
+            "lionagi.studio.app",
+        }
+        for name in (
+            "lionagi.studio.services.schedule_action_validation",
+            "lionagi.studio.services._schedule_validation",
+        ):
+            importlib.import_module(name)
+        assert not forbidden.intersection(sys.modules), forbidden.intersection(sys.modules)
+
+        importlib.import_module("lionagi.studio.scheduler.subprocess")
+        assert "lionagi.studio.scheduler.subprocess" in sys.modules
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_declaration_validators_run_without_importing_router(tmp_path):
     """Record refused imports even if a caller catches their exceptions."""
     program = textwrap.dedent(

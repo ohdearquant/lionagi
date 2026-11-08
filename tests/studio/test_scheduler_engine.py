@@ -1753,7 +1753,8 @@ def test_a_launch_that_sends_no_prompt_neither_renders_nor_checks_it(monkeypatch
 
 
 def test_an_engine_spec_that_renders_empty_is_refused_when_the_launch_is_built():
-    from lionagi.studio.scheduler.subprocess import build_argv, validate_launch_fields
+    from lionagi.studio.scheduler.subprocess import build_argv
+    from lionagi.studio.services.schedule_action_validation import validate_launch_fields
 
     schedule = _minimal_schedule(
         action_kind="engine", action_agent="summarize", action_prompt="{{pr_body}}"

@@ -427,7 +427,7 @@ schedules:
 
 def test_policies_rate_limit_malformed_rejected(tmp_path):
     """Policies.rateLimit is validated with the same
-    lionagi.studio.scheduler.admit.validate_rate_limit the fire-time engine
+    lionagi.studio.services._schedule_validation.validate_rate_limit the fire-time engine
     admission path uses -- an open dict[str, Any] would otherwise let a
     malformed rateLimit commit."""
     manifest = _policies_manifest(
@@ -3112,7 +3112,7 @@ def test_the_other_fields_validator_would_refuse_every_real_shape(args):
     the two contracts have converged and the reason these fields are validated
     separately no longer holds. Read that before deleting this.
     """
-    from lionagi.studio.scheduler.subprocess import _validate_extra_args
+    from lionagi.studio.services.schedule_action_validation import _validate_extra_args
 
     with pytest.raises(ValueError, match="starts with '-'"):
         _validate_extra_args(args)
