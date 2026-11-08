@@ -315,6 +315,7 @@ def build_chat_model(
     workload: str = DEFAULT_WORKLOAD,
     tool_settings: dict[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
+    secret_fill_skip: frozenset[str] | None = None,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
 
@@ -325,7 +326,9 @@ def build_chat_model(
     is refused. ``env`` is the whole environment a CLI provider's child process gets, in place
     of a copy of this process's own; a copy of it goes on the request, and the caller checks
     that the endpoint took it (``endpoint._runtime_state``), since an endpoint with no child
-    process would leave it unread.
+    process would leave it unread. ``secret_fill_skip`` is a set of variable names the
+    configured secret lookup must not fill into that child; it travels on the request
+    the way ``env`` does, and the caller checks it the same way.
     """
     from lionagi.service.connections.registry import EndpointRegistry
 
@@ -405,6 +408,8 @@ def build_chat_model(
         extra["config_overrides"] = merged
     if env is not None:
         extra["env"] = dict(env)
+    if secret_fill_skip:
+        extra["secret_fill_skip"] = frozenset(secret_fill_skip)
 
     if extra or workload != DEFAULT_WORKLOAD or tool_settings:
         model_instance = iModel(

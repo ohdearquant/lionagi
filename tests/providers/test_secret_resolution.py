@@ -651,3 +651,45 @@ async def test_a_cancel_during_the_timeout_cleanup_waits_for_the_child_to_stop(
         asyncio.get_running_loop().call_later(0.1, release.set)
         tg.cancel_scope.cancel()
     assert len(stopped) == 1 and stopped[0] is not None
+
+
+@pytest.mark.asyncio
+class TestARequestCanKeepTheLookupFromFillingNamesIntoItsChild:
+    """A caller that handed its child an environment without some credential names
+    names them in ``secret_fill_skip``, so the lookup cannot fill them back in. A real
+    child reports presence and equality only, and each arm declares a second name the
+    lookup does fill, so the lookup is shown working beside the skipped one."""
+
+    @staticmethod
+    def _cmd():
+        return [
+            sys.executable,
+            "-c",
+            "import os, json; print(json.dumps({"
+            f"'skipped': {NAME!r} in os.environ, "
+            f"'other': os.environ.get({OTHER!r}) == 'resolved::' + {OTHER!r}"
+            "}))",
+        ]
+
+    async def test_a_skipped_name_is_not_filled_into_the_child(
+        self, lionagi_home, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        _write_global(lionagi_home, _block(_PRINTS_A_VALUE, names=[NAME, OTHER]))
+        env = {"PATH": os.environ.get("PATH", os.defpath)}
+        seen = [
+            obj
+            async for obj in ndjson_from_cli(
+                self._cmd(), env=env, secret_fill_skip=frozenset({NAME})
+            )
+        ]
+        assert seen == [{"skipped": False, "other": True}]
+
+    async def test_with_no_skip_set_both_names_are_filled(
+        self, lionagi_home, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        _write_global(lionagi_home, _block(_PRINTS_A_VALUE, names=[NAME, OTHER]))
+        env = {"PATH": os.environ.get("PATH", os.defpath)}
+        seen = [obj async for obj in ndjson_from_cli(self._cmd(), env=env)]
+        assert seen == [{"skipped": True, "other": True}]

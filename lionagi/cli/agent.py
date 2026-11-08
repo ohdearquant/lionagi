@@ -2900,6 +2900,21 @@ async def _run_agent(
                     )
                     # Names only, never values.
                     env_removed = sorted(set(parent_env) - set(child_env))
+                    # At spawn, the configured secret lookup fills each name it declares that the
+                    # child's environment lacks, which would put a removed credential back. Every
+                    # name the lookup declares is skipped for this child except Claude Code's own
+                    # login token, so the lookup adds nothing the API route's commands lacked.
+                    from lionagi.service.accounts._secret_resolution import (
+                        resolve_secret_lookup_config,
+                    )
+
+                    lookup = resolve_secret_lookup_config().lookup
+                    kept = {name.upper() for name in _SUBSCRIPTION_ENV_ALLOWLIST}
+                    secret_fill_skip = frozenset(
+                        name
+                        for name in (() if lookup is None else lookup.names)
+                        if name.upper() not in kept
+                    )
                     subscription_model = build_chat_model(
                         _SUBSCRIPTION_FALLBACK_PROVIDER,
                         model,
@@ -2919,13 +2934,19 @@ async def _run_agent(
                         workload=workload,
                         tool_settings={"tools": set_tools},
                         env=child_env,
+                        secret_fill_skip=secret_fill_skip,
                     )
                     if isinstance(subscription_model, str):
                         subscription_model = iModel(model=subscription_model)
                     # The endpoint says whether it took the environment: one with no child process
                     # would leave it unread, and the CLI would then inherit this process's whole
                     # environment. The run does not switch; it fails with the routing error.
-                    if "env" not in getattr(subscription_model.endpoint, "_runtime_state", {}):
+                    # The same holds for the lookup's skip set: left unread, the lookup would fill
+                    # the removed names back in.
+                    taken = getattr(subscription_model.endpoint, "_runtime_state", {})
+                    if "env" not in taken or (
+                        secret_fill_skip and taken.get("secret_fill_skip") != secret_fill_skip
+                    ):
                         warn(
                             "not moving to the subscription route because the Claude Code "
                             "request did not take the child environment"
@@ -2965,6 +2986,8 @@ async def _run_agent(
                             # The sorted names, never the values, of the variables this process
                             # held that the switched child's environment does not carry.
                             "env_removed": env_removed,
+                            # The names the configured secret lookup may not fill into it.
+                            "env_fill_skipped": sorted(secret_fill_skip),
                         },
                     )
                     if _write_run_manifest is not None:

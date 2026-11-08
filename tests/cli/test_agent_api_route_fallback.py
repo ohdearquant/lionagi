@@ -83,6 +83,7 @@ def subscription(monkeypatch):
                 cli_args=args,
                 cli_tools=_flag_value(args, "--tools"),
                 request_env_names=_request_env_names(self.chat_model),
+                request_fill_skip=_request_fill_skip(self.chat_model),
             )
         )
         return ANSWER
@@ -214,6 +215,8 @@ async def test_a_first_request_refusal_continues_on_the_subscription_route(
     record = dict(manifest["subscription_fallback"])
     removed = record.pop("env_removed")
     assert removed == sorted(removed)
+    skipped = record.pop("env_fill_skipped")
+    assert skipped == sorted(skipped)
     assert record == {
         "original_model": provider.MODEL,
         "model_used": FALLBACK_MODEL,
@@ -471,6 +474,84 @@ async def test_the_switched_run_keeps_claude_codes_own_login_token_and_no_other_
     removed = _manifest(tmp_path)["subscription_fallback"]["env_removed"]
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in removed
     assert {"ANTHROPIC_API_KEY", "LIONAGI_TEST_AUTH_TOKEN"} <= set(removed)
+
+
+def _lookup_declaring(monkeypatch, *names):
+    """The configured secret lookup declares *names*. Its command is never run here: the
+    switched turn is a stand-in, so only the names reach the code under test."""
+    import sys
+
+    from lionagi.service.accounts import _secret_resolution
+
+    real = _secret_resolution.resolve_secret_lookup_config
+    block = {
+        "secrets": {
+            "lookup": {"argv": [sys.executable, "-c", "pass", "{name}"], "names": list(names)}
+        }
+    }
+    monkeypatch.setattr(
+        _secret_resolution, "resolve_secret_lookup_config", lambda **_: real(settings=block)
+    )
+
+
+def _request_fill_skip(chat_model) -> frozenset[str]:
+    """The names the Claude Code request the model's endpoint builds keeps the secret lookup
+    from filling into its child."""
+    payload, _ = chat_model.endpoint.create_payload({"prompt": "x"})
+    return payload["request"].secret_fill_skip
+
+
+@pytest.mark.asyncio
+async def test_the_secret_lookup_cannot_fill_a_removed_name_back_into_the_switched_child(
+    leg, subscription, monkeypatch, tmp_path
+):
+    """A configured secret lookup fills each name it declares that a child lacks. The switched
+    request names every such name except Claude Code's own login token, so a removed API key
+    is not filled back in, and run.json lists the skipped names."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _lookup_declaring(monkeypatch, "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="read"))
+
+    (turn,) = subscription.calls
+    assert turn.request_fill_skip == frozenset({"ANTHROPIC_API_KEY"})
+    record = _manifest(tmp_path)["subscription_fallback"]
+    assert record["env_fill_skipped"] == ["ANTHROPIC_API_KEY"]
+
+
+@pytest.mark.asyncio
+async def test_a_switch_whose_request_drops_the_fill_skip_set_does_not_happen(
+    leg, subscription, console_warnings, monkeypatch, tmp_path
+):
+    """An endpoint that did not keep the skip set would let the lookup fill the removed names
+    back in. The run does not switch and fails with the routing error."""
+    import lionagi.cli.agent as agent_mod
+
+    build_chat_model = agent_mod.build_chat_model
+
+    def build_without_the_skip_set(*args, **kwargs):
+        model = build_chat_model(*args, **kwargs)
+        state = getattr(getattr(model, "endpoint", None), "_runtime_state", None)
+        if isinstance(state, dict):
+            state.pop("secret_fill_skip", None)
+        return model
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", build_without_the_skip_set)
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _lookup_declaring(monkeypatch, "ANTHROPIC_API_KEY")
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="read"))
+
+    assert info.value.__cause__.code is RouterErrorCode.BUDGET_EXHAUSTED
+    assert subscription.calls == []
+    assert "subscription_fallback" not in _manifest(tmp_path)
+    (note,) = _not_moving_notes(console_warnings)
+    assert "child environment" in note
 
 
 @pytest.mark.asyncio

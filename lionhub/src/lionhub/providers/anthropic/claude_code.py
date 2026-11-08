@@ -328,6 +328,17 @@ class ClaudeCodeRequest(BaseModel):
             "it did not spawn itself. May be a coroutine function."
         ),
     )
+    secret_fill_skip: SkipJsonSchema[frozenset[str]] = Field(
+        default=frozenset(),
+        exclude=True,
+        repr=False,
+        description=(
+            "Environment variable names the configured secret lookup must not "
+            "fill into this CLI process, in addition to the routed account key "
+            "names. Names only, never values. Empty leaves the lookup's fill "
+            "exactly as it is."
+        ),
+    )
 
     @field_validator("env", mode="before")
     @classmethod
@@ -782,6 +793,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
                 on_spawn=request.on_spawn,
                 engine="claude",
                 workload=request.workload,
+                secret_fill_skip=request.secret_fill_skip,
             )
         ) as stream:
             async for obj in stream:
@@ -1155,7 +1167,7 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CLAUDE_HANDLER_PARAMS
     _handler_kwarg = "claude_handlers"
     _request_model = ClaudeCodeRequest
-    _runtime_state_fields = ("env", "on_spawn")
+    _runtime_state_fields = ("env", "on_spawn", "secret_fill_skip")
     # Claude Code streams a "system" event as soon as the CLI session starts,
     # well before the run completes — see stream_cc_cli() above.
     streams_first_output_early = True
@@ -1240,7 +1252,7 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             # supervisor callback would otherwise silently stop being the
             # original one that holds the durable process accounting.
             req2 = request.model_copy(deep=True)
-            for _runtime_field in ("env", "on_spawn"):
+            for _runtime_field in ("env", "on_spawn", "secret_fill_skip"):
                 object.__setattr__(req2, _runtime_field, getattr(request, _runtime_field))
             req2.prompt = "Please provide a the final result message only"
             req2.max_turns = 1

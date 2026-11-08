@@ -39,8 +39,11 @@ __all__ = ("AUTHORIZATION_KWARG_NAMES", "RUNTIME_STATE_NAMES", "EndpointConfig")
 # credentials; ``on_spawn`` is a callback whose representation carries whatever
 # object it is bound to. They are named here, in the model that would otherwise
 # serialize them, because that is the one place every route to a written-down
-# config has to pass through.
-RUNTIME_STATE_NAMES: tuple[str, ...] = ("env", "on_spawn")
+# config has to pass through. ``secret_fill_skip`` holds only variable names, the
+# ones the configured secret lookup must not fill into that child's environment;
+# a request restored from a stored config would otherwise run under a skip set
+# that belongs to the run that wrote it.
+RUNTIME_STATE_NAMES: tuple[str, ...] = ("env", "on_spawn", "secret_fill_skip")
 
 # Kwargs that grant the call an authority, kept in ``kwargs`` for the live call
 # and never written down. ``account_connectors`` lets a codex request reach the
