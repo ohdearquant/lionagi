@@ -1511,6 +1511,9 @@ def _first_request_route_refusal(exc: BaseException, branch, usage) -> Exception
     counts only when the run's usage record shows no request ever had an account selected
     and the branch holds no provider reply: no request reached the provider, and no earlier
     reply exists whose conversation would have to move with it.
+
+    Whether a refusal that qualifies here moves the run is decided by
+    ``_subscription_switch_objection``.
     """
     from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
 
@@ -1533,6 +1536,45 @@ def _first_request_route_refusal(exc: BaseException, branch, usage) -> Exception
     if any(isinstance(m, AssistantResponse) for m in branch.msgs.messages):
         return None
     return refusal
+
+
+async def _subscription_switch_objection(refusal, api_account: str | None) -> str | None:
+    """The warning to print when a refused first request must not move the run to the
+    subscription route, or None when it may move.
+
+    A refusal moves the run only when it is about spend. A run pinned to an account with
+    ``LIONAGI_API_ACCOUNT`` asked for that account and no other route, so it never moves.
+    ``budget_exhausted`` is a spend refusal. ``account_blocked`` carries no reason of its
+    own, so the ledger's status is read at the time of the refusal: the run moves only when
+    at least one account is blocked and every blocked account is blocked for
+    ``ceiling_exceeded``. A block for any other reason (a settlement conflict, an
+    authentication failure, a block set by hand) is not a spend problem the subscription
+    route solves, and a status that cannot be read, or that shows no blocked account, leaves
+    the run where it is. The warning names accounts and block reasons only, never key
+    material.
+    """
+    from lionagi.service.accounts._types import RouterErrorCode
+
+    not_moving = "not moving to the subscription route because"
+    if api_account is not None:
+        return f"{not_moving} LIONAGI_API_ACCOUNT pins it to account {api_account}"
+    if refusal.code == RouterErrorCode.BUDGET_EXHAUSTED:
+        return None
+    try:
+        from lionagi.service.accounts._router import get_router
+
+        statuses = await get_router().ledger.status("anthropic")
+    except Exception as exc:  # noqa: BLE001 — a status that cannot be read ends the decision
+        return f"{not_moving} the blocked accounts could not be read ({type(exc).__name__})"
+    blocked = [(s.name, s.block_reason) for s in statuses if s.block_reason]
+    if not blocked:
+        return f"{not_moving} no account is reported blocked"
+    other = [(name, reason) for name, reason in blocked if reason != "ceiling_exceeded"]
+    if not other:
+        return None
+    names = ", ".join(sorted(name for name, _ in other))
+    reasons = ", ".join(sorted({reason for _, reason in other}))
+    return f"{not_moving} account(s) {names} are blocked for {reasons}"
 
 
 def _read_api_account() -> str | None:
@@ -2798,6 +2840,14 @@ async def _run_agent(
                     refusal = _first_request_route_refusal(refused, branch, _api_usage)
                     if refusal is None or is_resumed_branch or canonical != "anthropic":
                         raise
+                    from lionhub.orchestration.console import warn
+
+                    # Only a refusal about spend moves the run, and never one pinned to an
+                    # account: the run prints why it stays and fails with the routing error.
+                    objection = await _subscription_switch_objection(refusal, api_account)
+                    if objection is not None:
+                        warn(objection)
+                        raise
                     # The CLI has every built-in tool unless the request names some, so the
                     # run names the tools of the set it ran with on the API route. A set with
                     # no entry has no tools to name, so the run does not switch: it fails with
@@ -2807,7 +2857,6 @@ async def _run_agent(
                     if set_tools is None:
                         raise
                     from lionagi.service.imodel import iModel
-                    from lionhub.orchestration.console import warn
 
                     original_spec = f"{provider}/{model}"
                     fallback_spec = f"{_SUBSCRIPTION_FALLBACK_PROVIDER}/{model}"

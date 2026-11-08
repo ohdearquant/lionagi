@@ -5,10 +5,12 @@
 refuses the run's first request.
 
 The router refuses before anything is sent when every configured account is blocked or out of
-budget. A run whose first request is refused that way continues on `claude_code/<model>`, at
-most once, and says so on the console and in run.json. A refusal after a reply, any other router
-code and any other provider keep failing with the routing error. The endpoint's call and the
-subscription route's turn are scripted here, so no request leaves the process.
+budget. A run whose first request is refused for spend (`budget_exhausted`, or `account_blocked`
+with every blocked account at its spend ceiling) continues on `claude_code/<model>`, at most
+once, and says so on the console and in run.json. A run pinned to an account with
+`LIONAGI_API_ACCOUNT`, a run refused for any other block reason, a refusal after a reply, any
+other router code and any other provider keep failing with the routing error. The endpoint's
+call and the subscription route's turn are scripted here, so no request leaves the process.
 """
 
 from __future__ import annotations
@@ -22,7 +24,14 @@ import pytest
 
 from lionagi._errors import ExecutionError
 from lionagi.service._api_telemetry import record_selected_attempt
-from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+from lionagi.service.accounts._types import (
+    AccountRoutingError,
+    AccountSpec,
+    ProvenNotSent,
+    Quote,
+    RouterErrorCode,
+    Scope,
+)
 from lionhub.orchestration.console import _WARN_LOGGER_NAME
 from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
@@ -112,10 +121,68 @@ def _fallback_notes(console_warnings) -> list[str]:
     return [line for line in console_warnings if "refused the first request" in line]
 
 
+def _not_moving_notes(console_warnings) -> list[str]:
+    """What the run printed when it stayed on the API route and said why."""
+    return [line for line in console_warnings if "not moving to the subscription route" in line]
+
+
+_TWO_TEAMS = [
+    {"name": "team-a", "key_env": "ACCT_A", "budget_usd": "10"},
+    {"name": "team-b", "key_env": "ACCT_B", "budget_usd": "10"},
+]
+
+
+@pytest.fixture
+def account_ledger(monkeypatch, tmp_path):
+    """The account router pointed at a ledger file of its own, so the blocked accounts a run reads
+    at its refusal are the ones a test wrote through the ledger. No account is pinned."""
+    from lionagi.service.accounts import _router as router_module
+
+    monkeypatch.delenv("LIONAGI_API_ACCOUNT", raising=False)
+    router_module._reset_router_test_dependencies()
+    router_module._set_router_test_dependencies(ledger_path=tmp_path / "ledger.sqlite3")
+    yield
+    router_module._reset_router_test_dependencies()
+
+
+async def _block(reasons: dict[str, str]) -> None:
+    """Give every configured account a ledger row, then block each named account for its reason,
+    through the ledger the router hands the run."""
+    from lionagi import config
+    from lionagi.service.accounts._router import get_router
+
+    specs = tuple(
+        AccountSpec(name=item.name, key_env=item.key_env, budget_nusd=item.budget_nusd)
+        for item in config.settings.ANTHROPIC_ACCOUNTS
+    )
+    ledger = get_router().ledger
+    first = await ledger.reserve(
+        Scope("branch", uuid4(), "anthropic"),
+        uuid4(),
+        Quote("model-a", 1, "price-a", "a" * 64),
+        specs,
+    )
+    await ledger.settle(first.attempt_id, ProvenNotSent())
+    for name, reason in reasons.items():
+        await ledger.block("anthropic", name, reason)
+
+
+def _assert_stays_on_the_api_route(info, code, leg, subscription, console_warnings, tmp_path):
+    """The run failed with the routing error it was refused with, sent nothing on the
+    subscription route, kept its API model and wrote no fallback record."""
+    assert isinstance(info.value.__cause__, AccountRoutingError)
+    assert info.value.__cause__.code is code
+    assert subscription.calls == []
+    assert len(leg.payloads) == 1
+    manifest = _manifest(tmp_path)
+    assert manifest["status"] == "failed"
+    assert "subscription_fallback" not in manifest
+    assert _fallback_notes(console_warnings) == []
+    assert leg.branch.chat_model.endpoint.config.provider == "anthropic"
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "code", [RouterErrorCode.BUDGET_EXHAUSTED, RouterErrorCode.ACCOUNT_BLOCKED]
-)
+@pytest.mark.parametrize("code", [RouterErrorCode.BUDGET_EXHAUSTED])
 async def test_a_first_request_refusal_continues_on_the_subscription_route(
     leg, subscription, console_warnings, monkeypatch, tmp_path, code
 ):
@@ -147,6 +214,144 @@ async def test_a_first_request_refusal_continues_on_the_subscription_route(
     assert "api_launch" not in leg.branch.metadata
     assert leg.branch.chat_model.endpoint.config.provider == "claude_code"
     assert leg.branch.parse_model is leg.branch.chat_model
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_run_does_not_move_to_the_subscription_route(
+    leg, subscription, console_warnings, monkeypatch, tmp_path
+):
+    """A run pinned to an account asked for that account and no other route: a spend refusal
+    that would move an unpinned run ends it with the routing error and says why."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    monkeypatch.setenv("LIONAGI_API_ACCOUNT", "team-b")
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="read"))
+
+    _assert_stays_on_the_api_route(
+        info, RouterErrorCode.BUDGET_EXHAUSTED, leg, subscription, console_warnings, tmp_path
+    )
+    (note,) = _not_moving_notes(console_warnings)
+    assert "LIONAGI_API_ACCOUNT pins it to account team-b" in note
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("accounts", "reasons"),
+    [
+        (_TEAM_B, {"team-b": "ceiling_exceeded"}),
+        (_TWO_TEAMS, {"team-a": "ceiling_exceeded", "team-b": "ceiling_exceeded"}),
+    ],
+    ids=["one account", "two accounts"],
+)
+async def test_account_blocked_at_the_spend_ceiling_continues_on_the_subscription_route(
+    leg, subscription, account_ledger, console_warnings, monkeypatch, tmp_path, accounts, reasons
+):
+    _settings(monkeypatch, tmp_path, accounts=accounts)
+    await _block(reasons)
+    _refuse(monkeypatch, leg, RouterErrorCode.ACCOUNT_BLOCKED)
+
+    result, provider_used, _, status, _ = await leg.run(_PROFILE(api_tools="read"))
+
+    assert (result, provider_used, status) == (ANSWER, "claude_code", "completed")
+    assert len(leg.payloads) == 1
+    (turn,) = subscription.calls
+    assert (turn.provider, turn.model) == ("claude_code", "claude-haiku-5-5")
+    fallback = _manifest(tmp_path)["subscription_fallback"]
+    assert fallback["refusal_code"] == "account_blocked"
+    assert fallback["model_used"] == FALLBACK_MODEL
+    (note,) = _fallback_notes(console_warnings)
+    assert "account_blocked" in note and FALLBACK_MODEL in note
+    assert _not_moving_notes(console_warnings) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reasons", "names", "reason_text"),
+    [
+        (
+            {"team-a": "settlement_conflict", "team-b": "ceiling_exceeded"},
+            "team-a",
+            "settlement_conflict",
+        ),
+        (
+            {"team-a": "auth_required", "team-b": "auth_required"},
+            "team-a, team-b",
+            "auth_required",
+        ),
+        ({"team-a": "manual", "team-b": "ceiling_exceeded"}, "team-a", "manual"),
+    ],
+    ids=["settlement conflict beside a ceiling", "auth reason", "reason set by hand"],
+)
+async def test_account_blocked_for_any_other_reason_does_not_move_the_run(
+    leg,
+    subscription,
+    account_ledger,
+    console_warnings,
+    monkeypatch,
+    tmp_path,
+    reasons,
+    names,
+    reason_text,
+):
+    """A block that is not about spend is not something the subscription route solves: the run
+    names the accounts and reasons that keep it where it is and fails with the routing error."""
+    _settings(monkeypatch, tmp_path, accounts=_TWO_TEAMS)
+    await _block(reasons)
+    _refuse(monkeypatch, leg, RouterErrorCode.ACCOUNT_BLOCKED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="read"))
+
+    _assert_stays_on_the_api_route(
+        info, RouterErrorCode.ACCOUNT_BLOCKED, leg, subscription, console_warnings, tmp_path
+    )
+    (note,) = _not_moving_notes(console_warnings)
+    assert f"account(s) {names} are blocked for {reason_text}" in note
+    assert "ACCT_A" not in note and "ACCT_B" not in note
+
+
+@pytest.mark.asyncio
+async def test_account_blocked_with_no_blocked_account_in_the_ledger_does_not_move_the_run(
+    leg, subscription, account_ledger, console_warnings, monkeypatch, tmp_path
+):
+    _settings(monkeypatch, tmp_path, accounts=_TWO_TEAMS)
+    await _block({})
+    _refuse(monkeypatch, leg, RouterErrorCode.ACCOUNT_BLOCKED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="read"))
+
+    _assert_stays_on_the_api_route(
+        info, RouterErrorCode.ACCOUNT_BLOCKED, leg, subscription, console_warnings, tmp_path
+    )
+    (note,) = _not_moving_notes(console_warnings)
+    assert "no account is reported blocked" in note
+
+
+@pytest.mark.asyncio
+async def test_account_blocked_with_a_status_that_cannot_be_read_does_not_move_the_run(
+    leg, subscription, account_ledger, console_warnings, monkeypatch, tmp_path
+):
+    from lionagi.service.accounts._ledger import CredentialLedger
+
+    async def unreadable(self, provider, month_utc=None):
+        raise RuntimeError("ledger offline")
+
+    _settings(monkeypatch, tmp_path, accounts=_TWO_TEAMS)
+    monkeypatch.setattr(CredentialLedger, "status", unreadable)
+    _refuse(monkeypatch, leg, RouterErrorCode.ACCOUNT_BLOCKED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="read"))
+
+    _assert_stays_on_the_api_route(
+        info, RouterErrorCode.ACCOUNT_BLOCKED, leg, subscription, console_warnings, tmp_path
+    )
+    (note,) = _not_moving_notes(console_warnings)
+    assert "could not be read (RuntimeError)" in note
+    assert "ledger offline" not in note
 
 
 @pytest.mark.asyncio
