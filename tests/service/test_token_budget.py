@@ -129,10 +129,12 @@ class TestLookupContextWindow:
         ("provider", "model", "expected"),
         [
             ("anthropic", "claude-fable-5-1", 1_000_000),
+            ("anthropic", "claude-mythos-5-1", 1_000_000),
             ("anthropic", "claude-opus-5-5", 1_000_000),
             ("anthropic", "claude-sonnet-5-5", 1_000_000),
             ("anthropic", "claude-haiku-5-5", 1_000_000),
             ("claude_code", "claude-fable-5-1", 1_000_000),
+            ("claude_code", "claude-mythos-5-1", 1_000_000),
             ("claude_code", "claude-opus-5-5", 1_000_000),
             ("claude_code", "claude-sonnet-5-5", 1_000_000),
             ("claude_code", "claude-haiku-5-5", 1_000_000),

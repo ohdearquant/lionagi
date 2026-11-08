@@ -64,13 +64,13 @@ _LEGACY_TABLES = [
 # Lookups the parity check compares: every distinct model string built from the window keys,
 # times every distinct hint (none, the empty string, each catalog key, every alias a provider
 # declares, each key in upper case and padded with spaces, and an unknown name).
-_PARITY_COMPARISONS = 27440
+_PARITY_COMPARISONS = 28000
 
 # Number of entries in each provider's CONTEXT_WINDOWS table.
 _TABLE_SIZES = {
     "openai": 22,
-    "anthropic": 12,
-    "claude_code": 15,
+    "anthropic": 13,
+    "claude_code": 16,
     "codex": 8,
     "deepseek": 8,
     "nvidia_nim": 5,
