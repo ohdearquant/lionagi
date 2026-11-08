@@ -788,24 +788,46 @@ def test_the_rules_name_the_resolved_workspace_root(tmp_path, monkeypatch):
 
 
 def test_every_protected_name_is_denied_to_every_read_tool_in_any_case(tmp_path):
+    from fnmatch import fnmatchcase
+
     from lionagi.cli.agent import _subscription_read_rules
-    from lionagi.libs.path_safety import DENIED_NAMES
+    from lionagi.libs.path_safety import DENIED_NAMES, is_protected_name
 
     root = str(tmp_path.resolve())
     _, _, denials = _subscription_read_rules("Read,Grep,Glob", root)
 
-    def any_case(name):
-        return "".join(f"[{c.lower()}{c.upper()}]" if c.isalpha() else c for c in name)
+    def patterns(tool, below):
+        prefix, suffix = f"{tool}(/{root}/**/", f"{below})"
+        return [
+            rule[len(prefix) : -len(suffix)]
+            for rule in denials
+            if rule.startswith(prefix)
+            and rule.endswith(suffix)
+            and "/" not in rule[len(prefix) : -len(suffix)]
+        ]
 
-    expected = {
-        f"{tool}(/{root}/**/{any_case(name)})"
-        for tool in ("Read", "Grep", "Glob")
-        for name in DENIED_NAMES
-    }
-    assert len(denials) == len(expected)
-    assert set(denials) == expected
-    assert f"Glob(/{root}/**/.[eE][nN][vV])" in denials
-    assert f"Grep(/{root}/**/[iI][dD]_[rR][sS][aA])" in denials
+    # Spellings the API reader refuses: each folds to a protected name.
+    spellings = set()
+    for name in DENIED_NAMES:
+        spellings |= {name, name.upper(), name.title(), name.swapcase()}
+        spellings |= {name.replace("s", "ſ"), name.replace("ss", "ß"), name.replace("ss", "ẞ")}
+    spellings = {s for s in spellings if is_protected_name(s)}
+    assert {".htpaßwd", "id_rſa", ".ENV"} <= spellings
+    for tool in ("Read", "Grep", "Glob"):
+        for below in ("", "/**"):
+            found = patterns(tool, below)
+            for spelling in spellings:
+                assert any(fnmatchcase(spelling, pattern) for pattern in found), (
+                    tool,
+                    below,
+                    spelling,
+                )
+            for ordinary in ("notes.txt", "env", ".envrc", "id_rsa.pub", "htpasswd"):
+                assert not any(fnmatchcase(ordinary, pattern) for pattern in found), ordinary
+    assert f"Read(/{root}/**/.[Ee][Nn][Vv])" in denials
+    assert f"Glob(/{root}/**/.[Ee][Nn][Vv]/**)" in denials
+    assert f"Grep(/{root}/**/[Ii][Dd]_[Rr][Ssſ][Aa])" in denials
+    assert f"Read(/{root}/**/.[Hh][Tt][Pp][Aa][ßẞ][Ww][Dd])" in denials
 
 
 @pytest.mark.parametrize("protected", ["id_rsa", ".ENV", "id_ed25519"])

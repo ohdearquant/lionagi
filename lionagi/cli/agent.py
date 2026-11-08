@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -142,10 +143,43 @@ _SUBSCRIPTION_ENV_ALLOWLIST: tuple[str, ...] = ("CLAUDE_CODE_OAUTH_TOKEN",)
 _SUBSCRIPTION_RULE_ROOT = re.compile(r"/[A-Za-z0-9._/-]+")
 
 
-def _any_case(name: str) -> str:
-    """*name* as a rule pattern that matches it in any letter case: a case-insensitive file
-    system opens ``.ENV`` as ``.env``."""
-    return "".join(f"[{c.lower()}{c.upper()}]" if c.isalpha() else c for c in name)
+@functools.cache
+def _case_folds() -> dict[str, frozenset[str]]:
+    """Each string some character case-folds to, mapped to the characters that fold to it
+    (``s`` to ``s``, ``S`` and ``ſ``; ``ss`` to ``ß`` and ``ẞ``)."""
+    folds: dict[str, set[str]] = {}
+    for point in range(sys.maxunicode + 1):
+        char = chr(point)
+        folded = char.casefold()
+        if folded != char:
+            folds.setdefault(folded, set()).add(char)
+    return {folded: frozenset(chars) for folded, chars in folds.items()}
+
+
+def _any_case(name: str) -> list[str]:
+    """Rule patterns that together match every name that case-folds to *name*'s fold, which
+    is how the API reader compares a name with the protected ones: a case-insensitive file
+    system opens ``.ENV`` as ``.env``, and ``id_rſa`` folds to ``id_rsa``. Each character
+    becomes a class of every character folding to it, and each run of characters one
+    character folds to (``ss`` in ``.htpasswd``, from ``ß``) may also be that character."""
+    folds = _case_folds()
+    target = name.casefold()
+
+    def one(char: str) -> str:
+        chars = sorted({char} | folds.get(char, frozenset()))
+        return chars[0] if len(chars) == 1 else f"[{''.join(chars)}]"
+
+    def spell(start: int) -> list[str]:
+        if start == len(target):
+            return [""]
+        spelled = [one(target[start]) + rest for rest in spell(start + 1)]
+        for folded, chars in folds.items():
+            if len(folded) > 1 and target.startswith(folded, start):
+                whole = f"[{''.join(sorted(chars))}]"
+                spelled += [whole + rest for rest in spell(start + len(folded))]
+        return spelled
+
+    return spell(0)
 
 
 def _subscription_read_rules(
@@ -174,10 +208,14 @@ def _subscription_read_rules(
         return None
     names = tools.split(",")
     grants = [f"{tool}(/{root}/**)" for tool in names]
+    # The API search also leaves out everything below a directory with a protected name, so
+    # each name is denied as a file and as a directory's contents.
     denials = [
-        f"{tool}(/{root}/**/{_any_case(protected)})"
+        f"{tool}(/{root}/**/{pattern}{below})"
         for tool in names
         for protected in sorted(DENIED_NAMES)
+        for pattern in _any_case(protected)
+        for below in ("", "/**")
     ]
     return root, grants, denials
 
