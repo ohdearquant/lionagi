@@ -287,7 +287,7 @@ def test_an_unknown_revision_refuses():
     assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
 
 
-def test_an_attempt_reserved_under_the_earlier_revision_still_settles_under_it():
+def test_the_earlier_revision_still_resolves_and_prices_its_models_unchanged():
     earlier = revision_by_id("anthropic-20261012")
     assert earlier is not REV
     assert "claude-mythos-5-1" not in earlier.models

@@ -155,7 +155,8 @@ _REVISION_20261012 = PriceRevision(
 )
 
 # Claude Mythos 5.1 has the specifications and prices of Claude Fable 5.1 (its model page). The
-# earlier revision stays registered: an attempt reserved under it settles under it.
+# earlier revision stays registered so its id, stored on ledger attempts, still resolves; it prices
+# every model it names exactly as this revision does.
 CURRENT_REVISION = PriceRevision(
     id="anthropic-20261108",
     read_on="2026-11-08",
