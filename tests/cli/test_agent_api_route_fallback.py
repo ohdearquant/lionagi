@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -55,6 +56,15 @@ def _flag_value(args: list[str], flag: str) -> str | None:
     return args[args.index(flag) + 1] if flag in args else None
 
 
+def _request_env_names(chat_model) -> frozenset[str] | None:
+    """The names in the child process environment of the Claude Code request that the model's
+    endpoint builds; None when the request carries none, so that the child would inherit this
+    process's whole environment. Names only: the values are never read."""
+    payload, _ = chat_model.endpoint.create_payload({"prompt": "x"})
+    env = payload["request"].env
+    return None if env is None else frozenset(env)
+
+
 @pytest.fixture
 def subscription(monkeypatch):
     """The subscription route's turn: what `Branch.operate` is handed and what it answers."""
@@ -72,6 +82,7 @@ def subscription(monkeypatch):
                 model=config.kwargs.get("model"),
                 cli_args=args,
                 cli_tools=_flag_value(args, "--tools"),
+                request_env_names=_request_env_names(self.chat_model),
             )
         )
         return ANSWER
@@ -200,7 +211,10 @@ async def test_a_first_request_refusal_continues_on_the_subscription_route(
     assert manifest["provider"] == "claude_code"
     assert manifest["model"] == FALLBACK_MODEL
     assert manifest["status"] == "completed"
-    assert manifest["subscription_fallback"] == {
+    record = dict(manifest["subscription_fallback"])
+    removed = record.pop("env_removed")
+    assert removed == sorted(removed)
+    assert record == {
         "original_model": provider.MODEL,
         "model_used": FALLBACK_MODEL,
         "refusal_code": code.value,
@@ -404,6 +418,62 @@ async def test_a_write_set_run_continues_with_the_tools_its_api_set_had(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("api_tools", ["read", "write"])
+async def test_the_switched_run_gets_the_environment_without_the_api_routes_credential_names(
+    leg, subscription, seatbelt, monkeypatch, tmp_path, api_tools
+):
+    """The Claude Code request carries a child environment of its own instead of leaving the CLI
+    to inherit this process's whole one: the API key name and the configured account key name are
+    gone, an unrelated name is kept, and run.json lists exactly the names that were removed."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder")
+    monkeypatch.setenv("ACCT_B", "placeholder")
+    monkeypatch.setenv("LIONAGI_TEST_PLAIN", "placeholder")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools=api_tools))
+
+    (turn,) = subscription.calls
+    child_names = turn.request_env_names
+    assert child_names is not None
+    assert "ANTHROPIC_API_KEY" not in child_names
+    assert "ACCT_B" not in child_names
+    assert "LIONAGI_TEST_PLAIN" in child_names
+    removed = _manifest(tmp_path)["subscription_fallback"]["env_removed"]
+    assert removed == sorted(removed)
+    assert {"ANTHROPIC_API_KEY", "ACCT_B"} <= set(removed)
+    assert "LIONAGI_TEST_PLAIN" not in removed
+    assert set(removed) == set(os.environ) - child_names
+
+
+@pytest.mark.asyncio
+async def test_the_switched_run_keeps_claude_codes_own_login_token_and_no_other_token(
+    leg, subscription, monkeypatch, tmp_path
+):
+    """Claude Code can read its own login token from its environment, so that one name is kept;
+    the API key stays removed (it would be billed in place of the subscription) and so does any
+    other name that matches a sensitive-name pattern."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "placeholder")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder")
+    monkeypatch.setenv("LIONAGI_TEST_AUTH_TOKEN", "placeholder")
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="read"))
+
+    (turn,) = subscription.calls
+    child_names = turn.request_env_names
+    assert child_names is not None
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in child_names
+    assert "ANTHROPIC_API_KEY" not in child_names
+    assert "LIONAGI_TEST_AUTH_TOKEN" not in child_names
+    removed = _manifest(tmp_path)["subscription_fallback"]["env_removed"]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in removed
+    assert {"ANTHROPIC_API_KEY", "LIONAGI_TEST_AUTH_TOKEN"} <= set(removed)
+
+
+@pytest.mark.asyncio
 async def test_a_write_set_run_is_told_the_subscription_route_has_no_sandbox(
     leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path
 ):
@@ -578,6 +648,45 @@ async def test_a_run_whose_api_set_has_no_subscription_tools_fails_with_the_rout
     assert manifest["status"] == "failed"
     assert "subscription_fallback" not in manifest
     assert _fallback_notes(console_warnings) == []
+    assert leg.branch.chat_model.endpoint.config.provider == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_a_switch_whose_request_does_not_take_the_child_environment_does_not_happen(
+    leg, subscription, console_warnings, monkeypatch, tmp_path
+):
+    """A Claude Code endpoint that did not take the child environment would leave the CLI to
+    inherit this process's whole one. The run does not switch: it prints one warning saying why,
+    fails with the routing error, and the branch keeps its API model."""
+    import lionagi.cli.agent as agent_mod
+
+    build_chat_model = agent_mod.build_chat_model
+
+    def build_without_the_environment(*args, **kwargs):
+        model = build_chat_model(*args, **kwargs)
+        state = getattr(getattr(model, "endpoint", None), "_runtime_state", None)
+        if isinstance(state, dict):
+            state.pop("env", None)
+        return model
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", build_without_the_environment)
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="read"))
+
+    assert isinstance(info.value.__cause__, AccountRoutingError)
+    assert info.value.__cause__.code is RouterErrorCode.BUDGET_EXHAUSTED
+    assert subscription.calls == []
+    assert len(leg.payloads) == 1
+    manifest = _manifest(tmp_path)
+    assert (manifest["provider"], manifest["model"]) == ("anthropic", provider.MODEL)
+    assert manifest["status"] == "failed"
+    assert "subscription_fallback" not in manifest
+    assert _fallback_notes(console_warnings) == []
+    (note,) = _not_moving_notes(console_warnings)
+    assert "child environment" in note
     assert leg.branch.chat_model.endpoint.config.provider == "anthropic"
 
 

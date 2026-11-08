@@ -129,6 +129,11 @@ _SUBSCRIPTION_API_SET_TOOLS: dict[str, str] = {
     "read": "Read,Grep,Glob",
     "write": "Read,Grep,Glob,Edit,Write,Bash",
 }
+# The one variable a run that moves to the subscription route keeps although its name matches a
+# sensitive-name pattern: Claude Code's own login token, which a run authenticating that way reads
+# from its environment. Every API key name is removed from the switched child's environment, so
+# that no key is billed in place of the subscription.
+_SUBSCRIPTION_ENV_ALLOWLIST: tuple[str, ...] = ("CLAUDE_CODE_OAUTH_TOKEN",)
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
 _NO_PERSISTED_EXECUTION = object()
@@ -2871,6 +2876,30 @@ async def _run_agent(
                     # with neither. The write set's Edit, Write and Bash cannot be approved in
                     # print mode, so a write-set run keeps the run's own flags.
                     read_set = api_launch["tools"] == "read"
+                    # The CLI child inherits this whole process's environment unless the request
+                    # carries one. It is handed this environment without the credential names the
+                    # API route's commands went without (the declared names, the shared sensitive
+                    # name patterns and the shell startup names), for the read set as for the
+                    # write set, so that no API key reaches Claude Code or its Bash tool, where an
+                    # `ANTHROPIC_API_KEY` would be billed in place of the subscription. Only Claude
+                    # Code's own login token is kept. The names come from the API model's key
+                    # reference, read before the branch's model is replaced.
+                    from lionagi._command_env import scrub_command_env
+                    from lionagi._command_env_metadata import configured_command_env_names
+
+                    api_key_reference = branch.chat_model.endpoint.config.api_key_env
+                    parent_env = dict(os.environ)
+                    child_env = scrub_command_env(
+                        parent_env,
+                        declared_names=configured_command_env_names(
+                            active_reference_names=(api_key_reference,)
+                            if api_key_reference is not None
+                            else (),
+                        ),
+                        command_env_allowlist=_SUBSCRIPTION_ENV_ALLOWLIST,
+                    )
+                    # Names only, never values.
+                    env_removed = sorted(set(parent_env) - set(child_env))
                     subscription_model = build_chat_model(
                         _SUBSCRIPTION_FALLBACK_PROVIDER,
                         model,
@@ -2889,9 +2918,19 @@ async def _run_agent(
                         contain_account_integrations=contain_account_integrations,
                         workload=workload,
                         tool_settings={"tools": set_tools},
+                        env=child_env,
                     )
                     if isinstance(subscription_model, str):
                         subscription_model = iModel(model=subscription_model)
+                    # The endpoint says whether it took the environment: one with no child process
+                    # would leave it unread, and the CLI would then inherit this process's whole
+                    # environment. The run does not switch; it fails with the routing error.
+                    if "env" not in getattr(subscription_model.endpoint, "_runtime_state", {}):
+                        warn(
+                            "not moving to the subscription route because the Claude Code "
+                            "request did not take the child environment"
+                        )
+                        raise
                     api_model = branch.chat_model
                     parse_follows_chat = branch.parse_model is api_model
                     branch.chat_model = subscription_model
@@ -2923,6 +2962,9 @@ async def _run_agent(
                             # carries none.
                             "permission_mode": switched_permission_mode,
                             "sandbox_dropped": left_sandbox,
+                            # The sorted names, never the values, of the variables this process
+                            # held that the switched child's environment does not carry.
+                            "env_removed": env_removed,
                         },
                     )
                     if _write_run_manifest is not None:

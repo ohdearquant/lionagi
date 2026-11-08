@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -313,6 +314,7 @@ def build_chat_model(
     contain_account_integrations: bool = False,
     workload: str = DEFAULT_WORKLOAD,
     tool_settings: dict[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
 
@@ -320,7 +322,10 @@ def build_chat_model(
     given or derived (a codex request may derive one from the global config);
     any such setting needs an iModel to carry it. ``tool_settings`` is a profile's tool
     set (``_profile_tool_settings``): it goes on a Claude Code request, and any other model
-    is refused.
+    is refused. ``env`` is the whole environment a CLI provider's child process gets, in place
+    of a copy of this process's own; a copy of it goes on the request, and the caller checks
+    that the endpoint took it (``endpoint._runtime_state``), since an endpoint with no child
+    process would leave it unread.
     """
     from lionagi.service.connections.registry import EndpointRegistry
 
@@ -398,6 +403,8 @@ def build_chat_model(
         merged = dict(codex_profile_overrides)
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
+    if env is not None:
+        extra["env"] = dict(env)
 
     if extra or workload != DEFAULT_WORKLOAD or tool_settings:
         model_instance = iModel(
