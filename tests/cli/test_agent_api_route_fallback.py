@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -938,6 +939,63 @@ async def test_a_resumed_branch_is_not_moved_to_the_subscription_route(
     assert info.value.__cause__.code is RouterErrorCode.BUDGET_EXHAUSTED
     assert subscription.calls == []
     assert _fallback_notes(console_warnings) == []
+
+
+@pytest.mark.asyncio
+async def test_a_branch_that_moved_to_the_subscription_route_is_not_resumed(
+    leg, subscription, monkeypatch, tmp_path
+):
+    """The reduced environment the switched Claude Code process ran with is not saved with the
+    branch, so a restored branch would spawn Claude Code with this process's whole environment.
+    The saved branch records the move, and resuming it is refused before any turn runs."""
+    from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.runs import find_branch
+
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+    _, _, branch_id, _, _ = await leg.run(_PROFILE(api_tools="read"))
+    _, path = find_branch(branch_id)
+    saved = json.loads(path.read_text())["metadata"]
+    assert saved["subscription_switch"] == {"from": provider.MODEL}
+    assert "api_launch" not in saved
+
+    with pytest.raises(ConfigurationError, match="cannot be resumed"):
+        await leg.run(_PROFILE(api_tools="read"), "continue", resume=branch_id)
+    assert len(subscription.calls) == 1, "no turn ran on the resumed branch"
+
+
+@pytest.mark.asyncio
+async def test_unreadable_credential_settings_keep_the_run_on_the_api_route(
+    leg, subscription, console_warnings, monkeypatch, tmp_path
+):
+    """When the names to remove from the child environment cannot be read, the run does not move:
+    it prints why and fails with the routing error, not the settings error."""
+    import lionagi._command_env_metadata as metadata
+    from lionagi._errors import ConfigurationError
+
+    real = metadata.configured_command_env_names
+
+    def unreadable(**kwargs):
+        # Only the switch's own read fails; the launch reads the same names through the agent
+        # factory, which must still succeed for the first request to be sent and refused.
+        if sys._getframe(1).f_code.co_name == "_run_agent":
+            raise ConfigurationError("settings could not be read")
+        return real(**kwargs)
+
+    monkeypatch.setattr(metadata, "configured_command_env_names", unreadable)
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="read"))
+
+    assert isinstance(info.value.__cause__, AccountRoutingError)
+    assert info.value.__cause__.code is RouterErrorCode.BUDGET_EXHAUSTED
+    assert subscription.calls == []
+    assert "subscription_fallback" not in _manifest(tmp_path)
+    (note,) = _not_moving_notes(console_warnings)
+    assert "could not be read (ConfigurationError)" in note
+    assert leg.branch.chat_model.endpoint.config.provider == "anthropic"
 
 
 def test_li_agent_exits_zero_and_prints_the_subscription_answer(

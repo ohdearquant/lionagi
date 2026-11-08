@@ -152,6 +152,10 @@ _API_TOOL_SETS: dict[str, tuple[str, ...]] = {
 _API_CONFINED_TOOL_SETS = ("write",)
 # The tool set and round bound an API branch was launched with, read again on resume.
 _API_LAUNCH_KEY = "api_launch"
+# Set on a branch the subscription fallback moved to the Claude Code route. The child environment
+# that route was handed is runtime state and is not saved with the branch, so a restored branch
+# would spawn Claude Code with this process's whole environment; such a branch is not resumed.
+_SUBSCRIPTION_SWITCH_KEY = "subscription_switch"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
 _API_DEFAULT_MAX_EXTENSIONS = 10
 # The tool loops an API leg can run (`api_loop`): ReAct, the default, batched LNDL rounds
@@ -1852,6 +1856,13 @@ async def _run_agent(
         # reliable "reopened existing" vs "minting new" signal once that block runs.
         is_resumed_branch = branch is not None
 
+        if is_resumed_branch and branch.metadata.get(_SUBSCRIPTION_SWITCH_KEY):
+            raise ConfigurationError(
+                "this branch moved from the Anthropic API route to the subscription route, and "
+                "the reduced environment its Claude Code process ran with is not saved with the "
+                "branch; it cannot be resumed. Start a new branch."
+            )
+
         if is_resumed_branch and mcp_config is not None:
             launched = branch.metadata.get(_MCP_LAUNCH_KEY)
             if (
@@ -2887,34 +2898,46 @@ async def _run_agent(
                     from lionagi._command_env import scrub_command_env
                     from lionagi._command_env_metadata import configured_command_env_names
 
-                    api_key_reference = branch.chat_model.endpoint.config.api_key_env
-                    parent_env = dict(os.environ)
-                    child_env = scrub_command_env(
-                        parent_env,
-                        declared_names=configured_command_env_names(
-                            active_reference_names=(api_key_reference,)
-                            if api_key_reference is not None
-                            else (),
-                        ),
-                        command_env_allowlist=_SUBSCRIPTION_ENV_ALLOWLIST,
-                    )
-                    # Names only, never values.
-                    env_removed = sorted(set(parent_env) - set(child_env))
-                    # At spawn, the configured secret lookup fills each name it declares that the
-                    # child's environment lacks, which would put a removed credential back. Every
-                    # name the lookup declares is skipped for this child except Claude Code's own
-                    # login token, so the lookup adds nothing the API route's commands lacked.
-                    from lionagi.service.accounts._secret_resolution import (
-                        resolve_secret_lookup_config,
-                    )
+                    # A settings file that cannot be read leaves the names to remove unknown, so
+                    # the run does not move; it fails with the routing error.
+                    env_failure: str | None = None
+                    try:
+                        api_key_reference = branch.chat_model.endpoint.config.api_key_env
+                        parent_env = dict(os.environ)
+                        child_env = scrub_command_env(
+                            parent_env,
+                            declared_names=configured_command_env_names(
+                                active_reference_names=(api_key_reference,)
+                                if api_key_reference is not None
+                                else (),
+                            ),
+                            command_env_allowlist=_SUBSCRIPTION_ENV_ALLOWLIST,
+                        )
+                        # Names only, never values.
+                        env_removed = sorted(set(parent_env) - set(child_env))
+                        # At spawn, the configured secret lookup fills each name it declares that the
+                        # child's environment lacks, which would put a removed credential back. Every
+                        # name the lookup declares is skipped for this child except Claude Code's own
+                        # login token, so the lookup adds nothing the API route's commands lacked.
+                        from lionagi.service.accounts._secret_resolution import (
+                            resolve_secret_lookup_config,
+                        )
 
-                    lookup = resolve_secret_lookup_config().lookup
-                    kept = {name.upper() for name in _SUBSCRIPTION_ENV_ALLOWLIST}
-                    secret_fill_skip = frozenset(
-                        name
-                        for name in (() if lookup is None else lookup.names)
-                        if name.upper() not in kept
-                    )
+                        lookup = resolve_secret_lookup_config().lookup
+                        kept = {name.upper() for name in _SUBSCRIPTION_ENV_ALLOWLIST}
+                        secret_fill_skip = frozenset(
+                            name
+                            for name in (() if lookup is None else lookup.names)
+                            if name.upper() not in kept
+                        )
+                    except Exception as env_exc:  # noqa: BLE001 — the run stays where it is
+                        env_failure = type(env_exc).__name__
+                    if env_failure is not None:
+                        warn(
+                            "not moving to the subscription route because the credential names "
+                            f"to remove from its environment could not be read ({env_failure})"
+                        )
+                        raise
                     subscription_model = build_chat_model(
                         _SUBSCRIPTION_FALLBACK_PROVIDER,
                         model,
@@ -2959,6 +2982,12 @@ async def _run_agent(
                         branch.parse_model = subscription_model
                     # The branch now runs a CLI provider, which carries no API tool-loop record.
                     branch.metadata.pop(_API_LAUNCH_KEY, None)
+                    branch.metadata[_SUBSCRIPTION_SWITCH_KEY] = {"from": original_spec}
+                    # The API turn saved the branch before this move; save it again, so that the
+                    # branch a resume would read already records the move.
+                    from lionagi.operations.run.run import _write_branch_snapshot
+
+                    await _write_branch_snapshot(branch, str(run.branches_dir))
                     await api_model.close()
                     provider = _SUBSCRIPTION_FALLBACK_PROVIDER
                     effort = resolve_persisted_effort(
