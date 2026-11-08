@@ -120,6 +120,15 @@ _API_ACCOUNT_ENV = "LIONAGI_API_ACCOUNT"
 # The provider an Anthropic API run moves to when the account router refuses its first request:
 # the Claude subscription route, which takes the same model id.
 _SUBSCRIPTION_FALLBACK_PROVIDER = "claude_code"
+# The Claude Code built-in tools that stand for an API tool set's own, so a run that moves to the
+# subscription route keeps the capability it had and gains none. The read set's `reader` is Read,
+# and its `search` greps (Grep) and finds files by name (Glob); its `context` tool manages the
+# API model's own window and has no built-in counterpart. The write set adds its editor (Edit,
+# Write) and bash (Bash).
+_SUBSCRIPTION_API_SET_TOOLS: dict[str, str] = {
+    "read": "Read,Grep,Glob",
+    "write": "Read,Grep,Glob,Edit,Write,Bash",
+}
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
 _NO_PERSISTED_EXECUTION = object()
@@ -2794,6 +2803,16 @@ async def _run_agent(
 
                     original_spec = f"{provider}/{model}"
                     fallback_spec = f"{_SUBSCRIPTION_FALLBACK_PROVIDER}/{model}"
+                    # The CLI has every built-in tool unless the request names some, so the
+                    # run names the tools of the set it ran with on the API route; a
+                    # profile's own `tools` list stays what it declared.
+                    fallback_tool_settings = dict(tool_settings)
+                    set_tools = _SUBSCRIPTION_API_SET_TOOLS.get(api_launch["tools"])
+                    if set_tools is not None and "tools" not in fallback_tool_settings:
+                        fallback_tool_settings["tools"] = set_tools
+                    # Only the API route's editor and bash run under the macOS sandbox;
+                    # Claude Code has no filesystem sandbox of its own and nothing here adds one.
+                    left_sandbox = api_launch["tools"] in _API_CONFINED_TOOL_SETS
                     subscription_model = build_chat_model(
                         _SUBSCRIPTION_FALLBACK_PROVIDER,
                         model,
@@ -2803,12 +2822,15 @@ async def _run_agent(
                         requested_effort,
                         fast,
                         bypass,
-                        mcp_servers=mcp_resolution.servers,
-                        mcp_exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
+                        # The API leg was handed no MCP server, so this one gets none either:
+                        # an empty set that is the whole set keeps the CLI from loading any
+                        # config of its own.
+                        mcp_servers={},
+                        mcp_exclusive=True,
                         account_connectors=account_connectors,
                         contain_account_integrations=contain_account_integrations,
                         workload=workload,
-                        tool_settings=tool_settings,
+                        tool_settings=fallback_tool_settings,
                     )
                     if isinstance(subscription_model, str):
                         subscription_model = iModel(model=subscription_model)
@@ -2834,6 +2856,10 @@ async def _run_agent(
                             "original_model": original_spec,
                             "model_used": fallback_spec,
                             "refusal_code": refusal.code.value,
+                            # The `--tools` value the switched leg runs with; null when it
+                            # runs with every built-in tool.
+                            "tools": subscription_model.endpoint.config.kwargs.get("tools"),
+                            "sandbox_dropped": left_sandbox,
                         },
                     )
                     if _write_run_manifest is not None:
@@ -2854,10 +2880,20 @@ async def _run_agent(
                                 f"could not record the subscription route on the session: "
                                 f"{record_exc!r}"
                             )
+                    # The code after this block needs these three None: the `if _api_turn is None:`
+                    # turn, the steer routing (`run_turn=_api_turn`) and the context-fold
+                    # manifest write.
                     api_launch = _api_turn = _api_fold = None
                     warn(
                         f"the Anthropic API route refused the first request "
                         f"({refusal.code.value}); continuing on {fallback_spec}"
+                        + (
+                            ". The write set's editor and bash ran under the macOS sandbox on the "
+                            "API route; Claude Code has no filesystem sandbox, so on this route "
+                            "its commands run without that confinement"
+                            if left_sandbox
+                            else ""
+                        )
                     )
             if _api_turn is None:
                 res = await branch.operate(

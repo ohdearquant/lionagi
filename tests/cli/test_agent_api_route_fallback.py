@@ -24,6 +24,7 @@ from lionagi._errors import ExecutionError
 from lionagi.service._api_telemetry import record_selected_attempt
 from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
 from lionhub.orchestration.console import _WARN_LOGGER_NAME
+from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 from tests.cli import test_agent_api_provider as provider
 from tests.cli.test_agent_api_account_record import _TEAM_B, _settings
@@ -35,6 +36,16 @@ FALLBACK_MODEL = "claude_code/claude-haiku-5-5"
 _PROFILE = provider._profile
 
 
+def _cli_args(kwargs: dict) -> list[str]:
+    """The command line the Claude Code CLI would be started with for a model's request kwargs."""
+    return ClaudeCodeRequest(prompt="x", **kwargs).as_cmd_args()
+
+
+def _flag_value(args: list[str], flag: str) -> str | None:
+    """The value after *flag*, None when the flag is absent."""
+    return args[args.index(flag) + 1] if flag in args else None
+
+
 @pytest.fixture
 def subscription(monkeypatch):
     """The subscription route's turn: what `Branch.operate` is handed and what it answers."""
@@ -44,11 +55,14 @@ def subscription(monkeypatch):
 
     async def operate(self, instruction=None, **kw):
         config = self.chat_model.endpoint.config
+        args = _cli_args(config.kwargs)
         seen.calls.append(
             SimpleNamespace(
                 instruction=instruction,
                 provider=config.provider,
                 model=config.kwargs.get("model"),
+                cli_args=args,
+                cli_tools=_flag_value(args, "--tools"),
             )
         )
         return ANSWER
@@ -123,6 +137,8 @@ async def test_a_first_request_refusal_continues_on_the_subscription_route(
         "original_model": provider.MODEL,
         "model_used": FALLBACK_MODEL,
         "refusal_code": code.value,
+        "tools": "Read,Grep,Glob",
+        "sandbox_dropped": False,
     }
     assert not {"prompt_caching", "tool_result_max_chars", "context_fold"} & set(manifest)
     (note,) = _fallback_notes(console_warnings)
@@ -130,6 +146,115 @@ async def test_a_first_request_refusal_continues_on_the_subscription_route(
     assert "api_launch" not in leg.branch.metadata
     assert leg.branch.chat_model.endpoint.config.provider == "claude_code"
     assert leg.branch.parse_model is leg.branch.chat_model
+
+
+@pytest.mark.asyncio
+async def test_a_read_set_run_continues_with_only_the_read_tools(
+    leg, subscription, console_warnings, monkeypatch, tmp_path
+):
+    """The API route gave the read set's tools and nothing that writes; the subscription route's
+    CLI keeps every built-in tool unless the request names some, so the request names the reads."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="read"))
+
+    (turn,) = subscription.calls
+    assert turn.cli_tools == "Read,Grep,Glob"
+    (note,) = _fallback_notes(console_warnings)
+    assert "sandbox" not in note
+    record = _manifest(tmp_path)["subscription_fallback"]
+    assert record["tools"] == "Read,Grep,Glob"
+    assert record["sandbox_dropped"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_profile_that_names_its_own_tools_keeps_them_on_the_subscription_route(
+    leg, subscription, monkeypatch, tmp_path
+):
+    """The API route refuses a profile's `tools` when the run launches, so the first model is let
+    through here to reach the switch with the profile's own list in hand."""
+    import lionagi.cli.agent as agent_mod
+
+    build_chat_model = agent_mod.build_chat_model
+
+    def launch_then_switch(provider_name, *args, **kwargs):
+        if provider_name == "anthropic":
+            kwargs["tool_settings"] = None
+        return build_chat_model(provider_name, *args, **kwargs)
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", launch_then_switch)
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="read", tools=["Read", "Grep"]))
+
+    (turn,) = subscription.calls
+    assert turn.cli_tools == "Read,Grep"
+
+
+@pytest.fixture
+def seatbelt(monkeypatch, tmp_path):
+    """The macOS sandbox the write set needs is reported available, as on a Mac."""
+    from lionagi.tools import _seatbelt
+
+    monkeypatch.setattr(_seatbelt, "seatbelt_available", lambda: True)
+    monkeypatch.setattr(
+        _seatbelt, "_uv_cache_dir", lambda *, _command_env_names=None: tmp_path / "uv-cache"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_write_set_run_continues_with_the_tools_its_api_set_had(
+    leg, subscription, seatbelt, monkeypatch, tmp_path
+):
+    """The API write set had a reader, search, an editor and bash; the switched leg names the
+    built-ins that stand for them, and run.json records that and the dropped sandbox."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="write"))
+
+    (turn,) = subscription.calls
+    assert turn.cli_tools == "Read,Grep,Glob,Edit,Write,Bash"
+    record = _manifest(tmp_path)["subscription_fallback"]
+    assert record["tools"] == "Read,Grep,Glob,Edit,Write,Bash"
+    assert record["sandbox_dropped"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_write_set_run_is_told_the_subscription_route_has_no_sandbox(
+    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path
+):
+    """The write set's editor and bash ran under the macOS sandbox on the API route; nothing on
+    the subscription route confines them, and the one warning line says so."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    result, provider_used, _, status, _ = await leg.run(_PROFILE(api_tools="write"))
+
+    assert (result, provider_used, status) == (ANSWER, "claude_code", "completed")
+    (note,) = _fallback_notes(console_warnings)
+    assert FALLBACK_MODEL in note
+    assert "macOS sandbox" in note and "no filesystem sandbox" in note
+
+
+@pytest.mark.asyncio
+async def test_the_switched_run_is_handed_no_mcp_server(leg, subscription, monkeypatch, tmp_path):
+    """The API leg was handed no MCP server. A server the project configures is not handed to the
+    switched leg either, and the CLI is kept from loading a config of its own."""
+    (leg.workspace / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"notes": {"command": "notes-server"}}})
+    )
+    monkeypatch.chdir(leg.workspace)
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    await leg.run(_PROFILE(api_tools="read"))
+
+    (turn,) = subscription.calls
+    assert "--strict-mcp-config" in turn.cli_args
+    assert json.loads(_flag_value(turn.cli_args, "--mcp-config")) == {"mcpServers": {}}
 
 
 @pytest.mark.asyncio
