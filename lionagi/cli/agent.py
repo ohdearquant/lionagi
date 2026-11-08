@@ -8,6 +8,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -134,6 +135,27 @@ _SUBSCRIPTION_API_SET_TOOLS: dict[str, str] = {
 # from its environment. Every API key name is removed from the switched child's environment, so
 # that no key is billed in place of the subscription.
 _SUBSCRIPTION_ENV_ALLOWLIST: tuple[str, ...] = ("CLAUDE_CODE_OAUTH_TOKEN",)
+# A workspace root a Claude Code permission rule can carry literally: an absolute path of
+# letters, digits, `.`, `_`, `-` and `/` only. Any other character (a glob character, a
+# parenthesis, whitespace) would change what the rule matches or how it parses, so a run
+# whose root has one does not move.
+_SUBSCRIPTION_RULE_ROOT = re.compile(r"/[A-Za-z0-9._/-]+")
+
+
+def _subscription_read_rules(tools: str, cwd: str | None) -> tuple[str, list[str]] | None:
+    """The run's workspace root and the permission rules that grant each of *tools* (a
+    ``--tools`` value) only under it, or None when the root cannot be written as a rule.
+
+    The root is the one the API read set's ``guard_paths`` holds its reader to: *cwd*, or the
+    process's working directory, resolved. ``//`` begins an absolute path in a Claude Code
+    rule, and ``/**`` matches everything below it.
+    """
+    root = str(Path(cwd if cwd else Path.cwd()).expanduser().resolve(strict=False))
+    if not _SUBSCRIPTION_RULE_ROOT.fullmatch(root):
+        return None
+    return root, [f"{tool}(/{root}/**)" for tool in tools.split(",")]
+
+
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
 _NO_PERSISTED_EXECUTION = object()
@@ -2876,6 +2898,18 @@ async def _run_agent(
                             f"moves, and this run has the {api_launch['tools']} set"
                         )
                         raise
+                    # The API read set's reader is held to the workspace root, while Claude
+                    # Code's Read, Grep and Glob read anywhere this account can. The switched
+                    # run is granted each tool only under that root, and `dontAsk` refuses every
+                    # call no rule grants. A root that a rule cannot carry literally does not move.
+                    read_grant = _subscription_read_rules(set_tools, cwd)
+                    if read_grant is None:
+                        warn(
+                            "not moving to the subscription route because the working "
+                            "directory's path cannot be written as a Claude Code permission rule"
+                        )
+                        raise
+                    workspace_root, read_rules = read_grant
                     from lionagi.service.imodel import iModel
 
                     original_spec = f"{provider}/{model}"
@@ -2951,8 +2985,14 @@ async def _run_agent(
                         contain_account_integrations=contain_account_integrations,
                         workload=workload,
                         # No user, project or local Claude Code settings are read, so their
-                        # hooks, permission rules and plugins do not reach the switched leg.
-                        tool_settings={"tools": set_tools, "setting_sources": ""},
+                        # hooks, permission rules and plugins do not reach the switched leg, and
+                        # the only rules it runs under are the workspace grants.
+                        tool_settings={
+                            "tools": set_tools,
+                            "allowed_tools": read_rules,
+                            "permission_mode": "dontAsk",
+                            "setting_sources": "",
+                        },
                         env=child_env,
                         secret_fill_skip=secret_fill_skip,
                     )
@@ -2970,6 +3010,18 @@ async def _run_agent(
                         warn(
                             "not moving to the subscription route because the Claude Code "
                             "request did not take the child environment"
+                        )
+                        raise
+                    # Without `dontAsk` and the workspace grants, the CLI's own defaults would
+                    # decide where its reads reach, so the run does not switch.
+                    granted = subscription_model.endpoint.config.kwargs
+                    if (
+                        granted.get("permission_mode") != "dontAsk"
+                        or list(granted.get("allowed_tools") or ()) != read_rules
+                    ):
+                        warn(
+                            "not moving to the subscription route because the Claude Code "
+                            "request did not take the workspace permission rules"
                         )
                         raise
                     api_model = branch.chat_model
@@ -3004,6 +3056,10 @@ async def _run_agent(
                             # The `--tools` value the switched leg runs with; null when it
                             # runs with every built-in tool.
                             "tools": switched_kwargs.get("tools"),
+                            # The rules granting those tools under the workspace root, and the
+                            # permission mode that refuses every call they do not grant.
+                            "allowed_tools": switched_kwargs.get("allowed_tools"),
+                            "permission_mode": switched_kwargs.get("permission_mode"),
                             # The sorted names, never the values, of the variables this process
                             # held that the switched child's environment does not carry.
                             "env_removed": env_removed,
@@ -3037,12 +3093,9 @@ async def _run_agent(
                         f"the Anthropic API route refused the first request "
                         f"({refusal.code.value}); continuing on {fallback_spec}"
                     ]
-                    # The API route's reader paths are held to the workspace root by
-                    # `guard_paths` and by each tool's own path resolution, and its search tool
-                    # by that resolution; Claude Code's tools are held to no such root here.
                     warning.append(
-                        "Claude Code's tools are not confined to the working directory the "
-                        "way the API route's tools were"
+                        f"Claude Code's {', '.join(set_tools.split(','))} are granted only under "
+                        f"{workspace_root}, and every other tool call is refused"
                     )
                     warn(". ".join(warning))
             if _api_turn is None:

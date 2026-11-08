@@ -223,6 +223,10 @@ async def test_a_first_request_refusal_continues_on_the_subscription_route(
         "model_used": FALLBACK_MODEL,
         "refusal_code": code.value,
         "tools": "Read,Grep,Glob",
+        "allowed_tools": [
+            f"{tool}(/{leg.workspace.resolve()}/**)" for tool in ("Read", "Grep", "Glob")
+        ],
+        "permission_mode": "dontAsk",
     }
     assert not {"prompt_caching", "tool_result_max_chars", "context_fold"} & set(manifest)
     (note,) = _fallback_notes(console_warnings)
@@ -391,6 +395,15 @@ async def test_a_read_set_run_continues_with_only_the_read_tools(
     # No user, project or local Claude Code settings are read by the switched leg.
     assert "--setting-sources" in turn.cli_args
     assert turn.cli_args[turn.cli_args.index("--setting-sources") + 1] == ""
+    # Each read tool is granted only under the workspace root the API reader was held to, and
+    # every call no rule grants is refused.
+    root = str(leg.workspace.resolve())
+    rules = [f"Read(/{root}/**)", f"Grep(/{root}/**)", f"Glob(/{root}/**)"]
+    start = turn.cli_args.index("--allowedTools") + 1
+    assert turn.cli_args[start : start + 3] == rules
+    assert _flag_value(turn.cli_args, "--permission-mode") == "dontAsk"
+    assert record["allowed_tools"] == rules
+    assert record["permission_mode"] == "dontAsk"
 
 
 @pytest.fixture
@@ -542,8 +555,8 @@ async def test_a_switch_whose_request_drops_the_fill_skip_set_does_not_happen(
 async def test_a_read_set_run_switches_without_a_permission_bypass(
     leg, subscription, console_warnings, monkeypatch, tmp_path, flag
 ):
-    """Claude Code's Read, Grep and Glob need no approval, so the read set's switch carries no
-    permission bypass even when the run was started with `yolo` or `bypass`."""
+    """The read set's switch carries no permission bypass even when the run was started with
+    `yolo` or `bypass`: it runs in `dontAsk`, which refuses every call its rules do not grant."""
     _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
     _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
 
@@ -551,25 +564,26 @@ async def test_a_read_set_run_switches_without_a_permission_bypass(
 
     (turn,) = subscription.calls
     assert "--dangerously-skip-permissions" not in turn.cli_args
-    assert "--permission-mode" not in turn.cli_args
-    assert "permission_mode" not in _manifest(tmp_path)["subscription_fallback"]
+    assert _flag_value(turn.cli_args, "--permission-mode") == "dontAsk"
+    assert _manifest(tmp_path)["subscription_fallback"]["permission_mode"] == "dontAsk"
     (note,) = _fallback_notes(console_warnings)
     assert "without asking" not in note
 
 
 @pytest.mark.asyncio
-async def test_the_warning_says_the_tools_are_not_confined_to_the_working_directory(
+async def test_the_warning_names_the_root_the_read_tools_are_granted_under(
     leg, subscription, console_warnings, monkeypatch, tmp_path
 ):
-    """The API route's reader and search paths are held to the workspace root; Claude Code's
-    tools are not, and the switched run is told so."""
+    """The switched run is told where its read tools reach and that every other call is
+    refused."""
     _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
     _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
 
     await leg.run(_PROFILE(api_tools="read"))
 
     (note,) = _fallback_notes(console_warnings)
-    assert "not confined to the working directory" in note
+    assert f"Read, Grep, Glob are granted only under {leg.workspace.resolve()}" in note
+    assert "every other tool call is refused" in note
 
 
 def test_only_sets_without_a_sandbox_move_to_the_subscription_route():
@@ -675,6 +689,88 @@ async def test_a_switch_whose_request_does_not_take_the_child_environment_does_n
     (note,) = _not_moving_notes(console_warnings)
     assert "child environment" in note
     assert leg.branch.chat_model.endpoint.config.provider == "anthropic"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dropped", ["permission_mode", "allowed_tools"])
+async def test_a_switch_whose_request_drops_the_workspace_permission_rules_does_not_happen(
+    leg, subscription, console_warnings, monkeypatch, tmp_path, dropped
+):
+    """Without `dontAsk` and the workspace grants, the CLI's own defaults would decide where
+    its reads reach. The run does not switch: it prints one warning saying why, fails with the
+    routing error, and the branch keeps its API model."""
+    import lionagi.cli.agent as agent_mod
+
+    build_chat_model = agent_mod.build_chat_model
+
+    def build_without_the_rule(*args, **kwargs):
+        model = build_chat_model(*args, **kwargs)
+        endpoint = getattr(model, "endpoint", None)
+        if endpoint is not None:
+            endpoint.config.kwargs.pop(dropped, None)
+        return model
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", build_without_the_rule)
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="read"))
+
+    _assert_stays_on_the_api_route(
+        info, RouterErrorCode.BUDGET_EXHAUSTED, leg, subscription, console_warnings, tmp_path
+    )
+    (note,) = _not_moving_notes(console_warnings)
+    assert "workspace permission rules" in note
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_whose_path_a_rule_cannot_carry_does_not_move(
+    leg, subscription, console_warnings, monkeypatch, tmp_path
+):
+    """A space in the workspace path would change how the permission rule parses, so the run
+    stays on the API route and says why."""
+    import lionagi.cli.agent as agent_mod
+
+    spaced = tmp_path / "work space"
+    spaced.mkdir()
+    profile = _PROFILE(api_tools="read")
+    monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: profile)
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    with pytest.raises(ExecutionError) as info:
+        await agent_mod._run_agent(
+            provider.MODEL, "what do the notes say?", agent_name=profile.name, cwd=str(spaced)
+        )
+
+    _assert_stays_on_the_api_route(
+        info, RouterErrorCode.BUDGET_EXHAUSTED, leg, subscription, console_warnings, tmp_path
+    )
+    (note,) = _not_moving_notes(console_warnings)
+    assert "permission rule" in note
+
+
+@pytest.mark.parametrize(
+    "root", ["/work space", "/work/*", "/work/[ab]", "/work/a(b)", "/work/a?", "/work/~a", "/"]
+)
+def test_a_root_with_any_character_a_rule_reads_specially_gets_no_rules(root):
+    from lionagi.cli.agent import _subscription_read_rules
+
+    assert _subscription_read_rules("Read,Grep,Glob", root) is None
+
+
+def test_the_rules_name_the_resolved_workspace_root(tmp_path, monkeypatch):
+    from lionagi.cli.agent import _subscription_read_rules
+
+    (tmp_path / "ws").mkdir()
+    monkeypatch.chdir(tmp_path)
+    root = str((tmp_path / "ws").resolve())
+    expected = (root, [f"Read(/{root}/**)", f"Grep(/{root}/**)", f"Glob(/{root}/**)"])
+
+    assert _subscription_read_rules("Read,Grep,Glob", "ws/../ws") == expected
+    monkeypatch.chdir(tmp_path / "ws")
+    assert _subscription_read_rules("Read,Grep,Glob", None) == expected
 
 
 @pytest.mark.asyncio
