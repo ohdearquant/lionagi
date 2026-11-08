@@ -117,6 +117,9 @@ _PRESET_CHOICES = ("coding",)
 # in lionagi/config.py), so a mixed-case value or one containing "sk-ant" is refused. This field
 # also refuses one starting "sk-", which that rule admits.
 _API_ACCOUNT_ENV = "LIONAGI_API_ACCOUNT"
+# The provider an Anthropic API run moves to when the account router refuses its first request:
+# the Claude subscription route, which takes the same model id.
+_SUBSCRIPTION_FALLBACK_PROVIDER = "claude_code"
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
 _NO_PERSISTED_EXECUTION = object()
@@ -1488,6 +1491,41 @@ def _admission_refusal(exc: BaseException) -> SubagentAdmissionRefusedError | No
     return None
 
 
+def _first_request_route_refusal(exc: BaseException, branch, usage) -> Exception | None:
+    """The account router's refusal when *exc* is or wraps one that ended the run's first
+    request before it left the process, else None.
+
+    The router refuses a request with ``budget_exhausted`` or ``account_blocked`` when every
+    configured account is out of budget or blocked, and the Branch re-raises the failed call
+    as an ``ExecutionError`` caused by that refusal. The code alone does not say nothing was
+    sent, because settling a response can also raise ``budget_exhausted``. So the refusal
+    counts only when the run's usage record shows no request ever had an account selected
+    and the branch holds no provider reply: no request reached the provider, and no earlier
+    reply exists whose conversation would have to move with it.
+    """
+    from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+
+    refusal: AccountRoutingError | None = None
+    cause: BaseException | None = exc
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        if isinstance(cause, AccountRoutingError):
+            refusal = cause
+            break
+        seen.add(id(cause))
+        cause = cause.__cause__
+    if refusal is None or refusal.code not in (
+        RouterErrorCode.BUDGET_EXHAUSTED,
+        RouterErrorCode.ACCOUNT_BLOCKED,
+    ):
+        return None
+    if usage is None or any(row["selected_attempts"] for row in usage.snapshot()["requests"]):
+        return None
+    if any(isinstance(m, AssistantResponse) for m in branch.msgs.messages):
+        return None
+    return refusal
+
+
 def _read_api_account() -> str | None:
     """The account name in ``LIONAGI_API_ACCOUNT`` (ADR-0126 Amendment 4), None when it is unset.
 
@@ -2742,8 +2780,86 @@ async def _run_agent(
                 )
                 if _write_run_manifest is not None:
                     _write_run_manifest(run_manifest)
-                res = await _api_turn(prompt, timeout)
-            else:
+                try:
+                    res = await _api_turn(prompt, timeout)
+                except Exception as refused:
+                    # The router refused the run's first request before anything was sent, so
+                    # the same model is asked on the subscription route, at most once. Every
+                    # other failure, and a refusal after a reply, ends the run as it did.
+                    refusal = _first_request_route_refusal(refused, branch, _api_usage)
+                    if refusal is None or is_resumed_branch or canonical != "anthropic":
+                        raise
+                    from lionagi.service.imodel import iModel
+                    from lionhub.orchestration.console import warn
+
+                    original_spec = f"{provider}/{model}"
+                    fallback_spec = f"{_SUBSCRIPTION_FALLBACK_PROVIDER}/{model}"
+                    subscription_model = build_chat_model(
+                        _SUBSCRIPTION_FALLBACK_PROVIDER,
+                        model,
+                        yolo,
+                        verbose,
+                        theme,
+                        requested_effort,
+                        fast,
+                        bypass,
+                        mcp_servers=mcp_resolution.servers,
+                        mcp_exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
+                        account_connectors=account_connectors,
+                        contain_account_integrations=contain_account_integrations,
+                        workload=workload,
+                        tool_settings=tool_settings,
+                    )
+                    if isinstance(subscription_model, str):
+                        subscription_model = iModel(model=subscription_model)
+                    api_model = branch.chat_model
+                    parse_follows_chat = branch.parse_model is api_model
+                    branch.chat_model = subscription_model
+                    if parse_follows_chat:
+                        branch.parse_model = subscription_model
+                    # The branch now runs a CLI provider, which carries no API tool-loop record.
+                    branch.metadata.pop(_API_LAUNCH_KEY, None)
+                    await api_model.close()
+                    provider = _SUBSCRIPTION_FALLBACK_PROVIDER
+                    effort = resolve_persisted_effort(
+                        provider, subscription_model, requested_effort
+                    )
+                    resolved_model_spec = _provenance.resolve_model_spec(provider, model)
+                    for api_only in ("prompt_caching", "tool_result_max_chars", "context_fold"):
+                        run_manifest.pop(api_only, None)
+                    run_manifest.update(
+                        provider=provider,
+                        model=resolved_model_spec,
+                        subscription_fallback={
+                            "original_model": original_spec,
+                            "model_used": fallback_spec,
+                            "refusal_code": refusal.code.value,
+                        },
+                    )
+                    if _write_run_manifest is not None:
+                        _write_run_manifest(run_manifest)
+                    if live is not None and live.get("db") is not None:
+                        try:
+                            await live["db"].update_session(
+                                live["session_id"],
+                                model=resolved_model_spec,
+                                provider=provider,
+                                effort=effort,
+                            )
+                            await live["db"].update_branch(
+                                branch_id, model=resolved_model_spec, provider=provider
+                            )
+                        except Exception as record_exc:  # noqa: BLE001 — the run goes on
+                            log_error(
+                                f"could not record the subscription route on the session: "
+                                f"{record_exc!r}"
+                            )
+                    api_launch = _api_turn = _api_fold = None
+                    warn(
+                        f"the Anthropic API route refused the first request "
+                        f"({refusal.code.value}); continuing on {fallback_spec}"
+                    )
+            if _api_turn is None:
                 res = await branch.operate(
                     instruction=prompt,
                     stream_persist=True,
