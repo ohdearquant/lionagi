@@ -114,8 +114,8 @@ async def _wait_for_session_count(db_path: Path, expected: int) -> list[dict]:
 
 def test_mirror_forever_writes_session_then_stops(tmp_path, monkeypatch):
     """A fresh transcript is mirrored to a live (running) session; stop ends the loop."""
-    import lionagi.cli._mirror_service as service_mod
     import lionagi.state.db as state_db_mod
+    import lionhub.serve.mirror as service_mod
 
     db_path = tmp_path / "state.db"
     root = tmp_path / "claude_projects"
@@ -184,8 +184,8 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
     selector a test (or any embedder) that carefully points the mirror at its own
     directory would still walk the machine's whole codex rollout corpus.
     """
-    import lionagi.cli._mirror_service as service_mod
     import lionagi.state.db as state_db_mod
+    import lionhub.serve.mirror as service_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -293,7 +293,7 @@ def test_start_claude_mirror_respects_flag(monkeypatch):
         seen.update(kwargs)
         await stop.wait()
 
-    monkeypatch.setattr("lionagi.cli._mirror_service.mirror_forever", _fake_forever)
+    monkeypatch.setattr("lionhub.serve.mirror.mirror_forever", _fake_forever)
 
     async def _on() -> None:
         stop, task = app_mod._start_claude_mirror()
@@ -312,10 +312,10 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
     makes both decoys land in the fresh profile DB, even though the lower-level
     mirror already supports scoped roots.
     """
-    import lionagi.cli._mirror_service as service_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.mirror as service_mod
 
     isolated_home = tmp_path / "isolated-profile"
     db_path = isolated_home / "state.db"
@@ -364,10 +364,10 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
 
 def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
     """Custom Claude and Codex roots remain an explicit isolated-profile opt-in."""
-    import lionagi.cli._mirror_service as service_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.mirror as service_mod
 
     isolated_home = tmp_path / "isolated-profile"
     db_path = isolated_home / "state.db"
@@ -458,7 +458,7 @@ def test_studio_mirror_startup_error_does_not_expose_transcript_data(tmp_path, m
     async def _boom(stop, **kwargs):
         raise RuntimeError(f"{secret_path}: {secret_content}")
 
-    monkeypatch.setattr("lionagi.cli._mirror_service.mirror_forever", _boom)
+    monkeypatch.setattr("lionhub.serve.mirror.mirror_forever", _boom)
 
     async def _body() -> None:
         stop, task = app_mod._start_claude_mirror()

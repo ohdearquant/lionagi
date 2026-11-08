@@ -350,8 +350,8 @@ async def _make_session_with_id(db: StateDB, sid: str, *, status: str = "running
 
 
 async def test_resolve_wait_target_rejects_ambiguous_prefix(temp_db_path: Path) -> None:
-    from lionagi.cli._util import AmbiguousIdError
     from lionagi.cli.wait import _resolve_wait_target
+    from lionhub.orchestration.job import AmbiguousIdError
 
     async with StateDB() as db:
         first = await _make_session_with_id(db, "abcde01")

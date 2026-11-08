@@ -4,7 +4,7 @@
 """Regression: Codex's thread.started event carries "thread_id", not
 "session_id" — run.py's engine-session-id capture (used to link a
 profile-typed agent session to its claude/codex-mirror engine session at
-teardown, see lionagi/cli/_runs.py) only reads chunk.metadata["session_id"].
+teardown, see lionhub/src/lionhub/orchestration/runs.py) only reads chunk.metadata["session_id"].
 Without normalizing the system chunk's metadata, teardown always sees
 engine_session_uid=None for Codex and the linked-engine reconciliation path
 never runs."""

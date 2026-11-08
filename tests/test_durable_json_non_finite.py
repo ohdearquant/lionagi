@@ -21,26 +21,10 @@ from pathlib import Path
 
 import pytest
 
-CONTROL = {"finite": 1.5, "negative": -0.25, "zero": 0.0, "absent": None}
-
-
-def _assert_control_roundtrip(path):
-    """The control payload survived the write byte-for-value."""
-    loaded = json.loads(path.read_text())
-    assert loaded["payload"] == CONTROL
-
-
-def test_run_manifest_writer_refuses_non_finite(tmp_path):
-    from lionagi.cli._runs import _atomic_write_json
-
-    target = tmp_path / "run.json"
-
-    with pytest.raises(ValueError, match=r"non-finite float at \$\.usage\.cost"):
-        _atomic_write_json(target, {"usage": {"cost": float("inf")}})
-    assert not target.exists()
-
-    _atomic_write_json(target, {"payload": CONTROL})
-    _assert_control_roundtrip(target)
+from tests._runs_checkpoint_json_test_support import CONTROL as CONTROL
+from tests._runs_checkpoint_json_test_support import (
+    _assert_control_roundtrip as _assert_control_roundtrip,
+)
 
 
 def test_orchestration_branch_snapshot_refuses_non_finite(tmp_path):
@@ -61,53 +45,6 @@ def test_orchestration_branch_snapshot_refuses_non_finite(tmp_path):
 
     _write_branch_snapshot(target, _Branch({"payload": CONTROL}))
     _assert_control_roundtrip(target)
-
-
-async def test_flow_checkpoint_refuses_non_finite(tmp_path):
-    from lionagi.cli.orchestrate._checkpoint import CheckpointWriter
-
-    def _writer(ops):
-        return CheckpointWriter(
-            path=tmp_path / "checkpoint.json",
-            session_id="s",
-            prompt="p",
-            plan=[],
-            config={},
-            ops=ops,
-        )
-
-    bad = _writer({"a": {"agent_id": "a", "status": "done", "response": {"score": float("-inf")}}})
-    with pytest.raises(ValueError, match=r"non-finite float at \$\.ops\.a\.response\.score"):
-        await bad.flush()
-    assert not (tmp_path / "checkpoint.json").exists()
-
-    good = _writer({"a": {"agent_id": "a", "status": "done", "response": CONTROL}})
-    await good.flush()
-    written = json.loads((tmp_path / "checkpoint.json").read_text())
-    assert written["ops"]["a"]["response"] == CONTROL
-
-
-async def test_flow_checkpoint_checks_the_stringified_dataclass(tmp_path):
-    from lionagi.cli.orchestrate._checkpoint import CheckpointWriter
-
-    @dataclass
-    class Response:
-        score: float
-
-    response = Response(score=float("nan"))
-    writer = CheckpointWriter(
-        path=tmp_path / "checkpoint.json",
-        session_id="s",
-        prompt="p",
-        plan=[],
-        config={},
-        ops={"a": {"agent_id": "a", "status": "done", "response": response}},
-    )
-
-    await writer.flush()
-
-    written = json.loads((tmp_path / "checkpoint.json").read_text())
-    assert written["ops"]["a"]["response"] == str(response)
 
 
 def test_team_inbox_refuses_non_finite(tmp_path):
@@ -192,37 +129,6 @@ def test_job_record_refuses_non_finite(tmp_path, monkeypatch):
     assert json.loads(target.read_text())["pid_create_time"] is None
 
 
-@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
-def test_mcp_config_read_refuses_non_standard_json_constants(tmp_path, token):
-    """The three tokens cannot enter the resolved server map at all.
-
-    ``json.loads`` accepts them by default — they are a Python extension, not
-    JSON — so a config carrying one would otherwise resolve to a Python float and
-    be re-emitted into the snapshot the child is handed. The refusal names the
-    file an operator wrote, and happens before anything is spawned.
-    """
-    from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
-
-    (tmp_path / ".mcp.json").write_text(
-        f'{{"mcpServers": {{"x": {{"command": "y", "timeout": {token}}}}}}}'
-    )
-
-    resolution = resolve_spawn_mcp_servers(launch_dir=tmp_path)
-    assert resolution.servers is None
-    assert resolution.reason.startswith("mcp_config_unusable:")
-    assert token in resolution.reason
-
-    with pytest.raises(McpConfigError, match="not valid JSON"):
-        resolve_spawn_mcp_servers(tmp_path / ".mcp.json", launch_dir=tmp_path)
-
-    # Control: the same config with a finite timeout resolves and keeps its value.
-    (tmp_path / ".mcp.json").write_text(
-        '{"mcpServers": {"x": {"command": "y", "timeout": 1.5, "retries": null}}}'
-    )
-    ok = resolve_spawn_mcp_servers(launch_dir=tmp_path)
-    assert ok.servers == {"x": {"command": "y", "timeout": 1.5, "retries": None}}
-
-
 def test_mcp_server_snapshot_refuses_non_finite(tmp_path):
     """And the write refuses too, for a server map that reached it some other way."""
     from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
@@ -242,37 +148,6 @@ def test_mcp_server_snapshot_refuses_non_finite(tmp_path):
         target, {"payload": CONTROL}, source="found.json", searched_from=tmp_path
     )
     assert json.loads(target.read_text())["mcpServers"]["payload"] == CONTROL
-
-
-def test_mirror_offsets_refuse_non_finite(tmp_path, monkeypatch):
-    """The transcript cursor file is not the closed shape its fields suggest.
-
-    The offset is this module's own arithmetic, but the tool-name map comes out
-    of a transcript another program wrote and is never coerced to ``str``.
-    """
-    from lionagi.cli import _mirror_service as mirror
-
-    target = tmp_path / "offsets.json"
-    monkeypatch.setattr(mirror, "_OFFSETS_PATH", target)
-
-    bad = mirror._FileState(session_uid="s", offset=12, tool_names={"t1": float("nan")})
-    with pytest.raises(ValueError, match=r"non-finite float at \$\.f\.pending_tool_names\.t1"):
-        mirror._save_states({"f": bad})
-    assert not target.exists()
-
-    good = mirror._FileState(session_uid="s", offset=12, tool_names={"t1": "Read"})
-    mirror._save_states({"f": good})
-    assert json.loads(target.read_text())["f"] == {
-        "offset": 12,
-        "session_uid": "s",
-        "pending_tool_names": {"t1": "Read"},
-        "tool_names": {"t1": "Read"},
-        "leaf_uuid": None,
-        # Carried so a message mirrored after a restart keeps the attribution of
-        # the turn that produced it; it reaches this file out of a codex rollout,
-        # so it is on the same foreign-data footing as tool_names above.
-        "turn": {},
-    }
 
 
 def test_hypothesis_chains_export_refuses_non_finite(tmp_path):
@@ -295,7 +170,7 @@ def test_hypothesis_chains_export_refuses_non_finite(tmp_path):
     assert written["events"] == [] and written["open_questions"] == []
 
 
-async def test_stream_buffer_chunk_refuses_non_finite(tmp_path):
+async def test_stream_buffer_chunk_records_non_finite_and_continues(tmp_path):
     from lionagi.operations.run.run import _append_chunk
 
     class _Chunk:
@@ -307,9 +182,21 @@ async def test_stream_buffer_chunk_refuses_non_finite(tmp_path):
 
     target = tmp_path / "b.jsonl"
 
-    with pytest.raises(ValueError, match=r"non-finite float at \$\.usage\.tokens_per_s"):
-        await _append_chunk(target, _Chunk({"usage": {"tokens_per_s": float("nan")}}))
-    assert not target.exists()
+    def reject_constant(value):
+        raise ValueError(f"invalid JSON constant: {value}")
+
+    await _append_chunk(
+        target, _Chunk({"usage": {"tokens_per_s": float("nan")}, "payload": CONTROL})
+    )
+    lines = target.read_text().splitlines()
+    assert len(lines) == 1
+    assert "NaN" not in lines[0] and "Infinity" not in lines[0]
+    assert json.loads(lines[0], parse_constant=reject_constant) == {
+        "text": "",
+        "serialization_error": "non-finite float",
+    }
 
     await _append_chunk(target, _Chunk({"payload": CONTROL}))
-    assert json.loads(target.read_text())["payload"] == CONTROL
+    lines = target.read_text().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[1], parse_constant=reject_constant)["payload"] == CONTROL

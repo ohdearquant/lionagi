@@ -46,7 +46,7 @@ RESERVED_IDENTIFIER = re.compile(r"\blambda:[a-z][a-z0-9_-]*\b")
 EXPECTED_FIXTURES: dict[str, frozenset[str]] = {
     "scripts/lint_python_hygiene.py": frozenset({"sample-unit", "x"}),
     "tests/scripts/test_ci_hygiene.py": frozenset({"item", "sample-unit", "x"}),
-    "tests/mcp/test_notify_failure_classification.py": frozenset({"y"}),
+    "lionhub/tests/lionhub_tests/serve/mcp/test_notify_failure_classification.py": frozenset({"y"}),
     "benchmarks/orchestration/suites/lionbench/test_data_hygiene.py": frozenset({"x"}),
 }
 

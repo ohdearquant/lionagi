@@ -11,19 +11,18 @@
 
 ## Context
 
-Line citations in this record are at source baseline
-`3d7f9e0b15e3c20f4c18986e1a4c3cb807d47b52`.
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 
 ADR-0055 D3 stores an ordered collection of message identifiers as one JSON-array text value.
 This gives a simple full reconstruction and idempotent append, but append work grows with the
 history already stored. SQLite scans membership and reconstructs the array; PostgreSQL expands
 the text as JSON, checks membership, appends and serializes it again
-(`lionagi/state/db.py:3445@6fe53aff`). Live persistence normally updates both a branch progression and
+(`lionagi/state/db.py::StateDB._progression_append_sql`). Live persistence normally updates both a branch progression and
 a session progression in one transaction (`lionagi/state/db.py::StateDB._persist_live_message`).
 
 Bulk insertion already avoids one rewrite per message: it decodes a string-ID collection,
 deduplicates a batch with a set and rewrites the collection once
-(`lionagi/state/db.py::StateDB.insert_messages`). This improves amortization but retains full-history work per batch.
+(`lionagi/state/db.py::StateDB._extend_progression_in_tx`). This improves amortization but retains full-history work per batch.
 
 ### Measured cost and population
 
@@ -70,17 +69,17 @@ Mirroring is a supported recurring feature. It has a standalone loop and histori
 mode (`lionagi/cli/mirror.py::add_mirror_subparser`, `lionagi/cli/mirror.py::_run`), and Studio starts an embedded task
 (`lionagi/studio/app.py::_start_claude_mirror`, `lionagi/studio/app.py::lifespan`). Mirroring is enabled by default when the profile has eligible
 sources (`lionagi/studio/config.py::_mirror_import_ambient_default`, `lionagi/studio/config.py::MIRROR_CLAUDE_ENABLED`, `lionagi/studio/config.py::_MIRROR_SOURCE_RAW`). A process-name search cannot rule out
-the embedded task. A recent-file window does not cap an active transcript's lifetime length.
+the embedded task. A recent-file window does not cap an active transcript's lifetime length. These line numbers are at `317e6b4cfd4bb8f05d2bfc6a947d9fc1dcd28add`.
 
 Other writers also have no lifetime ceiling. Resume reuses existing progression IDs
-(`lionagi/cli/_runs.py::setup_agent_persist`); flow branches share a session progression
-(`lionagi/cli/orchestrate/_orchestration.py::setup_orchestration_persist`); run import can create or replace complete
-unbounded orders (`lionagi/cli/state.py:247@93932753`, `lionagi/cli/state.py:284@93932753`). The small current population justifies a
-staged rollout, not a permanent assumption that these histories remain small.
+(`lionagi/cli/_runs.py:2236-2237@e1800c3b`); flow branches share a session progression
+(`lionagi/cli/orchestrate/_orchestration.py::setup_orchestration_persist`, `lionagi/cli/_runs.py:1922@e1800c3b`); run import creates complete
+unbounded orders (`lionagi/cli/state.py::_import_one_run`). The small current population justifies a
+staged rollout, not a permanent assumption that these histories remain small. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 
 Read amplification persists for idle histories. A detail page loads entire arrays before taking
 a tail window (`lionagi/studio/services/sessions.py::get_session`), counts expand JSON (`lionagi/studio/services/sessions.py::list_sessions.listing_sql`),
-and streaming expands membership (`lionagi/studio/services/sessions.py::get_session`). The measured 8.127 ms read is only a warmed full-list
+and streaming expands membership (`lionagi/studio/services/sessions.py::get_session_messages_after`). The measured 8.127 ms read is only a warmed full-list
 read near 100k, not endpoint latency at the observed maximum. These are reachable read costs;
 the supplied evidence does not measure how often the idle large histories are read.
 
@@ -93,7 +92,7 @@ immediate performance return on migrating every stored progression.
 The column is also a published read surface. Direct readers include retention code that protects
 messages referenced by surviving progressions (`lionagi/studio/services/db_maintenance.py::_prune_session_chunk`;
 `lionagi/cli/state.py::_prune`). Freezing JSON without migrating these readers can hide references
-and affect deletion correctness, not merely display stale counts.
+and affect deletion correctness, not merely display stale counts. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 
 ## Teardown of the previous premises
 
@@ -233,7 +232,7 @@ full normalized list to construct a Python set.
 Bulk append preserves incoming order and admits each new ID once, including duplicate IDs within
 the batch. Indexed membership checks and insert work scale with batch size and index access, not
 the entire prior collection. Message upsert, both progression updates, and session-activity
-updates retain their current transaction boundary (`lionagi/state/db.py::StateDB._progression_append_sql`, `lionagi/state/db.py::StateDB._touch_activity_sql`). A
+updates retain their current transaction boundary (`lionagi/state/db.py::StateDB.insert_messages`, `lionagi/state/db.py::StateDB._persist_live_message`). A
 duplicate membership does not suppress an otherwise valid message-content upsert.
 
 In `json`, preserve legacy append and bulk behavior. Increment the JSON revision only when the
@@ -247,14 +246,15 @@ in the uncopied prefix. Successful new IDs receive contiguous positions at or ab
 cost intentionally remains during this finite phase. A target failure must not be hidden behind
 a committed JSON-only append presented as a successful dual write.
 
-Creation preserves `ON CONFLICT DO NOTHING`: re-creating an existing progression does not reset
-its representation or content (`lionagi/state/db.py::StateDB._create_progression_in_tx`). Newly created progressions may use
+In native stores, creation preserves `ON CONFLICT DO NOTHING`: re-creating an existing progression
+does not reset its representation or content (`lionagi/state/db.py::StateDB._create_progression_in_tx`). In compatibility
+mode, creation refuses an existing row (`lionagi/state/db.py::StateDB.create_progression`, `lionagi/state/db.py::StateDB._insert_new_row`). Newly created progressions may use
 `items` only after the store's compatibility gate enables that default. Their supplied collection
 is materialized in input order, preserving duplicates, and their initial JSON value is an exact
 frozen prefix. Empty creation uses an empty prefix. No count is inferred from message existence.
 
 `set_progression` remains a wholesale replacement and a missing-row no-op
-(`lionagi/state/db.py::StateDB.create_progression`). It locks the progression, increments generation and JSON revision,
+(`lionagi/state/db.py::StateDB.set_progression`). It locks the progression, increments generation and JSON revision,
 and invalidates pending snapshots and verification. It preserves phase:
 
 - `json`: replace JSON; reset migration evidence. Any abandoned shadow is ineligible for use.
@@ -405,8 +405,8 @@ Keeping that column current would retain the performance defect.
    `lionagi/studio/services/admin.py::health_report`, and full-list counts at `lionagi/cli/state.py::_collect_sessions`
    with cached membership counts. Preserve branch aggregation versus session-order semantics.
    Role counts and surviving-message counts remain distinct and must not be replaced by the
-   membership count (`lionagi/studio/services/sessions.py::get_session`).
-3. **Timestamp streaming.** `lionagi/studio/services/sessions.py::get_session` orders by message time,
+   membership count (`lionagi/studio/services/sessions.py::get_session`). The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+3. **Timestamp streaming.** `lionagi/studio/services/sessions.py::get_session_messages_after` orders by message time,
    message ID and branch ID, not ordinal. Preserve that cursor contract. Replace JSON expansion
    with relational membership and a timestamp-seeking query. A messages-driven seek on a
    composite `(created_at, id)` index with progression/message membership probes is permitted;
@@ -414,14 +414,14 @@ Keeping that column current would retain the performance defect.
    unrelated-message selectivity. An ordinal primary key alone does not satisfy this obligation.
    If the required plan cannot be obtained, that consumer's cutover remains disabled until an
    equivalent indexed read design is accepted; silently changing stream order is prohibited.
-4. **Full readers and last-ID consumers.** Route `lionagi/cli/_runs.py::_teardown_common`, `lionagi/cli/_runs.py::setup_agent_persist` and
+4. **Full readers and last-ID consumers.** Route `lionhub/src/lionhub/orchestration/runs.py::_teardown_common`, `lionhub/src/lionhub/orchestration/runs.py::setup_agent_persist` and
    `lionagi/cli/_context_from.py::_candidate_from_branch` through complete authority. Replace the last-ID-only load
    at `lionagi/state/_mirror_common.py::reconcile_status` with an indexed one-item tail. Do not describe
    intentionally complete reconstruction or role aggregation as constant-time work.
 5. **Deletion and shared references.** Adapt `lionagi/state/db.py::StateDB.delete_imported_session`,
    `lionagi/studio/services/db_maintenance.py::_prune_session_chunk` and `lionagi/cli/state.py::_prune`
    before any JSON freeze. Candidate and survivor reference checks must include target-only
-   tail items, including shared progressions and retained references to absent message rows.
+   tail items, including shared progressions and retained references to absent message rows. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 6. **Other direct readers.** Publish a versioned complete-reader contract for SQL clients,
    including phase interpretation and equivalent queries on both backends. A compatibility
    helper or view may assemble complete JSON on demand at full-read cost; it must not maintain

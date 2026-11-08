@@ -126,6 +126,36 @@ Sources: UI `routes/library.tsx` and `components/library/`; services
 `agents.py`, `playbooks.py`, `skills.py`, `plugins.py`, `mcp_servers.py`,
 `hooks_library.py`, `operator_hooks.py`, `workflow_defs.py`, and `engine_defs.py`.
 
+The backend also exposes a read-only Engine preset catalog while its tab is hidden:
+
+- `GET /api/engine-catalog/blueprints` describes registered engine kinds and their preset inputs.
+- `GET /api/engine-catalog/presets` lists presets in ID order, with `limit` (default 100,
+  maximum 200), optional `kind`, and an opaque `cursor`. It is not a snapshot: an insertion
+  before a cursor may be missed; deleting or renaming a preset does not change its ID order.
+- `GET /api/engine-catalog/preset?id=<encoded-id>` retrieves one preset independently of pages.
+  An empty `id` is distinct from an omitted parameter. Rows with a NULL, non-text, or NUL-containing
+  ID are outside the catalog.
+
+Trailing IDs longer than 4,096 UTF-8 bytes are deferred when the page has an encodable ID.
+When all IDs on a page exceed that bound, the page has no next cursor and includes
+`stop_reason: id_exceeds_cursor_bound` only if additional rows exist. Proxies may impose
+request-line limits on encoded IDs and cursors.
+Unregistered kinds and unreadable options remain listed as unavailable; their stored data is not
+rewritten. The descriptor's model and budget constraints describe preset/Studio admission only.
+Workflow engine-node overrides follow their existing validation path and are not governed by this
+descriptor.
+
+Preset creation and updates accept only registered kinds and options consumed by the selected
+kind. `PUT /api/engine-defs/{id}` uses field presence: omitted fields stay unchanged; null clears
+model, budget and description overrides. Name and kind cannot be null, and names are trimmed
+and must remain nonempty. Options replace the entire object; null replaces them with `{}`,
+which a kind with a required option refuses. A kind change validates the retained options
+unless the same request supplies a replacement.
+Unrelated edits with an unchanged kind preserve legacy options exactly, including unreadable
+or unused values. Presets with an unavailable kind remain read-only. Concurrent updates validate
+and write the same current row atomically; direct StateDB writers are internal and unvalidated.
+These write rules do not tighten legacy CLI or workflow execution.
+
 ## Teams
 
 **Teams** browses crews created with `li team`. The list shows a team's name,

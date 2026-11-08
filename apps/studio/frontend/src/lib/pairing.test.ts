@@ -116,7 +116,7 @@ describe("redeemPairingCode", () => {
     expect(localWrites).toHaveBeenCalledTimes(1);
     expect(localWrites).toHaveBeenCalledWith(
       "studio.pairedBearer",
-      JSON.stringify({ base: BASE, token: "launch-bearer" }),
+      JSON.stringify({ base: BASE, token: "launch-bearer", token_source: "launch" }),
     );
     expect(document.cookie).not.toContain("launch-bearer");
   });
@@ -416,6 +416,7 @@ describe("a bearer kept across reloads", () => {
     expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
       base: BASE,
       token: "launch-bearer",
+      token_source: "launch",
     });
     expect(pairedBearer(BASE)).toBe("launch-bearer");
   });
@@ -441,7 +442,10 @@ describe("a bearer kept across reloads", () => {
     ["an empty token", JSON.stringify({ base: BASE, token: "" })],
   ])("gives nothing for a stored value that is %s", async (_label, raw) => {
     const reloaded = await reload();
-    storage.setItem(BEARER_KEY, JSON.stringify({ base: BASE, token: "stored-token" }));
+    storage.setItem(
+      BEARER_KEY,
+      JSON.stringify({ base: BASE, token: "stored-token", token_source: "launch" }),
+    );
     expect(reloaded.pairedBearer(BASE)).toBe("stored-token");
 
     storage.setItem(BEARER_KEY, raw);
@@ -457,7 +461,7 @@ describe("a bearer kept across reloads", () => {
 
     expect(pairedBearer(BASE)).toBe("launch-bearer");
     expect(pairedBearer(OTHER)).toBeUndefined();
-    expect(() => forgetPairedBearer("launch-bearer")).not.toThrow();
+    expect(() => forgetPairedBearer("launch-bearer", BASE)).not.toThrow();
     expect(pairedBearer(BASE)).toBeUndefined();
   });
 
@@ -480,6 +484,7 @@ describe("a bearer kept across reloads", () => {
     expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
       base: BASE,
       token: "second-bearer",
+      token_source: "launch",
     });
     expect((await reload()).pairedBearer(BASE)).toBe("second-bearer");
   });
@@ -487,7 +492,7 @@ describe("a bearer kept across reloads", () => {
   it("forgets the bearer from memory and from storage", async () => {
     await pair();
 
-    forgetPairedBearer("launch-bearer");
+    forgetPairedBearer("launch-bearer", BASE);
 
     expect(storage.getItem(BEARER_KEY)).toBeNull();
     expect(pairedBearer(BASE)).toBeUndefined();
@@ -496,9 +501,12 @@ describe("a bearer kept across reloads", () => {
 
   it("forgets only the refused bearer, keeping one another tab stored since", async () => {
     await pair("first-bearer");
-    storage.setItem(BEARER_KEY, JSON.stringify({ base: BASE, token: "second-bearer" }));
+    storage.setItem(
+      BEARER_KEY,
+      JSON.stringify({ base: BASE, token: "second-bearer", token_source: "launch" }),
+    );
 
-    forgetPairedBearer("first-bearer");
+    forgetPairedBearer("first-bearer", BASE);
 
     expect(pairedBearer(BASE)).toBe("second-bearer");
     expect((await reload()).pairedBearer(BASE)).toBe("second-bearer");
@@ -507,12 +515,13 @@ describe("a bearer kept across reloads", () => {
   it("keeps the bearer this load paired with when an older one is refused", async () => {
     await pair("current-bearer");
 
-    forgetPairedBearer("older-bearer");
+    forgetPairedBearer("older-bearer", BASE);
 
     expect(pairedBearer(BASE)).toBe("current-bearer");
     expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
       base: BASE,
       token: "current-bearer",
+      token_source: "launch",
     });
   });
 
@@ -526,7 +535,7 @@ describe("a bearer kept across reloads", () => {
     );
     await redeemPairingCode(BASE);
 
-    forgetPairedBearer("launch-bearer");
+    forgetPairedBearer("launch-bearer", BASE);
 
     expect(pairedBearer(BASE)).toBeUndefined();
     expect(pairedDecisionToken(BASE)).toBe("decision-capability");
@@ -545,40 +554,40 @@ describe("a bearer kept across reloads", () => {
     expect(await redeemPairingCode(BASE)).toBe("paired");
   }
 
-  it("never stores a configured token, and holds it in memory for this load only", async () => {
-    await pairAnswering({ token: "configured-token", token_source: "configured" });
+  it.each(["configured", undefined, "Launch", "", "something-new"])(
+    "keeps a %s bearer in the tab and offers it to the gate after reload",
+    async (token_source) => {
+      await pairAnswering({ token: "configured-token", token_source });
+      expect(storage.getItem(BEARER_KEY)).toBeNull();
+      expect(pairedBearer(BASE)).toBe("configured-token");
+      const reloaded = await reload();
+      expect(reloaded.storedBearerToCheck(BASE)).toBe("configured-token");
+      expect(reloaded.pairedBearer(BASE)).toBe("configured-token");
+      expect(reloaded.pairedBearer(OTHER)).toBeUndefined();
+    },
+  );
 
-    expect(storage.getItem(BEARER_KEY)).toBeNull();
-    expect(pairedBearer(BASE)).toBe("configured-token");
-    expect((await reload()).pairedBearer(BASE)).toBeUndefined();
-  });
-
-  it("stores nothing when the daemon does not say which bearer it sent", async () => {
-    await pairAnswering({ token: "unlabelled-token" });
-
-    expect(storage.getItem(BEARER_KEY)).toBeNull();
-    expect(pairedBearer(BASE)).toBe("unlabelled-token");
-  });
-
-  it("stores nothing for a token_source other than launch", async () => {
-    await pairAnswering({ token: "odd-token", token_source: "Launch" });
-
-    expect(storage.getItem(BEARER_KEY)).toBeNull();
-  });
-
-  it("removes a stored launch bearer when the page pairs with a configured token", async () => {
+  it("removes a stored launch bearer when pairing with a configured token", async () => {
     await pair("launch-bearer");
-    expect(storage.getItem(BEARER_KEY)).not.toBeNull();
     pendingPage("#pair=second-code");
-
     await pairAnswering({ token: "configured-token", token_source: "configured" });
-
     expect(storage.getItem(BEARER_KEY)).toBeNull();
-    expect(pairedBearer(BASE)).toBe("configured-token");
+    expect((await reload()).pairedBearer(BASE)).toBe("configured-token");
+  });
+
+  it("forgets a session-only configured token after refusal", async () => {
+    await pairAnswering({ token: "configured-token", token_source: "configured" });
+    forgetPairedBearer("configured-token", BASE);
+    expect(storage.getItem(BEARER_KEY)).toBeNull();
+    expect(pairedBearer(BASE)).toBeUndefined();
+    expect((await reload()).storedBearerToCheck(BASE)).toBeUndefined();
   });
 
   it("offers a stored bearer for the gate's check only when this load has not paired", async () => {
-    storage.setItem(BEARER_KEY, JSON.stringify({ base: BASE, token: "stored-token" }));
+    storage.setItem(
+      BEARER_KEY,
+      JSON.stringify({ base: BASE, token: "stored-token", token_source: "launch" }),
+    );
     const fresh = await reload();
 
     expect(fresh.storedBearerToCheck(BASE)).toBe("stored-token");

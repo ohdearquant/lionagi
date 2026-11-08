@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.cli._providers import _parse_profile
+from lionhub.orchestration.spawn import _parse_profile
 from tests.cli._worker_fixtures import WorkerSetup
 
 _REVIEWER_PROFILE_TEXT = "---\nmodel: claude_code/sonnet\nrole: reviewer\n---\nExtra reviewer body."

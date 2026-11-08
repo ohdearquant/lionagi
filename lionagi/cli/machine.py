@@ -442,8 +442,7 @@ def reserve_stdout() -> Iterator[MachineChannel]:
 
 def handshake_data() -> dict[str, Any]:
     from lionagi.version import __version__
-
-    from ._code_identity import code_identity
+    from lionhub.serve.diagnostics import code_identity
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -484,7 +483,7 @@ def runs_data(limit: int = _DEFAULT_RUNS_LIMIT) -> dict[str, Any]:
     # Taken from `_runs` rather than from `lionagi._paths`, so this reads the
     # same root `list_runs` below walks; two bindings of one constant is how a
     # listing comes back describing a directory nobody wrote to.
-    from ._runs import RUNS_ROOT, list_runs
+    from lionhub.orchestration.runs import RUNS_ROOT, list_runs
 
     listing = list_directory(RUNS_ROOT, missing_is_empty=True)
     if not listing["available"]:
@@ -786,7 +785,7 @@ def dispatch_machine(argv: list[str]) -> int:
     disk it is an ordinary failure of that run and gets an envelope like any
     other.
     """
-    from ._util import run_was_allocated
+    from lionhub.orchestration.job import run_was_allocated
 
     with reserve_stdout() as channel:
         try:
@@ -821,7 +820,7 @@ def _run_machine_command(argv: list[str]) -> dict[str, Any]:
     if module_name is not None:
         return import_module(module_name, package=__package__).machine_result(rest)
 
-    from lionagi._auto import command_exists
+    from lionhub.cli.catalog import command_exists
 
     if command_exists(name) or name in ("play", "skill", "wait"):
         raise MachineError(
@@ -873,7 +872,7 @@ def run_runs(args: argparse.Namespace) -> int:
     data = runs_data(getattr(args, "limit", _DEFAULT_RUNS_LIMIT))
     listing = data["runs"]
     if not listing["available"]:
-        from ._logging import log_error
+        from lionhub.orchestration.console import log_error
 
         log_error(f"could not list runs ({listing['reason_code']}): {listing['detail']}")
         return 1
@@ -908,7 +907,7 @@ def add_lifecycle_subparser(subparsers: argparse._SubParsersAction) -> None:
     area="lifecycle", cli=CliDeclaration(seed="lifecycle", parser_factory=add_lifecycle_subparser)
 )
 def run_lifecycle(args: argparse.Namespace) -> int:
-    from ._logging import log_error
+    from lionhub.orchestration.console import log_error
 
     data = lifecycle_data(args.run_id)
     state = data["lifecycle"]

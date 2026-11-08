@@ -109,9 +109,9 @@ async def test_a_refusal_inside_a_group_fails_the_orchestration_run(tmp_path: Pa
     """A refusal that arrives inside an exception group fails the run with the refusal as its
     reason, as a bare one does, rather than recording persistence as degraded."""
     from lionagi import Session
-    from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration
     from lionagi.ln.concurrency._compat import BaseExceptionGroup
+    from lionhub.orchestration.runs import RunDir
 
     refusal = StateCompatibilityRefused("create_progression", "owned@1", "refused")
 
@@ -140,8 +140,8 @@ async def test_a_refused_orchestration_admission_fails_the_run(tmp_path: Path, m
     """An admission write the store refuses fails the run with the refusal as its reason, rather
     than recording persistence as degraded and continuing without it (ADR-0128 D6)."""
     from lionagi import Session
-    from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration
+    from lionhub.orchestration.runs import RunDir
 
     handle = await _refusing_admission_handle(tmp_path, "admission")
     monkeypatch.setattr(_orchestration, "_open_shared_db", lambda **_: _resolved(handle))
@@ -192,8 +192,8 @@ async def test_a_refused_admission_without_a_manifest_leaves_run_json_as_it_was(
 ):
     """With no manifest of its own to update, the refusal branch writes nothing over run.json."""
     from lionagi import Session
-    from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration
+    from lionhub.orchestration.runs import RunDir
 
     handle = await _refusing_admission_handle(tmp_path, "admission-no-manifest")
     monkeypatch.setattr(_orchestration, "_open_shared_db", lambda **_: _resolved(handle))
@@ -236,8 +236,8 @@ async def test_a_non_refusal_from_admission_degrades_the_run(tmp_path: Path, mon
     failure: the run records persistence degraded and keeps running. Only a store refusal fails
     the run, so the admission path must not fail the run on an error that is not one."""
     from lionagi import Session
-    from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration
+    from lionhub.orchestration.runs import RunDir
 
     async def broken_open(**_):
         raise RuntimeError("the store would not open")
@@ -268,9 +268,9 @@ async def test_orchestration_admission_leaves_the_registered_shared_handle_in_pl
     so a handle another owner registered is neither closed nor displaced by this setup."""
     import lionagi.state.db as db_mod
     from lionagi import Session
-    from lionagi.cli._runs import RunDir, teardown_persist
     from lionagi.cli.orchestrate import _orchestration
     from lionagi.state.db import StateDB, get_shared_db, register_shared_db
+    from lionhub.orchestration.runs import RunDir, teardown_persist
 
     monkeypatch.setattr(db_mod, "_SHARED", {})
     monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
@@ -664,9 +664,9 @@ async def test_a_group_without_a_refusal_still_degrades_to_a_tool_error():
 
 
 async def test_a_setup_refusal_inside_a_group_leaves_as_itself(monkeypatch):
-    from lionagi.cli import _runs as runs_mod
     from lionagi.ln.concurrency import BaseExceptionGroup
     from lionagi.session.branch import Branch
+    from lionhub.orchestration import runs as runs_mod
 
     refusal = StateCompatibilityRefused("create_session", "synthetic", "refused")
     group = BaseExceptionGroup("setup writes", [ValueError("ordinary"), refusal])
@@ -682,9 +682,9 @@ async def test_a_setup_refusal_inside_a_group_leaves_as_itself(monkeypatch):
 
 
 async def test_a_setup_group_without_a_refusal_still_degrades_persistence(monkeypatch):
-    from lionagi.cli import _runs as runs_mod
     from lionagi.ln.concurrency import BaseExceptionGroup
     from lionagi.session.branch import Branch
+    from lionhub.orchestration import runs as runs_mod
 
     group = BaseExceptionGroup("setup writes", [ValueError("one"), OSError("two")])
 

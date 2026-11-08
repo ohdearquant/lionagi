@@ -49,7 +49,7 @@ async def test_without_the_variable_run_json_names_no_account(monkeypatch, tmp_p
 
 def _real_runs_root(monkeypatch, tmp_path):
     """The real allocate_run under a scratch root, so a run that gets that far leaves run.json."""
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     runs_root = tmp_path / "runs"
     monkeypatch.setattr(_runs, "RUNS_ROOT", runs_root)

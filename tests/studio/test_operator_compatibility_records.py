@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import anyio
 import pytest
 
-import lionagi.cli._runs as runs_mod
+import lionhub.orchestration.runs as runs_mod
 from lionagi.state.compat import Closure, CompatibilityProfile, StateCompatibilityRefused
 from lionagi.studio.operator import coordinator as coordinator_mod
 from lionagi.studio.operator.coordinator import OperatorCoordinator
@@ -169,6 +169,14 @@ async def test_a_refused_teardown_fails_both_the_turn_and_its_run(tmp_path, monk
 @pytest.mark.asyncio
 async def test_the_native_path_records_the_turn_after_teardown(tmp_path, monkeypatch):
     """The native turn keeps its own status while waiting for teardown."""
+    written_runs = []
+    write_manifest = runs_mod.RunDir.write_manifest
+
+    def record_write(run_dir, data):
+        write_manifest(run_dir, data)
+        written_runs.append(run_dir)
+
+    monkeypatch.setattr(runs_mod.RunDir, "write_manifest", record_write)
     turn_status, run_status, order = await _drive(
         tmp_path, monkeypatch, compatibility=None, decided_status="failed"
     )
@@ -176,6 +184,13 @@ async def test_the_native_path_records_the_turn_after_teardown(tmp_path, monkeyp
     assert run_status == "completed"
     assert turn_status == "completed"
     assert order == [("teardown", "completed"), ("finish_turn", "completed")]
+    [manifest_path] = (tmp_path / "runs").glob("operator-*/run.json")
+    manifest = json.loads(manifest_path.read_text())
+    assert written_runs
+    for run_dir in written_runs:
+        assert manifest["run_id"] == manifest_path.parent.name == run_dir.run_id
+        assert run_dir.state_root.resolve() == manifest_path.parent.resolve()
+    assert Path(manifest["state_root"]).resolve() == manifest_path.parent.resolve()
 
 
 @pytest.mark.asyncio

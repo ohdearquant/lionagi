@@ -657,7 +657,7 @@ async def test_run_agent_preset_and_profile_single_system_message_with_both(monk
     from types import SimpleNamespace as _NS
 
     from lionagi import Branch as _Branch
-    from lionagi.cli._providers import AgentProfile  # type: ignore[attr-defined]
+    from lionhub.orchestration.spawn import AgentProfile  # type: ignore[attr-defined]
 
     branches_created: list = []
     real_branch_init = _Branch.__init__
@@ -983,7 +983,7 @@ def _make_agents_dir(tmp_path, monkeypatch):
     agents_dir = lionagi_dir / "agents"
     agents_dir.mkdir(parents=True)
 
-    import lionagi.cli._providers as agents_mod
+    import lionhub.orchestration.spawn as agents_mod
 
     monkeypatch.setattr(agents_mod, "_find_lionagi_dirs", lambda: [lionagi_dir])
     return agents_dir

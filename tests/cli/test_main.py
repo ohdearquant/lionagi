@@ -10,9 +10,9 @@ import pytest
 import yaml
 
 from lionagi._feature_errors import MissingFeatureError
-from lionagi.cli._util import EXIT_CODE_ENVIRONMENT_ERROR
 from lionagi.cli.main import _handle_play_shortcut, main
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 
 
 def test_main_resolves_notify_settings_project_dir_from_cwd_flag(monkeypatch):
@@ -196,7 +196,7 @@ def test_handle_play_shortcut_resume_passthrough():
 
 def test_handle_play_shortcut_rejects_flag_before_name(monkeypatch):
     """play --bad returns exit code 1 because flag comes before name."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
     result = _handle_play_shortcut(["play", "--bad"])
@@ -324,7 +324,7 @@ def test_play_check_separates_a_missing_module_from_a_bad_profile(
 
     monkeypatch.setattr(_orch, "_resolve_playbook_path", fake_resolve)
     monkeypatch.setattr("lionagi.cli.main._resolve_playbook_path", fake_resolve, raising=False)
-    monkeypatch.setattr("lionagi.cli._providers.load_agent_profile", fake_load)
+    monkeypatch.setattr("lionhub.orchestration.spawn.load_agent_profile", fake_load)
 
     with caplog.at_level("ERROR"):
         result = _handle_play_shortcut(["play", "check", "withagent"])
@@ -390,7 +390,7 @@ def test_play_check_names_what_is_missing_then_gives_the_guidance(
     reported: list[str] = []
     monkeypatch.setattr(_orch, "_resolve_playbook_path", fake_resolve)
     monkeypatch.setattr("lionagi.cli.main._resolve_playbook_path", fake_resolve, raising=False)
-    monkeypatch.setattr("lionagi.cli._providers.load_agent_profile", fake_load)
+    monkeypatch.setattr("lionhub.orchestration.spawn.load_agent_profile", fake_load)
     monkeypatch.setattr("lionagi.cli.main.log_error", reported.append)
 
     assert _handle_play_shortcut(["play", "check", "withagent"]) == EXIT_CODE_ENVIRONMENT_ERROR
@@ -462,7 +462,7 @@ def test_cli_package_init_is_lazy():
     """Importing lionagi.cli (or any submodule of it, e.g. via
     lionagi.studio.cli) must not pull in lionagi.cli.main — main.py imports
     lionagi.studio.cli at module level, so an eager package init would make
-    every studio->cli._logging import re-enter a partially-initialized
+    every studio import of a CLI submodule re-enter a partially-initialized
     module. `from lionagi.cli import main` still resolves to the callable
     via the package's lazy __getattr__ re-export."""
     import subprocess
@@ -506,7 +506,7 @@ def test_cli_package_getattr_raises_for_unknown_attr():
 
 def test_command_registry_loaders_expose_parser_and_handler():
     """Every registry entry resolves before a command-specific parse needs it."""
-    from lionagi._auto import build_cli_parser, iter_cli_seeds
+    from lionhub.cli.catalog import build_cli_parser, iter_cli_seeds
 
     for seed in iter_cli_seeds():
         build = build_cli_parser(seed)

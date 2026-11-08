@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from lionagi._feature_errors import MissingFeatureError
-from lionagi.cli._util import (
+from lionhub.orchestration.job import (
     EXIT_CODE_BY_STATUS,
     EXIT_CODE_ENVIRONMENT_ERROR,
     begin_invocation,
@@ -32,6 +32,7 @@ from lionagi.cli._util import (
     mark_run_allocated,
     run_was_allocated,
 )
+from tests._job_test_support import _no_run_allocated  # noqa: F401
 
 # `from lionagi.cli import main` is not a handle on this module. What it yields
 # depends on import order: the package's __getattr__ pins the re-exported
@@ -45,16 +46,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Both import roots of this checkout, so a child process runs this tree's lionagi and
 # lionhub rather than whichever checkout the installed distribution points at.
 SOURCE_PATH = os.pathsep.join([str(REPO_ROOT), str(REPO_ROOT / "lionhub" / "src")])
-
-
-def test_environment_code_collides_with_no_run_status() -> None:
-    """The whole point is distinguishability, so a collision defeats it.
-
-    Asserted against the status map rather than a second literal: adding a
-    status that happens to use 78 would otherwise silently re-merge the two
-    cases this separation exists to keep apart.
-    """
-    assert EXIT_CODE_ENVIRONMENT_ERROR not in set(EXIT_CODE_BY_STATUS.values())
 
 
 def test_missing_dependency_exits_with_the_environment_code(monkeypatch, reported):
@@ -352,19 +343,6 @@ def reported(monkeypatch) -> list[str]:
     return messages
 
 
-@pytest.fixture(autouse=True)
-def _no_run_allocated():
-    """Keep the process-level allocation marker from leaking between tests.
-
-    Some tests here set it deliberately, and any other test in the session that
-    allocates a run sets it too. Left set, it would silently turn the assertions
-    below into their opposite.
-    """
-    clear_run_allocation()
-    yield
-    clear_run_allocation()
-
-
 def test_the_loader_boundary_does_not_absorb_a_missing_dependency(monkeypatch, reported):
     """A missing dependency found while loading a command is still the environment.
 
@@ -437,6 +415,43 @@ def test_a_missing_command_module_reports_the_environment_end_to_end():
     assert "No run was started" in last_line
 
 
+def test_a_missing_cli_catalog_reports_the_environment_in_a_fresh_process():
+    """A missing catalog must reach the same startup error boundary as a command."""
+    script = textwrap.dedent(
+        """
+        import sys
+
+        BLOCKED = "lionhub.cli.catalog"
+
+        class _RefuseCatalog:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == BLOCKED:
+                    raise ModuleNotFoundError(
+                        f"No module named {fullname!r}", name=fullname
+                    )
+                return None
+
+        sys.meta_path.insert(0, _RefuseCatalog())
+        from lionagi.cli.main import main
+
+        sys.exit(main(["doctor"]))
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
+        timeout=120,
+    )
+
+    assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
+    last_line = [line for line in proc.stderr.splitlines() if line.strip()][-1]
+    assert "lionhub.cli.catalog" in last_line
+    assert "No run was started" in last_line
+
+
 def test_a_missing_import_after_a_run_was_allocated_is_not_an_environment_fault(monkeypatch):
     """Once a run exists on disk, the same error means something different.
 
@@ -473,40 +488,6 @@ def test_a_previous_invocations_run_does_not_suppress_the_report(monkeypatch, re
 
     assert cli_main.main([]) == EXIT_CODE_ENVIRONMENT_ERROR
     assert "sniffio" in "\n".join(reported)
-
-
-def test_an_overlapping_invocation_does_not_erase_an_allocation():
-    """The reset is the dangerous operation, so it only runs when nothing is in flight.
-
-    The two ways overlapping invocations can go wrong are not equally bad.
-    Seeing another invocation's allocation only re-raises, which is what
-    happened before any of this existed. Losing one asserts that nothing ran
-    while a run directory sits on disk, which is the false claim the exit code
-    exists to prevent, so that direction has to be impossible.
-    """
-    begin_invocation()
-    mark_run_allocated()
-
-    begin_invocation()  # a second invocation starts while the first is running
-    assert run_was_allocated(), "the second entry erased the first one's allocation"
-
-    end_invocation()
-    end_invocation()
-
-
-def test_a_finished_invocation_lets_the_next_one_reset():
-    """Guarding the reset must not disable it, or the marker latches on forever.
-
-    Once nothing is in flight the fact is stale, and a later broken environment
-    in the same process has to be reported as one.
-    """
-    begin_invocation()
-    mark_run_allocated()
-    end_invocation()
-
-    begin_invocation()
-    assert not run_was_allocated()
-    end_invocation()
 
 
 def test_the_marker_survives_allocation_on_another_thread(monkeypatch, reported):

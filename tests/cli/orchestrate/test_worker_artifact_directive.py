@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.cli._providers import _add_workload_kwarg
 from lionagi.cli.orchestrate._common import (
     BARE_WORKER_SYSTEM,
     bare_worker_system,
@@ -21,6 +20,7 @@ from lionagi.cli.orchestrate._orchestration import (
     collect_worker_artifacts,
 )
 from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
+from lionhub.orchestration.spawn import _add_workload_kwarg
 
 # Half 1: the prompt names the directory
 

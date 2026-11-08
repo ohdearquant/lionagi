@@ -11,43 +11,51 @@
   provider placement to ADR-0122; requires ADR-0123's Run/entity decision before target-registry freeze;
   touches every ADR that added a StateDB column or table
 
+Line citations not attributed to a named revision are re-derived at `bb57cc9619765bd03e7dd2b3369725335d48af21`.
+
 ## Context
 
 The persistence layer describes its own schema five times in the package and a sixth time in
 its own test fixture, and the guard that checks agreement between them compares names only.
 
 **P1 — five parallel schema descriptions, plus a sixth in the test.** One logical schema is
-written down in these hand-maintained forms:
+written down in these hand-maintained forms. Except for the explicitly measured schema and test
+counts, the numeric P1 inventory figures below have not been reverified at `bb57cc96`:
 
-1. `lionagi/state/schema_meta.py` (1,224 lines): a SQLAlchemy `MetaData` declaring 32 tables,
-   380 columns and 83 `Index(...)` objects. Its own docstring calls it the "single source of
-   truth for schema DDL". It is what production actually creates from:
-   `await conn.run_sync(metadata.create_all)` at `lionagi/state/db.py::StateDB._apply_schema`.
-2. `lionagi/state/schema.sql` (1,021 lines): 32 `CREATE TABLE` and 87 `CREATE INDEX`
-   statements declaring the same schema in DDL text. Its header line reads
-   `-- lionagi state schema v1` while line 22 seeds `version` `'3'`. It is bound to
-   `_SCHEMA_PATH` (`lionagi/state/db.py::_SCHEMA_PATH`) and read only by tests; production open never executes
-   it.
+1. At `bb57cc9619765bd03e7dd2b3369725335d48af21`, `lionagi/state/schema_meta.py` has 1,357
+   lines and declares 34 tables, 408 directly declared columns and 93 named `Index(...)` objects
+   in a SQLAlchemy `MetaData`. Its own docstring calls it the "single source of truth for schema
+   DDL". It is what production creates from: `await conn.run_sync(metadata.create_all)` at
+   `lionagi/state/db.py::StateDB._apply_schema`.
+2. At `bb57cc9619765bd03e7dd2b3369725335d48af21`, `lionagi/state/schema.sql` has 1,102
+   lines and contains 34 `CREATE TABLE` and 97 `CREATE [UNIQUE] INDEX` statements describing the
+   schema in DDL text.
+   Its header line reads `-- lionagi state schema v1` while line 22 seeds `version` `'6'`.
+   It is bound to `_SCHEMA_PATH` (`lionagi/state/db.py::_SCHEMA_PATH`) and read only by tests; production open
+   never executes it.
 3. 16 hand-written `CREATE TABLE` statements across 6 files in 3 packages that bypass both, of
    three distinct kinds: 3 rebuild targets in `state/db.py` (`sessions_new`, `invocations_new`,
    `schedule_runs_new`); 6 tables owned by `studio/operator/store.py` alone
    (`studio_operator_conversations`, `_views`, `_turns`, `_frames`, `_proposals`, `_effects`);
    and 7 re-declarations of tables the state layer already owns, in
    `studio/services/attention.py` (3), `approvals.py` (2), `run_tags.py` (1) and
-   `projects.py` (1). Counting the operator's six, the shared database file holds 38 tables
-   while the schema authority describes 32.
+   `projects.py` (1). At `bb57cc9619765bd03e7dd2b3369725335d48af21`, the state authority
+   declares 34 tables and the operator store declares six additional tables.
 4. `MIGRATION_COLUMNS` / `MIGRATION_INDEXES` in `state/schema_migrations.py`: a per-table
    ledger of additive columns (the `sessions` list alone carries ~30 entries) and a per-dialect
    index list, both re-stating what 1 and 2 already declare.
-5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 298, `_INVOCATION_COLUMNS`
-   355, `_SHOW_COLUMNS` 369, `_PLAY_COLUMNS` 383, `_BRANCH_COLUMNS` 406) guarding the dynamic
+5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 334, `_INVOCATION_COLUMNS`
+   392, `_SHOW_COLUMNS` 406, `_PLAY_COLUMNS` 420, `_BRANCH_COLUMNS` 443) guarding the dynamic
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
    The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
    thing and are not part of this five.
-6. `ALL_TABLES` in `tests/state/test_engine_schema.py::test_make_readonly_engine_rejects_writes`: a hand-typed set of all 32 table
-   names, which is the population every parity assertion iterates over. A table added to the
-   package and not to this set is not checked by any of them.
+6. `ALL_TABLES` in `tests/state/test_engine_schema.py::ALL_TABLES`: a hand-typed set of 34 table names
+   at `bb57cc9619765bd03e7dd2b3369725335d48af21`. The metadata table-name assertion compares
+   the whole created table set to it; the column-name parity assertion iterates over it. A
+   table omitted from both the set and the metadata population is not discovered by that
+   column-name comparison.
 
+The following four-or-five-location estimate has not been reverified at `bb57cc96`.
 Adding one column today can require four or five separately-edited, separately-reviewed
 locations. Recent regressions in this area (a backfill writing a guessed `ended_at` that
 downstream read as measured; an audit default misfiling automatic disables as operator
@@ -56,28 +64,35 @@ different belief about the schema.
 
 **P2 — the parity guard compares names, so the drift that exists today passes it.**
 `tests/state/test_engine_schema.py` builds one database from `MetaData` and another from
-`schema.sql` and compares: the table-name set (`test_metadata_creates_all_tables`), the
-per-table column-*name* sets (`test_metadata_column_parity_vs_schema_sql:246`), the columns of
-exactly one index (`test_branches_index_matches_runtime_migration_definition:287`), and CHECK
-enum value-sets (`test_metadata_check_constraint_parity_vs_schema_sql:344`). Column types,
-nullability, defaults, primary and foreign keys, the other 85 indexes, and index direction are
-outside what it pins. Two divergences are live in the tree right now and green:
+`schema.sql`. It checks the metadata table-name set (`test_metadata_creates_all_tables`),
+per-table column-*name* sets (`test_metadata_column_parity_vs_schema_sql:336`), the columns
+of two named indexes (`test_branches_index_matches_runtime_migration_definition:377` and
+`test_invocation_reaper_index_matches_every_schema_path:434`), and CHECK enum value-sets
+(`test_metadata_check_constraint_parity_vs_schema_sql:488`). This comparison does not establish
+full parity for column types, nullability, defaults, primary and foreign keys, all index
+membership and key direction. Two divergences are present at
+`bb57cc9619765bd03e7dd2b3369725335d48af21`:
 
 - `schema.sql` declares four indexes that `schema_meta.py` does not, and `schema_meta.py`
   declares none that `schema.sql` does not: the metadata is a strict subset. The four are
   `idx_def_unique_version`, `idx_plays_show_name`, `idx_session_signals_seq` and
-  `idx_sessions_run_id`. Absolute counts on 2026-08-15: 87 and 83.
-- `schema.sql` declares 15 indexes with `DESC` key direction (`:93,204,210,326,354,421,…`);
-  `schema_meta.py` declares zero. Production databases, built by `create_all`, therefore have
-  none of those descending indexes. (SQLite and PostgreSQL can both scan an ascending index
-  backwards, so the query-plan consequence is unmeasured; the definitional drift is proven.)
+  `idx_sessions_run_id`. The recorded 2026-08-15 totals of 87 and 83 have not been reverified.
+- At `79c9772930`, `schema.sql` declared 15 indexes with a `DESC` key, while `schema_meta.py`
+  declared none with `.desc()`. At `bb57cc9619765bd03e7dd2b3369725335d48af21`, the respective
+  source counts are 17 and one, `idx_engine_runs_started_id` (`lionagi/state/schema_meta.py` `Index("idx_engine_runs_started_id", engine_runs.c.started_at.desc(),`). These are
+  source counts, not a count of mismatched definitions. For example, `idx_sessions_updated` and
+  `idx_sessions_recent_visible` use descending SQL keys (`schema.sql:203-208`) but ascending
+  metadata keys (`lionagi/state/schema_meta.py` `Index("idx_sessions_updated", sessions.c.updated_at)`). Physical catalog state and query-plan consequences
+  require separate measurement.
 
 A guard that passes while its two subjects disagree is worse than no guard, because it is
 cited as the reason the duplication is safe.
 
 **P3 — DDL issuance and connection ownership are not confined to the state layer.**
-`studio/operator/store.py` (2,349 lines) declares and creates 6 tables of its own and is in
-effect a second persistence layer beside `StateDB`. Four `studio/services/*` modules create 7
+The following counts of tables, modules, request handlers and call sites, direct connections,
+and `require_file_store` references are earlier estimates, not reverified at `bb57cc96`.
+`studio/operator/store.py` (2,647 lines at `bb57cc96`) declares and creates 6 tables of its
+own and is in effect a second persistence layer beside `StateDB`. Four `studio/services/*` modules create 7
 more tables of their own. That DDL does not run at import: each module holds its
 `CREATE TABLE` text as a module constant and executes it from inside request-handling functions —
 20 of them, reached from 26 call sites — so the tables are re-asserted on the request path rather
@@ -94,16 +109,21 @@ referenced 37 times, but `services/shows.py`, `services/signals.py` and `service
 never call it.
 
 **P4 — SQL is hand-built, and identifier safety is convention rather than construction.**
-There are 361 lexical `text(` sites across `state/` and `studio/` and zero in `protocols/` or
-`service/`. There are 88 `# noqa: S608` suppressions across 12 files (45 in `state/db.py`, 17
-in `studio/services/db_maintenance.py`, 7 in `studio/services/sessions.py`, the rest in
+The following `text(`, suppression and identifier-interpolation counts are earlier estimates, not
+reverified at `bb57cc96`. A raw `text(` substring search also matches names such as `context(`;
+the suppression estimates do not establish the number of interpolated identifiers.
+An earlier inventory estimated 361 lexical `text(` sites across `state/` and `studio/` and zero in
+`protocols/` or `service/`. It estimated 88 `# noqa: S608` suppressions across 12 files
+(45 in `state/db.py`, 17 in `studio/services/db_maintenance.py`, 7 in `studio/services/sessions.py`, the rest in
 single digits), of which 22 are direct interpolations of an identifier into a statement being
-constructed (14 `text(f"…")`, 8 `execute(f"…")`). No injection of a caller-supplied *value*
-was found: every site is guarded by a nearby allow-list, fixed tuple, or enum check. The
+constructed (14 `text(f"…")`, 8 `execute(f"…")`). That earlier inventory found no injection of
+a caller-supplied *value* at the sites it covered, each being guarded by a nearby allow-list,
+fixed tuple, or enum check. This conclusion is no stronger than the inventory behind it and was
+not reverified at `bb57cc96` either. The
 weakness is that each guard is re-established by hand at each site, and at least one path has
 none: `LifecyclePolicy.table` and `patch_fields` are plain `str`/`frozenset[str]`
 (`lionagi/state/lifecycle/models.py::LifecyclePolicy`), the registry does not validate them as identifiers, and
-they are interpolated into SQL at `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.initialize_in_transaction` and elsewhere.
+they are interpolated into SQL at `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.initialize_in_transaction`, `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write` and elsewhere.
 
 **P5 — migration is an additive ledger, and the version is not a shape identity.** Schema
 evolution uses `MIGRATION_COLUMNS` at startup plus bespoke `*_new` copy-and-rename rebuilds
@@ -117,19 +137,23 @@ target table from `schema_meta.py` via `to_metadata`
 path already exists on SQLite.
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
-`state/` (13,677 lines, 25 files) plus `studio/` (37,197 lines, 79 files) together exceed the
-entire core layer — `providers/` + `service/` + `protocols/` + `ln/` ≈ 29,600 lines — while
-re-implementing primitives those packages already provide. `StateDB` returns raw row dicts
-rather than typed objects, so every consumer re-parses the same fields; that broken return
+At `bb57cc96`, tracked Python files under `lionagi/state/` comprise 24,659 lines in 33 files,
+and those under `lionagi/studio/` comprise 46,496 lines in 92 files. Some persistence primitives
+overlap with other packages; these counts do not establish a comparable functional-core size.
+The earlier approximately 29,600-line core figure has an unverified counting method. `StateDB`
+returns raw row dicts rather than typed objects, so every consumer re-parses the same fields; that broken return
 contract, not the presence of duplicate helper functions, is where the primitives are being
 bypassed. A reference implementation of the full destination design provides DDL generation,
 typed CRUD, schema introspection, schema diffing, risk-classified migration planning,
-identifier validation and typed error mapping in roughly 4,000 lines.
+identifier validation and typed error mapping in a size previously estimated at roughly 4,000
+lines; that estimate has not been verified here.
 
-**P7 — misplaced modules.** Provider transcript mirrors live in the state package
+**P7 — misplaced modules.** The vocabulary count in this paragraph has not been
+reverified at `bb57cc96`. Provider transcript mirrors live in the state package
 (`state/claude_mirror.py`, `state/codex_mirror.py`, `state/_mirror_common.py`) although they
-are provider-format concerns. `state/reasons.py` mixes four unrelated vocabularies in 248
-lines: reason-code namespaces, the canonical entity-type vocabulary, a frontend route alias,
+are provider-format concerns. `state/reasons.py` mixes four unrelated vocabularies in 266
+LF-terminated lines at `bb57cc96` (248 at `79c9772930`; see reproduction below): reason-code
+namespaces, the canonical entity-type vocabulary, a frontend route alias,
 plural table-name aliases, a code-format validator, and the entity-type → physical-table map
 that `update_status()` uses.
 
@@ -155,7 +179,9 @@ and departs from it where the departures are called out. The shape is:
 ### What that implementation gets wrong
 
 Adopt the pattern, and do not copy the code: the implementation studied has defects that a bulk
-port would import wholesale, several of them observable by running it.
+port would import wholesale, several of them observable by running it. The numerical examples
+of hash seeds, output orders, dimensions and implementation versions below have not been
+reverified at `bb57cc96` or attributed to a reproducible reference revision.
 
 - **Generated output is not deterministic, measurably.** Field selection filters by iterating the
   caller's collection rather than filtering the stored ordered tuple, and the composition path
@@ -200,6 +226,8 @@ unchanged. This codebase is SQLAlchemy-based and SQLite-first with PostgreSQL su
 (`StateDB.dialect` branches throughout). SQLite's `ALTER TABLE` cannot drop constraints, change
 column types, or add foreign keys, which is exactly why the `*_new` rebuild pattern exists. Any
 port that assumes PostgreSQL is dead on arrival.
+
+The following two-NULL-row example has not been reverified at `bb57cc96`.
 
 Worse, it fails quietly. SQLite accepts `UUID`, `JSONB`, `DOUBLE PRECISION` and
 `TIMESTAMP WITH TIME ZONE` as column type names and gives them none of the corresponding
@@ -308,9 +336,10 @@ table list, so the test population can no longer drift from the package.
 
 **D3 — parity is proven on physical semantics, through dialect catalog adapters.** The gate
 compares column types, nullability, defaults, primary and foreign keys, unique and check
-constraints, and the full index set including key direction — not the name sets the current test
-compares. The 15 descending indexes, the four-index membership gap and the one default divergence
-are resolved by an explicit recorded decision each, before either authority is deleted.
+constraints, and the full index set including key direction — not the limited comparisons the
+current tests make. The descending-index differences, the four-index membership gap and the
+default divergence are resolved by an explicit recorded decision each, before either authority
+is deleted.
 
 Stating the comparison is not enough, because the obvious way to implement it silently cannot
 make two of those distinctions. Against the installed SQLAlchemy, generic SQLite reflection
@@ -357,9 +386,12 @@ view definition/dependency · zero or multiple owners for one catalog object.
 
 Each arm must go red on its own. The acceptance test is a mutation, not a passing run: reverting
 an adapter's read of one field must redden exactly that field's arm and no other, which proves
-both that the arm is live and that the arms are independent. The two divergences already in the
-tree — 15 `DESC` indexes against zero, and four indexes declared in one authority and not the
-other — supply the direction and membership fixtures for free; the rest are constructed.
+both that the arm is live and that the arms are independent. The direction differences and four
+indexes (the source membership scan is at `bb57cc96`) declared in one authority and not the other
+supply direction and membership fixture candidates; the rest are constructed.
+
+The counts of 22 interpolations, five allow-lists and 88 suppressions in D4 are earlier estimates
+not reverified at `bb57cc96`; they are not an acceptance threshold.
 
 **D4 — generated statement builders replace hand-built SQL for row CRUD.** Insert column lists,
 update SET clauses, and update allow-lists derive from the spec's field set. The 22 identifier
@@ -369,6 +401,11 @@ carries validated identifier types instead of `str`. Hand-written SQL remains le
 expected for genuinely bespoke work — locking, CTEs, JSON operators, window aggregates, atomic
 CAS transitions, retention sweeps — which moves behind named typed owners with an explicit
 escape hatch that validates identifiers, rather than being scattered through route code.
+
+At `bb57cc96`, `state/db.py` has seven rebuild paths over five tables, counted as its seven
+`ALTER TABLE … RENAME TO` statements: one for `sessions`, three for `schedules`, and one each for
+`invocations`, `schedule_runs` and `definitions`. The sessions path and the six others are the
+paths D5 refers to below.
 
 **D5 — migration is a diff between declared and introspected schema, and it fails closed.** At
 open, introspect the live database, diff against the declared schema, and produce a
@@ -387,10 +424,9 @@ used to bypass ownership.
 The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
 copy statement's column list from catalog-read names and re-executing index DDL strings taken from
 `sqlite_master` (`lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table`, `lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table._rebuild`, and the same shape in the six other rebuild paths).
-That faithfully preserves whatever the database happens to contain, including objects nothing
-declares, so a rebuild carries drift forward instead of resolving it — a database built from the
-old DDL path keeps its 15 descending indexes through every future migration. It is also the one
-place where identifiers reach SQL from a source no allow-list covers.
+That preserves catalog index DDL replayed by those paths, including objects nothing declares, so
+a rebuild can carry drift forward instead of resolving it. It is also the one place where
+identifiers reach SQL from a source no allow-list covers.
 
 "Additive" is not a safe synonym for "cheap", and the classifier has to say so. D1 lets a field
 be declared non-null without a default, and SQLite refuses `ADD COLUMN` for exactly that shape;
@@ -495,6 +531,9 @@ The distinction is enforced at the catch site because the defect this replaces i
 blanket `except Exception: continue` that could not tell the two apart and then stamped the
 version anyway.
 
+The operator-table and studio-service re-declaration counts in this discussion have not been
+reverified at `bb57cc96`.
+
 One consequence of "unknown shape means quarantine" has to be settled before Phase 4 turns
 application on, because the phasing creates the condition on purpose. Migration applies in Phase
 4; the operator-store tables do not enter the registry until Phase 5. Between those two points a
@@ -528,6 +567,9 @@ with no handle, DDL, or version write. A complete unknown shape takes zero retri
 connection whose write fails at the backend, while the same PostgreSQL shape without safe
 read-only credentials returns `Unavailable`. A later open after restoration is evaluated anew.
 
+The D6 counts of six operator tables, seven re-declarations, 38 direct contexts and three
+services without the guard have not been reverified at `bb57cc96`.
+
 **D6 — DDL issuance and store access become the state layer's exclusive right.** The six
 operator-store tables and the 7 studio-service re-declarations register in the registry (the
 latter as the state-owned tables they already duplicate). Studio loses its
@@ -544,9 +586,14 @@ persistence-schema decision or a proven pure move. ADR-0122 decides the provider
 projection, and persistence port boundaries and their compatibility path. ADR-0118 removes the
 state import inversion only through that accepted boundary; Phase 0 does not move these files.
 
+The D8 per-class code counts below count direct string-literal assignments by class at `bb57cc96`
+using the AST scan in the reproduction section. The seven proposed renames and 497 sites have not
+been reverified at `bb57cc96`. The six facade values and seven existing policy values used in the
+projection design also require a same-revision inventory.
+
 **D8 — `reasons.py` is keyed two different ways at once; separate them.** The module holds two
 vocabularies that look like one. The eight code classes are keyed on *producer domain*, and each
-owns exactly one code prefix: `RunReasons` → `run.` (30 codes), `SessionReasons` → `session.`
+owns exactly one code prefix: `RunReasons` → `run.` (33 codes), `SessionReasons` → `session.`
 (6), `PlayReasons` → `play.` (8), `ShowReasons` → `show.` (5), `ScheduleReasons` → `schedule.`
 (7), `ScheduleDefinitionReasons` → `schedule_definition.` (9), `TeamReasons` → `team.` (1),
 `DispatchReasons` → `dispatch.` (8). Everything around them —
@@ -597,8 +644,11 @@ as an explicit compatibility map. This is Phase 1 work, not a pre-registry Phase
 domain reason classes remain separate from both registry-derived projections throughout.
 
 "Derived from the registry" has to mean derived from a *projection* of it, and the projection
-needs declaring, because the two sets are not the same size and never were. The registry holds
-32 persisted entities. `VALID_ENTITY_TYPES` holds six — `session`, `show`, `play`, `invocation`,
+needs declaring, because `VALID_ENTITY_TYPES` names only part of what is persisted. At
+`bb57cc9619765bd03e7dd2b3369725335d48af21`, the metadata declares 34 tables, and the six
+types map to six of them through `ENTITY_TYPE_TO_TABLE`; the eventual entity-registry
+population is a separate design outcome. `VALID_ENTITY_TYPES` holds six —
+`session`, `show`, `play`, `invocation`,
 `team`, `schedule_run` — and is the compatibility exposure of generic
 `StateDB.update_status()`. It is **not** the complete set whose transitions LifecycleService
 validates: the live policy registry also owns `dispatch`, and dispatch/outbox production code
@@ -648,6 +698,9 @@ demonstrates in this repository.
 
 ### Ordering against ADR-0117
 
+The count of 16 inventoried hand-authored declarations below has not been reverified at
+`bb57cc96`.
+
 ADR-0117 declares its canonical schema target as hand-written `CREATE TABLE` text for
 `progression_items` and `progression_storage_state`. Under D1 that is one more authored
 authority, so the two ADRs have to agree on which absorbs which rather than discovering it later.
@@ -696,6 +749,10 @@ declared index to a table that already exists — the separate index ledger exis
 that — so a schema change made in the writer phase would still have to be applied to the spec and
 the old migration ledger together, and a missed edit points a generated writer at a shape the
 upgraded store does not have.
+
+Numerical estimates of existing authorities, policies and direct connections in the phase plan
+below have not been reverified at `bb57cc96`; target counts are design requirements. The count of
+seven rebuild paths was measured at `bb57cc96` (D5).
 
 - **Foundation gate:** accept and implement the relevant ADR-0119 contracts for dataclass
   defaults/default factories, Sentinel states, ordered field identity, structural equality/hash,
@@ -805,6 +862,9 @@ concurrency, serialization and retry underneath both.
 
 ## Scope boundary: typed rows
 
+The estimate of 51 untyped read methods, repeated below, has not been reverified at `bb57cc96`;
+the annotation patterns alone do not establish the number of public read signatures.
+
 `StateDB`'s read surface returns untyped rows — 51 methods annotated
 `dict[str, Any] | None` or `list[dict[str, Any]]` — so every consumer re-parses the same fields
 and no reader is checked against the schema. It is the same root cause as P1: nothing connects
@@ -831,22 +891,18 @@ gates unprovable. It needs its own decision, taken once the generated decoders e
 
 ## What this deletes
 
-Measured file by file at the current head. "Deleted" means the hand-authored source stops
-existing, because the same facts are generated from the registry.
+The table records sizing from the earlier `79c9772930` draft. The whole-file line count for
+`state/schema.sql` at that revision is reproducible; region boundaries, deletability and the
+subtotal have not been revalidated at `bb57cc96`. "Deleted" means the hand-authored source
+would stop existing because the same facts are generated from the registry.
 
-Two kinds of figure appear below and they carry different weight, so the method is stated rather
-than left to the reader. **Structural counts** — whole-file line counts, table and column counts,
-method counts, the number of `_*_COLUMNS` frozensets — are derived from the AST or from the
-declared `MetaData`, never from a line-oriented pattern. That distinction is not pedantic: a
-regex requiring the value on the same line as the name undercounts anything spelled across
-lines, which is exactly how an earlier draft of this document reported 29 `RunReasons` codes
-instead of 30. Every structural figure here was re-derived that way and reconciles.
-**Region-bounded counts** — the rebuild machinery's 956 lines, the operator schema region's 244,
-the 286 duplicated lines in three service modules — depend on where the region is judged to
-start and stop. They are honest measurements of a boundary someone drew, they are not
-reproducible from a command alone, and they should be treated as sizing rather than as facts.
+The historical table mixes whole-file and region-bounded estimates. A whole-file line count can
+be reproduced from the named revision. The estimated rebuild, operator-schema and duplicate-code
+regions depend on chosen boundaries; no repeatable current-revision measurement or verified
+deletion estimate is supplied here. Counts of tables, columns and declarations require their own
+enumeration and must not be inferred from line counts.
 
-| Deleted outright | Lines |
+| Proposed deletion region (historical estimate at 79c9772930) | Lines |
 |---|---:|
 | `state/schema.sql` (becomes a generated artifact) | 1,021 |
 | `state/schema_migrations.py` (`MIGRATION_COLUMNS` + `MIGRATION_INDEXES`) | 284 |
@@ -856,45 +912,49 @@ reproducible from a command alone, and they should be treated as sizing rather t
 | `studio/operator/store.py` schema + migration region | 244 |
 | `studio/services/_db.py` (second connection path) | 114 |
 | `studio/services/*` fallback DDL blocks, 4 files | 93 |
-| **Subtotal, measured** | **2,986** |
+| **Historical arithmetic subtotal, not revalidated** | **2,986** |
 
-`state/schema_meta.py` (1,224 lines) is not in that column because it is *replaced* rather than
-removed: its 32 tables become entity specs. A spec form of the same 380 columns should land near
-900 lines, so call it another 300 net.
+`state/schema_meta.py` (1,224 lines at `79c9772930`, 1,357 at `bb57cc96`) is not in that
+column because it is *replaced* rather than removed: its 34 declared tables and 408 directly
+specified columns at `bb57cc96` inform the entity specifications. The earlier estimates of
+approximately 900 lines for specs and 300 lines net reduction have not been validated.
 
 Against that, the generator is new code: specs, registry, MetaData compiler, introspection, diff,
-plan, rebuild generator, identifier validation, error mapping. A comparable implementation does
-more than this in roughly 4,000 lines, including CRUD and PostgreSQL-only concerns this design
-does not adopt, so 1,500 to 2,500 is the honest band.
+plan, rebuild generator, identifier validation and error mapping. The earlier draft estimated a
+roughly 4,000-line comparable implementation, 1,500 to 2,500 lines of new code and a net reduction
+of 800 to 1,800 lines; none of those figures is verified here. Re-measure implementation scope and
+savings after the relevant phases. The design aims to make one column one edit and give the schema
+one authoritative description.
 
-Net on the schema layer: somewhere between 800 and 1,800 lines smaller, and that is the least
-interesting part of the answer. The change that matters is that one column stops being four or
-five edits, and "what is the schema" stops having six answers.
-
-The larger cut is smaller than the module sizes suggest. The six studio service modules carrying
-persistence total 2,387 lines. Within `projects.py`, `shows.py` and `signals.py` (1,209 lines of
-that), the code reimplementing a `StateDB` method that already exists measures 286 lines: 159 of
-`projects.py`'s 346, 78 of `shows.py`'s 801, and 49 of `signals.py`'s 62. `StateDB` already
+At `bb57cc96`, `projects.py`, `shows.py`, `signals.py`, `run_tags.py`, `approvals.py` and
+`attention.py` total 2,426 lines; the first three total 1,263. At `79c9772930` those totals were
+2,387 and 1,209. The earlier draft estimated 286 duplicate lines across the first three (159, 78
+and 49 respectively); these region boundaries and the current duplicate total have not been
+revalidated. The following counts of six project, five show and two signal methods have not been
+reverified at `bb57cc96`. `StateDB` already
 carries six project methods, five show methods and two signal methods. The bulk of `shows.py` is
 filesystem show-import and presentation logic that no store method covers, so it is not a
 candidate for this cut at all. `run_tags`, `approvals` and `attention` own real domain logic and
 only their DDL and connection handling go.
 
-Phase 5 cannot treat those 286 lines as a mechanical delete, because the pairs have drifted in
-response shape. `signals.py` coalesces `op_id` to `""` and `payload` to `{}` where `StateDB`
+Phase 5 cannot treat the previously estimated duplicate regions as a mechanical delete, because
+the pairs have drifted in response shape. `signals.py` coalesces `op_id` to `""` and `payload` to `{}` where `StateDB`
 returns whatever the row holds, and a client reading the signal stream sees the difference.
 `projects.py`'s `update_project` reports success for a patch carrying no mutable fields when the
 project exists, where `StateDB` returns `False`, which is the difference between a 200 and a 404
 at the route. Each swap is an API contract decision with a caller behind it, so the
 caller-by-caller pass Phase 5 opens with is what sizes this work.
 
-Add to it the 38 direct store connections across 9 modules that collapse to one
-`StateStore`/`TransactionRunner`, the
+The following estimate of 38 direct store connections across nine modules has not been
+reverified at `bb57cc96`. Add to it the 38 direct store connections across 9 modules that collapse
+to one `StateStore`/`TransactionRunner`, the
 repeated session-by-id lookups in the operator package, and the admin-event insert duplicated
 between `studio/operator/store.py` and `StateDB.insert_admin_event`. Sizing the rest is Phase 5's
 opening pass, not something to estimate from here.
 
 ## Consequences
+
+The seven-path count repeated below is the one measured at `bb57cc96` in D5.
 
 - One column addition becomes one edit in one place, and "what is the schema" has one answer.
 - The identifier-interpolation class disappears rather than being re-guarded site by site.
@@ -914,38 +974,41 @@ opening pass, not something to estimate from here.
 ## Appendix A — inventory
 
 Counts are source-site counts, not runtime frequencies, and the units are deliberately not
-summed: a declaration, a statement string, and an execution call are different things.
+summed: a declaration, a statement string, and an execution call are different things. Except
+where explicitly measured at the stated revision, these inventory figures have not been
+reverified at `bb57cc96`. In particular, the migration ledger, inline DDL, execution-call,
+allow-list, suppression, operator and service-table, request-handler and connection counts in
+the next five rows are unverified estimates, not measured current totals.
 
 | Where | Declares schema | Issues DDL | Builds SQL | Notes |
 |---|---|---|---|---|
-| `state/schema_meta.py` | 32 tables, 380 columns, 83 indexes | via `create_all` | — | what production builds from; also 34 PK columns, 27 FKs, 20 CHECKs, 8 uniques, 29 partial indexes, 37 server defaults — Phase 1 compares generated objects and Phase 2 compares physical catalogs |
-| `state/schema.sql` | 32 tables, 87 indexes, 5 pragmas, 3 seeds | tests only | — | `_SCHEMA_PATH` at `lionagi/state/db.py::_SCHEMA_PATH`; not executed by writable open |
+| `state/schema_meta.py` | 34 tables, 408 direct columns, 93 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21` | via `create_all` | — | what production builds from; PK, FK, CHECK, unique, partial-index and server-default counts need a fresh same-pin inventory — Phase 1 compares generated objects and Phase 2 compares physical catalogs |
+| `state/schema.sql` | 34 tables, 97 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21`; pragma and seed totals require a fresh inventory | tests only | — | `_SCHEMA_PATH` at `lionagi/state/db.py::_SCHEMA_PATH`; not executed by writable open |
 | `state/schema_migrations.py` | 127 additive column declarations over 14 tables | 10 indexes per dialect | — | the two dialect tuples are textually identical |
-| `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 6,683 lines; 5 `_*_COLUMNS` allow-lists; 45 `S608` |
+| `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 9,539 lines and 73 physical lines containing `S608` at `bb57cc96` (see scan below); 5 `_*_COLUMNS` allow-lists |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |
-| `studio/operator/store.py` | 6 tables (+2 indexes) + own migration | yes | 119 sites | 2,349 lines; a second persistence layer |
+| `studio/operator/store.py` | 6 tables (+2 indexes) + own migration | yes | 119 sites | 2,647 lines at `bb57cc96`; a second persistence layer |
 | `studio/services/*` | 7 re-declarations of state tables, 4 modules | on the request path, in 20 request-handling functions | 93 execution calls | 38 direct store connections in 9 files |
 
-Divergences found between the two full-schema authorities, all currently green.
+Historical divergences and source observations for the two full-schema authorities. The dated
+index-count row has not been reverified, and physical catalog state requires separate checking.
 
-The index rows are stated as *membership* rather than as a pair of totals, because the totals
-move under ordinary schema traffic and the divergence does not. Both totals rose by one within a
-day of this document being written, together, leaving the gap and its four member names
-unchanged. Anything downstream that needs a stable figure — an acceptance threshold, a fixture
-count — takes it from the membership row and the direction row, never from the totals. The
-totals are dated for that reason. Method, so it can be repeated rather than trusted: index names
-from `schema.sql` by matching `CREATE [UNIQUE] INDEX` with line comments stripped, index names
-from `schema_meta.py` by walking its syntax tree for `Index(...)` calls, both parsers asserted
-non-empty, then compared as name sets in both directions rather than by subtracting counts.
+The source membership row compares index names, not physical index semantics. The earlier claim
+that both historical totals rose by one while the same four-name gap remained has not been
+reverified. The direction row records two source populations; their sizes are not a difference
+count and are not a stable acceptance threshold. A downstream fixture or gate must re-derive the
+relevant membership and per-key direction comparison at its own revision and verify physical
+semantics where required. The reproducible source scan below compares names in both directions,
+rather than subtracting totals, and separately counts declarations containing descending keys.
 
 | Divergence | `schema.sql` | `schema_meta.py` |
 |---|---|---|
-| Index membership | 4 declared here and absent there | 0 declared here and absent there |
+| Index membership at `bb57cc9619765bd03e7dd2b3369725335d48af21` | 4 declared here and absent there | 0 declared here and absent there |
 | Index count (2026-08-15) | 87 | 83 |
-| Descending index direction | 15 indexes | 0 |
+| Descending index declarations at `bb57cc9619765bd03e7dd2b3369725335d48af21` | 17 indexes contain `DESC` | 1 index contains `.desc()` |
 | `idx_sessions_run_id` | present | absent (also in the migration registry) |
 | `artifacts.updated_at` default | `DEFAULT (strftime('%s','now'))` | no `server_default` |
-| Header version | `v1` in the comment | seeds `version` `3` |
+| SQL header and seed at `bb57cc9619765bd03e7dd2b3369725335d48af21` | `v1` in the comment; seeds `version` `6` | no seed asserted by this row |
 
 The `artifacts.updated_at` divergence is deliberate and carries its reason in the code: `ALTER
 TABLE` rejects an expression default, so the column that `schema.sql` creates with one is
@@ -970,18 +1033,109 @@ That is what makes this one safe to decide now instead of deferring it with the 
 it is a declaration change with an empty data migration, which the `DESC` index questions are not. Naming it is also a correction: this table previously implied the
 two authorities differed only in index count and direction.
 
-The defaults dimension was then enumerated across all 32 tables rather than spot-checked, since
-a dimension proven to be missing an entry is not usefully repaired one row at a time.
-`schema.sql` carries 38 column defaults and `schema_meta.py` 37; every other pair matches once
-SQLite's quoted rendering is normalised against SQLAlchemy's. `artifacts.updated_at` is the
-whole of the gap.
+A prior inventory enumerated defaults across the then-recorded 32-table population rather than
+spot-checking them. Its reported 38-versus-37 counts and the claim that
+`artifacts.updated_at` was the entire gap have not been reverified against the 34-table
+population at `bb57cc9619765bd03e7dd2b3369725335d48af21`; a complete same-pin comparison is
+needed before treating those counts or the gap's completeness as current.
 
-Cross-cutting: 361 lexical `text(` sites in `state/` + `studio/` against zero in `protocols/` and
-`service/`; 88 `S608` suppressions across 12 files; 22 identifier interpolations; 34
+The cross-cutting figures below have not been reverified at `bb57cc96`: neither the lexical
+`text(` estimate (which may also match `context(`), the S608 and interpolated-identifier estimates,
+nor the `BEGIN IMMEDIATE` and untyped-method estimates are established current counts.
+
+Earlier cross-cutting estimates: 361 lexical `text(` sites in `state/` + `studio/` against zero
+in `protocols/` and `service/`; 88 `S608` suppressions across 12 files; 22 identifier interpolations; 34
 `BEGIN IMMEDIATE` sites; 51 `StateDB` methods returning untyped row dicts.
+
+The following estimates of five session lookups, eight frame inserts and six admin-event inserts
+have not been reverified at `bb57cc96`.
 
 Duplicate query ownership worth its own issues: session-by-id is reimplemented five times across
 the operator modules against `state/db.py`'s own; projects, shows and signals each duplicate a
 `StateDB` API in `studio/services/`; the operator store repeats one frame insert eight times and
 one admin-event insert six times; approvals and attention each implement the same
 lock-read-append ledger separately.
+
+### Reproducing amended source counts
+
+From the repository root, these commands count LF-terminated lines in tracked files and enumerate
+explicit source declarations. The SQL scan is bounded to the syntax in these revisions; neither
+it nor the metadata AST scan proves a deployed physical catalog or complete per-key parity.
+
+```sh
+scratch=$(mktemp -d)
+mkdir -p "$scratch/current" "$scratch/historical"
+git archive bb57cc9619765bd03e7dd2b3369725335d48af21 lionagi tests/state/test_engine_schema.py | tar -x -C "$scratch/current"
+git archive 79c9772930ac8da8522c3b3ced5d2974d13daea1 lionagi | tar -x -C "$scratch/historical"
+python3 -I - "$scratch/current" "$scratch/historical" <<'PY'
+import ast
+import pathlib
+import re
+import sys
+
+current, historical = map(pathlib.Path, sys.argv[1:])
+for label, root in (("bb57", current), ("79c", historical)):
+    print(label)
+    for path in ("state/db.py", "state/schema_meta.py", "state/schema.sql", "studio/operator/store.py"):
+        print(path, (root / "lionagi" / path).read_bytes().count(b"\n"))
+    services = root / "lionagi/studio/services"
+    names = ("projects", "shows", "signals", "run_tags", "approvals", "attention")
+    counts = [(services / (name + ".py")).read_bytes().count(b"\n") for name in names]
+    print("service lines", counts, "first three", sum(counts[:3]), "all six", sum(counts))
+    for directory in ("state", "studio", "providers", "service", "protocols", "ln"):
+        if not (root / "lionagi" / directory).is_dir():
+            print(directory, "absent")
+            continue
+        paths = list((root / "lionagi" / directory).rglob("*.py"))
+        print(directory, len(paths), sum(p.read_bytes().count(b"\n") for p in paths))
+
+m = ast.parse((current / "lionagi/state/schema_meta.py").read_text())
+calls = [n for n in ast.walk(m) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+tables = [n for n in calls if n.func.id == "Table"]
+columns = [a for t in tables for a in t.args if isinstance(a, ast.Call) and isinstance(a.func, ast.Name) and a.func.id == "Column"]
+indexes = [n for n in calls if n.func.id == "Index" and n.args and isinstance(n.args[0], ast.Constant)]
+raw = "\n".join(re.sub(r"--.*", "", line) for line in (current / "lionagi/state/schema.sql").read_text().splitlines())
+sql_tables = re.findall(r"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"\[]?([\w]+)", raw, re.I)
+sql_indexes = list(re.finditer(r"CREATE\s+(?:UNIQUE\s+)?INDEX\b[^;]+;", raw, re.I | re.S))
+name = lambda s: re.search(r"INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", s, re.I).group(1)
+sql_names = {name(n.group()) for n in sql_indexes}
+meta_names = {n.args[0].value for n in indexes}
+sql_desc = {name(n.group()) for n in sql_indexes if re.search(r"\bDESC\b", n.group(), re.I)}
+meta_desc = {n.args[0].value for n in indexes if any(isinstance(x, ast.Attribute) and x.attr == "desc" for x in ast.walk(n))}
+test = ast.parse((current / "tests/state/test_engine_schema.py").read_text())
+a = next(n for n in test.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "ALL_TABLES" for t in n.targets))
+assert tables and columns and indexes and sql_tables and sql_indexes, "a parser found nothing"
+print("metadata tables/direct columns/named indexes", len(tables), len(columns), len(indexes))
+print("SQL tables/indexes", len(sql_tables), len(sql_indexes))
+print("SQL-only", sorted(sql_names - meta_names), "metadata-only", sorted(meta_names - sql_names))
+print("DESC-bearing SQL/metadata declarations", len(sql_desc), len(meta_desc), sorted(meta_desc))
+print("ALL_TABLES", len(a.value.elts))
+historical_raw = "\n".join(re.sub(r"--.*", "", line) for line in (historical / "lionagi/state/schema.sql").read_text().splitlines())
+historical_indexes = list(re.finditer(r"CREATE\s+(?:UNIQUE\s+)?INDEX\b[^;]+;", historical_raw, re.I | re.S))
+historical_meta = ast.parse((historical / "lionagi/state/schema_meta.py").read_text())
+historical_meta_indexes = [n for n in ast.walk(historical_meta) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "Index"]
+print("79c DESC-bearing SQL/metadata declarations", sum(bool(re.search(r"\bDESC\b", n.group(), re.I)) for n in historical_indexes), sum(any(isinstance(x, ast.Attribute) and x.attr == "desc" for x in ast.walk(n)) for n in historical_meta_indexes))
+PY
+```
+
+The line counts for `state/reasons.py`, physical `S608`-containing lines in `state/db.py`, and
+the direct class string-literal assignment counts in D8 are reproducible separately (the scans do
+not infer runtime use):
+
+```sh
+git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/reasons.py | wc -l
+git show 79c9772930ac8da8522c3b3ced5d2974d13daea1:lionagi/state/reasons.py | wc -l
+git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/db.py | rg -c S608
+git show bb57cc9619765bd03e7dd2b3369725335d48af21:lionagi/state/reasons.py | python3 -I -c '
+import ast, sys
+m = ast.parse(sys.stdin.read())
+for c in m.body:
+    if isinstance(c, ast.ClassDef) and c.name.endswith("Reasons"):
+        values = [a.value.value for a in c.body if isinstance(a, ast.Assign)
+                  and len(a.targets) == 1 and isinstance(a.targets[0], ast.Name)
+                  and isinstance(a.value, ast.Constant) and isinstance(a.value.value, str)]
+        print(c.name, len(values))
+'
+```
+
+The temporary directory can be removed after inspection.

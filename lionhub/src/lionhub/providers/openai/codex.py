@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 import toml
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
@@ -52,15 +53,16 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
-    CLI_ARGUMENT_MAX_BYTES as _CLI_ARGUMENT_MAX_BYTES,  # noqa: F401
-)
-from lionhub.providers._cli_subprocess import (
     Redacted,
     SpawnedProcess,
+    _resolve_cli_path,
     build_declarative_cli_args,
+    declarative_cli_flags,
     discover_cli,
     env_as_the_spawn_encodes_it,
+    make_cli_flag,
     ndjson_from_cli,
+    nul_refusal_message,
     print_readable,
     raise_if_env_is_not_a_string_map,
     redact_runtime_fields_in_place,
@@ -70,12 +72,6 @@ from lionhub.providers._cli_subprocess import (
     resolve_cli_workspace,
     reveal_redacted,
     validate_message_prompt,
-)
-from lionhub.providers._cli_subprocess import (
-    make_cli_flag as _cli,
-)
-from lionhub.providers._cli_subprocess import (
-    nul_refusal_message as _nul_refusal_message,
 )
 
 from ._codex_profile import (
@@ -372,7 +368,24 @@ CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
 # The refusals shared with the other CLI providers name the program they guard; here they
 # name the Codex CLI.
 _refuse_oversized_argument = functools.partial(refuse_oversized_argument, cli="Codex CLI")
-_refuse_oversized_command = functools.partial(refuse_oversized_command, cli="Codex CLI")
+
+
+def _refuse_oversized_command(cmd: list[str]) -> None:
+    flags = declarative_cli_flags(CodexCodeRequest) | {
+        "--json",
+        "--add-dir",
+        "--sandbox",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-s",
+        "--enable",
+        "--disable",
+        "-i",
+        "-C",
+        "-c",
+    }
+    refuse_oversized_command(cmd, "Codex CLI", known_flags=flags)
+
+
 _refuse_text_strict_utf8_cannot_encode = functools.partial(
     refuse_text_strict_utf8_cannot_encode, cli="Codex CLI"
 )
@@ -433,7 +446,7 @@ def _argument_text_failure(text: str, what: str) -> ValueError | None:
     None: strict UTF-8 must encode it, and it may not hold a NUL, which exec refuses."""
     failure = _strict_utf8_failure(text, what)
     if failure is None and "\x00" in text:
-        failure = ValueError(_nul_refusal_message(what))
+        failure = ValueError(nul_refusal_message(what))
     return failure
 
 
@@ -1130,6 +1143,8 @@ def _linked_worktree_git_writable_roots(cwd: Path) -> tuple[Path, ...]:
 class CodexCodeRequest(BaseModel):
     """Configuration + prompt for an OpenAI Codex CLI invocation."""
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Codex CLI")
 
@@ -1137,17 +1152,17 @@ class CodexCodeRequest(BaseModel):
     model: str | None = Field(
         default="gpt-5.3-codex",
         description="Codex model to use",
-        json_schema_extra=_cli("-m", 10),
+        json_schema_extra=make_cli_flag("-m", 10),
     )
     profile: str | None = Field(
         default=None,
         description="Configuration profile from ~/.codex/config.toml",
-        json_schema_extra=_cli("-p", 11),
+        json_schema_extra=make_cli_flag("-p", 11),
     )
     oss: bool = Field(
         default=False,
         description="Use local open-source model provider (Ollama)",
-        json_schema_extra=_cli("--oss", 12, "bool"),
+        json_schema_extra=make_cli_flag("--oss", 12, "bool"),
     )
     search: bool = Field(
         default=False,
@@ -1185,7 +1200,7 @@ class CodexCodeRequest(BaseModel):
     add_dir: list[str] | None = Field(
         default=None,
         description="Additional directories to grant write access",
-        json_schema_extra=_cli("--add-dir", 30, "repeat"),
+        json_schema_extra=make_cli_flag("--add-dir", 30, "repeat"),
     )
 
     # ── process (runtime-only, never rendered as CLI args) ─────────
@@ -1308,17 +1323,17 @@ class CodexCodeRequest(BaseModel):
     output_schema: str | Path | None = Field(
         default=None,
         description="Path to JSON Schema file for structured output",
-        json_schema_extra=_cli("--output-schema", 50),
+        json_schema_extra=make_cli_flag("--output-schema", 50),
     )
     output_last_message: str | Path | None = Field(
         default=None,
         description="Write the final message to a file",
-        json_schema_extra=_cli("--output-last-message", 51),
+        json_schema_extra=make_cli_flag("--output-last-message", 51),
     )
     color: CodexColorMode | None = Field(
         default=None,
         description="ANSI color mode",
-        json_schema_extra=_cli("--color", 52),
+        json_schema_extra=make_cli_flag("--color", 52),
     )
 
     # ── features (order 60–69) ────────────────────────────────────
@@ -1329,22 +1344,22 @@ class CodexCodeRequest(BaseModel):
             "run in per-task artifact dirs that are not git repos, where codex would "
             "otherwise refuse with 'Not inside a trusted directory'."
         ),
-        json_schema_extra=_cli("--skip-git-repo-check", 60, "bool"),
+        json_schema_extra=make_cli_flag("--skip-git-repo-check", 60, "bool"),
     )
     ephemeral: bool = Field(
         default=False,
         description="Don't persist session to disk",
-        json_schema_extra=_cli("--ephemeral", 61, "bool"),
+        json_schema_extra=make_cli_flag("--ephemeral", 61, "bool"),
     )
     no_alt_screen: bool = Field(
         default=False,
         description="Disable alternate screen mode for TUI",
-        json_schema_extra=_cli("--no-alt-screen", 62, "bool"),
+        json_schema_extra=make_cli_flag("--no-alt-screen", 62, "bool"),
     )
     include_plan_tool: bool = Field(
         default=False,
         description="Include the plan tool in the conversation",
-        json_schema_extra=_cli("--include-plan-tool", 63, "bool"),
+        json_schema_extra=make_cli_flag("--include-plan-tool", 63, "bool"),
     )
     ignore_user_config: bool = Field(
         default=False,
@@ -1364,19 +1379,19 @@ class CodexCodeRequest(BaseModel):
             "flag. A `profile`, or overrides that select one, are refused with the flag, since "
             "codex then loads no profile."
         ),
-        json_schema_extra=_cli("--ignore-user-config", 64, "bool"),
+        json_schema_extra=make_cli_flag("--ignore-user-config", 64, "bool"),
     )
 
     # ── feature flags (order 70–79) ───────────────────────────────
     enable_features: list[str] | None = Field(
         default=None,
         description="Feature flags to enable",
-        json_schema_extra=_cli("--enable", 70, "repeat"),
+        json_schema_extra=make_cli_flag("--enable", 70, "repeat"),
     )
     disable_features: list[str] | None = Field(
         default=None,
         description="Feature flags to disable",
-        json_schema_extra=_cli("--disable", 71, "repeat"),
+        json_schema_extra=make_cli_flag("--disable", 71, "repeat"),
     )
     contain_account_integrations: bool = Field(
         default=False,
@@ -1673,43 +1688,55 @@ class CodexCodeRequest(BaseModel):
         exist, or that this process cannot list and enter leaves the walk with
         nothing it can read, so a caller cannot tell which codex configs apply
         and containment cannot be enforced. Each is refused before the request
-        is used, naming the directory and the reason, chained from the error
-        the filesystem raised.
+        is used, naming the reason without retaining the path or filesystem error.
         """
         if not self._contains_account_integrations():
             return
-        repo = str(self.repo)
+        unresolved = False
         try:
             self.repo.resolve()
-        except (RuntimeError, OSError) as exc:
+        except (RuntimeError, OSError):
+            unresolved = True
+        if unresolved:
             raise ContainmentRefusedError(
-                f"contain_account_integrations cannot use the working directory "
-                f"{repo!r}: it cannot be resolved ({exc})"
-            ) from exc
-        # The same validation the spawn path uses, so the refusal names the
-        # directory the same way and is chained from the value error it raises.
+                "contain_account_integrations cannot use the working directory: it cannot be resolved"
+            ) from None
+        unavailable = False
         try:
             resolve_cli_workspace(self.repo, None)
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError):
+            unavailable = True
+        if unavailable:
             raise ContainmentRefusedError(
-                f"contain_account_integrations cannot use the working directory: {exc}"
-            ) from exc
+                "contain_account_integrations cannot use the working directory: it is unavailable"
+            ) from None
         if not os.access(self.repo, os.R_OK | os.X_OK):
             raise ContainmentRefusedError(
-                f"contain_account_integrations cannot use the working directory "
-                f"{repo!r}: this process cannot list and enter it"
+                "contain_account_integrations cannot use the working directory: "
+                "this process cannot list and enter it"
             )
 
     @model_validator(mode="after")
     def _contain_path_fields_in_repo(self):
+        value_refused = False
         try:
-            repo_root = self.repo.resolve()
-        except RuntimeError:
+            repo_root = _resolve_cli_path(self.repo, "working directory")
+        except ValueError:
+            if not self._contains_account_integrations():
+                raise
+            value_refused = True
+        except (RuntimeError, OSError):
             if self._contains_account_integrations():
                 # Deferred to __init__, which raises the refusal outside
                 # pydantic's validation and so keeps its own type.
                 return self
             raise
+        if value_refused:
+            message = (
+                "contain_account_integrations cannot use the working directory: "
+                "it cannot be resolved"
+            )
+            raise CLIInputRefusedError(message) from ContainmentRefusedError(message)
         # Each path is read the way the snapshot reads it, `str.__str__(os.fspath(x))`, so
         # the text this check contains is the text the command line renders: a path-like
         # value whose own `__str__` answers differently on a later read cannot pass here

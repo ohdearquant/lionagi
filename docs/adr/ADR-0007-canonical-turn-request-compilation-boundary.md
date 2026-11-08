@@ -559,7 +559,7 @@ lines:
   separately (`lionagi/protocols/messages/prepare.py::prepare_messages_for_chat`);
 - kept versus dropped: over a per-provider cap or over the total budget, the registry appends
   the provider name to `ProviderReport.skipped` and moves on
-  (`lionagi/protocols/context_providers.py::ContextProviderRegistry.gather` and `lionagi/protocols/context_providers.py::ContextProviderRegistry.gather`). Only the surviving texts
+  (`lionagi/protocols/context_providers.py::ContextProviderRegistry.gather`). Only the surviving texts
   are threaded into compilation, as `context_blocks: Sequence[str]`
   (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`), and joined into the first instruction's guidance,
   or prefixed to its plain content, with no marker (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs.f`, `lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`); when no instruction
@@ -568,7 +568,7 @@ lines:
   one more block (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`). The prompt therefore shows the kept
   state alone and never says material was dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py::ContextProviderRegistry.__init__`)
-  and render per session (`lionagi/cli/monitor.py::_format_khive_injection_line`), and `branch.last_context_report`
+  and render per session (`lionagi/cli/monitor.py::_format_khive_injection_line` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`), and `branch.last_context_report`
   exposes one turn's names (`lionagi/session/branch.py::Branch.last_context_report`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;
@@ -581,7 +581,7 @@ lines:
   "an empty `left_out` means nothing was left out" is false today for any evicted message;
 - a compaction path exists there too: the context tool's `compact` action replaces a span of
   messages with one assistant summary carrying `[CONTEXT COMPACTION]` and excludes the originals
-  from the active view (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`, the summary at `lionagi/tools/context/context.py::ContextTool.bind.context_tool`).
+  from the active view (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`, the summary at `lionagi/tools/context/context.py` `note = await msgs.a_add_message(`).
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters

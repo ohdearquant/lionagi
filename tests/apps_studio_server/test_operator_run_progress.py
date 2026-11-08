@@ -360,8 +360,8 @@ async def test_run_progress_id_prefix_candidate_cap_and_truncation(db_path):
     """An id-prefix collision comes back as candidates capped at the same
     listing size the CLI helper uses, and truncation is counted over the
     rows this turn may actually see."""
-    from lionagi.cli._util import _CANDIDATES_SHOWN
     from lionagi.studio.operator.run_progress import run_progress
+    from lionhub.orchestration.job import _CANDIDATES_SHOWN
 
     ids = [f"deadbeef-{index:04d}-2222-3333-444455556666" for index in range(6)]
     for sid in ids:
@@ -378,8 +378,8 @@ async def test_run_progress_id_prefix_candidate_cap_and_truncation(db_path):
 async def test_run_progress_id_prefix_truncation_ignores_foreign_rows(db_path, monkeypatch):
     """A collision set padded with foreign-project rows is not truncated once
     those rows are gone: four visible candidates are all of them."""
-    from lionagi.cli._util import _CANDIDATES_SHOWN
     from lionagi.studio.operator.run_progress import run_progress
+    from lionhub.orchestration.job import _CANDIDATES_SHOWN
 
     project = "/Users/admin/acme-research"
     owned = [f"deadbeef-{index:04d}-2222-3333-444455556666" for index in range(4)]
@@ -460,8 +460,8 @@ async def test_run_progress_id_prefix_exactly_listing_size_is_not_truncated(db_p
     candidates come back and nothing was left out, so truncation is false.
     A full window is the truncation signal only when a row was actually
     dropped -- a boundary of exactly the cap must not read as truncated."""
-    from lionagi.cli._util import _CANDIDATES_SHOWN
     from lionagi.studio.operator.run_progress import run_progress
+    from lionhub.orchestration.job import _CANDIDATES_SHOWN
 
     project = "/Users/admin/acme-research"
     owned = await _seed_shared_prefix_runs(
@@ -482,8 +482,8 @@ async def test_run_progress_id_prefix_truncation_counts_only_visible_rows(db_pat
     """One foreign row and six in-scope rows share a prefix. Five candidates
     are shown and a sixth in-scope match is hidden, so truncation is reported
     over the rows this turn may see."""
-    from lionagi.cli._util import _CANDIDATES_SHOWN
     from lionagi.studio.operator.run_progress import run_progress
+    from lionhub.orchestration.job import _CANDIDATES_SHOWN
 
     project = "/Users/admin/acme-research"
     owned = await _seed_shared_prefix_runs(

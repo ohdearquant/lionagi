@@ -26,12 +26,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.cli._providers import AgentProfile, AgentProfileNotFoundError
-from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._orchestration import (
     DEFAULT_ORCHESTRATOR_AGENT,
     setup_orchestration,
 )
+from lionhub.orchestration.runs import RunDir
+from lionhub.orchestration.spawn import AgentProfile, AgentProfileNotFoundError
 
 
 class _Reached(Exception):

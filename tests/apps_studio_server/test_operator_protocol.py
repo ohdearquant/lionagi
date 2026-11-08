@@ -1080,8 +1080,8 @@ async def test_application_mcp_resume_run_delegates_flow_kind_to_checkpoint_repl
     same as the agent-kind end-to-end test above."""
     import uuid
 
-    import lionagi.cli.orchestrate._checkpoint as ckmod
     import lionagi.studio.services.run_resume as resume_svc
+    import lionhub.orchestration.flow.checkpoint as ckmod
     from lionagi.state.db import StateDB
     from lionagi.studio.operator.application_mcp import _dispatch
     from lionagi.studio.operator.resume_run import resume_run
@@ -1485,8 +1485,8 @@ async def _audit_decisions(proposal_id: str) -> list[str]:
 
 
 def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
-    import lionagi.cli._runs as runs_mod
     import lionagi.state.db as state_db_mod
+    import lionhub.orchestration.runs as runs_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
@@ -1635,13 +1635,13 @@ async def test_scripted_turn_streams_and_is_visible_as_canonical_run(tmp_path, m
     run_id = link["payload"]["result"]["runId"]
     branch_id = link["payload"]["result"]["branchId"]
 
-    from lionagi.cli._runs import find_branch
     from lionagi.session.branch import Branch
     from lionagi.state.db import StateDB
     from lionagi.studio.services.run_resume import (
         _ensure_branch_snapshot_available,
         _resolve_branch,
     )
+    from lionhub.orchestration.runs import find_branch
 
     # The Operator's canonical Run is not display-only: the exact branch
     # and DB run mapping consumed by `li agent -r` already exist.
@@ -1677,7 +1677,7 @@ async def test_scripted_turn_streams_and_is_visible_as_canonical_run(tmp_path, m
 async def test_a_turn_writes_its_run_json_off_the_event_loop(tmp_path, monkeypatch):
     # each write takes the run's manifest lock, which another writer of the run can hold; made on the
     # event loop, a held lock would stall every turn the coordinator serves
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1718,7 +1718,7 @@ async def test_a_turn_cancelled_while_its_first_run_json_write_waits_ends_on_its
     # the terminal record land first and `running` after it
     import threading
 
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1771,7 +1771,7 @@ async def test_a_first_run_json_write_that_fails_is_logged_once_whether_or_not_i
     # so the failure is logged by the cleanup that waits it out; an uncancelled turn fails on it
     import threading
 
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1818,7 +1818,7 @@ async def test_a_first_run_json_write_that_fails_is_logged_once_whether_or_not_i
 async def test_a_terminal_run_json_write_that_fails_is_logged(tmp_path, monkeypatch, caplog):
     """The run's record keeps its opening status when the terminal write fails, so the
     failure is logged rather than dropped."""
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2444,6 +2444,18 @@ async def test_provider_session_column_is_added_to_a_preexisting_conversation_st
     assert (await store.get_conversation(conversation_id))["providerSessionId"] == "session-xyz"
 
 
+def test_system_guidance_distinguishes_view_metadata_from_rendered_content():
+    from lionagi.studio.operator.engine import _SYSTEM_PROMPT
+
+    guidance = " ".join(_SYSTEM_PROMPT.lower().split())
+    assert "get_current_view" in guidance
+    assert "cannot see rendered content" in guidance
+    for missing in ("rows", "panel text", "banners", "pixels"):
+        assert missing in guidance
+    assert "never say you cannot tell" not in guidance
+    assert "structured equivalent" not in guidance
+
+
 def test_compiled_prompt_carries_the_view_the_human_is_looking_at():
     """The browser sends a view snapshot every turn; the prompt must show it.
 
@@ -2477,6 +2489,35 @@ def test_compiled_prompt_carries_the_view_the_human_is_looking_at():
     assert "advisor" in prompt
     # The instruction stays last so the model reads the view as background.
     assert prompt.endswith("which page am I on?")
+
+
+def test_compiled_prompt_describes_view_as_turn_time_metadata_not_screen_content():
+    from lionagi.studio.operator.engine import _compile_operator_prompt
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    async def request_permission(*_args):
+        raise AssertionError("prompt compilation cannot request permission")
+
+    prompt = _compile_operator_prompt(
+        OperatorEngineTurn(
+            conversation_id="conversation",
+            request_id="request",
+            instruction="What is visible on this page?",
+            context={"space": "library", "route": "/library", "selection": {"run": "run-1"}},
+            history=(),
+            request_permission=request_permission,
+        )
+    )
+    guidance = " ".join(prompt.lower().split())
+    assert "metadata" in guidance
+    assert "when this turn was submitted" in guidance
+    assert "get_current_view" in guidance
+    assert "rendered content" in guidance
+    assert "pixels" in guidance
+    assert "treat it as current fact" not in guidance
+    assert "- route: /library" in prompt
+    assert '"run":"run-1"' in prompt
+    assert prompt.endswith("What is visible on this page?")
 
 
 def test_compiled_prompt_bounds_an_oversized_filter_payload():

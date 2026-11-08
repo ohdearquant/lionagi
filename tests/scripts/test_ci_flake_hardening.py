@@ -52,6 +52,26 @@ def test_quarantine_manifest_parses_metadata_and_signature_delimiters(tmp_path: 
     ]
 
 
+@pytest.mark.parametrize(
+    ("nodeid", "valid"),
+    [
+        ("tests/example/test_case.py::test_one", True),
+        ("lionhub/tests/example/test_case.py::test_one", True),
+        ("lionhub/tests/../other/test_case.py::test_one", False),
+        ("lionhub/test/example.py::test_one", False),
+        ("lionhub/tests/example/test_case.py", False),
+    ],
+)
+def test_quarantine_requires_a_test_under_a_test_root(tmp_path, nodeid, valid):
+    manifest = tmp_path / "quarantine.txt"
+    manifest.write_text(f"2026-07-01 | {nodeid} | example\n")
+    if valid:
+        assert load_manifest(manifest)[0].nodeid == nodeid
+    else:
+        with pytest.raises(QuarantineError):
+            load_manifest(manifest)
+
+
 def test_quarantine_cap_names_oldest_entries() -> None:
     entries = [
         QuarantineEntry(

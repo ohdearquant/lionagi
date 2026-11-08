@@ -17,6 +17,7 @@ from ._base import (
     Adapter,
     AdapterBase,
     AdapterError,
+    AdapterParseError,
     dispatch_adapt_meth,
 )
 
@@ -83,18 +84,16 @@ class CsvAdapter(AdapterBase, Adapter[T]):
                 try:
                     result.append(dispatch_adapt_meth(adapt_meth, row, adapt_kw, subj_cls))
                 except validation_errors as e:
-                    cls._handle_error(
-                        e,
-                        "validation",
-                        data=row,
-                        row=i + 1,
-                        errors=e.errors() if hasattr(e, "errors") else str(e),
-                    )
+                    error = cls._validation_error(e, row, row=i + 1)
+                else:
+                    continue
+                raise error from None
             if len(result) == 1 and not many:
                 return result[0]
             return result
         except validation_errors as e:
-            cls._handle_error(e, "validation", data=rows, errors=e.errors())
+            error = cls._validation_error(e, rows)
+        raise error from None
 
     @classmethod
     def from_obj(
@@ -109,6 +108,7 @@ class CsvAdapter(AdapterBase, Adapter[T]):
         validation_errors: tuple[type[Exception], ...] = (ValidationError,),
         **kw,
     ) -> T | list[T]:
+        rows = None
         try:
             rows, fieldnames = cls._read_obj_to_csv(obj, **kw)
             if not rows:
@@ -119,7 +119,12 @@ class CsvAdapter(AdapterBase, Adapter[T]):
         except AdapterError:
             raise
         except Exception as e:
-            cls._handle_error(e, "parse", unexpected=True)
+            if not isinstance(e, ValidationError):
+                cls._handle_error(e, "parse", unexpected=True)
+            safe = cls._validation_error(e, rows)
+            safe.details.update(category="parse", unexpected=True)
+            error = AdapterParseError(safe.message, details=safe.details)
+        raise error from None
 
     @classmethod
     def to_obj(

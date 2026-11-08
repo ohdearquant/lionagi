@@ -11,9 +11,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from lionagi import Branch, Session
-from lionagi.cli import _runs
-from lionagi.cli.orchestrate import _checkpoint, _orchestration
-from lionagi.cli.orchestrate._checkpoint import FlowResumeError
+from lionagi.cli.orchestrate import _orchestration
+from lionhub.orchestration import runs as _runs
+from lionhub.orchestration.flow import checkpoint as _checkpoint
+from lionhub.orchestration.flow.checkpoint import FlowResumeError
 from lionhub.serve.mcp import config, jobs
 
 
@@ -172,7 +173,7 @@ async def test_resume_with_unreadable_degradation_state_keeps_generic_error(
         return None
 
     monkeypatch.setattr("lionagi.state.db.StateDB", EmptyStateDB)
-    monkeypatch.setattr("lionagi.cli._inspection.resolve_any_target", unresolved)
+    monkeypatch.setattr("lionhub.orchestration.inspection.resolve_any_target", unresolved)
 
     with pytest.raises(FlowResumeError, match=r"No run, session, invocation, or play found"):
         await _checkpoint.resolve_checkpoint_target(run_id)

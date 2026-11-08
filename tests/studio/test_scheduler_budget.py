@@ -519,8 +519,8 @@ async def test_spawned_cli_session_is_included_in_schedule_spend(tmp_path, monke
             import argparse
             import asyncio
 
-            from lionagi._auto import build_cli_parser, seed_for
-            from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+            from lionhub.cli.catalog import build_cli_parser, seed_for
+            from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
             from lionagi.session.branch import Branch
             from lionagi.state.db import StateDB
 

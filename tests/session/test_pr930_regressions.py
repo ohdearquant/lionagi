@@ -14,13 +14,12 @@ from pathlib import Path
 import pytest
 
 import lionagi.cli.skill as skill_module
-from lionagi.cli._logging import _LazyStderrHandler
-from lionagi.cli._providers import _clamp_claude_effort
 from lionagi.cli.main import _handle_play_shortcut
 from lionagi.cli.orchestrate import _resolve_playbook_path, _validate_spec_fields
 from lionagi.cli.skill import _containment_anchor, _first_line, resolve_skill_path
 from lionagi.service.hooks._types import HookEventTypes
 from lionagi.service.hooks.hook_registry import HookRegistry
+from lionhub.orchestration.spawn import _clamp_claude_effort
 
 # Symlink containment
 
@@ -468,28 +467,6 @@ class TestMaxOpsZeroAccepted:
 # _clamp_claude_effort coverage
 
 
-class TestClampClaudeEffort:
-    def test_xhigh_preserved_on_opus_4_7(self):
-        assert _clamp_claude_effort("xhigh", "claude/claude-opus-4-7") == "xhigh"
-
-    def test_xhigh_preserved_on_bare_opus_4_7(self):
-        assert _clamp_claude_effort("xhigh", "opus-4-7") == "xhigh"
-
-    def test_xhigh_preserved_on_bare_opus(self):
-        assert _clamp_claude_effort("xhigh", "opus") == "xhigh"
-
-    def test_xhigh_clamped_on_sonnet(self):
-        assert _clamp_claude_effort("xhigh", "claude/claude-sonnet-4-6") == "high"
-
-    def test_xhigh_clamped_on_haiku(self):
-        assert _clamp_claude_effort("xhigh", "claude/claude-haiku-4-5") == "high"
-
-    def test_non_xhigh_untouched_on_any_model(self):
-        for effort in ("none", "minimal", "low", "medium", "high", "max"):
-            assert _clamp_claude_effort(effort, "claude/claude-sonnet-4-6") == effort
-            assert _clamp_claude_effort(effort, "claude/claude-opus-4-7") == effort
-
-
 # _handle_play_shortcut coverage
 
 
@@ -547,28 +524,3 @@ class TestHandlePlayShortcut:
     def test_play_flag_before_name_errors(self):
         code = _handle_play_shortcut(["play", "--bogus", "foo"])
         assert code == 1
-
-
-# _LazyStderrHandler re-binds stream
-
-
-class TestLazyStderrHandler:
-    def test_emit_uses_current_stderr(self, capsys, monkeypatch):
-        import logging
-
-        handler = _LazyStderrHandler()
-        handler.setFormatter(logging.Formatter("%(message)s"))
-
-        logger = logging.getLogger("lionagi.cli._logging_test")
-        logger.handlers.clear()
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-        logger.propagate = False
-
-        logger.info("first-message")
-        err1 = capsys.readouterr().err
-        assert "first-message" in err1
-
-        logger.info("second-message")
-        err2 = capsys.readouterr().err
-        assert "second-message" in err2

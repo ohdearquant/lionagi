@@ -138,9 +138,9 @@ what was measured and not a proof that there is no fourth:
   the same name. Calls a caller believes are going to the first server go to the last one.
 - **With a one-entry MCP dict, regardless of the flag.** When this ADR was written
   (this item's line numbers are at `0b6cabda`), `ActionManager.__contains__`
-  (`lionagi/protocols/action/manager.py::ActionManager.__init__`) had arms for `Tool`, `str` and callable and returned `False`
+  (`lionagi/protocols/action/manager.py::ActionManager.__contains__`) had arms for `Tool`, `str` and callable and returned `False`
   otherwise. A dict is a member of `FuncTool`, so `tool in self` at `lionagi/protocols/action/manager.py::ActionManager.register_tool` was `False` for
-  a dict even when that name was registered, the `update=False` guard passed, and `lionagi/protocols/action/manager.py::ActionManager.__contains__`
+  a dict even when that name was registered, the `update=False` guard passed, and `lionagi/protocols/action/manager.py::ActionManager.register_tool`
   overwrote. The displacement was the same as the `update=True` case and it needed no
   flag. ADR-0011 lines 330-332 record this behavior. #2950 later added the `dict` arm
   that delta #8 asks for, so a one-entry dict whose name is already registered now
@@ -218,7 +218,7 @@ def qualified_mcp_name(server_name: str, tool_name: str) -> str:
 
 The name matters and is not `mcp_tool_name`. That identifier is already bound to a `str`
 on this exact path — a local in `_validate_prebuilt_mcp_tool_admission`
-(`lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`, read at `lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission` and `lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`) and a parameter of
+(`lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`, read at `lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`) and a parameter of
 `is_synthetic_mcp_wrapper_schema` (`lionagi/service/connections/mcp_wrapper.py::is_synthetic_mcp_wrapper_schema`). A module-level function of that
 name would be shadowed inside the one function that most needs it, and a later call from
 there would raise `TypeError: 'str' object is not callable` at runtime and only at

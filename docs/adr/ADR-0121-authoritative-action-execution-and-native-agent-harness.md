@@ -12,6 +12,8 @@
   outcome/evidence behavior; depends on ADR-0119 (deterministic declaration substrate) and
   ADR-0120 (interception and observation planes); coordinates with ADR-0123 (canonical Run)
 
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+
 ## Context
 
 LionAGI currently has the ingredients of an execution system without one authoritative execution
@@ -908,12 +910,12 @@ every one of them, whatever its name, when it fingerprints a transport:
 (`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._policy_key`), and a registered tool proxy drops them before
 it reconnects: `config_for_client = {k: v for k, v in mcp_config.items() if not k.startswith("_")}`
 (`lionagi/service/connections/mcp_wrapper.py::create_mcp_tool.mcp_callable`). When the pool builds a client it reads only the transport keys it names and ignores the
-rest (`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._create_client`). The one such key read after a tool is built, `_original_tool_name`, names the
+rest (`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._handshake_timeout`, `lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._server_label`, `lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._stdio_handshake_mode`, `lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._create_client`). The one such key read after a tool is built, `_original_tool_name`, names the
 tool that admission checks (`lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`) and picks the tool to call
 on the server already chosen (`lionagi/service/connections/mcp_wrapper.py::create_mcp_tool.mcp_callable`). It never selects the transport, so these keys
 are no part of it. Equal means the two have the same canonical form, compared exactly as text: the
 typed serialization that the pool's `_policy_key` builds with `server_name=None` before hashing it
-(`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._policy_key.typed`). The form tags value types recursively,
+(`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._policy_key`). The form tags value types recursively,
 orders dictionary entries by their typed keys, preserves sequence order, and writes floats with
 `float.hex()`, so `1` and `1.0` differ, parsed `1e2` and `100.0` match, and a list and a tuple
 differ. A configuration holding a value with no JSON form at any depth, a float that is not finite

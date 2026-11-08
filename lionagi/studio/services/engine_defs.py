@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
 import re
 import sqlite3
 import time
@@ -13,32 +15,53 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+import lionhub.orchestration.engine_definitions as _engine_registry
 from lionagi.ln import short_id
-from lionagi.state.db import StateDB, state_db_known_absent
+from lionagi.state.db import (
+    StateDB,
+    _get_engine_def_for_update_in_tx,
+    _update_engine_def_in_tx,
+    state_db_known_absent,
+)
 
 from ..registry import studio_route
+
+KIND_META = _engine_registry.KIND_META
+is_registered_engine_kind = _engine_registry._is_registered_engine_kind
 
 
 class NameConflictError(Exception):
     """Engine definition name is already taken."""
 
 
-# Closed set of engine kinds — must equal set(lionagi.cli._engine_definitions.KIND_META).
-_VALID_ENGINE_KINDS: frozenset[str] = frozenset(
-    {"research", "review", "coding", "hypothesis", "planning"}
-)
-
 # Allowed keys in the options JSON object.
 _ALLOWED_OPTIONS_KEYS: frozenset[str] = frozenset({"test_cmd", "export_dir"})
+_PRESET_BUDGET_BOUNDS = (1, 100)
 
 # Safe shell-token pattern: no leading '-', no shell metacharacters.
 _SAFE_TOKEN_RE = re.compile(r"^[a-zA-Z0-9_./:@\-\+= ]+$")
 
 
 def _validate_kind(kind: str) -> None:
-    if kind not in _VALID_ENGINE_KINDS:
+    if not is_registered_engine_kind(kind):
         raise ValueError(
-            f"Invalid engine kind {kind!r}. Valid kinds: {sorted(_VALID_ENGINE_KINDS)}"
+            f"Invalid engine kind {kind!r}. Valid kinds: {sorted(_engine_registry.KIND_META)}"
+        )
+
+
+def _validate_option_value(
+    key: str, val: Any, *, echo_value: bool = True, strict: bool = False
+) -> None:
+    """Share value checks while preserving the legacy validator's error text."""
+    if not isinstance(val, str):
+        raise ValueError(f"options.{key} must be a string, got {type(val).__name__}")
+    if val.startswith("-"):
+        shown = f" {val!r}" if echo_value else ""
+        raise ValueError(f"options.{key}{shown} starts with '-' and would inject a CLI flag")
+    if not (_SAFE_TOKEN_RE.fullmatch(val) if strict else _SAFE_TOKEN_RE.match(val)):
+        shown = f" {val!r}" if echo_value else ""
+        raise ValueError(
+            f"options.{key}{shown} contains shell metacharacters not allowed in engine option values"
         )
 
 
@@ -48,19 +71,29 @@ def _validate_options(options: dict[str, Any] | None) -> None:
     bad_keys = set(options) - _ALLOWED_OPTIONS_KEYS
     if bad_keys:
         raise ValueError(
-            f"options contains disallowed keys {sorted(bad_keys)}. "
-            f"Allowed: {sorted(_ALLOWED_OPTIONS_KEYS)}"
+            f"options contains disallowed keys {sorted(bad_keys)}. Allowed: {sorted(_ALLOWED_OPTIONS_KEYS)}"
         )
     for key, val in options.items():
-        if not isinstance(val, str):
-            raise ValueError(f"options.{key} must be a string, got {type(val).__name__}")
-        if val.startswith("-"):
-            raise ValueError(f"options.{key} {val!r} starts with '-' and would inject a CLI flag")
-        if not _SAFE_TOKEN_RE.match(val):
-            raise ValueError(
-                f"options.{key} {val!r} contains shell metacharacters not allowed in "
-                "engine option values"
-            )
+        _validate_option_value(key, val)
+
+
+def _validate_preset_write_options(kind: str, options: Any) -> None:
+    """Validate submitted options without changing legacy workflow admission."""
+    if not isinstance(options, dict):
+        raise ValueError("options must be an object")
+    if any(not isinstance(key, str) for key in options):
+        raise ValueError("options keys must be strings")
+    definitions = _engine_registry.KIND_META[kind]["preset_options"]
+    bad_keys = set(options) - set(definitions)
+    if bad_keys:
+        raise ValueError(
+            f"options contains disallowed keys {sorted(bad_keys)}. Allowed: {sorted(definitions)}"
+        )
+    for key, val in options.items():
+        _validate_option_value(key, val, echo_value=False, strict=True)
+    for key, definition in definitions.items():
+        if definition.get("required") and not str(options.get(key) or "").strip():
+            raise ValueError(f"the {kind!r} engine kind requires a non-blank options.{key}")
 
 
 def _validate_kind_options(kind: str, options: dict[str, Any] | None) -> None:
@@ -74,13 +107,14 @@ def _validate_kind_options(kind: str, options: dict[str, Any] | None) -> None:
 
 
 def _validate_budget(field: str, val: Any) -> None:
-    """A max_depth/max_agents override must be an int in [1, 100] (or absent)."""
+    """Validate an optional max_depth/max_agents override against the preset bounds."""
     if val is None:
         return
     if not isinstance(val, int) or isinstance(val, bool):
         raise ValueError(f"{field} must be an integer")
-    if not (1 <= val <= 100):
-        raise ValueError(f"{field} must be in [1, 100], got {val}")
+    low, high = _PRESET_BUDGET_BOUNDS
+    if not (low <= val <= high):
+        raise ValueError(f"{field} must be in [{low}, {high}], got {val}")
 
 
 def _svc_validate_action_model(model: str | None) -> None:
@@ -126,7 +160,10 @@ async def get_engine_def_by_name(name: str) -> dict[str, Any] | None:
 
 
 async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
-    name = data.get("name", "").strip()
+    name = data.get("name", "")
+    if not isinstance(name, str):
+        raise ValueError("Engine definition name must be a string")
+    name = name.strip()
     if not name:
         raise ValueError("Engine definition name is required")
     _svc_validate_identifier(name, "name")
@@ -139,8 +176,17 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
     for field in ("max_depth", "max_agents"):
         _validate_budget(field, data.get(field))
 
-    _validate_options(data.get("options"))
-    _validate_kind_options(kind, data.get("options"))
+    options = data.get("options")
+    if isinstance(options, dict):
+        options = dict(options)
+    elif options is None:
+        options = {}
+    _validate_preset_write_options(kind, options)
+
+    if "options" in data:
+        stored_options = options
+    else:
+        stored_options = None
 
     def_id = short_id(12)
     now = time.time()
@@ -151,7 +197,7 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
         "model": data.get("model"),
         "max_depth": data.get("max_depth"),
         "max_agents": data.get("max_agents"),
-        "options": data.get("options"),
+        "options": stored_options,
         "description": data.get("description"),
         "created_at": now,
         "updated_at": now,
@@ -165,33 +211,58 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
 
 
 async def update_engine_def(def_id: str, fields: dict[str, Any]) -> dict[str, Any] | bool:
+    fields = dict(fields)
+    if "name" in fields:
+        if not isinstance(fields["name"], str):
+            raise ValueError("Engine definition name must be a string")
+        fields["name"] = fields["name"].strip()
+        if not fields["name"]:
+            raise ValueError("Engine definition name is required")
+        _svc_validate_identifier(fields["name"], "name")
+    if "kind" in fields:
+        _validate_kind(fields["kind"])
+    if "model" in fields:
+        _svc_validate_action_model(fields["model"])
+    for field in ("max_depth", "max_agents"):
+        if field in fields:
+            _validate_budget(field, fields[field])
+    if "options" in fields:
+        if fields["options"] is None:
+            fields["options"] = {}
+        elif isinstance(fields["options"], dict):
+            fields["options"] = dict(fields["options"])
+
     async with StateDB() as db:
-        existing = await db.get_engine_def(def_id)
-        if not existing:
-            return False
         if not fields:
+            async with db._read() as conn:
+                existing = await _get_engine_def_for_update_in_tx(
+                    db, conn, def_id, for_update=False
+                )
+            if existing is None:
+                return False
+            # A read-only no-op does not interpret or rewrite legacy options.
             return existing
 
-        if "name" in fields:
-            _svc_validate_identifier(fields["name"], "name")
-        if "kind" in fields:
-            _validate_kind(fields["kind"])
-        if "model" in fields:
-            _svc_validate_action_model(fields["model"])
-        for field in ("max_depth", "max_agents"):
-            if field in fields:
-                _validate_budget(field, fields[field])
-        if "options" in fields:
-            _validate_options(fields["options"])
-
-        # Validate the EFFECTIVE merged definition, not just the patch — a kind
-        # change to 'coding' or dropping test_cmd would otherwise store a def the CLI rejects.
-        effective_kind = fields.get("kind", existing.get("kind"))
-        effective_options = fields["options"] if "options" in fields else existing.get("options")
-        _validate_kind_options(effective_kind, effective_options)
-
         try:
-            await db.update_engine_def(def_id, **fields)
+            async with db.transaction() as conn:
+                existing = await _get_engine_def_for_update_in_tx(db, conn, def_id)
+                if existing is None:
+                    return False
+                old_kind = existing.get("kind")
+                if not is_registered_engine_kind(old_kind):
+                    raise ValueError("Stored engine kind is unavailable")
+                effective_kind = fields.get("kind", old_kind)
+                if "options" in fields:
+                    _validate_preset_write_options(effective_kind, fields["options"])
+                elif effective_kind != old_kind:
+                    options, reason = _catalog_options(existing.get("options"))
+                    if reason is not None or options is None:
+                        raise ValueError(
+                            "Stored options cannot be validated; supply replacement options"
+                        )
+                    _validate_preset_write_options(effective_kind, options)
+                if not await _update_engine_def_in_tx(conn, def_id, fields):
+                    return False
         except (sqlite3.IntegrityError, SAIntegrityError) as exc:
             raise NameConflictError(
                 f"Engine definition name {fields.get('name')!r} already exists"
@@ -242,7 +313,7 @@ async def list_engine_defs_route(
 )
 async def create_engine_def_route(body: CreateEngineDefRequest) -> dict[str, Any]:
     try:
-        return await create_engine_def(body.model_dump(exclude_none=True))
+        return await create_engine_def(body.model_dump(exclude_unset=True))
     except NameConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -259,7 +330,7 @@ async def get_engine_def_route(def_id: str) -> dict[str, Any]:
 
 @studio_route("/engine-defs/{def_id}", method="PUT", area="engine-defs", name="update_engine_def")
 async def update_engine_def_route(def_id: str, body: UpdateEngineDefRequest) -> dict[str, Any]:
-    fields = body.model_dump(exclude_none=True)
+    fields = body.model_dump(exclude_unset=True)
     try:
         ok = await update_engine_def(def_id, fields)
     except NameConflictError as exc:
@@ -279,3 +350,331 @@ async def delete_engine_def_route(def_id: str) -> dict[str, Any]:
     if not ok:
         raise HTTPException(status_code=404, detail=f"Engine definition '{def_id}' not found")
     return {"ok": True}
+
+
+_CATALOG_CURSOR_ID_BYTES = 4096
+_CATALOG_OPTIONS_MAX_BYTES = 65536
+_CATALOG_OPTIONS_MAX_DEPTH = 32
+_CATALOG_JSON_STRING = r'"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"'
+_CATALOG_CURSOR_SHAPE = re.compile(
+    rf'\{{"v":1,"after":{_CATALOG_JSON_STRING},"kind":(?:null|{_CATALOG_JSON_STRING})\}}'
+)
+
+
+def _catalog_encode_cursor(after: str, kind: str | None) -> str:
+    import base64
+    import json
+
+    payload = json.dumps(
+        {"v": 1, "after": after, "kind": kind}, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _catalog_decode_cursor(cursor: str, kind: str | None) -> str:
+    import base64
+    import binascii
+    import json
+
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", cursor):
+            raise ValueError("invalid encoding")
+        data = base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
+        payload = data.decode("utf-8")
+        # The shape check forbids nested containers and duplicate keys before JSON
+        # decoding, so hostile nesting cannot trigger decoder recursion.
+        if _CATALOG_CURSOR_SHAPE.fullmatch(payload) is None:
+            raise ValueError("invalid shape")
+        obj = json.loads(payload)
+        after = obj["after"]
+        if (
+            not isinstance(after, str)
+            or obj["kind"] != kind
+            or "\x00" in after
+            or len(after.encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES
+        ):
+            raise ValueError("invalid cursor")
+        if _catalog_encode_cursor(after, kind) != cursor:
+            raise ValueError("noncanonical cursor")
+        return after
+    except (binascii.Error, UnicodeError, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid engine catalog cursor") from exc
+
+
+def _catalog_options(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
+    import json
+
+    if raw is None:
+        return {}, None
+    if isinstance(raw, bytes | bytearray | memoryview):
+        size = raw.nbytes if isinstance(raw, memoryview) else len(raw)
+        if size > _CATALOG_OPTIONS_MAX_BYTES:
+            return None, "options_undecodable"
+        try:
+            raw = bytes(raw).decode("utf-8")
+        except UnicodeDecodeError:
+            return None, "options_undecodable"
+    if isinstance(raw, str):
+        # UTF-8 uses at least one byte per character; avoid encoding an already oversized value.
+        if len(raw) > _CATALOG_OPTIONS_MAX_BYTES:
+            return None, "options_undecodable"
+        try:
+            if len(raw.encode("utf-8")) > _CATALOG_OPTIONS_MAX_BYTES:
+                return None, "options_undecodable"
+        except UnicodeEncodeError:
+            return None, "options_undecodable"
+        # Check depth before decoding: json.loads itself can recurse on deeply nested input.
+        depth = 0
+        quoted = False
+        escaped = False
+        for char in raw:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif char in "[{":
+                depth += 1
+                if depth > _CATALOG_OPTIONS_MAX_DEPTH:
+                    return None, "options_undecodable"
+            elif char in "]}":
+                depth -= 1
+
+        class NonJsonConstantError(ValueError):
+            pass
+
+        def reject_constant(_constant: str) -> None:
+            raise NonJsonConstantError("non-JSON constant")
+
+        try:
+            value = json.loads(raw, parse_constant=reject_constant)
+        except (json.JSONDecodeError, NonJsonConstantError):
+            return None, "options_malformed"
+        except (RecursionError, UnicodeError, ValueError):
+            return None, "options_undecodable"
+    else:
+        value = raw
+    try:
+        # The response must be encodable: reject lone surrogates and non-finite values.
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (RecursionError, UnicodeError, ValueError, TypeError):
+        return None, "options_undecodable"
+    if value is None:
+        return {}, None
+    if not isinstance(value, dict):
+        return None, "options_not_object"
+    return value, None
+
+
+def _catalog_annotate_row(row: dict[str, Any]) -> dict[str, Any]:
+    result = dict(row)
+    low, high = _PRESET_BUDGET_BOUNDS
+    budget_invalid = any(
+        value is not None
+        and (not isinstance(value, int) or isinstance(value, bool) or not (low <= value <= high))
+        for value in (result.get("max_depth"), result.get("max_agents"))
+    )
+    for field in ("name", "model", "description"):
+        value = result.get(field)
+        if isinstance(value, bytes):
+            try:
+                value.decode("utf-8")
+            except UnicodeDecodeError:
+                result[field] = None
+    for field in ("max_depth", "max_agents"):
+        value = result.get(field)
+        if isinstance(value, bytes | bytearray | memoryview) or (
+            isinstance(value, float) and not math.isfinite(value)
+        ):
+            result[field] = None
+    options, options_reason = _catalog_options(result.pop("options", None))
+    result["options"] = options
+    result["unused_option_keys"] = None
+    result["stored_option_keys"] = None
+    result["missing_option_keys"] = None
+    result["invalid_option_keys"] = None
+    reasons = []
+    kind = result.get("kind")
+    registered = is_registered_engine_kind(kind)
+    if not isinstance(kind, str):
+        result["kind"] = None
+        reasons.append("kind_not_text")
+    elif not registered:
+        reasons.append("kind_not_registered")
+    if options_reason is not None:
+        reasons.append(options_reason)
+    if options is not None:
+        keys = sorted(options)
+        result["stored_option_keys"] = keys
+        if registered:
+            definitions = KIND_META[kind]["preset_options"]
+            result["unused_option_keys"] = sorted(set(keys) - set(definitions))
+            missing_keys = sorted(
+                name
+                for name, definition in definitions.items()
+                if definition.get("required") and not str(options.get(name) or "").strip()
+            )
+            result["missing_option_keys"] = missing_keys
+            result["invalid_option_keys"] = []
+            if missing_keys:
+                reasons.append("required_option_missing")
+            try:
+                _validate_options(options)
+            except ValueError:
+                invalid_keys = []
+                for name in keys:
+                    try:
+                        _validate_options({name: options[name]})
+                    except ValueError:
+                        invalid_keys.append(name)
+                # Validator messages can include values; only expose the offending keys.
+                result["options"] = None
+                result["invalid_option_keys"] = invalid_keys
+                reasons.append("options_invalid")
+    if budget_invalid:
+        reasons.append("budget_invalid")
+    result["availability"] = "unavailable" if reasons else "available"
+    result["reasons"] = reasons
+    return result
+
+
+def _catalog_validate_kind(kind: str | None) -> None:
+    if kind is not None and not is_registered_engine_kind(kind):
+        raise HTTPException(status_code=422, detail="Invalid engine catalog kind")
+
+
+def engine_catalog_blueprints() -> dict[str, Any]:
+    """Describe preset inputs from the runtime engine registry."""
+    items = []
+    for kind, meta in KIND_META.items():
+        items.append(
+            {
+                "kind": kind,
+                "input": {"name": meta["pos_arg"], "help": meta["pos_help"]},
+                "options": [
+                    {"name": name, **option} for name, option in meta["preset_options"].items()
+                ],
+                "common_fields": {
+                    "model": {"type": "string", "nullable": True, "scope": "preset"},
+                    "max_depth": {
+                        "type": "integer",
+                        "nullable": True,
+                        "minimum": _PRESET_BUDGET_BOUNDS[0],
+                        "maximum": _PRESET_BUDGET_BOUNDS[1],
+                        "scope": "preset",
+                    },
+                    "max_agents": {
+                        "type": "integer",
+                        "nullable": True,
+                        "minimum": _PRESET_BUDGET_BOUNDS[0],
+                        "maximum": _PRESET_BUDGET_BOUNDS[1],
+                        "scope": "preset",
+                    },
+                },
+            }
+        )
+    return {"schema_version": 1, "items": items}
+
+
+async def list_engine_catalog_presets(
+    *, kind: str | None = None, limit: int = 100, cursor: str | None = None
+) -> dict[str, Any]:
+    """List non-NULL-ID presets by ID, without snapshot isolation.
+
+    An insertion before the cursor can be missed; deletes and renames preserve the ID order.
+    Rows with NULL, non-text or NUL-containing IDs are outside this catalog.
+    Trailing IDs above the cursor bound are deferred if a page contains an encodable ID.
+    If every ID in the page is oversized, return that page with no cursor and include
+    stop_reason only if additional rows exist.
+    """
+    from lionagi.state.db import _list_engine_catalog_rows
+
+    _catalog_validate_kind(kind)
+    after = _catalog_decode_cursor(cursor, kind) if cursor is not None else None
+    if state_db_known_absent():
+        return {"items": [], "next_cursor": None}
+    async with StateDB() as db:
+        rows = await _list_engine_catalog_rows(db, kind=kind, after=after, limit=limit + 1)
+    page = rows[:limit]
+    visible = page.copy()
+    # A trailing oversized ID cannot be encoded as the next seek position.
+    while visible and len(visible[-1]["id"].encode("utf-8")) > _CATALOG_CURSOR_ID_BYTES:
+        visible.pop()
+    if not visible:
+        items = await asyncio.to_thread(lambda: [_catalog_annotate_row(row) for row in page])
+        result = {"items": items, "next_cursor": None}
+        if page and len(rows) > limit:
+            result["stop_reason"] = "id_exceeds_cursor_bound"
+        return result
+    has_more = len(rows) > len(visible)
+    next_cursor = _catalog_encode_cursor(visible[-1]["id"], kind) if has_more else None
+    items = await asyncio.to_thread(lambda: [_catalog_annotate_row(row) for row in visible])
+    return {"items": items, "next_cursor": next_cursor}
+
+
+async def get_engine_catalog_preset(def_id: str) -> dict[str, Any] | None:
+    """Return a text-ID preset independently of the loaded page."""
+    from lionagi.state.db import _get_engine_catalog_row
+
+    if "\x00" in def_id or state_db_known_absent():
+        return None
+    async with StateDB() as db:
+        row = await _get_engine_catalog_row(db, def_id)
+    return await asyncio.to_thread(_catalog_annotate_row, row) if row is not None else None
+
+
+@studio_route(
+    "/engine-catalog/blueprints", method="GET", area="engine-defs", name="engine_catalog_blueprints"
+)
+async def engine_catalog_blueprints_route() -> dict[str, Any]:
+    return engine_catalog_blueprints()
+
+
+_CATALOG_PRESETS_DESCRIPTION = (
+    "List text-ID presets; paging is not a snapshot. Rows with NULL, non-text or "
+    "NUL-containing IDs are not listed. If a page contains an encodable ID, trailing oversized IDs are "
+    "deferred; when more rows exist, the cursor names the last encodable ID. "
+    "If every ID on a page is "
+    "oversized, the page is returned with next_cursor null; stop_reason is "
+    "id_exceeds_cursor_bound only if additional rows exist.\n\n"
+    f"Stored options over {_CATALOG_OPTIONS_MAX_BYTES} UTF-8 bytes or "
+    f"{_CATALOG_OPTIONS_MAX_DEPTH} JSON nesting levels are unavailable. "
+    "Preset inputs are flat key/value pairs, so the nesting limit does not exclude "
+    "normal preset options. "
+    f"Preset budget overrides accept integers from {_PRESET_BUDGET_BOUNDS[0]} to "
+    f"{_PRESET_BUDGET_BOUNDS[1]}, or null; invalid stored budgets have reason budget_invalid. "
+    "Each row includes stored_option_keys, unused_option_keys, missing_option_keys "
+    "and invalid_option_keys: null when not computed, otherwise a sorted list "
+    "([] when none)."
+)
+
+
+@studio_route(
+    "/engine-catalog/presets",
+    method="GET",
+    area="engine-defs",
+    name="list_engine_catalog_presets",
+    description=_CATALOG_PRESETS_DESCRIPTION,
+)
+async def list_engine_catalog_presets_route(
+    kind: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
+    cursor: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """List text-ID presets with documented pagination and preset limits."""
+    return await list_engine_catalog_presets(kind=kind, limit=limit, cursor=cursor)
+
+
+@studio_route(
+    "/engine-catalog/preset", method="GET", area="engine-defs", name="get_engine_catalog_preset"
+)
+async def get_engine_catalog_preset_route(def_id: str = Query(..., alias="id")) -> dict[str, Any]:
+    """Look up a text-ID preset by query parameter, including an empty ID."""
+    row = await get_engine_catalog_preset(def_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Engine preset not found")
+    return row

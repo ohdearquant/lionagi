@@ -5,7 +5,7 @@
 or any agent is spawned, instead of the provider layer silently creating the
 directory (or a deep, opaque subprocess failure reported as a clean success).
 
-Covers the shared validator (`lionagi.cli._util.validate_cwd_exists`) and its
+Covers the shared validator (`lionhub.orchestration.job.validate_cwd_exists`) and its
 wiring into both the async engine (`_run_agent`) and the sync CLI entry point
 (`run_agent`).
 """
@@ -18,58 +18,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.cli._util import validate_cwd_exists
+from lionhub.orchestration.job import validate_cwd_exists
 
 # validate_cwd_exists — the shared validator
-
-
-class TestValidateCwdExists:
-    def test_none_is_a_noop(self):
-        assert validate_cwd_exists(None) is None  # must not raise
-
-    def test_empty_string_is_a_noop(self):
-        assert validate_cwd_exists("") == ""  # must not raise
-
-    def test_existing_directory_passes(self, tmp_path):
-        assert validate_cwd_exists(str(tmp_path)) == str(tmp_path)  # must not raise
-
-    def test_tilde_path_to_existing_dir_returns_expanded(self, tmp_path, monkeypatch):
-        """A `--cwd=~/...` value must come back tilde-expanded: validating the
-        expanded path while forwarding the literal would pass validation and
-        then fail deep in the provider layer, which never expands `~`."""
-        monkeypatch.setenv("HOME", str(tmp_path))
-        (tmp_path / "proj").mkdir()
-        assert validate_cwd_exists("~/proj") == str(tmp_path / "proj")
-
-    def test_tilde_path_to_nonexistent_dir_still_raises(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        with pytest.raises(ConfigurationError) as exc_info:
-            validate_cwd_exists("~/does-not-exist-xyz")
-        assert "~/does-not-exist-xyz" in str(exc_info.value)
-
-    def test_nonexistent_path_raises_naming_path_and_flag(self, tmp_path):
-        bad = str(tmp_path / "does-not-exist-xyz")
-        with pytest.raises(ConfigurationError) as exc_info:
-            validate_cwd_exists(bad)
-        msg = str(exc_info.value)
-        assert bad in msg
-        assert "--cwd" in msg
-
-    def test_path_that_is_a_file_raises_not_a_directory(self, tmp_path):
-        f = tmp_path / "im-a-file.txt"
-        f.write_text("x")
-        with pytest.raises(ConfigurationError) as exc_info:
-            validate_cwd_exists(str(f))
-        msg = str(exc_info.value)
-        assert str(f) in msg
-        assert "not a directory" in msg
-
-    def test_custom_flag_name_is_reflected_in_message(self, tmp_path):
-        bad = str(tmp_path / "nope")
-        with pytest.raises(ConfigurationError) as exc_info:
-            validate_cwd_exists(bad, flag="--workspace")
-        assert "--workspace" in str(exc_info.value)
-        assert "--cwd" not in str(exc_info.value)
 
 
 # _run_agent: fails before any spawn / run allocation
@@ -226,7 +177,7 @@ def test_run_agent_cli_nonzero_and_diagnostic_for_nonexistent_cwd(monkeypatch, t
     propagates (which the console-script wrapper turns into a nonzero
     process exit — see classify_exception -> EXIT_CODE_BY_STATUS['failed'])."""
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._util import EXIT_CODE_BY_STATUS, classify_exception
+    from lionhub.orchestration.job import EXIT_CODE_BY_STATUS, classify_exception
 
     errors_emitted: list[str] = []
     monkeypatch.setattr(agent_mod, "log_error", lambda msg: errors_emitted.append(msg))

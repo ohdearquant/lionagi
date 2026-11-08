@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 from sqlalchemy import event
 
-from lionagi.cli._runs import teardown_persist
 from lionagi.cli.monitor import _session_to_row
 from lionagi.cli.orchestrate import flow
 from lionagi.cli.orchestrate._control import _enqueue_control_inner
@@ -24,6 +23,7 @@ from lionagi.cli.status import EXIT_UNKNOWN
 from lionagi.ln.concurrency import move_on_after
 from lionagi.state import engine as state_engine
 from lionagi.state.db import StateDB
+from lionhub.orchestration.runs import teardown_persist
 from tests.cli._worker_fixtures import create_worker_session
 from tests.cli.orchestrate.test_control_poller import _FakeExecutor, _make_session, _queue_control
 from tests.cli.orchestrate.test_control_poller_lifecycle import _plan_and_dag
@@ -1082,7 +1082,7 @@ async def test_a_run_id_prefix_short_of_the_t_cannot_control_a_run(db_path, enti
     start of an entity id. It acts on no run, while read-only status keeps the
     broader lookup.
     """
-    from lionagi.cli import _inspection
+    from lionhub.orchestration import inspection as _inspection
 
     async with StateDB(db_path) as db:
         sid = await _named_session(db, "run-backed-session")
@@ -1108,8 +1108,8 @@ async def test_a_run_id_prefix_through_the_t_controls_its_run(db_path):
 
 async def test_a_branch_prefix_that_also_begins_a_run_is_refused(db_path):
     """The branch fallback refuses a cross-space match, as the entity search does."""
-    from lionagi.cli import _inspection
-    from lionagi.cli._util import AmbiguousIdError
+    from lionhub.orchestration import inspection as _inspection
+    from lionhub.orchestration.job import AmbiguousIdError
 
     async with StateDB(db_path) as db:
         branch_owner = await _named_session(db, "branch-owner-session")

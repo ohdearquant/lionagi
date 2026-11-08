@@ -14,7 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ._inspection import (
+from lionhub.orchestration.console import log_error
+from lionhub.orchestration.inspection import (
     _DB_BUSY_TIMEOUT_S,
     _PLAY_FAILURE,
     _PLAY_SUCCESS,
@@ -27,9 +28,8 @@ from ._inspection import (
     resolve_play_target,
     resolve_primary_session,
 )
-from ._logging import log_error
-from ._project import detect_project
-from ._util import AmbiguousIdError
+from lionhub.orchestration.job import AmbiguousIdError
+from lionhub.orchestration.project import detect_project
 
 __all__ = (
     "run_agent_status",

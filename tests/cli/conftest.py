@@ -7,63 +7,16 @@ from pathlib import Path
 import pytest
 import toml
 
-# Loggers mutated by lionagi.cli._logging.configure_cli_logging(). Tests that
+from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
+from tests._engine_loader_support import engine_import_package  # noqa: F401
+from tests._kill_scope_test_support import (
+    _guard_runner_probes_in_kill_tests as _guard_runner_probes_in_kill_tests,
+)
+
+# Loggers mutated by lionhub.orchestration.console.configure_cli_logging(). Tests that
 # drive main() end-to-end trigger that call, which sets propagate=False and
 # attaches stderr handlers — breaking caplog for any test that runs later in
 # the same worker (e.g. tests/cli/orchestrate/test_flow_spec_file.py).
-_CLI_LOGGERS = (
-    "lionagi.cli.progress",
-    "lionagi.cli.hint",
-    "lionagi.cli.warn",
-    "lionagi.cli.error",
-    "claude-cli",
-    "codex-cli",
-    "pi-cli",
-    "gemini-cli",
-    "lionagi",
-)
-
-
-@pytest.fixture(autouse=True)
-def _restore_cli_logging():
-    """Snapshot and restore CLI logger state around every test."""
-    saved = {}
-    for name in _CLI_LOGGERS:
-        logger = logging.getLogger(name)
-        saved[name] = (
-            logger.level,
-            logger.propagate,
-            list(logger.handlers),
-            getattr(logger, "_lionagi_cli_fallback_level", None),
-        )
-    yield
-    for name, (level, propagate, handlers, fallback_level) in saved.items():
-        logger = logging.getLogger(name)
-        logger.setLevel(level)
-        logger.propagate = propagate
-        logger.handlers[:] = handlers
-        if fallback_level is None:
-            if hasattr(logger, "_lionagi_cli_fallback_level"):
-                del logger._lionagi_cli_fallback_level
-        else:
-            logger._lionagi_cli_fallback_level = fallback_level
-
-
-@pytest.fixture(autouse=True)
-def _guard_runner_probes_in_kill_tests(request, monkeypatch):
-    """Kill tests must explicitly supply every runner PID observation."""
-    if request.path.name not in {
-        "test_kill.py",
-        "test_kill_recorded_workers.py",
-        "test_kill_degraded_run.py",
-        "test_smart_staleness.py",
-    }:
-        return
-
-    def unexpected_runner(pid):
-        raise AssertionError(f"unconfigured runner process probe: {pid}")
-
-    monkeypatch.setattr("lionagi.cli._kill_service._runner_process_create_time", unexpected_runner)
 
 
 @dataclass

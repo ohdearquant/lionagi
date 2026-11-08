@@ -49,8 +49,8 @@ async def _wait_done(store: OperatorStore, conversation_id: str, *, timeout: flo
 
 
 def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
-    import lionagi.cli._runs as runs_mod
     import lionagi.state.db as state_db_mod
+    import lionhub.orchestration.runs as runs_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")

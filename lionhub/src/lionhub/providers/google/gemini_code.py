@@ -15,7 +15,7 @@ from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi._provider_errors import (
@@ -34,6 +34,7 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
+    _resolve_cli_path,
     discover_cli,
     ndjson_from_cli,
     print_readable,
@@ -374,6 +375,8 @@ def derive_print_timeout(timeout: int | float) -> str:
 class GeminiCodeRequest(BaseModel):
     """Configuration + prompt for an Antigravity CLI (`agy`) invocation."""
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     # -- conversational bits -------------------------------------------------
     prompt: str = Field(description="The prompt for the Antigravity CLI")
     system_prompt: str | None = Field(
@@ -456,7 +459,9 @@ class GeminiCodeRequest(BaseModel):
     def _contain_directories_in_repo(self):
         if self.include_directories:
             contain_paths_in_root(
-                self.include_directories, self.repo.resolve(), "include_directories"
+                self.include_directories,
+                _resolve_cli_path(self.repo, "working directory"),
+                "include_directories",
             )
         return self
 

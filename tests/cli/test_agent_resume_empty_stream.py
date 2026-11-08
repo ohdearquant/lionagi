@@ -115,8 +115,8 @@ async def test_resume_empty_stream_logs_actionable_message(monkeypatch, tmp_path
     """Resume empty-stream must emit an error message naming the UUID and the re-run hint."""
     branch_id, branch_path = _make_branch_json(tmp_path)
 
-    import lionagi.cli._logging as logging_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.console as logging_mod
 
     errors_emitted: list[str] = []
     monkeypatch.setattr(logging_mod, "log_error", lambda msg: errors_emitted.append(msg))
@@ -148,8 +148,8 @@ async def test_resume_empty_stream_exit_code_nonzero(monkeypatch, tmp_path):
     """run_agent() must return non-zero exit code when resume produces empty stream."""
     branch_id, branch_path = _make_branch_json(tmp_path)
 
-    import lionagi.cli._logging as logging_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.console as logging_mod
 
     monkeypatch.setattr(logging_mod, "log_error", lambda msg: None)
     monkeypatch.setattr(agent_mod, "log_error", lambda msg: None)
@@ -265,8 +265,8 @@ async def test_a_resumed_turn_failing_before_the_cli_reports_a_session_stays_fai
     has reported. A provider error before any session event must not be settled by the status
     of the previous turn's session, which is already completed in the store; once the stream
     has reported the session, the run is settled by that session as before."""
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch, iModel
     from lionagi._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session

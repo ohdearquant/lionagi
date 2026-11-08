@@ -9,8 +9,7 @@ import stat
 from pathlib import Path
 
 from lionagi.libs.path_safety import validate_path_component
-
-from ._logging import log_error
+from lionhub.orchestration.console import log_error
 
 
 def _skills_root() -> Path:

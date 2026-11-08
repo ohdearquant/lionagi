@@ -80,7 +80,7 @@ def _placement(name: str) -> dict[str, Any]:
     of picking a winner; those files are listed unordered and the walk stops.
     """
     from lionagi._paths import find_lionagi_dirs
-    from lionagi.cli._providers import _profile_path_candidates, _resolve_plugin_profile_path
+    from lionhub.orchestration.spawn import _profile_path_candidates, _resolve_plugin_profile_path
 
     found: list[dict[str, str]] = []
     ambiguous: list[dict[str, str]] = []
@@ -158,7 +158,7 @@ def _resolved_fields() -> tuple[str, ...]:
     """The keys a resolved block carries, asked of the function that builds one
     (not a second hardcoded list, which could drift from it) plus the fields a
     profile may or may not carry, so the schema recognises them either way."""
-    from lionagi.cli._providers import AgentProfile, profile_config
+    from lionhub.orchestration.spawn import AgentProfile, profile_config
 
     # Both optional account-integration fields and the settings containment set,
     # so the keys profile_config adds only when set are listed too.
@@ -254,7 +254,7 @@ def profile_list(
     even when ``fields`` doesn't ask for it, since rows that can't be told
     apart are unusable rather than merely smaller.
     """
-    from lionagi.cli._providers import build_agent_profile_catalog
+    from lionhub.orchestration.spawn import build_agent_profile_catalog
 
     selected, resolved_fields, whole_resolved = (
         (set(), None, False) if fields is None else _parse_fields(fields)
@@ -289,7 +289,7 @@ def profile_show(name: str, *, cwd: str | None = None) -> dict[str, Any]:
     A name nothing declares raises ``FileNotFoundError`` from the loader itself,
     carrying the loader's own list of what is available.
     """
-    from lionagi.cli._providers import load_agent_profile, profile_config
+    from lionhub.orchestration.spawn import load_agent_profile, profile_config
 
     with _resolving_under(cwd):
         profile = load_agent_profile(name)

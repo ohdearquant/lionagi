@@ -2,19 +2,34 @@
 
 A citation of the form ``path.py:120`` goes stale as soon as a line is inserted above
 line 120, so every such change would have to renumber the records. The records cite
-code in one of three forms instead:
+code in one of four forms instead:
 
 * a symbol, ``path.py::Class.method`` (or ``path.py::NAME`` for a module-level binding),
   which names the code and does not move;
 * a quote, a ``path.py`` span followed by a short code span holding one line of that file,
   which must occur exactly once in the file;
 * a pin, ``path.py:N@<hash8>``, for code that was rewritten or removed so that no symbol
-  holds it any more: the commit fixes the file, so line N never moves.
+  holds it any more: the commit fixes the file, so line N never moves;
+* a module, ``path.py`` alone, for a record that means the whole file: it carries no line
+  and no name, so nothing in it can go stale. The file it names must still be tracked.
 
-Five checks keep that true. Each is a plain function over the record texts and a
+Eight checks keep that true. Each is a plain function over the record texts and a
 ``Source`` (the tracked files, their current text, and the file text at a commit), so a
 small in-memory fixture can carry exactly one defect and a test can require the check to
 report it. The tests over the real records use the repository checkout as the source.
+
+A line number written after a citation token outside backticks (``path.py::name`, :12``) is
+reported unless the token is a repository path to a file that is not Python. A code span
+that holds only a line number (``:12`` or ``:15-18``) is reported when the nearest path
+before it in the same paragraph is a Python file.
+
+A module citation is a repository path to a Python file that is the whole content of a list
+item or of a table cell. A path inside running text may name a file that was retired or is
+still planned, so only the list item and the table cell are checked against the tracked
+files.
+
+A symbol citation is checked for existing in a tracked file, not for being the code its
+sentence describes, and the checks read citations of Python files only.
 """
 
 from __future__ import annotations
@@ -36,49 +51,47 @@ ADR_DIR = REPO_ROOT / "docs" / "adr"
 EDIT_RECORD = "edits/ADR-0126-amendment-9-edits.md"
 
 # Pins outside the edit record, by record file (relative to docs/adr). A pin is allowed
-# only while the code it points at has no symbol at the head. A new pin fails
+# while the cited code has no symbol at the head in that file, or while the sentence says
+# where the code stood at the pinned commit. A new pin fails
 # test_pins_outside_the_edit_record_are_listed, and a pin that is gone from its record
-# fails it too, so the list can only shrink: when a cited symbol returns, replace the pin
-# with the symbol and delete its entry here.
+# fails it too, so the list always matches the records: when a cited symbol returns,
+# replace the pin with the symbol and delete its entry here.
 KNOWN_PINS: dict[str, tuple[str, ...]] = {
     "ADR-0066-li-mcp-v2-verb-surface.md": (
         "lionagi/cli/kill.py:378@95b559a4",
         "lionagi/cli/kill.py:383@95b559a4",
         "lionagi/cli/kill.py:392-418@95b559a4",
-        "lionagi/cli/kill.py:488-498@95b559a4",
     ),
     "ADR-0069-reactive-flow-steering-and-recovery.md": (
-        "lionagi/cli/orchestrate/_checkpoint.py:29@72461356",
+        "lionagi/cli/_runs.py:631-634@ee589cb2",
+        "lionagi/cli/orchestrate/_checkpoint.py:100@ee589cb2",
+        "lionagi/cli/orchestrate/_checkpoint.py:136@ee589cb2",
+        "lionagi/cli/orchestrate/_checkpoint.py:188@ee589cb2",
+        "lionagi/cli/orchestrate/_checkpoint.py:80@ee589cb2",
         "lionagi/cli/orchestrate/_manifest.py:333@72461356",
     ),
-    "ADR-0109-mirrored-session-idleness-is-not-completion.md": (
-        "lionagi/cli/mirror.py:42@9caaceb3",
-        "lionagi/state/lifecycle/callbacks.py:45@ee4cfee3",
-    ),
     "ADR-0117-normalized-progression-membership-and-online-cutover.md": (
-        "lionagi/cli/state.py:247@93932753",
-        "lionagi/cli/state.py:284@93932753",
-        "lionagi/state/db.py:3445@6fe53aff",
+        "lionagi/cli/_runs.py:1922@e1800c3b",
+        "lionagi/cli/_runs.py:2236-2237@e1800c3b",
+    ),
+    "ADR-0126-provider-credential-routing-and-monthly-account-budgets.md": (
+        "lionagi/providers/anthropic/messages.py:511-541@04e03ffe",
+        "lionagi/providers/anthropic/messages.py:981-1011@04e03ffe",
+        "lionagi/service/accounts/_ledger.py:548@c6ac2d97",
     ),
     "ADR-0130-per-request-input-ceiling-and-context-management-past-it.md": (
         "lionagi/providers/anthropic/messages.py:988@2a8b69c9",
     ),
     "ADR-0131-operator-decisions-require-a-launcher-issued-decision-capability.md": (
         "lionagi/studio/cli.py:274@124b1419",
+        "lionagi/studio/launch_access.py:49@124b1419",
+        "lionagi/studio/launch_access.py:63@124b1419",
         "tests/studio/test_hosted_hardening.py:967@124b1419",
     ),
-    "ADR-0135-bounded-opt-in-session-and-run-listing.md": (
-        "lionagi/state/schema_migrations.py:10@35a520d4",
-        "lionagi/state/schema_migrations.py:270@6fe53aff",
-        "tests/apps_studio_server/test_session_listing_projection.py:188@35a520d4",
-    ),
     "ADR-0136-moving-non-core-packages-into-lionhub.md": (
-        "lionagi/_auto.py:157-161@7c434920",
-        "lionagi/_auto.py:175@7c434920",
-        "lionagi/_auto.py:180@7c434920",
-        "lionagi/casts/emission.py:401@c4abb363",
-        "lionagi/casts/emission.py:422-434@c4abb363",
-        "lionagi/casts/emission.py:437@c4abb363",
+        "lionagi/_auto.py:157-161@5f3672b2",
+        "lionagi/_auto.py:175@5f3672b2",
+        "lionagi/_auto.py:180@5f3672b2",
         "lionagi/lndl/extract.py:12-27@c4abb363",
         "lionagi/operations/flow.py:1126@c4abb363",
         "lionagi/operations/flow.py:1162@c4abb363",
@@ -86,39 +99,84 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/operations/flow.py:1306@c4abb363",
         "lionagi/operations/lndl_middle/lndl_middle.py:16@0e6f1979",
         "lionagi/operations/parse/parse.py:315@c4abb363",
+        "lionagi/providers/_secret_resolution.py:101-104@c4abb363",
         "lionagi/providers/_secret_resolution.py:101@c4abb363",
         "lionagi/session/signal.py:280@c4abb363",
+        "lionagi/state/lifecycle/notify_settings.py:383@1e7be920",
+        "lionagi/state/lifecycle/notify_settings.py:41@1e7be920",
         "lionagi/state/provenance.py:19@1e7be920",
         "lionagi/studio/scheduler/subprocess.py:279@c4abb363",
     ),
     "ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md": (
-        "lionagi/cli/mirror.py:21@ddb46ce9",
+        "lionagi/cli/_schedule_parsing.py:32-79@fa46d0e8",
+        "lionagi/cli/_schedule_parsing.py:358@fa46d0e8",
+        "lionagi/cli/_schedule_parsing.py:429-441@fa46d0e8",
+        "lionagi/cli/machine_schedule.py:136@fa46d0e8",
+        "lionagi/cli/machine_schedule.py:38@fa46d0e8",
+        "lionagi/cli/machine_schedule.py:443@fa46d0e8",
+        "lionagi/cli/machine_schedule.py:515@fa46d0e8",
+        "lionagi/cli/machine_schedule.py:73-76@fa46d0e8",
+        "lionagi/cli/mirror.py:21@b4a3bebf",
+        "lionagi/studio/app.py:349-364@8c119ecc",
+        "lionagi/studio/app.py:349-364@b4a3bebf",
+        "lionagi/studio/cli.py:1203-1226@b4a3bebf",
         "lionagi/studio/services/schedule_declaration.py:482@8c119ecc",
-        "tests/test_moved_modules.py:669@8c119ecc",
+        "lionagi/studio/services/schedule_declaration.py:482@b4a3bebf",
+        "lionagi/studio/services/schedule_declaration.py:534@b4a3bebf",
+        "tests/test_moved_modules.py:669@b4a3bebf",
     ),
     "ADR-0139-cli-package-location-and-console-script-ownership.md": (
-        "lionagi/_auto.py:157@7c434920",
-        "lionagi/_auto.py:172@7c434920",
-        "lionagi/_auto.py:223@7c434920",
-        "lionagi/cli/_runs.py:1913@11c965a2",
-        "lionagi/cli/_runs.py:2131@11c965a2",
-        "lionagi/cli/engine.py:29@11c965a2",
-        "lionagi/cli/engine.py:62@11c965a2",
-        "lionagi/cli/kill.py:43@83260865",
-        "lionagi/cli/kill.py:508@83260865",
-        "lionagi/cli/kill.py:794@83260865",
-        "lionagi/cli/mirror.py:111@20073afe",
-        "lionagi/cli/mirror.py:21@fdaea538",
-        "lionagi/cli/mirror.py:25@20073afe",
-        "lionagi/cli/mirror.py:854@20073afe",
-        "lionagi/cli/orchestrate/__init__.py:394@fdaea538",
-        "lionagi/cli/orchestrate/__init__.py:425@fdaea538",
-        "lionagi/cli/orchestrate/_checkpoint.py:227@fdaea538",
-        "lionagi/cli/status.py:262@fdaea538",
-        "lionagi/cli/status.py:37@fdaea538",
-        "lionagi/cli/status.py:55@fdaea538",
-        "lionagi/cli/team.py:42@fdaea538",
-        "lionagi/studio/scheduler/subprocess.py:279@fdaea538",
+        "lionagi/_auto.py:143@2a49c9fe",
+        "lionagi/cli/_argtypes.py:23@5aaacb6d",
+        "lionagi/cli/_code_identity.py:55@5aaacb6d",
+        "lionagi/cli/_engine_definitions.py:19@5aaacb6d",
+        "lionagi/cli/_inspection.py:1@5aaacb6d",
+        "lionagi/cli/_inspection.py:23@8ed68552",
+        "lionagi/cli/_inspection.py:265@8ed68552",
+        "lionagi/cli/_inspection.py:38@8ed68552",
+        "lionagi/cli/_inspection.py:44@8ed68552",
+        "lionagi/cli/_kill_service.py:42@5aaacb6d",
+        "lionagi/cli/_logging.py:1@5aaacb6d",
+        "lionagi/cli/_mcp_resolve.py:22@5aaacb6d",
+        "lionagi/cli/_mirror_service.py:28@95b97d21",
+        "lionagi/cli/_mirror_service.py:43@5aaacb6d",
+        "lionagi/cli/_mirror_settings.py:16@5aaacb6d",
+        "lionagi/cli/_mirror_settings.py:16@95b97d21",
+        "lionagi/cli/_orchestrate_parsing.py:10@4af5b0a9",
+        "lionagi/cli/_orchestrate_parsing.py:10@4cb34cb9",
+        "lionagi/cli/_orchestrate_parsing.py:174@4af5b0a9",
+        "lionagi/cli/_orchestrate_parsing.py:1@5aaacb6d",
+        "lionagi/cli/_orchestrate_parsing.py:398@4af5b0a9",
+        "lionagi/cli/_orchestrate_parsing.py:399@4af5b0a9",
+        "lionagi/cli/_orchestrate_parsing.py:41@4af5b0a9",
+        "lionagi/cli/_orchestrate_parsing.py:42@4cb34cb9",
+        "lionagi/cli/_orchestrate_parsing.py:7@4af5b0a9",
+        "lionagi/cli/_orchestrate_parsing.py:7@e1a5568e",
+        "lionagi/cli/_project.py:19@5aaacb6d",
+        "lionagi/cli/_providers.py:184@5aaacb6d",
+        "lionagi/cli/_runs.py:1499@8c2134d5",
+        "lionagi/cli/_runs.py:1922@95b97d21",
+        "lionagi/cli/_runs.py:2053@8c2134d5",
+        "lionagi/cli/_runs.py:2273@8c2134d5",
+        "lionagi/cli/_runs.py:24@8c2134d5",
+        "lionagi/cli/_runs.py:37@5aaacb6d",
+        "lionagi/cli/_runs.py:37@8c2134d5",
+        "lionagi/cli/_schedule_parsing.py:1@5aaacb6d",
+        "lionagi/cli/_team_service.py:16@5aaacb6d",
+        "lionagi/cli/_util.py:14@5aaacb6d",
+        "lionagi/cli/main.py:370@2a49c9fe",
+        "lionagi/cli/orchestrate/__init__.py:26@4af5b0a9",
+        "lionagi/cli/orchestrate/__init__.py:27-28@4cb34cb9",
+        "lionagi/cli/orchestrate/__init__.py:27@4af5b0a9",
+        "lionagi/cli/orchestrate/__init__.py:425@1717674a",
+        "lionagi/cli/orchestrate/_checkpoint.py:21@5aaacb6d",
+        "lionagi/cli/orchestrate/_checkpoint.py:242@4cb34cb9",
+        "lionagi/cli/orchestrate/_orchestration.py:2137@1717674a",
+        "lionagi/cli/status.py:17@8ed68552",
+        "lionagi/cli/status.py:29@8ed68552",
+        "lionagi/studio/scheduler/subprocess.py:251@4cb34cb9",
+        "lionagi/studio/scheduler/subprocess.py:279@1717674a",
+        "lionagi/studio/scheduler/subprocess.py:279@2a49c9fe",
     ),
 }
 
@@ -128,6 +186,21 @@ PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {
     "ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md": (
         "tests/packaging/test_studio_backend_boundary.py::"
         "test_fresh_wheel_schedule_validate_and_export_without_backend",
+    ),
+    "ADR-0141-recorded-chain-decisions-for-schedule-runs.md": (
+        "tests/studio/test_scheduler_engine.py::"
+        "test_normal_path_terminal_write_records_chain_decision",
+        "tests/studio/test_scheduler_engine.py::"
+        "test_recovery_terminal_write_records_chain_decision",
+        "tests/studio/test_scheduler_engine.py::test_selection_is_none_at_depth_cap",
+        "tests/state/lifecycle/test_schedule_adapter.py::"
+        "test_schedule_run_status_write_keeps_reason_columns",
+        "tests/studio/test_scheduler_engine.py::test_lost_terminal_cas_does_not_chain_normal_path",
+        "tests/cli/test_monitor_run.py::test_chain_decision_none_returns_without_sleep",
+        "tests/cli/test_monitor_run.py::test_chain_decision_branch_follows_child",
+        "tests/cli/test_monitor_run.py::test_chain_decision_survives_schedule_edit",
+        "tests/cli/test_monitor_run.py::"
+        "test_chain_decision_unknown_version_is_legacy_with_one_warning",
     ),
 }
 
@@ -140,6 +213,20 @@ _LINE = re.compile(
 _SYMBOL = re.compile(rf"(?<![\w./-])(?P<path>{_PATH})::(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)")
 # `path.py` followed by one backticked line of that file.
 _QUOTE = re.compile(rf"`(?P<path>{_PATH})` `(?P<quote>[^`\n]+)`")
+# A code span followed by line numbers written outside backticks: ``path.py::name`, :12; :15-18``.
+_BARE_RUN = re.compile(r"`(?P<span>[^`\n]+)`(?P<run>(?:[,;] :\d+(?:[-–]\d+)?(?![\w@]))+)")
+_BARE_MEMBER = re.compile(r"[,;] (?P<number>:\d+(?:[-–]\d+)?)")
+# The path a code span starts with, when it is a repository path to a file that is not Python.
+_OTHER_PATH = re.compile(r"[\w.-]+(?:/[\w.-]+)+\.(?!pyi?$)[A-Za-z]\w*")
+# A Python path that is the whole content of a list item, or of one cell of a table row.
+_ITEM = re.compile(rf"\s*(?:[-*+]|\d+[.)])\s+`(?P<path>{_PATH})`\s*")
+_CELL = re.compile(rf"\s*`(?P<path>{_PATH})`\s*")
+# A code span that holds only a line number: ``:12`` or ``:15-18``.
+_FLOATING = re.compile(r"`:(?P<number>\d+(?:[-–]\d+)?)`")
+# A path to a file of a kind the records cite, with or without a symbol or line after it.
+_ANY_PATH = re.compile(
+    r"(?<![\w./-])(?P<path>[\w./-]+\.(?:py|sql|tsx|ts|md|toml|rs|yaml|yml|json|js|sh|cfg))(?!\w)"
+)
 
 
 class Source(Protocol):
@@ -409,6 +496,101 @@ def check_pins_are_listed(records: dict[str, str], known: dict[str, tuple[str, .
     return problems
 
 
+def check_no_bare_members(records: dict[str, str]) -> list[str]:
+    """Check 6: no line number follows a token outside backticks, unless the token is not Python.
+
+    ``path.py::name`, :12`` leaves ``:12`` as a bare line number of a file the record cites
+    by symbol. A token that is a repository path to a file of another language (a ``.rs``
+    span) is never rewritten into a symbol, so its line numbers stay.
+    """
+    problems: list[str] = []
+    for name, text in records.items():
+        for run in _BARE_RUN.finditer(text):
+            span = run.group("span")
+            if _OTHER_PATH.fullmatch(span.split(None, 1)[0].split(":", 1)[0]):
+                continue
+            line = _lineno(text, run.start("run"))
+            problems.extend(
+                f"{name}:{line}: {member.group('number')} follows `{span}` "
+                "as a bare line number; cite a symbol"
+                for member in _BARE_MEMBER.finditer(run.group("run"))
+            )
+    return problems
+
+
+def _paragraphs(text: str) -> list[tuple[int, str]]:
+    """Each run of non-blank lines as (number of its first line, its text)."""
+    found: list[tuple[int, str]] = []
+    first, lines = 0, []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line.strip():
+            if not lines:
+                first = number
+            lines.append(line)
+        elif lines:
+            found.append((first, "\n".join(lines)))
+            lines = []
+    if lines:
+        found.append((first, "\n".join(lines)))
+    return found
+
+
+def check_no_floating_line_numbers(records: dict[str, str]) -> list[str]:
+    """Check 7: a code span holding only ``:N`` or ``:N-M`` does not follow a Python path.
+
+    Such a span is a line number of the file the paragraph named last. When that file is
+    Python the number goes stale like any ``path.py:N``, so the sentence must cite a symbol.
+    A path to another kind of file (a record, a schema) keeps its line numbers.
+    """
+    problems: list[str] = []
+    for name, text in records.items():
+        for first, paragraph in _paragraphs(text):
+            for span in _FLOATING.finditer(paragraph):
+                before = list(_ANY_PATH.finditer(paragraph[: span.start()]))
+                if before and before[-1].group("path").endswith(".py"):
+                    line = first + paragraph.count("\n", 0, span.start())
+                    problems.append(
+                        f"{name}:{line}: `:{span.group('number')}` follows "
+                        f"{before[-1].group('path')} as a bare line number; cite a symbol"
+                    )
+    return problems
+
+
+def module_tokens(records: dict[str, str], source: Source) -> list[tuple[str, int, str]]:
+    """Module citations as (record, line, path): a repository path to a Python file that is
+    the whole content of a list item or of a table cell.
+
+    A path that does not start at a top-level directory of the repository names no file by
+    itself, so it is prose and not a citation.
+    """
+    roots = {path.split("/", 1)[0] for path in source.tracked() if "/" in path}
+    found: list[tuple[str, int, str]] = []
+    for name, text in records.items():
+        for number, line in enumerate(text.splitlines(), start=1):
+            if line.lstrip().startswith("|"):
+                matches = [_CELL.fullmatch(cell) for cell in line.strip().strip("|").split("|")]
+            else:
+                matches = [_ITEM.fullmatch(line)]
+            found.extend(
+                (name, number, m.group("path"))
+                for m in matches
+                if m is not None
+                and "/" in m.group("path")
+                and m.group("path").split("/", 1)[0] in roots
+            )
+    return found
+
+
+def check_module_paths_exist(records: dict[str, str], source: Source) -> list[str]:
+    """Check 8: every module citation names a file that is tracked at the head."""
+    tracked = source.tracked()
+    return [
+        f"{name}:{line}: {path} is not a tracked file"
+        for name, line, path in module_tokens(records, source)
+        if path not in tracked
+    ]
+
+
 def _all_checks(
     records: dict[str, str],
     source: Source,
@@ -417,6 +599,9 @@ def _all_checks(
 ) -> list[str]:
     return [
         *check_no_line_citations(records),
+        *check_no_bare_members(records),
+        *check_no_floating_line_numbers(records),
+        *check_module_paths_exist(records, source),
         *check_symbols_exist(records, source, planned),
         *check_pins_exist(records, source),
         *check_quotes_unique(records, source),
@@ -480,6 +665,103 @@ def _problems(doc: str, known: dict[str, tuple[str, ...]] | None = None) -> list
 
 def test_clean_fixture_passes_every_check() -> None:
     assert _all_checks(CLEAN, TREE, CLEAN_PINS) == []
+
+
+def test_module_path_alone_passes_every_check() -> None:
+    doc = (
+        "The whole module is `pkg/registry.py`, and the table row names it too:\n"
+        "\n"
+        "| Module | Role |\n"
+        "| --- | --- |\n"
+        "| `pkg/other.py` | the constants |\n"
+    )
+    assert _problems(doc) == []
+    assert quote_tokens({"ADR-0001-registry.md": doc}, TREE) == []
+
+
+def test_module_citation_in_a_list_naming_an_untracked_file_is_reported() -> None:
+    doc = "The modules of the package:\n\n- `pkg/registry.py`\n- `pkg/missing.py`\n"
+    problems = check_module_paths_exist({"ADR-0001-registry.md": doc}, TREE)
+    assert problems == ["ADR-0001-registry.md:4: pkg/missing.py is not a tracked file"]
+
+
+def test_module_citation_in_a_table_cell_naming_an_untracked_file_is_reported() -> None:
+    doc = (
+        "| Module | Role |\n"
+        "| --- | --- |\n"
+        "| `pkg/missing.py` | the constants |\n"
+        "| `pkg/other.py` | the values |\n"
+    )
+    problems = check_module_paths_exist({"ADR-0001-registry.md": doc}, TREE)
+    assert problems == ["ADR-0001-registry.md:3: pkg/missing.py is not a tracked file"]
+
+
+def test_module_citations_naming_tracked_files_pass() -> None:
+    doc = (
+        "The modules of the package:\n"
+        "\n"
+        "- `pkg/registry.py`\n"
+        "1. `pkg/other.py`\n"
+        "\n"
+        "| Module | Role |\n"
+        "| --- | --- |\n"
+        "| `pkg/other.py` | the values |\n"
+        "| `pkg/registry.py` | the registry |\n"
+    )
+    records = {"ADR-0001-registry.md": doc}
+    assert len(module_tokens(records, TREE)) == 4
+    assert check_module_paths_exist(records, TREE) == []
+
+
+def test_path_in_running_text_is_not_a_module_citation() -> None:
+    doc = (
+        "The retired `pkg/gone.py` is no longer used, and `registry/gone.py` was never a path.\n"
+        "\n"
+        "- `registry/gone.py`\n"
+        "- `pkg/gone.py` held the old registry\n"
+    )
+    records = {"ADR-0001-registry.md": doc}
+    assert module_tokens(records, TREE) == []
+    assert check_module_paths_exist(records, TREE) == []
+
+
+def test_line_range_after_a_python_path_in_the_paragraph_is_reported() -> None:
+    doc = (
+        "The registry resolves a name with `pkg/registry.py::Registry.match`, and\n"
+        "`build_registry` at `:20-22` constructs it.\n"
+    )
+    problems = check_no_floating_line_numbers({"ADR-0001-registry.md": doc})
+    assert problems == [
+        "ADR-0001-registry.md:2: `:20-22` follows pkg/registry.py as a bare line number; "
+        "cite a symbol"
+    ]
+
+
+def test_line_number_after_a_markdown_path_in_the_paragraph_passes() -> None:
+    doc = (
+        "- `docs/adr/ADR-0001-registry.md:8-12` says the registry is shared;\n"
+        "  the same file at `:30-31` names its owner, and `pkg/registry.py::Registry` holds it.\n"
+    )
+    assert check_no_floating_line_numbers({"ADR-0001-registry.md": doc}) == []
+
+
+def test_the_nearest_path_before_a_floating_line_number_decides() -> None:
+    after_markdown = "See `pkg/registry.py::Registry`, then `docs/guide.md:3`, and `:9`.\n"
+    after_python = "See `docs/guide.md:3`, then `pkg/registry.py::Registry`, and `:9`.\n"
+    assert check_no_floating_line_numbers({"ADR-0001-registry.md": after_markdown}) == []
+    assert len(check_no_floating_line_numbers({"ADR-0001-registry.md": after_python})) == 1
+
+
+def test_a_path_in_an_earlier_paragraph_does_not_reach_a_floating_line_number() -> None:
+    doc = (
+        "The registry is `pkg/registry.py::Registry`.\n"
+        "\n"
+        "The same file at `:20-22` is a different paragraph, and a path after the number\n"
+        "(`pkg/other.py::VALUE`) does not count either.\n"
+        "\n"
+        "A paragraph with no path at all cites `:5`.\n"
+    )
+    assert check_no_floating_line_numbers({"ADR-0001-registry.md": doc}) == []
 
 
 def test_line_citation_without_a_pin_is_reported() -> None:
@@ -620,11 +902,37 @@ def test_listed_pin_that_is_no_longer_cited_is_reported() -> None:
     assert "is listed but no longer cited" in problems[0]
 
 
+def test_line_number_after_a_python_token_is_reported() -> None:
+    doc = "The registry matches a name with `pkg/registry.py::Registry.match`, :12.\n"
+    problems = check_no_bare_members({"ADR-0001-registry.md": doc})
+    assert problems == [
+        "ADR-0001-registry.md:1: :12 follows `pkg/registry.py::Registry.match` "
+        "as a bare line number; cite a symbol"
+    ]
+
+
+def test_every_member_of_a_run_after_a_python_token_is_reported() -> None:
+    doc = "It reloads (`pkg/registry.py::Registry.refresh`, :12; :15-18, :20) and returns.\n"
+    problems = check_no_bare_members({"ADR-0001-registry.md": doc})
+    assert [p.split(" ")[1] for p in problems] == [":12", ":15-18", ":20"]
+
+
+def test_line_number_after_a_token_of_another_language_is_not_reported() -> None:
+    doc = "The engine starts in `crates/engine/src/main.rs:3-9`, :12.\n"
+    assert check_no_bare_members({"ADR-0001-registry.md": doc}) == []
+
+
+def test_colon_and_digits_after_prose_are_not_a_bare_member() -> None:
+    doc = "It sat at `pkg/registry.py:3@0123abcd`, and the ratio is 3, :1 to 2.\n"
+    assert check_no_bare_members({"ADR-0001-registry.md": doc}) == []
+
+
 def test_fixture_with_every_defect_is_reported_by_every_check() -> None:
     doc = (
         "A line `pkg/registry.py:9`, an untracked `pkg/missing.py::run`, "
         "a stray pin `pkg/registry.py:3@deadbeef`, "
-        "a quote `pkg/registry.py` `return Registry()`.\n"
+        "a quote `pkg/registry.py` `return Registry()`, "
+        "a member `pkg/registry.py::build_default`, :12.\n"
     )
     problems = _problems(doc)
     for fragment in (
@@ -633,6 +941,7 @@ def test_fixture_with_every_defect_is_reported_by_every_check() -> None:
         "names a commit that does not exist",
         "occurs 2 times",
         "is a new pin",
+        "as a bare line number",
     ):
         assert any(fragment in p for p in problems), fragment
 
@@ -654,6 +963,11 @@ def git_source() -> GitSource:
 
 def test_records_cite_no_code_by_line_number(records: dict[str, str]) -> None:
     problems = check_no_line_citations(records)
+    assert not problems, "\n".join(problems)
+
+
+def test_records_leave_no_bare_line_number_after_a_python_token(records: dict[str, str]) -> None:
+    problems = check_no_bare_members(records)
     assert not problems, "\n".join(problems)
 
 
@@ -680,6 +994,21 @@ def test_every_quote_occurs_once_in_its_file(
 ) -> None:
     assert quote_tokens(records, git_source), "no quoted citations found; the scan is broken"
     problems = check_quotes_unique(records, git_source)
+    assert not problems, "\n".join(problems)
+
+
+def test_records_leave_no_floating_line_number_after_a_python_path(
+    records: dict[str, str],
+) -> None:
+    problems = check_no_floating_line_numbers(records)
+    assert not problems, "\n".join(problems)
+
+
+def test_every_module_citation_names_a_tracked_file(
+    records: dict[str, str], git_source: GitSource
+) -> None:
+    assert module_tokens(records, git_source), "no module citations found; the scan is broken"
+    problems = check_module_paths_exist(records, git_source)
     assert not problems, "\n".join(problems)
 
 

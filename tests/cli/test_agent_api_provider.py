@@ -13,6 +13,7 @@ The endpoint's call is scripted here, so no request leaves the process.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,7 +21,7 @@ import anyio
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.cli._providers import AgentProfile
+from lionhub.orchestration.spawn import AgentProfile
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 
 MODEL = "anthropic/claude-haiku-5-5"
@@ -105,8 +106,8 @@ def _profile(**extra) -> AgentProfile:
 @pytest.fixture
 def leg(monkeypatch, tmp_path):
     """Run `_run_agent` against a scripted Anthropic endpoint; return what it saw."""
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.service.manager import iModelManager
 
     workspace = tmp_path / "workspace"
@@ -185,8 +186,8 @@ async def test_a_profile_with_the_read_set_runs_the_tool_loop_to_an_answer(leg):
 async def test_the_run_record_holds_every_message_of_the_loop_and_the_terminal_status(
     leg, monkeypatch, tmp_path
 ):
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.state.db import StateDB
 
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
@@ -314,7 +315,7 @@ async def test_the_round_bound_comes_from_the_profile(leg):
 
 @pytest.mark.asyncio
 async def test_the_branch_is_written_where_a_resume_finds_it(leg):
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     leg.replies = [_last_round(), _answer("first")]
     _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
@@ -332,7 +333,7 @@ async def test_the_branch_is_written_where_a_resume_finds_it(leg):
 
 @pytest.mark.asyncio
 async def test_a_resumed_leg_calls_the_read_set_again(leg):
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     leg.replies = [_last_round(), _answer("first")]
     _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
@@ -420,7 +421,7 @@ async def test_preset_coding_is_refused_for_an_api_model(leg):
 @pytest.mark.asyncio
 async def test_a_resumed_branch_without_the_launch_record_runs_as_before(leg, monkeypatch):
     from lionagi import Branch
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     leg.replies = [_last_round(), _answer("first")]
     _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
@@ -475,7 +476,7 @@ async def test_a_stored_record_this_version_cannot_run_is_refused_before_a_run_e
     leg, monkeypatch, record, with_profile
 ):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     leg.replies = [_last_round(), _answer("first")]
     _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
@@ -693,7 +694,7 @@ def _capture_hints(monkeypatch) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_a_react_turn_records_and_prints_what_it_spent(leg, monkeypatch):
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     hints = _capture_hints(monkeypatch)
     leg.replies = [_read_round("notes.txt"), _last_round(), _answer("the notes say hello")]
@@ -711,7 +712,7 @@ async def test_a_react_turn_records_and_prints_what_it_spent(leg, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_resumed_turn_counts_only_its_own_spend(leg):
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     leg.replies = [_read_round("notes.txt"), _last_round(), _answer("first")]
     _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
@@ -753,7 +754,7 @@ async def test_a_second_turn_in_the_same_invocation_adds_to_its_spend(leg, tmp_p
 
 @pytest.mark.asyncio
 async def test_a_turn_that_fails_still_records_its_spend(leg):
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     leg.replies = [_read_round("notes.txt")]
 
@@ -930,7 +931,7 @@ async def test_a_loop_without_the_read_set_is_refused_before_a_run_exists(leg, m
 
 @pytest.mark.asyncio
 async def test_a_record_without_a_loop_resumes_on_react(leg):
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     leg.replies = [_last_round(), _answer("first")]
     _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
@@ -952,7 +953,7 @@ async def test_a_record_without_a_loop_resumes_on_react(leg):
 @pytest.mark.asyncio
 async def test_an_lndl_branch_resumes_on_lndl_from_its_record(leg):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     leg.replies = [_text(_LNDL_READ), _lndl_answer("first")]
     _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read", api_loop="lndl"))
@@ -1001,7 +1002,7 @@ async def test_a_loop_without_the_read_set_is_refused_for_a_cli_provider(
 @pytest.mark.asyncio
 async def test_a_loop_without_the_read_set_is_refused_on_resume_without_a_record(leg, monkeypatch):
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._runs import find_branch
+    from lionhub.orchestration.runs import find_branch
 
     leg.replies = [_last_round(), _answer("first")]
     _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
@@ -1555,10 +1556,23 @@ def _run_record(tmp_path) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_the_run_record_of_a_refused_turn_carries_the_stop_reason(leg, tmp_path):
+async def test_the_run_record_of_a_refused_turn_carries_the_stop_reason(leg, tmp_path, monkeypatch):
     import lionagi.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
 
+    # Keep project discovery offline while retaining the real run allocator.
+    monkeypatch.setattr("lionagi._paths._find_git_root", lambda _cwd: None)
+    monkeypatch.setattr("lionhub.orchestration.project._find_git_root", lambda _cwd: None)
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {"pid": 4242})
+    allocated = []
+    allocate = agent_mod.allocate_run
+
+    def record_allocation(*args, **kwargs):
+        run_dir = allocate(*args, **kwargs)
+        allocated.append(run_dir)
+        return run_dir
+
+    monkeypatch.setattr(agent_mod, "allocate_run", record_allocation)
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):
         leg.replies.extend([_last_round(), _refused()])
 
@@ -1566,6 +1580,11 @@ async def test_the_run_record_of_a_refused_turn_carries_the_stop_reason(leg, tmp
         await leg.run(_profile(api_tools="read"))
 
     manifest = _run_record(tmp_path)
+    [manifest_path] = (tmp_path / "runs").glob("*/run.json")
+    [run_dir] = allocated
+    assert manifest["run_id"] == manifest_path.parent.name == run_dir.run_id
+    assert Path(manifest["state_root"]).resolve() == manifest_path.parent.resolve()
+    assert run_dir.state_root.resolve() == manifest_path.parent.resolve()
     assert manifest["stop_reason"] == "refusal"
     assert "the provider refused the response" in manifest["error"]
 
@@ -1621,8 +1640,8 @@ async def test_a_refused_turn_with_stop_details_fails_as_a_nonretryable_provider
     import lionagi.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
     from lionagi._provider_errors import ProviderSafetyError
-    from lionagi.cli._runs import resolve_run_reason
     from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration.runs import resolve_run_reason
 
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):
         leg.replies.extend([_last_round(), _refused_with(stop_details=_STOP_DETAILS)])
@@ -1658,8 +1677,8 @@ async def test_a_refused_turn_without_stop_details_has_the_same_reason_and_no_su
 ):
     import lionagi.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
-    from lionagi.cli._runs import resolve_run_reason
     from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration.runs import resolve_run_reason
 
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):
         leg.replies.extend([_last_round(), _refused_with(**extra)])
@@ -1718,8 +1737,8 @@ async def test_an_openai_refusal_carries_its_text_beside_the_stop_reason(
 ):
     import lionagi.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
-    from lionagi.cli._runs import resolve_run_reason
     from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration.runs import resolve_run_reason
 
     # The scripted endpoint speaks the Anthropic wire, so the pass's raw responses are
     # swapped for the OpenAI-shaped one the failed-round check reads.
@@ -1752,8 +1771,8 @@ async def test_a_failed_round_that_is_not_a_refusal_keeps_the_exception_reason_a
 ):
     import lionagi.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
-    from lionagi.cli._runs import resolve_run_reason
     from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration.runs import resolve_run_reason
 
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):
         leg.replies.extend([_last_round(), _text("")])

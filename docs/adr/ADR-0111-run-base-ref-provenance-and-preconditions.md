@@ -10,7 +10,7 @@
   manifest schema v1**: D1 writes to the run directory's `run.json`, and D2/D3
   add keys to *playbooks*, a separate document with a separate loader — see
   D1a, which is where the word "manifest" is disambiguated. Depends on the
-  existing `lionagi/cli/_code_identity.py`, whose `git_identity()` already
+  existing `lionhub/src/lionhub/serve/diagnostics.py`, whose `git_identity()` already
   computes every value D1 records
 
 ## Context
@@ -47,7 +47,7 @@ planning — holds that premise for its whole duration while the codebase moves
 underneath it.
 
 **We already built the instrument and the orchestration path is the only
-surface that does not consult it.** `lionagi/cli/_code_identity.py` exposes
+surface that does not consult it.** `lionhub/src/lionhub/serve/diagnostics.py` exposes
 `git_identity(tree)`, which returns the resolved 40-hex `commit`, `branch`,
 `detached`, `dirty`, a `worktree_fingerprint`, a `comparison_ref` with its
 provenance (configured upstream, else the remote's default branch), and
@@ -58,7 +58,7 @@ than a zero that reads as agreement.
 `li doctor`, `li --machine`, the MCP dispatch surface, the MCP server and the
 Studio admin surface all consume it, through the module's own
 `code_identity()` and `snapshot_git_position()` wrappers — `git_identity` has
-no caller outside `_code_identity.py`. `lionagi/cli/_runs.py` and
+no caller outside `diagnostics.py`. `lionhub/src/lionhub/orchestration/runs.py` and
 `lionagi/cli/orchestrate/` consume it by neither route. So `li doctor` will
 tell an operator exactly where their checkout sits, while a nineteen-agent run
 beside it records no such thing.

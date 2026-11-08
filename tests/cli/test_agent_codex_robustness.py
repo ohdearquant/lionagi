@@ -11,77 +11,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lionagi.cli._providers import (
+from lionhub.orchestration.spawn import (
     PROVIDER_BYPASS_KWARGS,
     PROVIDER_YOLO_KWARGS,
     build_chat_model,
 )
 
 # build_chat_model threads bypass kwarg
-
-
-def test_build_chat_model_bypass_applies_bypass_kwargs(monkeypatch):
-    """build_chat_model with bypass=True injects PROVIDER_BYPASS_KWARGS for codex."""
-    import lionagi.cli._providers as pmod
-    from lionagi.testing import IModelKwargCaptor
-
-    captor = IModelKwargCaptor.fresh()
-    monkeypatch.setattr(pmod, "iModel", captor)
-
-    build_chat_model(
-        "codex", "gpt-5.3-codex-spark", yolo=False, verbose=False, theme=None, bypass=True
-    )
-
-    assert len(captor.captures) == 1
-    kwargs = captor.captures[0]
-    expected = PROVIDER_BYPASS_KWARGS["codex"]
-    for k, v in expected.items():
-        assert kwargs.get(k) == v, f"Expected {k}={v!r} in kwargs, got {kwargs.get(k)!r}"
-
-
-def test_build_chat_model_bypass_takes_precedence_over_yolo(monkeypatch):
-    """When both bypass and yolo are True, bypass wins (bypass_approvals, not full_auto)."""
-    import lionagi.cli._providers as pmod
-    from lionagi.testing import IModelKwargCaptor
-
-    captor = IModelKwargCaptor.fresh()
-    monkeypatch.setattr(pmod, "iModel", captor)
-
-    build_chat_model(
-        "codex", "gpt-5.3-codex-spark", yolo=True, verbose=False, theme=None, bypass=True
-    )
-
-    assert len(captor.captures) == 1
-    kwargs = captor.captures[0]
-    # bypass_approvals from PROVIDER_BYPASS_KWARGS (not full_auto from PROVIDER_YOLO_KWARGS)
-    assert kwargs.get("bypass_approvals") is True
-    assert "full_auto" not in kwargs, "full_auto (yolo) must not override bypass"
-
-
-def test_build_chat_model_no_bypass_no_yolo_returns_str_for_codex(tmp_path, monkeypatch):
-    """Without any flags AND without a global codex effort, build_chat_model
-    returns a plain spec string (no iModel). The empty CODEX_HOME is the
-    premise, stated here rather than inherited from the suite's isolation: a
-    global model_reasoning_effort would rightly turn this into an iModel."""
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    result = build_chat_model("codex", "gpt-5.3-codex-spark", yolo=False, verbose=False, theme=None)
-    assert isinstance(result, str)
-    assert result == "codex/gpt-5.3-codex-spark"
-
-
-def test_build_chat_model_bypass_claude_applies_permission_mode(monkeypatch):
-    """bypass for claude provider injects permission_mode=bypassPermissions."""
-    import lionagi.cli._providers as pmod
-    from lionagi.testing import IModelKwargCaptor
-
-    captor = IModelKwargCaptor.fresh()
-    monkeypatch.setattr(pmod, "iModel", captor)
-
-    build_chat_model("claude", "sonnet", yolo=False, verbose=False, theme=None, bypass=True)
-
-    assert len(captor.captures) == 1
-    kwargs = captor.captures[0]
-    assert kwargs.get("permission_mode") == "bypassPermissions"
 
 
 # _run_agent threads bypass and warns for naked codex
@@ -175,8 +111,8 @@ async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path):
 
     warnings_emitted: list[str] = []
 
-    import lionagi.cli._logging as logging_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.console as logging_mod
 
     def capture_warn(msg):
         warnings_emitted.append(msg)
@@ -206,12 +142,12 @@ async def test_run_agent_codex_profile_approval_flag_suppresses_warning(
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
     warnings_emitted: list[str] = []
-    import lionagi.cli._logging as logging_mod
+    import lionhub.orchestration.console as logging_mod
 
     monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
 
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._providers import _parse_profile
+    from lionhub.orchestration.spawn import _parse_profile
 
     profile = _parse_profile(
         "approved",
@@ -240,7 +176,7 @@ async def test_run_agent_codex_with_bypass_no_warning(monkeypatch, tmp_path):
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
     warnings_emitted: list[str] = []
-    import lionagi.cli._logging as logging_mod
+    import lionhub.orchestration.console as logging_mod
 
     monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
 
@@ -263,7 +199,7 @@ async def test_run_agent_codex_with_yolo_no_warning(monkeypatch, tmp_path):
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
     warnings_emitted: list[str] = []
-    import lionagi.cli._logging as logging_mod
+    import lionhub.orchestration.console as logging_mod
 
     monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
 

@@ -303,6 +303,17 @@
           },
           {
             "option_strings": [
+              "--mcp-submit-snapshot"
+            ],
+            "dest": "mcp_submit_snapshot",
+            "required": false,
+            "nargs": null,
+            "default": null,
+            "choices": null,
+            "help": "==SUPPRESS=="
+          },
+          {
+            "option_strings": [
               "--mcp-config"
             ],
             "dest": "mcp_config",
@@ -723,6 +734,17 @@
             "default": false,
             "choices": null,
             "help": "With --resume: proceed even when a pending op declared inherit_context \u2014 it runs against an empty branch instead of its predecessor's conversation history, which resume does not restore. Without this flag such ops refuse loudly, naming them."
+          },
+          {
+            "option_strings": [
+              "--mcp-submit-snapshot"
+            ],
+            "dest": "mcp_submit_snapshot",
+            "required": false,
+            "nargs": null,
+            "default": null,
+            "choices": null,
+            "help": "==SUPPRESS=="
           },
           {
             "option_strings": [
@@ -1249,6 +1271,17 @@
           "default": null,
           "choices": null,
           "help": "Total token budget for --context-from content (default 8000; ~4 chars/token)."
+        },
+        {
+          "option_strings": [
+            "--mcp-submit-snapshot"
+          ],
+          "dest": "mcp_submit_snapshot",
+          "required": false,
+          "nargs": null,
+          "default": null,
+          "choices": null,
+          "help": "==SUPPRESS=="
         },
         {
           "option_strings": [
@@ -6775,6 +6808,21 @@
               "default": "",
               "choices": null,
               "help": "Optional human-readable reason recorded in status_transitions."
+            },
+            {
+              "option_strings": [
+                "--resolve-quarantine"
+              ],
+              "dest": "resolve_quarantine",
+              "required": false,
+              "nargs": null,
+              "default": null,
+              "choices": [
+                "aborted",
+                "cancelled",
+                "failed"
+              ],
+              "help": "Record an operator disposition for a quarantined row without signalling its PID; requires --reason."
             },
             {
               "option_strings": [

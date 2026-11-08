@@ -299,7 +299,7 @@ def build_context_block(candidates: Sequence[ContextCandidate], budget_tokens: i
 
     See docs/internals/cli.md for the budget-allocation and drop-order contract.
     """
-    from lionagi.cli._logging import warn
+    from lionhub.orchestration.console import warn
 
     if not candidates:
         return ""

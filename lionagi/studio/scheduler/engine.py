@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from lionagi.cli._schedule_parsing import _CHAIN_ACTION_ALLOWED_KEYS, _MAX_CHAIN_DEPTH
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.ln.concurrency import ExceptionGroup, current_time
 from lionagi.ln.concurrency import sleep as _sleep
@@ -49,6 +48,11 @@ from lionagi.studio.services.scheduler_state import (
     default_scheduler_state,
     flush_run_telemetry,
     resolve_invocation_terminal,
+)
+from lionhub.orchestration.schedule.parsing import (
+    _MAX_CHAIN_DEPTH,
+    _chain_action_with_usable_selected_kind,
+    _merge_chain_action,
 )
 
 _log = logging.getLogger(__name__)
@@ -442,20 +446,15 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
     return None
 
 
-def _merge_chain_action(schedule: dict, chain_action: dict) -> dict:
-    """The schedule a chained run fires: *schedule* overlaid with its ``on_success`` or
-    ``on_fail`` action, whose short keys replace the action fields they name, None included.
-    Only the keys a chain action may carry are overlaid; any other stored key leaves the
-    parent's field in place."""
-    chain_action = {k: v for k, v in chain_action.items() if k in _CHAIN_ACTION_ALLOWED_KEYS}
-    chain_schedule = {**schedule, **chain_action}
-    chain_schedule["action_kind"] = chain_action.get(
-        "kind", chain_action.get("action_kind", schedule["action_kind"])
-    )
-    for key in ("model", "prompt", "agent", "playbook"):
-        if key in chain_action:
-            chain_schedule[f"action_{key}"] = chain_action[key]
-    return chain_schedule
+def _selected_chain_action(schedule: dict, success: bool) -> dict | None:
+    """Return the selected stored chain if it can be used by the scheduler."""
+    field = "on_success" if success else "on_fail"
+    action = _chain_action_with_usable_selected_kind(schedule, success)
+    if action is None and schedule.get(field):
+        _log.warning(
+            "Schedule %s has an unusable %s chain action; skipping", schedule.get("id"), field
+        )
+    return action
 
 
 class SchedulerEngine:
@@ -1363,11 +1362,7 @@ class SchedulerEngine:
                 continue
             await self._check_max_runs(schedule, chain_depth)
             if chain_depth < _MAX_CHAIN_DEPTH:
-                chain_action = None
-                if run_status == "completed" and schedule.get("on_success"):
-                    chain_action = schedule["on_success"]
-                elif run_status != "completed" and schedule.get("on_fail"):
-                    chain_action = schedule["on_fail"]
+                chain_action = _selected_chain_action(schedule, run_status == "completed")
 
                 if chain_action:
                     chain_schedule = _merge_chain_action(schedule, chain_action)
@@ -3359,11 +3354,7 @@ class SchedulerEngine:
             await self._check_max_runs(schedule, chain_depth)
 
             if chain_depth < _MAX_CHAIN_DEPTH:
-                chain_action = None
-                if success and schedule.get("on_success"):
-                    chain_action = schedule["on_success"]
-                elif not success and schedule.get("on_fail"):
-                    chain_action = schedule["on_fail"]
+                chain_action = _selected_chain_action(schedule, success)
 
                 if chain_action:
                     chain_schedule = _merge_chain_action(schedule, chain_action)

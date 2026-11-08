@@ -78,7 +78,7 @@ Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. 
 
 - `cli/agent.py` — `li agent`: one-shot or resumed turn
 - `cli/team.py` — `li team`: inbox (`~/.lionagi/teams/{id}.json`), concurrent writes via `fcntl.flock`
-- `cli/_project.py` — `detect_project(cwd)`: returns `(project_name, project_source)` via detection cascade (see ADR-0026)
+- `lionhub.orchestration.project` — `detect_project(cwd)`: returns `(project_name, project_source)` via detection cascade (see ADR-0026)
 - `cli/orchestrate/` — `li o fanout` / `li o flow`:
   - `flow.py` — DAG planning (`plan()`), reactive expansion (`SpawnRequest`), `FlowPlanError`. `--team-mode` enables `li team` routing mid-pipeline.
   - `_common.py` — `BARE_WORKER_SYSTEM` / `TEAM_WORKER_SYSTEM` / `TEAM_COORD_SECTION` prompt templates
@@ -86,14 +86,14 @@ Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. 
 
 Project detection runs at every session creation site (`cli/agent.py`, `cli/orchestrate/_orchestration.py`, `cli/state.py`). The resolved `project` and `project_source` columns are written to the `sessions` table and displayed in Studio.
 
-### Persistence (`lionagi/cli/_runs.py`)
+### Persistence (`lionhub/src/lionhub/orchestration/runs.py`)
 
 Every run: `~/.lionagi/runs/{run_id}/` (`YYYYMMDDTHHMMSS-{uuid6}`).
 
 - `run.json` — manifest · `branches/{id}.json` — snapshots · `stream/{id}.buffer.jsonl` — live chunks
 - `artifacts/` when `--save` not provided · `find_branch(id)` scans `~/.lionagi/runs/` manifests
 
-### CLI Logging (`lionagi/cli/_logging.py`)
+### CLI Logging (`lionhub.orchestration.console`)
 
 `configure_cli_logging(verbose)`. Never `print(..., file=sys.stderr)` in CLI code:
 `progress()` (silenced when verbose) · `hint()` (post-run) · `warn()` (warning prefix) · `log_error()` (error prefix)

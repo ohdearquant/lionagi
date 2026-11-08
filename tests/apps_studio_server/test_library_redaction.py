@@ -67,10 +67,10 @@ def _make_redaction_client(tmp_path, monkeypatch):
     """A TestClient wired to a scratch LIONAGI_HOME, both agent write paths
     (PUT /agents/{name} and POST /definitions/agent/{name}) kept in sync, and
     the demo-mode switch guaranteed off until a test opts in."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.agents as agents_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()

@@ -21,7 +21,7 @@ import argparse
 
 import pytest
 
-from lionagi._auto import iter_cli_seeds, load_cli_command
+from lionhub.cli.catalog import iter_cli_seeds, load_cli_command
 from lionhub.serve.mcp.verbs import ABSENT, FENCED_PATHS, VERBS
 
 

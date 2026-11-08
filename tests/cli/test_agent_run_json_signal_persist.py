@@ -18,8 +18,11 @@ import time
 
 import pytest
 
-from lionagi.cli import _runs
-from lionagi.cli._runs import SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD, TERMINAL_WRITE_LOST_FIELD
+from lionhub.orchestration import runs as _runs
+from lionhub.orchestration.runs import (
+    SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
+    TERMINAL_WRITE_LOST_FIELD,
+)
 from tests.cli.test_agent_run_json_error import (
     _run,
     _snapshot_before_operate,
@@ -287,9 +290,9 @@ async def test_two_window_openings_write_one_marker(monkeypatch, tmp_path):
 async def test_a_binding_without_a_run_manifest_marks_nothing(monkeypatch, tmp_path, caplog):
     """Only the `li agent` binding, which passes its manifest and run directory, is marked."""
     from lionagi import Branch
-    from lionagi.cli._runs import RunDir
     from lionagi.session.signal import NodeStarted
     from lionagi.state import engine as state_engine
+    from lionhub.orchestration.runs import RunDir
 
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", BUSY_MS)
@@ -348,7 +351,7 @@ async def test_a_hand_off_that_fails_keeps_the_time_on_the_manifest_and_logs(
 
     run_manifest = {"status": "running"}
     mark = _runs._signal_window_marker(run_manifest, tmp_path)
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli._runs"):
+    with caplog.at_level(logging.WARNING, logger="lionhub.orchestration.runs"):
         with monkeypatch.context() as patched:
             patched.setattr(_runs.threading, "Thread", refuse)
             mark()  # raises nothing
@@ -358,7 +361,7 @@ async def test_a_hand_off_that_fails_keeps_the_time_on_the_manifest_and_logs(
 
 
 def test_the_marker_write_keeps_an_earlier_time_and_the_rest_of_the_file(tmp_path):
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     run = RunDir(run_id="run-k", state_root=tmp_path / "k", artifact_root=tmp_path / "k-art")
     run.ensure_state_dirs()
@@ -376,7 +379,7 @@ def test_the_marker_write_keeps_an_earlier_time_and_the_rest_of_the_file(tmp_pat
 def test_a_whole_file_write_keeps_the_earliest_time_on_file(tmp_path, bound):
     """A manifest written without the time, or with a later one, keeps the time on file, as the
     whole-file write of another invocation sharing the run id must; an earlier one replaces it."""
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     run = RunDir(
         run_id="run-s",
@@ -409,7 +412,7 @@ def test_a_whole_file_write_keeps_the_earliest_time_on_file(tmp_path, bound):
 def test_a_malformed_time_on_file_is_not_kept(tmp_path, on_file):
     """A whole-file write does not carry a time no reader takes, and the marker thread writes
     over one."""
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     run = RunDir(run_id="run-m", state_root=tmp_path / "m", artifact_root=tmp_path / "m-art")
     run.ensure_state_dirs()
@@ -431,7 +434,7 @@ def test_a_malformed_time_on_file_is_not_kept(tmp_path, on_file):
 def test_the_degradation_record_keeps_the_earliest_time_on_file(tmp_path):
     """Recording why persistence was disabled writes the whole file, and carries the time on file
     as every other whole-file write does: a later time does not replace it, an earlier one does."""
-    from lionagi.cli._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
+    from lionhub.orchestration.runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
 
     run = RunDir(run_id="run-d", state_root=tmp_path / "d", artifact_root=tmp_path / "d-art")
     run.ensure_state_dirs()
@@ -457,7 +460,7 @@ def test_the_degradation_record_keeps_the_earliest_time_on_file(tmp_path):
 def test_the_copy_back_waits_for_the_manifest_lock(tmp_path):
     """Copying a resumed leg's lost-write record onto the run's run.json takes the run directory's
     manifest lock: it does not write while another descriptor holds it, and writes once freed."""
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     run = RunDir(run_id="run-c", state_root=tmp_path / "c", artifact_root=tmp_path / "c-art")
     run.ensure_state_dirs()
@@ -493,7 +496,7 @@ def test_the_copy_back_waits_for_the_manifest_lock(tmp_path):
 
 def test_the_copy_back_writes_while_it_holds_the_manifest_lock(monkeypatch, tmp_path):
     """At the moment the copy-back writes run.json, the run directory's manifest lock is held."""
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     run = RunDir(run_id="run-h", state_root=tmp_path / "h", artifact_root=tmp_path / "h-art")
     run.ensure_state_dirs()
@@ -525,7 +528,7 @@ def test_the_copy_back_writes_while_it_holds_the_manifest_lock(monkeypatch, tmp_
 def test_a_time_on_file_that_is_not_one_is_left_out_by_both_partial_writers(tmp_path, token):
     """run.json holding a NaN or an infinity for the time does not stop the degradation record or
     the copy-back from writing; both leave the value out, as a whole-file write does."""
-    from lionagi.cli._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
+    from lionhub.orchestration.runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
 
     run = RunDir(run_id="run-n", state_root=tmp_path / "n", artifact_root=tmp_path / "n-art")
     run.ensure_state_dirs()
@@ -549,7 +552,7 @@ def test_a_time_on_file_that_is_not_one_is_left_out_by_both_partial_writers(tmp_
 def test_an_integer_time_on_file_is_kept_by_every_writer(tmp_path):
     """JSON holds a whole-second time as an integer, which readers take as a time, so the
     degradation record, the copy-back, the marker write and a whole-file write all keep it."""
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     run = RunDir(run_id="run-i", state_root=tmp_path / "i", artifact_root=tmp_path / "i-art")
     run.ensure_state_dirs()
@@ -575,7 +578,7 @@ def test_an_integer_time_on_file_is_kept_by_every_writer(tmp_path):
 def test_a_provenance_bound_write_over_an_unreadable_file_still_writes(tmp_path):
     """A run bound to its provenance reads the file only for the time, so a file it cannot read
     is written over as before, without one."""
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     run = RunDir(
         run_id="run-u", state_root=tmp_path / "u", artifact_root=tmp_path / "u-art", cwd=tmp_path
@@ -597,7 +600,7 @@ def test_a_marker_write_that_fails_logs_and_changes_nothing(tmp_path, caplog, co
     if content is not None:
         (state_root / "run.json").write_bytes(content)
 
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli._runs"):
+    with caplog.at_level(logging.WARNING, logger="lionhub.orchestration.runs"):
         _runs._write_signal_persistence_degraded_at(state_root, 100.0)  # raises nothing
 
     assert any("signal persistence degradation" in r.getMessage() for r in caplog.records)

@@ -31,8 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
-
-from ._logging import log_error
+from lionhub.orchestration.console import log_error
 
 __all__ = ("add_hooks_subparser", "run_hooks")
 

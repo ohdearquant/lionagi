@@ -421,7 +421,7 @@ It is not sufficient once `play.submit` exists. `li kill` performs transitive
 `_do_kill` at `lionagi/cli/kill.py::_do_kill` invokes the play walk without a `recursive` guard). That path also
 writes the lifecycle status transitions and fires the terminal-notify emit. The cancellation
 write guards running invocations and clears a session's live phase in the same update
-(`_persist_cancel`, `lionagi/cli/kill.py:488-498@95b559a4`). A raw `killpg` stops the processes while leaving
+(`_persist_cancel`, `lionhub/src/lionhub/orchestration/kill.py::_persist_cancel`). A raw `killpg` stops the processes while leaving
 those rows un-transitioned and skipping the notify.
 
 **Decision:**

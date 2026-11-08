@@ -314,7 +314,7 @@ async def test_proposal_tools_use_the_shared_decision_reader(monkeypatch, module
         ]
         expected = {key: False, "reason": "failed", "id": "session"}
         if module_name == "cancel_run":
-            expected["run_untouched"] = True
+            expected["run_untouched"] = None
 
     assert delegated, "proposal tools must use the shared decision reader"
     assert delegated == [(store, initial)]

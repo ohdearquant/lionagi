@@ -131,8 +131,10 @@ def test_in_process_spawn_paths_are_present_where_named() -> None:
         "review.py": "ReviewEngine._on_issue",
         "research.py": "ResearchEngine._on_finding",
     }
+    # The amendment cites the hypothesis handlers as the engine class, which holds seven of them.
+    cited = {"hypothesis.py": "HypothesisEngine"}
     for module, qualname in named.items():
-        assert f"{engines}/{module}::{qualname}" in amendment
+        assert f"{engines}/{module}::{cited.get(module, qualname)}`" in amendment
         assert "run.spawn" in _def_source(f"{engines}/{module}", qualname)
     # Hypothesis spawns from two sites in the handler, not one.
     assert _def_source(f"{engines}/hypothesis.py", named["hypothesis.py"]).count("run.spawn") >= 2
@@ -392,7 +394,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
-    assert "lionagi/cli/_runs.py::teardown_persist" in flat
+    assert "lionhub/src/lionhub/orchestration/runs.py::teardown_persist" in flat
     assert "lionagi/studio/services/workflow_run.py::_teardown_run_persist" in flat
 
 

@@ -86,7 +86,7 @@ async def request(
 
 def main() -> None:
     """Console entrypoint: run the server over stdio."""
-    from lionagi.cli._code_identity import snapshot_git_position
+    from lionhub.serve.diagnostics import snapshot_git_position
 
     # Taken now, before serving anything: the process keeps its imported
     # modules for its whole life, so a checkout that moves later is divergence

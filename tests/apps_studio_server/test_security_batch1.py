@@ -69,9 +69,9 @@ class TestPublicPath:
 class TestDefinitionsDiskPath:
     def test_list_definitions_disk_path_not_absolute(self, tmp_path, monkeypatch):
         """list_definitions() must not expose absolute disk_path in response."""
-        import lionagi.cli._runs as cli_runs_mod
         import lionagi.state.db as state_db_mod
         import lionagi.studio.services.definitions as defs_mod
+        import lionhub.orchestration.runs as cli_runs_mod
 
         fake_home = _make_fake_home(tmp_path)
         agents_dir = fake_home / "agents"

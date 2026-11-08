@@ -36,13 +36,13 @@ def _make_client(
     for d in (shows_root, runs_root, agents_root, playbooks_root, skills_root):
         d.mkdir(parents=True)
 
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.config as config_mod
     import lionagi.studio.services.agents as agents_mod
     import lionagi.studio.services.playbooks as playbooks_mod
     import lionagi.studio.services.shows as shows_mod
     import lionagi.studio.services.skills as skills_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)

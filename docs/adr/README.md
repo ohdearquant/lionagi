@@ -274,6 +274,8 @@ its area block.
 - 0074-0075 — unused (intentional gaps)
 - [ADR-0108](ADR-0108-agent-run-steering-at-turn-end.md) — Agent-run steering at the turn-end
   boundary (sequential number; see Numbering)
+- [ADR-0141](ADR-0141-recorded-chain-decisions-for-schedule-runs.md) — Recorded chain decisions
+  for schedule runs (sequential number; see Numbering)
 
 ### studio (0076-0085)
 

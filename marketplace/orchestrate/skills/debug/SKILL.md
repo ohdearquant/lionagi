@@ -54,5 +54,5 @@ checkout. A plugin install has no access to them — it only sees the MCP server
 
 - `lionagi/cli/agent.py` — `li agent`, the CLI counterpart of `agent.submit`
 - `lionagi/cli/orchestrate/fanout.py` — `li o fanout`, the CLI counterpart of `fanout.submit`
-- `lionagi/cli/_runs.py` — run persistence at `~/.lionagi/runs/`, also readable
+- `lionhub/src/lionhub/orchestration/runs.py` — run persistence at `~/.lionagi/runs/`, also readable
   through `job.status` / `job.output`

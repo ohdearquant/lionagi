@@ -15,8 +15,12 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from unittest.mock import AsyncMock, patch
 
-from lionagi.cli._schedule_parsing import _MAX_CHAIN_DEPTH, _parse_chain_action
 from lionagi.studio.services.schedules import create_schedule, update_schedule
+from lionhub.orchestration.schedule.parsing import (
+    _MAX_CHAIN_DEPTH,
+    _parse_chain_action,
+    _validate_chain_kinds,
+)
 
 FIELDS = ("on_success", "on_fail")
 
@@ -328,8 +332,8 @@ def test_merge_ignores_stored_chain_keys_that_are_not_allowed(key, value):
 
 
 def test_merge_applies_every_allowed_key():
-    from lionagi.cli._schedule_parsing import _CHAIN_ACTION_ALLOWED_KEYS
     from lionagi.studio.scheduler.engine import _merge_chain_action
+    from lionhub.orchestration.schedule.parsing import _CHAIN_ACTION_ALLOWED_KEYS
 
     nested = {"prompt": "after", "on_success": None}
     chain_action = {
@@ -354,3 +358,395 @@ def test_merge_applies_every_allowed_key():
     assert merged["on_success"] is nested
     assert merged["on_fail"] == {"prompt": "recover", "on_fail": None}
     assert parent["on_success"] == {"prompt": "old"}, "the parent schedule is not modified"
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("kind_key", ["kind", "action_kind"])
+@pytest.mark.parametrize("bad_kind", [None, "", [], {}, "private-invalid-kind"])
+def test_chain_kind_refusal_agrees_between_parser_create_and_update(field, kind_key, bad_kind):
+    chain = {kind_key: bad_kind, field: None}
+    parsed, cli_error = _parse_chain_action(json.dumps(chain), _flag(field))
+    created, create_error = _run_create(_create_data(**{field: chain}))
+    updated, update_error = _run_update({field: chain})
+
+    assert parsed is None
+    assert cli_error and _flag(field) in cli_error and kind_key in cli_error
+    assert "private-invalid-kind" not in cli_error
+    assert str(create_error) == cli_error == str(update_error)
+    created.create_schedule.assert_not_called()
+    updated.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("parent_kind", [42, True, ("agent",)])
+def test_non_string_parent_kind_is_refused_at_service_boundary(field, parent_kind):
+    chain = {"kind": "agent", field: None}
+    created, create_error = _run_create(_create_data(action_kind=parent_kind, **{field: chain}))
+    updated, update_error = _run_update({field: chain}, existing=_existing(action_kind=parent_kind))
+
+    assert create_error is not None and "action_kind" in str(create_error)
+    assert update_error is not None and "action_kind" in str(update_error)
+    assert type(parent_kind).__name__ in str(create_error)
+    assert type(parent_kind).__name__ in str(update_error)
+    created.create_schedule.assert_not_called()
+    updated.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("parent_kind", [42, ["private-value"], {"private-value": True}, [], {}])
+@pytest.mark.parametrize("with_chain", [False, True])
+@pytest.mark.parametrize("operation", ["create", "update"])
+def test_action_kind_type_is_refused_on_create_and_update(parent_kind, with_chain, operation):
+    chain = {"on_success": {"kind": "agent", "on_success": None}} if with_chain else {}
+    if operation == "create":
+        store, error = _run_create(_create_data(action_kind=parent_kind, **chain))
+    else:
+        store, error = _run_update({"action_kind": parent_kind, **chain})
+
+    assert error is not None
+    assert "action_kind" in str(error)
+    assert type(parent_kind).__name__ in str(error)
+    assert "private-value" not in str(error)
+    store.create_schedule.assert_not_called()
+    store.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("legacy_kind", [42, ["private-value"], {"private-value": True}])
+def test_unrelated_update_leaves_non_string_legacy_kind_alone(legacy_kind):
+    updated, error = _run_update(
+        {"description": "updated"}, existing=_existing(action_kind=legacy_kind)
+    )
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", description="updated")
+
+
+@pytest.mark.parametrize("legacy_kind", [42, ["private-value"], {"private-value": True}])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("on_success", None),
+        ("on_fail", None),
+        ("action_prompt", "updated"),
+        ("action_playbook", "updated"),
+        ("action_extra_args", []),
+        ("action_flow_yaml", "nodes: []"),
+        ("action_command", "echo updated"),
+    ],
+)
+def test_kind_dependent_update_refuses_non_string_legacy_kind(legacy_kind, field, value):
+    updated, error = _run_update({field: value}, existing=_existing(action_kind=legacy_kind))
+    assert error is not None
+    assert "action_kind" in str(error) and type(legacy_kind).__name__ in str(error)
+    assert "private-value" not in str(error)
+    updated.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("kind_key", ["kind", "action_kind"])
+@pytest.mark.parametrize("target", ["command", "flow_yaml"])
+def test_target_bearing_kind_requires_matching_parent(field, kind_key, target):
+    chain = {kind_key: target, field: None}
+    parsed, cli_error = _parse_chain_action(json.dumps(chain), _flag(field))
+    created, create_error = _run_create(_create_data(**{field: chain}))
+    updated, update_error = _run_update({field: chain})
+    assert parsed is None and cli_error
+    assert str(create_error) == cli_error == str(update_error)
+    assert _flag(field) in cli_error and target not in cli_error
+    created.create_schedule.assert_not_called()
+    updated.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("kind_key", ["kind", "action_kind"])
+@pytest.mark.parametrize("kind", ["command", "flow_yaml"])
+def test_same_target_bearing_kind_is_allowed_under_matching_parent(field, kind_key, kind):
+    data = _create_data(
+        action_kind=kind,
+        action_command="echo" if kind == "command" else None,
+        action_flow_yaml="nodes: []" if kind == "flow_yaml" else None,
+        **{field: {kind_key: kind, field: None}},
+    )
+    with (
+        patch("lionagi.studio.services.schedules._svc_validate_action_command"),
+        patch("lionagi.studio.services.schedules._validate_flow_yaml_spec", return_value=None),
+    ):
+        created, error = _run_create(data)
+    assert error is None
+    created.create_schedule.assert_awaited_once()
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("depth", [1, 2, 10])
+@pytest.mark.parametrize("kind_key", ["kind", "action_kind"])
+@pytest.mark.parametrize("target", ["command", "flow_yaml"])
+def test_target_kind_is_checked_against_effective_parent_at_each_depth(
+    field, depth, kind_key, target
+):
+    chain = {kind_key: target, field: None}
+    for _ in range(depth - 1):
+        chain = {"kind": "agent", field: chain}
+    created, error = _run_create(_create_data(**{field: chain}))
+    assert error is not None
+    assert _flag(field) + f".{field}" * (depth - 1) in str(error)
+    assert target not in str(error)
+    created.create_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("depth", [1, 2, 10])
+@pytest.mark.parametrize("target", ["command", "flow_yaml"])
+def test_inherited_target_kind_remains_valid_at_each_depth(field, depth, target):
+    chain = {"kind": target, field: None}
+    for _ in range(depth - 1):
+        chain = {field: chain}
+    data = _create_data(
+        action_kind=target,
+        action_command="echo" if target == "command" else None,
+        action_flow_yaml="nodes: []" if target == "flow_yaml" else None,
+        **{field: chain},
+    )
+    with (
+        patch("lionagi.studio.services.schedules._svc_validate_action_command"),
+        patch("lionagi.studio.services.schedules._validate_flow_yaml_spec", return_value=None),
+    ):
+        created, error = _run_create(data)
+    assert error is None
+    created.create_schedule.assert_awaited_once()
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("target", ["command", "flow_yaml"])
+def test_explicit_intermediate_kind_changes_the_effective_parent(field, target):
+    chain = {"kind": "agent", field: {"kind": target, field: None}}
+    data = _create_data(
+        action_kind=target,
+        action_command="echo" if target == "command" else None,
+        action_flow_yaml="nodes: []" if target == "flow_yaml" else None,
+        **{field: chain},
+    )
+    with (
+        patch("lionagi.studio.services.schedules._svc_validate_action_command"),
+        patch("lionagi.studio.services.schedules._validate_flow_yaml_spec", return_value=None),
+    ):
+        created, error = _run_create(data)
+    assert error is not None and f"{_flag(field)}.{field}.kind" in str(error)
+    assert target not in str(error)
+    created.create_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("field", FIELDS)
+def test_parent_kind_change_and_chain_replacement_use_new_effective_kind(field):
+    stored = _existing(action_kind="agent", **{field: {"kind": "agent", field: None}})
+    replacement = {"kind": "command", field: None}
+    with patch("lionagi.studio.services.schedules._svc_validate_action_command"):
+        updated, error = _run_update(
+            {"action_kind": "command", "action_command": "echo", field: replacement},
+            existing=stored,
+        )
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with(
+        "sid-chain-1", action_kind="command", action_command="echo", **{field: replacement}
+    )
+
+
+@pytest.mark.parametrize("field", FIELDS)
+def test_kind_alias_and_shadowed_invalid_kind_are_checked(field):
+    valid = {"kind": "playbook", "action_kind": "flow", field: None}
+    created, error = _run_create(_create_data(**{field: valid}))
+    assert error is None
+    created.create_schedule.assert_awaited_once()
+
+    invalid = {"kind": "play", "action_kind": "private-invalid-kind", field: None}
+    created, error = _run_create(_create_data(**{field: invalid}))
+    assert error is not None and "action_kind" in str(error)
+    assert "private-invalid-kind" not in str(error)
+    created.create_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("target", ["command", "flow_yaml"])
+def test_shadowed_target_kind_must_also_match_parent(field, target):
+    chain = {"kind": "play", "action_kind": target, field: None}
+    created, error = _run_create(_create_data(**{field: chain}))
+    assert error is not None and f"{_flag(field)}.action_kind" in str(error)
+    assert target not in str(error)
+    created.create_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("field", FIELDS)
+def test_changing_parent_kind_revalidates_effective_stored_chain(field):
+    stored = _existing(
+        action_kind="command", action_command="echo", **{field: {"kind": "command", field: None}}
+    )
+    updated, error = _run_update({"action_kind": "agent"}, existing=stored)
+    assert error is not None and field in str(error)
+    updated.update_schedule.assert_not_called()
+
+    updated, error = _run_update({"description": "unrelated"}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", description="unrelated")
+
+    updated, error = _run_update({"action_kind": "agent", field: None}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with(
+        "sid-chain-1", action_kind="agent", **{field: None}
+    )
+
+
+@pytest.mark.parametrize("field", FIELDS)
+def test_repeating_parent_kind_does_not_revalidate_legacy_chain(field):
+    stored = _existing(
+        action_kind="command", action_command="echo", **{field: {"kind": "flow_yaml"}}
+    )
+    updated, error = _run_update({"action_kind": "command"}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", action_kind="command")
+
+
+@pytest.mark.parametrize("operation", ["create", "update"])
+@pytest.mark.parametrize("first,second", [("on_success", "on_fail"), ("on_fail", "on_success")])
+def test_rejects_sibling_inheritance_with_incompatible_effective_parent(operation, first, second):
+    first_chain = {"kind": "agent", first: None}
+    second_chain = {"kind": "command", second: None}
+    data = _create_data(
+        action_kind="command",
+        action_command="echo inherited",
+        **{first: first_chain, second: second_chain},
+    )
+    if operation == "create":
+        with patch("lionagi.studio.services.schedules._svc_validate_action_command"):
+            db, error = _run_create(data)
+        write = db.create_schedule
+    else:
+        stored = _existing(
+            action_kind="command", action_command="echo inherited", **{second: second_chain}
+        )
+        db, error = _run_update({first: first_chain}, existing=stored)
+        write = db.update_schedule
+    assert error is not None
+    assert f"{first}.{second}" in str(error) and "inherited" in str(error)
+    write.assert_not_called()
+
+
+def test_accepts_compatible_sibling_inheritance():
+    data = _create_data(
+        action_kind="command",
+        action_command="echo inherited",
+        on_success={"kind": "agent", "on_success": None},
+        on_fail={"kind": "agent", "on_fail": None},
+    )
+    with patch("lionagi.studio.services.schedules._svc_validate_action_command"):
+        created, error = _run_create(data)
+    assert error is None
+    created.create_schedule.assert_awaited_once()
+
+
+def test_scheduler_and_admission_share_chain_merge():
+    from lionagi.studio.scheduler.engine import _merge_chain_action as scheduler_merge
+    from lionhub.orchestration.schedule.parsing import _merge_chain_action as admission_merge
+
+    assert scheduler_merge is admission_merge
+
+
+def test_reachable_walk_stops_at_scheduler_depth_limit():
+    from lionhub.orchestration.schedule import parsing as parsing
+
+    parent = {"action_kind": "agent", "on_success": {"kind": "agent"}, "on_fail": {"kind": "agent"}}
+    with patch.object(parsing, "_merge_chain_action", wraps=parsing._merge_chain_action) as merge:
+        assert parsing._validate_reachable_chain_actions(parent) is None
+    assert merge.call_count == 2 ** (parsing._MAX_CHAIN_DEPTH + 1) - 2
+
+
+@pytest.mark.parametrize("cleared,legacy", [("on_success", "on_fail"), ("on_fail", "on_success")])
+def test_clearing_chain_does_not_revalidate_unmodified_legacy_structure(cleared, legacy):
+    stored = _existing(**{legacy: {"prompt": "old", "legacy_key": True, legacy: None}})
+    updated, error = _run_update({cleared: None}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", **{cleared: None})
+
+
+def test_kind_change_and_clear_do_not_revalidate_unmodified_legacy_structure():
+    stored = _existing(on_fail={"kind": "agent", "legacy_key": True, "on_fail": None})
+    updated, error = _run_update({"action_kind": "flow", "on_success": None}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with(
+        "sid-chain-1", action_kind="flow", on_success=None
+    )
+
+
+def test_kind_change_checks_reachable_kinds_without_rechecking_legacy_structure():
+    stored = _existing(on_fail={"kind": "agent", "legacy_key": True, "on_fail": None})
+    updated, error = _run_update({"action_kind": "flow"}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", action_kind="flow")
+
+    stored = _existing(
+        action_kind="command",
+        action_command="echo",
+        on_fail={"kind": "command", "legacy_key": True, "on_fail": None},
+    )
+    updated, error = _run_update({"action_kind": "agent"}, existing=stored)
+    assert error is not None and "on_fail" in str(error)
+    updated.update_schedule.assert_not_called()
+
+
+def test_modified_chain_still_requires_valid_structure():
+    stored = _existing(on_fail={"kind": "agent", "legacy_key": True, "on_fail": None})
+    updated, error = _run_update({"on_fail": stored["on_fail"]}, existing=stored)
+    assert error is not None and "unknown key" in str(error)
+    updated.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("legacy_value", ["old", ["old"], 1, True])
+def test_clearing_other_chain_with_non_object_legacy_sibling(legacy_value):
+    stored = _existing(on_fail=legacy_value)
+    updated, error = _run_update({"on_success": None}, existing=stored)
+    assert error is not None
+    assert "on_fail" in str(error) and "malformed" in str(error) and "clear" in str(error)
+    assert "old" not in str(error)
+    updated.update_schedule.assert_not_called()
+
+    updated, error = _run_update({"action_kind": "flow"}, existing=stored)
+    assert error is not None and "malformed" in str(error) and "clear" in str(error)
+    updated.update_schedule.assert_not_called()
+
+    updated, error = _run_update({"on_fail": None}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", on_fail=None)
+
+    updated, error = _run_update({"description": "changed"}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", description="changed")
+
+
+@pytest.mark.parametrize("legacy_value", [None, "", [], 0, False])
+def test_clearing_other_chain_with_falsy_non_object_sibling(legacy_value):
+    stored = _existing(on_fail=legacy_value)
+    updated, error = _run_update({"on_success": None}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", on_success=None)
+
+
+def test_edit_still_checks_legacy_sibling_reachable_kind():
+    stored = _existing(
+        action_kind="command",
+        action_command="echo",
+        on_fail={"kind": "command", "legacy_key": True, "on_fail": None},
+    )
+    updated, error = _run_update(
+        {"on_success": {"kind": "agent", "on_success": None}}, existing=stored
+    )
+    assert error is not None and "on_success.on_fail" in str(error)
+    assert "inherited" in str(error)
+    updated.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("key", ["kind", "action_kind"])
+def test_direct_service_accepts_valid_string_subclass_without_calling_hash(key):
+    class HashTrap(str):
+        def __hash__(self):
+            raise AssertionError("kind hash called")
+
+    chain = {key: HashTrap("agent"), "on_success": {"kind": "agent", "on_success": None}}
+    created, error = _run_create(_create_data(on_success=chain))
+    assert error is None
+    created.create_schedule.assert_awaited_once()

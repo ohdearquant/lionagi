@@ -21,12 +21,14 @@ from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
 from lionagi.service._subagent_admission import refuse_nested_agent
+from lionhub.orchestration.console import hint, log_error
+from lionhub.orchestration.flow.checkpoint import FlowResumeError
+from lionhub.orchestration.flow.parsing import _add_mcp_config_args as _add_mcp_config_args
+from lionhub.orchestration.flow.parsing import (
+    add_orchestrate_subparser as add_orchestrate_subparser,
+)
+from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 
-from .._logging import hint, log_error
-from .._orchestrate_parsing import _add_mcp_config_args as _add_mcp_config_args
-from .._orchestrate_parsing import add_orchestrate_subparser as add_orchestrate_subparser
-from .._util import EXIT_CODE_BY_STATUS
-from ._checkpoint import FlowResumeError
 from .fanout import FanoutPlanError, _run_fanout
 from .flow import FlowPlanError, _resume_flow, _run_flow, _validate_flow_invocation
 
@@ -173,7 +175,7 @@ def _warn_if_shadowing_plugin_playbook(name: str) -> None:
     )
     if not owners:
         return
-    from .._logging import warn
+    from lionhub.orchestration.console import warn
 
     warn(
         f"playbook {name!r} is also declared by plugin(s) {', '.join(owners)}; "
@@ -196,7 +198,7 @@ def _warn_if_shadowing_global_playbook(name: str, matched_dir: Path) -> None:
     if not global_candidate.is_file():
         return
 
-    from .._logging import warn
+    from lionhub.orchestration.console import warn
 
     local_candidate = matched_dir / "playbooks" / f"{name}.playbook.yaml"
     warn(
@@ -453,7 +455,7 @@ def _warn_resume_on_timeout_is_inert(args: argparse.Namespace) -> None:
 
     import warnings
 
-    from .._logging import warn
+    from lionhub.orchestration.console import warn
 
     message = (
         "--resume-on-timeout has no effect on `li orchestrate "
@@ -520,6 +522,11 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 notify=getattr(args, "notify", None),
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),
+                **(
+                    {"mcp_submit_snapshot": args.mcp_submit_snapshot}
+                    if getattr(args, "mcp_submit_snapshot", None) is not None
+                    else {}
+                ),
             ),
             verbose=args.verbose,
             # planning produced no usable assignments — fail loud with actionable message
@@ -765,6 +772,11 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 notify=getattr(args, "notify", None),
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),
+                **(
+                    {"mcp_submit_snapshot": args.mcp_submit_snapshot}
+                    if getattr(args, "mcp_submit_snapshot", None) is not None
+                    else {}
+                ),
             ),
             verbose=args.verbose,
             # planning produced no usable DAG — fail loud with actionable message

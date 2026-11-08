@@ -14,9 +14,8 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
 from lionagi.state.session_naming import resolve_display_name
-
-from ._runs import RUNS_ROOT
-from ._util import EXIT_CODE_BY_STATUS
+from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
+from lionhub.orchestration.runs import RUNS_ROOT, _manifest_run_id_matches
 
 __all__ = [
     # import helpers
@@ -1470,14 +1469,14 @@ async def _doctor(
 
     from sqlalchemy import text
 
-    from lionagi.cli._kill_service import (
+    from lionhub.orchestration.job import pid_alive
+    from lionhub.orchestration.kill import (
         NOT_JUDGEABLE_HERE,
         check_pid_identity,
         imported_degraded_process_is_live,
         read_pid_from_entity,
         unaddressable_pid_reason,
     )
-    from lionagi.cli._util import pid_alive
 
     async with StateDB() as db:
         async with db._read() as conn:
@@ -1602,7 +1601,14 @@ async def _import_runs() -> dict[str, int]:
                 counts["errors"] += 1
                 continue
 
-            run_id = manifest.get("run_id") or run_dir.name
+            if not _manifest_run_id_matches(run_dir.name, manifest):
+                print(
+                    f"  [error] {run_dir.name!r}: manifest run_id "
+                    f"{manifest['run_id']!r} does not match its directory"
+                )
+                counts["errors"] += 1
+                continue
+            run_id = run_dir.name
 
             existing = await db.get_session(run_id)
             if existing is not None:
@@ -1633,8 +1639,7 @@ async def _import_teams() -> dict[str, int]:
     from sqlalchemy import JSON, bindparam, text
 
     from lionagi.state.db import StateDB
-
-    from ._team_service import read_team_json
+    from lionhub.orchestration.team import read_team_json
 
     teams_dir = (RUNS_ROOT.parent / "teams").resolve()
     counts = {"teams": 0, "messages": 0, "skipped_teams": 0, "errors": 0}
@@ -1995,8 +2000,7 @@ def run_state(args: argparse.Namespace) -> int:
 
     if args.state_command == "terminal-consumer":
         from lionagi.state.lifecycle.consumer_inspection import ConsumerInspectionBackendError
-
-        from ._logging import log_error
+        from lionhub.orchestration.console import log_error
 
         try:
             result = run_async(_terminal_consumer_list_data())

@@ -21,12 +21,12 @@ from lionagi.ln.concurrency import (
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 from lionhub.orchestration import plan
+from lionhub.orchestration.console import log_error, progress, warn
+from lionhub.orchestration.job import classify_exception
 from lionhub.orchestration.prompts import SYNTHESIS_INSTRUCTION
+from lionhub.orchestration.spawn import parse_model_spec
 
 from .._agent_depth import stamp_worker_depth
-from .._logging import log_error, progress, warn
-from .._providers import parse_model_spec
-from .._util import classify_exception
 from ._common import (
     _build_worker_operate_node,
     _create_fanout_team,
@@ -180,6 +180,7 @@ async def _run_fanout(
     notify: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    mcp_submit_snapshot: str | None = None,
 ) -> tuple[str, str]:
     """Three-phase fan-out: decompose → fan out → synthesize.
 
@@ -223,6 +224,11 @@ async def _run_fanout(
             pack=pack,
             mcp_config=mcp_config,
             no_mcp_config=no_mcp_config,
+            **(
+                {"mcp_submit_snapshot": mcp_submit_snapshot}
+                if mcp_submit_snapshot is not None
+                else {}
+            ),
         )
         _shared: dict = {}
 

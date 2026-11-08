@@ -21,18 +21,19 @@ import pytest
 from pydantic import ValidationError
 
 from lionagi._errors import CLIInputRefusedError, ConfigurationError, ContainmentRefusedError
-from lionagi.cli._providers import (
+from lionagi.service.connections.endpoint import Endpoint
+from lionagi.service.imodel import iModel
+from lionhub.orchestration.spawn import (
     AgentProfile,
     _parse_profile,
     build_chat_model,
     build_imodel_from_spec,
     profile_config,
 )
-from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.imodel import iModel
 from lionhub.providers.openai import codex as codex_mod
 from lionhub.providers.openai._codex_profile import CODEX_MCP_PROFILE_PREFIX
 from lionhub.providers.openai.codex import CodexCodeRequest, _override_pairs
+from tests._spawn_account_integrations_test_support import captor as captor
 
 
 def _features_switched(args: list[str]) -> list[tuple[str, str]]:
@@ -263,102 +264,7 @@ def test_a_stored_row_carrying_the_grant_restores_without_it():
 # ── role profile ────────────────────────────────────────────────────────
 
 
-def _profile(frontmatter: str) -> AgentProfile:
-    return _parse_profile("role", f"---\nmodel: codex/gpt-5.5\n{frontmatter}---\n\nBody.\n")
-
-
-def test_profile_without_either_field_reports_what_it_did_before():
-    profile = _profile("")
-    assert profile.contain_account_integrations is False
-    assert profile.account_connectors == ()
-    config = profile_config(profile)
-    assert "contain_account_integrations" not in config
-    assert "account_connectors" not in config
-
-
-def test_profile_fields_parse_and_stay_out_of_extra():
-    profile = _profile(
-        "contain_account_integrations: true\naccount_connectors: [github, ' github', gmail]\n"
-    )
-    assert profile.contain_account_integrations is True
-    assert profile.account_connectors == ("github", "gmail")
-    assert "contain_account_integrations" not in profile.extra
-    assert "account_connectors" not in profile.extra
-    config = profile_config(profile)
-    assert config["contain_account_integrations"] is True
-    assert config["account_connectors"] == ["github", "gmail"]
-
-
-def test_unreadable_containment_flag_warns_and_contains(caplog):
-    with caplog.at_level(logging.WARNING):
-        profile = _profile("contain_account_integrations: maybe\n")
-    assert profile.contain_account_integrations is True
-    assert "contain_account_integrations 'maybe'" in caplog.text
-
-
-@pytest.mark.parametrize("raw", ["github", "[github, '']", "[1]", "{github: 1}"])
-def test_unreadable_connector_list_warns_and_grants_none(raw, caplog):
-    with caplog.at_level(logging.WARNING):
-        profile = _profile(f"account_connectors: {raw}\n")
-    assert profile.account_connectors == ()
-    assert "ignoring account_connectors" in caplog.text
-
-
 # ── the CLI builders hand the fields to codex only ──────────────────────
-
-
-@pytest.fixture
-def captor(monkeypatch):
-    import lionagi.cli._providers as pmod
-    from lionagi.testing import IModelKwargCaptor
-
-    captor = IModelKwargCaptor.fresh()
-    monkeypatch.setattr(pmod, "iModel", captor)
-    return captor
-
-
-def test_build_imodel_from_spec_hands_both_fields_to_codex():
-    model = build_imodel_from_spec(
-        "codex/gpt-5.5",
-        account_connectors=("github",),
-        contain_account_integrations=True,
-    )
-    kw = model.endpoint.config.kwargs
-    assert kw["account_connectors"] == ["github"]
-    assert kw["contain_account_integrations"] is True
-
-
-def test_build_imodel_from_spec_leaves_both_out_when_unset(captor):
-    build_imodel_from_spec("codex/gpt-5.5")
-    kw = captor.captures[-1]
-    assert "account_connectors" not in kw
-    assert "contain_account_integrations" not in kw
-
-
-def test_build_imodel_from_spec_hands_neither_to_another_provider():
-    model = build_imodel_from_spec(
-        "claude_code/sonnet",
-        account_connectors=("github",),
-        contain_account_integrations=True,
-    )
-    kw = model.endpoint.config.kwargs
-    assert "account_connectors" not in kw
-    assert "contain_account_integrations" not in kw
-
-
-def test_build_chat_model_hands_both_fields_to_codex(captor):
-    build_chat_model(
-        "codex",
-        "gpt-5.5",
-        False,
-        False,
-        None,
-        account_connectors=("github",),
-        contain_account_integrations=True,
-    )
-    kw = captor.captures[-1]
-    assert kw["account_connectors"] == ["github"]
-    assert kw["contain_account_integrations"] is True
 
 
 # ── a profile under containment ─────────────────────────────────────────
@@ -791,20 +697,21 @@ def test_a_root_profile_key_that_is_not_a_string_is_named_by_its_type(tmp_path, 
 
 def test_containment_refuses_a_working_directory_that_is_a_symlink_to_itself(tmp_path):
     """The config walk cannot resolve such a directory, so it cannot read the configs
-    codex would apply. The refusal names the directory and the reason it cannot be used."""
+    codex would apply. The refusal gives the reason without naming the directory."""
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
     # Python before 3.13 cannot resolve the loop; 3.13 and later resolve it and find no
-    # directory there. Either way the refusal names the directory.
-    with pytest.raises(ContainmentRefusedError, match=re.escape(str(loop))):
+    # directory there. Either way the refusal omits the directory.
+    with pytest.raises(ContainmentRefusedError, match="cannot use the working directory") as raised:
         CodexCodeRequest(prompt="hi", repo=loop, contain_account_integrations=True)
+    assert str(loop) not in str(raised.value)
 
 
 def test_containment_refuses_a_working_directory_that_does_not_exist(tmp_path):
     missing = tmp_path / "missing"
-    with pytest.raises(ContainmentRefusedError, match=re.escape(str(missing))) as raised:
+    with pytest.raises(ContainmentRefusedError, match="working directory.*unavailable") as raised:
         CodexCodeRequest(prompt="hi", repo=missing, contain_account_integrations=True)
-    assert "does not exist or is not a directory" in str(raised.value)
+    assert str(missing) not in str(raised.value)
 
 
 def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp_path):
@@ -817,7 +724,8 @@ def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp
         looped = CodexCodeRequest(prompt="hi", repo=loop)
     except RuntimeError as exc:
         # Python before 3.13 raises while resolving the loop, as it did before containment.
-        assert "Symlink loop" in str(exc)
+        assert "working directory cannot be resolved" in str(exc)
+        assert str(loop) not in str(exc)
     else:
         with pytest.raises(ValueError, match="does not exist or is not a directory"):
             looped.as_cmd_args()
@@ -846,13 +754,16 @@ def _unusable_directory(tmp_path, kind):
 @pytest.mark.parametrize("kind", ["no-permissions", "read-without-search", "child-of-locked"])
 def test_containment_refuses_a_working_directory_it_cannot_enter(tmp_path, kind):
     """Without permission to list and enter the directory the walk cannot read the
-    configs codex would apply, so containment refuses it, naming the directory."""
+    configs codex would apply, so containment refuses it without naming the directory."""
     target, modes = _unusable_directory(tmp_path, kind)
     for path, mode in modes:
         path.chmod(mode)
     try:
-        with pytest.raises(ContainmentRefusedError, match=re.escape(str(target))):
+        with pytest.raises(
+            ContainmentRefusedError, match="cannot use the working directory"
+        ) as raised:
             CodexCodeRequest(prompt="hi", repo=target, contain_account_integrations=True)
+        assert str(target) not in str(raised.value)
     finally:
         for path, _ in modes:
             path.chmod(0o755)

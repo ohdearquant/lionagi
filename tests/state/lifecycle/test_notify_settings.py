@@ -408,8 +408,8 @@ def _outcome_fn_for(run):
 
 @pytest.mark.asyncio
 async def test_exec_handler_records_nonzero_exit_outcome_and_warns(monkeypatch, tmp_path):
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(run_id="notify-fail-run")
@@ -468,9 +468,9 @@ async def test_exec_handler_redacts_argv_and_bounds_stderr_in_warn_and_outcome(
     only the adapter's own name (argv[0]'s basename). Stderr content is
     adapter-controlled and can't be scrubbed for arbitrary secrets, but it
     is bounded to STDERR_SNIPPET_LIMIT chars, capping exposure."""
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.state.lifecycle.notify_settings import STDERR_SNIPPET_LIMIT
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(run_id="notify-secret-run")
@@ -517,8 +517,8 @@ async def test_exec_handler_redacts_argv_and_bounds_stderr_in_warn_and_outcome(
 
 @pytest.mark.asyncio
 async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_path):
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(run_id="notify-timeout-run")
@@ -587,8 +587,8 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, tmp_path):
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(run_id="notify-spawn-error-run")
@@ -620,8 +620,8 @@ async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, t
 
 @pytest.mark.asyncio
 async def test_exec_handler_records_success_outcome_without_warn(monkeypatch, tmp_path):
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(run_id="notify-ok-run")
@@ -659,8 +659,8 @@ async def test_exec_handler_outcome_recording_is_a_noop_without_a_bound_run(tmp_
     """build_handler() with no outcome_fn (the process-wide default
     registration, before any run-scoped override exists) never guesses at a
     target run -- outcome recording is skipped, not misattributed."""
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(run_id="unbound-run")
@@ -691,12 +691,12 @@ async def test_run_scoped_outcome_survives_a_later_run_allocation(monkeypatch, t
     been allocated in the same process -- the handler is bound to A's RunDir
     at registration time, not resolved dynamically against whichever run is
     "current" when the callback fires."""
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.state.lifecycle.notify_settings import (
         register_run_notify_outcome_scope,
         unregister_run_notify_outcome_scope,
     )
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(
@@ -758,9 +758,9 @@ async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatc
     """A terminal event for an entity with no run-scoped registration must
     record nothing -- never fall back to whichever run was allocated most
     recently."""
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(
@@ -1055,12 +1055,12 @@ async def test_run_scoped_registration_honors_configured_filter(monkeypatch, tmp
     must therefore apply the configured filter itself -- otherwise an entity
     the operator excluded via filter.kinds/filter.ids starts receiving
     notifications the moment it runs under a run scope."""
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.state.lifecycle.notify_settings import (
         register_run_notify_outcome_scope,
         unregister_run_notify_outcome_scope,
     )
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(
@@ -1150,9 +1150,9 @@ async def test_run_scoped_registration_honors_configured_filter(monkeypatch, tmp
 
 
 def test_run_scoped_registration_records_a_settings_rejection(monkeypatch, tmp_path):
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     registry = TerminalCallbackRegistry()
@@ -1201,9 +1201,9 @@ def test_run_scoped_registration_records_a_python_build_failure(monkeypatch, tmp
     """A python adapter that resolves and then fails to build is configured and
     unusable. Only build_handler knows why, so a run-bound caller is handed the
     reason instead of the same None it returns for nothing configured."""
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(
@@ -1231,9 +1231,9 @@ def test_filtered_out_entity_is_chosen_silence_not_a_rejection(monkeypatch, tmp_
     """An entity the operator excluded is silence by choice for that entity, so
     it writes no record. Recording it would make an intentional exclusion look
     like a broken notifier."""
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
     from lionagi.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(
@@ -1259,8 +1259,8 @@ async def test_adapter_argument_values_echoed_on_stderr_are_redacted(monkeypatch
     """The realistic leak path: an adapter fails and echoes its own invocation
     back on stderr, carrying a token it was passed as an argument. That value
     must not survive into the warn line, the persisted outcome, or the log."""
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(run_id="redaction-run")
@@ -1313,8 +1313,8 @@ async def test_env_sourced_credential_in_adapter_stderr_reaches_no_shared_surfac
     path to it."""
     import stat
 
-    import lionagi.cli._runs as runs_mod
-    from lionagi.cli._runs import allocate_run
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(run_id="env-secret-run")

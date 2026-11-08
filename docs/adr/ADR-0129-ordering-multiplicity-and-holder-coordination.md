@@ -11,6 +11,8 @@
 
 ## Context
 
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+
 ADR-0002 records what the collection model is today and lists two questions it deliberately does not
 decide: what decides a `Progression`'s multiplicity, and where the coordination of concurrent access
 lives. Both are targets rather than observations, and the shipped code contradicts both. This record
@@ -23,8 +25,8 @@ on the method called. `include` (`lionagi/protocols/generic/progression.py::Prog
 occurrence), and membership (`lionagi/protocols/generic/progression.py::Progression.__contains__`, "at least once") behave as a set; construction
 (`lionagi/protocols/generic/progression.py::Progression._validate_ordering` returns `deque(validate_order(value))` unchanged, so a repeated id is kept, as the edge
 case in `tests/protocols/generic/test_progression_edge_cases.py::TestProgressionInit.test_duplicate_ids_stored` shows), `append`
-(`tests/protocols/generic/test_progression_edge_cases.py::TestProgressionExclude.test_exclude_removes`), `extend` (`tests/protocols/generic/test_progression_edge_cases.py::TestProgressionCountIndex`), `insert` (`tests/protocols/generic/test_progression_edge_cases.py::TestProgressionEquality.test_different_progressions`), `+=` (`tests/protocols/generic/test_progression_edge_cases.py::TestProgressionCountIndex.test_index_missing_raises`), and positional
-assignment (`tests/protocols/generic/test_progression_edge_cases.py::TestProgressionSetItem.test_setitem_within_range_works`) store additional positions for an id already present. A reader cannot tell
+(`lionagi/protocols/generic/progression.py::Progression.append`), `extend` (`lionagi/protocols/generic/progression.py::Progression.extend`), `insert` (`lionagi/protocols/generic/progression.py::Progression.insert`), `+=` (`lionagi/protocols/generic/progression.py::Progression.__iadd__`), and positional
+assignment (`lionagi/protocols/generic/progression.py::Progression.__setitem__`) store additional positions for an id already present. A reader cannot tell
 from a signature whether a call may duplicate an id, and neither can a caller that holds the object
 as `Ordering[T]`.
 
@@ -158,15 +160,15 @@ holder's, exercised where the holder lives.
 **The contract**:
 
 - `Pile` exposes no lock. The private pair (`lionagi/protocols/generic/pile.py::Pile`), the `lock` and `async_lock`
-  properties (`lionagi/protocols/generic/pile.py::Pile.lock`), the both-lock context manager with its synchronous spin (`lionagi/protocols/generic/pile.py::Pile._spin_acquire_sync_lock`), and
+  properties (`lionagi/protocols/generic/pile.py::Pile.lock`, `lionagi/protocols/generic/pile.py::Pile.async_lock`), the both-lock context manager with its synchronous spin (`lionagi/protocols/generic/pile.py::Pile._spin_acquire_sync_lock`, `lionagi/protocols/generic/pile.py::Pile._both_locks`), and
   the decorators that take them are removed, together with the async entry protocol that exists only
-  to hold them (`lionagi/protocols/generic/pile.py::Pile.__aenter__`).
+  to hold them (`lionagi/protocols/generic/pile.py::Pile.__aenter__`, `lionagi/protocols/generic/pile.py::Pile.__aexit__`).
 - The snapshot value is a **tuple of ids in order**: `Pile.snapshot() -> tuple[UUID, ...]`, read
   once without a lock. It replaces the two informal order snapshots the code takes today
   (`lionagi/protocols/generic/pile.py::Pile.__iter__` for iteration, `lionagi/protocols/generic/pile.py::Pile.__aiter__` for async iteration) and it is the value a caller
   keeps instead of holding the collection open. A caller that also needs items reads them through
   `Pile.__getitem__` on the ids, which is what `keys`, `values`, and `items` do inside the lock
-  today (`lionagi/protocols/generic/pile.py::Pile.keys`).
+  today (`lionagi/protocols/generic/pile.py::Pile.keys`, `lionagi/protocols/generic/pile.py::Pile.values`, `lionagi/protocols/generic/pile.py::Pile.items`).
 - `adump`'s critical sections become plain reads of the ids and the records it is already ordered by
   (`lionagi/protocols/generic/pile.py::Pile.adump`).
 - `Flow` drops its RLock (`lionagi/protocols/generic/flow.py::Flow`, `lionagi/protocols/generic/flow.py::Flow.from_dict`). Its methods — `add_progression` (`lionagi/protocols/generic/flow.py::Flow.add_progression`),
@@ -183,7 +185,7 @@ holder's, exercised where the holder lives.
     (`lionagi/protocols/generic/processor.py::Executor.__init__`);
   - `InMemoryStore` over its item `Pile` (`lionagi/protocols/memory.py::InMemoryStore`), which owns no lock today and relies
     on `Pile.ainclude`/`aget`; under D2 it takes its own lock for `store` and `retrieve`;
-  - `Flow` over its named views (`lionagi/protocols/generic/flow.py::Flow.add_progression`).
+  - `Flow` over its named views (`lionagi/protocols/generic/flow.py::Flow`).
 - **Four of those sites are synchronous holders, and two sites genuinely wait.** `Session`'s
   `ainclude_branches` (`lionagi/session/session.py::Session.ainclude_branches`) takes the lock and calls the synchronous
   `include_branches`; `MessageManager.aclear_messages` (`lionagi/protocols/messages/manager.py::MessageManager.aclear_messages`) takes it and calls the
@@ -205,7 +207,7 @@ holder's, exercised where the holder lives.
     and its holder `MessageManager` is listed with the holders above and keeps a lock of its own
     around the insertion instead of taking the pile's. ADR-0006 D4's re-entrancy statement —
     callbacks run after the lock is released, so an async callback may re-enter `a_add_message`
-    without deadlocking (`lionagi/protocols/messages/manager.py::MessageManager.add_message`) — keeps its observable behavior, because callbacks still run
+    without deadlocking (`docs/adr/ADR-0006-conversational-message-envelope-and-ordered-history.md:382-384`) — keeps its observable behavior, because callbacks still run
     after the insertion, and restates its reason as the holder's critical section ending before the
     callback snapshot.
   - ADR-0092 D3 (`Accepted`) keeps `InMemoryStore` on a `Pile` and records that `Pile.ainclude()`
@@ -225,11 +227,11 @@ holder's, exercised where the holder lives.
 | View | Where the code is | Class |
 |------|-------------------|-------|
 | A collection's default order (`Pile.progression`) | `lionagi/protocols/generic/pile.py::Pile`; uniqueness enforced today at `lionagi/protocols/generic/pile.py::_validate_progression`, `lionagi/protocols/generic/pile.py::Pile.include`, `lionagi/protocols/generic/pile.py::Pile._insert`, `lionagi/protocols/generic/pile.py::Pile._setitem` | unique |
-| `Flow` views appended by `add_item` | `lionagi/operations/flow.py::DependencyAwareExecutor.__init__`; ADR-0002 D5 records that repeated calls append the same id repeatedly | repeated |
+| `Flow` views appended by `add_item` | `lionagi/protocols/generic/flow.py::Flow.add_item`; ADR-0002 D5 records that repeated calls append the same id repeatedly | repeated |
 | `Executor.pending` | `lionagi/protocols/generic/processor.py::Executor.__init__`, `lionagi/protocols/generic/processor.py::Executor.append` (`pending.include(event)`) | repeated type, used set-like: this call site stores at most one position per id |
 | `Executor.pile` | `lionagi/protocols/generic/processor.py::Executor.__init__` | unique |
 | `MessageManager.messages` | `lionagi/protocols/messages/manager.py::MessageManager.__init__` | unique |
-| `MessageManager` typed views (`assistant_responses`, `actions`, `action_requests`, `action_responses`, `instructions`) | `lionagi/protocols/messages/manager.py::MessageManager.assistant_responses` | unique: each access builds a fresh filtered Pile (`lionagi/protocols/generic/pile.py::Pile.filter_by_type`) whose own default order is a unique order |
+| `MessageManager` typed views (`assistant_responses`, `actions`, `action_requests`, `action_responses`, `instructions`) | `lionagi/protocols/messages/manager.py::MessageManager.assistant_responses`, `lionagi/protocols/messages/manager.py::MessageManager.actions`, `lionagi/protocols/messages/manager.py::MessageManager.action_requests`, `lionagi/protocols/messages/manager.py::MessageManager.action_responses`, `lionagi/protocols/messages/manager.py::MessageManager.instructions` | unique: each access builds a fresh filtered Pile (`lionagi/protocols/generic/pile.py::Pile.filter_by_type`) whose own default order is a unique order |
 | `Branch.progression`, both forms | `lionagi/session/branch.py::Branch.progression`: the `metadata["current_progression"]` subset, built at `lionagi/tools/context/context.py::ContextTool.bind._ensure_cp`, or `MessageManager.progression` when it is unset | unique: the subset is seeded from the full order and the context tool's restore path skips host copies and ids already in its proposed view (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`) before inserting an original (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`), the branch appends a newly added message to it only when the id is absent (`lionagi/session/branch.py::Branch._track_message_in_view`), and after the message manager replaces the system message or clears its messages (`lionagi/protocols/messages/manager.py::MessageManager.set_system`, `lionagi/protocols/messages/manager.py::MessageManager.clear_messages`) the branch drops every id no longer in the pile and puts the system message at its head once (`lionagi/session/branch.py::Branch._sync_view_with_pile`), `lionagi/session/branch.py::Branch.progression` calls it a subset, and ADR-0007 D2 rejects a duplicate id in the selected history (`docs/adr/ADR-0007-canonical-turn-request-compilation-boundary.md:242-243`) |
 | `Exchange` mailbox views `outbox` and `inbox_<sender>` | `lionagi/session/exchange.py::Exchange.register`, `lionagi/session/exchange.py::Exchange._deliver_locked` | repeated: standalone orders held by per-owner Flows; the `progressions` Pile that indexes them is itself a collection, and therefore unique over the view objects |
 
@@ -284,7 +286,7 @@ A universal set-like order would simplify membership and align standalone sequen
 collections. It would remove the ability to represent repeated sequence visits and would change
 `append`, `extend`, `insert`, and already serialized data. It lost because the repeated order is
 meaning-bearing where it is used: `Flow` views take the same UUID again on every `add_item`
-(`lionagi/operations/flow.py::DependencyAwareExecutor.__init__`, ADR-0002 D5), and mailbox orders carry one entry per delivery.
+(`lionagi/protocols/generic/flow.py::Flow.add_item`, ADR-0002 D5), and mailbox orders carry one entry per delivery.
 
 ### Keep the two locks and publish their contract
 

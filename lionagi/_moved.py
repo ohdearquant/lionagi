@@ -26,7 +26,8 @@ import importlib.util
 import os
 import sys
 import warnings
-from types import CodeType, ModuleType
+from collections.abc import Iterable, Mapping
+from types import CodeType, MappingProxyType, ModuleType
 from typing import NamedTuple
 
 __all__ = ("MOVED", "Moved", "install", "resolve", "still_on_disk")
@@ -71,12 +72,68 @@ MOVED: tuple[Moved, ...] = (
         "0.37.0",
         "2.0.0",
     ),
+    Moved("lionagi.cli._argtypes", "lionhub.orchestration.arguments", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._code_identity", "lionhub.serve.diagnostics", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._logging", "lionhub.orchestration.console", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._mirror_settings", "lionhub.serve.mirror_settings", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._project", "lionhub.orchestration.project", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._mcp_resolve", "lionhub.orchestration.mcp_config", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._team_service", "lionhub.orchestration.team", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.cli._engine_definitions",
+        "lionhub.orchestration.engine_definitions",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved("lionagi.cli._util", "lionhub.orchestration.job", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._inspection", "lionhub.orchestration.inspection", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._providers", "lionhub.orchestration.spawn", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.cli._orchestrate_parsing", "lionhub.orchestration.flow.parsing", "0.38.0", "2.0.0"
+    ),
+    Moved(
+        "lionagi.cli._schedule_parsing", "lionhub.orchestration.schedule.parsing", "0.38.0", "2.0.0"
+    ),
+    Moved("lionagi.cli._mirror_service", "lionhub.serve.mirror", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._runs", "lionhub.orchestration.runs", "0.38.0", "2.0.0"),
+    Moved("lionagi.cli._kill_service", "lionhub.orchestration.kill", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.cli.orchestrate._checkpoint",
+        "lionhub.orchestration.flow.checkpoint",
+        "0.38.0",
+        "2.0.0",
+    ),
+)
+
+
+def _index_by_first_component(rows: Iterable[Moved]) -> Mapping[str, tuple[Moved, ...]]:
+    """Group ``rows`` by the first dotted component of ``old``, keeping their order."""
+    buckets: dict[str, list[Moved]] = {}
+    for row in rows:
+        buckets.setdefault(row.old.split(".", 1)[0], []).append(row)
+    return MappingProxyType({first: tuple(bucket) for first, bucket in buckets.items()})
+
+
+# The finder asks about every module name Python looks up. A lookup checks only the rows whose
+# ``old`` begins with the same first component as the name, taken from an index of ``MOVED``
+# that follows its current value: it is rebuilt when ``MOVED`` is rebound to another tuple.
+# Every current ``old`` begins with ``lionagi``, so a lionagi name still checks every row.
+_INDEX: tuple[tuple[Moved, ...], Mapping[str, tuple[Moved, ...]]] = (
+    MOVED,
+    _index_by_first_component(MOVED),
 )
 
 
 def _row(fullname: str) -> Moved | None:
+    global _INDEX
+    table = MOVED
+    pair = _INDEX
+    if pair[0] is not table:
+        # The table and its index are one tuple replaced in one statement, so a thread can
+        # rebuild redundantly but never pairs one table with another table's index.
+        pair = _INDEX = (table, _index_by_first_component(table))
     best: Moved | None = None
-    for row in MOVED:
+    for row in pair[1].get(fullname.split(".", 1)[0], ()):
         if fullname == row.old or fullname.startswith(row.old + "."):
             if best is None or len(row.old) > len(best.old):
                 best = row

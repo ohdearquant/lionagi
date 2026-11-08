@@ -617,7 +617,7 @@ did not decide how often a subscriber that is a process rather than an in-proces
 run, and the cheapest reading of D3's dispatch, one run per matching fact, is the one to refuse.
 One attempt of `ReactiveExecutor` emits a different fact per node transition, from `NodeQueued`
 through `NodeStarted` to `NodeCompleted` or `NodeFailed`, with `NodeSkipped`, `NodeCancelled` and
-`NodeEscalated` beside them (`lionagi/session/signal.py::NodeStarted`, `lionagi/session/signal.py::NodeQueued`), so a subscriber
+`NodeEscalated` beside them (`lionagi/session/signal.py::NodeStarted`, `lionagi/session/signal.py::NodeCompleted`, `lionagi/session/signal.py::NodeFailed`, `lionagi/session/signal.py::NodeSkipped`, `lionagi/session/signal.py::NodeCancelled`, `lionagi/session/signal.py::NodeQueued`, `lionagi/session/signal.py::NodeAwaitingApproval`, `lionagi/session/signal.py::NodeEscalated`, `lionagi/session/signal.py::NodePaused`, `lionagi/session/signal.py::NodeLifecycleState`, `lionagi/session/signal.py::_TERMINAL`), so a subscriber
 bound to one attempt pays a full run per row and re-reads the same attempt once per transition. At
 forty facts and six subscribers that is two hundred forty runs to review one attempt. ADR-0123
 (Proposed) D1 names the unit the wake follows: a Run is one admitted execution attempt, not a
@@ -692,7 +692,7 @@ batch are minted; closure wakes only for remaining admitted facts. Closure drain
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
 settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
 writes it tracked are known to have finished (`lionagi/session/observer.py::SessionObserver.unbind_db_persistence`), ahead of the
-CLI and Studio closing the store (`lionagi/cli/_runs.py::teardown_persist`,
+CLI and Studio closing the store (`lionhub/src/lionhub/orchestration/runs.py::teardown_persist` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`,
 `lionagi/studio/services/workflow_run.py::_teardown_run_persist`). `retryable` closing work waits durably;
 `best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
 durable work without inventing a successful settlement.
@@ -804,17 +804,17 @@ everything since; facts past the range belong to the next wake.
   (`lionagi/session/observer.py::SessionObserver.observe`, `lionagi/session/observer.py::SessionObserver.emit`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
-  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py::HypothesisEngine._on_finding`, `lionhub/src/lionhub/orchestration/engines/review.py::ReviewEngine._on_issue`,
+  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py::HypothesisEngine`, `lionhub/src/lionhub/orchestration/engines/review.py::ReviewEngine._on_issue`,
   `lionhub/src/lionhub/orchestration/engines/research.py::ResearchEngine._on_finding`, `lionhub/src/lionhub/orchestration/engines/research.py::ResearchEngine._on_depth`), and the reactive flow subscribes to its spawn type
   and `EscalationRequest` and injects the resulting nodes into a graph it is already running
-  (`lionagi/operations/flow.py::ReactiveExecutor.execute`, `lionagi/operations/flow.py::ReactiveExecutor._inject_request`), under ADR-0023 D6, which decides that the
+  (`lionagi/operations/flow.py::ReactiveExecutor.execute`, `lionagi/operations/flow.py::ReactiveExecutor._inject_request`, `lionagi/operations/flow.py::ReactiveExecutor.inject`), under ADR-0023 D6, which decides that the
   executor accepts bus spawns and escalations while running. These are in-process spawns inside a
   running flow; none of them is a durable subscriber's woken run.
 - No per-subscriber cursor exists. The durable reader positions nearest to one exist and none is a
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
   not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round`, `lionagi/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.build_round_operations`;
-  `lionagi/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete`). A schedule holds `github_cursor`, a reader
+  `lionagi/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:493`, `:564-572`; `lionagi/state/db.py::StateDB._build_update_schedule_stmt`, `lionagi/state/db.py::StateDB.create_schedule_run_and_advance`;

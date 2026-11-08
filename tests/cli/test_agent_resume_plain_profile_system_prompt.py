@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.cli._providers import _parse_profile
+from lionhub.orchestration.spawn import _parse_profile
 from tests.cli._worker_fixtures import WorkerSetup
 
 _PLAIN_PROFILE_TEXT_V1 = "---\nmodel: claude_code/sonnet\n---\nOriginal plain profile body."

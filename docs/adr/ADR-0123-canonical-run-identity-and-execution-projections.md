@@ -36,7 +36,7 @@ callbacks. Its constructor mints a twelve-hex-character `run_id`. The CLI also p
 strategy inside an attempt; it is not evidence that a second user-visible attempt began.
 
 **P3 — the CLI creates a third Run identity and lets a directory act as the record.**
-`lionagi/cli/_runs.py::allocate_run()` mints a timestamp-and-random-suffix ID, creates
+`lionhub/src/lionhub/orchestration/runs.py::allocate_run()` mints a timestamp-and-random-suffix ID, creates
 `~/.lionagi/runs/{run_id}/`, and writes `run.json`. `RunDir` owns manifest, checkpoint, branch,
 stream, notification, and artifact paths. Some readers infer status and timestamps from the
 presence and modification times of those files. A workspace is a resource used by an attempt;

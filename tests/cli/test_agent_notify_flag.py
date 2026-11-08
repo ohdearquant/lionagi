@@ -98,7 +98,7 @@ async def test_a_refused_notify_override_is_recorded_on_the_run(monkeypatch, tmp
     so this assertion would pass vacuously against the stub.
     """
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     _wire_agent_stubs(
         monkeypatch,
@@ -136,7 +136,7 @@ async def test_an_accepted_notify_override_records_no_refusal(monkeypatch, tmp_p
     test above while marking every healthy run as failed.
     """
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     _wire_agent_stubs(
         monkeypatch,

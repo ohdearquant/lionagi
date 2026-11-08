@@ -419,7 +419,7 @@ def _resolve_path(raw: str, manifest_dir: Path) -> Path:
 
 
 def _resolve_agent_target(target: AgentTarget, cwd: Path) -> dict[str, Any]:
-    from lionagi.cli._providers import load_agent_profile
+    from lionhub.orchestration.spawn import load_agent_profile
 
     # The launched child reads its profile from its own working directory, so
     # the profile recorded here is the one found from the execution root.
@@ -1067,7 +1067,7 @@ async def _adopt_model_pair(
         # read from the row's own execution root, which is where the launch reads it.
         root_key, root_path, _display = await _adoption_execution_root(row)
         if root_key[0] == "path" and root_path is not None:
-            from lionagi.cli._providers import load_agent_profile
+            from lionhub.orchestration.spawn import load_agent_profile
 
             try:
                 profile_model = load_agent_profile(row["action_agent"], cwd=Path(root_path)).model
@@ -1129,7 +1129,7 @@ async def _adopt_project_pair(
         if root[1] is None:
             return ("unknown",), "detected from the scheduler working directory"
         try:
-            from lionagi.cli._project import detect_project
+            from lionhub.orchestration.project import detect_project
 
             project, _source = detect_project(Path(root[1]))
         except (OSError, RuntimeError, ValueError):
@@ -1431,7 +1431,7 @@ async def _adopt_undeclarable(
         root_key, root_path, _display = await _adoption_execution_root(row)
         if root_key[0] != "path" or root_path is None:
             return True
-        from lionagi.cli._providers import load_agent_profile
+        from lionhub.orchestration.spawn import load_agent_profile
 
         try:
             load_agent_profile(current, cwd=Path(root_path))

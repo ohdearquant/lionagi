@@ -7,27 +7,7 @@ import pytest
 
 from lionagi import Branch
 from lionagi.agent.factory import register_profile_injection
-from lionagi.cli._providers import _parse_profile
-
-
-def test_profile_parser_promotes_khive_injection_frontmatter():
-    profile = _parse_profile(
-        "researcher",
-        """---
-khive_injection:
-  profile_id: researcher-recall-v1
-  compose:
-    enabled: true
----
-Research carefully.
-""",
-    )
-
-    assert profile.khive_injection == {
-        "profile_id": "researcher-recall-v1",
-        "compose": {"enabled": True},
-    }
-    assert "khive_injection" not in profile.extra
+from lionhub.orchestration.spawn import _parse_profile
 
 
 def test_verbatim_profile_registers_provider_without_calling_khive():

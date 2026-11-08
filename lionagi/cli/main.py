@@ -10,17 +10,31 @@ import sys
 import traceback
 from typing import get_args
 
-from lionagi._auto import build_cli_parser, seed_for
 from lionagi._feature_errors import MissingFeatureError
 from lionagi.ln import import_module
 
-from ._logging import configure_cli_logging, log_error
-from ._util import (
-    EXIT_CODE_ENVIRONMENT_ERROR,
-    begin_invocation,
-    end_invocation,
-    run_was_allocated,
-)
+try:
+    from lionhub.cli.catalog import build_cli_parser, seed_for
+except ModuleNotFoundError as exc:
+    _catalog_import_error: ModuleNotFoundError | None = exc
+else:
+    _catalog_import_error = None
+
+from lionagi._log_channels import log_error
+
+# The canonical exit constant lives in the module whose absence this startup path reports.
+_STARTUP_ENVIRONMENT_EXIT = 78
+_job_import_error: ModuleNotFoundError | None = None
+if _catalog_import_error is None:
+    try:
+        from lionhub.orchestration.job import (
+            EXIT_CODE_ENVIRONMENT_ERROR,
+            begin_invocation,
+            end_invocation,
+            run_was_allocated,
+        )
+    except ModuleNotFoundError as exc:
+        _job_import_error = exc
 
 # The errors that mean the installation lacks something the command needs: the union for
 # annotations, the tuple for ``except`` clauses. The tuple is read from the union, so adding a
@@ -144,7 +158,7 @@ def _handle_play_check(argv: list[str]) -> int:
     agent_name = spec.get("agent")
     if agent_name:
         try:
-            from lionagi.cli._providers import load_agent_profile
+            from lionhub.orchestration.spawn import load_agent_profile
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
@@ -315,6 +329,13 @@ def _parse_prompt_args(parser: argparse.ArgumentParser, tail: list[str]) -> argp
 
 
 def _run(argv: list[str] | None = None) -> int:
+    if _catalog_import_error is not None:
+        raise _catalog_import_error
+
+    # Defer setup so missing dependencies reach the environment-fault wrapper,
+    # while any saved catalog fault takes precedence.
+    from lionhub.orchestration.console import configure_cli_logging
+
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).
     _argv = argv if argv is not None else sys.argv[1:]
     # Scan only before the '--' sentinel so a scheduled action_prompt
@@ -459,7 +480,7 @@ def _run(argv: list[str] | None = None) -> int:
             return _load_studio().run_schedule_quick_create(_argv[2], _argv[3:])
         ns, extras = schedule_parser.parse_known_args(_argv[1:])
         if extras:
-            from lionagi.cli._schedule_parsing import suggest_schedule_flag
+            from lionhub.orchestration.schedule.parsing import suggest_schedule_flag
 
             # Did-you-mean only applies to dash-prefixed tokens; a bare
             # positional has no "real flag" to guess.
@@ -483,7 +504,7 @@ def _run(argv: list[str] | None = None) -> int:
     return 1
 
 
-def _report_broken_environment(exc: _EnvironmentFault) -> int:
+def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int) -> int:
     """Report a missing import as an environment fault, not a failed run.
 
     A ``ModuleNotFoundError`` reaching the top of the CLI means some import
@@ -509,7 +530,7 @@ def _report_broken_environment(exc: _EnvironmentFault) -> int:
         "No run was started, so this is an unusable environment rather than a "
         f"failed run. Install the missing dependency, then re-run.{guidance}"
     )
-    return EXIT_CODE_ENVIRONMENT_ERROR
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -524,13 +545,21 @@ def main(argv: list[str] | None = None) -> int:
     allocation marker decides, and once a run exists the error is left to
     propagate and be reported the way any other failure during a run is.
     """
+    startup_error = (
+        _catalog_import_error if _catalog_import_error is not None else _job_import_error
+    )
+    if startup_error is not None:
+        try:
+            raise startup_error
+        except _ENVIRONMENT_FAULTS as exc:
+            return _report_broken_environment(exc, exit_code=_STARTUP_ENVIRONMENT_EXIT)
     begin_invocation()
     try:
         return _run(argv)
     except _ENVIRONMENT_FAULTS as exc:
         if run_was_allocated():
             raise
-        return _report_broken_environment(exc)
+        return _report_broken_environment(exc, exit_code=EXIT_CODE_ENVIRONMENT_ERROR)
     finally:
         end_invocation()
 

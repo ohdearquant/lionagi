@@ -414,8 +414,8 @@ is a separate characterization, distinct from the acceptance tests in D7):
 
 **P1: no request in a tool loop is a prefix of the next.** Each pair of consecutive requests first
 differs at the previous round's instruction. While an instruction is current it renders its
-`Tools`, `ResponseSchema` and `ResponseFormat` sections (`lionagi/protocols/messages/instruction.py::InstructionContent._format_text_content`);
-once it is history it is re-rendered without them (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`). Rounds 0 to
+`Tools`, `ResponseSchema` and `ResponseFormat` sections (`lionagi/protocols/messages/instruction.py::InstructionContent._format_text_content` at `54176709`);
+once it is history it is re-rendered without them (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs` at `54176709`). Rounds 0 to
 1 differ at message 0, 1 to 2 at message 2, 2 to 3 at message 4. The current instruction is about
 3,170 characters of `json.dumps` of the whole message object, role wrapper included (3,141 of the
 content alone), almost all of it those sections, sent uncached on every call.
@@ -432,14 +432,14 @@ with request 0 at all (the two message 0 values share the folded system line, 46
 text, before the injected block makes them differ).
 
 **P4: the Anthropic adapter places one five-minute mark, and whether the flag that asks for it
-reaches the mark code depends on the endpoint.** `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` marks only
+reaches the mark code depends on the endpoint.** `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` at `54176709` marks only
 the last message's last block, with no lifetime choice, and lifts a native `system` field only when
 the first message has role `system`, which the fold never produces. The `cache_control` flag reaches
 that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`lionagi/service/connections/endpoint.py::Endpoint.create_payload`) before `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` looks for it. Building that
+  (`lionagi/service/connections/endpoint.py::Endpoint.create_payload` at `54176709`) before `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` at `54176709` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — a model
@@ -449,12 +449,12 @@ that code on one of two paths, and the two paths differ:
   out, so the flag reaches the mark code and one ephemeral five-minute mark lands on the last
   message's last block.
 
-`iModel` then pops the same flag from the request (`lionagi/service/imodel.py::iModel.create_api_calling`) and, in `Endpoint.call`,
+`iModel` then pops the same flag from the request (`lionagi/service/imodel.py::iModel.create_api_calling` at `9a03f175`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
-(`lionagi/service/connections/endpoint.py::Endpoint.call`), a different feature.
+(`lionagi/service/connections/endpoint.py::Endpoint.call` at `9a03f175`), a different feature.
 
 **P5: the run record cannot show what caching saved.** `RunEnd` carries `cached_tokens` and
-`cache_write_tokens` (`lionagi/session/signal.py::RunEnd`) without the lifetime of the write, and ADR-0126's
+`cache_write_tokens` (`lionagi/session/signal.py::RunEnd` at `54176709`) without the lifetime of the write, and ADR-0126's
 ledger needs read and write counts per lifetime to price a run in its own sense of the word.
 
 | Concern | Decision |
@@ -481,11 +481,11 @@ native system block and caches by prompt prefix (D3 names the declaration) **and
 configuration turns prompt caching on. The option is `prompt_caching` (bool, default False), off
 unless set (D5). With the option off, every provider's compiled request is byte-identical to today's
 on every path, with no exception: the Anthropic adapter's `cache_control`-triggered last-message mark
-(`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload`) stays exactly as today wherever it fires today.
+(`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` at `9a03f175`) stays exactly as today wherever it fires today.
 
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — a dict-configured model
-(`lionagi/service/connections/endpoint.py::Endpoint.create_payload`) — the flag reaches the mark code and one five-minute mark
+(`lionagi/service/connections/endpoint.py::Endpoint.create_payload` at `9a03f175`) — the flag reaches the mark code and one five-minute mark
 lands on the last message. With the option on and the declaration present, this record's placement
 replaces that mark. For a provider without the declaration the request is unchanged whatever the
 option says. There is no ungated change.
@@ -642,7 +642,7 @@ The option is `prompt_caching` (bool, default False), a field of the endpoint co
 adapter reads it from that configuration before the request-option filter runs, so a filtered
 endpoint cannot drop it, and it is never written into the request body. With the option off every
 provider's compiled request is byte-identical to today's on every path, the adapter's
-`cache_control`-triggered last-message mark (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload`) included
+`cache_control`-triggered last-message mark (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint.create_payload` at `9a03f175`) included
 wherever it fires today. The mark code only runs when the option is on and the provider declares that
 it accepts a native system block and caches by prefix (D3); marks come only from this option. With
 the option on and the declaration present, this decision's placement replaces that one

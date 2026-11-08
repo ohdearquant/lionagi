@@ -19,12 +19,6 @@ from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.cli._schedule_parsing import (
-    _ALIAS_ACTION_KINDS,
-    _MODEL_RE,
-    _VALID_ACTION_KINDS,
-    _validate_identifier,
-)
 from lionagi.ln import (
     aterminate_process_group,
     capture_group_witnesses,
@@ -32,6 +26,12 @@ from lionagi.ln import (
     prepare_process_group_env,
 )
 from lionagi.ln._proc import env_without_state_db_url
+from lionhub.orchestration.schedule.parsing import (
+    _ALIAS_ACTION_KINDS,
+    _MODEL_RE,
+    _VALID_ACTION_KINDS,
+    _validate_identifier,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ def _reserved_flow_flags() -> frozenset[str]:
     if _RESERVED_FLOW_FLAGS is None:
         import argparse
 
-        from lionagi.cli._orchestrate_parsing import add_orchestrate_subparser
+        from lionhub.orchestration.flow.parsing import add_orchestrate_subparser
 
         probe = argparse.ArgumentParser(prog="li", add_help=False)
         flow = add_orchestrate_subparser(probe.add_subparsers(dest="command"))["flow"]

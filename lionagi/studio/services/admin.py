@@ -23,14 +23,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import JSON, Boolean, bindparam, text
 from sqlalchemy.exc import OperationalError as _SAOperationalError
 
-from lionagi.cli._util import (
-    BOOT_TIME_TOLERANCE,
-    recorded_identity_mode,
-    recorded_pid_is_foreign,
-)
-from lionagi.cli._util import (
-    pid_alive as _pid_is_live,
-)
 from lionagi.ln import now_utc
 from lionagi.ln.concurrency import run_sync as _run_sync
 from lionagi.ln.concurrency.errors import shield_quietly
@@ -42,6 +34,14 @@ from lionagi.state.session_naming import resolve_display_name
 from lionagi.state.terminal_eligibility import (
     has_delivery_eligibility_column,
     is_delivery_eligible,
+)
+from lionhub.orchestration.job import (
+    BOOT_TIME_TOLERANCE,
+    recorded_identity_mode,
+    recorded_pid_is_foreign,
+)
+from lionhub.orchestration.job import (
+    pid_alive as _pid_is_live,
 )
 
 from ..registry import studio_route
@@ -924,7 +924,7 @@ async def _code_identity_report() -> dict[str, Any]:
     its own health check.
     """
     try:
-        from lionagi.cli._code_identity import code_identity
+        from lionhub.serve.diagnostics import code_identity
 
         return await _run_sync(code_identity)
     except Exception as exc:  # noqa: BLE001 — an unanswerable check is unknown, never absent
