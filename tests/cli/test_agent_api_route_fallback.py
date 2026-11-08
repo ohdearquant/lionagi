@@ -52,6 +52,13 @@ def _cli_args(kwargs: dict) -> list[str]:
     return ClaudeCodeRequest(prompt="x", **kwargs).as_cmd_args()
 
 
+def _protected_denials(root) -> list[str]:
+    """The deny rules the switch builds for the protected names under *root*."""
+    from lionagi.cli.agent import _subscription_read_rules
+
+    return _subscription_read_rules("Read,Grep,Glob", str(root))[2]
+
+
 def _flag_value(args: list[str], flag: str) -> str | None:
     """The value after *flag*, None when the flag is absent."""
     return args[args.index(flag) + 1] if flag in args else None
@@ -226,6 +233,7 @@ async def test_a_first_request_refusal_continues_on_the_subscription_route(
         "allowed_tools": [
             f"{tool}(/{leg.workspace.resolve()}/**)" for tool in ("Read", "Grep", "Glob")
         ],
+        "disallowed_tools": _protected_denials(leg.workspace.resolve()),
         "permission_mode": "dontAsk",
     }
     assert not {"prompt_caching", "tool_result_max_chars", "context_fold"} & set(manifest)
@@ -404,6 +412,12 @@ async def test_a_read_set_run_continues_with_only_the_read_tools(
     assert _flag_value(turn.cli_args, "--permission-mode") == "dontAsk"
     assert record["allowed_tools"] == rules
     assert record["permission_mode"] == "dontAsk"
+    # The names the API reader refuses inside the root are denied to each tool, and a deny
+    # rule wins over a grant.
+    denials = _protected_denials(root)
+    start = turn.cli_args.index("--disallowedTools") + 1
+    assert set(denials) <= set(turn.cli_args[start:])
+    assert record["disallowed_tools"] == denials
 
 
 @pytest.fixture
@@ -692,7 +706,7 @@ async def test_a_switch_whose_request_does_not_take_the_child_environment_does_n
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("dropped", ["permission_mode", "allowed_tools"])
+@pytest.mark.parametrize("dropped", ["permission_mode", "allowed_tools", "disallowed_tools"])
 async def test_a_switch_whose_request_drops_the_workspace_permission_rules_does_not_happen(
     leg, subscription, console_warnings, monkeypatch, tmp_path, dropped
 ):
@@ -768,9 +782,22 @@ def test_the_rules_name_the_resolved_workspace_root(tmp_path, monkeypatch):
     root = str((tmp_path / "ws").resolve())
     expected = (root, [f"Read(/{root}/**)", f"Grep(/{root}/**)", f"Glob(/{root}/**)"])
 
-    assert _subscription_read_rules("Read,Grep,Glob", "ws/../ws") == expected
+    assert _subscription_read_rules("Read,Grep,Glob", "ws/../ws")[:2] == expected
     monkeypatch.chdir(tmp_path / "ws")
-    assert _subscription_read_rules("Read,Grep,Glob", None) == expected
+    assert _subscription_read_rules("Read,Grep,Glob", None)[:2] == expected
+
+
+def test_every_protected_name_is_denied_to_every_read_tool_in_any_case(tmp_path):
+    from lionagi.cli.agent import _subscription_read_rules
+    from lionagi.libs.path_safety import DENIED_NAMES
+
+    root = str(tmp_path.resolve())
+    _, _, denials = _subscription_read_rules("Read,Grep,Glob", root)
+
+    assert len(denials) == 3 * len(DENIED_NAMES)
+    assert f"Read(/{root}/**/.[eE][nN][vV])" in denials
+    assert f"Grep(/{root}/**/[iI][dD]_[rR][sS][aA])" in denials
+    assert all(rule.startswith(("Read(", "Grep(", "Glob(")) for rule in denials)
 
 
 @pytest.mark.asyncio

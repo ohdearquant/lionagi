@@ -142,18 +142,38 @@ _SUBSCRIPTION_ENV_ALLOWLIST: tuple[str, ...] = ("CLAUDE_CODE_OAUTH_TOKEN",)
 _SUBSCRIPTION_RULE_ROOT = re.compile(r"/[A-Za-z0-9._/-]+")
 
 
-def _subscription_read_rules(tools: str, cwd: str | None) -> tuple[str, list[str]] | None:
-    """The run's workspace root and the permission rules that grant each of *tools* (a
-    ``--tools`` value) only under it, or None when the root cannot be written as a rule.
+def _any_case(name: str) -> str:
+    """*name* as a rule pattern that matches it in any letter case: a case-insensitive file
+    system opens ``.ENV`` as ``.env``."""
+    return "".join(f"[{c.lower()}{c.upper()}]" if c.isalpha() else c for c in name)
+
+
+def _subscription_read_rules(
+    tools: str, cwd: str | None
+) -> tuple[str, list[str], list[str]] | None:
+    """The run's workspace root, the permission rules that grant each of *tools* (a
+    ``--tools`` value) only under it, and the rules that deny each of them the protected
+    names under it; None when the root cannot be written as a rule.
 
     The root is the one the API read set's ``guard_paths`` holds its reader to: *cwd*, or the
     process's working directory, resolved. ``//`` begins an absolute path in a Claude Code
-    rule, and ``/**`` matches everything below it.
+    rule, and ``/**`` matches everything below it. The API reader also refuses a protected
+    name (``.env``, a private key) inside the root, in any letter case, and a deny rule wins
+    over a grant, so each of those names is denied at any depth.
     """
+    from lionagi.libs.path_safety import DENIED_NAMES
+
     root = str(Path(cwd if cwd else Path.cwd()).expanduser().resolve(strict=False))
     if not _SUBSCRIPTION_RULE_ROOT.fullmatch(root):
         return None
-    return root, [f"{tool}(/{root}/**)" for tool in tools.split(",")]
+    names = tools.split(",")
+    grants = [f"{tool}(/{root}/**)" for tool in names]
+    denials = [
+        f"{tool}(/{root}/**/{_any_case(protected)})"
+        for tool in names
+        for protected in sorted(DENIED_NAMES)
+    ]
+    return root, grants, denials
 
 
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
@@ -2909,7 +2929,7 @@ async def _run_agent(
                             "directory's path cannot be written as a Claude Code permission rule"
                         )
                         raise
-                    workspace_root, read_rules = read_grant
+                    workspace_root, read_rules, read_denials = read_grant
                     from lionagi.service.imodel import iModel
 
                     original_spec = f"{provider}/{model}"
@@ -2990,6 +3010,7 @@ async def _run_agent(
                         tool_settings={
                             "tools": set_tools,
                             "allowed_tools": read_rules,
+                            "disallowed_tools": read_denials,
                             "permission_mode": "dontAsk",
                             "setting_sources": "",
                         },
@@ -3018,6 +3039,7 @@ async def _run_agent(
                     if (
                         granted.get("permission_mode") != "dontAsk"
                         or list(granted.get("allowed_tools") or ()) != read_rules
+                        or not set(read_denials) <= set(granted.get("disallowed_tools") or ())
                     ):
                         warn(
                             "not moving to the subscription route because the Claude Code "
@@ -3059,6 +3081,7 @@ async def _run_agent(
                             # The rules granting those tools under the workspace root, and the
                             # permission mode that refuses every call they do not grant.
                             "allowed_tools": switched_kwargs.get("allowed_tools"),
+                            "disallowed_tools": switched_kwargs.get("disallowed_tools"),
                             "permission_mode": switched_kwargs.get("permission_mode"),
                             # The sorted names, never the values, of the variables this process
                             # held that the switched child's environment does not carry.
