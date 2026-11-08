@@ -153,7 +153,7 @@ def _subscription_read_rules(
 ) -> tuple[str, list[str], list[str]] | None:
     """The run's workspace root, the permission rules that grant each of *tools* (a
     ``--tools`` value) only under it, and the rules that deny each of them the protected
-    names under it; None when the root cannot be written as a rule.
+    names under it; None when the root cannot be written as a rule or holds a protected name.
 
     The root is the one the API read set's ``guard_paths`` holds its reader to: *cwd*, or the
     process's working directory, resolved. ``//`` begins an absolute path in a Claude Code
@@ -161,10 +161,16 @@ def _subscription_read_rules(
     name (``.env``, a private key) inside the root, in any letter case, and a deny rule wins
     over a grant, so each of those names is denied at any depth.
     """
-    from lionagi.libs.path_safety import DENIED_NAMES
+    from lionagi.libs.path_safety import DENIED_NAMES, is_protected_name
 
-    root = str(Path(cwd if cwd else Path.cwd()).expanduser().resolve(strict=False))
+    resolved = Path(cwd if cwd else Path.cwd()).expanduser().resolve(strict=False)
+    root = str(resolved)
     if not _SUBSCRIPTION_RULE_ROOT.fullmatch(root):
+        return None
+    # The API search leaves out every result whose path holds a protected name in any
+    # component, the root's own included, and no rule below the root can say that, so a run
+    # whose root holds one does not move.
+    if any(is_protected_name(part) for part in resolved.parts):
         return None
     names = tools.split(",")
     grants = [f"{tool}(/{root}/**)" for tool in names]
@@ -2926,7 +2932,8 @@ async def _run_agent(
                     if read_grant is None:
                         warn(
                             "not moving to the subscription route because the working "
-                            "directory's path cannot be written as a Claude Code permission rule"
+                            "directory's path cannot be written as a Claude Code permission rule "
+                            "or holds a protected name"
                         )
                         raise
                     workspace_root, read_rules, read_denials = read_grant

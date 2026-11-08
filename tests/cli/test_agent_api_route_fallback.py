@@ -794,10 +794,29 @@ def test_every_protected_name_is_denied_to_every_read_tool_in_any_case(tmp_path)
     root = str(tmp_path.resolve())
     _, _, denials = _subscription_read_rules("Read,Grep,Glob", root)
 
-    assert len(denials) == 3 * len(DENIED_NAMES)
-    assert f"Read(/{root}/**/.[eE][nN][vV])" in denials
+    def any_case(name):
+        return "".join(f"[{c.lower()}{c.upper()}]" if c.isalpha() else c for c in name)
+
+    expected = {
+        f"{tool}(/{root}/**/{any_case(name)})"
+        for tool in ("Read", "Grep", "Glob")
+        for name in DENIED_NAMES
+    }
+    assert len(denials) == len(expected)
+    assert set(denials) == expected
+    assert f"Glob(/{root}/**/.[eE][nN][vV])" in denials
     assert f"Grep(/{root}/**/[iI][dD]_[rR][sS][aA])" in denials
-    assert all(rule.startswith(("Read(", "Grep(", "Glob(")) for rule in denials)
+
+
+@pytest.mark.parametrize("protected", ["id_rsa", ".ENV", "id_ed25519"])
+def test_a_root_with_a_protected_name_in_its_path_gets_no_rules(tmp_path, protected):
+    from lionagi.cli.agent import _subscription_read_rules
+
+    root = tmp_path / protected / "project"
+    root.mkdir(parents=True)
+
+    assert _subscription_read_rules("Read,Grep,Glob", str(root)) is None
+    assert _subscription_read_rules("Read,Grep,Glob", str(tmp_path / protected)) is None
 
 
 @pytest.mark.asyncio
