@@ -105,7 +105,7 @@ def _flat(
 _ONE_MILLION = 1_000_000
 _MAX_OUTPUT = 128_000
 
-CURRENT_REVISION = PriceRevision(
+_REVISION_20261012 = PriceRevision(
     id="anthropic-20261012",
     read_on="2026-10-12",
     sources=(
@@ -154,7 +154,29 @@ CURRENT_REVISION = PriceRevision(
     ),
 )
 
-_REVISIONS: Mapping[str, PriceRevision] = MappingProxyType({CURRENT_REVISION.id: CURRENT_REVISION})
+# Claude Mythos 5.1 has the specifications and prices of Claude Fable 5.1 (its model page). The
+# earlier revision stays registered: an attempt reserved under it settles under it.
+CURRENT_REVISION = PriceRevision(
+    id="anthropic-20261108",
+    read_on="2026-11-08",
+    sources=(
+        *_REVISION_20261012.sources,
+        "https://platform.claude.com/docs/en/models/mythos-5-1/overview",
+    ),
+    models=MappingProxyType(
+        {
+            **_REVISION_20261012.models,
+            "claude-mythos-5-1": ModelPrice(
+                _ONE_MILLION, _MAX_OUTPUT, _flat("10", "12.50", "20", "0.25", "50")
+            ),
+        }
+    ),
+    geo_multipliers=_REVISION_20261012.geo_multipliers,
+)
+
+_REVISIONS: Mapping[str, PriceRevision] = MappingProxyType(
+    {revision.id: revision for revision in (_REVISION_20261012, CURRENT_REVISION)}
+)
 
 
 def revision_by_id(revision_id: str) -> PriceRevision:

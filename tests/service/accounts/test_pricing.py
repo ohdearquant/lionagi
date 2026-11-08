@@ -47,6 +47,7 @@ def _refused(body: bytes) -> None:
     ("model", "rates"),
     [
         ("claude-fable-5-1", (10_000, 12_500, 20_000, 250, 50_000)),
+        ("claude-mythos-5-1", (10_000, 12_500, 20_000, 250, 50_000)),
         ("claude-opus-5-5", (4_000, 5_000, 8_000, 200, 20_000)),
         ("claude-sonnet-5-5", (2_000, 2_500, 4_000, 100, 10_000)),
     ],
@@ -284,6 +285,29 @@ def test_an_unknown_revision_refuses():
     with pytest.raises(AccountRoutingError) as caught:
         revision_by_id("anthropic-19990101")
     assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
+
+
+def test_an_attempt_reserved_under_the_earlier_revision_still_settles_under_it():
+    earlier = revision_by_id("anthropic-20261012")
+    assert earlier is not REV
+    assert "claude-mythos-5-1" not in earlier.models
+    # Every model the earlier revision priced keeps the same price in the current one.
+    assert {m: REV.models[m] for m in earlier.models} == dict(earlier.models)
+    assert set(REV.models) - set(earlier.models) == {"claude-mythos-5-1"}
+    usage = {"input_tokens": 1000, "output_tokens": 10}
+    assert price_usage(earlier, _NONE, "claude-opus-5-5", usage) == price_usage(
+        REV, _NONE, "claude-opus-5-5", usage
+    )
+    assert usage_outcome(earlier, _NONE, "claude-mythos-5-1", usage) == UnknownOutcome(
+        "unpriced_model"
+    )
+
+
+def test_a_mythos_request_is_quoted_at_the_fable_ceiling():
+    mythos = _quote(model="claude-mythos-5-1", max_tokens=1000)
+    fable = _quote(model="claude-fable-5-1", max_tokens=1000)
+    assert mythos.ceiling_nusd == fable.ceiling_nusd
+    assert mythos.price_revision == REV.id
 
 
 # --- settlement ----------------------------------------------------------------------------
