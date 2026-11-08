@@ -223,8 +223,6 @@ async def test_a_first_request_refusal_continues_on_the_subscription_route(
         "model_used": FALLBACK_MODEL,
         "refusal_code": code.value,
         "tools": "Read,Grep,Glob",
-        "permission_mode": None,
-        "sandbox_dropped": False,
     }
     assert not {"prompt_caching", "tool_result_max_chars", "context_fold"} & set(manifest)
     (note,) = _fallback_notes(console_warnings)
@@ -389,7 +387,10 @@ async def test_a_read_set_run_continues_with_only_the_read_tools(
     assert "sandbox" not in note
     record = _manifest(tmp_path)["subscription_fallback"]
     assert record["tools"] == "Read,Grep,Glob"
-    assert record["sandbox_dropped"] is False
+    assert "sandbox_dropped" not in record
+    # No user, project or local Claude Code settings are read by the switched leg.
+    assert "--setting-sources" in turn.cli_args
+    assert turn.cli_args[turn.cli_args.index("--setting-sources") + 1] == ""
 
 
 @pytest.fixture
@@ -404,27 +405,8 @@ def seatbelt(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_write_set_run_continues_with_the_tools_its_api_set_had(
-    leg, subscription, seatbelt, monkeypatch, tmp_path
-):
-    """The API write set had a reader, search, an editor and bash; the switched leg names the
-    built-ins that stand for them, and run.json records that and the dropped sandbox."""
-    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
-    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
-
-    await leg.run(_PROFILE(api_tools="write"))
-
-    (turn,) = subscription.calls
-    assert turn.cli_tools == "Read,Grep,Glob,Edit,Write,Bash"
-    record = _manifest(tmp_path)["subscription_fallback"]
-    assert record["tools"] == "Read,Grep,Glob,Edit,Write,Bash"
-    assert record["sandbox_dropped"] is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("api_tools", ["read", "write"])
 async def test_the_switched_run_gets_the_environment_without_the_api_routes_credential_names(
-    leg, subscription, seatbelt, monkeypatch, tmp_path, api_tools
+    leg, subscription, monkeypatch, tmp_path
 ):
     """The Claude Code request carries a child environment of its own instead of leaving the CLI
     to inherit this process's whole one: the API key name and the configured account key name are
@@ -436,7 +418,7 @@ async def test_the_switched_run_gets_the_environment_without_the_api_routes_cred
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
 
-    await leg.run(_PROFILE(api_tools=api_tools))
+    await leg.run(_PROFILE(api_tools="read"))
 
     (turn,) = subscription.calls
     child_names = turn.request_env_names
@@ -556,23 +538,6 @@ async def test_a_switch_whose_request_drops_the_fill_skip_set_does_not_happen(
 
 
 @pytest.mark.asyncio
-async def test_a_write_set_run_is_told_the_subscription_route_has_no_sandbox(
-    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path
-):
-    """The write set's editor and bash ran under the macOS sandbox on the API route; nothing on
-    the subscription route confines them, and the one warning line says so."""
-    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
-    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
-
-    result, provider_used, _, status, _ = await leg.run(_PROFILE(api_tools="write"))
-
-    assert (result, provider_used, status) == (ANSWER, "claude_code", "completed")
-    (note,) = _fallback_notes(console_warnings)
-    assert FALLBACK_MODEL in note
-    assert "macOS sandbox" in note and "no filesystem sandbox" in note
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("flag", ["yolo", "bypass"])
 async def test_a_read_set_run_switches_without_a_permission_bypass(
     leg, subscription, console_warnings, monkeypatch, tmp_path, flag
@@ -587,118 +552,58 @@ async def test_a_read_set_run_switches_without_a_permission_bypass(
     (turn,) = subscription.calls
     assert "--dangerously-skip-permissions" not in turn.cli_args
     assert "--permission-mode" not in turn.cli_args
-    assert _manifest(tmp_path)["subscription_fallback"]["permission_mode"] is None
+    assert "permission_mode" not in _manifest(tmp_path)["subscription_fallback"]
     (note,) = _fallback_notes(console_warnings)
     assert "without asking" not in note
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("flag", ["yolo", "bypass"])
-async def test_a_write_set_run_keeps_its_permission_bypass_on_the_switch(
-    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path, flag
-):
-    """Claude Code in print mode cannot approve Edit, Write or Bash, so the write set's switch
-    keeps the run's own `yolo` or `bypass`; run.json records the mode and the one warning line
-    says the tools run without asking."""
-    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
-    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
-
-    await leg.run(_PROFILE(api_tools="write"), **{flag: True})
-
-    (turn,) = subscription.calls
-    assert "--dangerously-skip-permissions" in turn.cli_args
-    record = _manifest(tmp_path)["subscription_fallback"]
-    assert record["permission_mode"] == "bypassPermissions"
-    (note,) = _fallback_notes(console_warnings)
-    assert "runs its tools without asking" in note
-
-
-@pytest.mark.asyncio
-async def test_a_write_set_run_without_yolo_or_bypass_is_not_told_it_runs_without_asking(
-    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path
-):
-    """The warning follows the request that was built: with no bypass on it, nothing is said about
-    tools running without asking and run.json records no permission mode."""
-    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
-    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
-
-    await leg.run(_PROFILE(api_tools="write"))
-
-    (turn,) = subscription.calls
-    assert "--dangerously-skip-permissions" not in turn.cli_args
-    assert _manifest(tmp_path)["subscription_fallback"]["permission_mode"] is None
-    (note,) = _fallback_notes(console_warnings)
-    assert "without asking" not in note
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("api_tools", ["read", "write"])
 async def test_the_warning_says_the_tools_are_not_confined_to_the_working_directory(
-    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path, api_tools
+    leg, subscription, console_warnings, monkeypatch, tmp_path
 ):
-    """The API route's reader, editor and search paths are held to the workspace root; Claude Code's
-    tools are not, and every switched run is told so."""
+    """The API route's reader and search paths are held to the workspace root; Claude Code's
+    tools are not, and the switched run is told so."""
     _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
     _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
 
-    await leg.run(_PROFILE(api_tools=api_tools))
+    await leg.run(_PROFILE(api_tools="read"))
 
     (note,) = _fallback_notes(console_warnings)
     assert "not confined to the working directory" in note
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("api_network", "clause"),
-    [
-        (False, "run without the file-write and network confinement"),
-        (True, "run without the file-write confinement"),
-    ],
-)
-async def test_the_sandbox_clause_names_the_network_only_when_the_sandbox_denied_it(
-    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path, api_network, clause
-):
-    """The write set's macOS sandbox denies network unless the profile sets `api_network`, so the
-    warning names the network confinement only for a profile that left it off."""
-    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
-    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
-
-    await leg.run(_PROFILE(api_tools="write", api_network=api_network))
-
-    (note,) = _fallback_notes(console_warnings)
-    assert clause in note
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("api_tools", "named"),
-    [("write", True), ("read", False)],
-)
-async def test_the_warning_names_the_command_checks_only_a_write_set_run_loses(
-    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path, api_tools, named
-):
-    """The write set's bash ran under the check that refuses destructive commands and its bash and
-    editor under the check that refuses email addresses in outbound headers; Claude Code's tools
-    run under neither. The read set has no bash or editor, so its warning names neither."""
-    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
-    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
-
-    await leg.run(_PROFILE(api_tools=api_tools))
-
-    (note,) = _fallback_notes(console_warnings)
-    assert "\n" not in note
-    assert ("refuse destructive commands" in note) is named
-    assert ("email addresses in outbound headers" in note) is named
-    if named:
-        assert "without the API route's checks that refuse destructive commands" in note
-
-
-def test_every_api_tool_set_has_a_subscription_tool_list():
-    """A set with no entry in the subscription table cannot be switched, so the two tables must
-    name the same sets."""
+def test_only_sets_without_a_sandbox_move_to_the_subscription_route():
+    """A set whose editor and bash ran under the macOS sandbox has nothing on the subscription
+    route to run them under, so the subscription table names none of those sets."""
     import lionagi.cli.agent as agent_mod
 
-    assert set(agent_mod._SUBSCRIPTION_API_SET_TOOLS) == set(agent_mod._API_TOOL_SETS)
+    assert set(agent_mod._SUBSCRIPTION_API_SET_TOOLS) <= set(agent_mod._API_TOOL_SETS)
+    assert not set(agent_mod._SUBSCRIPTION_API_SET_TOOLS) & set(agent_mod._API_CONFINED_TOOL_SETS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", [None, "yolo", "bypass"])
+async def test_a_write_set_run_does_not_move_to_the_subscription_route(
+    leg, subscription, seatbelt, console_warnings, monkeypatch, tmp_path, flag
+):
+    """The write set's editor and bash ran under the macOS sandbox and the API route's command
+    checks. The run stays: it prints why and fails with the routing error, and nothing runs on
+    the subscription route, with or without `yolo` and `bypass`."""
+    _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+    _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
+
+    with pytest.raises(ExecutionError) as info:
+        await leg.run(_PROFILE(api_tools="write"), **({flag: True} if flag else {}))
+
+    assert info.value.__cause__.code is RouterErrorCode.BUDGET_EXHAUSTED
+    assert subscription.calls == []
+    assert len(leg.payloads) == 1
+    manifest = _manifest(tmp_path)
+    assert manifest["provider"] == "anthropic"
+    assert "subscription_fallback" not in manifest
+    (note,) = _not_moving_notes(console_warnings)
+    assert "only a read-set run moves" in note
+    assert leg.branch.chat_model.endpoint.config.provider == "anthropic"
 
 
 @pytest.mark.asyncio
@@ -713,13 +618,13 @@ async def test_a_run_whose_api_set_has_no_subscription_tools_fails_with_the_rout
     monkeypatch.setattr(
         agent_mod,
         "_SUBSCRIPTION_API_SET_TOOLS",
-        {k: v for k, v in agent_mod._SUBSCRIPTION_API_SET_TOOLS.items() if k != "write"},
+        {k: v for k, v in agent_mod._SUBSCRIPTION_API_SET_TOOLS.items() if k != "read"},
     )
     _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
     _refuse(monkeypatch, leg, RouterErrorCode.BUDGET_EXHAUSTED)
 
     with pytest.raises(ExecutionError) as info:
-        await leg.run(_PROFILE(api_tools="write"))
+        await leg.run(_PROFILE(api_tools="read"))
 
     assert isinstance(info.value.__cause__, AccountRoutingError)
     assert info.value.__cause__.code is RouterErrorCode.BUDGET_EXHAUSTED

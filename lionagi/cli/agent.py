@@ -120,14 +120,14 @@ _API_ACCOUNT_ENV = "LIONAGI_API_ACCOUNT"
 # The provider an Anthropic API run moves to when the account router refuses its first request:
 # the Claude subscription route, which takes the same model id.
 _SUBSCRIPTION_FALLBACK_PROVIDER = "claude_code"
-# The Claude Code built-in tools that stand for an API tool set's own, so a run that moves to the
-# subscription route keeps the capability it had and gains none. The read set's `reader` is Read,
-# and its `search` greps (Grep) and finds files by name (Glob); its `context` tool manages the
-# API model's own window and has no built-in counterpart. The write set adds its editor (Edit,
-# Write) and bash (Bash).
+# The Claude Code built-in tools that stand for an API tool set's own, for the sets that move to
+# the subscription route. Only the read set moves: its `reader` is Read, and its `search` greps
+# (Grep) and finds files by name (Glob); its `context` tool manages the API model's own window
+# and has no built-in counterpart. The write set's editor and bash ran under the macOS sandbox
+# and the API route's command checks, which Claude Code has no counterpart for, so a write-set
+# run does not move.
 _SUBSCRIPTION_API_SET_TOOLS: dict[str, str] = {
     "read": "Read,Grep,Glob",
-    "write": "Read,Grep,Glob,Edit,Write,Bash",
 }
 # The one variable a run that moves to the subscription route keeps although its name matches a
 # sensitive-name pattern: Claude Code's own login token, which a run authenticating that way reads
@@ -2866,32 +2866,25 @@ async def _run_agent(
                         raise
                     # The CLI has every built-in tool unless the request names some, so the
                     # run names the tools of the set it ran with on the API route. A set with
-                    # no entry has no tools to name, so the run does not switch: it fails with
-                    # the routing error instead of gaining tools its API set did not have.
+                    # no entry (the write set among them) does not move: the run prints why and
+                    # fails with the routing error instead of gaining what its API set lacked.
                     # This is decided before the branch's model or anything else is changed.
                     set_tools = _SUBSCRIPTION_API_SET_TOOLS.get(api_launch["tools"])
                     if set_tools is None:
+                        warn(
+                            "not moving to the subscription route because only a read-set run "
+                            f"moves, and this run has the {api_launch['tools']} set"
+                        )
                         raise
                     from lionagi.service.imodel import iModel
 
                     original_spec = f"{provider}/{model}"
                     fallback_spec = f"{_SUBSCRIPTION_FALLBACK_PROVIDER}/{model}"
-                    # Only the API route's editor and bash run under the macOS sandbox, which
-                    # confines file writes and, unless the profile set `api_network`, network
-                    # access; Claude Code has no filesystem sandbox of its own and nothing here
-                    # adds one. `api_launch` is cleared below, so the network switch is read now.
-                    left_sandbox = api_launch["tools"] in _API_CONFINED_TOOL_SETS
-                    left_network_confinement = left_sandbox and not api_launch["network"]
-                    # `yolo` and `bypass` make a claude_code request skip permission prompts. The
-                    # read set's Read, Grep and Glob need no approval, so a read-set run switches
-                    # with neither. The write set's Edit, Write and Bash cannot be approved in
-                    # print mode, so a write-set run keeps the run's own flags.
-                    read_set = api_launch["tools"] == "read"
                     # The CLI child inherits this whole process's environment unless the request
                     # carries one. It is handed this environment without the credential names the
-                    # API route's commands went without (the declared names, the shared sensitive
-                    # name patterns and the shell startup names), for the read set as for the
-                    # write set, so that no API key reaches Claude Code or its Bash tool, where an
+                    # API route's write-set commands went without (the declared names, the shared
+                    # sensitive name patterns and the shell startup names), so that no API key
+                    # reaches Claude Code, where an
                     # `ANTHROPIC_API_KEY` would be billed in place of the subscription. Only Claude
                     # Code's own login token is kept. The names come from the API model's key
                     # reference, read before the branch's model is replaced.
@@ -2941,12 +2934,14 @@ async def _run_agent(
                     subscription_model = build_chat_model(
                         _SUBSCRIPTION_FALLBACK_PROVIDER,
                         model,
-                        yolo and not read_set,
+                        # Read, Grep and Glob need no approval, so the request carries no
+                        # permission bypass whatever the run's `yolo` and `bypass` were.
+                        False,
                         verbose,
                         theme,
                         requested_effort,
                         fast,
-                        bypass and not read_set,
+                        False,
                         # The API leg was handed no MCP server, so this one gets none either:
                         # an empty set that is the whole set keeps the CLI from loading any
                         # config of its own.
@@ -2955,7 +2950,9 @@ async def _run_agent(
                         account_connectors=account_connectors,
                         contain_account_integrations=contain_account_integrations,
                         workload=workload,
-                        tool_settings={"tools": set_tools},
+                        # No user, project or local Claude Code settings are read, so their
+                        # hooks, permission rules and plugins do not reach the switched leg.
+                        tool_settings={"tools": set_tools, "setting_sources": ""},
                         env=child_env,
                         secret_fill_skip=secret_fill_skip,
                     )
@@ -2997,7 +2994,6 @@ async def _run_agent(
                     for api_only in ("prompt_caching", "tool_result_max_chars", "context_fold"):
                         run_manifest.pop(api_only, None)
                     switched_kwargs = subscription_model.endpoint.config.kwargs
-                    switched_permission_mode = switched_kwargs.get("permission_mode")
                     run_manifest.update(
                         provider=provider,
                         model=resolved_model_spec,
@@ -3008,10 +3004,6 @@ async def _run_agent(
                             # The `--tools` value the switched leg runs with; null when it
                             # runs with every built-in tool.
                             "tools": switched_kwargs.get("tools"),
-                            # The permission mode the switched request carries; null when it
-                            # carries none.
-                            "permission_mode": switched_permission_mode,
-                            "sandbox_dropped": left_sandbox,
                             # The sorted names, never the values, of the variables this process
                             # held that the switched child's environment does not carry.
                             "env_removed": env_removed,
@@ -3045,27 +3037,13 @@ async def _run_agent(
                         f"the Anthropic API route refused the first request "
                         f"({refusal.code.value}); continuing on {fallback_spec}"
                     ]
-                    if switched_permission_mode == "bypassPermissions":
-                        warning.append("Claude Code runs its tools without asking")
-                    # The API route's reader and editor paths are held to the workspace root by
+                    # The API route's reader paths are held to the workspace root by
                     # `guard_paths` and by each tool's own path resolution, and its search tool
                     # by that resolution; Claude Code's tools are held to no such root here.
                     warning.append(
                         "Claude Code's tools are not confined to the working directory the "
                         "way the API route's tools were"
                     )
-                    # The write set's bash also ran under `guard_destructive`, and its bash and
-                    # editor under `guard_email_in_headers`, both wired by `_wire_secure_guards`;
-                    # Claude Code's Bash, Edit and Write tools run under neither here.
-                    if left_sandbox:
-                        warning.append(
-                            "The write set's editor and bash ran under the macOS sandbox on the "
-                            "API route; Claude Code has no filesystem sandbox, so on this route "
-                            "its commands run without the file-write"
-                            + (" and network" if left_network_confinement else "")
-                            + " confinement, and without the API route's checks that refuse "
-                            "destructive commands and email addresses in outbound headers"
-                        )
                     warn(". ".join(warning))
             if _api_turn is None:
                 res = await branch.operate(
