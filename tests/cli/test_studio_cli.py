@@ -406,7 +406,6 @@ def test_find_repo_root_characterization(monkeypatch, tmp_path):
     package_dir = tmp_path / "site-packages" / "lionagi"
     package_dir.mkdir(parents=True)
     monkeypatch.setattr(lionagi, "__file__", str(package_dir / "__init__.py"))
-    monkeypatch.setattr(studio_cli, "__file__", str(package_dir / "studio" / "cli.py"))
     assert studio_cli._find_repo_root() is None
 
 
