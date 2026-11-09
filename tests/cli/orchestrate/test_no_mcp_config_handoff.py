@@ -870,14 +870,19 @@ async def test_a_codex_synthesis_branch_handed_an_empty_set_takes_no_effort_from
 
 
 @pytest.mark.asyncio
-async def test_a_codex_synthesis_branch_does_not_inherit_account_connectors(tmp_run, codex_home):
+@pytest.mark.parametrize("orchestrator_contained", [True, None, False])
+async def test_a_codex_synthesis_branch_does_not_inherit_account_connectors(
+    tmp_run, codex_home, orchestrator_contained
+):
     from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
     from lionhub.providers.openai.codex import CodexCodeRequest
 
     codex_home.write_config({})
     env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5")
     orchestrator_kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
-    orchestrator_kwargs["contain_account_integrations"] = True
+    orchestrator_kwargs.pop("contain_account_integrations", None)
+    if orchestrator_contained is not None:
+        orchestrator_kwargs["contain_account_integrations"] = orchestrator_contained
     orchestrator_kwargs["account_connectors"] = ["github"]
 
     branch = await _fresh_synthesis_branch(env)

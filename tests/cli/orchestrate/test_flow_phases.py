@@ -657,7 +657,18 @@ async def test_execute_dag_tags_spawned_nodes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(tmp_path):
+@pytest.mark.parametrize(
+    "orchestrator_kwargs",
+    [
+        {"contain_account_integrations": True, "account_connectors": ["github"]},
+        # Connectors alone lift containment for the orchestrator; the clone loses them.
+        {"account_connectors": ["github"]},
+        {"contain_account_integrations": False, "account_connectors": ["github"]},
+    ],
+)
+async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(
+    tmp_path, orchestrator_kwargs
+):
     """Reactive execution must pass a spawn_branch_setup callback into
     run_dag that retargets a CLI-backed spawned branch's writable workspace
     (chat_model.endpoint.config.kwargs['repo']) to that spawn's own artifact
@@ -714,10 +725,7 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
             endpoint=SimpleNamespace(
                 config=SimpleNamespace(
                     provider="codex",
-                    kwargs={
-                        "contain_account_integrations": True,
-                        "account_connectors": ["github"],
-                    },
+                    kwargs=dict(orchestrator_kwargs),
                 )
             ),
         ),

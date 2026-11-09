@@ -106,7 +106,11 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"
     # build_worker_branch hands it to a worker: as the whole set.
     worker_servers = getattr(env, "mcp_servers", None)
     chat_model = env.orc_branch.chat_model.copy()
-    chat_model.endpoint.config.kwargs.pop("account_connectors", None)
+    synthesis_kwargs = chat_model.endpoint.config.kwargs
+    # Named connectors lift containment for the orchestrator; the synthesis branch does not
+    # get them, so it is contained again.
+    if synthesis_kwargs.pop("account_connectors", None):
+        synthesis_kwargs["contain_account_integrations"] = True
     _hand_mcp_servers(
         chat_model,
         worker_servers,

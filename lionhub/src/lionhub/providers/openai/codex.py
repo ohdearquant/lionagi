@@ -111,7 +111,10 @@ HAS_CODEX_CLI, CODEX_CLI = discover_cli("codex")
 
 log = logging.getLogger("codex-cli")
 
-_CONTAINMENT_OPT_OUT = " Set contain_account_integrations: false in the role profile to opt out."
+_CONTAINMENT_OPT_OUT = (
+    " To run without containment, launch through an agent profile that sets"
+    " contain_account_integrations: false."
+)
 
 _BOOL_ADAPTER = TypeAdapter(bool)
 

@@ -2504,7 +2504,10 @@ async def _execute_dag(
         servers, exclusive = _worker_mcp_hand_off(worker_mcp_servers, contained=contained)
         _hand_mcp_servers(chat_model, servers, label=spawn_id, exclusive=exclusive)
         kwargs = chat_model.endpoint.config.kwargs
-        kwargs.pop("account_connectors", None)
+        # Named connectors lift containment for the orchestrator; the spawned clone does not
+        # get them, so it is contained again.
+        if kwargs.pop("account_connectors", None):
+            kwargs["contain_account_integrations"] = True
         # A clone of the orchestrator's branch takes the class of the worker that
         # asked for it, recorded by _build_spawn_node, so a light worker cannot
         # obtain a heavy agent. The orchestrator's own class confines only its own

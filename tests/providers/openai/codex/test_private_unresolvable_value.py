@@ -34,7 +34,8 @@ def test_value_path_refusal_does_not_expose_input(tmp_path, monkeypatch, method,
         pytest.fail("working-directory value refusal lost its safe type", pytrace=False)
     expected = (
         "contain_account_integrations cannot use the working directory: it cannot be resolved."
-        " Set contain_account_integrations: false in the role profile to opt out."
+        " To run without containment, launch through an agent profile that sets"
+        " contain_account_integrations: false."
     )
     assert str(error) == expected
     assert isinstance(error.__cause__, ContainmentRefusedError)
