@@ -444,6 +444,26 @@ async def test_stream_duplicate_compares_evidence_and_preserves_the_attempt_on_c
 
 
 @pytest.mark.anyio
+async def test_stored_stream_request_id_must_match_the_attempt_column(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger, attempt, quote, revision = await priced_reservation(path)
+    await ledger.settle(attempt, UnknownOutcome("cancelled"))
+    value = replace(estimate(quote, revision, "cancelled"), request_id="req-valid")
+    assert await ledger.settle(attempt, value) == "settled"
+    before_matching_repeat = stored_row(path, attempt)
+    assert await ledger.settle(attempt, value) == "already_settled"
+    assert stored_row(path, attempt) == before_matching_repeat
+
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE attempt SET request_id=? WHERE id=?", ("req-other", str(attempt)))
+    before = stored_row(path, attempt)
+    with pytest.raises(AccountRoutingError) as error:
+        await ledger.settle(attempt, UnknownOutcome("transport_error"))
+    assert error.value.code is RouterErrorCode.LEDGER_UNAVAILABLE
+    assert stored_row(path, attempt) == before
+
+
+@pytest.mark.anyio
 async def test_identical_stream_repeat_is_a_noop(tmp_path):
     path = tmp_path / "ledger.sqlite3"
     ledger, attempt, quote, revision = await priced_reservation(path)

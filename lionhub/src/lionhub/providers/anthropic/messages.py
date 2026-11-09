@@ -898,6 +898,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         request_headers["x-api-key"] = attempt.key.get_secret_value()
 
         request_entered = False
+        status = None
         failure: Exception | None = None
         redactor = StreamingSecretRedactor(attempt.key)
         # The byte redactor sees the JSON framing between two deltas, so a key split

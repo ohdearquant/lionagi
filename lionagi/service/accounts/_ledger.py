@@ -571,11 +571,12 @@ def _stored_evidence(
                     _checked_int(rate["denominator"], minimum=1, maximum=INT64_MAX, label="rate")
                     if math.gcd(rate["numerator"], rate["denominator"]) != 1:
                         raise ValueError("unreduced rate")
-                request_id = ev["request_id"]
-                if request_id is not None and (
-                    not isinstance(request_id, str) or _REQUEST_ID_RE.fullmatch(request_id) is None
+                envelope_request_id = ev["request_id"]
+                if envelope_request_id is not None and (
+                    not isinstance(envelope_request_id, str)
+                    or _REQUEST_ID_RE.fullmatch(envelope_request_id) is None
                 ):
-                    ev["request_id"] = None
+                    envelope_request_id = None
                 if ev["original_reason"] not in {
                     "cancelled",
                     "stream_closed",
@@ -592,7 +593,7 @@ def _stored_evidence(
                     first["rejection_class"],
                 ):
                     raise ValueError("stream rejection columns")
-                if request_id != ev["request_id"]:
+                if request_id != envelope_request_id:
                     raise ValueError("stream request id")
                 if cost != ev["cost_nusd"]:
                     raise ValueError("stream row cost")

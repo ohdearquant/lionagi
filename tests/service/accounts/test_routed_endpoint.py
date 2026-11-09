@@ -2640,6 +2640,39 @@ async def test_a_stream_cancelled_after_its_request_was_sent_records_why(monkeyp
     assert _http_statuses(path) == [(200,)]
 
 
+@pytest.mark.asyncio
+async def test_a_stream_cancelled_while_waiting_for_headers_records_why(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    headers_waiting = asyncio.Event()
+    model, transport = _model(monkeypatch, [StubResponse()])
+
+    class HeaderWaitSession(StubSession):
+        @asynccontextmanager
+        async def stream(self, method, url, **kwargs):
+            response = self._request(method, url, **kwargs)
+            headers_waiting.set()
+            await asyncio.Event().wait()
+            yield response
+
+    model.endpoint._create_http_session = lambda client_kwargs=None, *, timeout=None: (
+        HeaderWaitSession(transport, timeout=timeout)
+    )
+
+    async def consume():
+        async for _ in model.endpoint.stream(REQUEST):
+            pass
+
+    task = asyncio.create_task(consume())
+    await headers_waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    row = _attempts(path)[0]
+    assert row[2:] == ("open", None, "cancelled")
+    assert _http_statuses(path) == [(None,)]
+
+
 def _text_block(index) -> dict:
     return {
         "type": "content_block_start",
