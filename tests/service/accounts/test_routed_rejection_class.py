@@ -33,6 +33,7 @@ from tests.service.accounts.test_routed_endpoint import (
     _answer_late,
     _attempts,
     _block_reason,
+    _http_statuses,
     _install_accounts,
     _model,
     _prime,
@@ -75,6 +76,14 @@ def _typed(message) -> bytes:
 def _body_of(size: int) -> bytes:
     """A body of exactly ``size`` bytes whose message names the first class."""
     body = _typed(PROMPT + "x" * (size - len(_typed(PROMPT))))
+    assert len(body) == size
+    return body
+
+
+def _overloaded_of(size: int) -> bytes:
+    """A 529 body of exactly ``size`` bytes naming ``overloaded_error``."""
+    head = _envelope({"type": "overloaded_error", "message": ""})
+    body = _envelope({"type": "overloaded_error", "message": "x" * (size - len(head))})
     assert len(body) == size
     return body
 
@@ -179,11 +188,25 @@ async def _reject(monkeypatch, tmp_path, body: bytes, streamed: bool):
     return path, transport, caught.value
 
 
+async def _reject_status(monkeypatch, tmp_path, status: int, body: bytes, streamed: bool):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_Rejection(status, body)])
+    model.endpoint.config.max_retries = 0
+    with pytest.raises(AccountRoutingError) as caught:
+        await _send(model, streamed)
+    return path, transport, caught.value
+
+
 def _assert_recorded(path, error, error_type: str, rejection_class: str) -> None:
     assert error.code is RouterErrorCode.REQUEST_REJECTED
     assert error.http_status == 400
     assert (error.provider_error_type, error.rejection_class) == (error_type, rejection_class)
-    assert _rejection_columns(path) == [("request_rejected", error_type, rejection_class)]
+    if error_type == INVALID:
+        assert _attempts(path)[0][2:5] == ("settled", 0, "rejection_zero")
+        assert _rejection_columns(path) == [("rejection_zero", INVALID, rejection_class)]
+    else:
+        assert _attempts(path)[0][2:5] == ("open", None, "request_rejected")
+        assert _rejection_columns(path) == [("request_rejected", error_type, rejection_class)]
 
 
 def _assert_no_sentinel(error, caplog, path) -> None:
@@ -489,6 +512,25 @@ async def test_a_streamed_body_that_arrives_after_the_read_limit_records_other(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response_class", [_LateRejection, _BrokenRejection], ids=["late", "broken"]
+)
+async def test_a_streamed_overload_body_that_is_not_read_keeps_the_ceiling(
+    monkeypatch, tmp_path, response_class
+):
+    monkeypatch.setattr(messages_module, "_REJECTION_READ_SECONDS", 0.05)
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [response_class(529, _envelope({"type": "overloaded_error"}))])
+    model.endpoint.config.max_retries = 0
+    with pytest.raises(AccountRoutingError) as caught:
+        await _send(model, True)
+
+    assert caught.value.code is RouterErrorCode.PROVIDER_ERROR
+    assert _attempts(path)[0][2:5] == ("open", None, "provider_error")
+    assert _http_statuses(path) == [(529,)]
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_caller_still_has_its_streamed_rejection_classified(
     monkeypatch, tmp_path
 ):
@@ -501,7 +543,7 @@ async def test_a_cancelled_caller_still_has_its_streamed_rejection_classified(
             await _send(model, True)
 
     assert caller.cancel_called
-    assert _rejection_columns(path) == [("request_rejected", INVALID, "prompt_too_long")]
+    assert _rejection_columns(path) == [("rejection_zero", INVALID, "prompt_too_long")]
 
 
 @pytest.mark.asyncio
@@ -641,9 +683,105 @@ async def test_a_pending_cancellation_is_delivered_after_a_classified_rejection_
         with anyio.fail_after(DEADLINE):
             await _send(model, streamed)
 
-    assert _attempts(path)[-1][4] == "request_rejected"
-    assert _rejection_columns(path)[-1] == ("request_rejected", INVALID, "prompt_too_long")
+    assert _attempts(path)[-1][4] == "rejection_zero"
+    assert _rejection_columns(path)[-1] == ("rejection_zero", INVALID, "prompt_too_long")
     assert _warm_rows(path) == []
+
+
+@pytest.mark.asyncio
+@STREAMED
+@pytest.mark.parametrize(
+    ("status", "body", "zero", "expected_type", "expected_class"),
+    [
+        (400, _typed(PROMPT), True, INVALID, "prompt_too_long"),
+        (400, _envelope({"type": INVALID}), True, INVALID, "other"),
+        (400, _typed("unrelated"), True, INVALID, "other"),
+        (529, _envelope({"type": "overloaded_error"}), True, "overloaded_error", None),
+        (400, _envelope({"type": "overloaded_error"}), False, "overloaded_error", "other"),
+        (529, _envelope({"type": INVALID}), False, INVALID, "other"),
+        (529, b"", False, "other", "other"),
+        (529, b"{not json", False, "other", "other"),
+        (529, _overloaded_of(65_536), True, "overloaded_error", None),
+        (529, _overloaded_of(65_537), False, "other", "other"),
+        (413, _envelope({"type": INVALID}), False, INVALID, "other"),
+        (404, _envelope({"type": INVALID}), False, INVALID, "other"),
+        (500, b"", False, "other", "other"),
+        (503, b"", False, "other", "other"),
+        (500, _envelope({"type": "overloaded_error"}), False, "overloaded_error", None),
+        (503, _envelope({"type": "overloaded_error"}), False, "overloaded_error", None),
+    ],
+    ids=[
+        "400-known",
+        "400-no-message",
+        "400-other-class",
+        "529-overloaded",
+        "400-mismatch",
+        "529-mismatch",
+        "529-empty",
+        "529-invalid-json",
+        "529-at-limit",
+        "529-over-limit",
+        "413-mismatch",
+        "404",
+        "500",
+        "503",
+        "500-overloaded",
+        "503-overloaded",
+    ],
+)
+async def test_status_rejection_settlement_is_typed_and_bounded(
+    monkeypatch, tmp_path, streamed, status, body, zero, expected_type, expected_class
+):
+    path, transport, error = await _reject_status(monkeypatch, tmp_path, status, body, streamed)
+    row = _attempts(path)[0]
+    assert row[2] == ("settled" if zero else "open")
+    assert row[3] == (0 if zero else None)
+    assert row[4] == (
+        "rejection_zero" if zero else ("provider_error" if status >= 500 else "request_rejected")
+    )
+    assert _rejection_columns(path) == [
+        (
+            row[4],
+            expected_type if status < 500 else None,
+            expected_class if status < 500 else None,
+        )
+    ]
+    assert _http_statuses(path) == [(status,)]
+    assert error.http_status == status
+    assert type(error) is AccountRoutingError
+    if status >= 500:
+        assert error.code is RouterErrorCode.PROVIDER_ERROR
+    else:
+        assert error.code is RouterErrorCode.REQUEST_REJECTED
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.asyncio
+@STREAMED
+@pytest.mark.parametrize("first_status", [529, 500], ids=["overloaded", "server-error"])
+async def test_a_529_overload_retries_like_a_server_error(
+    monkeypatch, tmp_path, streamed, first_status
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    first_body = _envelope({"type": "overloaded_error"}) if first_status == 529 else b""
+    model, transport = _model(
+        monkeypatch,
+        [_Rejection(first_status, first_body), _Rejection(500, b"")],
+    )
+    model.endpoint.config.max_retries = 2
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await _send(model, streamed)
+
+    assert caught.value.code is RouterErrorCode.PROVIDER_ERROR
+    assert caught.value.http_status == 500
+    assert len(transport.calls) == 2
+    outcomes = [row[4] for row in _attempts(path)]
+    assert outcomes == (
+        ["rejection_zero", "provider_error"]
+        if first_status == 529
+        else ["provider_error", "provider_error"]
+    )
 
 
 @pytest.mark.asyncio
