@@ -669,7 +669,7 @@ that doesn't count higher than the one already stored by the same page is
 discarded, since reports race and the loser of that race is the stale
 view.
 
-## lionagi/studio/services/schedule_declaration.py
+## lionhub/src/lionhub/orchestration/schedule/declaration.py
 
 **`_resolve_path`** — Resolves a manifest-relative path to an absolute
 one. A manifest may write relative paths, unlike a stored schedule row:
@@ -833,7 +833,7 @@ an absolute path even when `manifest_dir` is itself relative.
   directory, never under `SKILLS_DIR`, so they're unreachable through this
   path by construction, not by an extra check.
 
-## lionagi/studio/services/schedule_export.py
+## lionhub/src/lionhub/orchestration/schedule/export.py
 
 Read-only conversion of `schedules` rows into a `ScheduleSet` document, two
 modes, neither touching the database: legacy conversion (`managed_by IS
@@ -1237,7 +1237,7 @@ had since been pruned — sharing the check means GET's answer and POST's
 outcome can only disagree when something about the run genuinely changed
 between the two calls.
 
-## lionagi/studio/services/_db.py
+## lionhub/src/lionhub/orchestration/state_store.py
 
 `store_path()` resolves `LIONAGI_STATE_DB_URL` rather than naming
 `DEFAULT_DB_PATH` directly, so a route reads the same file the daemon

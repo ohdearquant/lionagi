@@ -10,10 +10,15 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from lionhub.orchestration.project_store import (  # noqa: F401
+    _ENSURE_TABLE_SQL,
+    _ensure_table,
+    get_project,
+)
+from lionhub.orchestration.state_store import open_db as _open_db
+from lionhub.orchestration.state_store import require_file_store, store_exists, store_path
+
 from ..registry import studio_route
-from ._db import open_db as _open_db
-from ._db import require_file_store, store_exists, store_path
-from .project_lookup import _ENSURE_TABLE_SQL, _ensure_table, get_project  # noqa: F401
 
 
 class NameConflictError(Exception):

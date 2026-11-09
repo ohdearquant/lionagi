@@ -22,7 +22,7 @@ from sqlalchemy import text
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler import capabilities
-from lionagi.studio.services._schedule_validation import validate_rate_limit
+from lionhub.orchestration.schedule.validation import validate_rate_limit
 
 __all__ = (
     "DEFAULT_KEY_CONCURRENCY",

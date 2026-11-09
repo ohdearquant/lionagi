@@ -2317,7 +2317,7 @@ def test_schedule_apply_adopt_dry_run_reports_existing_row(
 ):
     from lionagi.studio.cli import run_schedule
 
-    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     manifest = _write_manifest(agent_profile_cwd)
     _create_unowned_schedule(agent_profile_cwd)
 
@@ -2364,7 +2364,7 @@ def test_schedule_apply_adopt_refusal_reports_the_changed_column(
 ):
     from lionagi.studio.cli import run_schedule
 
-    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     manifest = _write_manifest(agent_profile_cwd)
     _create_unowned_schedule(agent_profile_cwd, cron_expr="17 4 * * *")
 
@@ -2436,7 +2436,7 @@ def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, caps
 def test_schedule_apply_refusal_names_each_row_once(agent_profile_cwd, temp_state_db, monkeypatch):
     from lionagi.studio.cli import run_schedule
 
-    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     manifest = _write_manifest(agent_profile_cwd)
     _create_unowned_schedule(
         agent_profile_cwd,
@@ -2458,7 +2458,7 @@ def test_schedule_apply_dry_run_prints_a_refused_row_through_the_warning_channel
     through the warning channel, while the rest of the plan stays ordinary output."""
     from lionagi.studio.cli import run_schedule
 
-    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     manifest = _write_manifest(agent_profile_cwd)
     _create_unowned_schedule(agent_profile_cwd, cron_expr="17 4 * * *")
 

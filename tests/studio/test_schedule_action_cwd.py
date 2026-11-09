@@ -114,7 +114,7 @@ def test_create_schedule_derives_action_cwd_from_action_project(tmp_path, monkey
         return_value={"name": "myproj", "path": str(project_dir), "source": "studio"}
     )
     monkeypatch.setattr(
-        "lionagi.studio.services.project_lookup.get_project", fake_get_project, raising=False
+        "lionhub.orchestration.project_store.get_project", fake_get_project, raising=False
     )
     data = _create_data(action_project="myproj")
 
@@ -142,7 +142,7 @@ def test_create_schedule_explicit_action_cwd_wins_over_action_project(tmp_path, 
         return_value={"name": "myproj", "path": str(project_dir), "source": "studio"}
     )
     monkeypatch.setattr(
-        "lionagi.studio.services.project_lookup.get_project", fake_get_project, raising=False
+        "lionhub.orchestration.project_store.get_project", fake_get_project, raising=False
     )
     data = _create_data(action_project="myproj", action_cwd=str(explicit_dir))
 
@@ -165,7 +165,7 @@ def test_create_schedule_no_cwd_no_resolvable_project_stays_none(monkeypatch):
     None (a pure-API creation path has no meaningful client cwd)."""
     fake_get_project = AsyncMock(return_value=None)
     monkeypatch.setattr(
-        "lionagi.studio.services.project_lookup.get_project", fake_get_project, raising=False
+        "lionhub.orchestration.project_store.get_project", fake_get_project, raising=False
     )
     data = _create_data(action_project="unregistered")
 
@@ -187,7 +187,7 @@ def test_create_schedule_without_action_project_stays_none_without_lookup(monkey
     the project registry is never consulted."""
     fake_get_project = AsyncMock(return_value=None)
     monkeypatch.setattr(
-        "lionagi.studio.services.project_lookup.get_project", fake_get_project, raising=False
+        "lionhub.orchestration.project_store.get_project", fake_get_project, raising=False
     )
     data = _create_data()
 

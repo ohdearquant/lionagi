@@ -15,7 +15,7 @@ import aiosqlite
 # store file would then wait different lengths, a difference nobody chose.
 from lionagi.state import engine as _state_engine
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.services._db")
 
 _ACTIVE_CONNECTIONS: int = 0
 

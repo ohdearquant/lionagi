@@ -19,6 +19,7 @@ from starlette.staticfiles import StaticFiles
 
 from lionagi._errors import LionError
 from lionagi.version import __version__
+from lionhub.orchestration.state_store import StoreNotAddressableError
 
 from ._host import admitted_host_names, normalize_host
 from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
@@ -31,7 +32,6 @@ from .launch_access import (
 )
 from .reconnect import ReconnectChannel, default_socket_path, port_proof, unix_sockets_supported
 from .registry import iter_studio_routes, load_studio_route_modules
-from .services._db import StoreNotAddressableError
 
 _log = logging.getLogger(__name__)
 

@@ -147,7 +147,7 @@ async def _turn_at_limit(tmp_path, monkeypatch, summary_exists):
 async def test_elision_helper_leaves_commit_with_the_transaction_owner(
     tmp_path, monkeypatch, summary_exists
 ):
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     store, conversation_id, request_id = await _turn_at_limit(tmp_path, monkeypatch, summary_exists)
     before_frames = await store.list_frames(conversation_id)
@@ -176,7 +176,7 @@ async def test_elision_helper_leaves_commit_with_the_transaction_owner(
 async def test_frame_caller_keeps_elision_inside_its_transaction(
     tmp_path, monkeypatch, summary_exists
 ):
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     store, conversation_id, request_id = await _turn_at_limit(tmp_path, monkeypatch, summary_exists)
     before_frames = await store.list_frames(conversation_id)

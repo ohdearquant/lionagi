@@ -8,7 +8,7 @@ import pytest
 
 from lionagi.studio.operator import store as store_mod
 from lionagi.studio.operator.store import OperatorStore
-from lionagi.studio.services._db import open_db
+from lionhub.orchestration.state_store import open_db
 
 
 async def _start_turn(store: OperatorStore) -> tuple[str, str]:

@@ -84,31 +84,6 @@ def test_svc_validate_budget_usd_accepts_finite_positive(good_value):
     _svc_validate_budget_usd(good_value)  # does not raise
 
 
-@pytest.mark.parametrize(
-    "bad_value",
-    [
-        {},
-        {"max_fires": 1},
-        {"window_sec": 60},
-        {"max_fires": 0, "window_sec": 60},
-        {"max_fires": True, "window_sec": 60},
-        {"max_fires": 1, "window_sec": 0},
-        {"max_fires": 1, "window_sec": 60, "burst": 2},
-    ],
-)
-def test_validate_rate_limit_rejects_malformed_config(bad_value):
-    from lionagi.studio.services._schedule_validation import validate_rate_limit
-
-    with pytest.raises(ValueError, match="rate_limit"):
-        validate_rate_limit(bad_value)
-
-
-def test_validate_rate_limit_accepts_positive_window_cap():
-    from lionagi.studio.services._schedule_validation import validate_rate_limit
-
-    assert validate_rate_limit({"max_fires": 3, "window_sec": 120}) == (3, 120)
-
-
 # _check_budget — pure read, no reservation
 
 

@@ -18,8 +18,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.state.db import read_only_open_supported, state_db_known_absent
-from lionagi.studio.services._db import StoreNotAddressableError
 from lionagi.studio.services.runs import get_run
+from lionhub.orchestration.state_store import StoreNotAddressableError
 
 from .redact import (
     ARTIFACT_BYTE_CAP,

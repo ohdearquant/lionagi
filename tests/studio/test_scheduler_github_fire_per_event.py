@@ -17,11 +17,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import lionhub.orchestration.schedule.validation as schedule_validation
 from lionagi.state.db import NO_CURSOR_CLAIM
 from lionagi.studio.scheduler import github as gh_mod
 from lionagi.studio.scheduler.engine import SchedulerEngine
 from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
-from lionagi.studio.services import _schedule_validation
 from lionagi.studio.services.schedules import _run_trigger_facts
 
 
@@ -627,7 +627,7 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
         await engine._tick_github(schedule, now=10_000.0)
 
     assert fired_prs == []
-    assert len(first_client.requests) == _schedule_validation._MERGED_MODE_MAX_PAGES
+    assert len(first_client.requests) == schedule_validation._MERGED_MODE_MAX_PAGES
     first_spawn.assert_not_awaited()
     svc.create_invocation.assert_not_awaited()
     svc.create_schedule_run_and_advance.assert_not_awaited()

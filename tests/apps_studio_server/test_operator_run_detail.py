@@ -544,7 +544,7 @@ async def test_run_detail_store_not_addressable_error_collapses_to_unavailable(
     signal (`require_file_store()` raising past `get_run` uncaught) rather
     than a bare OSError — both are caught by the same except clause."""
     from lionagi.studio.operator import run_detail as run_detail_mod
-    from lionagi.studio.services._db import StoreNotAddressableError
+    from lionhub.orchestration.state_store import StoreNotAddressableError
 
     async with StateDB(db_path):
         pass

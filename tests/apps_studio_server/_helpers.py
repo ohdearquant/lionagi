@@ -1,16 +1,3 @@
-from __future__ import annotations
+from lionhub_tests.orchestration._test_support_state_store import run_async
 
-import asyncio
-from collections.abc import Awaitable
-from typing import TypeVar
-
-T = TypeVar("T")
-
-
-def run_async(coro: Awaitable[T]) -> T:
-    """Run a coroutine synchronously in a fresh event loop."""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+__all__ = ["run_async"]

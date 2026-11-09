@@ -95,8 +95,8 @@ async def test_postgres_capped_limit_is_integer_and_reset_clears_it(pg_url):
 
 
 async def test_merged_page_limit_is_validated_and_survives_reopen(tmp_path):
-    from lionagi.studio.services._schedule_validation import merged_page_limit
     from lionagi.studio.services.schedules import _svc_validate_github_filter
+    from lionhub.orchestration.schedule.validation import merged_page_limit
 
     config = {"event": "pr_merged", "merged_page_limit": 20}
     _svc_validate_github_filter(config)

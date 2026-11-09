@@ -24,7 +24,7 @@ from lionagi.ln import (
     prepare_process_group_env,
 )
 from lionagi.ln._proc import env_without_state_db_url
-from lionagi.studio.services.schedule_action_validation import (
+from lionhub.orchestration.schedule.action_validation import (
     _COMMAND_ALLOWLIST_ENV,  # noqa: F401
     _COMMAND_RE,  # noqa: F401
     _ENGINE_OPT_VALUE_RE,

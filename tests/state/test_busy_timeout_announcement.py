@@ -17,8 +17,6 @@ import pytest
 
 from lionagi.state import engine as eng
 
-ENV = "LIONAGI_SQLITE_BUSY_TIMEOUT_MS"
-
 
 @pytest.fixture
 def announce(monkeypatch, caplog):
@@ -146,16 +144,5 @@ class TestBothStoreEntryPointsAnnounce:
 
         assert any("busy_timeout" in r.getMessage() for r in caplog.records)
 
-    @pytest.mark.asyncio
-    async def test_the_studio_connection_helper_announces(self, monkeypatch, tmp_path, caplog):
-        from lionagi.studio.services import _db
 
-        monkeypatch.setattr(eng, "_busy_timeout_announced", False)
-        monkeypatch.delenv(ENV, raising=False)
-
-        caplog.clear()
-        with caplog.at_level(logging.INFO, logger=eng._log.name):
-            async with _db.open_db(str(tmp_path / "studio.db")):
-                pass
-
-        assert any("busy_timeout" in r.getMessage() for r in caplog.records)
+from lionhub_tests.orchestration._test_support_state_store import ENV

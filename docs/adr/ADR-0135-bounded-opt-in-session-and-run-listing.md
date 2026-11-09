@@ -60,8 +60,8 @@ before the listing DTO's NULL-to-zero timestamp fallback
 
 **P5 — Query labels and cursor encodings are not authorization.** Authentication and
 origin controls run before API routes (`lionagi/studio/app.py::create_app.require_studio_bearer_token`). File-store guards and
-configured store resolution precede listing (`lionagi/studio/services/_db.py::store_path`,
-`lionagi/studio/services/_db.py::require_file_store`, `lionagi/studio/services/sessions.py::list_sessions`). A project
+configured store resolution precede listing (`lionhub/src/lionhub/orchestration/state_store.py::store_path`,
+`lionhub/src/lionhub/orchestration/state_store.py::require_file_store`, `lionagi/studio/services/sessions.py::list_sessions`). A project
 label is an ordinary user predicate (`lionagi/studio/services/sessions.py::SessionFilter.where`). This
 deployment exposes the configured store to an admitted caller; it does not establish a
 new row-level tenant boundary.

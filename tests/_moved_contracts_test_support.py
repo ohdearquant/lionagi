@@ -881,6 +881,60 @@ CONTRACTS: tuple[MoveContract, ...] = (
         ),
         state_consumers=(StateConsumer("checkpoint-version", _CHECKPOINT_VERSION),),
     ),
+    MoveContract(
+        old="lionagi.studio.services._schedule_validation",
+        new="lionhub.orchestration.schedule.validation",
+        kind="module",
+        public_names=frozenset({"validate_rate_limit"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.schedule_action_validation",
+        new="lionhub.orchestration.schedule.action_validation",
+        kind="module",
+        public_names=frozenset({"validate_launch_fields"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.schedule_timing",
+        new="lionhub.orchestration.schedule.timing",
+        kind="module",
+        public_names=frozenset({"resolve_schedule_timezone"}),
+    ),
+    MoveContract(
+        old="lionagi.studio._timezone_rules",
+        new="lionhub.orchestration.schedule._timezone_rules",
+        kind="module",
+        public_names=frozenset({"rules_equal"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.schedule_execution_root",
+        new="lionhub.orchestration.schedule.execution_root",
+        kind="module",
+        public_names=frozenset({"SchedulerCwdInheritRefusedError"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.schedule_declaration",
+        new="lionhub.orchestration.schedule.declaration",
+        kind="module",
+        public_names=frozenset({"ScheduleSetError"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.schedule_export",
+        new="lionhub.orchestration.schedule.export",
+        kind="module",
+        public_names=frozenset({"ExportReportLine"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.project_lookup",
+        new="lionhub.orchestration.project_store",
+        kind="module",
+        public_names=frozenset({"get_project"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services._db",
+        new="lionhub.orchestration.state_store",
+        kind="module",
+        public_names=frozenset({"StoreNotAddressableError"}),
+    ),
 )
 
 

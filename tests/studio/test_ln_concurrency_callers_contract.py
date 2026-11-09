@@ -245,7 +245,7 @@ def _admin_subject(monkeypatch, tmp_path, site, probe):
     monkeypatch.setattr(admin, "db_health", lambda: {})
     monkeypatch.setattr(admin, "process_snapshot_diagnostics", lambda: {})
     monkeypatch.setattr(
-        "lionagi.studio.services.schedule_timing.scheduler_timezone_report", lambda: {}
+        "lionhub.orchestration.schedule.timing.scheduler_timezone_report", lambda: {}
     )
     if site != "identity":
         monkeypatch.setattr(admin, "_code_identity_report", no_identity)

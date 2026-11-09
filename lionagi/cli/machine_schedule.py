@@ -206,7 +206,7 @@ def _resolved_next_fire(row: dict[str, Any]) -> dict[str, Any]:
     """
     try:
         from lionagi.studio.scheduler.engine import scheduler
-        from lionagi.studio.services.schedule_timing import resolve_schedule_timezone
+        from lionhub.orchestration.schedule.timing import resolve_schedule_timezone
     except Exception as exc:  # noqa: BLE001 — an unimportable resolver is not a create failure
         return unavailable("unresolved", f"the scheduler's resolver is unavailable here: {exc}")
 
@@ -322,7 +322,7 @@ def _validate(argv: list[str]) -> dict[str, Any]:
         argv,
         unhonoured={"as_json": "the machine result is already the only thing written to stdout"},
     )
-    from lionagi.studio.services.schedule_declaration import (
+    from lionhub.orchestration.schedule.declaration import (
         ScheduleSetError,
         parse_schedule_set,
         resolve_schedule_set,
@@ -382,7 +382,7 @@ def _export(argv: list[str]) -> dict[str, Any]:
     import asyncio
 
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedule_export import (
+    from lionhub.orchestration.schedule.export import (
         build_managed_export_document,
         convert_legacy_rows,
         dump_schedule_set_yaml,
