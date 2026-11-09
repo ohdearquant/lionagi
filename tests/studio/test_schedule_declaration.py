@@ -84,7 +84,7 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def pinned_scheduler_tz(monkeypatch: pytest.MonkeyPatch) -> str:
-    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
     return "America/New_York"
 
 
@@ -427,7 +427,7 @@ schedules:
 
 def test_policies_rate_limit_malformed_rejected(tmp_path):
     """Policies.rateLimit is validated with the same
-    lionagi.studio.scheduler.admit.validate_rate_limit the fire-time engine
+    lionagi.studio.services._schedule_validation.validate_rate_limit the fire-time engine
     admission path uses -- an open dict[str, Any] would otherwise let a
     malformed rateLimit commit."""
     manifest = _policies_manifest(
@@ -1845,7 +1845,7 @@ async def test_adopt_reads_a_zoneless_row_in_the_zone_the_scheduler_recorded(
     assert ("resolved_timezone", "Europe/Berlin", "America/New_York") in differences
 
     # Applier in UTC, scheduler recorded New York: the applier's zone is irrelevant.
-    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "UTC")
+    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "UTC")
     new_york = _legacy_adoption_row("nightly", cwd=agent_profile)
     assert await _adopt_spec_differences(new_york, resolved) == []
 
@@ -2800,7 +2800,7 @@ async def test_adopt_refusal_describes_both_changed_execution_roots(
             return {"path": str(row_root)}
         return None
 
-    monkeypatch.setattr("lionagi.studio.services.projects.get_project", get_project)
+    monkeypatch.setattr("lionagi.studio.services.project_lookup.get_project", get_project)
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_adoption_row(
@@ -3112,7 +3112,7 @@ def test_the_other_fields_validator_would_refuse_every_real_shape(args):
     the two contracts have converged and the reason these fields are validated
     separately no longer holds. Read that before deleting this.
     """
-    from lionagi.studio.scheduler.subprocess import _validate_extra_args
+    from lionagi.studio.services.schedule_action_validation import _validate_extra_args
 
     with pytest.raises(ValueError, match="starts with '-'"):
         _validate_extra_args(args)

@@ -20,6 +20,12 @@ __all__ = (
     "AccountSpec",
     "CompleteUsage",
     "Evidence",
+    "Rate",
+    "PricingInputs",
+    "UsageCounts",
+    "UsageRates",
+    "RejectionZero",
+    "StreamUsageEstimate",
     "ProvenNotSent",
     "Quote",
     "Reservation",
@@ -91,6 +97,7 @@ _REJECTION_CLASSES = frozenset(
         "other",
     }
 )
+_REQUEST_ID_RE = __import__("re").compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
 def _check_member(field: str, value: Any, allowed: frozenset[str]) -> None:
@@ -173,6 +180,159 @@ class Quote:
     price_revision: str
     # sha256 hex of the final credential-free request bytes
     request_digest: str
+    pricing_inputs: PricingInputs | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Rate:
+    numerator: int
+    denominator: int
+
+    def __post_init__(self) -> None:
+        import math
+
+        _strict_int(self.numerator, minimum=0, label="rate numerator")
+        _strict_int(self.denominator, minimum=1, label="rate denominator")
+        divisor = math.gcd(self.numerator, self.denominator)
+        if divisor != 1:
+            raise ValueError("rate must be reduced")
+
+
+def _strict_int(value: object, *, minimum: int, label: str) -> None:
+    if type(value) is not int or value < minimum or value > INT64_MAX:
+        raise ValueError(f"invalid {label}")
+
+
+@dataclass(frozen=True, slots=True)
+class PricingInputs:
+    output_bound: int
+    cache_ttls: tuple[str, ...]
+    single_ttl: str | None
+    feature_profile: str
+    tier_selector: str
+    output_rate_max: Rate
+
+    def __post_init__(self) -> None:
+        _strict_int(self.output_bound, minimum=1, label="output bound")
+        if type(self.cache_ttls) is not tuple or self.cache_ttls not in (
+            (),
+            ("1h",),
+            ("5m",),
+            ("5m", "1h"),
+        ):
+            raise ValueError("invalid cache TTLs")
+        expected = self.cache_ttls[0] if len(self.cache_ttls) == 1 else None
+        if self.single_ttl != expected:
+            raise ValueError("invalid single TTL")
+        if (
+            self.feature_profile != "messages_standard_v1"
+            or self.tier_selector != "max_applicable_at_reserve"
+        ):
+            raise ValueError("unknown pricing selector")
+        if not isinstance(self.output_rate_max, Rate):
+            raise ValueError("invalid maximum output rate")
+
+
+@dataclass(frozen=True, slots=True)
+class UsageCounts:
+    input_tokens: int
+    cache_read_input_tokens: int
+    cache_write_5m_tokens: int
+    cache_write_1h_tokens: int
+    output_tokens: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "input_tokens",
+            "cache_read_input_tokens",
+            "cache_write_5m_tokens",
+            "cache_write_1h_tokens",
+            "output_tokens",
+        ):
+            _strict_int(getattr(self, name), minimum=0, label=name)
+
+
+@dataclass(frozen=True, slots=True)
+class UsageRates:
+    input: Rate
+    cache_read: Rate
+    cache_write_5m: Rate
+    cache_write_1h: Rate
+    output: Rate
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(getattr(self, name), Rate)
+            for name in ("input", "cache_read", "cache_write_5m", "cache_write_1h", "output")
+        ):
+            raise ValueError("invalid usage rates")
+
+
+@dataclass(frozen=True, slots=True)
+class RejectionZero:
+    http_status: int
+    provider_error_type: str
+    rejection_class: str | None
+    original_reason: str
+
+    def __post_init__(self) -> None:
+        if type(self.http_status) is not int or not 100 <= self.http_status <= 599:
+            raise ValueError("invalid HTTP status")
+        if (self.http_status, self.provider_error_type) not in (
+            (400, "invalid_request_error"),
+            (529, "overloaded_error"),
+        ):
+            raise ValueError("invalid rejection pair")
+        _check_member("rejection_class", self.rejection_class, _REJECTION_CLASSES)
+        if self.http_status == 400 and self.rejection_class is None:
+            object.__setattr__(self, "rejection_class", "other")
+        expected = "request_rejected" if self.http_status == 400 else "provider_error"
+        if self.original_reason != expected:
+            raise ValueError("invalid original reason")
+
+
+@dataclass(frozen=True, slots=True)
+class StreamUsageEstimate:
+    original_reason: str
+    served_model: str
+    counts: UsageCounts
+    request_id: str | None
+    pricing_inputs: PricingInputs
+    quote_origin: Literal["reservation", "operator"]
+    rates: UsageRates
+    observed_cost_nusd: int
+    margin_tokens: int
+    margin_nusd: int
+    cost_nusd: int
+
+    def __post_init__(self) -> None:
+        if self.original_reason not in {
+            "cancelled",
+            "stream_closed",
+            "transport_error",
+            "stream_truncated",
+            "stream_error",
+        }:
+            raise ValueError("unknown stream reason")
+        if not isinstance(self.served_model, str) or not self.served_model:
+            raise ValueError("invalid served model")
+        if (
+            not isinstance(self.counts, UsageCounts)
+            or not isinstance(self.pricing_inputs, PricingInputs)
+            or not isinstance(self.rates, UsageRates)
+        ):
+            raise ValueError("invalid stream usage fields")
+        if self.quote_origin not in ("reservation", "operator"):
+            raise ValueError("unknown quote origin")
+        if self.request_id is not None and (
+            not isinstance(self.request_id, str)
+            or _REQUEST_ID_RE.fullmatch(self.request_id) is None
+        ):
+            object.__setattr__(self, "request_id", None)
+        for name in ("observed_cost_nusd", "margin_tokens", "margin_nusd", "cost_nusd"):
+            _strict_int(getattr(self, name), minimum=0, label=name)
+        if self.cost_nusd != self.observed_cost_nusd + self.margin_nusd:
+            raise ValueError("inconsistent stream cost")
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +373,7 @@ class ProvenNotSent:
 
 @dataclass(frozen=True, slots=True)
 class UnknownOutcome:
-    """Settlement evidence that closes an attempt with a reason code and no usage.
+    """Evidence that records a reason code while leaving an attempt open.
 
     ``provider_error_type`` and ``rejection_class`` are closed-set strings that only a
     ``request_rejected`` outcome may carry. The ledger records all three on the attempt.
@@ -234,4 +394,4 @@ class UnknownOutcome:
             )
 
 
-Evidence = CompleteUsage | ProvenNotSent | UnknownOutcome
+Evidence = CompleteUsage | ProvenNotSent | UnknownOutcome | RejectionZero | StreamUsageEstimate

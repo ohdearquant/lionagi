@@ -180,10 +180,10 @@ class Policies(BaseModel):
     @model_validator(mode="after")
     def _valid_rate_limit(self) -> Policies:
         # Same validator the fire-time engine admission path uses
-        # (lionagi.studio.scheduler.admit.validate_rate_limit) -- an open
+        # (lionagi.studio.services._schedule_validation.validate_rate_limit) -- an open
         # dict[str, Any] would otherwise let a malformed rateLimit commit
         # and only fail (or silently no-op) at fire time.
-        from lionagi.studio.scheduler.admit import validate_rate_limit
+        from lionagi.studio.services._schedule_validation import validate_rate_limit
 
         try:
             validate_rate_limit(self.rateLimit)
@@ -440,7 +440,10 @@ def _resolve_agent_target(target: AgentTarget, cwd: Path) -> dict[str, Any]:
     # the launch refuses a model outside the model identifier character set and a
     # prompt it cannot pass through. A row holding either would fail at every fire,
     # so refuse it here instead.
-    from lionagi.studio.scheduler.subprocess import _validate_action_model, _validate_prompt
+    from lionagi.studio.services.schedule_action_validation import (
+        _validate_action_model,
+        _validate_prompt,
+    )
 
     source = "target.model" if target.model else f"profile {target.profile!r}"
     if not isinstance(resolved_model, str):
@@ -509,11 +512,11 @@ def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, An
 
 
 def _resolve_playbook_target(target: PlaybookTarget) -> dict[str, Any]:
-    from lionagi.studio.scheduler.subprocess import (
+    from lionagi.studio.services.schedule_action_validation import (
         _PLAY_SUBCOMMANDS,
-        _validate_identifier,
         _validate_playbook_args,
     )
+    from lionhub.orchestration.schedule.parsing import _validate_identifier
 
     _validate_identifier(target.name, "target.playbook.name")
     if target.name in _PLAY_SUBCOMMANDS:
@@ -527,11 +530,11 @@ def _resolve_playbook_target(target: PlaybookTarget) -> dict[str, Any]:
 
 
 def _resolve_command_target(target: CommandTarget) -> dict[str, Any]:
-    from lionagi.studio.scheduler.subprocess import (
+    from lionagi.studio.services._schedule_validation import _svc_validate_command_args
+    from lionagi.studio.services.schedule_action_validation import (
         _validate_action_command,
         _validate_command_allowlisted,
     )
-    from lionagi.studio.services._schedule_validation import _svc_validate_command_args
 
     _validate_action_command(target.executable)
     _validate_command_allowlisted(target.executable)
@@ -1002,7 +1005,7 @@ _LAUNCH_READERS: dict[str, tuple[frozenset[str] | None, frozenset[str] | None]] 
 
 def _row_action_kind(row: dict[str, Any]) -> str | None:
     """The canonical launch kind a row's action_kind names, aliases resolved."""
-    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS
+    from lionhub.orchestration.schedule.parsing import _ALIAS_ACTION_KINDS
 
     kind = row.get("action_kind")
     return _ALIAS_ACTION_KINDS.get(kind, kind)
@@ -1043,7 +1046,7 @@ async def _adoption_execution_root(
     schedule: dict[str, Any],
 ) -> tuple[tuple[str, ...], str | None, str]:
     """Resolve the root a schedule subprocess would inherit from the engine."""
-    from lionagi.studio.scheduler.engine import (
+    from lionagi.studio.services.schedule_execution_root import (
         SchedulerCwdInheritRefusedError,
         _resolve_action_cwd,
     )
@@ -1113,7 +1116,7 @@ async def _adopt_project_pair(
             # The launch validates the project identifier whatever the kind, so a
             # value it refuses fails at every fire even where the kind drops it;
             # only a value the launch accepts is then unused.
-            from lionagi.studio.scheduler.subprocess import _validate_identifier
+            from lionhub.orchestration.schedule.parsing import _validate_identifier
 
             try:
                 _validate_identifier(project, "action_project")
@@ -1157,7 +1160,7 @@ def row_cron_timezone(row: dict[str, Any]) -> str | None:
     share, so the zone the scheduler last recorded on the row stands for it.
     None when the row stores no zone and no scheduler has recorded one.
     """
-    from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+    from lionagi.studio.services.schedule_timing import resolve_schedule_timezone
 
     if row.get("resolved_timezone"):
         return resolve_schedule_timezone(row).name
@@ -1165,7 +1168,7 @@ def row_cron_timezone(row: dict[str, Any]) -> str | None:
 
 
 def _adopt_timezone_pair(row: dict[str, Any], declared: Any) -> tuple[str | None, str]:
-    from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+    from lionagi.studio.services.schedule_timing import resolve_schedule_timezone
 
     return (
         row_cron_timezone(row),
@@ -1181,7 +1184,7 @@ def _adopt_unconfirmed_recorded_zone(row: dict[str, Any]) -> tuple[str, str] | N
     this process may be configured differently from the scheduler, so adoption
     pins a zone only when both say the same one.
     """
-    from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+    from lionagi.studio.services.schedule_timing import resolve_schedule_timezone
 
     recorded = row.get("effective_timezone")
     if row.get("resolved_timezone") or not recorded:
@@ -1221,7 +1224,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # into the argv, and the other kinds drop it after the check.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import _validate_identifier
+        from lionhub.orchestration.schedule.parsing import _validate_identifier
 
         try:
             _validate_identifier(value, "action_agent")
@@ -1233,7 +1236,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # named kinds then pass it on.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import _validate_action_model
+        from lionagi.studio.services.schedule_action_validation import _validate_action_model
 
         try:
             _validate_action_model(value)
@@ -1248,7 +1251,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # kind, so those count as written.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import _validate_prompt
+        from lionagi.studio.services.schedule_action_validation import _validate_prompt
 
         try:
             _validate_prompt(value)
@@ -1260,7 +1263,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
     if name == "interval_sec":
         trigger_type = schedule.get("trigger_type")
         if trigger_type == "github_poll":
-            from lionagi.studio.scheduler.engine import resolve_schedule_cadence_seconds
+            from lionagi.studio.services.schedule_timing import resolve_schedule_cadence_seconds
 
             return resolve_schedule_cadence_seconds({**schedule, "interval_sec": value})
         # Only an interval or github_poll trigger reads the interval.
@@ -1270,7 +1273,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # the name as a positional.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import _validate_identifier
+        from lionhub.orchestration.schedule.parsing import _validate_identifier
 
         try:
             _validate_identifier(value, "action_playbook")
@@ -1283,7 +1286,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # refuses fails at every fire, so it counts as written.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import (
+        from lionagi.studio.services.schedule_action_validation import (
             _validate_action_command,
             _validate_command_allowlisted,
         )
@@ -1422,7 +1425,7 @@ async def _adopt_undeclarable(
         # profile from the row's own execution root. A member always names a
         # profile, so a value the launch refuses or resolves nowhere is one no
         # member of this set declares.
-        from lionagi.studio.scheduler.subprocess import _validate_identifier
+        from lionhub.orchestration.schedule.parsing import _validate_identifier
 
         try:
             _validate_identifier(current, "action_agent")
@@ -1444,7 +1447,8 @@ async def _adopt_undeclarable(
         return any(status not in _NOTIFY_ALLOWED_STATUSES for status in current)
     if name == "action_playbook" and isinstance(current, str):
         # A member's playbook name is refused when the launch would refuse it.
-        from lionagi.studio.scheduler.subprocess import _PLAY_SUBCOMMANDS, _validate_identifier
+        from lionagi.studio.services.schedule_action_validation import _PLAY_SUBCOMMANDS
+        from lionhub.orchestration.schedule.parsing import _validate_identifier
 
         try:
             _validate_identifier(current, "action_playbook")
@@ -1455,7 +1459,7 @@ async def _adopt_undeclarable(
         # A member's executable resolves only against the allow-list, so a name the
         # launch refuses, or one this process's allow-list does not carry, is not
         # one a member can be edited to name.
-        from lionagi.studio.scheduler.subprocess import (
+        from lionagi.studio.services.schedule_action_validation import (
             _validate_action_command,
             _validate_command_allowlisted,
         )
@@ -1477,7 +1481,7 @@ async def _adopt_undeclarable(
         return True
     if name == "action_prompt" and isinstance(current, str):
         # A member's prompt is refused when the launch would refuse it.
-        from lionagi.studio.scheduler.subprocess import _validate_prompt
+        from lionagi.studio.services.schedule_action_validation import _validate_prompt
 
         try:
             _validate_prompt(current)
@@ -1487,7 +1491,7 @@ async def _adopt_undeclarable(
     if name == "action_model" and isinstance(current, str):
         # A member's model, its own or its profile's, is refused when the launch would
         # refuse it.
-        from lionagi.studio.scheduler.subprocess import _validate_action_model
+        from lionagi.studio.services.schedule_action_validation import _validate_action_model
 
         try:
             _validate_action_model(current)
@@ -1499,7 +1503,7 @@ async def _adopt_undeclarable(
         if isinstance(stored, str) and stored:
             # The launch validates the identifier whatever the kind, so a value it
             # refuses is not one a member can be edited to carry.
-            from lionagi.studio.scheduler.subprocess import _validate_identifier
+            from lionhub.orchestration.schedule.parsing import _validate_identifier
 
             try:
                 _validate_identifier(stored, "action_project")

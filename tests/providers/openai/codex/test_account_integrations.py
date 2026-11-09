@@ -264,6 +264,18 @@ def test_a_stored_row_carrying_the_grant_restores_without_it():
 # ── role profile ────────────────────────────────────────────────────────
 
 
+def test_profile_config_reports_the_containment_a_codex_role_gets():
+    omitted = profile_config(_parse_profile("role", "---\nmodel: codex/gpt-5.5\n---\nWork."))
+    disabled = profile_config(
+        _parse_profile(
+            "role",
+            "---\nmodel: codex/gpt-5.5\ncontain_account_integrations: false\n---\nWork.",
+        )
+    )
+    assert omitted["contain_account_integrations"] is True
+    assert disabled["contain_account_integrations"] is False
+
+
 # ── the CLI builders hand the fields to codex only ──────────────────────
 
 
@@ -281,8 +293,9 @@ def test_a_stored_row_carrying_the_grant_restores_without_it():
 )
 def test_containment_refuses_a_profile_lionagi_did_not_write(profile):
     req = CodexCodeRequest(prompt="hi", contain_account_integrations=True, profile=profile)
-    with pytest.raises(ValueError, match=re.escape(f"profile={profile!r}")):
+    with pytest.raises(ValueError, match=re.escape(f"profile={profile!r}")) as raised:
         req.as_cmd_args()
+    assert "contain_account_integrations: false" in str(raised.value)
 
 
 def test_containment_keeps_the_profile_lionagi_writes_for_mcp_server_secrets(tmp_path):
@@ -693,6 +706,7 @@ def test_a_root_profile_key_that_is_not_a_string_is_named_by_its_type(tmp_path, 
     with pytest.raises(ValueError, match="a root profile key of type dict") as raised:
         req.as_cmd_args()
     assert "not-echoed" not in str(raised.value)
+    assert "contain_account_integrations: false" in str(raised.value)
 
 
 def test_containment_refuses_a_working_directory_that_is_a_symlink_to_itself(tmp_path):
@@ -705,6 +719,7 @@ def test_containment_refuses_a_working_directory_that_is_a_symlink_to_itself(tmp
     with pytest.raises(ContainmentRefusedError, match="cannot use the working directory") as raised:
         CodexCodeRequest(prompt="hi", repo=loop, contain_account_integrations=True)
     assert str(loop) not in str(raised.value)
+    assert "contain_account_integrations: false" in str(raised.value)
 
 
 def test_containment_refuses_a_working_directory_that_does_not_exist(tmp_path):
@@ -712,6 +727,7 @@ def test_containment_refuses_a_working_directory_that_does_not_exist(tmp_path):
     with pytest.raises(ContainmentRefusedError, match="working directory.*unavailable") as raised:
         CodexCodeRequest(prompt="hi", repo=missing, contain_account_integrations=True)
     assert str(missing) not in str(raised.value)
+    assert "contain_account_integrations: false" in str(raised.value)
 
 
 def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp_path):

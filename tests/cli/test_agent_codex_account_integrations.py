@@ -13,7 +13,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionhub.orchestration.spawn import _parse_profile
+from lionhub.orchestration.spawn import (
+    _parse_profile,
+    build_chat_model,
+    resolve_account_integrations,
+)
+from lionhub.providers.openai.codex import CodexCodeRequest
 from tests.cli.orchestrate.test_worker_artifact_directive import _build_worker
 from tests.cli.test_agent_resume_model_override import _wire_agent_stubs
 
@@ -23,6 +28,41 @@ _GRANTING_ROLE = (
 )
 _CONTAINED_ROLE = "---\nmodel: codex/gpt-5.5\ncontain_account_integrations: true\n---\n\nWork.\n"
 _PLAIN_ROLE = "---\nmodel: codex/gpt-5.5\n---\n\nWork.\n"
+_DISABLED_ROLE = "---\nmodel: codex/gpt-5.5\ncontain_account_integrations: false\n---\n\nWork.\n"
+_CONNECTOR_ROLE = "---\nmodel: codex/gpt-5.5\naccount_connectors: [gmail]\n---\n\nWork.\n"
+
+
+def _codex_argv(kwargs: dict) -> list[str]:
+    request = CodexCodeRequest(
+        prompt="Work.",
+        contain_account_integrations=kwargs.get("contain_account_integrations", False),
+        account_connectors=kwargs.get("account_connectors"),
+    )
+    return request.as_cmd_args()
+
+
+def _disabled_features(argv: list[str]) -> set[str]:
+    """The feature names the argv turns off, one per ``--disable`` flag."""
+    return {argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--disable"}
+
+
+_ACCOUNT_FEATURES = {"apps", "plugins"}
+
+
+def test_a_non_codex_profile_without_a_setting_does_not_change_cli_kwargs():
+    profile = _parse_profile("role", "---\nmodel: claude_code/haiku\n---\nWork.")
+    connectors, contained = resolve_account_integrations(profile)
+    model = build_chat_model(
+        "claude_code",
+        "haiku",
+        False,
+        False,
+        None,
+        account_connectors=connectors,
+        contain_account_integrations=contained,
+    )
+
+    assert model == "claude_code/haiku"
 
 
 def _use_role(monkeypatch, text: str) -> None:
@@ -66,7 +106,9 @@ def _stored_codex_branch(tmp_path: Path) -> tuple[str, Path]:
     [
         (_GRANTING_ROLE, {"account_connectors": ["gmail"], "contain_account_integrations": True}),
         (_CONTAINED_ROLE, {"contain_account_integrations": True}),
-        (_PLAIN_ROLE, {}),
+        (_PLAIN_ROLE, {"contain_account_integrations": True}),
+        (_DISABLED_ROLE, {}),
+        (_CONNECTOR_ROLE, {"account_connectors": ["gmail"]}),
     ],
 )
 async def test_a_new_run_takes_the_roles_settings(monkeypatch, tmp_path, role, expected):
@@ -81,12 +123,17 @@ async def test_a_new_run_takes_the_roles_settings(monkeypatch, tmp_path, role, e
     kwargs = captured[-1]
     for name in ("account_connectors", "contain_account_integrations"):
         assert kwargs.get(name) == expected.get(name)
+    argv = _codex_argv(kwargs)
+    if expected.get("contain_account_integrations") and not expected.get("account_connectors"):
+        assert _ACCOUNT_FEATURES <= _disabled_features(argv)
+    else:
+        assert not _ACCOUNT_FEATURES & _disabled_features(argv)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("role", "expected_connectors", "expected_containment"),
-    [(_GRANTING_ROLE, ["gmail"], True), (_PLAIN_ROLE, None, False)],
+    [(_GRANTING_ROLE, ["gmail"], True), (_PLAIN_ROLE, None, True), (_DISABLED_ROLE, None, False)],
 )
 async def test_a_resume_runs_with_the_roles_grant_not_the_stored_one(
     monkeypatch, tmp_path, role, expected_connectors, expected_containment
@@ -130,12 +177,31 @@ async def test_a_resumed_api_branch_takes_no_account_integration_settings(monkey
     assert not ({"contain_account_integrations", "account_connectors"} & set(captured[-1]))
 
 
+@pytest.mark.asyncio
+async def test_a_codex_launch_without_a_profile_is_contained(monkeypatch, tmp_path):
+    from lionagi.cli.agent import _run_agent
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent("codex/gpt-5.5", "do the thing")
+
+    argv = _codex_argv(captured[-1])
+    assert _ACCOUNT_FEATURES <= _disabled_features(argv)
+
+
 class _Reached(Exception):
     pass
 
 
 @pytest.mark.asyncio
-async def test_the_orchestrator_takes_its_roles_settings(monkeypatch):
+@pytest.mark.parametrize(
+    ("role_text", "expected_connectors", "expected_containment"),
+    [(_GRANTING_ROLE, ("gmail",), True), (_PLAIN_ROLE, (), True)],
+)
+async def test_the_orchestrator_takes_its_roles_settings(
+    monkeypatch, role_text, expected_connectors, expected_containment
+):
     import lionagi.cli.orchestrate._orchestration as orch_mod
     from lionagi.cli.orchestrate._orchestration import setup_orchestration
 
@@ -146,7 +212,7 @@ async def test_the_orchestrator_takes_its_roles_settings(monkeypatch):
         raise _Reached
 
     monkeypatch.setattr(
-        orch_mod, "load_agent_profile", lambda name, *a, **kw: _parse_profile(name, _GRANTING_ROLE)
+        orch_mod, "load_agent_profile", lambda name, *a, **kw: _parse_profile(name, role_text)
     )
     monkeypatch.setattr(orch_mod, "build_imodel_from_spec", _capture)
 
@@ -163,8 +229,13 @@ async def test_the_orchestrator_takes_its_roles_settings(monkeypatch):
             theme=None,
         )
 
-    assert seen["account_connectors"] == ("gmail",)
-    assert seen["contain_account_integrations"] is True
+    assert seen["account_connectors"] == expected_connectors
+    assert seen["contain_account_integrations"] is expected_containment
+    argv = _codex_argv(seen)
+    if expected_connectors:
+        assert not _ACCOUNT_FEATURES & _disabled_features(argv)
+    else:
+        assert _ACCOUNT_FEATURES <= _disabled_features(argv)
 
 
 _WORKER_PROFILE = SimpleNamespace(
@@ -174,26 +245,43 @@ _WORKER_PROFILE = SimpleNamespace(
     yolo=False,
     fast_mode=False,
     khive_injection=None,
+)
+
+_CONNECTOR_WORKER_PROFILE = SimpleNamespace(
+    raw_body=True,
+    system_prompt="You are a specialist.",
+    effort=None,
+    yolo=False,
+    fast_mode=False,
+    khive_injection=None,
     account_connectors=("gmail",),
-    contain_account_integrations=True,
 )
 
 
 @pytest.mark.parametrize(
-    ("bare", "connectors", "contained"),
-    [(False, ("gmail",), True), (True, (), False)],
+    ("bare", "profile", "connectors", "contained"),
+    [
+        (False, _WORKER_PROFILE, (), True),
+        (True, _WORKER_PROFILE, (), True),
+        (False, _CONNECTOR_WORKER_PROFILE, ("gmail",), False),
+    ],
 )
 def test_a_worker_takes_its_roles_settings_and_a_bare_worker_none(
-    tmp_path, bare, connectors, contained
+    tmp_path, bare, profile, connectors, contained
 ):
     _env, _imodel, built = _build_worker(
         tmp_path,
         agent_id="specialist",
         role="specialist",
         bare=bare,
-        profile=_WORKER_PROFILE,
+        profile=profile,
         provider="codex",
     )
     kwargs = built["imodel_kwargs"]
     assert kwargs["account_connectors"] == connectors
     assert kwargs["contain_account_integrations"] is contained
+    argv = _codex_argv(kwargs)
+    if connectors:
+        assert not _ACCOUNT_FEATURES & _disabled_features(argv)
+    else:
+        assert _ACCOUNT_FEATURES <= _disabled_features(argv)

@@ -1980,6 +1980,10 @@
       "layer": "root",
       "owner": "studio"
     },
+    "lionagi.studio.services.project_lookup": {
+      "layer": "root",
+      "owner": "studio"
+    },
     "lionagi.studio.services.projects": {
       "layer": "root",
       "owner": "studio"
@@ -2014,15 +2018,27 @@
       "owner": "studio",
       "target_owner": "lionhub.serve"
     },
+    "lionagi.studio.services.schedule_action_validation": {
+      "layer": "root",
+      "owner": "studio"
+    },
     "lionagi.studio.services.schedule_declaration": {
       "layer": "adapter",
       "owner": "scheduler",
       "target_owner": "lionhub.orchestration.schedule"
     },
+    "lionagi.studio.services.schedule_execution_root": {
+      "layer": "root",
+      "owner": "studio"
+    },
     "lionagi.studio.services.schedule_export": {
       "layer": "adapter",
       "owner": "scheduler",
       "target_owner": "lionhub.orchestration.schedule"
+    },
+    "lionagi.studio.services.schedule_timing": {
+      "layer": "root",
+      "owner": "studio"
     },
     "lionagi.studio.services.scheduler_state": {
       "layer": "adapter",

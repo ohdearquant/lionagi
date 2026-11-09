@@ -108,7 +108,6 @@ async def _cancel_while_worker_is_blocked(subject, probe, *, abandon):
 def _admin_subject(monkeypatch, tmp_path, site, probe):
     from lionagi.state import db as state_db
     from lionagi.state.reasons import SessionReasons
-    from lionagi.studio import config
     from lionagi.studio.services import admin, sessions
     from lionhub.serve import diagnostics
 
@@ -245,7 +244,9 @@ def _admin_subject(monkeypatch, tmp_path, site, probe):
     monkeypatch.setattr(admin, "resolve_process_liveness", dead)
     monkeypatch.setattr(admin, "db_health", lambda: {})
     monkeypatch.setattr(admin, "process_snapshot_diagnostics", lambda: {})
-    monkeypatch.setattr(config, "scheduler_timezone_report", lambda: {})
+    monkeypatch.setattr(
+        "lionagi.studio.services.schedule_timing.scheduler_timezone_report", lambda: {}
+    )
     if site != "identity":
         monkeypatch.setattr(admin, "_code_identity_report", no_identity)
     monkeypatch.setattr(admin, "_find_stale_lock", scan)

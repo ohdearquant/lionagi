@@ -204,6 +204,11 @@ def _attempts(path):
         ).fetchall()
 
 
+def _http_statuses(path):
+    with sqlite3.connect(path) as connection:
+        return connection.execute("SELECT http_status FROM attempt ORDER BY rowid").fetchall()
+
+
 def _cleanup_router():
     router_module._reset_router_test_dependencies()
 
@@ -1650,6 +1655,7 @@ async def test_stream_does_not_retry_after_yielding_a_chunk(monkeypatch, tmp_pat
     assert len(transport.calls) == 1
     row = _attempts(path)[0]
     assert row[2] == "open" and row[4] == "transport_error", row
+    assert _http_statuses(path) == [(200,)]
 
 
 @pytest.mark.asyncio
@@ -1759,6 +1765,75 @@ async def test_cancellation_settles_only_when_the_transport_was_not_entered(monk
         await task
     row = _attempts(path)[0]
     assert row[2:] == ("open", None, "cancelled")
+    assert _http_statuses(path) == [(None,)]
+
+
+@pytest.mark.asyncio
+async def test_a_routed_call_body_that_cannot_be_read_records_response_status(
+    monkeypatch, tmp_path
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+
+    class FailedBodyResponse(StubResponse):
+        def json(self):
+            raise httpx.ReadError("connection dropped while reading response")
+
+    model, transport = _model(monkeypatch, [FailedBodyResponse(), StubResponse()])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.endpoint.call(REQUEST)
+
+    # The provider answered 200, so the request ran: it is not sent again, and the
+    # attempt stays open as usage_incomplete with the status it received.
+    assert caught.value.code is RouterErrorCode.PROVIDER_ERROR
+    assert len(transport.calls) == 1
+    assert _attempts(path)[0][4] == "usage_incomplete"
+    assert _http_statuses(path) == [(200,)]
+
+
+@pytest.mark.asyncio
+async def test_a_routed_call_cancelled_while_reading_body_records_response_status(
+    monkeypatch, tmp_path
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+
+    class CancelledBodyResponse(StubResponse):
+        def json(self):
+            raise asyncio.CancelledError
+
+    model, transport = _model(monkeypatch, [CancelledBodyResponse()])
+
+    with pytest.raises(asyncio.CancelledError):
+        await model.endpoint.call(REQUEST)
+
+    assert _attempts(path)[0][4] == "cancelled"
+    assert _http_statuses(path) == [(200,)]
+
+
+@pytest.mark.asyncio
+async def test_a_routed_call_failing_after_a_response_records_response_status(
+    monkeypatch, tmp_path
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+
+    class UnreadRejectionResponse(StubResponse):
+        @property
+        def content(self):
+            raise httpx.ResponseNotRead()
+
+        @content.setter
+        def content(self, value):
+            pass
+
+    model, transport = _model(monkeypatch, [UnreadRejectionResponse(status=400), StubResponse()])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.endpoint.call(REQUEST)
+
+    assert caught.value.code is RouterErrorCode.TRANSPORT_ERROR
+    assert len(transport.calls) == 1
+    assert _attempts(path)[0][4] == "transport_error"
+    assert _http_statuses(path) == [(400,)]
 
 
 def _sse(events) -> bytes:
@@ -2601,6 +2676,7 @@ async def test_a_consumer_closing_the_stream_early_records_why(monkeypatch, tmp_
 
     row = _attempts(path)[0]
     assert row[2:] == ("open", None, "stream_closed")
+    assert _http_statuses(path) == [(200,)]
 
 
 @pytest.mark.asyncio
@@ -2631,6 +2707,40 @@ async def test_a_stream_cancelled_after_its_request_was_sent_records_why(monkeyp
 
     row = _attempts(path)[0]
     assert row[2:] == ("open", None, "cancelled")
+    assert _http_statuses(path) == [(200,)]
+
+
+@pytest.mark.asyncio
+async def test_a_stream_cancelled_while_waiting_for_headers_records_why(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    headers_waiting = asyncio.Event()
+    model, transport = _model(monkeypatch, [StubResponse()])
+
+    class HeaderWaitSession(StubSession):
+        @asynccontextmanager
+        async def stream(self, method, url, **kwargs):
+            response = self._request(method, url, **kwargs)
+            headers_waiting.set()
+            await asyncio.Event().wait()
+            yield response
+
+    model.endpoint._create_http_session = lambda client_kwargs=None, *, timeout=None: (
+        HeaderWaitSession(transport, timeout=timeout)
+    )
+
+    async def consume():
+        async for _ in model.endpoint.stream(REQUEST):
+            pass
+
+    task = asyncio.create_task(consume())
+    await headers_waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    row = _attempts(path)[0]
+    assert row[2:] == ("open", None, "cancelled")
+    assert _http_statuses(path) == [(None,)]
 
 
 def _text_block(index) -> dict:
@@ -3658,6 +3768,7 @@ async def test_a_pending_cancellation_is_delivered_after_a_transport_failure_is_
 
     attempt = _attempts(path)[-1]
     assert attempt[4] == "transport_error", attempt
+    assert _http_statuses(path)[-1] == (None,)
     assert _warm_rows(path) == []
 
 
@@ -3699,6 +3810,7 @@ async def test_a_cancellation_before_the_request_enters_leaves_the_warm_rows(
 
     assert len(_attempts(path)) == 2
     assert _attempts(path)[-1][4] != "transport_error"
+    assert _http_statuses(path)[-1] == (None,)
     assert _warm_rows(path) == rows
 
 
@@ -4674,12 +4786,12 @@ async def test_a_native_cancel_inside_a_stream_status_write_records_no_second_ou
     in_write = asyncio.Event()
     never_set = asyncio.Event()
 
-    async def hold_status_write(self, attempt, reason):
+    async def hold_status_write(self, attempt, reason, **kwargs):
         recorded.append(("settle_unknown", reason))
         in_write.set()
         await never_set.wait()
 
-    async def record_stream_end(self, attempt, usage, *, reason="usage_incomplete"):
+    async def record_stream_end(self, attempt, usage, *, reason="usage_incomplete", **kwargs):
         recorded.append(("settle_stream_end", reason))
 
     monkeypatch.setattr(router_module.AccountRouter, "settle_unknown", hold_status_write)
