@@ -1442,7 +1442,14 @@ class CredentialLedger:
                                 + evidence.counts.cache_write_5m_tokens
                                 + evidence.counts.cache_write_1h_tokens
                             )
-                            geo = max(revision.geo_multipliers.values())
+                            # The observed counts carry no region, so the usage is priced at
+                            # the highest regional multiplier, as the ceiling and the stored
+                            # rates are; the stored rates then reproduce the observed cost.
+                            geo_region = max(
+                                revision.geo_multipliers,
+                                key=lambda region: revision.geo_multipliers[region],
+                            )
+                            geo = revision.geo_multipliers[geo_region]
                             rates = (
                                 tier.input * geo,
                                 tier.read * geo,
@@ -1476,6 +1483,7 @@ class CredentialLedger:
                                     "ephemeral_1h_input_tokens": evidence.counts.cache_write_1h_tokens,
                                 },
                                 "output_tokens": evidence.counts.output_tokens,
+                                "inference_geo": geo_region,
                             }
                             priced = price_usage(
                                 revision,

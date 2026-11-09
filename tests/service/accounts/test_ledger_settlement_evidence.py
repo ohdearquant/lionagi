@@ -53,7 +53,7 @@ async def reserved(path: Path):
     return ledger, attempt
 
 
-def priced_revision(max_output: int = 2048, max_input: int = 10_000):
+def priced_revision(max_output: int = 2048, max_input: int = 10_000, geo_multipliers=None):
     rate = Fraction(1, 1000)
     tier = PriceTier(None, rate, rate, rate, rate, rate)
     return PriceRevision(
@@ -61,14 +61,19 @@ def priced_revision(max_output: int = 2048, max_input: int = 10_000):
         "2026-01-01",
         (),
         {"model-a": ModelPrice(max_input, max_output, (tier,))},
-        {None: Fraction(1, 1)},
+        geo_multipliers or {None: Fraction(1, 1)},
     )
 
 
 async def priced_reservation(
-    path: Path, *, max_output: int = 2048, max_input: int = 10_000, output_bound: int = 1024
+    path: Path,
+    *,
+    max_output: int = 2048,
+    max_input: int = 10_000,
+    output_bound: int = 1024,
+    geo_multipliers=None,
 ):
-    revision = priced_revision(max_output, max_input)
+    revision = priced_revision(max_output, max_input, geo_multipliers)
     quote = quote_ceiling(
         revision,
         json.dumps(
@@ -485,6 +490,59 @@ async def test_stream_estimate_recomputes_cost_before_writing(tmp_path):
     with pytest.raises(ValueError, match="recomputed"):
         await ledger.settle(attempt, estimate_value)
     assert stored_row(path, attempt) == before
+
+
+@pytest.mark.anyio
+async def test_stream_estimate_under_a_regional_multiplier_is_reproduced_by_its_stored_rates(
+    tmp_path,
+):
+    path = tmp_path / "ledger.sqlite3"
+    multipliers = {None: Fraction(1), "global": Fraction(1), "us": Fraction(11, 10)}
+    ledger, attempt, quote, _ = await priced_reservation(path, geo_multipliers=multipliers)
+    # Worked by hand: every rate is 1/1000 at the base, 11/10000 at the highest multiplier.
+    applied = Fraction(11, 10000)
+    counts = UsageCounts(4000, 0, 0, 0, 1000)
+    observed = 6  # ceil(5000 * 11/10000) = ceil(5.5); the base multiplier would give 5
+    margin_tokens = 1024  # max(1024, ceil(1000 / 10))
+    assert quote.pricing_inputs.output_rate_max == Rate(11, 10000)
+    margin = 2  # ceil(1024 * 11/10000) = ceil(1.1264)
+    rate = Rate(applied.numerator, applied.denominator)
+    value = StreamUsageEstimate(
+        "stream_closed",
+        "model-a",
+        counts,
+        None,
+        quote.pricing_inputs,
+        "reservation",
+        UsageRates(rate, rate, rate, rate, rate),
+        observed,
+        margin_tokens,
+        margin,
+        observed + margin,
+    )
+
+    await ledger.settle(attempt, value)
+
+    with sqlite3.connect(path) as db:
+        cost, outcome, raw = db.execute(
+            "SELECT cost_nusd, outcome, settlement_evidence_json FROM attempt WHERE id=?",
+            (str(attempt),),
+        ).fetchone()
+    assert (cost, outcome) == (8, "stream_usage_estimate")
+    evidence = json.loads(raw)["evidence"]
+    stored_rates = {
+        name: Fraction(pair["numerator"], pair["denominator"])
+        for name, pair in evidence["rates"].items()
+    }
+    counted = evidence["counts"]
+    reproduced = (
+        counted["input_tokens"] * stored_rates["input"]
+        + counted["cache_read_input_tokens"] * stored_rates["cache_read"]
+        + counted["cache_write_5m_tokens"] * stored_rates["cache_write_5m"]
+        + counted["cache_write_1h_tokens"] * stored_rates["cache_write_1h"]
+        + counted["output_tokens"] * stored_rates["output"]
+    )
+    assert -(-reproduced.numerator // reproduced.denominator) == evidence["observed_cost_nusd"]
 
 
 @pytest.mark.anyio
