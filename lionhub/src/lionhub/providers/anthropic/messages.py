@@ -291,15 +291,26 @@ def _settlement_reading(event: Any) -> dict | None:
 
 
 class _AccountingStreamParser:
-    """Read billing fields from complete UTF-8 server-sent events."""
+    """Read billing fields from the stream's raw bytes, framed as the endpoint frames them.
 
-    def __init__(self, key) -> None:
+    Events are delimited by the endpoint's own server-sent-event framer (``framer``'s
+    ``_frame_stream_line`` and ``_take_sse_event``), so the events read here for billing
+    are exactly the events the consumer receives, whatever separators the stream uses.
+    """
+
+    def __init__(self, key, framer) -> None:
         import codecs
+
+        from lionagi.service.connections.endpoint import (
+            _SSE_CALL_FAILURE_NAMES,
+            _event_reports_call_failure,
+            _SSEFrame,
+        )
 
         self.decoder = codecs.getincrementaldecoder("utf-8")()
         self.pending = ""
-        self.data: list[str] = []
-        self.event_name = None
+        self.frame = _SSEFrame()
+        self.framer = framer
         self.key = key
         self.model = None
         self.models: set[str] = set()
@@ -309,51 +320,47 @@ class _AccountingStreamParser:
         self.output_valid = False
         self.message_stop = False
         self.saw_error = False
-        from lionagi.service.connections.endpoint import (
-            _SSE_CALL_FAILURE_NAMES,
-            _event_reports_call_failure,
-        )
-
         self._failure_names = _SSE_CALL_FAILURE_NAMES
         self._reports_failure = _event_reports_call_failure
 
-    def feed(self, raw: bytes, *, final: bool = False) -> list[dict]:
-        self.pending += self.decoder.decode(raw, final=final)
+    def feed(self, raw: bytes) -> list[dict]:
+        """The events the complete lines of ``raw`` finish."""
+        self.pending += self.decoder.decode(raw)
         events = []
         while "\n" in self.pending:
             line, self.pending = self.pending.split("\n", 1)
-            line = line.removesuffix("\r")
-            if not line:
-                event = self._finish_event()
-                if event is not None:
-                    events.append(event)
-            elif line.startswith("data:"):
-                self.data.append(line[5:].lstrip(" "))
-            elif line.startswith("event:"):
-                self.event_name = line[6:].strip() or None
-        if final:
-            self.pending = ""
+            events.extend(self._events(self.framer._frame_stream_line(line, self.frame)))
         return events
 
-    def _finish_event(self):
-        if not self.data:
-            self.event_name = None
-            return None
-        payload = "\n".join(self.data)
-        self.data.clear()
-        try:
-            event = json.loads(payload)
-        except (TypeError, ValueError):
-            event = None
-        name = self.event_name
-        self.event_name = None
-        if isinstance(event, dict):
-            if name == "error":
-                event = {**event, "type": "error"}
-            elif (event.get("type") is None or "type" not in event) and name:
-                event = {**event, "type": name}
-            return {**event, "_accounting_sse_event": name}
-        return {"type": name, "_invalid": True, "_accounting_sse_event": name} if name else None
+    def finish(self) -> list[dict]:
+        """The events a clean end of stream completes: the last line and the held event.
+
+        Called only when the byte source ended without an error; after a transport failure
+        an unterminated line or event is a truncated event and contributes nothing.
+        """
+        self.pending += self.decoder.decode(b"", final=True)
+        framed = self.framer._frame_stream_line(self.pending, self.frame) if self.pending else []
+        self.pending = ""
+        if self.frame.data:
+            framed.append(self.framer._take_sse_event(self.frame))
+        return self._events(framed)
+
+    def _events(self, framed) -> list[dict]:
+        events = []
+        for payload, name in framed:
+            try:
+                event = json.loads(payload)
+            except (TypeError, ValueError):
+                event = None
+            if isinstance(event, dict):
+                if name == "error":
+                    event = {**event, "type": "error"}
+                elif event.get("type") is None and name:
+                    event = {**event, "type": name}
+                events.append({**event, "_accounting_sse_event": name})
+            elif name:
+                events.append({"type": name, "_invalid": True, "_accounting_sse_event": name})
+        return events
 
     def observe(self, event: dict) -> None:
         if event.get("_accounting_sse_event") in self._failure_names or self._reports_failure(
@@ -1050,7 +1057,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         # The same SSE framing as the unrouted stream, so an event keeps its ``event:``
         # name and an ``event: error`` fails the call here as it does there.
         frame = _SSEFrame()
-        accounting = _AccountingStreamParser(attempt.key)
+        accounting = _AccountingStreamParser(attempt.key, type(self))
         settled = False  # set before each settlement write, so no handler writes a second
         settlement_write = False
 
@@ -1318,8 +1325,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         except Exception as error:
                             transport_error = error
                             break
-                        accounting_events = accounting.feed(raw)
-                        for accounting_event in accounting_events:
+                        for accounting_event in accounting.feed(raw):
                             accounting.observe(accounting_event)
                             if accounting_event.get("type") == "message_stop" and not settled:
                                 terminal = accounting_usage()
@@ -1334,6 +1340,18 @@ class AnthropicMessagesEndpoint(Endpoint):
                             for data, name in self._frame_stream_line(line, frame):
                                 async for chunk in emit_ready(queue_data(data, name)):
                                     yield chunk
+                    if transport_error is None:
+                        # A clean end completes the last line and any held event, exactly as
+                        # the endpoint framer does below; a message_stop among them settles
+                        # before any of that output is yielded.
+                        for accounting_event in accounting.finish():
+                            accounting.observe(accounting_event)
+                            if accounting_event.get("type") == "message_stop" and not settled:
+                                terminal = accounting_usage()
+                                settled = True
+                                await router.settle_stream_end(
+                                    attempt, terminal, http_status=status
+                                )
                     if transport_error is not None and not settled:
                         # Settled before the first await after the failure, so a cancellation
                         # arriving now finds it settled and cannot record it as cancelled.

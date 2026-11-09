@@ -2450,7 +2450,7 @@ async def test_held_thinking_reaches_the_consumer_before_the_blocks_signature(
                 + json.dumps({"type": "error", "error": {"type": "overloaded_error"}}).encode()
                 + b"\n"
             ],
-            "stream_truncated",
+            "stream_error",
         ),
     ],
 )
@@ -5460,3 +5460,34 @@ async def test_a_cancellation_at_the_transport_failure_keeps_the_transport_reaso
         ).fetchone()[0]
     assert json.loads(raw)["evidence"]["original_reason"] == "transport_error"
     assert _warm_rows(path) == []
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        pytest.param(
+            lambda events: b"".join(b"data: " + json.dumps(e).encode() + b"\n" for e in events),
+            id="single_newlines",
+        ),
+        pytest.param(lambda events: _sse(events)[:-1], id="no_final_blank_line"),
+        pytest.param(lambda events: _sse(events)[:-2], id="no_final_newline"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_complete_stream_settles_exactly_whatever_its_event_separators(
+    monkeypatch, tmp_path, framing
+):
+    """Billing reads the events the consumer receives: a stream the consumer reads to its
+    message_stop settles at its exact usage however its events are separated."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    events = [_HOUR_MESSAGE_START, _FINAL_COUNT, _MESSAGE_STOP]
+    model, _ = _model(
+        monkeypatch,
+        [StubResponse(pieces=[_sse(events)]), StubResponse(pieces=[framing(events)])],
+    )
+    control = [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    framed = [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    assert [chunk.type for chunk in framed] == [chunk.type for chunk in control]
+    expected, row = _attempts(path)
+    assert expected[2] == "settled" and expected[4] == "complete", expected
+    assert row[2:] == expected[2:], (row, expected)
