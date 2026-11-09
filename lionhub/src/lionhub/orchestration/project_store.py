@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._db import open_db as _open_db
-from ._db import require_file_store, store_exists, store_path
+from lionhub.orchestration.state_store import open_db as _open_db
+from lionhub.orchestration.state_store import require_file_store, store_exists, store_path
 
 _ENSURE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS projects (

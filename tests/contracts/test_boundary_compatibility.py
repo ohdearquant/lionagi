@@ -108,7 +108,11 @@ def _surface(root):
     public_definitions = {}
     environment_lookups = {}
     moved_modules = None
-    for path in sorted((root / "lionagi").rglob("*.py")):
+    # The hub package carries modules moved out of lionagi; its exports, definitions and
+    # environment reads are part of the same compatibility surface.
+    hub = root / "lionhub/src/lionhub"
+    paths = [*(root / "lionagi").rglob("*.py"), *(hub.rglob("*.py") if hub.is_dir() else ())]
+    for path in sorted(paths):
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(path))
         alias_mappings = _getattr_alias_mappings(tree)
@@ -304,3 +308,20 @@ def test_surface_extraction_detects_declaration_changes(tmp_path):
     changed = _surface(tmp_path)
     assert changed["extras"] != original["extras"]
     assert changed["console_scripts"] != original["console_scripts"]
+
+
+def test_surface_extraction_reads_hub_modules(tmp_path):
+    package = tmp_path / "lionagi"
+    package.mkdir()
+    (package / "config.py").write_text("class AppSettings:\n    pass\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    hub = tmp_path / "lionhub/src/lionhub/orchestration"
+    hub.mkdir(parents=True)
+    module = hub / "service.py"
+    module.write_text('def run():\n    return os.environ.get("EXAMPLE_ROOT")\n', encoding="utf-8")
+    surface = _surface(tmp_path)
+    key = "lionhub/src/lionhub/orchestration/service.py"
+    assert surface["environment_lookups"][key] == ['os.environ.get:"EXAMPLE_ROOT"']
+    assert surface["public_definitions"][key] == ["run"]
+    module.write_text('def run():\n    return os.environ.get("OTHER_ROOT")\n', encoding="utf-8")
+    assert _surface(tmp_path)["environment_lookups"] != surface["environment_lookups"]

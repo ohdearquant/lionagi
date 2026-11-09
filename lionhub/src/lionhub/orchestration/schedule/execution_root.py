@@ -67,7 +67,7 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
 
     action_project = schedule.get("action_project")
     if action_project:
-        from lionagi.studio.services.project_lookup import get_project
+        from lionhub.orchestration.project_store import get_project
 
         project = await get_project(action_project)
         if project:

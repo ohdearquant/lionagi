@@ -39,18 +39,6 @@ from lionagi.studio.scheduler.signals import (
     record_handler_failure,
     register_default_handlers,
 )
-from lionagi.studio.services._schedule_validation import merged_page_limit, validate_rate_limit
-from lionagi.studio.services.schedule_action_validation import validate_launch_fields
-from lionagi.studio.services.schedule_execution_root import (
-    SchedulerCwdInheritRefusedError,
-    _is_usable_execution_root,
-    _resolve_action_cwd,
-)
-from lionagi.studio.services.schedule_timing import (
-    ScheduleTimezone,  # noqa: F401
-    resolve_schedule_cadence_seconds,
-    resolve_schedule_timezone,
-)
 from lionagi.studio.services.scheduler_state import (
     SchedulerStateService,
     _DBSchedulerStateService,
@@ -59,11 +47,23 @@ from lionagi.studio.services.scheduler_state import (
     flush_run_telemetry,
     resolve_invocation_terminal,
 )
+from lionhub.orchestration.schedule.action_validation import validate_launch_fields
+from lionhub.orchestration.schedule.execution_root import (
+    SchedulerCwdInheritRefusedError,
+    _is_usable_execution_root,
+    _resolve_action_cwd,
+)
 from lionhub.orchestration.schedule.parsing import (
     _MAX_CHAIN_DEPTH,
     _chain_action_with_usable_selected_kind,
     _merge_chain_action,
 )
+from lionhub.orchestration.schedule.timing import (
+    ScheduleTimezone,  # noqa: F401
+    resolve_schedule_cadence_seconds,
+    resolve_schedule_timezone,
+)
+from lionhub.orchestration.schedule.validation import merged_page_limit, validate_rate_limit
 
 _log = logging.getLogger(__name__)
 
@@ -566,7 +566,7 @@ class SchedulerEngine:
 
     def _log_scheduler_timezone(self) -> None:
         """Say the effective cron timezone out loud, once, at startup."""
-        from lionagi.studio.services.schedule_timing import (
+        from lionhub.orchestration.schedule.timing import (
             TZ_UTC_FALLBACK_SOURCES,
             scheduler_timezone_report,
         )
@@ -632,7 +632,7 @@ class SchedulerEngine:
             if s.get("action_cwd") is not None or not s.get("action_project"):
                 continue
             try:
-                from lionagi.studio.services.project_lookup import get_project
+                from lionhub.orchestration.project_store import get_project
 
                 project = await get_project(s["action_project"])
                 path = project.get("path") if project else None
@@ -699,7 +699,7 @@ class SchedulerEngine:
             schedule["id"], next_fire_at=new, **self._effective_timezone_fields(schedule)
         )
         if old is not None:
-            from lionagi.studio.services.schedule_timing import SCHEDULER_TZ
+            from lionhub.orchestration.schedule.timing import SCHEDULER_TZ
 
             _log.info(
                 "next_fire_at shifted for schedule %s (%s): %s -> %s (tz=%s)",

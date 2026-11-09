@@ -23,30 +23,14 @@ import pytest
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient  # noqa: E402
+from lionhub_tests.orchestration._test_support_state_store import _configure, _run
 
 import lionagi.state.db as state_db_mod  # noqa: E402
 from lionagi.state.db import StateDB  # noqa: E402
-from lionagi.studio.services._db import (  # noqa: E402
+from lionhub.orchestration.state_store import (  # noqa: E402
     StoreNotAddressableError,
     require_file_store,
 )
-
-
-def _run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-
-def _configure(monkeypatch, *, default: Path, url: str | None) -> None:
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", default)
-    monkeypatch.setattr(
-        state_db_mod,
-        "settings",
-        state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": url}),
-    )
 
 
 def _client(*, raise_server_exceptions: bool = True) -> TestClient:
@@ -58,43 +42,6 @@ def _client(*, raise_server_exceptions: bool = True) -> TestClient:
 
 
 # ── require_file_store(): the three states ──────────────────────────────────
-
-
-def test_existing_store_path_does_not_raise(tmp_path, monkeypatch):
-    """The accept arm: an existing file-backed store is left alone."""
-    default = tmp_path / "state.db"
-    _run(StateDB(default).open())
-    _configure(monkeypatch, default=default, url=None)
-
-    require_file_store()  # must not raise
-
-
-def test_missing_store_file_does_not_raise(tmp_path, monkeypatch):
-    """A store that simply has not been created yet is not the same as one
-    this layer cannot reach -- the existing empty-result behavior stays."""
-    default = tmp_path / "state.db"
-    _configure(monkeypatch, default=default, url=None)
-    assert not default.exists()
-
-    require_file_store()  # must not raise
-
-
-def test_server_backed_store_raises(tmp_path, monkeypatch):
-    default = tmp_path / "state.db"
-    _configure(monkeypatch, default=default, url="postgresql://user:secret@host/db")
-
-    with pytest.raises(StoreNotAddressableError) as exc_info:
-        require_file_store()
-    assert exc_info.value.backend == "postgresql"
-
-
-def test_in_memory_store_raises(tmp_path, monkeypatch):
-    default = tmp_path / "state.db"
-    _configure(monkeypatch, default=default, url=":memory:")
-
-    with pytest.raises(StoreNotAddressableError) as exc_info:
-        require_file_store()
-    assert "memory" in exc_info.value.backend
 
 
 # ── The app-level 501 handler, on a representative route ────────────────────

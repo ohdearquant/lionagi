@@ -404,7 +404,7 @@ def test_quick_create_duplicate_name_rejected(temp_db_path, agent_profile, capsy
 def test_apply_collides_with_quick_created_schedule(temp_db_path, agent_profile):
     """A later ScheduleSet apply targeting the same qualified name as a
     CLI quick-create row must still hit the ownership-collision guard."""
-    from lionagi.studio.services.schedule_declaration import (
+    from lionhub.orchestration.schedule.declaration import (
         ScheduleSetError,
         apply_schedule_set,
         parse_schedule_set,

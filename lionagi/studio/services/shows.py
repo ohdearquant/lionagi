@@ -14,17 +14,17 @@ from lionagi.libs.path_safety import safe_join
 from lionagi.ln import coerce_created_at
 from lionagi.ln.concurrency import sleep
 from lionagi.state.session_naming import resolve_display_name
-
-from ..config import SHOWS_ROOT
-from ..registry import studio_route
-from ._db import (
+from lionhub.orchestration.state_store import (
     StoreNotAddressableError,
     require_file_store,
     store_exists,
     store_path,
     table_columns,
 )
-from ._db import open_db as _open_db
+from lionhub.orchestration.state_store import open_db as _open_db
+
+from ..config import SHOWS_ROOT
+from ..registry import studio_route
 from ._io import read_json_file as _read_json
 from ._io import read_json_file_checked as _read_json_checked
 from ._path_safety import public_path, safe_path_join

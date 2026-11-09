@@ -72,7 +72,7 @@ async def operator_startup() -> list[str]:
     have answered is never reached. A subsystem that cannot run must not take
     the ones that can down with it.
     """
-    from ._db import StoreNotAddressableError, require_file_store
+    from lionhub.orchestration.state_store import StoreNotAddressableError, require_file_store
 
     try:
         require_file_store()

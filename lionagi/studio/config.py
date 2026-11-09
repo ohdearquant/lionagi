@@ -5,10 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# The preview limit is read in one place so the mirror service and the studio agree on it.
-from lionhub.serve.mirror_settings import MIRROR_PREVIEW_CHARS  # noqa: F401
-
-from .services.schedule_timing import (
+from lionhub.orchestration.schedule.timing import (
     _SCHEDULER_TZ_RESOLUTION,  # noqa: F401
     SCHEDULER_TZ,  # noqa: F401
     SCHEDULER_TZ_ENV_VAR,  # noqa: F401
@@ -42,6 +39,9 @@ from .services.schedule_timing import (
     _zone_name_from_path,  # noqa: F401
     scheduler_timezone_report,  # noqa: F401
 )
+
+# The preview limit is read in one place so the mirror service and the studio agree on it.
+from lionhub.serve.mirror_settings import MIRROR_PREVIEW_CHARS  # noqa: F401
 
 STUDIO_PORT: int = int(os.environ.get("LIONAGI_STUDIO_PORT", "8765"))
 HOST: str = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")

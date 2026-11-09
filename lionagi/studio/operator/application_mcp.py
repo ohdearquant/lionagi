@@ -659,7 +659,7 @@ async def list_sessions(arguments: dict[str, Any]) -> dict[str, Any]:
     args = ListSessionsInput.model_validate(arguments)
     from lionagi.studio.services import runs as runs_service
     from lionagi.studio.services import sessions as sessions_service
-    from lionagi.studio.services._db import store_exists
+    from lionhub.orchestration.state_store import store_exists
 
     # The carrier answers an absent store with an empty list, so without this
     # check a store that cannot be read is indistinguishable from a store with
@@ -757,7 +757,7 @@ async def session_detail(arguments: dict[str, Any]) -> dict[str, Any]:
 async def session_signals(arguments: dict[str, Any]) -> dict[str, Any]:
     args = SessionSignalsInput.model_validate(arguments)
     from lionagi.studio.services import signals as signals_service
-    from lionagi.studio.services._db import store_exists
+    from lionhub.orchestration.state_store import store_exists
 
     # Same reason as list_sessions: the carrier returns an empty page both for a
     # session with no signals and for a store it could not open.

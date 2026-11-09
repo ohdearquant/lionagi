@@ -10,8 +10,8 @@ from typing import Any
 
 import aiosqlite
 
-from ._db import open_db as _open_db
-from ._db import require_file_store, store_exists, store_path
+from lionhub.orchestration.state_store import open_db as _open_db
+from lionhub.orchestration.state_store import require_file_store, store_exists, store_path
 
 __all__ = ("get_signals_after",)
 

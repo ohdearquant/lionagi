@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from lionagi.studio._timezone_rules import MAX_TZIF_BYTES, read_tzif, rules_equal, tzif_rules
+from lionhub.orchestration.schedule._timezone_rules import (
+    MAX_TZIF_BYTES,
+    read_tzif,
+    rules_equal,
+    tzif_rules,
+)
 
 _logger = logging.getLogger("lionagi.studio.config")
 
