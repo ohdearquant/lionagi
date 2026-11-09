@@ -11,7 +11,8 @@ from lionhub.orchestration.schedule.action_validation import (
     _validate_playbook_args,
     validate_launch_fields,
 )
-from lionhub_tests.orchestration.schedule._test_support_play_launch_args import (
+
+from ._test_support_play_launch_args import (
     _play_schedule,
 )
 
@@ -39,7 +40,7 @@ class TestBuildArgvPlay:
 import os
 import shlex
 
-from lionhub_tests.orchestration.schedule._test_support_command_action_kind import (
+from ._test_support_command_action_kind import (
     ALLOWLIST_ENV,
 )
 

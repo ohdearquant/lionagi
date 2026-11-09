@@ -12,8 +12,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-pytest_plugins = ("lionhub_tests.orchestration.schedule._test_support_schedule_export",)
 import yaml
 
 from lionagi.state.db import StateDB
@@ -33,9 +31,14 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 pytest.importorskip("croniter", reason="studio extra not installed")
 
-from lionhub_tests.orchestration.schedule._test_support_schedule_export import (
+from . import _test_support_schedule_export as _support
+from ._test_support_schedule_export import (
     _legacy_row,
 )
+
+# Fixtures shared with the support module, bound here so they apply to this module only.
+agent_profile = _support.agent_profile
+temp_db_path = _support.temp_db_path
 
 
 @pytest.mark.asyncio

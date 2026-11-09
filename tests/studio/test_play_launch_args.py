@@ -6,9 +6,6 @@ plus the Operator's placeholder guard."""
 from __future__ import annotations
 
 import pytest
-
-pytest_plugins = ("lionhub_tests.orchestration.schedule._test_support_play_launch_args",)
-
 from lionhub_tests.orchestration.schedule._test_support_play_launch_args import (
     _play_schedule,
 )

@@ -12,9 +12,6 @@ import shlex
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-pytest_plugins = ("lionhub_tests.orchestration.schedule._test_support_command_action_kind",)
-
 from lionhub_tests.orchestration.schedule._test_support_command_action_kind import (
     ALLOWLIST_ENV,
 )

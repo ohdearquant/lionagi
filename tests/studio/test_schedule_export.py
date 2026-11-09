@@ -14,15 +14,18 @@ from pathlib import Path
 
 import pytest
 
-pytest_plugins = ("lionhub_tests.orchestration.schedule._test_support_schedule_export",)
-
 pytest.importorskip("fastapi", reason="studio extra not installed")
 pytest.importorskip("croniter", reason="studio extra not installed")
 
 import yaml
+from lionhub_tests.orchestration.schedule import _test_support_schedule_export as _support
 from lionhub_tests.orchestration.schedule._test_support_schedule_export import (
     _legacy_row,
 )
+
+# Fixtures shared with the support module, bound here so they apply to this module only.
+agent_profile = _support.agent_profile
+temp_db_path = _support.temp_db_path
 
 from lionagi.state.db import StateDB
 from lionhub.orchestration.schedule.declaration import (

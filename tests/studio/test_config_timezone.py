@@ -26,14 +26,15 @@ from importlib import resources
 from pathlib import Path
 
 import pytest
-
-pytest_plugins = ("lionhub_tests.orchestration.schedule._test_support_config_timezone",)
-
+from lionhub_tests.orchestration.schedule import _test_support_config_timezone as _support
 from lionhub_tests.orchestration.schedule._test_support_config_timezone import (
     _HOST_TZPATH,
     _Blocked,
     _host_zone_bytes,
 )
+
+# Fixtures shared with the support module, bound here so they apply to this module only.
+tz_host = _support.tz_host
 
 import lionhub.orchestration.schedule.timing as config
 

@@ -19,7 +19,8 @@ from lionhub.orchestration.state_store import (
     store_exists,
     store_path,
 )
-from lionhub_tests.orchestration._test_support_state_store import (
+
+from ._test_support_state_store import (
     ENV,
     _configure,
     _run,

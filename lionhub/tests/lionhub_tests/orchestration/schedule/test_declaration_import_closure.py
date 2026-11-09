@@ -10,7 +10,7 @@ import subprocess
 import sys
 import textwrap
 
-from lionhub_tests.orchestration.schedule._test_support_schedule_service_import_closure import (
+from ._test_support_schedule_service_import_closure import (
     _BLOCKER,
     REPO_ROOT,
     _run_child,

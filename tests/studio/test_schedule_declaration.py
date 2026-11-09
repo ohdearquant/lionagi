@@ -14,11 +14,10 @@ from pathlib import Path
 
 import pytest
 
-pytest_plugins = ("lionhub_tests.orchestration.schedule._test_support_schedule_declaration",)
-
 pytest.importorskip("fastapi", reason="studio extra not installed")
 pytest.importorskip("croniter", reason="studio extra not installed")
 
+from lionhub_tests.orchestration.schedule import _test_support_schedule_declaration as _support
 from lionhub_tests.orchestration.schedule._test_support_schedule_declaration import (
     _AGENT_TARGET_BLOCK,
     _DIFFERING_ROW_OVERRIDES,
@@ -33,6 +32,11 @@ from lionhub_tests.orchestration.schedule._test_support_schedule_declaration imp
     _table_kind_cases,
     _table_trigger_cases,
 )
+
+# Fixtures shared with the support module, bound here so they apply to this module only.
+agent_profile = _support.agent_profile
+pinned_scheduler_tz = _support.pinned_scheduler_tz
+temp_db_path = _support.temp_db_path
 from pydantic import ValidationError
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
