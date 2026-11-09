@@ -1046,7 +1046,7 @@ async def _adoption_execution_root(
     schedule: dict[str, Any],
 ) -> tuple[tuple[str, ...], str | None, str]:
     """Resolve the root a schedule subprocess would inherit from the engine."""
-    from lionagi.studio.scheduler.engine import (
+    from lionagi.studio.services.schedule_execution_root import (
         SchedulerCwdInheritRefusedError,
         _resolve_action_cwd,
     )
@@ -1160,7 +1160,7 @@ def row_cron_timezone(row: dict[str, Any]) -> str | None:
     share, so the zone the scheduler last recorded on the row stands for it.
     None when the row stores no zone and no scheduler has recorded one.
     """
-    from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+    from lionagi.studio.services.schedule_timing import resolve_schedule_timezone
 
     if row.get("resolved_timezone"):
         return resolve_schedule_timezone(row).name
@@ -1168,7 +1168,7 @@ def row_cron_timezone(row: dict[str, Any]) -> str | None:
 
 
 def _adopt_timezone_pair(row: dict[str, Any], declared: Any) -> tuple[str | None, str]:
-    from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+    from lionagi.studio.services.schedule_timing import resolve_schedule_timezone
 
     return (
         row_cron_timezone(row),
@@ -1184,7 +1184,7 @@ def _adopt_unconfirmed_recorded_zone(row: dict[str, Any]) -> tuple[str, str] | N
     this process may be configured differently from the scheduler, so adoption
     pins a zone only when both say the same one.
     """
-    from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+    from lionagi.studio.services.schedule_timing import resolve_schedule_timezone
 
     recorded = row.get("effective_timezone")
     if row.get("resolved_timezone") or not recorded:
@@ -1263,7 +1263,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
     if name == "interval_sec":
         trigger_type = schedule.get("trigger_type")
         if trigger_type == "github_poll":
-            from lionagi.studio.scheduler.engine import resolve_schedule_cadence_seconds
+            from lionagi.studio.services.schedule_timing import resolve_schedule_cadence_seconds
 
             return resolve_schedule_cadence_seconds({**schedule, "interval_sec": value})
         # Only an interval or github_poll trigger reads the interval.
