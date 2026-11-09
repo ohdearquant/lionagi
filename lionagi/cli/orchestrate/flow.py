@@ -41,7 +41,12 @@ from lionhub.orchestration.flow.checkpoint import (
     resolve_checkpoint_target,
 )
 from lionhub.orchestration.job import classify_exception
-from lionhub.orchestration.spawn import _PROFILE_TOOL_FIELDS, _is_light_codex, parse_model_spec
+from lionhub.orchestration.spawn import (
+    _PROFILE_TOOL_FIELDS,
+    _is_light_codex,
+    parse_model_spec,
+    strip_connector_grant,
+)
 
 from .._agent_depth import stamp_worker_depth
 from ._common import (
@@ -1426,7 +1431,12 @@ def _reconstruct_spawned_nodes(
             # Reconstructed nodes are already in the graph, so the reactive spawn
             # callback never runs. Give this retry its own contained branch rather
             # than reusing the (possibly unrestricted) role or orchestrator.
+            cloned_orchestrator = role_branch is None
             role_branch = (role_branch or env.orc_branch).clone()
+            if cloned_orchestrator:
+                model = getattr(role_branch, "chat_model", None)
+                if model is not None:
+                    strip_connector_grant(model.endpoint.config.kwargs)
             role_branch.metadata["mcp_launch"] = {
                 "mcp_config": None,
                 "no_mcp_config": True,
@@ -1447,6 +1457,25 @@ def _reconstruct_spawned_nodes(
                 )
                 _hand_mcp_servers(model, {}, label=spawn_id or node_id, exclusive=True)
             env.session.include_branches(role_branch)
+            persisting = getattr(env, "_live_persist", None)
+            if persisting:
+                # The executor skips a node that already has a branch, so it never
+                # registers this copy; without the hook its messages and usage go
+                # unrecorded.
+                register_branch_hook(persisting, role_branch)
+        elif role_branch is None and node.execution.status == EventStatus.PENDING:
+            orc_branch = getattr(env, "orc_branch", None)
+            orc_model = getattr(orc_branch, "chat_model", None)
+            if orc_model is not None and orc_model.endpoint.config.kwargs.get("account_connectors"):
+                # With no branch the executor runs this node on a plain copy of the
+                # orchestrator, which keeps the orchestrator's connector grant. Give it a
+                # copy without the grant, contained as the other clones are.
+                role_branch = orc_branch.clone()
+                strip_connector_grant(role_branch.chat_model.endpoint.config.kwargs)
+                env.session.include_branches(role_branch)
+                persisting = getattr(env, "_live_persist", None)
+                if persisting:
+                    register_branch_hook(persisting, role_branch)
         if role_branch is not None:
             node.branch_id = role_branch.id
         built[node_id] = node
@@ -2504,7 +2533,7 @@ async def _execute_dag(
         servers, exclusive = _worker_mcp_hand_off(worker_mcp_servers, contained=contained)
         _hand_mcp_servers(chat_model, servers, label=spawn_id, exclusive=exclusive)
         kwargs = chat_model.endpoint.config.kwargs
-        kwargs.pop("account_connectors", None)
+        strip_connector_grant(kwargs)
         # A clone of the orchestrator's branch takes the class of the worker that
         # asked for it, recorded by _build_spawn_node, so a light worker cannot
         # obtain a heavy agent. The orchestrator's own class confines only its own

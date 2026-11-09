@@ -192,7 +192,9 @@ async def test_a_resume_drops_the_stored_containment_whatever_the_codex_spelling
 
     resumed_on, kwargs = captured[-1]
     assert resumed_on == provider
-    assert "contain_account_integrations" not in kwargs
+    # The stored kwargs are not replayed: a launch with no role resolves containment
+    # the way every codex launch does, so the value comes from this launch.
+    assert kwargs.get("contain_account_integrations") is True
     assert kwargs.get("workload") is None
 
 

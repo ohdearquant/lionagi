@@ -64,6 +64,8 @@ research body
 
     assert catalog["web-research/researcher"] == {
         "bypass": False,
+        # A codex profile reports the containment it launches with, set or not.
+        "contain_account_integrations": True,
         "effort": "high",
         "fast_mode": False,
         "khive_injection": None,

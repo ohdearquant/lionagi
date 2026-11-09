@@ -23,13 +23,35 @@ def _profile(frontmatter: str) -> AgentProfile:
     return _parse_profile("role", f"---\nmodel: codex/gpt-5.5\n{frontmatter}---\n\nBody.\n")
 
 
-def test_profile_without_either_field_reports_what_it_did_before():
+def test_a_codex_profile_without_either_field_reports_the_containment_it_gets():
     profile = _profile("")
-    assert profile.contain_account_integrations is False
+    # The profile leaves the key unset; its launches are contained, and discovery says so.
+    assert profile.contain_account_integrations is None
     assert profile.account_connectors == ()
     config = profile_config(profile)
-    assert "contain_account_integrations" not in config
+    assert config["contain_account_integrations"] is True
     assert "account_connectors" not in config
+
+
+def test_a_codex_profile_naming_connectors_reports_it_is_not_contained():
+    config = profile_config(_profile("account_connectors: [gmail]\n"))
+    assert config["contain_account_integrations"] is False
+    assert config["account_connectors"] == ["gmail"]
+
+
+def test_a_keyless_bare_codex_profile_reports_containment():
+    profile = _parse_profile("role", "---\nmodel: codex\n---\n\nBody.\n")
+    assert profile_config(profile)["contain_account_integrations"] is True
+
+
+@pytest.mark.parametrize("model", ["claude_code/haiku", "gpt-5"])
+def test_another_profile_reports_containment_only_when_it_sets_it(model):
+    profile = _parse_profile("role", f"---\nmodel: {model}\n---\n\nBody.\n")
+    assert "contain_account_integrations" not in profile_config(profile)
+    profile = _parse_profile(
+        "role", f"---\nmodel: {model}\ncontain_account_integrations: false\n---\n\nBody.\n"
+    )
+    assert profile_config(profile)["contain_account_integrations"] is False
 
 
 def test_profile_fields_parse_and_stay_out_of_extra():

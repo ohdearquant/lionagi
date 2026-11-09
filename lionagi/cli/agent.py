@@ -100,6 +100,7 @@ from lionhub.orchestration.spawn import (
     build_deadline_preamble,
     load_agent_profile,
     normalize_effort,
+    resolve_account_integrations,
     resolve_persisted_effort,
 )
 from lionhub.serve.mcp.config import JOB_MARKER_ENV_VAR
@@ -1884,10 +1885,7 @@ async def _run_agent(
         if profile_disables_mcp:
             no_mcp_config = True
 
-        # A codex leg's account integrations follow its role; with no role, or one that sets
-        # neither field, the leg's argv is what it was before these fields existed.
-        account_connectors = tuple(getattr(profile, "account_connectors", None) or ())
-        contain_account_integrations = bool(getattr(profile, "contain_account_integrations", False))
+        account_connectors, contain_account_integrations = resolve_account_integrations(profile)
         # A role's tool set is checked here, before any run is allocated; whether the agent's
         # model can take it is decided where the request is built.
         tool_settings = _profile_tool_settings(profile)

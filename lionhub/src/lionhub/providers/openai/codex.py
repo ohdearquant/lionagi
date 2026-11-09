@@ -111,6 +111,11 @@ HAS_CODEX_CLI, CODEX_CLI = discover_cli("codex")
 
 log = logging.getLogger("codex-cli")
 
+_CONTAINMENT_OPT_OUT = (
+    " To run without containment, launch through an agent profile that sets"
+    " contain_account_integrations: false."
+)
+
 _BOOL_ADAPTER = TypeAdapter(bool)
 
 
@@ -1699,7 +1704,8 @@ class CodexCodeRequest(BaseModel):
             unresolved = True
         if unresolved:
             raise ContainmentRefusedError(
-                "contain_account_integrations cannot use the working directory: it cannot be resolved"
+                "contain_account_integrations cannot use the working directory: it cannot be resolved."
+                + _CONTAINMENT_OPT_OUT
             ) from None
         unavailable = False
         try:
@@ -1708,12 +1714,13 @@ class CodexCodeRequest(BaseModel):
             unavailable = True
         if unavailable:
             raise ContainmentRefusedError(
-                "contain_account_integrations cannot use the working directory: it is unavailable"
+                "contain_account_integrations cannot use the working directory: it is unavailable."
+                + _CONTAINMENT_OPT_OUT
             ) from None
         if not os.access(self.repo, os.R_OK | os.X_OK):
             raise ContainmentRefusedError(
                 "contain_account_integrations cannot use the working directory: "
-                "this process cannot list and enter it"
+                "this process cannot list and enter it." + _CONTAINMENT_OPT_OUT
             )
 
     @model_validator(mode="after")
@@ -1734,7 +1741,7 @@ class CodexCodeRequest(BaseModel):
         if value_refused:
             message = (
                 "contain_account_integrations cannot use the working directory: "
-                "it cannot be resolved"
+                "it cannot be resolved." + _CONTAINMENT_OPT_OUT
             )
             raise CLIInputRefusedError(message) from ContainmentRefusedError(message)
         # Each path is read the way the snapshot reads it, `str.__str__(os.fspath(x))`, so
@@ -2034,7 +2041,7 @@ class CodexCodeRequest(BaseModel):
             raise ValueError(
                 f"contain_account_integrations cannot be combined with profile={plain.profile!r}: "
                 "codex before 0.135 applies a profile's features after --disable, so the "
-                "profile could turn apps or plugins back on"
+                "profile could turn apps or plugins back on." + _CONTAINMENT_OPT_OUT
             )
         for index, (key, _value) in enumerate(plain.overrides):
             # A key that holds '=' is refused by position where as_cmd_args renders the
@@ -2053,7 +2060,8 @@ class CodexCodeRequest(BaseModel):
                 raise ValueError(
                     "contain_account_integrations cannot be combined with the config "
                     f"override entry {index}: it selects or changes a profile, and codex "
-                    "before 0.135 applies a profile's features after --disable"
+                    "before 0.135 applies a profile's features after --disable."
+                    + _CONTAINMENT_OPT_OUT
                 )
         if plain.profile is not None:
             # The profile lionagi writes is a file of its own, but codex before 0.135 reads `-p`
@@ -2064,7 +2072,7 @@ class CodexCodeRequest(BaseModel):
                 raise ValueError(
                     f"contain_account_integrations cannot be combined with profile={plain.profile!r} "
                     f"while {str(defined)!r} defines a profile of that name: codex before 0.135 "
-                    "applies its features after --disable"
+                    "applies its features after --disable." + _CONTAINMENT_OPT_OUT
                 )
         else:
             sources = [("the codex config", configured_codex_profile(plain.env))]
@@ -2082,7 +2090,8 @@ class CodexCodeRequest(BaseModel):
                 raise ValueError(
                     f"contain_account_integrations cannot be combined with {named} in {where}: "
                     "with no -p, codex before 0.135 makes it the active profile and applies "
-                    "its features after --disable (from 0.135 codex refuses the key itself)"
+                    "its features after --disable (from 0.135 codex refuses the key itself)."
+                    + _CONTAINMENT_OPT_OUT
                 )
 
     def _refuse_a_config_profile_for_light(self, plain: _PlainRequest, cwd: Path) -> None:

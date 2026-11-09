@@ -59,6 +59,7 @@ from lionhub.orchestration.spawn import (
     list_agents,
     load_agent_profile,
     parse_model_spec,
+    resolve_account_integrations,
     resolve_persisted_effort,
 )
 
@@ -1116,6 +1117,7 @@ async def setup_orchestration(
     if loaded_pack is None:
         raise ConfigurationError("The packaged default casts pack could not be loaded.")
 
+    orc_account_connectors, orc_containment = resolve_account_integrations(orc_profile)
     orc_imodel = build_imodel_from_spec(
         model_spec,
         yolo=yolo,
@@ -1123,10 +1125,8 @@ async def setup_orchestration(
         effort_override=effort,
         theme=theme,
         fast=fast,
-        account_connectors=tuple(getattr(orc_profile, "account_connectors", None) or ()),
-        contain_account_integrations=bool(
-            getattr(orc_profile, "contain_account_integrations", False)
-        ),
+        account_connectors=orc_account_connectors,
+        contain_account_integrations=orc_containment,
         workload=getattr(orc_profile, "workload", None) or DEFAULT_WORKLOAD,
         tool_settings=_profile_tool_settings(orc_profile),
     )
@@ -1463,6 +1463,9 @@ async def build_worker_branch(
         pack_config=w_cfg,
     )
 
+    account_connectors, contain_account_integrations = resolve_account_integrations(
+        None if env.bare else w_profile
+    )
     w_imodel = build_imodel_from_spec(
         w_model,
         yolo=w_yolo,
@@ -1472,12 +1475,8 @@ async def build_worker_branch(
         theme=env.theme,
         fast=w_fast,
         # The role's settings, as for its other fields; a bare worker has no role.
-        account_connectors=(
-            tuple(getattr(w_profile, "account_connectors", None) or ()) if not env.bare else ()
-        ),
-        contain_account_integrations=bool(
-            not env.bare and getattr(w_profile, "contain_account_integrations", False)
-        ),
+        account_connectors=account_connectors,
+        contain_account_integrations=contain_account_integrations,
         workload=(
             getattr(w_profile, "workload", None) or DEFAULT_WORKLOAD
             if not env.bare
