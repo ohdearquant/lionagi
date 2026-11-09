@@ -1660,12 +1660,12 @@ async def test_fire_now_refuses_when_the_project_registry_cannot_be_read(monkeyp
     import sqlite3
 
     from lionagi.studio.scheduler.engine import SchedulerEngine
-    from lionagi.studio.services import projects
+    from lionagi.studio.services import project_lookup
 
     async def unreadable(name):
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(projects, "get_project", unreadable)
+    monkeypatch.setattr(project_lookup, "get_project", unreadable)
     svc = _make_svc()
     svc.get_schedule.return_value = _minimal_schedule(action_project="proj")
     engine = SchedulerEngine(svc=svc)
@@ -1691,12 +1691,12 @@ async def test_fire_now_refuses_when_the_project_registry_cannot_be_read(monkeyp
 @pytest.mark.asyncio
 async def test_fire_now_refuses_when_the_execution_root_cannot_be_resolved(monkeypatch, caplog):
     from lionagi.studio.scheduler.engine import SchedulerEngine
-    from lionagi.studio.services import projects
+    from lionagi.studio.services import project_lookup
 
     async def denied(name):
         raise PermissionError(13, "Permission denied", "/private/registry.db")
 
-    monkeypatch.setattr(projects, "get_project", denied)
+    monkeypatch.setattr(project_lookup, "get_project", denied)
     svc = _make_svc()
     svc.get_schedule.return_value = _minimal_schedule(action_project="proj")
     engine = SchedulerEngine(svc=svc)
@@ -1873,10 +1873,10 @@ def test_compute_next_fire_uses_configured_timezone(monkeypatch):
     correct UTC epoch — pinned via LIONAGI_SCHEDULER_TZ so this doesn't
     depend on the CI host's local timezone."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(cron_expr="0 18 * * *")  # 18:00 local, daily
@@ -1900,10 +1900,10 @@ def test_compute_next_fire_date_pinned_cron_fires_same_day_not_next_year(monkeyp
     its UTC-clock moment but before its local-clock moment must fire
     *today*, not silently skip to the same date next year."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(cron_expr="30 17 2 7 *")  # 17:30 local, July 2 only
@@ -1926,10 +1926,10 @@ def test_invalid_scheduler_tz_falls_back_to_utc(monkeypatch, caplog):
     """An invalid LIONAGI_SCHEDULER_TZ must not crash cron resolution — it
     falls back to UTC with a warning."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "Not/A_Real_Zone")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "Not/A_Real_Zone")
 
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(cron_expr="0 18 * * *")
@@ -1949,10 +1949,10 @@ def test_compute_next_fire_cron_prefers_resolved_timezone_over_scheduler_tz(monk
     path) must resolve cron against THAT zone, not the process-wide
     SCHEDULER_TZ -- even when the two clearly disagree."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "UTC")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "UTC")
 
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(cron_expr="0 18 * * *", resolved_timezone="America/New_York")
@@ -1971,10 +1971,10 @@ def test_compute_next_fire_cron_null_resolved_timezone_uses_scheduler_tz(monkeyp
     """A legacy row with no resolved_timezone (NULL) keeps resolving cron
     against SCHEDULER_TZ, unchanged."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(cron_expr="0 18 * * *", resolved_timezone=None)
@@ -2237,10 +2237,10 @@ async def test_recompute_next_fire_persists_and_logs_on_shift(monkeypatch, caplo
     """Recomputing a schedule whose stored next_fire_at is stale persists
     the new value and logs exactly once (old -> new)."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
@@ -2259,7 +2259,7 @@ async def test_recompute_next_fire_persists_and_logs_on_shift(monkeypatch, caplo
         schedule["id"],
         next_fire_at=new,
         effective_timezone="America/New_York",
-        effective_timezone_source=studio_config.SCHEDULER_TZ_SOURCE,
+        effective_timezone_source=schedule_timing.SCHEDULER_TZ_SOURCE,
     )
     shift_logs = [r for r in caplog.records if "next_fire_at shifted" in r.message]
     assert len(shift_logs) == 1
@@ -2270,10 +2270,10 @@ async def test_recompute_next_fire_noop_when_unchanged(monkeypatch, caplog):
     """(d) A schedule already at the correct next_fire_at is a true no-op:
     no DB write, no log line."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
@@ -2301,11 +2301,11 @@ async def test_recompute_armed_cron_schedules_shifts_and_logs_on_startup(monkeyp
     see test_recompute_armed_cron_schedules_leaves_past_due_untouched below,
     it must not be touched here."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
@@ -2333,11 +2333,11 @@ async def test_recompute_armed_cron_schedules_leaves_past_due_untouched(monkeypa
     not be recomputed into the future here -- that would erase the
     missed-fire recovery _check_missed_fires() is about to apply."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
@@ -2367,11 +2367,11 @@ async def test_startup_missed_fire_run_once_recovers_and_advances(monkeypatch):
     _check_missed_fires() (not erased by the earlier recompute pass), and
     next_fire_at ends up in the future once that fire completes."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
@@ -2442,11 +2442,11 @@ async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(
     queue a second, duplicate fire for it."""
     pytest.importorskip("croniter", reason="studio extra not installed")
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
     # _tick() also runs the dispatch-outbox scan and the D3 task-worker tick
     # (_deliver_due_dispatches / _run_task_worker_tick), both of which open a
     # StateDB() at the default path — redirect it so this test never touches
@@ -2533,11 +2533,11 @@ async def test_startup_missed_fire_run_once_reserve_failure_skips_recovery(monke
     not a missed_recovery fire."""
     pytest.importorskip("croniter", reason="studio extra not installed")
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
     # Same real-DB hazard as the sibling test above: _tick() opens StateDB()
     # at the default path via _deliver_due_dispatches / _run_task_worker_tick.
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
@@ -2621,11 +2621,11 @@ async def test_startup_missed_fire_skip_records_no_recovery_and_advances(monkeyp
     fire is created, and next_fire_at still ends up in the future (advanced
     by the skip-recording path itself)."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
@@ -2664,11 +2664,11 @@ async def test_check_missed_fires_run_once_equality_boundary_is_due(monkeypatch)
     <= now as past-due (see _recompute_armed_cron_schedules), so the
     missed-fire guard must match with > now (strictly future), not >= now."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
@@ -2698,11 +2698,11 @@ async def test_check_missed_fires_skip_equality_boundary_is_due(monkeypatch):
     == now must be recorded as a missed-fire skip, not silently fall
     through to the normal tick's due-check."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
@@ -2734,11 +2734,11 @@ async def test_recompute_armed_cron_schedules_unchanged_no_log(monkeypatch, capl
     """(d) A schedule that's already correct produces no write and no log
     during the daemon-start sweep."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr(schedule_timing, "SCHEDULER_TZ", "America/New_York")
 
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
@@ -3860,6 +3860,7 @@ async def test_fire_deadline_records_one_timed_out_terminal_and_releases_slot(
 ):
     """A launcher deadline is a timed-out outcome, not a generic failed exception."""
     import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler import subprocess as subprocess_mod
     from lionagi.studio.scheduler.engine import SchedulerEngine
 

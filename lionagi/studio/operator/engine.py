@@ -555,7 +555,7 @@ async def resolve_operator_execution_root(
         OPERATOR_CWD_RULE_DEFAULT,
         OPERATOR_CWD_RULE_ENV,
     )
-    from lionagi.studio.scheduler.engine import _is_usable_execution_root
+    from lionagi.studio.services.schedule_execution_root import _is_usable_execution_root
 
     daemon_cwd = Path.cwd().resolve()
     if daemon_resolution is None:
@@ -583,7 +583,7 @@ async def resolve_operator_execution_root(
         )
 
     if project is not None:
-        from lionagi.studio.services.projects import get_project
+        from lionagi.studio.services.project_lookup import get_project
 
         project_row = await get_project(project)
         project_path = (

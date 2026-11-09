@@ -948,7 +948,7 @@ async def health_report() -> dict[str, Any]:
         SessionHealth,
         classify_session_health,
     )
-    from lionagi.studio.config import scheduler_timezone_report
+    from lionagi.studio.services.schedule_timing import scheduler_timezone_report
 
     from .sessions import _user_label_selection
 
