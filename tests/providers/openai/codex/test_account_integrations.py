@@ -264,7 +264,7 @@ def test_a_stored_row_carrying_the_grant_restores_without_it():
 # ── role profile ────────────────────────────────────────────────────────
 
 
-def test_profile_config_reports_only_an_explicit_containment_value():
+def test_profile_config_reports_the_containment_a_codex_role_gets():
     omitted = profile_config(_parse_profile("role", "---\nmodel: codex/gpt-5.5\n---\nWork."))
     disabled = profile_config(
         _parse_profile(
@@ -272,7 +272,7 @@ def test_profile_config_reports_only_an_explicit_containment_value():
             "---\nmodel: codex/gpt-5.5\ncontain_account_integrations: false\n---\nWork.",
         )
     )
-    assert "contain_account_integrations" not in omitted
+    assert omitted["contain_account_integrations"] is True
     assert disabled["contain_account_integrations"] is False
 
 

@@ -870,7 +870,7 @@ async def test_a_codex_synthesis_branch_handed_an_empty_set_takes_no_effort_from
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("orchestrator_contained", [True, None, False])
+@pytest.mark.parametrize("orchestrator_contained", [True, None])
 async def test_a_codex_synthesis_branch_does_not_inherit_account_connectors(
     tmp_run, codex_home, orchestrator_contained
 ):
@@ -897,6 +897,24 @@ async def test_a_codex_synthesis_branch_does_not_inherit_account_connectors(
     assert isinstance(request, CodexCodeRequest)
     assert {"apps", "plugins"} <= disabled_features
     assert orchestrator_kwargs["account_connectors"] == ["github"]
+
+
+@pytest.mark.asyncio
+async def test_a_codex_synthesis_branch_of_a_keyless_orchestrator_is_contained(tmp_run, codex_home):
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+
+    codex_home.write_config({})
+    # No role names containment or connectors: the orchestrator is built contained, as built.
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5")
+    assert env.orc_branch.chat_model.endpoint.config.kwargs["contain_account_integrations"] is True
+
+    branch = await _fresh_synthesis_branch(env)
+    event = await branch.chat_model.create_event(prompt="hi")
+    args = event.payload["request"].as_cmd_args()
+    disabled_features = {args[i + 1] for i in range(len(args) - 1) if args[i] == "--disable"}
+
+    assert branch.chat_model.endpoint.config.kwargs["contain_account_integrations"] is True
+    assert {"apps", "plugins"} <= disabled_features
 
 
 @pytest.mark.asyncio

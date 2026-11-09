@@ -658,16 +658,19 @@ async def test_execute_dag_tags_spawned_nodes(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "orchestrator_kwargs",
+    ("orchestrator_kwargs", "clone_contained"),
     [
-        {"contain_account_integrations": True, "account_connectors": ["github"]},
+        ({"contain_account_integrations": True, "account_connectors": ["github"]}, True),
         # Connectors alone lift containment for the orchestrator; the clone loses them.
-        {"account_connectors": ["github"]},
-        {"contain_account_integrations": False, "account_connectors": ["github"]},
+        ({"account_connectors": ["github"]}, True),
+        # A role with no key and no connectors: the orchestrator is contained, so is the clone.
+        ({"contain_account_integrations": True}, True),
+        # An opt-out without connectors carries no grant, and the clone keeps the opt-out.
+        ({}, False),
     ],
 )
 async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(
-    tmp_path, orchestrator_kwargs
+    tmp_path, orchestrator_kwargs, clone_contained
 ):
     """Reactive execution must pass a spawn_branch_setup callback into
     run_dag that retargets a CLI-backed spawned branch's writable workspace
@@ -735,7 +738,8 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(
     expected_dir = env.run.agent_artifact_dir("spawn-1")
     assert cli_branch.chat_model.endpoint.config.kwargs["repo"] == expected_dir
     assert "account_connectors" not in cli_branch.chat_model.endpoint.config.kwargs
-    assert cli_branch.chat_model.endpoint.config.kwargs["contain_account_integrations"] is True
+    clone_kwargs = cli_branch.chat_model.endpoint.config.kwargs
+    assert clone_kwargs.get("contain_account_integrations", False) is clone_contained
     assert expected_dir.exists()
 
     assert env.worker_artifact_dirs["spawn-1"] == expected_dir

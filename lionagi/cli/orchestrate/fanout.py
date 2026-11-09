@@ -24,7 +24,7 @@ from lionhub.orchestration import plan
 from lionhub.orchestration.console import log_error, progress, warn
 from lionhub.orchestration.job import classify_exception
 from lionhub.orchestration.prompts import SYNTHESIS_INSTRUCTION
-from lionhub.orchestration.spawn import parse_model_spec
+from lionhub.orchestration.spawn import parse_model_spec, strip_connector_grant
 
 from .._agent_depth import stamp_worker_depth
 from ._common import (
@@ -106,11 +106,7 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"
     # build_worker_branch hands it to a worker: as the whole set.
     worker_servers = getattr(env, "mcp_servers", None)
     chat_model = env.orc_branch.chat_model.copy()
-    synthesis_kwargs = chat_model.endpoint.config.kwargs
-    # Named connectors lift containment for the orchestrator; the synthesis branch does not
-    # get them, so it is contained again.
-    if synthesis_kwargs.pop("account_connectors", None):
-        synthesis_kwargs["contain_account_integrations"] = True
+    strip_connector_grant(chat_model.endpoint.config.kwargs)
     _hand_mcp_servers(
         chat_model,
         worker_servers,

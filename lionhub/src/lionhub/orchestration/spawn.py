@@ -67,8 +67,10 @@ __all__ = (
     "build_chat_model",
     "build_imodel_from_spec",
     "parse_model_spec",
+    "resolve_account_integrations",
     "resolve_codex_config_profile",
     "resolve_persisted_effort",
+    "strip_connector_grant",
     "AgentProfile",
     "AgentProfileNotFoundError",
     "AmbiguousProfileNameError",
@@ -113,6 +115,27 @@ def resolve_account_integrations(profile: Any | None) -> tuple[tuple[str, ...], 
     if contain is None:
         contain = not connectors
     return connectors, contain
+
+
+def strip_connector_grant(kwargs: dict) -> None:
+    """Drop the orchestrator's connector grant from a cloned branch's request settings.
+
+    Named connectors are what lifted containment for the orchestrator, so a clone that
+    loses them is contained again. An orchestrator that opted out without naming any
+    connectors carries no grant, and its clone keeps that opt-out.
+    """
+    if kwargs.pop("account_connectors", None):
+        kwargs["contain_account_integrations"] = True
+
+
+def _profile_names_codex(profile: AgentProfile) -> bool:
+    """Whether the profile's model spec names the codex provider (an alias included)."""
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    model = profile.model or ""
+    if "/" not in model:
+        return False
+    return EndpointRegistry.canonical_provider(model.split("/")[0]) == "codex"
 
 
 def _add_workload_kwarg(extra: dict, endpoint: Any, workload: str) -> None:
@@ -761,8 +784,10 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
     # Only when set, so a role that uses none of them reports exactly what it did before.
     if profile.idle_timeout is not None:
         config["idle_timeout"] = profile.idle_timeout
-    if profile.contain_account_integrations is not None:
-        config["contain_account_integrations"] = profile.contain_account_integrations
+    # A codex role reports the containment its launches get, set or not; another role
+    # reports the key only when it sets it.
+    if profile.contain_account_integrations is not None or _profile_names_codex(profile):
+        config["contain_account_integrations"] = resolve_account_integrations(profile)[1]
     if profile.account_connectors:
         config["account_connectors"] = list(profile.account_connectors)
     if profile.workload != DEFAULT_WORKLOAD:

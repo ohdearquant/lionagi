@@ -41,7 +41,12 @@ from lionhub.orchestration.flow.checkpoint import (
     resolve_checkpoint_target,
 )
 from lionhub.orchestration.job import classify_exception
-from lionhub.orchestration.spawn import _PROFILE_TOOL_FIELDS, _is_light_codex, parse_model_spec
+from lionhub.orchestration.spawn import (
+    _PROFILE_TOOL_FIELDS,
+    _is_light_codex,
+    parse_model_spec,
+    strip_connector_grant,
+)
 
 from .._agent_depth import stamp_worker_depth
 from ._common import (
@@ -2504,10 +2509,7 @@ async def _execute_dag(
         servers, exclusive = _worker_mcp_hand_off(worker_mcp_servers, contained=contained)
         _hand_mcp_servers(chat_model, servers, label=spawn_id, exclusive=exclusive)
         kwargs = chat_model.endpoint.config.kwargs
-        # Named connectors lift containment for the orchestrator; the spawned clone does not
-        # get them, so it is contained again.
-        if kwargs.pop("account_connectors", None):
-            kwargs["contain_account_integrations"] = True
+        strip_connector_grant(kwargs)
         # A clone of the orchestrator's branch takes the class of the worker that
         # asked for it, recorded by _build_spawn_node, so a light worker cannot
         # obtain a heavy agent. The orchestrator's own class confines only its own
