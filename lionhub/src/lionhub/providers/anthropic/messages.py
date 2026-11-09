@@ -290,6 +290,114 @@ def _settlement_reading(event: Any) -> dict | None:
     return None
 
 
+class _AccountingStreamParser:
+    """Read billing fields from complete UTF-8 server-sent events."""
+
+    def __init__(self, key) -> None:
+        import codecs
+
+        self.decoder = codecs.getincrementaldecoder("utf-8")()
+        self.pending = ""
+        self.data: list[str] = []
+        self.event_name = None
+        self.last_event_name = None
+        self.key = key
+        self.model = None
+        self.models: set[str] = set()
+        self.request_id = None
+        self.usage: dict[str, Any] = {}
+        self.output_seen = False
+        self.output_valid = False
+        self.message_stop = False
+        self.saw_error = False
+        from lionagi.service.connections.endpoint import (
+            _SSE_CALL_FAILURE_NAMES,
+            _event_reports_call_failure,
+        )
+
+        self._failure_names = _SSE_CALL_FAILURE_NAMES
+        self._reports_failure = _event_reports_call_failure
+
+    def feed(self, raw: bytes, *, final: bool = False) -> list[dict]:
+        self.pending += self.decoder.decode(raw, final=final)
+        events = []
+        while "\n" in self.pending:
+            line, self.pending = self.pending.split("\n", 1)
+            line = line.removesuffix("\r")
+            if not line:
+                event = self._finish_event()
+                if event is not None:
+                    events.append(event)
+            elif line.startswith("data:"):
+                self.data.append(line[5:].lstrip(" "))
+            elif line.startswith("event:"):
+                self.event_name = line[6:].strip() or None
+        if final:
+            self.pending = ""
+        return events
+
+    def _finish_event(self):
+        if not self.data:
+            self.event_name = None
+            return None
+        payload = "\n".join(self.data)
+        self.data.clear()
+        try:
+            event = json.loads(payload)
+        except (TypeError, ValueError):
+            event = None
+        name = self.event_name
+        self.event_name = None
+        if isinstance(event, dict):
+            if name == "error":
+                event = {**event, "type": "error"}
+            elif (event.get("type") is None or "type" not in event) and name:
+                event = {**event, "type": name}
+            return {**event, "_accounting_sse_event": name}
+        return {"type": name, "_invalid": True, "_accounting_sse_event": name} if name else None
+
+    def observe(self, event: dict) -> None:
+        if event.get("_accounting_sse_event") in self._failure_names or self._reports_failure(
+            event
+        ):
+            self.saw_error = True
+        kind = event.get("type")
+        reading = _settlement_reading(event)
+        if kind == "message_start" and reading:
+            model = reading.get("model")
+            if isinstance(model, str) and model:
+                self.models.add(model)
+                self.model = model if len(self.models) == 1 else None
+            from lionagi.service.accounts._router import provider_request_id
+
+            self.request_id = provider_request_id(reading.get("id"), self.key) or self.request_id
+            self._merge(reading.get("usage"), observed_output=False)
+        elif kind == "message_delta" and reading:
+            usage = reading.get("usage")
+            self._merge(usage, observed_output=True)
+        elif kind == "message_stop":
+            self.message_stop = True
+        elif kind == "error":
+            self.saw_error = True
+
+    def _merge(self, update, *, observed_output: bool) -> None:
+        if not isinstance(update, dict):
+            return
+        for name, value in update.items():
+            if name == "output_tokens" and not observed_output and self.output_seen:
+                continue
+            if name not in ("cache_creation",):
+                self.usage[name] = value
+        if "cache_creation_input_tokens" in update:
+            self.usage["cache_creation_input_tokens"] = update["cache_creation_input_tokens"]
+        if "cache_creation" in update:
+            self.usage["cache_creation"] = update["cache_creation"]
+        if observed_output and "output_tokens" in update:
+            value = update["output_tokens"]
+            self.output_seen = True
+            self.output_valid = type(value) is int and value >= 0
+
+
 def _mask_content_runs(body: Any, key: Any) -> Any:
     """``body`` with the key masked in every string of a response this request parsed.
 
@@ -868,19 +976,19 @@ class AnthropicMessagesEndpoint(Endpoint):
         import json
 
         from lionagi.ln.concurrency import get_cancelled_exc_class
-        from lionagi.service.accounts._pricing import usage_outcome
+        from lionagi.service.accounts._pricing import stream_usage_estimate, usage_outcome
         from lionagi.service.accounts._router import (
             StreamingSecretRedactor,
             StreamTextRedactor,
             get_router,
             header_pairs,
-            provider_request_id,
             redact_value,
             routed_client_kwargs,
             validate_routed_request,
         )
         from lionagi.service.accounts._types import (
             AccountRoutingError,
+            CompleteUsage,
             RejectionZero,
             RouterErrorCode,
         )
@@ -942,13 +1050,52 @@ class AnthropicMessagesEndpoint(Endpoint):
         # The same SSE framing as the unrouted stream, so an event keeps its ``event:``
         # name and an ``event: error`` fails the call here as it does there.
         frame = _SSEFrame()
-        usage: dict[str, Any] = {}
-        served_model = None
-        request_id = None
+        accounting = _AccountingStreamParser(attempt.key)
         settled = False  # set before each settlement write, so no handler writes a second
-        saw_error_event = False
-        saw_final_usage = False
-        start_models: set[str] = set()
+        settlement_write = False
+        ending_reason = None
+
+        def accounting_usage():
+            if not accounting.output_seen or not accounting.output_valid:
+                return None
+            if accounting.model is None:
+                return None
+            return usage_outcome(
+                router.revision,
+                attempt.ttls,
+                accounting.model,
+                accounting.usage,
+                accounting.request_id,
+            )
+
+        def early_estimate(reason):
+            try:
+                inputs = attempt.reservation.quote.pricing_inputs
+                if inputs is None or router.revision.id != attempt.reservation.quote.price_revision:
+                    return None
+                complete = accounting_usage()
+                from lionagi.service.accounts._types import UsageCounts
+
+                if not isinstance(complete, CompleteUsage):
+                    return None
+                counts = UsageCounts(
+                    complete.input_tokens,
+                    complete.cache_read_input_tokens,
+                    complete.cache_write_5m_tokens,
+                    complete.cache_write_1h_tokens,
+                    complete.output_tokens,
+                )
+                return stream_usage_estimate(
+                    router.revision,
+                    inputs,
+                    complete.served_model,
+                    counts,
+                    accounting.request_id,
+                    reason,
+                )
+            except Exception as error:
+                logger.debug("stream usage estimate unavailable: %s", type(error).__name__)
+                return None
 
         def queue_data(data: str, sse_event: str | None = None) -> list:
             """Hand one event to the text redactor; return the events now ready."""
@@ -1038,8 +1185,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             )
 
         async def emit_ready(ready: list):
-            nonlocal served_model, request_id, settled, saw_error_event, saw_final_usage
-            for (event, data, places, rewrite, shown_type, settlement, sse_event), texts in ready:
+            for (event, data, places, rewrite, shown_type, _settlement, sse_event), texts in ready:
                 shown_text = texts.pop() if shown_type is not None else None
                 raw = None
                 for (holder, field), text in zip(places, texts, strict=True):
@@ -1055,69 +1201,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                         event = None
                 elif places or rewrite:
                     data = json.dumps(event)
-                event_type = event.get("type") if isinstance(event, dict) else None
-                if event_type == "message_start":
-                    # A message_start whose message is not an object says nothing about the
-                    # attempt, and one that leaves a field out says nothing about that field,
-                    # so each leaves what an earlier event said in place. Its counts are
-                    # placeholders, so a start after a message_delta's final count leaves that
-                    # count alone, and its model too. A stream has one message_start; when
-                    # starts name two models, the next count cannot be tied to one of them
-                    # (see message_delta).
-                    if settlement is not None:
-                        started_model = settlement.get("model")
-                        if isinstance(started_model, str) and started_model:
-                            start_models.add(started_model)
-                        else:
-                            started_model = None
-                        if not saw_final_usage:
-                            served_model = started_model or served_model
-                        request_id = (
-                            provider_request_id(settlement.get("id"), attempt.key) or request_id
-                        )
-                        initial_usage = settlement.get("usage")
-                        if isinstance(initial_usage, dict) and not saw_final_usage:
-                            usage.update(initial_usage)
-                elif event_type == "message_delta":
-                    delta_usage = settlement.get("usage") if settlement else None
-                    if isinstance(delta_usage, dict):
-                        usage.update(delta_usage)
-                        # Usage that arrives after starts naming two models, an output count
-                        # or any other count, has no one model to price it at, so the attempt
-                        # is left unpriced, open with its ceiling held. Usage that arrived
-                        # before the second start keeps the first model's price.
-                        if len(start_models) > 1:
-                            served_model = None
-                        output_tokens = delta_usage.get("output_tokens")
-                        if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
-                            # A later delta whose count is not an integer replaces the earlier
-                            # count, which also leaves the attempt unpriced.
-                            saw_final_usage = True
-                elif event_type == "error":
-                    saw_error_event = True
-                elif event_type == "message_stop" and not settled:
-                    # message_start's output count is a placeholder; only a
-                    # message_delta's output count completes it. The attempt settles once,
-                    # so a later message_stop settles nothing.
-                    outcome = (
-                        usage_outcome(
-                            router.revision,
-                            attempt.ttls,
-                            served_model,
-                            usage,
-                            request_id if isinstance(request_id, str) else None,
-                        )
-                        if saw_final_usage
-                        else None
-                    )
-                    settled = True
-                    await router.settle_stream_end(attempt, outcome, http_status=status)
                 chunk = self._line_to_stream_chunk(data, sse_event=sse_event)
                 if chunk is not None:
-                    if chunk.metadata.get("call_failed"):
-                        # A failure the event's SSE name or its data reports, whatever
-                        # ``type`` the data carries.
-                        saw_error_event = True
                     if shown_text is not None and chunk.type == shown_type:
                         chunk.content = shown_text
                     chunk.content = redact_value(chunk.content, attempt.key)
@@ -1241,7 +1326,17 @@ class AnthropicMessagesEndpoint(Endpoint):
                             break
                         except Exception as error:
                             transport_error = error
+                            ending_reason = "transport_error"
                             break
+                        accounting_events = accounting.feed(raw)
+                        for accounting_event in accounting_events:
+                            accounting.observe(accounting_event)
+                            if accounting_event.get("type") == "message_stop" and not settled:
+                                terminal = accounting_usage()
+                                settled = True
+                                await router.settle_stream_end(
+                                    attempt, terminal, http_status=status
+                                )
                         safe = redactor.feed(raw)
                         pending += decoder.decode(safe)
                         while "\n" in pending:
@@ -1249,6 +1344,17 @@ class AnthropicMessagesEndpoint(Endpoint):
                             for data, name in self._frame_stream_line(line, frame):
                                 async for chunk in emit_ready(queue_data(data, name)):
                                     yield chunk
+                    if transport_error is not None and not settled:
+                        settled = True
+                        estimate = early_estimate("transport_error")
+                        settlement_write = True
+                        await router.settle_stream_end(
+                            attempt,
+                            estimate,
+                            reason="transport_error" if estimate is None else None,
+                            http_status=status,
+                        )
+                        settlement_write = False
                     # The byte redactor's held tail can hold several lines, the last events
                     # of the stream among them. They are framed whether the stream ended or
                     # the connection failed; after a failure a trailing partial character is
@@ -1278,10 +1384,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                         raise transport_error
                     if not settled:
                         # The stream ended before message_stop, so its usage is incomplete.
-                        reason = "stream_error" if saw_error_event else "stream_truncated"
+                        reason = "stream_error" if accounting.saw_error else "stream_truncated"
                         settled = True
+                        estimate = early_estimate(reason)
                         await router.settle_stream_end(
-                            attempt, None, reason=reason, http_status=status
+                            attempt,
+                            estimate,
+                            reason=reason if estimate is None else None,
+                            http_status=status,
                         )
         except get_cancelled_exc_class():
             # A write that fails records nothing; the cancellation still reaches the caller.
@@ -1290,8 +1400,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                 if not request_entered:
                     await router.settle_not_sent(attempt, caller_cancelled=True)
                 elif not settled:
+                    reason = ending_reason or "cancelled"
+                    estimate = early_estimate(reason)
+                    settled = True
                     await router.settle_stream_end(
-                        attempt, None, reason="cancelled", http_status=status
+                        attempt,
+                        estimate,
+                        reason=reason if estimate is None else None,
+                        http_status=status,
                     )
             except Exception:  # noqa: S110 - the caller must see the cancellation
                 pass
@@ -1299,16 +1415,37 @@ class AnthropicMessagesEndpoint(Endpoint):
         except GeneratorExit:
             # The consumer closed the stream before message_stop.
             if not settled:
-                reason = "stream_error" if saw_error_event else "stream_closed"
-                await router.settle_stream_end(attempt, None, reason=reason, http_status=status)
+                reason = ending_reason or (
+                    "stream_error" if accounting.saw_error else "stream_closed"
+                )
+                estimate = early_estimate(reason)
+                settled = True
+                await router.settle_stream_end(
+                    attempt,
+                    estimate,
+                    reason=reason if estimate is None else None,
+                    http_status=status,
+                )
             raise
         except AccountRoutingError:
             await anyio.lowlevel.checkpoint()
             raise
         except (_RoutedNoRetryError, _RoutedRetryableError):
+            if accounting.saw_error and not settled:
+                reason = "stream_error"
+                estimate = early_estimate(reason)
+                settled = True
+                await router.settle_stream_end(
+                    attempt,
+                    estimate,
+                    reason=reason if estimate is None else None,
+                    http_status=status,
+                )
             await anyio.lowlevel.checkpoint()
             raise
         except Exception:
+            if settlement_write:
+                raise
             failure = (_RoutedRetryableError if request_entered else _RoutedNoRetryError)(
                 RouterErrorCode.TRANSPORT_ERROR.value,
                 account=attempt.account,

@@ -27,7 +27,10 @@ from ._types import (
     Quote,
     Rate,
     RouterErrorCode,
+    StreamUsageEstimate,
     UnknownOutcome,
+    UsageCounts,
+    UsageRates,
 )
 
 __all__ = (
@@ -43,6 +46,7 @@ __all__ = (
     "request_ttls",
     "revision_by_id",
     "usage_outcome",
+    "stream_usage_estimate",
 )
 
 _NANODOLLARS_PER_TOKEN_PER_USD_PER_MTOK = 1000
@@ -546,6 +550,69 @@ def price_usage(
     """
     outcome = usage_outcome(revision, ttls, served_model, usage, request_id)
     return outcome if isinstance(outcome, CompleteUsage) else None
+
+
+def stream_usage_estimate(
+    revision: PriceRevision,
+    pricing_inputs: PricingInputs,
+    served_model: str,
+    counts: UsageCounts,
+    request_id: str | None,
+    original_reason: str,
+) -> StreamUsageEstimate | None:
+    """Build a priced early-stream estimate from observed cumulative usage."""
+    geo_region = max(revision.geo_multipliers, key=revision.geo_multipliers.__getitem__)
+    usage = {
+        "input_tokens": counts.input_tokens,
+        "cache_read_input_tokens": counts.cache_read_input_tokens,
+        "cache_creation_input_tokens": counts.cache_write_5m_tokens + counts.cache_write_1h_tokens,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": counts.cache_write_5m_tokens,
+            "ephemeral_1h_input_tokens": counts.cache_write_1h_tokens,
+        },
+        "output_tokens": counts.output_tokens,
+        "inference_geo": geo_region,
+    }
+    priced = price_usage(
+        revision, frozenset(pricing_inputs.cache_ttls), served_model, usage, request_id
+    )
+    model = revision.models.get(served_model)
+    if priced is None or model is None:
+        return None
+    geo = revision.geo_multipliers[geo_region]
+    tier = model.tier_for(
+        counts.input_tokens
+        + counts.cache_read_input_tokens
+        + counts.cache_write_5m_tokens
+        + counts.cache_write_1h_tokens
+    )
+    rates = UsageRates(
+        input=Rate(*_rate_pair(tier.input * geo)),
+        cache_read=Rate(*_rate_pair(tier.read * geo)),
+        cache_write_5m=Rate(*_rate_pair(tier.write_5m * geo)),
+        cache_write_1h=Rate(*_rate_pair(tier.write_1h * geo)),
+        output=Rate(*_rate_pair(tier.output * geo)),
+    )
+    margin_tokens = max(1024, (counts.output_tokens + 9) // 10)
+    rate = pricing_inputs.output_rate_max
+    margin_nusd = (margin_tokens * rate.numerator + rate.denominator - 1) // rate.denominator
+    return StreamUsageEstimate(
+        original_reason=original_reason,
+        served_model=served_model,
+        counts=counts,
+        request_id=request_id,
+        pricing_inputs=pricing_inputs,
+        quote_origin="reservation",
+        rates=rates,
+        observed_cost_nusd=priced.cost_nusd,
+        margin_tokens=margin_tokens,
+        margin_nusd=margin_nusd,
+        cost_nusd=priced.cost_nusd + margin_nusd,
+    )
+
+
+def _rate_pair(value: Fraction) -> tuple[int, int]:
+    return value.numerator, value.denominator
 
 
 # A reason code is at most 64 characters (the ledger's grammar), so a usage field it names

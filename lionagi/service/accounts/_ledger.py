@@ -1431,87 +1431,20 @@ class CredentialLedger:
                                 raise ValueError(
                                     "stream estimate pricing inputs differ from reservation"
                                 )
-                            from lionagi.service.accounts._pricing import price_usage
+                            from lionagi.service.accounts._pricing import stream_usage_estimate
 
-                            model = revision.models.get(evidence.served_model)
-                            if model is None:
-                                raise ValueError("stream model is not in retained revision")
-                            tier = model.tier_for(
-                                evidence.counts.input_tokens
-                                + evidence.counts.cache_read_input_tokens
-                                + evidence.counts.cache_write_5m_tokens
-                                + evidence.counts.cache_write_1h_tokens
-                            )
-                            # The observed counts carry no region, so the usage is priced at
-                            # the highest regional multiplier, as the ceiling and the stored
-                            # rates are; the stored rates then reproduce the observed cost.
-                            geo_region = max(
-                                revision.geo_multipliers,
-                                key=lambda region: revision.geo_multipliers[region],
-                            )
-                            geo = revision.geo_multipliers[geo_region]
-                            rates = (
-                                tier.input * geo,
-                                tier.read * geo,
-                                tier.write_5m * geo,
-                                tier.write_1h * geo,
-                                tier.output * geo,
-                            )
-                            rate_pairs = tuple((r.numerator, r.denominator) for r in rates)
-                            supplied_pairs = tuple(
-                                (
-                                    getattr(evidence.rates, n).numerator,
-                                    getattr(evidence.rates, n).denominator,
-                                )
-                                for n in (
-                                    "input",
-                                    "cache_read",
-                                    "cache_write_5m",
-                                    "cache_write_1h",
-                                    "output",
-                                )
-                            )
-                            if rate_pairs != supplied_pairs:
-                                raise ValueError("stream rates differ from retained revision")
-                            usage = {
-                                "input_tokens": evidence.counts.input_tokens,
-                                "cache_read_input_tokens": evidence.counts.cache_read_input_tokens,
-                                "cache_creation_input_tokens": evidence.counts.cache_write_5m_tokens
-                                + evidence.counts.cache_write_1h_tokens,
-                                "cache_creation": {
-                                    "ephemeral_5m_input_tokens": evidence.counts.cache_write_5m_tokens,
-                                    "ephemeral_1h_input_tokens": evidence.counts.cache_write_1h_tokens,
-                                },
-                                "output_tokens": evidence.counts.output_tokens,
-                                "inference_geo": geo_region,
-                            }
-                            priced = price_usage(
+                            recomputed = stream_usage_estimate(
                                 revision,
-                                frozenset(evidence.pricing_inputs.cache_ttls),
+                                evidence.pricing_inputs,
                                 evidence.served_model,
-                                usage,
+                                evidence.counts,
                                 evidence.request_id,
+                                evidence.original_reason,
                             )
-                            if priced is None:
+                            if recomputed is None:
                                 raise ValueError("observed stream usage is not priceable")
-                            margin_tokens = max(1024, (evidence.counts.output_tokens + 9) // 10)
-                            margin_numerator = (
-                                margin_tokens * evidence.pricing_inputs.output_rate_max.numerator
-                            )
-                            margin_denominator = evidence.pricing_inputs.output_rate_max.denominator
-                            margin_nusd = (
-                                margin_numerator + margin_denominator - 1
-                            ) // margin_denominator
-                            expected_cost = priced.cost_nusd + margin_nusd
-                            if (priced.cost_nusd, margin_tokens, margin_nusd, expected_cost) != (
-                                evidence.observed_cost_nusd,
-                                evidence.margin_tokens,
-                                evidence.margin_nusd,
-                                evidence.cost_nusd,
-                            ):
-                                raise ValueError(
-                                    "stream estimate cost differs from recomputed amount"
-                                )
+                            if recomputed != evidence:
+                                raise ValueError("stream estimate differs from recomputed amount")
                             if (
                                 evidence.quote_origin != "reservation"
                                 or evidence.cost_nusd > INT64_MAX

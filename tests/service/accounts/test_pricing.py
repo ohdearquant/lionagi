@@ -4,7 +4,9 @@
 
 import hashlib
 import json
+from dataclasses import replace
 from fractions import Fraction
+from types import MappingProxyType
 
 import pytest
 
@@ -15,11 +17,66 @@ from lionagi.service.accounts._pricing import (
     price_usage,
     quote_ceiling,
     revision_by_id,
+    stream_usage_estimate,
     usage_outcome,
 )
-from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode, UnknownOutcome
+from lionagi.service.accounts._types import (
+    AccountRoutingError,
+    PricingInputs,
+    Rate,
+    RouterErrorCode,
+    UnknownOutcome,
+    UsageCounts,
+)
 
 REV = CURRENT_REVISION
+
+
+@pytest.mark.parametrize(
+    ("multiplier", "observed", "margin"),
+    [(Fraction(1), 28_000, 20_480_000), (Fraction(11, 10), 30_800, 22_528_000)],
+)
+def test_stream_estimate_uses_exact_rates_and_margin(multiplier, observed, margin):
+    revision = replace(
+        REV,
+        geo_multipliers=MappingProxyType({None: multiplier}),
+    )
+    estimate = stream_usage_estimate(
+        revision,
+        PricingInputs(
+            4096,
+            (),
+            None,
+            "messages_standard_v1",
+            "max_applicable_at_reserve",
+            Rate(int(20_000 * multiplier), 1),
+        ),
+        "claude-opus-5-5",
+        UsageCounts(2, 0, 0, 0, 1),
+        None,
+        "cancelled",
+    )
+
+    assert estimate is not None
+    assert estimate.observed_cost_nusd == observed
+    assert estimate.margin_tokens == 1024
+    assert estimate.margin_nusd == margin
+    assert estimate.cost_nusd == observed + margin
+
+
+def test_stream_estimate_rejects_an_unpriced_model():
+    result = stream_usage_estimate(
+        REV,
+        PricingInputs(
+            4096, (), None, "messages_standard_v1", "max_applicable_at_reserve", Rate(20_000, 1)
+        ),
+        "unknown-model",
+        UsageCounts(2, 0, 0, 0, 1),
+        None,
+        "cancelled",
+    )
+
+    assert result is None
 
 
 def _payload(**overrides):
