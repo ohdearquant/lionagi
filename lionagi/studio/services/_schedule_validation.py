@@ -42,6 +42,10 @@ def validate_rate_limit(value: Any) -> tuple[int, int] | None:
     return max_fires, window_sec
 
 
+# Bounds pages fetched hunting an older, still-undispatched merged PR
+# (merged_at can trail the API's updated_at sort key). An incomplete scan
+# releases no events and leaves the cursor unchanged; the scheduler reports
+# repeated capped polls without dispatch as stalled progress.
 _MERGED_MODE_MAX_PAGES = 5
 
 
@@ -54,10 +58,17 @@ def merged_page_limit(value: object) -> int:
     return value
 
 
+# CWE-918 defense-in-depth: github_repo must be exactly "owner/name" (one
+# slash, no traversal/URL-special chars). The scheduler's GitHub poller and
+# the schedule services both call _validate_github_repo.
 _GITHUB_OWNER_MAX = 39
 _GITHUB_REPO_MAX = 100
+
+# Owner: alphanumeric start/end, alphanumeric or hyphen interior.
 _GITHUB_OWNER_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$")
+# Repo name: letters/digits/'-'/'_'/'.' only (leading '.' is valid).
 _GITHUB_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Traversal singletons that are structurally valid but semantically forbidden.
 _GITHUB_REPO_TRAVERSAL = frozenset({".", ".."})
 
 
