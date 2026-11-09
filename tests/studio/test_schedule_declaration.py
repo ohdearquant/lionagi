@@ -21,7 +21,7 @@ from pydantic import ValidationError
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.state.db import StateDB
-from lionagi.studio.services.schedule_declaration import (
+from lionhub.orchestration.schedule.declaration import (
     _ADOPT_DECLARATION_FIELDS,
     _ADOPT_UNDECLARED_COLUMNS,
     ScheduleMember,
@@ -84,7 +84,7 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def pinned_scheduler_tz(monkeypatch: pytest.MonkeyPatch) -> str:
-    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     return "America/New_York"
 
 
@@ -427,7 +427,7 @@ schedules:
 
 def test_policies_rate_limit_malformed_rejected(tmp_path):
     """Policies.rateLimit is validated with the same
-    lionagi.studio.services._schedule_validation.validate_rate_limit the fire-time engine
+    lionhub.orchestration.schedule.validation.validate_rate_limit the fire-time engine
     admission path uses -- an open dict[str, Any] would otherwise let a
     malformed rateLimit commit."""
     manifest = _policies_manifest(
@@ -717,7 +717,7 @@ def test_resolve_github_trigger_reuses_service_validators(tmp_path, monkeypatch)
     schedule_declaration imports and asserting they're actually called."""
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
     calls = []
-    import lionagi.studio.services._schedule_validation as svc
+    import lionhub.orchestration.schedule.validation as svc
 
     monkeypatch.setattr(svc, "_svc_validate_github_repo", lambda repo: calls.append(("repo", repo)))
     monkeypatch.setattr(svc, "_svc_validate_github_filter", lambda f: calls.append(("filter", f)))
@@ -1696,7 +1696,7 @@ async def test_adoption_compares_each_column_it_writes(
     # The expectation is derived rather than listed, so it cannot drift from what
     # the comparison and the launch-reader table do; the per-column enumeration
     # test pins each table row on its own.
-    from lionagi.studio.services.schedule_declaration import _column_read_by
+    from lionhub.orchestration.schedule.declaration import _column_read_by
 
     expected_unchecked = sorted(
         column
@@ -1845,7 +1845,7 @@ async def test_adopt_reads_a_zoneless_row_in_the_zone_the_scheduler_recorded(
     assert ("resolved_timezone", "Europe/Berlin", "America/New_York") in differences
 
     # Applier in UTC, scheduler recorded New York: the applier's zone is irrelevant.
-    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "UTC")
+    monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "UTC")
     new_york = _legacy_adoption_row("nightly", cwd=agent_profile)
     assert await _adopt_spec_differences(new_york, resolved) == []
 
@@ -2411,7 +2411,7 @@ async def test_a_prompt_or_model_no_member_can_declare_is_named_as_such(row, nam
 async def test_a_project_named_global_is_not_the_global_scope(
     temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch
 ):
-    from lionagi.studio.services import schedule_declaration
+    import lionhub.orchestration.schedule.declaration as schedule_declaration
 
     manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
         "  project: demo\n", "  project: global\n"
@@ -2800,7 +2800,7 @@ async def test_adopt_refusal_describes_both_changed_execution_roots(
             return {"path": str(row_root)}
         return None
 
-    monkeypatch.setattr("lionagi.studio.services.project_lookup.get_project", get_project)
+    monkeypatch.setattr("lionhub.orchestration.project_store.get_project", get_project)
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_adoption_row(
@@ -2961,7 +2961,7 @@ def test_both_create_paths_hold_command_args_to_the_same_contract(tmp_path, monk
     returns a list. So the validator is replaced with a recorder and the call
     itself is what gets asserted.
     """
-    from lionagi.studio.services import _schedule_validation as schedules_svc
+    import lionhub.orchestration.schedule.validation as schedules_svc
 
     seen: list[list[str]] = []
     real_validator = schedules_svc._svc_validate_command_args
@@ -3112,7 +3112,7 @@ def test_the_other_fields_validator_would_refuse_every_real_shape(args):
     the two contracts have converged and the reason these fields are validated
     separately no longer holds. Read that before deleting this.
     """
-    from lionagi.studio.services.schedule_action_validation import _validate_extra_args
+    from lionhub.orchestration.schedule.action_validation import _validate_extra_args
 
     with pytest.raises(ValueError, match="starts with '-'"):
         _validate_extra_args(args)
@@ -4229,7 +4229,7 @@ _ADOPT_TABLE_CASES = {
 
 
 def test_every_compared_column_has_a_case():
-    from lionagi.studio.services.schedule_declaration import _LAUNCH_READERS
+    from lionhub.orchestration.schedule.declaration import _LAUNCH_READERS
 
     assert set(_ADOPT_TABLE_CASES) == set(_LAUNCH_READERS), (
         "a table row without a case is a comparison nobody pinned, and a case "
@@ -4356,7 +4356,7 @@ _TABLE_TRIGGERS = {
 
 def _table_kind_cases() -> list[tuple[str, str]]:
     """(column, kind) for every column the table gives an action-kind set."""
-    from lionagi.studio.services.schedule_declaration import _LAUNCH_READERS
+    from lionhub.orchestration.schedule.declaration import _LAUNCH_READERS
 
     return [
         (column, kind)
@@ -4368,7 +4368,7 @@ def _table_kind_cases() -> list[tuple[str, str]]:
 
 def _table_trigger_cases() -> list[tuple[str, str]]:
     """(column, trigger) for every column the table gives a trigger set."""
-    from lionagi.studio.services.schedule_declaration import _LAUNCH_READERS
+    from lionhub.orchestration.schedule.declaration import _LAUNCH_READERS
 
     return [
         (column, trigger)
@@ -4386,7 +4386,7 @@ def test_the_walks_pin_every_column_whose_reader_set_they_vary():
     """Each walk's pin covers every column the table still gives that axis a set
     for, and names only columns the walk can build a row for -- so a table entry
     the walk dropped a kind from cannot quietly leave the walk with no case."""
-    from lionagi.studio.services.schedule_declaration import _LAUNCH_READERS
+    from lionhub.orchestration.schedule.declaration import _LAUNCH_READERS
 
     kind_columns = {
         column for column, (kinds, _triggers) in _LAUNCH_READERS.items() if kinds is not None
@@ -4512,7 +4512,7 @@ _MISSING_OWN_COLUMN_CASES = {
 async def test_adopt_names_a_row_missing_its_own_target_column_as_undeclarable(
     kind, temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch
 ):
-    from lionagi.studio.services.schedule_declaration import _MEMBER_TARGET_COLUMNS
+    from lionhub.orchestration.schedule.declaration import _MEMBER_TARGET_COLUMNS
 
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
     flows = agent_profile / "flows"

@@ -67,8 +67,8 @@ def test_declaration_and_export_import_without_studio_runtime(tmp_path):
         from pathlib import Path
         import yaml
 
-        from lionagi.studio.services import schedule_declaration as declaration
-        from lionagi.studio.services import schedule_export as export
+        import lionhub.orchestration.schedule.declaration as declaration
+        import lionhub.orchestration.schedule.export as export
 
         root = Path({str(tmp_path)!r}) / "workspace"
         root.mkdir()
@@ -132,8 +132,8 @@ def test_declaration_and_export_import_without_studio_runtime(tmp_path):
     )
     assert result["refused"] == []
     assert result["blocked_loaded"] == []
-    assert "lionagi.studio.services.schedule_declaration" in result["loaded"]
-    assert "lionagi.studio.services.schedule_export" in result["loaded"]
+    assert "lionhub.orchestration.schedule.declaration" in result["loaded"]
+    assert "lionhub.orchestration.schedule.export" in result["loaded"]
 
 
 def test_import_blocker_rejects_scheduler_runtime():

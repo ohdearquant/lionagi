@@ -20,13 +20,13 @@ pytest.importorskip("croniter", reason="studio extra not installed")
 import yaml
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services.schedule_declaration import (
+from lionhub.orchestration.schedule.declaration import (
     apply_schedule_set,
     build_plan,
     parse_schedule_set,
     resolve_schedule_set,
 )
-from lionagi.studio.services.schedule_export import (
+from lionhub.orchestration.schedule.export import (
     build_managed_export_document,
     convert_legacy_rows,
     dump_schedule_set_yaml,
@@ -107,7 +107,7 @@ async def test_legacy_cron_row_exports_the_zone_the_scheduler_recorded(
 ):
     """The exporting process's zone is not the scheduler's; a row with no stored
     zone fires in the zone the scheduler recorded, and only that may be exported."""
-    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_row("z1", "demo/berlin", cwd=agent_profile, effective_timezone="Europe/Berlin")
@@ -346,7 +346,7 @@ async def test_legacy_export_apply_adopts_supported_rows_in_place(
     temp_db_path, tmp_path, monkeypatch, agent_profile
 ):
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
-    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     config = agent_profile / ".lionagi" / "config.toml"
     config.write_text('[project]\nname = "demo"\n')
     rows = [
@@ -1285,7 +1285,7 @@ def test_legacy_export_reapplies_unchanged_as_its_own_set(temp_db_path, agent_pr
 
     # The zone the row was recorded firing in; adoption confirms it only when
     # the scheduler runs in that zone.
-    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
 
     async def _seed():
         async with StateDB() as db:

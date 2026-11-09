@@ -148,7 +148,7 @@ class TestBothStoreEntryPointsAnnounce:
 
     @pytest.mark.asyncio
     async def test_the_studio_connection_helper_announces(self, monkeypatch, tmp_path, caplog):
-        from lionagi.studio.services import _db
+        import lionhub.orchestration.state_store as _db
 
         monkeypatch.setattr(eng, "_busy_timeout_announced", False)
         monkeypatch.delenv(ENV, raising=False)

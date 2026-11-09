@@ -74,7 +74,7 @@ async def test_operator_uses_explicit_root_before_the_selected_project(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from lionagi.studio.services import project_lookup
+    import lionhub.orchestration.project_store as project_lookup
 
     # services.projects copies get_project at import. Import it before the patch, so its copy stays the real lookup and an
     # engine that read that copy would miss the fake below.
@@ -226,8 +226,8 @@ async def test_api_created_project_conversation_keeps_its_registered_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import lionhub.orchestration.project_store as project_lookup
     from lionagi.studio.operator.types import CreateConversationRequest
-    from lionagi.studio.services import project_lookup
 
     # services.projects copies get_project at import. Import it before the patch, so its copy stays the real lookup and an
     # engine that read that copy would miss the fake below.
@@ -279,7 +279,7 @@ async def test_selected_invalid_project_refuses_instead_of_using_the_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from lionagi.studio.services import project_lookup
+    import lionhub.orchestration.project_store as project_lookup
 
     # services.projects copies get_project at import. Import it before the patch, so its copy stays the real lookup and an
     # engine that read that copy would miss the fake below.
@@ -329,7 +329,7 @@ async def test_explicit_invalid_root_refuses_instead_of_using_the_default_or_pro
     monkeypatch: pytest.MonkeyPatch,
     configured: str,
 ) -> None:
-    from lionagi.studio.services import project_lookup
+    import lionhub.orchestration.project_store as project_lookup
 
     # services.projects copies get_project at import. Import it before the patch, so its copy stays the real lookup and an
     # engine that read that copy would miss the fake below.

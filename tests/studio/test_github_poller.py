@@ -19,8 +19,8 @@ import logging
 import httpx
 import pytest
 
+import lionhub.orchestration.schedule.validation as _schedule_validation
 from lionagi.studio.scheduler import github as gh_mod
-from lionagi.studio.services import _schedule_validation
 
 
 @pytest.fixture(autouse=True)

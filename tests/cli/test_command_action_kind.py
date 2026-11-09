@@ -190,7 +190,7 @@ class TestCommandAllowlist:
         Schedule creation and the later spawn check can run in separate
         processes, so the message needs to identify the configuration it read.
         """
-        from lionagi.studio.services.schedule_action_validation import _validate_command_allowlisted
+        from lionhub.orchestration.schedule.action_validation import _validate_command_allowlisted
 
         monkeypatch.delenv(ALLOWLIST_ENV, raising=False)
         with pytest.raises(ValueError) as unset:
@@ -206,7 +206,7 @@ class TestCommandAllowlist:
 
     @pytest.mark.parametrize("allowlisted_name", ["tool with space", "tool'quote", "tool$dollar"])
     def test_refusal_prints_a_shell_safe_allowlist_value(self, monkeypatch, allowlisted_name):
-        from lionagi.studio.services.schedule_action_validation import _validate_command_allowlisted
+        from lionhub.orchestration.schedule.action_validation import _validate_command_allowlisted
 
         monkeypatch.setenv(ALLOWLIST_ENV, allowlisted_name)
         with pytest.raises(ValueError) as caught:
@@ -221,7 +221,7 @@ class TestCommandAllowlist:
         that never exported it, the other is a policy that permits nothing.
         A reader cannot act on the first without being told which it is.
         """
-        from lionagi.studio.services.schedule_action_validation import _validate_command_allowlisted
+        from lionhub.orchestration.schedule.action_validation import _validate_command_allowlisted
 
         monkeypatch.delenv(ALLOWLIST_ENV, raising=False)
         with pytest.raises(ValueError) as unset:
@@ -235,7 +235,7 @@ class TestCommandAllowlist:
 
     def test_refusal_preserves_existing_allow_list_entries(self, monkeypatch):
         """The suggested daemon value keeps existing entries and adds the refused command."""
-        from lionagi.studio.services.schedule_action_validation import _validate_command_allowlisted
+        from lionhub.orchestration.schedule.action_validation import _validate_command_allowlisted
 
         monkeypatch.setenv(ALLOWLIST_ENV, "other-tool,kdev")
         with pytest.raises(ValueError) as exc:

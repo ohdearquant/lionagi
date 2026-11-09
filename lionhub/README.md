@@ -55,6 +55,21 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.cli._kill_service` | `lionhub.orchestration.kill` |
 | `lionagi.cli.orchestrate._checkpoint` | `lionhub.orchestration.flow.checkpoint` |
 
+The schedule services below are deprecated at their old paths in 0.38.0
+and are scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.studio.services._schedule_validation` | `lionhub.orchestration.schedule.validation` |
+| `lionagi.studio.services.schedule_action_validation` | `lionhub.orchestration.schedule.action_validation` |
+| `lionagi.studio.services.schedule_timing` | `lionhub.orchestration.schedule.timing` |
+| `lionagi.studio._timezone_rules` | `lionhub.orchestration.schedule._timezone_rules` |
+| `lionagi.studio.services.schedule_execution_root` | `lionhub.orchestration.schedule.execution_root` |
+| `lionagi.studio.services.schedule_declaration` | `lionhub.orchestration.schedule.declaration` |
+| `lionagi.studio.services.schedule_export` | `lionhub.orchestration.schedule.export` |
+| `lionagi.studio.services.project_lookup` | `lionhub.orchestration.project_store` |
+| `lionagi.studio.services._db` | `lionhub.orchestration.state_store` |
+
 ## Tests
 
 From the repository root, install the project dependencies and run:

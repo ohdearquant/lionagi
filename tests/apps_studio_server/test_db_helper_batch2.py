@@ -19,7 +19,7 @@ class TestOpenDb:
     @pytest.mark.integration
     def test_open_db_sets_wal_mode(self, tmp_path):
         """open_db() must switch the connection to WAL journal mode."""
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         db_path = str(tmp_path / "test.db")
 
@@ -36,7 +36,7 @@ class TestOpenDb:
     def test_open_db_sets_busy_timeout(self, tmp_path):
         """open_db() must set a busy_timeout, and the shared one."""
         from lionagi.state.engine import SQLITE_BUSY_TIMEOUT_MS
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         db_path = str(tmp_path / "test.db")
 
@@ -62,7 +62,7 @@ class TestOpenDb:
         """
         pytest.importorskip("sqlalchemy", reason="sqlalchemy not installed")
         from lionagi.state.engine import make_engine
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         db_path = tmp_path / "test.db"
 
@@ -87,7 +87,7 @@ class TestOpenDb:
     @pytest.mark.integration
     def test_open_db_sets_row_factory(self, tmp_path):
         """open_db() must set row_factory so rows are accessible by column name."""
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         db_path = str(tmp_path / "test.db")
 
@@ -150,7 +150,7 @@ class TestOpenDb:
         """
         import asyncio
 
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         db_path = str(tmp_path / "test.db")
         parked = asyncio.Event()
@@ -191,7 +191,7 @@ class TestOpenDb:
         import asyncio
         import threading
 
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         db_path = str(tmp_path / "test.db")
         gate = threading.Event()
@@ -231,7 +231,7 @@ class TestOpenDb:
     ):
         """A body that returns between its ``BEGIN IMMEDIATE`` and its ``COMMIT``, a read
         still open, leaves no write lock behind, and its writes are rolled back."""
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         db_path = str(tmp_path / "test.db")
         async with open_db(db_path) as db:
@@ -252,7 +252,7 @@ class TestOpenDb:
     ):
         """A body that raises between its ``BEGIN IMMEDIATE`` and its ``COMMIT`` leaves no
         write lock behind, its writes are rolled back, and its own error reaches the caller."""
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         db_path = str(tmp_path / "test.db")
         with pytest.raises(RuntimeError, match="the body failed"):

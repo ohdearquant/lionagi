@@ -14,7 +14,7 @@ from typing import Any, Literal, NamedTuple
 import httpx
 
 from lionagi.ln._proc import communicate_in_process_group
-from lionagi.studio.services._schedule_validation import (
+from lionhub.orchestration.schedule.validation import (
     _GITHUB_OWNER_MAX,  # noqa: F401
     _GITHUB_OWNER_RE,  # noqa: F401
     _GITHUB_REPO_MAX,  # noqa: F401
@@ -152,7 +152,7 @@ _client: httpx.AsyncClient | None = None
 _cached_token: str | None = None
 
 # Page size requested (GitHub's maximum); the merged-scan page budget in
-# lionagi.studio.services._schedule_validation is stated in terms of this.
+# lionhub.orchestration.schedule.validation is stated in terms of this.
 _PER_PAGE = 100
 
 _LINK_NEXT_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')

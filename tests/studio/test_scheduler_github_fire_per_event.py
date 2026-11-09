@@ -17,11 +17,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import lionhub.orchestration.schedule.validation as _schedule_validation
 from lionagi.state.db import NO_CURSOR_CLAIM
 from lionagi.studio.scheduler import github as gh_mod
 from lionagi.studio.scheduler.engine import SchedulerEngine
 from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
-from lionagi.studio.services import _schedule_validation
 from lionagi.studio.services.schedules import _run_trigger_facts
 
 

@@ -103,6 +103,55 @@ MOVED: tuple[Moved, ...] = (
         "0.38.0",
         "2.0.0",
     ),
+    Moved(
+        "lionagi.studio.services._schedule_validation",
+        "lionhub.orchestration.schedule.validation",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.schedule_action_validation",
+        "lionhub.orchestration.schedule.action_validation",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.schedule_timing",
+        "lionhub.orchestration.schedule.timing",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio._timezone_rules",
+        "lionhub.orchestration.schedule._timezone_rules",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.schedule_execution_root",
+        "lionhub.orchestration.schedule.execution_root",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.schedule_declaration",
+        "lionhub.orchestration.schedule.declaration",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.schedule_export",
+        "lionhub.orchestration.schedule.export",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.project_lookup",
+        "lionhub.orchestration.project_store",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved("lionagi.studio.services._db", "lionhub.orchestration.state_store", "0.38.0", "2.0.0"),
 )
 
 

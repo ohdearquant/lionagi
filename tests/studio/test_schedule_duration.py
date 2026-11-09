@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.studio.services.schedule_declaration import Trigger, _resolve_trigger
+from lionhub.orchestration.schedule.declaration import Trigger, _resolve_trigger
 
 
 @pytest.mark.parametrize(

@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import lionagi.state.db as state_db_mod  # noqa: E402
 from lionagi.state.db import StateDB  # noqa: E402
-from lionagi.studio.services._db import (  # noqa: E402
+from lionhub.orchestration.state_store import (  # noqa: E402
     StoreNotAddressableError,
     require_file_store,
 )

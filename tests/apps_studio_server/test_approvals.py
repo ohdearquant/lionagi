@@ -137,7 +137,7 @@ def test_expiry_rejects_grant(tmp_path, monkeypatch):
     )
 
     async def _force_expired():
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         async with open_db(str(db_path)) as db:
             await db.execute(
@@ -171,7 +171,7 @@ def test_expiry_rejects_consume_of_granted_but_expired(tmp_path, monkeypatch):
     _run(approvals_mod.grant_approval(row["id"]))
 
     async def _force_expired():
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         async with open_db(str(db_path)) as db:
             await db.execute(
@@ -444,7 +444,7 @@ def test_grant_route_404_for_unknown_id(tmp_path, monkeypatch):
 
 def _evidence_rows(db_path: Path) -> list[dict]:
     async def _fetch():
-        from lionagi.studio.services._db import open_db
+        from lionhub.orchestration.state_store import open_db
 
         async with open_db(str(db_path)) as db:
             cur = await db.execute("SELECT * FROM approval_evidence ORDER BY sequence ASC")
@@ -514,7 +514,7 @@ def test_tamper_detected_by_verify(tmp_path, monkeypatch):
     _run(_init_db(db_path))
 
     from lionagi.studio.services import approvals as approvals_mod
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     params = {"name": "demo"}
     row = _run(approvals_mod.create_approval(action_kind="launch_playbook", params=params))
@@ -577,7 +577,7 @@ def test_hmac_tamper_detected_when_key_configured(tmp_path, monkeypatch):
     _run(_init_db(db_path))
 
     from lionagi.studio.services import approvals as approvals_mod
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     _run(approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"}))
 
@@ -603,7 +603,7 @@ def test_hmac_stripped_signature_fails_verification(tmp_path, monkeypatch):
     _run(_init_db(db_path))
 
     from lionagi.studio.services import approvals as approvals_mod
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     _run(approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"}))
     rows = _evidence_rows(db_path)
@@ -654,7 +654,7 @@ def test_renumbered_sequence_detected_by_verify(tmp_path, monkeypatch):
     _run(_init_db(db_path))
 
     from lionagi.studio.services import approvals as approvals_mod
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     row = _run(
         approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"})
@@ -885,7 +885,7 @@ def test_lazy_expire_writes_expired_evidence_row_with_intact_chain(tmp_path, mon
     _run(_init_db(db_path))
 
     from lionagi.studio.services import approvals as approvals_mod
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     row = _run(
         approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"})
@@ -926,7 +926,7 @@ def test_double_expire_read_race_writes_only_one_evidence_row(tmp_path, monkeypa
     _run(_init_db(db_path))
 
     from lionagi.studio.services import approvals as approvals_mod
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     row = _run(
         approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"})
@@ -962,7 +962,7 @@ def test_fallback_ensure_table_creates_status_and_session_indexes(tmp_path):
     must create the same partial indexes the canonical schema defines, so the
     ledger is not left un-indexed on the status/session read paths."""
     from lionagi.studio.services import approvals as approvals_mod
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     db_path = tmp_path / "bare.db"
 

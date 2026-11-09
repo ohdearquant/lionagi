@@ -29,8 +29,8 @@ from typing import Any
 from lionagi.ln import compute_hash, short_id
 from lionagi.ln.types import Unset, UnsetType
 from lionagi.state import db as state_db_mod
+from lionhub.orchestration.state_store import open_db, require_file_store
 
-from ..services._db import open_db, require_file_store
 from .conversation_metadata import UpdateConversationInput, normalize_description
 
 _SCHEMA = """

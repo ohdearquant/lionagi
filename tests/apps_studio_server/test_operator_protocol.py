@@ -2708,7 +2708,7 @@ async def test_daemon_shutdown_during_a_store_write_terminalizes_and_can_restart
     import lionagi.state.engine as state_engine
     import lionagi.studio.services.operator as operator_service
     from lionagi.state.schema_meta import metadata
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2952,7 +2952,7 @@ async def test_native_tool_result_terminalizes_and_audits_provider_permission(
 async def test_pending_provider_permission_cancel_and_expiry_are_audited(
     tmp_path, monkeypatch, terminalizer, proposal_status, audit_decision
 ):
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -4588,7 +4588,7 @@ async def test_a_finished_turn_keeps_the_denial_it_committed(tmp_path, monkeypat
 async def test_a_finished_turn_keeps_the_expiry_it_committed(tmp_path, monkeypatch):
     """Expiry moves a proposal out of pending, so its confirmation has the
     same ordering requirement as a decision."""
-    from lionagi.studio.services._db import open_db
+    from lionhub.orchestration.state_store import open_db
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)

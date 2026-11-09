@@ -1521,7 +1521,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def _load_schedule_set_doc(path_str: str):
     """Read + parse a ScheduleSet file. Prints an error and returns
     ``(None, None)`` on any failure -- callers just check for None."""
-    from lionagi.studio.services.schedule_declaration import parse_schedule_set
+    from lionhub.orchestration.schedule.declaration import parse_schedule_set
 
     path = Path(path_str)
     if not path.is_file():
@@ -1536,7 +1536,7 @@ def _load_schedule_set_doc(path_str: str):
 
 
 def _cmd_validate_set(args: argparse.Namespace) -> int:
-    from lionagi.studio.services.schedule_declaration import ScheduleSetError, resolve_schedule_set
+    from lionhub.orchestration.schedule.declaration import ScheduleSetError, resolve_schedule_set
 
     doc, manifest_dir = _load_schedule_set_doc(args.file)
     if doc is None:
@@ -1582,7 +1582,7 @@ def _cmd_validate_set(args: argparse.Namespace) -> int:
 
 
 def _fmt_plan_line(entry, set_ref: str) -> str:
-    from lionagi.studio.services.schedule_declaration import PlanEntry
+    from lionhub.orchestration.schedule.declaration import PlanEntry
 
     e: PlanEntry = entry
     if e.action == "CREATE":
@@ -1610,7 +1610,7 @@ def _fmt_plan_line(entry, set_ref: str) -> str:
 
 def _cmd_apply_set(args: argparse.Namespace) -> int:
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedule_declaration import (
+    from lionhub.orchestration.schedule.declaration import (
         ScheduleSetError,
         apply_schedule_set,
         build_plan,
@@ -1720,7 +1720,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     never opens a write transaction against the database. Exit code 2 (not
     0/1) when any row was BLOCKED -- see EXIT_EXPORT_PARTIAL."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedule_export import (
+    from lionhub.orchestration.schedule.export import (
         build_managed_export_document,
         convert_legacy_rows,
         dump_schedule_set_yaml,
@@ -1926,7 +1926,7 @@ def build_quick_create_parser(kind: str) -> argparse.ArgumentParser:
 
 
 def _quick_create_trigger(args: argparse.Namespace) -> Any:
-    from lionagi.studio.services.schedule_declaration import CronTrigger, GithubTriggerSpec, Trigger
+    from lionhub.orchestration.schedule.declaration import CronTrigger, GithubTriggerSpec, Trigger
 
     if args.at:
         return Trigger(at=args.at)
@@ -1955,7 +1955,7 @@ def _quick_create_trigger(args: argparse.Namespace) -> Any:
 def _quick_create_policies(args: argparse.Namespace) -> Any:
     from pydantic import ValidationError
 
-    from lionagi.studio.services.schedule_declaration import Budget, Policies
+    from lionhub.orchestration.schedule.declaration import Budget, Policies
 
     if args.once and args.max_runs is not None:
         print("Error: --once and --max-runs are mutually exclusive.", file=sys.stderr)
@@ -1992,7 +1992,7 @@ def _quick_create_policies(args: argparse.Namespace) -> Any:
 
 
 def _quick_create_target(kind: str, args: argparse.Namespace) -> Any:
-    from lionagi.studio.services.schedule_declaration import (
+    from lionhub.orchestration.schedule.declaration import (
         AgentTarget,
         CommandTarget,
         FlowTarget,
@@ -2053,7 +2053,7 @@ def run_schedule_quick_create(kind: str, argv: list[str]) -> int:
     from pydantic import ValidationError
 
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedule_declaration import (
+    from lionhub.orchestration.schedule.declaration import (
         Execution,
         ScheduleMember,
         ScheduleSetError,

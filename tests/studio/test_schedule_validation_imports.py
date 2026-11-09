@@ -26,7 +26,8 @@ import pytest
     ],
 )
 def test_router_reexports_the_same_validation_objects(name):
-    from lionagi.studio.services import _schedule_validation, schedules
+    import lionhub.orchestration.schedule.validation as _schedule_validation
+    from lionagi.studio.services import schedules
 
     assert getattr(schedules, name) is getattr(_schedule_validation, name)
 
@@ -36,12 +37,12 @@ def test_router_reexports_the_same_validation_objects(name):
     [
         (
             "lionagi.studio.scheduler.admit",
-            "lionagi.studio.services._schedule_validation",
+            "lionhub.orchestration.schedule.validation",
             ("validate_rate_limit",),
         ),
         (
             "lionagi.studio.scheduler.github",
-            "lionagi.studio.services._schedule_validation",
+            "lionhub.orchestration.schedule.validation",
             (
                 "_validate_github_repo",
                 "merged_page_limit",
@@ -54,7 +55,7 @@ def test_router_reexports_the_same_validation_objects(name):
         ),
         (
             "lionagi.studio.scheduler.subprocess",
-            "lionagi.studio.services.schedule_action_validation",
+            "lionhub.orchestration.schedule.action_validation",
             (
                 "_PLAY_SUBCOMMANDS",
                 "_validate_action_model",
@@ -100,8 +101,8 @@ def test_service_validators_import_without_scheduler_runtime_modules():
             "lionagi.studio.app",
         }
         for name in (
-            "lionagi.studio.services.schedule_action_validation",
-            "lionagi.studio.services._schedule_validation",
+            "lionhub.orchestration.schedule.action_validation",
+            "lionhub.orchestration.schedule.validation",
         ):
             importlib.import_module(name)
         assert not forbidden.intersection(sys.modules), forbidden.intersection(sys.modules)
@@ -153,8 +154,8 @@ def test_declaration_validators_run_without_importing_router(tmp_path):
         assert attempts == [router]
         attempts.clear()
 
-        from lionagi.studio.services import _schedule_validation as validators
-        from lionagi.studio.services.schedule_declaration import (
+        import lionhub.orchestration.schedule.validation as validators
+        from lionhub.orchestration.schedule.declaration import (
             Budget, CommandTarget, FlowTarget, GithubTriggerSpec, Trigger,
             _resolve_command_target, _resolve_flow_target, _resolve_trigger,
         )

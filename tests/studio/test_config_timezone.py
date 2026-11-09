@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.studio.services import schedule_timing as config
+import lionhub.orchestration.schedule.timing as config
 
 # Captured before any test moves the search path, so the real trees stay
 # reachable as a source of tzfile bytes.
@@ -884,14 +884,12 @@ def test_link_named_zone_that_no_root_can_load_still_raises(tz_host):
 
 
 def test_moved_bindings_reexport_their_owner() -> None:
+    import lionhub.orchestration.project_store as project_lookup
+    import lionhub.orchestration.schedule.execution_root as schedule_execution_root
+    import lionhub.orchestration.schedule.timing as schedule_timing
     from lionagi.studio import config as legacy_config
     from lionagi.studio.scheduler import engine
-    from lionagi.studio.services import (
-        project_lookup,
-        projects,
-        schedule_execution_root,
-        schedule_timing,
-    )
+    from lionagi.studio.services import projects
 
     config_names = (
         "SYSTEM_LOCALTIME_LINK",
@@ -952,9 +950,9 @@ def test_service_import_boundaries_in_fresh_processes() -> None:
     import json
 
     service_modules = (
-        "lionagi.studio.services.schedule_timing",
-        "lionagi.studio.services.project_lookup",
-        "lionagi.studio.services.schedule_execution_root",
+        "lionhub.orchestration.schedule.timing",
+        "lionhub.orchestration.project_store",
+        "lionhub.orchestration.schedule.execution_root",
     )
     forbidden = {
         "lionagi.studio.scheduler.engine",
@@ -1009,14 +1007,14 @@ def test_scheduler_timezone_snapshot_is_resolved_once_in_both_import_orders(
 import sys
 calls = []
 def count(frame, event, arg):
-    if event == "call" and frame.f_code.co_name == "_resolve_scheduler_tz" and frame.f_globals.get("__name__") == "lionagi.studio.services.schedule_timing":
+    if event == "call" and frame.f_code.co_name == "_resolve_scheduler_tz" and frame.f_globals.get("__name__") == "lionhub.orchestration.schedule.timing":
         calls.append(frame.f_code.co_name)
 sys.setprofile(count)
 if sys.argv[1] == "config-first":
     import lionagi.studio.config
-    import lionagi.studio.services.schedule_timing
+    import lionhub.orchestration.schedule.timing
 else:
-    import lionagi.studio.services.schedule_timing
+    import lionhub.orchestration.schedule.timing
     import lionagi.studio.config
 sys.setprofile(None)
 print(f"_resolve_scheduler_tz calls: {len(calls)}")

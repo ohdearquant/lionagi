@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from lionagi.studio.services.schedule_declaration import (
+from lionhub.orchestration.schedule.declaration import (
     SPEC_KIND,
     SPEC_VERSION,
     AgentTarget,

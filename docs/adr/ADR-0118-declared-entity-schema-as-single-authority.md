@@ -102,7 +102,7 @@ reaches into `run_tags` for its private `_ensure_table` before a tag filter can 
 store that has never been tagged has no `run_tags` table. Separately, studio opens the store
 directly — 38
 `async with _open_db(...)` contexts across 9 files — rather than going through `StateDB`. The
-path those contexts open is chosen by `lionagi/studio/services/_db.py::store_path`, whose own docstring records
+path those contexts open is chosen by `lionhub/src/lionhub/orchestration/state_store.py::store_path`, whose own docstring records
 that for a server-backed store it falls back to the default SQLite file and is "equally wrong
 for that deployment". `require_file_store` exists as the guard against exactly that case and is
 referenced 37 times, but `services/shows.py`, `services/signals.py` and `services/stats.py`
