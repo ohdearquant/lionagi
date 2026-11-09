@@ -76,6 +76,9 @@ async def test_operator_uses_explicit_root_before_the_selected_project(
 ) -> None:
     from lionagi.studio.services import project_lookup
 
+    # Import the route module before patching, so a reader of its copy sees the real lookup.
+    from lionagi.studio.services import projects as _project_routes  # noqa: F401
+
     daemon_cwd = tmp_path / "app"
     execution_root = tmp_path / "operator-root"
     project_root = tmp_path / "selected-project"
@@ -224,6 +227,9 @@ async def test_api_created_project_conversation_keeps_its_registered_root(
 ) -> None:
     from lionagi.studio.operator.types import CreateConversationRequest
     from lionagi.studio.services import project_lookup
+
+    # Import the route module before patching, so a reader of its copy sees the real lookup.
+    from lionagi.studio.services import projects as _project_routes  # noqa: F401
     from lionagi.studio.services.operator import create_operator_conversation
 
     default_root = tmp_path / "operator-default"
@@ -273,6 +279,9 @@ async def test_selected_invalid_project_refuses_instead_of_using_the_default(
 ) -> None:
     from lionagi.studio.services import project_lookup
 
+    # Import the route module before patching, so a reader of its copy sees the real lookup.
+    from lionagi.studio.services import projects as _project_routes  # noqa: F401
+
     default_root = tmp_path / "operator-default"
     default_root.mkdir()
     monkeypatch.delenv("LIONAGI_STUDIO_OPERATOR_CWD", raising=False)
@@ -318,6 +327,9 @@ async def test_explicit_invalid_root_refuses_instead_of_using_the_default_or_pro
     configured: str,
 ) -> None:
     from lionagi.studio.services import project_lookup
+
+    # Import the route module before patching, so a reader of its copy sees the real lookup.
+    from lionagi.studio.services import projects as _project_routes  # noqa: F401
 
     daemon_cwd = tmp_path / "app"
     default_root = tmp_path / "operator-default"
