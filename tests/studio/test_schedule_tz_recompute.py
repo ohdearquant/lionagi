@@ -36,7 +36,7 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _pin_scheduler_tz(monkeypatch: pytest.MonkeyPatch):
     """Pin the configured cron timezone explicitly so these tests don't
     depend on the CI host's local timezone."""
-    import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as studio_config
 
     monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
 

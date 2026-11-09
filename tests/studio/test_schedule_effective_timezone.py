@@ -48,7 +48,7 @@ def _pin_scheduler_tz(monkeypatch: pytest.MonkeyPatch, name: str, source: str) -
     answer: pinning only the name would leave the source describing how some
     other name was arrived at, which is exactly the confusion under test.
     """
-    import lionagi.studio.config as studio_config
+    import lionagi.studio.services.schedule_timing as studio_config
 
     monkeypatch.setattr(studio_config, "SCHEDULER_TZ", name)
     monkeypatch.setattr(studio_config, "SCHEDULER_TZ_SOURCE", source)
@@ -85,7 +85,7 @@ async def _stamp_and_read(schedule_id: str) -> dict:
 async def test_unloadable_zone_is_recorded_as_unresolvable(temp_db_path, monkeypatch):
     """A configuration naming a zone this host cannot load must produce a row
     that says so -- not merely a row that happens to say UTC."""
-    from lionagi.studio.config import TZ_SOURCE_UTC_UNLOADABLE_NAME
+    from lionagi.studio.services.schedule_timing import TZ_SOURCE_UTC_UNLOADABLE_NAME
 
     _pin_scheduler_tz(monkeypatch, "Not/A_Real_Zone", "env:LIONAGI_SCHEDULER_TZ")
     sid = await _create_cron_schedule("tz-unloadable")
@@ -113,7 +113,7 @@ async def test_resolvable_zone_is_recorded_by_name(temp_db_path, monkeypatch):
 async def test_requested_utc_and_fallback_utc_are_distinguishable(temp_db_path, monkeypatch):
     """The whole point of storing the source: three configurations that all
     interpret cron in UTC must leave three different records."""
-    from lionagi.studio.config import (
+    from lionagi.studio.services.schedule_timing import (
         TZ_SOURCE_SCHEDULER_ENV,
         TZ_SOURCE_UTC_FALLBACK,
         TZ_SOURCE_UTC_UNLOADABLE_NAME,
@@ -146,7 +146,7 @@ async def test_declared_zone_on_the_row_wins_and_is_attributed_to_the_row(
 ):
     """A row carrying its own zone resolves in that zone, and the record says
     the zone came from the row -- not from the process default it overrode."""
-    from lionagi.studio.config import TZ_SOURCE_SCHEDULE_DECLARED
+    from lionagi.studio.services.schedule_timing import TZ_SOURCE_SCHEDULE_DECLARED
 
     _pin_scheduler_tz(monkeypatch, "UTC", "env:LIONAGI_SCHEDULER_TZ")
     sid = await _create_cron_schedule("tz-declared", resolved_timezone="Europe/Berlin")
@@ -305,8 +305,8 @@ def test_startup_announces_the_resolved_zone(caplog, monkeypatch):
 def test_startup_announces_a_utc_fallback_at_warning_level(caplog, monkeypatch):
     """A fallback moved every cron schedule in the process. It must not be
     logged at the same level as an ordinary, chosen configuration."""
-    from lionagi.studio.config import TZ_SOURCE_UTC_FALLBACK
     from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services.schedule_timing import TZ_SOURCE_UTC_FALLBACK
 
     _pin_scheduler_tz(monkeypatch, "UTC", TZ_SOURCE_UTC_FALLBACK)
 
