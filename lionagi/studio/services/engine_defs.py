@@ -120,7 +120,7 @@ def _validate_budget(field: str, val: Any) -> None:
 def _svc_validate_action_model(model: str | None) -> None:
     if not model:
         return
-    from lionagi.studio.scheduler.subprocess import _validate_action_model
+    from lionagi.studio.services.schedule_action_validation import _validate_action_model
 
     _validate_action_model(model)
 
