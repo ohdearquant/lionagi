@@ -33,7 +33,6 @@ from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notif
 from lionagi.state.reasons import RunReasons, ScheduleDefinitionReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
 from lionagi.studio.scheduler import threshold as _threshold
-from lionagi.studio.scheduler.admit import validate_rate_limit
 from lionagi.studio.scheduler.signals import (
     SchedulerHandlerCancelled,
     SchedulerSignalBus,
@@ -41,6 +40,8 @@ from lionagi.studio.scheduler.signals import (
     record_handler_failure,
     register_default_handlers,
 )
+from lionagi.studio.services._schedule_validation import merged_page_limit, validate_rate_limit
+from lionagi.studio.services.schedule_action_validation import validate_launch_fields
 from lionagi.studio.services.scheduler_state import (
     SchedulerStateService,
     _DBSchedulerStateService,
@@ -911,7 +912,7 @@ class SchedulerEngine:
         # A manual trigger carries no event, so a template naming an event's field, such as a poll
         # row's {{pr_number}}, would reach the run unfilled. Refuse before anything is reserved or
         # recorded, and refuse a schedule that cannot launch at all for that reason first.
-        _subprocess.validate_launch_fields(schedule)
+        validate_launch_fields(schedule)
         # Each refusal is raised outside its handler, so neither its cause nor its context
         # carries the original error, whose text can name the daemon's working directory.
         refusal = None
@@ -1917,8 +1918,6 @@ class SchedulerEngine:
                 polled = batch.items
             else:
                 self._github_polled_at[sid] = now
-                from .github import merged_page_limit
-
                 poll_filter = schedule.get("github_filter") or {}
                 if poll_filter.get("event") == "pr_merged":
                     try:

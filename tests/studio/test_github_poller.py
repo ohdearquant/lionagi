@@ -20,6 +20,7 @@ import httpx
 import pytest
 
 from lionagi.studio.scheduler import github as gh_mod
+from lionagi.studio.services import _schedule_validation
 
 
 @pytest.fixture(autouse=True)
@@ -1268,7 +1269,7 @@ def test_github_poll_truncated_scan_holding_everything_back_warns(monkeypatch, c
     # reports itself incomplete rather than reaching a natural end.
     pages = [
         _all_merged(_closed_page(10 - i, 1000 + i * 1000))
-        for i in range(gh_mod._MERGED_MODE_MAX_PAGES + 1)
+        for i in range(_schedule_validation._MERGED_MODE_MAX_PAGES + 1)
     ]
     _install_paginated(monkeypatch, pages)
 
@@ -1289,7 +1290,7 @@ def test_github_poll_truncated_scan_holding_everything_back_warns(monkeypatch, c
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert warnings, "a scan that found events and dispatched none logged nothing"
     msg = warnings[-1].getMessage()
-    held = gh_mod._PER_PAGE * gh_mod._MERGED_MODE_MAX_PAGES
+    held = gh_mod._PER_PAGE * _schedule_validation._MERGED_MODE_MAX_PAGES
     assert f"found {held} event(s) past the cursor and dispatched none" in msg
     assert "owner/name" in msg
 
@@ -1306,7 +1307,7 @@ def test_github_poll_truncated_scan_defers_older_merges_and_warns(monkeypatch, c
 
     pages = [
         _all_merged(_closed_page(10 - i, 1000 + i * 1000))
-        for i in range(gh_mod._MERGED_MODE_MAX_PAGES + 1)
+        for i in range(_schedule_validation._MERGED_MODE_MAX_PAGES + 1)
     ]
     # Even this merge, far older than the fetched updated_at window, could
     # step past an earlier merge on an unfetched page.
@@ -1442,7 +1443,7 @@ def _merged_poll_schedule(cursor):
 
 
 def test_control_the_earlier_merge_is_an_event_past_the_old_cursor(monkeypatch):
-    monkeypatch.setattr(gh_mod, "_MERGED_MODE_MAX_PAGES", 10)
+    monkeypatch.setattr(_schedule_validation, "_MERGED_MODE_MAX_PAGES", 10)
     _install_paginated(monkeypatch, _merged_scan_pages())
     result = _poll_result(_merged_poll_schedule(_EARLIER_MERGE_CURSOR))
     assert result.scan_complete is True
@@ -1454,12 +1455,12 @@ def test_capped_scan_keeps_the_cursor_until_a_complete_scan_recovers_all_merges(
     client = _install_paginated(monkeypatch, _merged_scan_pages())
     first = _poll_result(schedule)
     assert first.scan_complete is False
-    assert len(client.requests) == gh_mod._MERGED_MODE_MAX_PAGES
+    assert len(client.requests) == _schedule_validation._MERGED_MODE_MAX_PAGES
     assert first.items == []
     assert schedule["github_cursor"] == _EARLIER_MERGE_CURSOR
 
     # Once a complete scan reaches page 6, both merges remain past the cursor.
-    monkeypatch.setattr(gh_mod, "_MERGED_MODE_MAX_PAGES", 10)
+    monkeypatch.setattr(_schedule_validation, "_MERGED_MODE_MAX_PAGES", 10)
     _install_paginated(monkeypatch, _merged_scan_pages())
     later = _poll_result(schedule)
     assert later.scan_complete is True
@@ -1476,6 +1477,6 @@ def test_each_truncated_scan_defers_the_old_prefix_without_advancing_cursor(monk
         result = _poll_result(schedule)
         assert result.scan_complete is False
         assert result.poll_status == "ok"
-        assert len(client.requests) == gh_mod._MERGED_MODE_MAX_PAGES
+        assert len(client.requests) == _schedule_validation._MERGED_MODE_MAX_PAGES
         assert result.items == []
         assert schedule["github_cursor"] == _EARLIER_MERGE_CURSOR

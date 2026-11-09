@@ -124,7 +124,7 @@ def _svc_validate_action_model(model: str | None) -> None:
     """Service-boundary check: reject action_model values that inject CLI flags."""
     if not model:
         return
-    from lionagi.studio.scheduler.subprocess import _validate_action_model
+    from lionagi.studio.services.schedule_action_validation import _validate_action_model
 
     _validate_action_model(model)
 
@@ -206,7 +206,7 @@ def _svc_validate_extra_args(extra: list | None) -> None:
     """Service-boundary check: reject action_extra_args elements that inject CLI flags."""
     if not extra:
         return
-    from lionagi.studio.scheduler.subprocess import _validate_extra_args
+    from lionagi.studio.services.schedule_action_validation import _validate_extra_args
 
     _validate_extra_args(extra)
 
@@ -218,7 +218,7 @@ def _svc_validate_action_command(command: str | None) -> None:
     """
     if not command:
         return
-    from lionagi.studio.scheduler.subprocess import (
+    from lionagi.studio.services.schedule_action_validation import (
         _validate_action_command,
         _validate_command_allowlisted,
     )
@@ -302,7 +302,7 @@ def _svc_validate_max_runs(max_runs: Any) -> None:
 
 def _svc_validate_rate_limit(rate_limit: Any) -> None:
     """Service-boundary check for the optional rolling-window fire cap."""
-    from lionagi.studio.scheduler.admit import validate_rate_limit
+    from lionagi.studio.services._schedule_validation import validate_rate_limit
 
     validate_rate_limit(rate_limit)
 
@@ -356,7 +356,7 @@ def _svc_validate_prompt(prompt: str | None) -> None:
     end-of-options token that argparse would silently swallow."""
     if not prompt:
         return
-    from lionagi.studio.scheduler.subprocess import _validate_prompt
+    from lionagi.studio.services.schedule_action_validation import _validate_prompt
 
     _validate_prompt(prompt)
 
@@ -369,7 +369,8 @@ def _svc_validate_action_kind_type(kind: Any) -> None:
 def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
     """Service-boundary check: a play launch has no '--' separator, so a prompt it sends that
     starts with '-' would re-parse as a flag of `li play`."""
-    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS, _sends_prompt
+    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS
+    from lionagi.studio.services.schedule_action_validation import _sends_prompt
 
     kind = schedule.get("action_kind")
     kind = _ALIAS_ACTION_KINDS.get(kind, kind)
@@ -387,7 +388,8 @@ def _svc_validate_play_playbook(schedule: dict[str, Any]) -> None:
     """Service-boundary check: `li play` reads list, check and status as its own subcommands,
     so a play schedule naming one of them as its playbook, or starting its extra arguments
     with one when it has no playbook, would never run a playbook."""
-    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS, _PLAY_SUBCOMMANDS
+    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS
+    from lionagi.studio.services.schedule_action_validation import _PLAY_SUBCOMMANDS
 
     kind = schedule.get("action_kind")
     kind = _ALIAS_ACTION_KINDS.get(kind, kind)
