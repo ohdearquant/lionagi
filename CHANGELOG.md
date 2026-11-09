@@ -6,6 +6,409 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- `ReviewVerdict.served_models` lists every leg a review run built (each reviewer, a fallback
+  reviewer when one ran, each verifier, the clean audit and the synthesis), in the order the legs
+  finished; a leg whose construction fails makes no call and has no row. Each `StageServed` row
+  gives the stage, agent name, the model the engine asked for and `served`, the model the provider
+  named for the leg's most recent call that reached it. `served` is `None` when the provider named
+  none or the call itself failed (an error raised on the client after the provider named a model
+  keeps that model on a streamed call and clears it on a non-streamed one), and a call that never
+  left the client does not change it. A reviewer,
+  verifier, fallback or clean-audit leg whose call failed still has a row; a failed synthesis call
+  emits no verdict. `served_model` still names the synthesis call.
+
+- CI runs the compatibility-mode tests on each supported aiosqlite release (0.22.0 and 0.22.1) and
+  on SQLAlchemy at its floor (2.0.38) and its newest release (2.1.6), checking before the tests
+  that the installed versions are the ones the row names.
+
+- An agent profile can set a Claude Code agent's tool set with `tools`, `allowed_tools` and
+  `disallowed_tools` in its frontmatter, each a list of tool names. They reach the agent's
+  `--tools`, `--allowedTools` and `--disallowedTools` in `li agent`, on resume, and for the
+  workers and orchestrator of `li o flow` and `li o fanout`. A `light` workload still adds its
+  own denials to the profile's `disallowed_tools`. A profile that declares any of the three for a
+  model on another provider, or gives one a value that is not a list of non-empty tool names, is
+  refused when the agent starts, with the field named.
+
+- A worker run with `contain_user_settings` can have its role narrow its tools and never widen
+  them. The role's `tools` replace the default list and must all be among the tools containment
+  grants; its `allowed_tools` may name only those tools or the tools of the MCP servers the run
+  hands the worker. Each `allowed_tools` entry must be one rule: a tool name, optionally followed
+  by one parenthesised argument pattern such as `Bash(git status:*)`, which is judged by its tool
+  name. Anything else, an entry that carries two rules included, is refused when the worker is
+  built, naming the tool or entry, the role and the granted set.
+
+- An agent that a worker spawns with no role named, which is a copy of the orchestrator's
+  branch, no longer takes the tool fields of the orchestrator's profile, which confine the
+  orchestrator only. It runs as a worker with no role does, so a contained spawn is no longer
+  refused when the orchestrator's profile lists a tool that a contained worker does not get.
+
+- Check pull requests for unapproved data files and oversized JSON files.
+
+- Agent profiles can declare `mcp: none` to launch without MCP servers. Containment follows reactive spawns and remains in force when applied during resume; a conflicting explicit MCP configuration is refused. The unreadable-frontmatter scan runs in linear time.
+
+- Unreadable profile frontmatter containing MCP text or a backslash is refused until its YAML is fixed.
+
+- Added a read-only engine preset catalog with paginated browsing and availability information.
+
+### Changed
+
+- `EndpointRegistry.register` refuses a provider key or alias that the bundled provider catalog
+  declares, with `ProviderAliasCollisionError`, unless the class's `module:qualname` equals the
+  diagnostic id of one of the endpoints the catalog declares for that provider. Registering a
+  custom class under a built-in provider's name (for example `openai`) used to succeed; register it
+  under its own provider name instead. Inside a plugin provider module the refused class is skipped
+  with a warning, and the module's other endpoints still register.
+
+- The minimum SQLAlchemy is now 2.0.38 (`sqlalchemy[asyncio]>=2.0.38`, was `>=2.0.0`). Before
+  2.0.38 SQLAlchemy's aiosqlite dialect gives file databases no connection pool, and the
+  compatibility mode for stores another schema lineage manages is tested and supported only with
+  pooled connections. Upgrade SQLAlchemy if an environment pins an older 2.0 release.
+
+- An explicitly supplied provider catalog is no longer extended by the generic OpenAI-compatible
+  endpoint: asking it for an endpoint it does not declare, for a provider it declares with more
+  than one endpoint, now raises `ProviderNotFoundError` naming the catalog and the endpoints it
+  declares, whatever `openai_compatible` or `base_url` say.
+
+- `iModel.from_dict` follows the same rule when given a catalog: restoring a model whose stored
+  endpoint the catalog does not declare for its provider raises instead of rebuilding the stored
+  endpoint as a generic one. Omitting the catalog is unchanged, as are a provider the catalog does
+  not declare and a provider that declares a single endpoint, which still selects that endpoint
+  for any endpoint name.
+
+- Selecting a bundled provider whose implementation cannot be imported now raises, where the
+  failure used to be logged and skipped and the request fell through to the generic
+  OpenAI-compatible endpoint or to `ProviderNotFoundError`. An internal import failure, a syntax
+  error or a defect in the endpoint's factory raises `ProviderActivationError` (reason
+  `activation_failed`, original exception chained). A `ModuleNotFoundError` counts as a missing
+  optional dependency only when its `name` equals a top-level import root the endpoint declares;
+  then `MissingFeatureError` is raised. The failure is kept per endpoint, so repeated selection
+  does not repeat the warning, and other providers stay usable.
+
+- With the bundled provider hub missing from the installation, selecting a built-in provider
+  raises `MissingFeatureError` (feature `providers`, the requested provider, distribution
+  `lionagi`) instead of `ProviderNotFoundError`. A request that asks for the generic
+  OpenAI-compatible endpoint, with `openai_compatible=True` or with `base_url=`, raises the same
+  error, because a 1.x installation without the hub is incomplete and the generic endpoint does not
+  hide that. A hub that is installed but cannot load never gives way to the generic endpoint
+  either. Providers that are registered or come from plugins still resolve.
+
+- `list_providers()` and `failed_providers()` activate each endpoint the way a selection does.
+  An activation failure, an import error or a syntax error or a defect in the endpoint's factory
+  included, no longer stops the listing: `list_providers()` completes instead of raising on a
+  defect, and the other endpoints and providers still load. `failed_providers()` returns one row
+  per provider with a failure, naming the provider's first failed endpoint and carrying the source
+  and reason of the error a selection of that endpoint raises. The failure is kept per endpoint,
+  so a listing does not call a factory that already failed in a selection or repeat its warning,
+  and a selection does not call one that a listing saw fail.
+
+- `list_providers()` returns the rows of the built-in endpoints in the bundled catalog's order
+  whichever providers were selected first, then the rows registered by callers and plugins, with
+  the test-only scripted provider's after the entries registered before the load.
+  `failed_providers()` follows the catalog's order.
+
+- A provider the bundled catalog declares is answered by its declared endpoints alone. A class
+  registered under the module and qualified name of a declared endpoint no longer answers a request
+  that names no endpoint ahead of the declared default.
+
+- A flow or fanout run whose orchestrator is a codex model and is given a non-empty `--mcp-config`
+  set now stops at setup with a `ConfigurationError` when a codex profile is selected: a root
+  `profile` key in `$CODEX_HOME/config.toml`, a profile named on the request, or a `profile`
+  override. Before this release the same run started and loaded the profile's servers beside the
+  named set. A profile can declare servers that an exclusive set cannot switch off, so the run is
+  refused rather than started with servers outside the set. To run it, remove the profile
+  selection, or pass `--no-mcp-config` to run the orchestrator with no MCP servers.
+
+- The design records under docs/adr cite Python code by the symbol that holds it, by one unique quoted line, by
+  the module alone, or by a line pinned at a commit, in place of `path.py:N` line numbers.
+  tests/docs/test_adr_code_citations.py checks that each cited symbol, quote and pin resolves, and fails
+  when a record gains a `path.py:N` citation. Line numbers written in running prose are not checked, and citations
+  of other files, such as SQL schemas and other records, still use line numbers.
+
+- Tests for packages already moved to LionHub now live under `lionhub/tests`; the
+  LionHub README describes the current layout and import compatibility paths.
+
+- The schedule CLI shares host and URL resolution between human and machine
+  commands without importing the Studio command module for machine requests.
+
+- Correct the progression and CLI extraction design records to match current behavior and source citations.
+
+- Built-in CLI command discovery now lives in `lionhub.cli.catalog`; command names,
+  aliases and lazy loading are unchanged.
+
+- Engine preset updates now preserve omitted fields, clear explicit nullable overrides, and validate kind-specific options atomically. New presets follow the runtime registry; unrelated edits preserve legacy options. Preset writes reject option values with trailing newlines.
+
+- `lionagi.cli._argtypes` moves to `lionhub.orchestration.arguments`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._code_identity` moves to `lionhub.serve.diagnostics`; the old import path is removed in 2.0.0.
+
+- Importing the orchestration package or its prompt constants now loads orchestration functions only when requested.
+
+- `lionagi.cli._logging` moves to `lionhub.orchestration.console`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._mirror_settings` moves to `lionhub.serve.mirror_settings`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._project` moves to `lionhub.orchestration.project`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._mcp_resolve` moves to `lionhub.orchestration.mcp_config`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._team_service` moves to `lionhub.orchestration.team`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._engine_definitions` moves to `lionhub.orchestration.engine_definitions`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._util` moves to `lionhub.orchestration.job`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._inspection` moves to `lionhub.orchestration.inspection`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._providers` moves to `lionhub.orchestration.spawn`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._orchestrate_parsing` moves to `lionhub.orchestration.flow.parsing`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._schedule_parsing` moves to `lionhub.orchestration.schedule.parsing`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._mirror_service` moves to `lionhub.serve.mirror`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._runs` moves to `lionhub.orchestration.runs`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli._kill_service` moves to `lionhub.orchestration.kill`; the old import path is removed in 2.0.0.
+
+- `lionagi.cli.orchestrate._checkpoint` moves to `lionhub.orchestration.flow.checkpoint`; the old import path is removed in 2.0.0.
+
+- The moved-module import hook now looks up only the rows whose first name component matches the import, so unrelated imports skip the table.
+
+- `li agent` on an `anthropic/<model>` profile with the read tool set (`api_tools: read`) now moves to `claude_code/<model>` when the account router refuses the run's first request for spend, before anything was sent: on `budget_exhausted`, or on `account_blocked` when every blocked account hit its spend ceiling.
+  The run prints one warning naming the refusal code, the new model and the directory its read tools are granted under, records the original model, the model used and the refusal code in `subscription_fallback` in `run.json`, and records `claude_code` and its model as the run's provider and model.
+  The moved run has only Claude Code's `Read`, `Grep` and `Glob` tools, each granted only under the run's working directory (resolved, the root the API route's reader is held to) and denied the names that reader refuses there (`.env`, `.netrc`, `.htpasswd` and private key files, at any depth, in any spelling that case-folds to one of them, and everything below a directory with one of those names, a recursive search included), runs in Claude Code's `dontAsk` permission mode, which refuses every call those grants do not cover, a symlinked path that leaves the directory included, has no permission bypass whatever its `yolo` and `bypass` were, no MCP server and no MCP config of its own, and reads no user, project or local Claude Code settings.
+  Its Claude Code process gets this process's environment without the credential names the API route's commands went without (the names the run's configuration declares, the shared sensitive-name patterns and the shell startup names), keeping only Claude Code's own `CLAUDE_CODE_OAUTH_TOKEN`, and a configured secret lookup fills none of its declared names into that process except that token; the fallback never carries an API key into the Claude Code CLI, so an `ANTHROPIC_API_KEY` is never billed in place of the subscription.
+  `subscription_fallback` also records `tools`, the `--tools` value the run continued with, `allowed_tools`, the rules granting those tools under the working directory, `disallowed_tools`, the rules denying them the protected names, `permission_mode`, `env_removed`, the sorted names (never the values) of the variables this process held that the moved process's environment does not carry, and `env_fill_skipped`, the sorted names the secret lookup may not fill into it.
+  A run does not move, prints one warning saying why and fails with the routing error when it is pinned to an account with `LIONAGI_API_ACCOUNT`, when it was refused with `account_blocked` for any other block reason or its block reasons cannot be read, when it has the write set or any set other than the read set, when its working directory's path has a character other than letters, digits, `.`, `_`, `-` and `/`, which a permission rule cannot carry literally, or a protected name in any of its components, when the credential names to remove cannot be read, or when its Claude Code request does not take the child environment, the lookup's skip set or the permission rules.
+  A refusal after a reply, any other router code, any other provider and a resumed branch still fail with the routing error, and a run moves at most once; a branch that moved is not resumed, because the reduced environment its Claude Code process ran with is not saved with it.
+
+### Deprecated
+
+- `lionagi._auto` command catalog functions are deprecated; import
+  `build_cli_parser`, `command_exists`, `iter_cli_seeds`, `load_cli_command`, and
+  `seed_for` from `lionhub.cli.catalog`. The lazy aliases remain until 2.0.0.
+
+### Fixed
+
+- A routed Anthropic request rejected because the account's prepaid credit has run out now records
+  the rejection class `credit_balance_low`, and one rejected at a spend limit set on the
+  organization or a workspace records `spend_limit_reached`, where both recorded `other` before.
+  Both classes are diagnosis only: nothing blocks the account, retries the request or moves it to
+  another account because of them.
+
+- ReAct no longer asks the model for a chain-of-thought summary in the analysis field of its round
+  schema, which every round repeats. On Claude Sonnet 5.5 that wording made deep runs end mid-task
+  with a refusal; the field now asks for notes on progress so far.
+
+- A built-in provider whose `_config` module fails to import no longer stops every other built-in
+  provider from registering. The registry logs one warning naming it, keeps loading the others, and
+  selecting it (through `EndpointRegistry.match`, `match_endpoint` or `iModel`) raises its
+  `ProviderActivationError` for its key or any alias, never another endpoint or the generic
+  OpenAI-compatible one. `EndpointRegistry.failed_providers()` lists the failed providers with
+  their provider, endpoint, source and reason.
+
+- A hosted Studio page paired by `li studio` now keeps its access across reloads, new tabs and
+  bookmarks with any daemon, including lionagi 0.36.0 and a daemon that uses a configured
+  `LIONAGI_STUDIO_AUTH_TOKEN`. The page stores the bearer it was paired with, bound to the
+  daemon's API base, and forgets it on the first refusal. To keep a configured token out of a
+  browser, clear the site's data or pair in a private window.
+
+- A `light` codex agent can no longer write to `/tmp` or `$TMPDIR`. Its sandbox now sets
+  `exclude_slash_tmp` and `exclude_tmpdir_env_var` after any setting from the user's codex
+  config, so the working directory is the only place it writes.
+
+- The first provider selection (`iModel(provider=...)`, `match_endpoint`, `EndpointRegistry.match`)
+  no longer imports every built-in provider. It reads the bundled provider catalog's declarations
+  and imports only the endpoint it selects, so a process that uses one provider does not load the
+  others. `EndpointRegistry.canonical_provider` resolves a declared name or alias from its
+  declaration in the same way. `list_providers()` and `failed_providers()` still import every
+  provider, because their rows describe every built-in class.
+
+- Selecting the Ollama endpoint without the `ollama` package installed now raises
+  `MissingFeatureError`, naming the provider, the endpoint, the distribution and the install hint,
+  where it raised a bare `ModuleNotFoundError`. `li` treats it as it treated that error: a
+  provider that cannot activate because a declared package, or the provider hub, is not installed,
+  found before a run is allocated, still exits with status 78 and the broken-environment message,
+  which now names the missing package and its install hint. Once a run is allocated the error
+  propagates as before.
+
+- Resuming a Claude Code session in a new process (`li agent -r`) no longer sends the whole
+  conversation as the `-p` argument, which failed with `Argument list too long` once the history
+  was long enough. A CLI model now keeps the CLI's session id when it is saved and restored, so
+  the restored branch passes `--resume <id>` and sends only the new instruction. The saved id is
+  accepted only when it is a UUID; any other value, and a snapshot saved without one, behave as
+  before. If the CLI no longer holds the restored session, a streamed turn (`branch.run`, and
+  `branch.operate` on a CLI model) is sent once more without the id and with the whole history,
+  and the branch continues from the session the CLI starts for it; nothing the refused attempt
+  produced reaches the branch. A session the CLI reported in the current process is not sent
+  again. A non-streamed call (`branch.chat`) drops the restored id and raises, so the next call
+  sends the whole history.
+
+- On Python 3.14.7 and 3.14.8, when work that the framework shields from cancellation fails after
+  the task waiting on it was cancelled, the event loop's exception handler is no longer called, so
+  its default handler no longer logs the exception text. That text could include the output of a
+  failed secret lookup.
+
+- On every Python version, such a failure is no longer logged as "exception was never retrieved"
+  when no task is left waiting on it.
+
+- When a secret lookup is cancelled while its command is being stopped and that cleanup then fails,
+  the failure is logged as one warning that names only the exception's type, never its message.
+
+- A flow or fanout run whose orchestrator is a codex model now takes the MCP servers named with
+  `--mcp-config` as its whole set, as the run's workers and a single `li agent` call already did.
+  The orchestrator no longer loads the servers its own codex config declares beside the named set,
+  for its planning call or any later call on that model, and a Claude orchestrator is run with
+  `--strict-mcp-config`. A set found only by the `.mcp.json` lookup is still added to the servers
+  the CLI finds for itself, and `--no-mcp-config` still leaves the orchestrator with none.
+
+- The Claude Code provider writes the prompt to the CLI's standard input instead of passing it as a
+  command-line argument, so a conversation whose history is longer than the operating system's
+  argument limit starts instead of failing with "Argument list too long". A prompt over the CLI's
+  10 MB piped-input cap, or any other argument of 1,048,576 bytes or more, is refused before
+  the CLI starts with an error that names it. On Linux, the operating system can still refuse
+  arguments over 128 KiB when the CLI starts. Claude text inputs must be valid UTF-8;
+  filesystem paths retain their native byte representation. Argument refusals from Claude
+  Code and Codex no longer repeat an unrecognized preceding value as a flag name.
+
+- A codex run is now refused when an MCP server lionagi forwards to it has the same name as a
+  server that a codex config file already declares: the system config, the user config, a profile
+  file the request's `profile` option names, or a project `.codex/config.toml`. Codex merges the two key by key, so
+  the file's bearer token variable, headers, `args` or `env` used to reach the forwarded server,
+  and a stdio entry merged with a URL one left codex unable to load its config. The error names the
+  server and the file and shows no setting from either side; rename the forwarded server, or remove
+  that entry from the file. A run that ignores the user config is not refused over the user config.
+  The managed config, configuration delivered by device management and an enterprise cloud
+  configuration bundle cannot be read by lionagi, so a same-named server declared only there is
+  not caught.
+
+- A server a project `.codex/config.toml` declares under the same name as a server lionagi
+  forwards to a codex run no longer has its settings merged into the forwarded server; that run
+  is refused instead, as above. A project `.codex/config.toml` this Python's TOML parser cannot
+  read also refuses a run that forwards a server, since whether it declares that name is unknown;
+  a run that ignores the user config reads such a file line by line instead. A server selected by name that lionagi does not forward is not
+  checked, and codex still merges a same-name project definition into it.
+
+- Refuse invalid explicit or inherited run IDs before creating a run directory, and skip
+  imported manifests whose run ID does not match their directory name.
+
+- Reject manifest writes that would replace a run's own ID with a different ID.
+
+- Live monitoring now reads the active run's stream buffer and displays normalized
+  text chunks. A new stream clears a stale buffer, and chunks that cannot be
+  serialized retain their text with a serialization error marker. For objects
+  that define both methods, live-buffer serialization uses `to_dict` before
+  `model_dump`.
+
+- Normalized records reserve `_lionagi_stream_chunk: true`; a pre-existing legacy
+  record with that exact key and value is interpreted as normalized. Other legacy
+  records retain their previous text rendering, including text on non-text types.
+  The reader examines the last five physical lines and waits for a final newline
+  before showing an in-progress line. Terminated malformed lines retain the
+  existing raw-line fallback.
+
+- CLI argument errors name only recognized flags, avoiding disclosure of preceding
+  argument values. Claude text inputs that cannot be encoded as UTF-8 are refused
+  before starting the process.
+
+- Keep configured test roots consistent across CI and release checks, including older release tags.
+
+- CLI provider path and inline configuration refusals avoid exposing their values
+  in request validation text, subprocess workspace errors, and model error chains.
+  When a `ValidationError` reaches `iModel.invoke` or `iModel.stream` directly,
+  their rethrow reports its count instead of its details, including when it was
+  raised by a hook. The rethrow does not sanitize a `ValidationError` wrapped
+  inside another exception.
+  API events created by `iModel` also omit validation inputs when recording errors.
+  Direct callers of the request models retain Pydantic's default `errors()` and
+  `json()` behavior, which may include input values.
+  Path resolution failures now use fixed base categories, so exceptions such as
+  `PermissionError` are reported as `OSError`.
+  Hook-supplied or externally constructed events keep their own error storage.
+  For non-default event types, explicitly supplied `execution` arguments and
+  custom constructors without a declared `execution` parameter remain
+  caller-managed. Callers who rebind `event.execution` manage its error storage.
+  Other exception-group members keep their own causes and contexts unchanged.
+
+- Keep Studio responsive while stopping a run, and finish signalling and recording
+  the result before propagating cancellation of the requesting task.
+
+- Format adapter validation errors no longer expose rejected record values or
+  retain the validation exception. Diagnostic data replaces keys and values,
+  preserves bounded built-in container shapes, and marks truncated results.
+  Pydantic diagnostics retain the error count; individual error types, field
+  locations, and validation messages are omitted.
+  DataFrame missing-column errors report counts and bounded placeholder lists
+  rather than column names, marking when the lists are truncated.
+  Parser and resource failures, registry wrappers around third-party exceptions,
+  explicitly constructed adapter errors, caller-owned exception context, and
+  traceback frame locals keep their existing behavior.
+  A non-Pydantic exception that escapes a model validator and is not selected
+  for validation handling also keeps its existing message and exception chain.
+  DataFrame export propagates exceptions raised by the dump callable, including
+  Pydantic validation errors, directly to the caller.
+
+- Validate action kinds and inherited targets across reachable schedule chains.
+  Existing chains are checked when edited or when their schedule's action kind
+  changes; unrelated updates leave them untouched. Reconciliation can still
+  enqueue branches from a legacy stored root.
+
+- Studio keeps configured pairing credentials in session storage instead of
+  persistent local storage. Existing unmarked pairing records are discarded,
+  so users with those records must pair again once. Rotate a configured token
+  that was paired using an older build, since it may have been stored persistently.
+
+- API request validation refusals and recorded exception chains no longer retain
+  Pydantic validation errors and their input values. Ordinary exception text and
+  arguments, and caller-defined group text and attributes including `derive`
+  output, remain caller-owned and are not sanitized. A custom exception-group
+  subtype is preserved when its `derive` behaves correctly; a misbehaving
+  `derive` can cause a fallback to a standard group. Traceback frame locals
+  keep their existing behavior.
+
+- A value-category working-directory resolution failure under Codex account
+  containment now raises `CLIInputRefusedError` with a containment cause and a
+  fixed message instead of exposing the path in a validation error.
+
+- Schedules with legacy non-object chain actions now finish and reconcile
+  without attempting to run the invalid chain; the scheduler logs the affected
+  schedule and field and continues reconciling other runs.
+
+- Report the failing record's shape in DataFrame batches and avoid false truncation details on conversion errors.
+
+- Validate inherited chain action values when schedules are saved, and skip unusable stored chain actions consistently when scheduling or monitoring runs.
+
+- Keep a fixed placeholder for cycle back edges in linked exception groups when removing validation errors from recorded failures, instead of dropping them.
+
+- Stale sessions and invocations with repeatedly unverifiable process identities now enter a visible quarantine that operators can resolve without signalling the PID. The additive `run.failed.identity_unverified`, `run.aborted.identity_unverified`, and `run.cancelled.identity_unverified` reason codes identify those dispositions.
+
+- Use consistent identity checks for stale-process quarantine and report unreadable records and identity probe failures clearly.
+
+- Corrected Operator guidance to distinguish view metadata from rendered page content.
+
+- Preserved MCP configuration origin and profile restrictions across submitted runs and resumes.
+
+- Refreshed source references in proposed architecture records.
+
+- Corrected historical source references in architecture records.
+
+- Run PostgreSQL quarantine integration cases with the shared database fixture.
+
+- Corrected schema inventory observations and identified unverified estimates in the persistence architecture record.
+
+- Keep streaming when live diagnostic buffer setup or writes fail, while logging a warning.
+
+- If the CLI logging setup module fails to import because a module it needs is missing, `li` exits 78 with a no-run diagnosis instead of an unhandled import failure.
+
+- A routed Anthropic request naming claude-mythos-5-1 is priced at the Claude Fable 5.1 rates instead of being
+  refused as unpriced, and its context window reads as 1M tokens instead of the 128,000-token estimate. The prices
+  move to a new revision that keeps every earlier price unchanged.
+  Its xhigh effort is no longer lowered to high, and a bare `mythos-5-1` under a Claude provider gets the `claude-`
+  prefix like the other Claude families.
+
 ## [0.37.0] - 2026-11-02
 
 Provider integrations and LNDL move to the `lionhub` import root inside the same distribution;
