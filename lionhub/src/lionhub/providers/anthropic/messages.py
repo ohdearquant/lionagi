@@ -609,6 +609,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         request_headers["x-api-key"] = attempt.key.get_secret_value()
 
         request_entered = False
+        status = None
         failure: Exception | None = None
         try:
             async with self._create_http_session(session_kwargs, timeout=timeout) as client:
@@ -711,7 +712,9 @@ class AnthropicMessagesEndpoint(Endpoint):
                 if not request_entered:
                     await router.settle_not_sent(attempt, caller_cancelled=True)
                 else:
-                    await router.settle_stream_end(attempt, None, reason="cancelled")
+                    await router.settle_stream_end(
+                        attempt, None, reason="cancelled", http_status=status
+                    )
             except Exception:  # noqa: S110 - the caller must see the cancellation
                 pass
             raise
@@ -743,7 +746,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         # or the response.
         if failure is not None:
             if request_entered:
-                await router.settle_unknown(attempt, "transport_error")
+                await router.settle_unknown(attempt, "transport_error", http_status=status)
             else:
                 await router.settle_not_sent(attempt)
             await anyio.lowlevel.checkpoint()
@@ -1257,7 +1260,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         if failure is not None:
             if not settled:
                 if request_entered:
-                    await router.settle_unknown(attempt, "transport_error")
+                    await router.settle_unknown(attempt, "transport_error", http_status=status)
                 else:
                     await router.settle_not_sent(attempt)
             await anyio.lowlevel.checkpoint()

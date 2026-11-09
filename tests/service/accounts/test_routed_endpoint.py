@@ -1655,6 +1655,7 @@ async def test_stream_does_not_retry_after_yielding_a_chunk(monkeypatch, tmp_pat
     assert len(transport.calls) == 1
     row = _attempts(path)[0]
     assert row[2] == "open" and row[4] == "transport_error", row
+    assert _http_statuses(path) == [(200,)]
 
 
 @pytest.mark.asyncio
@@ -1764,6 +1765,74 @@ async def test_cancellation_settles_only_when_the_transport_was_not_entered(monk
         await task
     row = _attempts(path)[0]
     assert row[2:] == ("open", None, "cancelled")
+    assert _http_statuses(path) == [(None,)]
+
+
+@pytest.mark.asyncio
+async def test_a_routed_call_body_that_cannot_be_read_records_response_status(
+    monkeypatch, tmp_path
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+
+    class FailedBodyResponse(StubResponse):
+        def json(self):
+            raise httpx.ReadError("connection dropped while reading response")
+
+    model, transport = _model(monkeypatch, [FailedBodyResponse(), StubResponse()])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.endpoint.call(REQUEST)
+
+    # The provider answered 200, so the request ran: it is not sent again, and the
+    # attempt stays open as usage_incomplete with the status it received.
+    assert caught.value.code is RouterErrorCode.PROVIDER_ERROR
+    assert len(transport.calls) == 1
+    assert _attempts(path)[0][4] == "usage_incomplete"
+    assert _http_statuses(path) == [(200,)]
+
+
+@pytest.mark.asyncio
+async def test_a_routed_call_cancelled_while_reading_body_records_response_status(
+    monkeypatch, tmp_path
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+
+    class CancelledBodyResponse(StubResponse):
+        def json(self):
+            raise asyncio.CancelledError
+
+    model, transport = _model(monkeypatch, [CancelledBodyResponse()])
+
+    with pytest.raises(asyncio.CancelledError):
+        await model.endpoint.call(REQUEST)
+
+    assert _attempts(path)[0][4] == "cancelled"
+    assert _http_statuses(path) == [(200,)]
+
+
+async def test_a_routed_call_failing_after_a_response_records_response_status(
+    monkeypatch, tmp_path
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+
+    class UnreadRejectionResponse(StubResponse):
+        @property
+        def content(self):
+            raise httpx.ResponseNotRead()
+
+        @content.setter
+        def content(self, value):
+            pass
+
+    model, transport = _model(monkeypatch, [UnreadRejectionResponse(status=400), StubResponse()])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.endpoint.call(REQUEST)
+
+    assert caught.value.code is RouterErrorCode.TRANSPORT_ERROR
+    assert len(transport.calls) == 1
+    assert _attempts(path)[0][4] == "transport_error"
+    assert _http_statuses(path) == [(400,)]
 
 
 def _sse(events) -> bytes:
@@ -3698,6 +3767,7 @@ async def test_a_pending_cancellation_is_delivered_after_a_transport_failure_is_
 
     attempt = _attempts(path)[-1]
     assert attempt[4] == "transport_error", attempt
+    assert _http_statuses(path)[-1] == (None,)
     assert _warm_rows(path) == []
 
 
