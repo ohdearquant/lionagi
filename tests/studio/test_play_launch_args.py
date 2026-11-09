@@ -7,26 +7,17 @@ from __future__ import annotations
 
 import pytest
 
+pytest_plugins = ("lionhub_tests.orchestration.schedule._test_support_play_launch_args",)
+
+from lionhub_tests.orchestration.schedule._test_support_play_launch_args import (
+    _play_schedule,
+)
+
 from lionagi.studio.scheduler.subprocess import build_argv
 from lionhub.orchestration.schedule.action_validation import (
     _validate_playbook_args,
     validate_launch_fields,
 )
-
-
-def _play_schedule(**overrides):
-    schedule = {
-        "action_kind": "play",
-        "action_model": "",
-        "action_prompt": "",
-        "action_agent": None,
-        "action_playbook": "audit",
-        "action_project": None,
-        "action_extra_args": [],
-        "action_flow_yaml": None,
-    }
-    schedule.update(overrides)
-    return schedule
 
 
 class TestBuildArgvPlay:
@@ -84,19 +75,6 @@ class TestBuildArgvPlay:
         with pytest.raises(ValueError, match="must not start with '-'") as refused:
             build_argv(schedule, {"pr_title": "--private-title"}, executable_prefix=["li"])
         assert "private-title" not in str(refused.value)
-
-    @pytest.mark.parametrize("kind", ["play", "playbook"])
-    def test_a_stored_leading_dash_prompt_is_refused_before_rendering(self, kind):
-        # A manual trigger runs this check before it records a run.
-        with pytest.raises(ValueError, match="must not start with '-'"):
-            validate_launch_fields(_play_schedule(action_kind=kind, action_prompt="--bypass"))
-
-    @pytest.mark.parametrize("kind", ["play", "playbook"])
-    @pytest.mark.parametrize("name", ["list", "check", "status"])
-    def test_a_playbook_named_for_a_play_subcommand_is_refused(self, kind, name):
-        # `li play list` runs the listing and exits 0; the playbook would never run.
-        with pytest.raises(ValueError, match="names a `li play` subcommand"):
-            validate_launch_fields(_play_schedule(action_kind=kind, action_playbook=name))
 
     @pytest.mark.parametrize("kind", ["play", "playbook"])
     @pytest.mark.parametrize("playbook", [None, ""])
@@ -183,11 +161,6 @@ class TestBuildArgvPlay:
     def test_invalid_args_rejected(self, bad_args):
         with pytest.raises(ValueError):
             build_argv(_play_schedule(action_playbook_args=bad_args), {}, executable_prefix=["li"])
-
-    def test_validator_direct(self):
-        _validate_playbook_args({"mode": "deep", "strict": True, "n": 3})
-        with pytest.raises(ValueError):
-            _validate_playbook_args(["mode"])
 
     def test_a_scheduled_row_reads_the_args_its_target_declares(self):
         """A scheduled row carries its play args in the resolved target snapshot,

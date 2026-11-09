@@ -81,6 +81,9 @@ uv run pytest lionhub/tests
 
 Some integration tests exercise optional dependencies or local subprocesses.
 Tests that also cover core behavior remain under the repository's `tests/` tree.
+Moved orchestration tests live beside their modules under
+`lionhub/tests/lionhub_tests/orchestration/`; the schedule tests are in its
+`schedule/` subdirectory, and the state store tests are in `test_state_store.py`.
 The LionHub tests currently depend on the repository's `tests/` package: they
 share `tests/_shared_conftest.py` and supporting fixtures and helpers under
 `tests/`, including `tests/providers/` and `tests/mcp/`. Run them from a complete

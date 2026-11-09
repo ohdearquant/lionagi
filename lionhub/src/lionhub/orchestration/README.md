@@ -96,4 +96,6 @@ returns the module at its new path. Each old path is removed in 2.0.0. The rows 
 ## Tests
 
 Tests of this package live in `lionhub/tests/lionhub_tests/orchestration/`, with the schedule
-services under its `schedule/` directory.
+services under its `schedule/` directory and the run store in `test_state_store.py`. Tests that
+also exercise the Studio application, its HTTP routes, the `li` commands, the scheduler engine or
+its subprocess runner stay under `tests/`.

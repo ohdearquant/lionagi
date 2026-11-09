@@ -26,10 +26,10 @@ import pytest
     ],
 )
 def test_router_reexports_the_same_validation_objects(name):
-    import lionhub.orchestration.schedule.validation as _schedule_validation
+    import lionhub.orchestration.schedule.validation as schedule_validation
     from lionagi.studio.services import schedules
 
-    assert getattr(schedules, name) is getattr(_schedule_validation, name)
+    assert getattr(schedules, name) is getattr(schedule_validation, name)
 
 
 @pytest.mark.parametrize(

@@ -25,9 +25,9 @@ def readable_store(monkeypatch):
     was not, so without this the fakes are never consulted and every read here
     would report `known: False`. Tests for that path set it False explicitly.
     """
-    import lionhub.orchestration.state_store as _db
+    import lionhub.orchestration.state_store as state_store
 
-    monkeypatch.setattr(_db, "store_exists", lambda: True)
+    monkeypatch.setattr(state_store, "store_exists", lambda: True)
 
 
 def _assert_private_input_is_removed(result, source):
@@ -335,7 +335,7 @@ async def test_get_artifact_caps_and_redacts_content(monkeypatch):
 
 
 async def test_list_sessions_reports_unknown_when_the_store_cannot_be_opened(monkeypatch):
-    import lionhub.orchestration.state_store as _db
+    import lionhub.orchestration.state_store as state_store
     from lionagi.studio.operator.application_mcp import list_sessions
     from lionagi.studio.services import runs
 
@@ -347,7 +347,7 @@ async def test_list_sessions_reports_unknown_when_the_store_cannot_be_opened(mon
         return []
 
     monkeypatch.setattr(runs, "list_runs", fake_list_runs)
-    monkeypatch.setattr(_db, "store_exists", lambda: False)
+    monkeypatch.setattr(state_store, "store_exists", lambda: False)
 
     result = await list_sessions({"limit": 10})
 
@@ -378,7 +378,7 @@ async def test_list_sessions_reports_known_for_a_readable_but_empty_store(monkey
 
 
 async def test_session_signals_reports_unknown_when_the_store_cannot_be_opened(monkeypatch):
-    import lionhub.orchestration.state_store as _db
+    import lionhub.orchestration.state_store as state_store
     from lionagi.studio.operator.application_mcp import session_signals
     from lionagi.studio.services import signals
 
@@ -390,7 +390,7 @@ async def test_session_signals_reports_unknown_when_the_store_cannot_be_opened(m
         return []
 
     monkeypatch.setattr(signals, "get_signals_after", fake_get_signals_after)
-    monkeypatch.setattr(_db, "store_exists", lambda: False)
+    monkeypatch.setattr(state_store, "store_exists", lambda: False)
 
     result = await session_signals({"session_id": "s", "after_seq": None, "limit": 10})
 

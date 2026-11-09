@@ -34,9 +34,9 @@ def readable_store(monkeypatch):
     premise, that the store was reachable at all. The list handlers decline to
     answer when it was not, so without this they would short-circuit and the
     read-only exercise would never reach the handler body it is testing."""
-    import lionhub.orchestration.state_store as _db
+    import lionhub.orchestration.state_store as state_store
 
-    monkeypatch.setattr(_db, "store_exists", lambda: True)
+    monkeypatch.setattr(state_store, "store_exists", lambda: True)
 
 
 PRE_EXISTING_TOOL_NAMES = frozenset(
