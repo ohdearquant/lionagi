@@ -152,24 +152,11 @@ _client: httpx.AsyncClient | None = None
 # healthy poll skips GITHUB_TOKEN / `gh auth token`; a fresh 401/403 clears it.
 _cached_token: str | None = None
 
-# Bounds pages fetched hunting an older, still-undispatched merged PR
-# (merged_at can trail the API's updated_at sort key). An incomplete scan
-# releases no events and leaves the cursor unchanged; the scheduler reports
-# repeated capped polls without dispatch as stalled progress.
-
-# Page size requested (GitHub's maximum); the page budget above is stated in
-# terms of this.
+# Page size requested (GitHub's maximum); the merged-scan page budget in
+# lionagi.studio.services._schedule_validation is stated in terms of this.
 _PER_PAGE = 100
 
 _LINK_NEXT_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
-
-# CWE-918 defense-in-depth: github_repo must be exactly "owner/name" (one
-# slash, no traversal/URL-special chars). services/schedules.py delegates to
-# _validate_github_repo rather than duplicating these.
-
-# Owner: alphanumeric start/end, alphanumeric or hyphen interior.
-# Repo name: letters/digits/'-'/'_'/'.' only (leading '.' is valid).
-# Traversal singletons that are structurally valid but semantically forbidden.
 
 
 def _next_page_url(resp: httpx.Response) -> str | None:
