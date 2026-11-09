@@ -4,20 +4,144 @@
 
 from __future__ import annotations
 
+import json
 import math
+import re
+from collections.abc import Mapping
 from typing import Any
 
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
 
+
+def validate_rate_limit(value: Any) -> tuple[int, int] | None:
+    """Validate and normalize a schedule rolling-window fire cap.
+
+    ``None`` means unlimited. A configured cap must contain exactly the two
+    positive integer fields ``max_fires`` and ``window_sec``. Returning the
+    normalized pair keeps service-boundary validation and engine admission on
+    one definition of the persisted JSON shape.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("rate_limit must be an object") from exc
+    if not isinstance(value, Mapping):
+        raise ValueError("rate_limit must be an object")
+    expected = {"max_fires", "window_sec"}
+    if set(value) != expected:
+        raise ValueError("rate_limit must contain exactly max_fires and window_sec")
+    max_fires = value["max_fires"]
+    window_sec = value["window_sec"]
+    if isinstance(max_fires, bool) or not isinstance(max_fires, int) or max_fires <= 0:
+        raise ValueError("rate_limit.max_fires must be a positive integer")
+    if isinstance(window_sec, bool) or not isinstance(window_sec, int) or window_sec <= 0:
+        raise ValueError("rate_limit.window_sec must be a positive integer")
+    return max_fires, window_sec
+
+
+# Bounds pages fetched hunting an older, still-undispatched merged PR
+# (merged_at can trail the API's updated_at sort key). An incomplete scan
+# releases no events and leaves the cursor unchanged; the scheduler reports
+# repeated capped polls without dispatch as stalled progress.
+_MERGED_MODE_MAX_PAGES = 5
+
+
+def merged_page_limit(value: object) -> int:
+    """Resolve a bounded page limit for a merged pull-request scan."""
+    if value is None:
+        return _MERGED_MODE_MAX_PAGES
+    if type(value) is not int or not 5 <= value <= 100:
+        raise ValueError("github_filter.merged_page_limit must be an integer from 5 through 100")
+    return value
+
+
+# CWE-918 defense-in-depth: github_repo must be exactly "owner/name" (one
+# slash, no traversal/URL-special chars). The scheduler's GitHub poller and
+# the schedule services both call _validate_github_repo.
+_GITHUB_OWNER_MAX = 39
+_GITHUB_REPO_MAX = 100
+
+# Owner: alphanumeric start/end, alphanumeric or hyphen interior.
+_GITHUB_OWNER_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$")
+# Repo name: letters/digits/'-'/'_'/'.' only (leading '.' is valid).
+_GITHUB_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Traversal singletons that are structurally valid but semantically forbidden.
+_GITHUB_REPO_TRAVERSAL = frozenset({".", ".."})
+
+
+def _validate_github_repo(repo: str) -> None:
+    """Raise ValueError if *repo* is not a safe ``owner/name`` pair (CWE-918).
+
+    Defense-in-depth at URL-construction time; the service write boundary
+    applies the same check via ``services/schedules._svc_validate_github_repo``.
+    """
+    if not repo or "/" not in repo:
+        raise ValueError(
+            f"github_repo {repo!r} is not a valid owner/name identifier. "
+            "Expected format: 'owner/repo' with exactly one '/' separator."
+        )
+    parts = repo.split("/")
+    if len(parts) != 2:
+        raise ValueError(
+            f"github_repo {repo!r} must contain exactly one '/' (got {len(parts) - 1})."
+        )
+    owner, name = parts
+
+    # --- Owner validation ---
+    if not owner:
+        raise ValueError(f"github_repo {repo!r}: owner segment is empty.")
+    if len(owner) > _GITHUB_OWNER_MAX:
+        raise ValueError(
+            f"github_repo {repo!r}: owner segment is {len(owner)} chars (max {_GITHUB_OWNER_MAX})."
+        )
+    if not _GITHUB_OWNER_RE.match(owner):
+        raise ValueError(
+            f"github_repo {repo!r}: owner {owner!r} is not a valid GitHub owner "
+            "identifier (alphanumeric start/end, alphanumeric or '-' interior, "
+            "no leading/trailing hyphen)."
+        )
+
+    # --- Repo name validation ---
+    if not name:
+        raise ValueError(f"github_repo {repo!r}: repo name segment is empty.")
+    if len(name) > _GITHUB_REPO_MAX:
+        raise ValueError(
+            f"github_repo {repo!r}: repo name segment is {len(name)} chars "
+            f"(max {_GITHUB_REPO_MAX})."
+        )
+    if not _GITHUB_REPO_NAME_RE.match(name):
+        raise ValueError(
+            f"github_repo {repo!r}: repo name {name!r} contains characters not "
+            "allowed in a GitHub repository name (use letters, digits, '-', '_', '.')."
+        )
+    if name in _GITHUB_REPO_TRAVERSAL:
+        raise ValueError(
+            f"github_repo {repo!r}: repo name {name!r} is a path-traversal "
+            "singleton and is not a valid repository name."
+        )
+
+
 __all__ = (
+    "_GITHUB_OWNER_MAX",
+    "_GITHUB_OWNER_RE",
+    "_GITHUB_REPO_MAX",
+    "_GITHUB_REPO_NAME_RE",
+    "_GITHUB_REPO_TRAVERSAL",
     "_GITHUB_FILTER_ALLOWED_EVENTS",
     "_GITHUB_FILTER_ALLOWED_KEYS",
+    "_MERGED_MODE_MAX_PAGES",
+    "_validate_github_repo",
     "_svc_validate_budget_tokens",
     "_svc_validate_budget_usd",
     "_svc_validate_command_args",
     "_svc_validate_github_filter",
     "_svc_validate_github_repo",
     "_validate_flow_yaml_spec",
+    "merged_page_limit",
+    "validate_rate_limit",
 )
 
 
@@ -56,8 +180,6 @@ def _svc_validate_github_repo(repo: str | None) -> None:
     the API path (CWE-918). None is a no-op; an empty string is rejected."""
     if repo is None:
         return
-    from lionagi.studio.scheduler.github import _validate_github_repo
-
     _validate_github_repo(repo)
 
 
@@ -87,8 +209,6 @@ def _svc_validate_github_filter(github_filter: Any) -> None:
             f"{sorted(_GITHUB_FILTER_ALLOWED_KEYS)}"
         )
     if "merged_page_limit" in github_filter:
-        from lionagi.studio.scheduler.github import merged_page_limit
-
         merged_page_limit(github_filter["merged_page_limit"])
     event = github_filter.get("event")
     if event is not None and event not in _GITHUB_FILTER_ALLOWED_EVENTS:

@@ -180,10 +180,10 @@ class Policies(BaseModel):
     @model_validator(mode="after")
     def _valid_rate_limit(self) -> Policies:
         # Same validator the fire-time engine admission path uses
-        # (lionagi.studio.scheduler.admit.validate_rate_limit) -- an open
+        # (lionagi.studio.services._schedule_validation.validate_rate_limit) -- an open
         # dict[str, Any] would otherwise let a malformed rateLimit commit
         # and only fail (or silently no-op) at fire time.
-        from lionagi.studio.scheduler.admit import validate_rate_limit
+        from lionagi.studio.services._schedule_validation import validate_rate_limit
 
         try:
             validate_rate_limit(self.rateLimit)
@@ -440,7 +440,10 @@ def _resolve_agent_target(target: AgentTarget, cwd: Path) -> dict[str, Any]:
     # the launch refuses a model outside the model identifier character set and a
     # prompt it cannot pass through. A row holding either would fail at every fire,
     # so refuse it here instead.
-    from lionagi.studio.scheduler.subprocess import _validate_action_model, _validate_prompt
+    from lionagi.studio.services.schedule_action_validation import (
+        _validate_action_model,
+        _validate_prompt,
+    )
 
     source = "target.model" if target.model else f"profile {target.profile!r}"
     if not isinstance(resolved_model, str):
@@ -509,9 +512,9 @@ def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, An
 
 
 def _resolve_playbook_target(target: PlaybookTarget) -> dict[str, Any]:
-    from lionagi.studio.scheduler.subprocess import (
+    from lionagi.studio.scheduler.subprocess import _validate_identifier
+    from lionagi.studio.services.schedule_action_validation import (
         _PLAY_SUBCOMMANDS,
-        _validate_identifier,
         _validate_playbook_args,
     )
 
@@ -527,11 +530,11 @@ def _resolve_playbook_target(target: PlaybookTarget) -> dict[str, Any]:
 
 
 def _resolve_command_target(target: CommandTarget) -> dict[str, Any]:
-    from lionagi.studio.scheduler.subprocess import (
+    from lionagi.studio.services._schedule_validation import _svc_validate_command_args
+    from lionagi.studio.services.schedule_action_validation import (
         _validate_action_command,
         _validate_command_allowlisted,
     )
-    from lionagi.studio.services._schedule_validation import _svc_validate_command_args
 
     _validate_action_command(target.executable)
     _validate_command_allowlisted(target.executable)
@@ -1233,7 +1236,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # named kinds then pass it on.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import _validate_action_model
+        from lionagi.studio.services.schedule_action_validation import _validate_action_model
 
         try:
             _validate_action_model(value)
@@ -1248,7 +1251,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # kind, so those count as written.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import _validate_prompt
+        from lionagi.studio.services.schedule_action_validation import _validate_prompt
 
         try:
             _validate_prompt(value)
@@ -1283,7 +1286,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # refuses fails at every fire, so it counts as written.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import (
+        from lionagi.studio.services.schedule_action_validation import (
             _validate_action_command,
             _validate_command_allowlisted,
         )
@@ -1444,7 +1447,8 @@ async def _adopt_undeclarable(
         return any(status not in _NOTIFY_ALLOWED_STATUSES for status in current)
     if name == "action_playbook" and isinstance(current, str):
         # A member's playbook name is refused when the launch would refuse it.
-        from lionagi.studio.scheduler.subprocess import _PLAY_SUBCOMMANDS, _validate_identifier
+        from lionagi.studio.scheduler.subprocess import _validate_identifier
+        from lionagi.studio.services.schedule_action_validation import _PLAY_SUBCOMMANDS
 
         try:
             _validate_identifier(current, "action_playbook")
@@ -1455,7 +1459,7 @@ async def _adopt_undeclarable(
         # A member's executable resolves only against the allow-list, so a name the
         # launch refuses, or one this process's allow-list does not carry, is not
         # one a member can be edited to name.
-        from lionagi.studio.scheduler.subprocess import (
+        from lionagi.studio.services.schedule_action_validation import (
             _validate_action_command,
             _validate_command_allowlisted,
         )
@@ -1477,7 +1481,7 @@ async def _adopt_undeclarable(
         return True
     if name == "action_prompt" and isinstance(current, str):
         # A member's prompt is refused when the launch would refuse it.
-        from lionagi.studio.scheduler.subprocess import _validate_prompt
+        from lionagi.studio.services.schedule_action_validation import _validate_prompt
 
         try:
             _validate_prompt(current)
@@ -1487,7 +1491,7 @@ async def _adopt_undeclarable(
     if name == "action_model" and isinstance(current, str):
         # A member's model, its own or its profile's, is refused when the launch would
         # refuse it.
-        from lionagi.studio.scheduler.subprocess import _validate_action_model
+        from lionagi.studio.services.schedule_action_validation import _validate_action_model
 
         try:
             _validate_action_model(current)

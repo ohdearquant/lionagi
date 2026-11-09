@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.studio.scheduler.subprocess import (
+from lionagi.studio.scheduler.subprocess import build_argv
+from lionagi.studio.services.schedule_action_validation import (
     _validate_playbook_args,
-    build_argv,
     validate_launch_fields,
 )
 
@@ -130,7 +130,7 @@ class TestBuildArgvPlay:
         import importlib
         import inspect
 
-        from lionagi.studio.scheduler.subprocess import _PLAY_SUBCOMMANDS
+        from lionagi.studio.services.schedule_action_validation import _PLAY_SUBCOMMANDS
 
         # The module, not the `main` function the package exports under the same name.
         cli_main = importlib.import_module("lionagi.cli.main")

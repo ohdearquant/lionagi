@@ -134,10 +134,6 @@
     "lionagi/studio/scheduler/github.py": [
       "os.environ.get:\"GITHUB_TOKEN\""
     ],
-    "lionagi/studio/scheduler/subprocess.py": [
-      "os.environ.get:_COMMAND_ALLOWLIST_ENV",
-      "os.environ.get:_COMMAND_ALLOWLIST_ENV"
-    ],
     "lionagi/studio/services/approvals.py": [
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
@@ -155,6 +151,10 @@
     ],
     "lionagi/studio/services/redaction.py": [
       "os.environ.get:\"LIONAGI_STUDIO_DEMO_MODE\""
+    ],
+    "lionagi/studio/services/schedule_action_validation.py": [
+      "os.environ.get:_COMMAND_ALLOWLIST_ENV",
+      "os.environ.get:_COMMAND_ALLOWLIST_ENV"
     ],
     "lionagi/testing/_endpoint.py": [
       "os.environ.get:ENV_SCRIPT_PATH"
@@ -1112,7 +1112,7 @@
       "__all__ = (\n    \"DEFAULT_HEARTBEAT_TTL_SECONDS\",\n    \"DEFAULT_KEY_CONCURRENCY\",\n    \"DEFAULT_LEASE_TTL_SECONDS\",\n    \"DEFAULT_WAITER_CAP_MULTIPLIER\",\n    \"MAX_LEASE_ATTEMPTS\",\n    \"TASK_WORKER_ENABLED\",\n    \"claim_and_execute\",\n    \"default_execute\",\n    \"reap_expired_leases\",\n    \"register_heartbeat\",\n    \"worker_tick\",\n)"
     ],
     "lionagi/studio/services/_schedule_validation.py": [
-      "__all__ = (\n    \"_GITHUB_FILTER_ALLOWED_EVENTS\",\n    \"_GITHUB_FILTER_ALLOWED_KEYS\",\n    \"_svc_validate_budget_tokens\",\n    \"_svc_validate_budget_usd\",\n    \"_svc_validate_command_args\",\n    \"_svc_validate_github_filter\",\n    \"_svc_validate_github_repo\",\n    \"_validate_flow_yaml_spec\",\n)"
+      "__all__ = (\n    \"_GITHUB_OWNER_MAX\",\n    \"_GITHUB_OWNER_RE\",\n    \"_GITHUB_REPO_MAX\",\n    \"_GITHUB_REPO_NAME_RE\",\n    \"_GITHUB_REPO_TRAVERSAL\",\n    \"_GITHUB_FILTER_ALLOWED_EVENTS\",\n    \"_GITHUB_FILTER_ALLOWED_KEYS\",\n    \"_MERGED_MODE_MAX_PAGES\",\n    \"_validate_github_repo\",\n    \"_svc_validate_budget_tokens\",\n    \"_svc_validate_budget_usd\",\n    \"_svc_validate_command_args\",\n    \"_svc_validate_github_filter\",\n    \"_svc_validate_github_repo\",\n    \"_validate_flow_yaml_spec\",\n    \"merged_page_limit\",\n    \"validate_rate_limit\",\n)"
     ],
     "lionagi/studio/services/_session_tail.py": [
       "__all__ = (\"SessionTailRegistry\", \"StreamResyncError\", \"capture_frontiers\")"
@@ -3227,7 +3227,6 @@
       "holder_is_running",
       "normalize_action_args",
       "notify_request",
-      "validate_rate_limit",
       "waiter_ahead_count"
     ],
     "lionagi/studio/scheduler/capabilities.py": [
@@ -3252,8 +3251,7 @@
     "lionagi/studio/scheduler/github.py": [
       "GithubPollItem",
       "GithubPollResult",
-      "github_poll",
-      "merged_page_limit"
+      "github_poll"
     ],
     "lionagi/studio/scheduler/signals.py": [
       "ScheduleRunCancelled",
@@ -3271,8 +3269,7 @@
       "render_action_prompt",
       "resolve_li_executable",
       "spawn_and_wait",
-      "unfilled_template_vars",
-      "validate_launch_fields"
+      "unfilled_template_vars"
     ],
     "lionagi/studio/scheduler/threshold.py": [
       "compare",
@@ -3304,6 +3301,10 @@
       "public_path",
       "safe_path_join",
       "validate_name_component"
+    ],
+    "lionagi/studio/services/_schedule_validation.py": [
+      "merged_page_limit",
+      "validate_rate_limit"
     ],
     "lionagi/studio/services/_session_tail.py": [
       "SessionTailRegistry",
@@ -3677,6 +3678,9 @@
       "list_runs",
       "list_runs_route",
       "paginate_runs"
+    ],
+    "lionagi/studio/services/schedule_action_validation.py": [
+      "validate_launch_fields"
     ],
     "lionagi/studio/services/schedule_declaration.py": [
       "AgentTarget",
