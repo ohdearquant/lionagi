@@ -3854,10 +3854,14 @@ async def test_a_transport_error_is_not_chained_to_the_error(
     _install_accounts(monkeypatch, tmp_path)
     if ledger == "down":
 
-        async def settle_unknown(self, *args, **kwargs):
+        async def settle_stream_end(self, *args, **kwargs):
             raise RuntimeError("ledger unavailable")
 
-        monkeypatch.setattr(router_module.AccountRouter, "settle_unknown", settle_unknown)
+        if streamed:
+            monkeypatch.setattr(router_module.AccountRouter, "settle_stream_end", settle_stream_end)
+            monkeypatch.setattr(router_module.AccountRouter, "settle_unknown", settle_stream_end)
+        else:
+            monkeypatch.setattr(router_module.AccountRouter, "settle_unknown", settle_stream_end)
     failing = httpx.ConnectError("x-api-key: " + CANARY)
     response = StubResponse(pieces=[failing]) if streamed else _FailingResponse(failing)
     model, _ = _model(monkeypatch, [response])
@@ -4158,13 +4162,15 @@ async def test_a_later_message_starts_placeholder_count_does_not_undo_a_final_on
     monkeypatch, tmp_path
 ):
     """A message_delta's output count is the final one for the attempt; a message_start
-    after it carries a placeholder count and must not replace it, so the attempt settles
-    at the same cost as a stream that ends where the delta does."""
+    after it carries placeholder counts and must not replace that count or any other, so the
+    attempt settles at the same cost as a stream that ends where the delta does."""
     path = _install_accounts(monkeypatch, tmp_path)
     start = copy.deepcopy(_MESSAGE_START)
     start["message"]["usage"]["output_tokens"] = 1
     final = {"type": "message_delta", "usage": {"output_tokens": 5}}
-    events = [start, _PARTIAL_TEXT, final, copy.deepcopy(start), {"type": "message_stop"}]
+    late_start = copy.deepcopy(start)
+    late_start["message"]["usage"]["input_tokens"] += 1000
+    events = [start, _PARTIAL_TEXT, final, late_start, {"type": "message_stop"}]
     model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
     assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
 
@@ -4177,12 +4183,8 @@ async def test_a_later_message_starts_placeholder_count_does_not_undo_a_final_on
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("late_model", ["claude-opus-5-5", "claude-not-priced"])
-async def test_a_later_message_start_does_not_reprice_a_final_count(
-    monkeypatch, tmp_path, late_model
-):
-    """A message_start after the final count names no model for that count: the attempt
-    settles at the price of the model that produced it, and a start naming an unpriced
-    model does not leave the attempt open."""
+async def test_conflicting_message_start_models_keep_the_ceiling(monkeypatch, tmp_path, late_model):
+    """A second served model makes the observed vector unpriceable."""
     path = _install_accounts(monkeypatch, tmp_path)
     start = copy.deepcopy(_MESSAGE_START)
     start["message"]["usage"]["output_tokens"] = 1
@@ -4196,7 +4198,8 @@ async def test_a_later_message_start_does_not_reprice_a_final_count(
     assert [chunk async for chunk in control_model.endpoint.stream(REQUEST)]
 
     late_row, control = _attempts(path)
-    assert late_row[2:] == control[2:] == ("settled", 250_000, "complete"), (late_row, control)
+    assert late_row[2:] == ("open", None, "usage_incomplete"), late_row
+    assert control[2:] == ("settled", 250_000, "complete"), control
 
 
 def test_a_masked_name_taking_a_recorded_place_still_masks_its_value():
@@ -4670,7 +4673,14 @@ async def test_a_transport_failure_inside_an_unterminated_event_does_not_dispatc
             pass
 
     attempt = _attempts(path)[-1]
-    assert attempt[2:] == ("open", None, "transport_error"), attempt
+    assert attempt[2] == "settled" and attempt[4] == "stream_usage_estimate", attempt
+    with sqlite3.connect(path) as connection:
+        evidence = json.loads(
+            connection.execute(
+                "SELECT settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()[0]
+        )["evidence"]
+    assert evidence["original_reason"] == "transport_error"
     assert len(written) == 1, written
 
 
@@ -4941,3 +4951,590 @@ async def test_a_second_call_with_the_same_stable_prefix_binds_the_account_that_
     warm, accounts = await run_two_calls(tmp_path / "warm", {"usage": _hour_write_usage()})
     assert warm == ["primary"]
     assert accounts == ["primary", "primary"]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_stream_settles_its_observed_usage_estimate(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    delta = {"type": "message_delta", "usage": {"output_tokens": 5}}
+    model, _ = _model(
+        monkeypatch,
+        [StubResponse(pieces=[_sse([_MESSAGE_START, _PARTIAL_TEXT, delta])])],
+    )
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    assert chunks
+    with sqlite3.connect(path) as connection:
+        evidence = json.loads(
+            connection.execute("SELECT settlement_evidence_json FROM attempt").fetchone()[0]
+        )["evidence"]
+        block = connection.execute(
+            "SELECT block_reason FROM account WHERE name = 'primary'"
+        ).fetchone()[0]
+        warmth = connection.execute("SELECT COUNT(*) FROM warm_prefix").fetchone()[0]
+    assert evidence["original_reason"] == "stream_truncated"
+    assert evidence["counts"] == {
+        "input_tokens": 100,
+        "cache_read_input_tokens": 0,
+        "cache_write_5m_tokens": 0,
+        "cache_write_1h_tokens": 0,
+        "output_tokens": 5,
+    }
+    assert evidence["margin_tokens"] == 1024
+    assert evidence["margin_nusd"] == 11_264_000
+    assert evidence["cost_nusd"] == evidence["observed_cost_nusd"] + evidence["margin_nusd"]
+    assert _attempts(path)[0][2:] == (
+        "settled",
+        evidence["cost_nusd"],
+        "stream_usage_estimate",
+    )
+    assert block is None
+    assert warmth == 0
+
+
+@pytest.mark.parametrize("ending", ["truncated", "cancelled"])
+@pytest.mark.asyncio
+async def test_a_failed_estimate_keeps_the_open_ending_reason(monkeypatch, tmp_path, ending):
+    import lionagi.service.accounts._pricing as pricing
+
+    path = _install_accounts(monkeypatch, tmp_path)
+    delta = {"type": "message_delta", "usage": {"output_tokens": 5}}
+    response = StubResponse(pieces=[_sse([_MESSAGE_START, delta])])
+    if ending == "cancelled":
+        entered = asyncio.Event()
+
+        class HangingStream(ByteStream):
+            async def __anext__(self):
+                piece = next(self._pieces, None)
+                if piece is None:
+                    await asyncio.Event().wait()
+                return piece
+
+        response.content = HangingStream([_sse([_MESSAGE_START, delta])])
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(pricing, "stream_usage_estimate", fail)
+    model, _ = _model(monkeypatch, [response])
+    if ending == "truncated":
+        [chunk async for chunk in model.endpoint.stream(REQUEST)]
+        expected = "stream_truncated"
+    else:
+
+        async def consume():
+            async for _ in model.endpoint.stream(REQUEST):
+                entered.set()
+
+        task = asyncio.create_task(consume())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        expected = "cancelled"
+    assert _attempts(path)[0][2:] == ("open", None, expected)
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        b'data: {"type":"notice","error":true}\n\n',
+        b'event: response.error\ndata: {"message":"failed"}\n\n',
+    ],
+)
+@pytest.mark.asyncio
+async def test_accounting_parser_recognizes_endpoint_failure_events(monkeypatch, tmp_path, event):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse([_MESSAGE_START]), event])])
+    stream = model.endpoint.stream(REQUEST)
+    async for _ in stream:
+        break
+    await stream.aclose()
+    row = _attempts(path)[0]
+    assert row[2:] == ("open", None, "stream_error")
+
+
+_ESTIMATE_ENDINGS = (
+    "stream_truncated",
+    "stream_error",
+    "stream_closed",
+    "cancelled",
+    "transport_error",
+)
+
+
+def _assert_stream_estimate(path, reason, warmth):
+    row = _attempts(path)[-1]
+    assert row[2] == "settled" and row[4] == "stream_usage_estimate", row
+    with sqlite3.connect(path) as connection:
+        status, raw = connection.execute(
+            "SELECT http_status, settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    envelope = json.loads(raw)
+    evidence = envelope["evidence"]
+    assert status == 200
+    assert evidence["original_reason"] == reason
+    assert evidence["counts"]["output_tokens"] == 5
+    assert evidence["margin_tokens"] == 1024
+    assert evidence["margin_nusd"] > 0
+    assert evidence["cost_nusd"] == row[3]
+    assert len(_warm_rows(path)) == warmth
+
+
+@pytest.mark.parametrize("reason", _ESTIMATE_ENDINGS)
+@pytest.mark.asyncio
+async def test_complete_delta_estimates_each_stream_ending(monkeypatch, tmp_path, reason):
+    delta = {"type": "message_delta", "usage": {"output_tokens": 5}}
+    events = [_HOUR_MESSAGE_START, delta]
+    pieces = [_sse(events)]
+    if reason == "stream_error":
+        pieces.append(b'event: error\ndata: {"message":"failed"}\n\n')
+    elif reason == "transport_error":
+        pieces.append(httpx.ReadError("connection dropped"))
+    path, model, _, warm = await _prime(monkeypatch, tmp_path, [StubResponse(pieces=pieces)])
+    if reason == "cancelled":
+        await _cancel_stream_after_chunk(model)
+    elif reason == "stream_closed":
+        stream = model.endpoint.stream(HOUR_REQUEST)
+        await stream.__anext__()
+        await stream.aclose()
+    else:
+        if reason == "transport_error":
+            with pytest.raises(Exception):
+                [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+        else:
+            [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    _assert_stream_estimate(
+        path, reason, len(warm) if reason in ("cancelled", "stream_closed") else 0
+    )
+
+
+async def _consume_until_first(model, stream=None):
+    async for _ in stream or model.endpoint.stream(HOUR_REQUEST):
+        return
+
+
+async def _cancel_stream_after_chunk(model):
+    # Cancel while the stream generator awaits its byte source, after every piece has been
+    # read. A piece holding only message_start yields no chunk until more bytes or EOF arrive,
+    # so the cancel point is the read that blocks, not the first chunk.
+    blocked = asyncio.Event()
+    transport = model.endpoint._create_http_session.__self__
+    response = transport.responses[0]
+
+    class HangingStream(ByteStream):
+        async def __anext__(self):
+            piece = next(self._pieces, None)
+            if piece is None:
+                blocked.set()
+                await asyncio.Event().wait()
+            if isinstance(piece, BaseException):
+                raise piece
+            return piece
+
+    response.content = HangingStream(list(response.content.pieces))
+
+    async def consume():
+        async for _ in model.endpoint.stream(HOUR_REQUEST):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(blocked.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.parametrize("reason", _ESTIMATE_ENDINGS)
+@pytest.mark.asyncio
+async def test_message_start_alone_keeps_ceiling_for_each_stream_ending(
+    monkeypatch, tmp_path, reason
+):
+    pieces = [_sse([_HOUR_MESSAGE_START])]
+    if reason == "stream_error":
+        pieces.append(b'event: error\ndata: {"message":"failed"}\n\n')
+    elif reason == "transport_error":
+        pieces.append(httpx.ReadError("connection dropped"))
+    path, model, _, warm = await _prime(monkeypatch, tmp_path, [StubResponse(pieces=pieces)])
+    if reason == "cancelled":
+        await _cancel_stream_after_chunk(model)
+        row = _attempts(path)[-1]
+        assert row[2:] == ("open", None, "cancelled"), row
+        assert _http_statuses(path)[-1] == (200,)
+        with sqlite3.connect(path) as connection:
+            raw = connection.execute(
+                "SELECT settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()[0]
+        assert json.loads(raw)["basis"] is None
+        assert len(_warm_rows(path)) == len(warm)
+        return
+    if reason == "stream_closed":
+        stream = model.endpoint.stream(HOUR_REQUEST)
+        await stream.__anext__()
+        await stream.aclose()
+    else:
+        if reason == "transport_error":
+            with pytest.raises(Exception):
+                [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+        else:
+            [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    row = _attempts(path)[-1]
+    assert row[2:] == ("open", None, reason), row
+    assert _http_statuses(path)[-1] == (200,)
+    with sqlite3.connect(path) as connection:
+        raw = connection.execute(
+            "SELECT settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()[0]
+    assert json.loads(raw)["basis"] is None
+    assert len(_warm_rows(path)) == (len(warm) if reason in ("cancelled", "stream_closed") else 0)
+
+
+@pytest.mark.asyncio
+async def test_split_delta_and_incomplete_utf8_do_not_change_observed_vector(monkeypatch, tmp_path):
+    complete = _sse([_HOUR_MESSAGE_START, {"type": "message_delta", "usage": {"output_tokens": 5}}])
+    cut = _sse([_HOUR_MESSAGE_START]) + b'data: {"type":"message_delta","usage":{"output_tokens":5'
+    path, model, _, _ = await _prime(monkeypatch, tmp_path, [StubResponse(pieces=[cut])])
+    [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    assert _attempts(path)[-1][2:] == ("open", None, "stream_truncated")
+
+    utf8_dir = tmp_path / "utf8"
+    utf8_dir.mkdir()
+    path, model, _, _ = await _prime(
+        monkeypatch,
+        utf8_dir,
+        [StubResponse(pieces=[complete + b"\ndata: \xe2", httpx.ReadError("connection dropped")])],
+    )
+    with pytest.raises(Exception):
+        [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    assert _attempts(path)[-1][4] == "stream_usage_estimate"
+    with sqlite3.connect(path) as connection:
+        evidence = json.loads(
+            connection.execute(
+                "SELECT settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()[0]
+        )["evidence"]
+    assert (
+        evidence["original_reason"] == "transport_error"
+        and evidence["counts"]["output_tokens"] == 5
+    )
+
+
+@pytest.mark.parametrize(
+    ("deltas", "expected", "reason"),
+    [
+        ([{"output_tokens": 3}, {"output_tokens": 7}], 7, "stream_truncated"),
+        ([{"output_tokens": 5}, {"cache_read_input_tokens": 2}], 5, "stream_truncated"),
+        ([{"output_tokens": 5}, {"output_tokens": "bad"}], None, "stream_truncated"),
+        (
+            [
+                {
+                    "output_tokens": 5,
+                    "cache_creation_input_tokens": 4,
+                    "cache_creation": {"ephemeral_1h_input_tokens": 4},
+                },
+                {
+                    "output_tokens": 5,
+                    "cache_creation_input_tokens": 6,
+                    "cache_creation": {"ephemeral_5m_input_tokens": 6},
+                },
+            ],
+            5,
+            "stream_truncated",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_estimate_usage_fields_follow_cumulative_replacement(
+    monkeypatch, tmp_path, deltas, expected, reason
+):
+    events = [_HOUR_MESSAGE_START, *({"type": "message_delta", "usage": usage} for usage in deltas)]
+    path, model, _, _ = await _prime(monkeypatch, tmp_path, [StubResponse(pieces=[_sse(events)])])
+    [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    row = _attempts(path)[-1]
+    if expected is None:
+        assert row[2] == "open" and row[3] is None
+        assert row[4] == "stream_truncated"
+    else:
+        assert row[2] == "settled" and row[4] == "stream_usage_estimate"
+        with sqlite3.connect(path) as connection:
+            evidence = json.loads(
+                connection.execute(
+                    "SELECT settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+                ).fetchone()[0]
+            )["evidence"]
+        assert evidence["original_reason"] == reason
+        assert evidence["counts"]["output_tokens"] == expected
+        assert evidence["margin_tokens"] == 1024
+        assert evidence["margin_nusd"] > 0
+        assert evidence["cost_nusd"] == row[3]
+        if len(deltas) == 2 and "cache_creation" in deltas[0]:
+            assert evidence["counts"]["cache_write_5m_tokens"] == 6
+            assert evidence["counts"]["cache_write_1h_tokens"] == 0
+    assert _http_statuses(path)[-1] == (200,)
+    assert len(_warm_rows(path)) == 0
+
+
+@pytest.mark.asyncio
+async def test_message_stop_settles_before_first_chunk_from_its_piece(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    events = [
+        _HOUR_MESSAGE_START,
+        {"type": "message_delta", "usage": {"output_tokens": 5}},
+        {"type": "message_stop"},
+    ]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    seen = []
+    async for _ in model.endpoint.stream(HOUR_REQUEST):
+        seen.append(_attempts(path)[0][2:])
+        break
+    assert seen and seen[0][0] == "settled" and seen[0][2] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_transport_loss_after_message_stop_does_not_settle_twice(monkeypatch, tmp_path):
+    path, model, _, warm = await _prime(
+        monkeypatch,
+        tmp_path,
+        [
+            StubResponse(
+                pieces=[
+                    _sse([_HOUR_MESSAGE_START, _FINAL_COUNT, _MESSAGE_STOP]) + b"\n",
+                    httpx.ReadError("drop"),
+                ]
+            )
+        ],
+    )
+    calls = _count_ledger_settlements(monkeypatch)
+    with pytest.raises(Exception):
+        [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    row = _attempts(path)[-1]
+    assert row[2] == "settled" and row[4] == "complete" and row[3] > 0, row
+    assert len(calls) == 1
+    assert _warm_rows(path) == warm
+
+
+@pytest.mark.parametrize("reason", ["stream_truncated", "cancelled"])
+@pytest.mark.asyncio
+async def test_estimate_above_ceiling_blocks_and_clears_warmth(monkeypatch, tmp_path, reason):
+    # Observed input far above what the request's reservation covers puts the estimate above
+    # the reserved ceiling.
+    start = {
+        **_HOUR_MESSAGE_START,
+        "message": {
+            **_HOUR_MESSAGE_START["message"],
+            "usage": {**_HOUR_MESSAGE_START["message"]["usage"], "input_tokens": 50_000_000},
+        },
+    }
+    path, model, _, _ = await _prime(
+        monkeypatch,
+        tmp_path,
+        [StubResponse(pieces=[_sse([start, _FINAL_COUNT])])],
+    )
+    if reason == "cancelled":
+        await _cancel_stream_after_chunk(model)
+    else:
+        [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    row = _attempts(path)[-1]
+    assert row[2] == "settled" and row[4] == "stream_usage_estimate" and row[3] > 0
+    assert _block_reason(path, row[1]) == "ceiling_exceeded"
+    assert _warm_rows(path) == []
+
+
+@pytest.mark.parametrize("mismatch", [False, True], ids=["legacy", "revision"])
+@pytest.mark.asyncio
+async def test_unpriceable_quote_never_gets_stream_estimate(monkeypatch, tmp_path, mismatch):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(
+        monkeypatch,
+        [StubResponse(pieces=[_sse([_HOUR_MESSAGE_START, _FINAL_COUNT])])],
+    )
+    from dataclasses import replace
+
+    original = router_module.AccountRouter.begin
+
+    async def begin(self, *args, **kwargs):
+        attempt = await original(self, *args, **kwargs)
+        if mismatch:
+            # The price revision moves after the reservation was quoted.
+            self.revision = replace(self.revision, id="different-revision")
+        else:
+            attempt.reservation = replace(
+                attempt.reservation,
+                quote=replace(attempt.reservation.quote, pricing_inputs=None),
+            )
+        return attempt
+
+    monkeypatch.setattr(router_module.AccountRouter, "begin", begin)
+    [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    assert _attempts(path)[0][2] == "open" and _attempts(path)[0][4] == "stream_truncated"
+
+
+@pytest.mark.asyncio
+async def test_redacted_output_count_does_not_change_accounted_usage(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    event = {"type": "message_delta", "usage": {"output_tokens": 5}, "text": CANARY + "5"}
+    model, _ = _model(
+        monkeypatch,
+        [StubResponse(pieces=[_sse([_HOUR_MESSAGE_START, event, _MESSAGE_STOP])])],
+    )
+    [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    row = _attempts(path)[0]
+    assert row[2] == "settled" and row[4] == "complete"
+    with sqlite3.connect(path) as connection:
+        usage = json.loads(connection.execute("SELECT usage_json FROM attempt").fetchone()[0])
+    assert usage["output_tokens"] == 5
+
+
+@pytest.mark.parametrize("delta_seen", [True, False], ids=["estimate", "open"])
+@pytest.mark.asyncio
+async def test_deadline_during_a_transport_settlement_keeps_the_transport_reason(
+    monkeypatch, tmp_path, delta_seen
+):
+    events = [_HOUR_MESSAGE_START]
+    if delta_seen:
+        events.append({"type": "message_delta", "usage": {"output_tokens": 5}})
+    path, model, _, _ = await _prime(
+        monkeypatch,
+        tmp_path,
+        [StubResponse(pieces=[_sse(events), httpx.ReadError("connection dropped")])],
+    )
+    original = router_module.AccountRouter.settle_stream_end
+    calls = []
+
+    async def slow_settle(self, *args, **kwargs):
+        # A ledger commit that outlasts the caller's deadline; the router's write is shielded,
+        # so the delay sits inside a shield as well.
+        calls.append(kwargs.get("reason"))
+        with anyio.CancelScope(shield=True):
+            await anyio.sleep(0.3)
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(router_module.AccountRouter, "settle_stream_end", slow_settle)
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(0.1):
+            [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    assert len(calls) == 1
+    row = _attempts(path)[-1]
+    if delta_seen:
+        assert row[2] == "settled" and row[4] == "stream_usage_estimate", row
+        with sqlite3.connect(path) as connection:
+            raw = connection.execute(
+                "SELECT settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()[0]
+        assert json.loads(raw)["evidence"]["original_reason"] == "transport_error"
+    else:
+        assert row[2:] == ("open", None, "transport_error"), row
+    assert _warm_rows(path) == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_at_the_transport_failure_keeps_the_transport_reason(
+    monkeypatch, tmp_path
+):
+    holder = {}
+
+    class FailingStream(ByteStream):
+        async def __anext__(self):
+            piece = next(self._pieces, None)
+            if piece is None:
+                # The caller cancels in the same step the connection drops.
+                holder["scope"].cancel()
+                raise httpx.ReadError("connection dropped")
+            return piece
+
+    response = StubResponse()
+    response.content = FailingStream(
+        [_sse([_HOUR_MESSAGE_START, {"type": "message_delta", "usage": {"output_tokens": 5}}])]
+    )
+    path, model, _, _ = await _prime(monkeypatch, tmp_path, [response])
+    with anyio.CancelScope() as scope:
+        holder["scope"] = scope
+        with pytest.raises(Exception):
+            [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    row = _attempts(path)[-1]
+    assert row[2] == "settled" and row[4] == "stream_usage_estimate", row
+    with sqlite3.connect(path) as connection:
+        raw = connection.execute(
+            "SELECT settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()[0]
+    assert json.loads(raw)["evidence"]["original_reason"] == "transport_error"
+    assert _warm_rows(path) == []
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        pytest.param(
+            lambda events: b"".join(b"data: " + json.dumps(e).encode() + b"\n" for e in events),
+            id="single_newlines",
+        ),
+        pytest.param(lambda events: _sse(events)[:-1], id="no_final_blank_line"),
+        pytest.param(lambda events: _sse(events)[:-2], id="no_final_newline"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_complete_stream_settles_exactly_whatever_its_event_separators(
+    monkeypatch, tmp_path, framing
+):
+    """Billing reads the events the consumer receives: a stream the consumer reads to its
+    message_stop settles at its exact usage however its events are separated."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    events = [_HOUR_MESSAGE_START, _FINAL_COUNT, _MESSAGE_STOP]
+    model, _ = _model(
+        monkeypatch,
+        [StubResponse(pieces=[_sse(events)]), StubResponse(pieces=[framing(events)])],
+    )
+    control = [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    framed = [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    assert [chunk.type for chunk in framed] == [chunk.type for chunk in control]
+    expected, row = _attempts(path)
+    assert expected[2] == "settled" and expected[4] == "complete", expected
+    assert row[2:] == expected[2:], (row, expected)
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "expected_type", "failed"),
+    [
+        ("message_delta", {"usage": {"output_tokens": 5}}, None, False),
+        ("error", {"type": "message_delta", "usage": {"output_tokens": 5}}, "message_delta", True),
+        ("error", {"error": {"type": "overloaded_error"}}, "error", True),
+    ],
+    ids=[
+        "untyped_data_under_an_ordinary_name",
+        "typed_data_under_a_failure_name",
+        "untyped_failure",
+    ],
+)
+def test_the_accounting_parser_types_events_by_the_endpoint_rule(name, data, expected_type, failed):
+    # The endpoint uses an SSE name as the type only when the name says the call failed and
+    # the data carries no type; billing must read each event as the consumer receives it.
+    from lionhub.providers.anthropic.messages import _AccountingStreamParser
+
+    parser = _AccountingStreamParser("key-a", AnthropicMessagesEndpoint)
+    raw = f"event: {name}\ndata: {json.dumps(data)}\n\n".encode()
+    events = parser.feed(raw)
+    assert [event.get("type") for event in events] == [expected_type]
+    parser.observe(events[0])
+    assert parser.saw_error is failed
+
+
+@pytest.mark.parametrize(
+    ("name", "expected", "failed"),
+    [("message_stop", [], False), ("error", ["error"], True)],
+    ids=["ordinary_name", "failure_name"],
+)
+def test_the_accounting_parser_reads_non_object_data_only_under_a_failure_name(
+    name, expected, failed
+):
+    # The endpoint turns data that is not a JSON object into a text chunk, or into an error
+    # chunk under a failure name; a text chunk named message_stop must not end the stream.
+    from lionhub.providers.anthropic.messages import _AccountingStreamParser
+
+    parser = _AccountingStreamParser("key-a", AnthropicMessagesEndpoint)
+    events = parser.feed(f"event: {name}\ndata: not json\n\n".encode())
+    assert [event.get("type") for event in events] == expected
+    for event in events:
+        parser.observe(event)
+    assert parser.message_stop is False
+    assert parser.saw_error is failed

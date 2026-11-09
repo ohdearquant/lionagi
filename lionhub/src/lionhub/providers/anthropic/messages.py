@@ -290,6 +290,127 @@ def _settlement_reading(event: Any) -> dict | None:
     return None
 
 
+class _AccountingStreamParser:
+    """Read billing fields from the stream's raw bytes, framed as the endpoint frames them.
+
+    Events are delimited by the endpoint's own server-sent-event framer (``framer``'s
+    ``_frame_stream_line`` and ``_take_sse_event``), whatever separators the stream uses,
+    and an SSE name is read the way the endpoint's ``_line_to_stream_chunk`` reads it: it
+    stands in for the type only when it says the call failed and the data carries no type.
+    So billing reads an event as a ``message_start``, ``message_delta``, ``message_stop``
+    or failure exactly when the consumer's chunk for it has that type. Data that is not a
+    JSON object counts only under a failure name.
+    """
+
+    def __init__(self, key, framer) -> None:
+        import codecs
+
+        from lionagi.service.connections.endpoint import (
+            _SSE_CALL_FAILURE_NAMES,
+            _event_reports_call_failure,
+            _SSEFrame,
+        )
+
+        self.decoder = codecs.getincrementaldecoder("utf-8")()
+        self.pending = ""
+        self.frame = _SSEFrame()
+        self.framer = framer
+        self.key = key
+        self.model = None
+        self.models: set[str] = set()
+        self.request_id = None
+        self.usage: dict[str, Any] = {}
+        self.output_seen = False
+        self.output_valid = False
+        self.message_stop = False
+        self.saw_error = False
+        self._failure_names = _SSE_CALL_FAILURE_NAMES
+        self._reports_failure = _event_reports_call_failure
+
+    def feed(self, raw: bytes) -> list[dict]:
+        """The events the complete lines of ``raw`` finish."""
+        self.pending += self.decoder.decode(raw)
+        events = []
+        while "\n" in self.pending:
+            line, self.pending = self.pending.split("\n", 1)
+            events.extend(self._events(self.framer._frame_stream_line(line, self.frame)))
+        return events
+
+    def finish(self) -> list[dict]:
+        """The events a clean end of stream completes: the last line and the held event.
+
+        Called only when the byte source ended without an error; after a transport failure
+        an unterminated line or event is a truncated event and contributes nothing.
+        """
+        self.pending += self.decoder.decode(b"", final=True)
+        framed = self.framer._frame_stream_line(self.pending, self.frame) if self.pending else []
+        self.pending = ""
+        if self.frame.data:
+            framed.append(self.framer._take_sse_event(self.frame))
+        return self._events(framed)
+
+    def _events(self, framed) -> list[dict]:
+        events = []
+        for payload, name in framed:
+            try:
+                event = json.loads(payload)
+            except (TypeError, ValueError):
+                event = None
+            if isinstance(event, dict):
+                # The endpoint's rule (``_line_to_stream_chunk``): a name stands in for the
+                # type only when it says the call failed and the data carries no type.
+                if event.get("type") is None and name in self._failure_names:
+                    event = {**event, "type": name}
+                events.append({**event, "_accounting_sse_event": name})
+            elif name in self._failure_names:
+                # The endpoint turns such data into an error chunk under a failure name and
+                # into a text chunk under any other name, which billing does not read.
+                events.append({"type": name, "_invalid": True, "_accounting_sse_event": name})
+        return events
+
+    def observe(self, event: dict) -> None:
+        if event.get("_accounting_sse_event") in self._failure_names or self._reports_failure(
+            event
+        ):
+            self.saw_error = True
+        kind = event.get("type")
+        reading = _settlement_reading(event)
+        if kind == "message_start" and reading:
+            model = reading.get("model")
+            if isinstance(model, str) and model:
+                self.models.add(model)
+                self.model = model if len(self.models) == 1 else None
+            from lionagi.service.accounts._router import provider_request_id
+
+            self.request_id = provider_request_id(reading.get("id"), self.key) or self.request_id
+            # A start's counts are placeholders: once a message_delta has counted the output,
+            # a later start changes no count.
+            if not self.output_seen:
+                self._merge(reading.get("usage"), observed_output=False)
+        elif kind == "message_delta" and reading:
+            usage = reading.get("usage")
+            self._merge(usage, observed_output=True)
+        elif kind == "message_stop":
+            self.message_stop = True
+        elif kind == "error":
+            self.saw_error = True
+
+    def _merge(self, update, *, observed_output: bool) -> None:
+        if not isinstance(update, dict):
+            return
+        for name, value in update.items():
+            if name not in ("cache_creation",):
+                self.usage[name] = value
+        if "cache_creation_input_tokens" in update:
+            self.usage["cache_creation_input_tokens"] = update["cache_creation_input_tokens"]
+        if "cache_creation" in update:
+            self.usage["cache_creation"] = update["cache_creation"]
+        if observed_output and "output_tokens" in update:
+            value = update["output_tokens"]
+            self.output_seen = True
+            self.output_valid = type(value) is int and value >= 0
+
+
 def _mask_content_runs(body: Any, key: Any) -> Any:
     """``body`` with the key masked in every string of a response this request parsed.
 
@@ -868,19 +989,19 @@ class AnthropicMessagesEndpoint(Endpoint):
         import json
 
         from lionagi.ln.concurrency import get_cancelled_exc_class
-        from lionagi.service.accounts._pricing import usage_outcome
+        from lionagi.service.accounts._pricing import stream_usage_estimate, usage_outcome
         from lionagi.service.accounts._router import (
             StreamingSecretRedactor,
             StreamTextRedactor,
             get_router,
             header_pairs,
-            provider_request_id,
             redact_value,
             routed_client_kwargs,
             validate_routed_request,
         )
         from lionagi.service.accounts._types import (
             AccountRoutingError,
+            CompleteUsage,
             RejectionZero,
             RouterErrorCode,
         )
@@ -942,13 +1063,51 @@ class AnthropicMessagesEndpoint(Endpoint):
         # The same SSE framing as the unrouted stream, so an event keeps its ``event:``
         # name and an ``event: error`` fails the call here as it does there.
         frame = _SSEFrame()
-        usage: dict[str, Any] = {}
-        served_model = None
-        request_id = None
+        accounting = _AccountingStreamParser(attempt.key, type(self))
         settled = False  # set before each settlement write, so no handler writes a second
-        saw_error_event = False
-        saw_final_usage = False
-        start_models: set[str] = set()
+        settlement_write = False
+
+        def accounting_usage():
+            if not accounting.output_seen or not accounting.output_valid:
+                return None
+            if accounting.model is None:
+                return None
+            return usage_outcome(
+                router.revision,
+                attempt.ttls,
+                accounting.model,
+                accounting.usage,
+                accounting.request_id,
+            )
+
+        def early_estimate(reason):
+            try:
+                inputs = attempt.reservation.quote.pricing_inputs
+                if inputs is None or router.revision.id != attempt.reservation.quote.price_revision:
+                    return None
+                complete = accounting_usage()
+                from lionagi.service.accounts._types import UsageCounts
+
+                if not isinstance(complete, CompleteUsage):
+                    return None
+                counts = UsageCounts(
+                    complete.input_tokens,
+                    complete.cache_read_input_tokens,
+                    complete.cache_write_5m_tokens,
+                    complete.cache_write_1h_tokens,
+                    complete.output_tokens,
+                )
+                return stream_usage_estimate(
+                    router.revision,
+                    inputs,
+                    complete.served_model,
+                    counts,
+                    accounting.request_id,
+                    reason,
+                )
+            except Exception as error:
+                logger.debug("stream usage estimate unavailable: %s", type(error).__name__)
+                return None
 
         def queue_data(data: str, sse_event: str | None = None) -> list:
             """Hand one event to the text redactor; return the events now ready."""
@@ -971,11 +1130,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                 # of the other chunks of that type.
                 pieces.append((StreamTextRedactor.RAW, data))
                 places.append((None, None))
-                return push(event, data, places, False, pieces, shown, None, sse_event)
-            # What the event says about the attempt, read before the walk masks its text:
-            # a count whose text holds a run is masked in place, and the attempt is priced
-            # from the provider's own count.
-            settlement = _settlement_reading(event)
+                return push(event, data, places, False, pieces, shown, sse_event)
             delta = event.get("delta")
             if event.get("type") == "content_block_delta" and isinstance(delta, dict):
                 delta_type = delta.get("type")
@@ -1012,15 +1167,11 @@ class AnthropicMessagesEndpoint(Endpoint):
             rewrite = _mask_key_runs_in_strings(
                 event, attempt.key, {(id(holder), name) for holder, name in places}
             )
-            return push(event, data, places, rewrite, pieces, shown, settlement, sse_event)
+            return push(event, data, places, rewrite, pieces, shown, sse_event)
 
-        def push(
-            event, data, places, rewrite, pieces, shown, settlement=None, sse_event=None
-        ) -> list:
+        def push(event, data, places, rewrite, pieces, shown, sse_event=None) -> list:
             if shown is None:
-                return text_redactor.push(
-                    (event, data, places, rewrite, None, settlement, sse_event), pieces
-                )
+                return text_redactor.push((event, data, places, rewrite, None, sse_event), pieces)
             # A piece whose text the chunk shows takes the chunk's join too; other text
             # the chunk shows is a piece of its own.
             source = next(
@@ -1032,14 +1183,13 @@ class AnthropicMessagesEndpoint(Endpoint):
                 shown.content,
             )
             return text_redactor.push(
-                (event, data, places, rewrite, shown.type, settlement, sse_event),
+                (event, data, places, rewrite, shown.type, sse_event),
                 pieces,
                 (shown.type, source),
             )
 
         async def emit_ready(ready: list):
-            nonlocal served_model, request_id, settled, saw_error_event, saw_final_usage
-            for (event, data, places, rewrite, shown_type, settlement, sse_event), texts in ready:
+            for (event, data, places, rewrite, shown_type, sse_event), texts in ready:
                 shown_text = texts.pop() if shown_type is not None else None
                 raw = None
                 for (holder, field), text in zip(places, texts, strict=True):
@@ -1055,69 +1205,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                         event = None
                 elif places or rewrite:
                     data = json.dumps(event)
-                event_type = event.get("type") if isinstance(event, dict) else None
-                if event_type == "message_start":
-                    # A message_start whose message is not an object says nothing about the
-                    # attempt, and one that leaves a field out says nothing about that field,
-                    # so each leaves what an earlier event said in place. Its counts are
-                    # placeholders, so a start after a message_delta's final count leaves that
-                    # count alone, and its model too. A stream has one message_start; when
-                    # starts name two models, the next count cannot be tied to one of them
-                    # (see message_delta).
-                    if settlement is not None:
-                        started_model = settlement.get("model")
-                        if isinstance(started_model, str) and started_model:
-                            start_models.add(started_model)
-                        else:
-                            started_model = None
-                        if not saw_final_usage:
-                            served_model = started_model or served_model
-                        request_id = (
-                            provider_request_id(settlement.get("id"), attempt.key) or request_id
-                        )
-                        initial_usage = settlement.get("usage")
-                        if isinstance(initial_usage, dict) and not saw_final_usage:
-                            usage.update(initial_usage)
-                elif event_type == "message_delta":
-                    delta_usage = settlement.get("usage") if settlement else None
-                    if isinstance(delta_usage, dict):
-                        usage.update(delta_usage)
-                        # Usage that arrives after starts naming two models, an output count
-                        # or any other count, has no one model to price it at, so the attempt
-                        # is left unpriced, open with its ceiling held. Usage that arrived
-                        # before the second start keeps the first model's price.
-                        if len(start_models) > 1:
-                            served_model = None
-                        output_tokens = delta_usage.get("output_tokens")
-                        if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
-                            # A later delta whose count is not an integer replaces the earlier
-                            # count, which also leaves the attempt unpriced.
-                            saw_final_usage = True
-                elif event_type == "error":
-                    saw_error_event = True
-                elif event_type == "message_stop" and not settled:
-                    # message_start's output count is a placeholder; only a
-                    # message_delta's output count completes it. The attempt settles once,
-                    # so a later message_stop settles nothing.
-                    outcome = (
-                        usage_outcome(
-                            router.revision,
-                            attempt.ttls,
-                            served_model,
-                            usage,
-                            request_id if isinstance(request_id, str) else None,
-                        )
-                        if saw_final_usage
-                        else None
-                    )
-                    settled = True
-                    await router.settle_stream_end(attempt, outcome, http_status=status)
                 chunk = self._line_to_stream_chunk(data, sse_event=sse_event)
                 if chunk is not None:
-                    if chunk.metadata.get("call_failed"):
-                        # A failure the event's SSE name or its data reports, whatever
-                        # ``type`` the data carries.
-                        saw_error_event = True
                     if shown_text is not None and chunk.type == shown_type:
                         chunk.content = shown_text
                     chunk.content = redact_value(chunk.content, attempt.key)
@@ -1242,6 +1331,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                         except Exception as error:
                             transport_error = error
                             break
+                        for accounting_event in accounting.feed(raw):
+                            accounting.observe(accounting_event)
+                            if accounting_event.get("type") == "message_stop" and not settled:
+                                terminal = accounting_usage()
+                                settled = True
+                                await router.settle_stream_end(
+                                    attempt, terminal, http_status=status
+                                )
                         safe = redactor.feed(raw)
                         pending += decoder.decode(safe)
                         while "\n" in pending:
@@ -1249,6 +1346,31 @@ class AnthropicMessagesEndpoint(Endpoint):
                             for data, name in self._frame_stream_line(line, frame):
                                 async for chunk in emit_ready(queue_data(data, name)):
                                     yield chunk
+                    if transport_error is None:
+                        # A clean end completes the last line and any held event, exactly as
+                        # the endpoint framer does below; a message_stop among them settles
+                        # before any of that output is yielded.
+                        for accounting_event in accounting.finish():
+                            accounting.observe(accounting_event)
+                            if accounting_event.get("type") == "message_stop" and not settled:
+                                terminal = accounting_usage()
+                                settled = True
+                                await router.settle_stream_end(
+                                    attempt, terminal, http_status=status
+                                )
+                    if transport_error is not None and not settled:
+                        # Settled before the first await after the failure, so a cancellation
+                        # arriving now finds it settled and cannot record it as cancelled.
+                        settled = True
+                        estimate = early_estimate("transport_error")
+                        settlement_write = True
+                        await router.settle_stream_end(
+                            attempt,
+                            estimate,
+                            reason="transport_error" if estimate is None else None,
+                            http_status=status,
+                        )
+                        settlement_write = False
                     # The byte redactor's held tail can hold several lines, the last events
                     # of the stream among them. They are framed whether the stream ended or
                     # the connection failed; after a failure a trailing partial character is
@@ -1278,10 +1400,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                         raise transport_error
                     if not settled:
                         # The stream ended before message_stop, so its usage is incomplete.
-                        reason = "stream_error" if saw_error_event else "stream_truncated"
+                        reason = "stream_error" if accounting.saw_error else "stream_truncated"
                         settled = True
+                        estimate = early_estimate(reason)
                         await router.settle_stream_end(
-                            attempt, None, reason=reason, http_status=status
+                            attempt,
+                            estimate,
+                            reason=reason if estimate is None else None,
+                            http_status=status,
                         )
         except get_cancelled_exc_class():
             # A write that fails records nothing; the cancellation still reaches the caller.
@@ -1290,8 +1416,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                 if not request_entered:
                     await router.settle_not_sent(attempt, caller_cancelled=True)
                 elif not settled:
+                    reason = "cancelled"
+                    estimate = early_estimate(reason)
+                    settled = True
                     await router.settle_stream_end(
-                        attempt, None, reason="cancelled", http_status=status
+                        attempt,
+                        estimate,
+                        reason=reason if estimate is None else None,
+                        http_status=status,
                     )
             except Exception:  # noqa: S110 - the caller must see the cancellation
                 pass
@@ -1299,16 +1431,35 @@ class AnthropicMessagesEndpoint(Endpoint):
         except GeneratorExit:
             # The consumer closed the stream before message_stop.
             if not settled:
-                reason = "stream_error" if saw_error_event else "stream_closed"
-                await router.settle_stream_end(attempt, None, reason=reason, http_status=status)
+                reason = "stream_error" if accounting.saw_error else "stream_closed"
+                estimate = early_estimate(reason)
+                settled = True
+                await router.settle_stream_end(
+                    attempt,
+                    estimate,
+                    reason=reason if estimate is None else None,
+                    http_status=status,
+                )
             raise
         except AccountRoutingError:
             await anyio.lowlevel.checkpoint()
             raise
         except (_RoutedNoRetryError, _RoutedRetryableError):
+            if accounting.saw_error and not settled:
+                reason = "stream_error"
+                estimate = early_estimate(reason)
+                settled = True
+                await router.settle_stream_end(
+                    attempt,
+                    estimate,
+                    reason=reason if estimate is None else None,
+                    http_status=status,
+                )
             await anyio.lowlevel.checkpoint()
             raise
         except Exception:
+            if settlement_write:
+                raise
             failure = (_RoutedRetryableError if request_entered else _RoutedNoRetryError)(
                 RouterErrorCode.TRANSPORT_ERROR.value,
                 account=attempt.account,
