@@ -95,12 +95,24 @@ __all__ = (
 def _add_codex_account_integration_kwargs(
     extra: dict, account_connectors: tuple[str, ...], contain: bool
 ) -> None:
-    # Both are left out when unset, so a codex leg's argv is unchanged unless a
-    # role opts in.
+    # Connector grants remain explicit; containment is resolved at the launch layer.
     if account_connectors:
         extra["account_connectors"] = list(account_connectors)
     if contain:
         extra["contain_account_integrations"] = True
+
+
+def resolve_account_integrations(profile: Any | None) -> tuple[tuple[str, ...], bool]:
+    """Resolve the account integration settings for a codex launch.
+
+    An explicit profile value wins. Otherwise containment is enabled unless the
+    profile names connectors, which lifts containment for that grant.
+    """
+    connectors = tuple(getattr(profile, "account_connectors", None) or ())
+    contain = getattr(profile, "contain_account_integrations", None)
+    if contain is None:
+        contain = not connectors
+    return connectors, contain
 
 
 def _add_workload_kwarg(extra: dict, endpoint: Any, workload: str) -> None:
@@ -644,8 +656,8 @@ class AgentProfile:
     """Auto-resume-once on a timeout terminal status (profile 'resume_on_timeout: once')."""
     extra: dict = field(default_factory=dict)
     # Last, so a positional construction keeps the meaning it had before these existed.
-    contain_account_integrations: bool = False
-    """Run a codex leg of this role with the account's app and plugin integrations turned off."""
+    contain_account_integrations: bool | None = None
+    """Whether a codex leg of this role turns off the account's app and plugin integrations."""
     account_connectors: tuple[str, ...] = ()
     """Account app connectors a codex leg of this role may reach; naming any lifts the containment."""
     idle_timeout: int | None = None
@@ -749,8 +761,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
     # Only when set, so a role that uses none of them reports exactly what it did before.
     if profile.idle_timeout is not None:
         config["idle_timeout"] = profile.idle_timeout
-    if profile.contain_account_integrations:
-        config["contain_account_integrations"] = True
+    if profile.contain_account_integrations is not None:
+        config["contain_account_integrations"] = profile.contain_account_integrations
     if profile.account_connectors:
         config["account_connectors"] = list(profile.account_connectors)
     if profile.workload != DEFAULT_WORKLOAD:
@@ -902,13 +914,10 @@ def _parse_profile_resume_on_timeout(name: str, raw: Any) -> bool:
     return False
 
 
-def _parse_profile_contain_account_integrations(name: str, raw: Any) -> bool:
-    """Validate the profile flag; a connector grant can lift containment when a request is built.
-
-    An unreadable value warns and defaults to contained.
-    """
+def _parse_profile_contain_account_integrations(name: str, raw: Any) -> bool | None:
+    """Validate the optional profile flag, preserving whether it was declared."""
     if raw is None:
-        return False
+        return None
     if isinstance(raw, bool):
         return raw
     from lionhub.orchestration.console import warn
