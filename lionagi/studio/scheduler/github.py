@@ -20,7 +20,6 @@ from lionagi.studio.services._schedule_validation import (
     _GITHUB_REPO_MAX,  # noqa: F401
     _GITHUB_REPO_NAME_RE,  # noqa: F401
     _GITHUB_REPO_TRAVERSAL,  # noqa: F401
-    _MERGED_MODE_MAX_PAGES,  # noqa: F401
     _validate_github_repo,
     merged_page_limit,
 )
@@ -129,7 +128,7 @@ class GithubPollResult(NamedTuple):
     """Return shape of ``github_poll()``.
 
     ``scan_complete`` is False only when merged-mode pagination stopped for
-    an unsafe reason (the ``_MERGED_MODE_MAX_PAGES`` cap, or a fetch/status
+    an unsafe reason (the ``merged_page_limit`` cap, or a fetch/status
     error) rather than a safe boundary. An incomplete merged-mode scan returns
     no events, so its caller cannot advance past an unfetched merge.
     ``poll_status`` distinguishes healthy-but-empty from blind (a 401 or

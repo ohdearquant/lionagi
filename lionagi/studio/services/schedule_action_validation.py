@@ -219,7 +219,6 @@ def _validate_playbook_args(pb_args: object) -> None:
     """
     if not isinstance(pb_args, dict):
         raise ValueError("action_playbook_args must be an object of arg name -> value")
-    import re
 
     for key, value in pb_args.items():
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
