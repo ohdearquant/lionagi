@@ -2014,6 +2014,10 @@
       "owner": "studio",
       "target_owner": "lionhub.serve"
     },
+    "lionagi.studio.services.schedule_action_validation": {
+      "layer": "root",
+      "owner": "studio"
+    },
     "lionagi.studio.services.schedule_declaration": {
       "layer": "adapter",
       "owner": "scheduler",
