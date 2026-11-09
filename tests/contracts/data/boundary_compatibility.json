@@ -3483,7 +3483,6 @@
     ],
     "lionagi/studio/cli.py": [
       "add_studio_subparser",
-      "build_quick_create_parser",
       "run_schedule",
       "run_schedule_quick_create",
       "run_studio"
@@ -4736,6 +4735,7 @@
     "lionhub/src/lionhub/orchestration/schedule/parsing.py": [
       "add_schedule_subparser",
       "build_create_body",
+      "build_quick_create_parser",
       "normalize_host",
       "suggest_schedule_flag"
     ],

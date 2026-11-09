@@ -26,14 +26,19 @@ from lionagi._log_channels import log_error, warn
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 from lionagi.studio._host import admitted_host_names, is_unspecified_host, normalize_host
+from lionhub.orchestration.console import _refused_inside_an_agent
 from lionhub.orchestration.schedule.parsing import (
+    QUICK_CREATE_KINDS,  # noqa: F401 -- preserve the compatibility import
     _base_url,
     _is_schedule_request_timeout,
     _normalize_schedule_reason,
+    _quick_create_add_policy_flags,  # noqa: F401 -- preserve the compatibility import
+    _quick_create_add_trigger_flags,  # noqa: F401 -- preserve the compatibility import
     _schedule_request_timeout_message,
     _url_authority,
     add_schedule_subparser,
     build_create_body,
+    build_quick_create_parser,
     suggest_schedule_flag,  # noqa: F401 -- still importable from here for existing callers
 )
 
@@ -183,8 +188,9 @@ def run_studio(args: argparse.Namespace) -> int:
 
 
 def _find_repo_root() -> Path | None:
-    pkg_root = Path(__file__).resolve().parents[1]
-    repo_root = pkg_root.parent
+    import lionagi
+
+    repo_root = Path(lionagi.__file__).resolve().parent.parent
     if (repo_root / "apps" / "studio").is_dir():
         return repo_root
     return None
@@ -1789,142 +1795,6 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return EXIT_EXPORT_PARTIAL if has_blocked else 0
 
 
-# Typed quick-create — `li schedule create <kind> <name> ...`. Dispatched from
-# cli/main.py before the legacy `sched_sub` argparse tree (a reserved kind
-# token right after "create"), leaving the flat `li schedule create NAME
-# --cron ... --prompt ...` form untouched. Compiles into a ScheduleMember and
-# runs it through the same resolve_member()/create_quick_schedule() path a
-# ScheduleSet member uses.
-
-QUICK_CREATE_KINDS = ("agent", "flow", "playbook", "command")
-
-
-def _quick_create_add_trigger_flags(parser: argparse.ArgumentParser) -> None:
-    trigger = parser.add_mutually_exclusive_group(required=True)
-    trigger.add_argument(
-        "--at",
-        metavar="RFC3339",
-        help=(
-            "Fire once at this absolute instant. RFC 3339 with a mandatory "
-            "UTC offset and 'T' date/time separator, e.g. "
-            "2026-07-15T09:00:00-04:00. Implies max-runs=1."
-        ),
-    )
-    trigger.add_argument(
-        "--cron",
-        metavar="EXPR",
-        help='Cron expression, e.g. "0 2 * * *". Requires --timezone.',
-    )
-    trigger.add_argument(
-        "--every",
-        metavar="DURATION",
-        help="Strict positive duration, e.g. 30s / 15m / 6h / 2d.",
-    )
-    trigger.add_argument(
-        "--github",
-        metavar="OWNER/NAME",
-        help="Poll this GitHub repository. Optional --github-filter narrows which PRs fire.",
-    )
-    parser.add_argument(
-        "--timezone",
-        metavar="IANA_TZ",
-        help="IANA timezone for --cron, e.g. America/New_York. Required with --cron.",
-    )
-    parser.add_argument(
-        "--github-filter",
-        dest="github_filter",
-        metavar="JSON",
-        help='JSON object filtering which PRs fire --github, e.g. \'{"state": "open"}\'.',
-    )
-
-
-def _quick_create_add_policy_flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--cwd",
-        metavar="PATH",
-        help="Execution root for the spawned process (default: this CLI's invocation directory).",
-    )
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        help="Sugar for --max-runs 1 — fire once, then auto-disable.",
-    )
-    parser.add_argument(
-        "--max-runs",
-        dest="max_runs",
-        type=int,
-        metavar="N",
-        help="Auto-disable once N total runs have fired (default: unlimited). "
-        "Mutually exclusive with --once.",
-    )
-    parser.add_argument(
-        "--overlap",
-        choices=("skip", "allow"),
-        default="skip",
-        help="Overlap policy when a prior run is still in-flight (default: skip).",
-    )
-    parser.add_argument(
-        "--missed-fire",
-        dest="missed_fire",
-        choices=("skip", "run_once"),
-        default="skip",
-        help="Missed-fire policy (default: skip).",
-    )
-    parser.add_argument("--budget-usd", dest="budget_usd", type=float, metavar="USD")
-    parser.add_argument("--budget-tokens", dest="budget_tokens", type=int, metavar="N")
-    parser.add_argument(
-        "--rate-limit",
-        dest="rate_limit",
-        metavar="JSON",
-        help='Rolling-window fire cap, e.g. \'{"max_fires": 3, "window_sec": 3600}\'.',
-    )
-    parser.add_argument("--description", help="Human-readable description.")
-    parser.add_argument("--disabled", action="store_true", help="Create the schedule disabled.")
-
-
-def build_quick_create_parser(kind: str) -> argparse.ArgumentParser:
-    """Build the standalone parser for `li schedule create <kind>`."""
-    parser = argparse.ArgumentParser(
-        prog=f"li schedule create {kind}",
-        description=f"Create a typed {kind!r} schedule.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("name", help="Schedule name.")
-    if kind == "agent":
-        parser.add_argument("--profile", required=True, help="Agent profile name.")
-        parser.add_argument("--prompt", help="Prompt text (alternative to --prompt-file).")
-        parser.add_argument(
-            "--prompt-file",
-            dest="prompt_file",
-            metavar="PATH",
-            help="Read the prompt from a file; '-' reads stdin.",
-        )
-        parser.add_argument("--model", help="Explicit model override (default: profile's model).")
-    elif kind == "flow":
-        parser.add_argument("--file", required=True, help="Path to an `li o flow` YAML spec file.")
-    elif kind == "playbook":
-        parser.add_argument("--playbook", required=True, help="Playbook name.")
-        parser.add_argument(
-            "--arg",
-            dest="args",
-            action="append",
-            metavar="KEY=VALUE",
-            help="Typed playbook argument, repeatable.",
-        )
-    elif kind == "command":
-        # The executable + its argv are captured separately, by splitting the
-        # raw argv on a literal '--' *before* this parser ever runs (see
-        # run_schedule_quick_create) — nargs=REMAINDER can't be used here
-        # since it would greedily swallow the trigger/policy flags that
-        # follow `name` too, not just the tokens after '--'.
-        pass
-    else:  # pragma: no cover — gated by QUICK_CREATE_KINDS at the dispatch site
-        raise ValueError(f"unknown quick-create kind: {kind!r}")
-    _quick_create_add_trigger_flags(parser)
-    _quick_create_add_policy_flags(parser)
-    return parser
-
-
 def _quick_create_trigger(args: argparse.Namespace) -> Any:
     from lionhub.orchestration.schedule.declaration import CronTrigger, GithubTriggerSpec, Trigger
 
@@ -2136,20 +2006,6 @@ def run_schedule_quick_create(kind: str, argv: list[str]) -> int:
 # outside the asking process's tree, so no check at spawn can see that the request came
 # from inside an agent; the refusal happens here, before the request leaves.
 _STARTS_RUNS = frozenset({"create", "enable", "trigger", "apply"})
-
-
-def _refused_inside_an_agent() -> bool:
-    """Print the refusal and return True when this process runs inside an agent lionagi
-    started (see refuse_nested_agent)."""
-    from lionagi._provider_errors import NestedAgentRefusedError
-    from lionagi.service._subagent_admission import refuse_nested_agent
-
-    try:
-        refuse_nested_agent()
-    except NestedAgentRefusedError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return True
-    return False
 
 
 _ACTION_MAP = {

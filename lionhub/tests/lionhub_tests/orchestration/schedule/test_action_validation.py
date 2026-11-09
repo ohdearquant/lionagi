@@ -5,6 +5,9 @@ plus the Operator's placeholder guard."""
 
 from __future__ import annotations
 
+import os
+import shlex
+
 import pytest
 
 from lionhub.orchestration.schedule.action_validation import (
@@ -12,6 +15,9 @@ from lionhub.orchestration.schedule.action_validation import (
     validate_launch_fields,
 )
 
+from ._test_support_command_action_kind import (
+    ALLOWLIST_ENV,
+)
 from ._test_support_play_launch_args import (
     _play_schedule,
 )
@@ -35,14 +41,6 @@ class TestBuildArgvPlay:
         _validate_playbook_args({"mode": "deep", "strict": True, "n": 3})
         with pytest.raises(ValueError):
             _validate_playbook_args(["mode"])
-
-
-import os
-import shlex
-
-from ._test_support_command_action_kind import (
-    ALLOWLIST_ENV,
-)
 
 
 class TestCommandAllowlist:
