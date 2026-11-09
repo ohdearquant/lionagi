@@ -439,7 +439,7 @@ def _schedule_cadence_seconds(row: dict[str, Any], *, reference_at: float) -> fl
     uses the same timezone resolver as the scheduler and never trusts
     ``next_fire_at`` -- a stored cursor is a promise, not evidence of work.
     """
-    from ..scheduler.engine import resolve_schedule_cadence_seconds, resolve_schedule_timezone
+    from .schedule_timing import resolve_schedule_cadence_seconds, resolve_schedule_timezone
 
     cadence = resolve_schedule_cadence_seconds(row)
     if cadence is not None or row.get("trigger_type") != "cron":
@@ -1249,9 +1249,9 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     action_cwd = data.get("action_cwd")
     if not action_cwd and data.get("action_project"):
         from lionagi.studio.services._db import StoreNotAddressableError
-        from lionagi.studio.services.projects import get_project
+        from lionagi.studio.services.project_lookup import get_project
 
-        from ..scheduler.engine import _is_usable_execution_root
+        from .schedule_execution_root import _is_usable_execution_root
 
         # This lookup is a best-effort cwd snapshot on an otherwise
         # StateDB-only write (server-reachable). The projects catalog is

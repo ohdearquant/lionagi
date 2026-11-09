@@ -27,7 +27,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from lionagi.studio import config  # noqa: E402
+from lionagi.studio.services import schedule_timing as config  # noqa: E402
 
 NY = ZoneInfo("America/New_York")
 

@@ -84,7 +84,7 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def pinned_scheduler_tz(monkeypatch: pytest.MonkeyPatch) -> str:
-    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "America/New_York")
     return "America/New_York"
 
 
@@ -1845,7 +1845,7 @@ async def test_adopt_reads_a_zoneless_row_in_the_zone_the_scheduler_recorded(
     assert ("resolved_timezone", "Europe/Berlin", "America/New_York") in differences
 
     # Applier in UTC, scheduler recorded New York: the applier's zone is irrelevant.
-    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "UTC")
+    monkeypatch.setattr("lionagi.studio.services.schedule_timing.SCHEDULER_TZ", "UTC")
     new_york = _legacy_adoption_row("nightly", cwd=agent_profile)
     assert await _adopt_spec_differences(new_york, resolved) == []
 
@@ -2800,7 +2800,7 @@ async def test_adopt_refusal_describes_both_changed_execution_roots(
             return {"path": str(row_root)}
         return None
 
-    monkeypatch.setattr("lionagi.studio.services.projects.get_project", get_project)
+    monkeypatch.setattr("lionagi.studio.services.project_lookup.get_project", get_project)
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_adoption_row(
