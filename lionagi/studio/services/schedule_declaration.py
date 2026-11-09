@@ -512,11 +512,11 @@ def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, An
 
 
 def _resolve_playbook_target(target: PlaybookTarget) -> dict[str, Any]:
-    from lionagi.studio.scheduler.subprocess import _validate_identifier
     from lionagi.studio.services.schedule_action_validation import (
         _PLAY_SUBCOMMANDS,
         _validate_playbook_args,
     )
+    from lionhub.orchestration.schedule.parsing import _validate_identifier
 
     _validate_identifier(target.name, "target.playbook.name")
     if target.name in _PLAY_SUBCOMMANDS:
@@ -1005,7 +1005,7 @@ _LAUNCH_READERS: dict[str, tuple[frozenset[str] | None, frozenset[str] | None]] 
 
 def _row_action_kind(row: dict[str, Any]) -> str | None:
     """The canonical launch kind a row's action_kind names, aliases resolved."""
-    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS
+    from lionhub.orchestration.schedule.parsing import _ALIAS_ACTION_KINDS
 
     kind = row.get("action_kind")
     return _ALIAS_ACTION_KINDS.get(kind, kind)
@@ -1116,7 +1116,7 @@ async def _adopt_project_pair(
             # The launch validates the project identifier whatever the kind, so a
             # value it refuses fails at every fire even where the kind drops it;
             # only a value the launch accepts is then unused.
-            from lionagi.studio.scheduler.subprocess import _validate_identifier
+            from lionhub.orchestration.schedule.parsing import _validate_identifier
 
             try:
                 _validate_identifier(project, "action_project")
@@ -1224,7 +1224,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # into the argv, and the other kinds drop it after the check.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import _validate_identifier
+        from lionhub.orchestration.schedule.parsing import _validate_identifier
 
         try:
             _validate_identifier(value, "action_agent")
@@ -1273,7 +1273,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # the name as a positional.
         if not value:
             return None
-        from lionagi.studio.scheduler.subprocess import _validate_identifier
+        from lionhub.orchestration.schedule.parsing import _validate_identifier
 
         try:
             _validate_identifier(value, "action_playbook")
@@ -1425,7 +1425,7 @@ async def _adopt_undeclarable(
         # profile from the row's own execution root. A member always names a
         # profile, so a value the launch refuses or resolves nowhere is one no
         # member of this set declares.
-        from lionagi.studio.scheduler.subprocess import _validate_identifier
+        from lionhub.orchestration.schedule.parsing import _validate_identifier
 
         try:
             _validate_identifier(current, "action_agent")
@@ -1447,8 +1447,8 @@ async def _adopt_undeclarable(
         return any(status not in _NOTIFY_ALLOWED_STATUSES for status in current)
     if name == "action_playbook" and isinstance(current, str):
         # A member's playbook name is refused when the launch would refuse it.
-        from lionagi.studio.scheduler.subprocess import _validate_identifier
         from lionagi.studio.services.schedule_action_validation import _PLAY_SUBCOMMANDS
+        from lionhub.orchestration.schedule.parsing import _validate_identifier
 
         try:
             _validate_identifier(current, "action_playbook")
@@ -1503,7 +1503,7 @@ async def _adopt_undeclarable(
         if isinstance(stored, str) and stored:
             # The launch validates the identifier whatever the kind, so a value it
             # refuses is not one a member can be edited to carry.
-            from lionagi.studio.scheduler.subprocess import _validate_identifier
+            from lionhub.orchestration.schedule.parsing import _validate_identifier
 
             try:
                 _validate_identifier(stored, "action_project")
