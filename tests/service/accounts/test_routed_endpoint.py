@@ -5491,3 +5491,50 @@ async def test_a_complete_stream_settles_exactly_whatever_its_event_separators(
     expected, row = _attempts(path)
     assert expected[2] == "settled" and expected[4] == "complete", expected
     assert row[2:] == expected[2:], (row, expected)
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "expected_type", "failed"),
+    [
+        ("message_delta", {"usage": {"output_tokens": 5}}, None, False),
+        ("error", {"type": "message_delta", "usage": {"output_tokens": 5}}, "message_delta", True),
+        ("error", {"error": {"type": "overloaded_error"}}, "error", True),
+    ],
+    ids=[
+        "untyped_data_under_an_ordinary_name",
+        "typed_data_under_a_failure_name",
+        "untyped_failure",
+    ],
+)
+def test_the_accounting_parser_types_events_by_the_endpoint_rule(name, data, expected_type, failed):
+    # The endpoint uses an SSE name as the type only when the name says the call failed and
+    # the data carries no type; billing must read each event as the consumer receives it.
+    from lionhub.providers.anthropic.messages import _AccountingStreamParser
+
+    parser = _AccountingStreamParser("key-a", AnthropicMessagesEndpoint)
+    raw = f"event: {name}\ndata: {json.dumps(data)}\n\n".encode()
+    events = parser.feed(raw)
+    assert [event.get("type") for event in events] == [expected_type]
+    parser.observe(events[0])
+    assert parser.saw_error is failed
+
+
+@pytest.mark.parametrize(
+    ("name", "expected", "failed"),
+    [("message_stop", [], False), ("error", ["error"], True)],
+    ids=["ordinary_name", "failure_name"],
+)
+def test_the_accounting_parser_reads_non_object_data_only_under_a_failure_name(
+    name, expected, failed
+):
+    # The endpoint turns data that is not a JSON object into a text chunk, or into an error
+    # chunk under a failure name; a text chunk named message_stop must not end the stream.
+    from lionhub.providers.anthropic.messages import _AccountingStreamParser
+
+    parser = _AccountingStreamParser("key-a", AnthropicMessagesEndpoint)
+    events = parser.feed(f"event: {name}\ndata: not json\n\n".encode())
+    assert [event.get("type") for event in events] == expected
+    for event in events:
+        parser.observe(event)
+    assert parser.message_stop is False
+    assert parser.saw_error is failed

@@ -294,8 +294,12 @@ class _AccountingStreamParser:
     """Read billing fields from the stream's raw bytes, framed as the endpoint frames them.
 
     Events are delimited by the endpoint's own server-sent-event framer (``framer``'s
-    ``_frame_stream_line`` and ``_take_sse_event``), so the events read here for billing
-    are exactly the events the consumer receives, whatever separators the stream uses.
+    ``_frame_stream_line`` and ``_take_sse_event``), whatever separators the stream uses,
+    and an SSE name is read the way the endpoint's ``_line_to_stream_chunk`` reads it: it
+    stands in for the type only when it says the call failed and the data carries no type.
+    So billing reads an event as a ``message_start``, ``message_delta``, ``message_stop``
+    or failure exactly when the consumer's chunk for it has that type. Data that is not a
+    JSON object counts only under a failure name.
     """
 
     def __init__(self, key, framer) -> None:
@@ -353,12 +357,14 @@ class _AccountingStreamParser:
             except (TypeError, ValueError):
                 event = None
             if isinstance(event, dict):
-                if name == "error":
-                    event = {**event, "type": "error"}
-                elif event.get("type") is None and name:
+                # The endpoint's rule (``_line_to_stream_chunk``): a name stands in for the
+                # type only when it says the call failed and the data carries no type.
+                if event.get("type") is None and name in self._failure_names:
                     event = {**event, "type": name}
                 events.append({**event, "_accounting_sse_event": name})
-            elif name:
+            elif name in self._failure_names:
+                # The endpoint turns such data into an error chunk under a failure name and
+                # into a text chunk under any other name, which billing does not read.
                 events.append({"type": name, "_invalid": True, "_accounting_sse_event": name})
         return events
 
