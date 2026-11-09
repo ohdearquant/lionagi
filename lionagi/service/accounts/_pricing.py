@@ -45,8 +45,8 @@ __all__ = (
     "quote_ceiling",
     "request_ttls",
     "revision_by_id",
-    "usage_outcome",
     "stream_usage_estimate",
+    "usage_outcome",
 )
 
 _NANODOLLARS_PER_TOKEN_PER_USD_PER_MTOK = 1000
@@ -560,7 +560,18 @@ def stream_usage_estimate(
     request_id: str | None,
     original_reason: str,
 ) -> StreamUsageEstimate | None:
-    """Build a priced early-stream estimate from observed cumulative usage."""
+    """Price a stream that ended before ``message_stop`` from the usage it reported.
+
+    ``counts`` is the cumulative usage of the stream's complete events. It is priced as
+    ``price_usage`` prices a finished call, at the highest regional multiplier because the
+    counts carry no region, and a margin is added for output the stream may have produced
+    after its last count: ``margin_tokens = max(1024, ceil(output_tokens / 10))`` at the
+    reservation's highest output rate, rounded up to a whole nanodollar. The ledger calls
+    this again with the stored inputs and settles only an identical result.
+
+    Returns None for a model the revision does not price or usage ``price_usage`` cannot
+    price; the caller then keeps the reserved ceiling.
+    """
     geo_region = max(revision.geo_multipliers, key=revision.geo_multipliers.__getitem__)
     usage = {
         "input_tokens": counts.input_tokens,

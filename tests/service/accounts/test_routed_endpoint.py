@@ -4162,13 +4162,15 @@ async def test_a_later_message_starts_placeholder_count_does_not_undo_a_final_on
     monkeypatch, tmp_path
 ):
     """A message_delta's output count is the final one for the attempt; a message_start
-    after it carries a placeholder count and must not replace it, so the attempt settles
-    at the same cost as a stream that ends where the delta does."""
+    after it carries placeholder counts and must not replace that count or any other, so the
+    attempt settles at the same cost as a stream that ends where the delta does."""
     path = _install_accounts(monkeypatch, tmp_path)
     start = copy.deepcopy(_MESSAGE_START)
     start["message"]["usage"]["output_tokens"] = 1
     final = {"type": "message_delta", "usage": {"output_tokens": 5}}
-    events = [start, _PARTIAL_TEXT, final, copy.deepcopy(start), {"type": "message_stop"}]
+    late_start = copy.deepcopy(start)
+    late_start["message"]["usage"]["input_tokens"] += 1000
+    events = [start, _PARTIAL_TEXT, final, late_start, {"type": "message_stop"}]
     model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
     assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
 

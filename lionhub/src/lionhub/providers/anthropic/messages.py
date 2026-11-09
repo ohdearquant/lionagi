@@ -300,7 +300,6 @@ class _AccountingStreamParser:
         self.pending = ""
         self.data: list[str] = []
         self.event_name = None
-        self.last_event_name = None
         self.key = key
         self.model = None
         self.models: set[str] = set()
@@ -371,7 +370,10 @@ class _AccountingStreamParser:
             from lionagi.service.accounts._router import provider_request_id
 
             self.request_id = provider_request_id(reading.get("id"), self.key) or self.request_id
-            self._merge(reading.get("usage"), observed_output=False)
+            # A start's counts are placeholders: once a message_delta has counted the output,
+            # a later start changes no count.
+            if not self.output_seen:
+                self._merge(reading.get("usage"), observed_output=False)
         elif kind == "message_delta" and reading:
             usage = reading.get("usage")
             self._merge(usage, observed_output=True)
@@ -384,8 +386,6 @@ class _AccountingStreamParser:
         if not isinstance(update, dict):
             return
         for name, value in update.items():
-            if name == "output_tokens" and not observed_output and self.output_seen:
-                continue
             if name not in ("cache_creation",):
                 self.usage[name] = value
         if "cache_creation_input_tokens" in update:
@@ -1117,11 +1117,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                 # of the other chunks of that type.
                 pieces.append((StreamTextRedactor.RAW, data))
                 places.append((None, None))
-                return push(event, data, places, False, pieces, shown, None, sse_event)
-            # What the event says about the attempt, read before the walk masks its text:
-            # a count whose text holds a run is masked in place, and the attempt is priced
-            # from the provider's own count.
-            settlement = _settlement_reading(event)
+                return push(event, data, places, False, pieces, shown, sse_event)
             delta = event.get("delta")
             if event.get("type") == "content_block_delta" and isinstance(delta, dict):
                 delta_type = delta.get("type")
@@ -1158,15 +1154,11 @@ class AnthropicMessagesEndpoint(Endpoint):
             rewrite = _mask_key_runs_in_strings(
                 event, attempt.key, {(id(holder), name) for holder, name in places}
             )
-            return push(event, data, places, rewrite, pieces, shown, settlement, sse_event)
+            return push(event, data, places, rewrite, pieces, shown, sse_event)
 
-        def push(
-            event, data, places, rewrite, pieces, shown, settlement=None, sse_event=None
-        ) -> list:
+        def push(event, data, places, rewrite, pieces, shown, sse_event=None) -> list:
             if shown is None:
-                return text_redactor.push(
-                    (event, data, places, rewrite, None, settlement, sse_event), pieces
-                )
+                return text_redactor.push((event, data, places, rewrite, None, sse_event), pieces)
             # A piece whose text the chunk shows takes the chunk's join too; other text
             # the chunk shows is a piece of its own.
             source = next(
@@ -1178,13 +1170,13 @@ class AnthropicMessagesEndpoint(Endpoint):
                 shown.content,
             )
             return text_redactor.push(
-                (event, data, places, rewrite, shown.type, settlement, sse_event),
+                (event, data, places, rewrite, shown.type, sse_event),
                 pieces,
                 (shown.type, source),
             )
 
         async def emit_ready(ready: list):
-            for (event, data, places, rewrite, shown_type, _settlement, sse_event), texts in ready:
+            for (event, data, places, rewrite, shown_type, sse_event), texts in ready:
                 shown_text = texts.pop() if shown_type is not None else None
                 raw = None
                 for (holder, field), text in zip(places, texts, strict=True):
