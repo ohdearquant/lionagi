@@ -876,7 +876,7 @@
       "__all__ = (\"CredentialLedger\", \"AccountStatus\", \"default_ledger_path\")"
     ],
     "lionagi/service/accounts/_pricing.py": [
-      "__all__ = (\n    \"CACHE_WRITE_LIFETIMES\",\n    \"CURRENT_REVISION\",\n    \"ModelPrice\",\n    \"PriceRevision\",\n    \"PriceTier\",\n    \"cache_write_split\",\n    \"freeze_request\",\n    \"price_usage\",\n    \"quote_ceiling\",\n    \"request_ttls\",\n    \"revision_by_id\",\n    \"usage_outcome\",\n)"
+      "__all__ = (\n    \"CACHE_WRITE_LIFETIMES\",\n    \"CURRENT_REVISION\",\n    \"ModelPrice\",\n    \"PriceRevision\",\n    \"PriceTier\",\n    \"cache_write_split\",\n    \"freeze_request\",\n    \"price_usage\",\n    \"quote_ceiling\",\n    \"request_ttls\",\n    \"revision_by_id\",\n    \"stream_usage_estimate\",\n    \"usage_outcome\",\n)"
     ],
     "lionagi/service/accounts/_router.py": [
       "__all__ = (\"AccountRouter\",)"
@@ -2528,6 +2528,7 @@
       "registered_revisions",
       "request_ttls",
       "revision_by_id",
+      "stream_usage_estimate",
       "usage_outcome"
     ],
     "lionagi/service/accounts/_router.py": [
