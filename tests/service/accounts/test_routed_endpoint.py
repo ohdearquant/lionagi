@@ -1810,6 +1810,7 @@ async def test_a_routed_call_cancelled_while_reading_body_records_response_statu
     assert _http_statuses(path) == [(200,)]
 
 
+@pytest.mark.asyncio
 async def test_a_routed_call_failing_after_a_response_records_response_status(
     monkeypatch, tmp_path
 ):
