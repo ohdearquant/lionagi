@@ -1431,7 +1431,12 @@ def _reconstruct_spawned_nodes(
             # Reconstructed nodes are already in the graph, so the reactive spawn
             # callback never runs. Give this retry its own contained branch rather
             # than reusing the (possibly unrestricted) role or orchestrator.
+            cloned_orchestrator = role_branch is None
             role_branch = (role_branch or env.orc_branch).clone()
+            if cloned_orchestrator:
+                model = getattr(role_branch, "chat_model", None)
+                if model is not None:
+                    strip_connector_grant(model.endpoint.config.kwargs)
             role_branch.metadata["mcp_launch"] = {
                 "mcp_config": None,
                 "no_mcp_config": True,

@@ -133,8 +133,6 @@ def _profile_names_codex(profile: AgentProfile) -> bool:
     from lionagi.service.connections.registry import EndpointRegistry
 
     model = profile.model or ""
-    if "/" not in model:
-        return False
     return EndpointRegistry.canonical_provider(model.split("/")[0]) == "codex"
 
 

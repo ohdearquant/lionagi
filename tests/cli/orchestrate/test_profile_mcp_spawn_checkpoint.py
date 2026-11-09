@@ -103,3 +103,70 @@ def test_failed_spawn_resume_restores_profile_mcp_containment(monkeypatch, restr
         assert branches == []
         assert node.branch_id == (role.id if assigned else None)
         assert "profile_mcp_disabled" not in node.metadata
+
+
+@pytest.mark.parametrize("assigned", [False, True])
+def test_failed_spawn_resume_contains_a_clone_without_dropping_role_grants(assigned):
+    orchestrator = Branch(
+        name="coordinator",
+        chat_model=iModel(provider="codex", model="gpt-5.5", account_connectors=["github"]),
+    )
+    role = Branch(
+        name="specialist",
+        chat_model=iModel(provider="codex", model="gpt-5.5", account_connectors=["gmail"]),
+    )
+    original_kwargs = dict(orchestrator.chat_model.endpoint.config.kwargs)
+    role_kwargs = dict(role.chat_model.endpoint.config.kwargs)
+    builder = OperationGraphBuilder()
+    parent_id = builder.add_operation("operate", branch=role, instruction="do it")
+    branches = []
+    env = SimpleNamespace(
+        builder=builder,
+        orc_branch=orchestrator,
+        session=SimpleNamespace(include_branches=branches.append),
+        mcp_config_explicit=False,
+    )
+    dag = flow._DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"specialist": role},
+        worker_models=[],
+    )
+    plan = flow._PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="specialist")],
+        agent_ids=["specialist"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    child_id = str(uuid4())
+    entry = {
+        "node_id": child_id,
+        "status": "failed",
+        "operation": "operate",
+        "assignee": "specialist" if assigned else None,
+        "instruction": "follow up",
+        "parent_id": str(parent_id),
+        "spawn_id": "spawn-2",
+        "profile_mcp_disabled": True,
+    }
+
+    flow._reconstruct_spawned_nodes(
+        env, plan, dag, {"specialist": {"status": "completed"}}, [entry], retry_failed=True
+    )
+
+    node = builder.get_graph().internal_nodes[UUID(child_id)]
+    retried = branches[0]
+    kwargs = retried.chat_model.endpoint.config.kwargs
+    assert orchestrator.chat_model.endpoint.config.kwargs == original_kwargs
+    if assigned:
+        assert node.branch_id == retried.id
+        assert role.chat_model.endpoint.config.kwargs == role_kwargs
+        assert kwargs["account_connectors"] == ["gmail"]
+        assert "contain_account_integrations" not in kwargs
+    else:
+        assert "account_connectors" not in kwargs
+        assert kwargs["contain_account_integrations"] is True

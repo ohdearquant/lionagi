@@ -39,6 +39,11 @@ def test_a_codex_profile_naming_connectors_reports_it_is_not_contained():
     assert config["account_connectors"] == ["gmail"]
 
 
+def test_a_keyless_bare_codex_profile_reports_containment():
+    profile = _parse_profile("role", "---\nmodel: codex\n---\n\nBody.\n")
+    assert profile_config(profile)["contain_account_integrations"] is True
+
+
 @pytest.mark.parametrize("model", ["claude_code/haiku", "gpt-5"])
 def test_another_profile_reports_containment_only_when_it_sets_it(model):
     profile = _parse_profile("role", f"---\nmodel: {model}\n---\n\nBody.\n")

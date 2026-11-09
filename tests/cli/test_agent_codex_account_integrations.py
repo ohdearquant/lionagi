@@ -247,20 +247,34 @@ _WORKER_PROFILE = SimpleNamespace(
     khive_injection=None,
 )
 
+_CONNECTOR_WORKER_PROFILE = SimpleNamespace(
+    raw_body=True,
+    system_prompt="You are a specialist.",
+    effort=None,
+    yolo=False,
+    fast_mode=False,
+    khive_injection=None,
+    account_connectors=("gmail",),
+)
+
 
 @pytest.mark.parametrize(
-    ("bare", "connectors", "contained"),
-    [(False, (), True), (True, (), True)],
+    ("bare", "profile", "connectors", "contained"),
+    [
+        (False, _WORKER_PROFILE, (), True),
+        (True, _WORKER_PROFILE, (), True),
+        (False, _CONNECTOR_WORKER_PROFILE, ("gmail",), False),
+    ],
 )
 def test_a_worker_takes_its_roles_settings_and_a_bare_worker_none(
-    tmp_path, bare, connectors, contained
+    tmp_path, bare, profile, connectors, contained
 ):
     _env, _imodel, built = _build_worker(
         tmp_path,
         agent_id="specialist",
         role="specialist",
         bare=bare,
-        profile=_WORKER_PROFILE,
+        profile=profile,
         provider="codex",
     )
     kwargs = built["imodel_kwargs"]
