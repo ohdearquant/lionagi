@@ -552,6 +552,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         )
         from lionagi.service.accounts._types import (
             AccountRoutingError,
+            RejectionZero,
             RouterErrorCode,
         )
         from lionagi.service.connections.endpoint import (
@@ -645,7 +646,22 @@ class AnthropicMessagesEndpoint(Endpoint):
                         http_status=status,
                     )
                 if status >= 500:
-                    await router.settle_unknown(attempt, "provider_error", http_status=status)
+                    # A 529 whose body names ``overloaded_error`` settles at zero; every other
+                    # 5xx, and a 529 body that does not name it, keeps the ceiling. The raised
+                    # error, and so the retry, is the same either way.
+                    overloaded = (
+                        status == 529
+                        and _classify_rejection(response.content[: _REJECTION_BODY_LIMIT + 1])[0]
+                        == "overloaded_error"
+                    )
+                    if overloaded:
+                        await router.settle_rejection(
+                            attempt,
+                            RejectionZero(529, "overloaded_error", None, "provider_error"),
+                            http_status=status,
+                        )
+                    else:
+                        await router.settle_unknown(attempt, "provider_error", http_status=status)
                     raise _RoutedRetryableError(
                         RouterErrorCode.PROVIDER_ERROR.value,
                         account=attempt.account,
@@ -658,13 +674,24 @@ class AnthropicMessagesEndpoint(Endpoint):
                     provider_error_type, rejection_class = _classify_rejection(
                         response.content[: _REJECTION_BODY_LIMIT + 1]
                     )
-                    await router.settle_unknown(
-                        attempt,
-                        "request_rejected",
-                        provider_error_type=provider_error_type,
-                        rejection_class=rejection_class,
-                        http_status=status,
-                    )
+                    # Only a 400 naming ``invalid_request_error`` settles at zero, whatever its
+                    # class; every other rejection keeps the ceiling.
+                    if status == 400 and provider_error_type == "invalid_request_error":
+                        await router.settle_rejection(
+                            attempt,
+                            RejectionZero(
+                                400, "invalid_request_error", rejection_class, "request_rejected"
+                            ),
+                            http_status=status,
+                        )
+                    else:
+                        await router.settle_unknown(
+                            attempt,
+                            "request_rejected",
+                            provider_error_type=provider_error_type,
+                            rejection_class=rejection_class,
+                            http_status=status,
+                        )
                     raise _RoutedNoRetryError(
                         RouterErrorCode.REQUEST_REJECTED.value,
                         account=attempt.account,
@@ -854,6 +881,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         )
         from lionagi.service.accounts._types import (
             AccountRoutingError,
+            RejectionZero,
             RouterErrorCode,
         )
         from lionagi.service.connections.endpoint import (
@@ -1139,7 +1167,23 @@ class AnthropicMessagesEndpoint(Endpoint):
                         )
                     if status >= 500:
                         settled = True
-                        await router.settle_unknown(attempt, "provider_error", http_status=status)
+                        # A 529 whose body names ``overloaded_error`` settles at zero; every
+                        # other 5xx, and a 529 body that does not name it, keeps the ceiling.
+                        # The raised error, and so the retry, is the same either way.
+                        overloaded = False
+                        if status == 529:
+                            error_type, _ = await _classify_streamed_rejection(response)
+                            overloaded = error_type == "overloaded_error"
+                        if overloaded:
+                            await router.settle_rejection(
+                                attempt,
+                                RejectionZero(529, "overloaded_error", None, "provider_error"),
+                                http_status=status,
+                            )
+                        else:
+                            await router.settle_unknown(
+                                attempt, "provider_error", http_status=status
+                            )
                         raise _RoutedRetryableError(
                             RouterErrorCode.PROVIDER_ERROR.value,
                             account=attempt.account,
@@ -1154,13 +1198,27 @@ class AnthropicMessagesEndpoint(Endpoint):
                             provider_error_type,
                             rejection_class,
                         ) = await _classify_streamed_rejection(response)
-                        await router.settle_unknown(
-                            attempt,
-                            "request_rejected",
-                            provider_error_type=provider_error_type,
-                            rejection_class=rejection_class,
-                            http_status=status,
-                        )
+                        # Only a 400 naming ``invalid_request_error`` settles at zero, whatever
+                        # its class; every other rejection keeps the ceiling.
+                        if status == 400 and provider_error_type == "invalid_request_error":
+                            await router.settle_rejection(
+                                attempt,
+                                RejectionZero(
+                                    400,
+                                    "invalid_request_error",
+                                    rejection_class,
+                                    "request_rejected",
+                                ),
+                                http_status=status,
+                            )
+                        else:
+                            await router.settle_unknown(
+                                attempt,
+                                "request_rejected",
+                                provider_error_type=provider_error_type,
+                                rejection_class=rejection_class,
+                                http_status=status,
+                            )
                         raise AccountRoutingError(
                             RouterErrorCode.REQUEST_REJECTED,
                             account=attempt.account,
