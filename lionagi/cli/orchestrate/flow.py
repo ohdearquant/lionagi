@@ -1457,6 +1457,12 @@ def _reconstruct_spawned_nodes(
                 )
                 _hand_mcp_servers(model, {}, label=spawn_id or node_id, exclusive=True)
             env.session.include_branches(role_branch)
+            persisting = getattr(env, "_live_persist", None)
+            if persisting:
+                # The executor skips a node that already has a branch, so it never
+                # registers this copy; without the hook its messages and usage go
+                # unrecorded.
+                register_branch_hook(persisting, role_branch)
         elif role_branch is None and node.execution.status == EventStatus.PENDING:
             orc_branch = getattr(env, "orc_branch", None)
             orc_model = getattr(orc_branch, "chat_model", None)
@@ -1467,6 +1473,9 @@ def _reconstruct_spawned_nodes(
                 role_branch = orc_branch.clone()
                 strip_connector_grant(role_branch.chat_model.endpoint.config.kwargs)
                 env.session.include_branches(role_branch)
+                persisting = getattr(env, "_live_persist", None)
+                if persisting:
+                    register_branch_hook(persisting, role_branch)
         if role_branch is not None:
             node.branch_id = role_branch.id
         built[node_id] = node

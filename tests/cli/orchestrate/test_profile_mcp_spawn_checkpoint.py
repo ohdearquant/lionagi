@@ -106,7 +106,12 @@ def test_failed_spawn_resume_restores_profile_mcp_containment(monkeypatch, restr
 
 
 @pytest.mark.parametrize("assigned", [False, True])
-def test_failed_spawn_resume_contains_a_clone_without_dropping_role_grants(assigned):
+def test_failed_spawn_resume_contains_a_clone_without_dropping_role_grants(monkeypatch, assigned):
+    hooked = []
+    monkeypatch.setattr(
+        flow, "register_branch_hook", lambda ctx, branch: hooked.append((ctx, branch))
+    )
+    persisting = {"session_id": "run"}
     orchestrator = Branch(
         name="coordinator",
         chat_model=iModel(provider="codex", model="gpt-5.5", account_connectors=["github"]),
@@ -125,6 +130,7 @@ def test_failed_spawn_resume_contains_a_clone_without_dropping_role_grants(assig
         orc_branch=orchestrator,
         session=SimpleNamespace(include_branches=branches.append),
         mcp_config_explicit=False,
+        _live_persist=persisting,
     )
     dag = flow._DagState(
         node_ids=[parent_id],
@@ -162,6 +168,9 @@ def test_failed_spawn_resume_contains_a_clone_without_dropping_role_grants(assig
     retried = branches[0]
     kwargs = retried.chat_model.endpoint.config.kwargs
     assert orchestrator.chat_model.endpoint.config.kwargs == original_kwargs
+    # The executor skips a node that already has a branch, so the copy is
+    # registered with the run's persistence here.
+    assert hooked == [(persisting, retried)]
     if assigned:
         assert node.branch_id == retried.id
         assert role.chat_model.endpoint.config.kwargs == role_kwargs
@@ -176,8 +185,13 @@ def test_failed_spawn_resume_contains_a_clone_without_dropping_role_grants(assig
     ("status", "retry_failed"), [("failed", True), ("failed", False), ("completed", True)]
 )
 def test_retried_spawn_with_no_role_runs_on_a_copy_without_the_connector_grant(
-    status, retry_failed
+    monkeypatch, status, retry_failed
 ):
+    hooked = []
+    monkeypatch.setattr(
+        flow, "register_branch_hook", lambda ctx, branch: hooked.append((ctx, branch))
+    )
+    persisting = {"session_id": "run"}
     orchestrator = Branch(
         name="coordinator",
         chat_model=iModel(provider="codex", model="gpt-5.5", account_connectors=["github"]),
@@ -191,6 +205,7 @@ def test_retried_spawn_with_no_role_runs_on_a_copy_without_the_connector_grant(
         orc_branch=orchestrator,
         session=SimpleNamespace(include_branches=branches.append),
         mcp_config_explicit=False,
+        _live_persist=persisting,
     )
     dag = flow._DagState(
         node_ids=[parent_id],
@@ -228,11 +243,13 @@ def test_retried_spawn_with_no_role_runs_on_a_copy_without_the_connector_grant(
     if status == "completed" or not retry_failed:
         # A node that does not run again needs no branch of its own.
         assert branches == []
+        assert hooked == []
         assert node.branch_id is None
         return
     assert node.execution.status == EventStatus.PENDING
     assert len(branches) == 1
     assert node.branch_id == branches[0].id
+    assert hooked == [(persisting, branches[0])]
     kwargs = branches[0].chat_model.endpoint.config.kwargs
     assert "account_connectors" not in kwargs
     assert kwargs["contain_account_integrations"] is True
