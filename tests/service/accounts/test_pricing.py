@@ -64,6 +64,31 @@ def test_stream_estimate_uses_exact_rates_and_margin(multiplier, observed, margi
     assert estimate.cost_nusd == observed + margin
 
 
+@pytest.mark.parametrize(
+    ("output_tokens", "rate", "margin_tokens", "margin_nusd"),
+    [
+        # 1024 tokens at 20.001 nusd each is 20,481.024 nusd: the margin rounds up.
+        (1, Rate(20_001, 1000), 1024, 20_482),
+        # A tenth of 10,241 observed tokens is 1,024.1: the margin token count rounds up.
+        (10_241, Rate(20_000, 1), 1025, 20_500_000),
+    ],
+)
+def test_stream_estimate_margin_rounds_up(output_tokens, rate, margin_tokens, margin_nusd):
+    estimate = stream_usage_estimate(
+        REV,
+        PricingInputs(4096, (), None, "messages_standard_v1", "max_applicable_at_reserve", rate),
+        "claude-opus-5-5",
+        UsageCounts(2, 0, 0, 0, output_tokens),
+        None,
+        "stream_truncated",
+    )
+
+    assert estimate is not None
+    assert estimate.margin_tokens == margin_tokens
+    assert estimate.margin_nusd == margin_nusd
+    assert estimate.cost_nusd == estimate.observed_cost_nusd + margin_nusd
+
+
 def test_stream_estimate_rejects_an_unpriced_model():
     result = stream_usage_estimate(
         REV,

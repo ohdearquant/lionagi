@@ -5382,3 +5382,79 @@ async def test_redacted_output_count_does_not_change_accounted_usage(monkeypatch
     with sqlite3.connect(path) as connection:
         usage = json.loads(connection.execute("SELECT usage_json FROM attempt").fetchone()[0])
     assert usage["output_tokens"] == 5
+
+
+@pytest.mark.parametrize("delta_seen", [True, False], ids=["estimate", "open"])
+@pytest.mark.asyncio
+async def test_deadline_during_a_transport_settlement_keeps_the_transport_reason(
+    monkeypatch, tmp_path, delta_seen
+):
+    events = [_HOUR_MESSAGE_START]
+    if delta_seen:
+        events.append({"type": "message_delta", "usage": {"output_tokens": 5}})
+    path, model, _, _ = await _prime(
+        monkeypatch,
+        tmp_path,
+        [StubResponse(pieces=[_sse(events), httpx.ReadError("connection dropped")])],
+    )
+    original = router_module.AccountRouter.settle_stream_end
+    calls = []
+
+    async def slow_settle(self, *args, **kwargs):
+        # A ledger commit that outlasts the caller's deadline; the router's write is shielded,
+        # so the delay sits inside a shield as well.
+        calls.append(kwargs.get("reason"))
+        with anyio.CancelScope(shield=True):
+            await anyio.sleep(0.3)
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(router_module.AccountRouter, "settle_stream_end", slow_settle)
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(0.1):
+            [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    assert len(calls) == 1
+    row = _attempts(path)[-1]
+    if delta_seen:
+        assert row[2] == "settled" and row[4] == "stream_usage_estimate", row
+        with sqlite3.connect(path) as connection:
+            raw = connection.execute(
+                "SELECT settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()[0]
+        assert json.loads(raw)["evidence"]["original_reason"] == "transport_error"
+    else:
+        assert row[2:] == ("open", None, "transport_error"), row
+    assert _warm_rows(path) == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_at_the_transport_failure_keeps_the_transport_reason(
+    monkeypatch, tmp_path
+):
+    holder = {}
+
+    class FailingStream(ByteStream):
+        async def __anext__(self):
+            piece = next(self._pieces, None)
+            if piece is None:
+                # The caller cancels in the same step the connection drops.
+                holder["scope"].cancel()
+                raise httpx.ReadError("connection dropped")
+            return piece
+
+    response = StubResponse()
+    response.content = FailingStream(
+        [_sse([_HOUR_MESSAGE_START, {"type": "message_delta", "usage": {"output_tokens": 5}}])]
+    )
+    path, model, _, _ = await _prime(monkeypatch, tmp_path, [response])
+    with anyio.CancelScope() as scope:
+        holder["scope"] = scope
+        with pytest.raises(Exception):
+            [chunk async for chunk in model.endpoint.stream(HOUR_REQUEST)]
+    row = _attempts(path)[-1]
+    assert row[2] == "settled" and row[4] == "stream_usage_estimate", row
+    with sqlite3.connect(path) as connection:
+        raw = connection.execute(
+            "SELECT settlement_evidence_json FROM attempt ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()[0]
+    assert json.loads(raw)["evidence"]["original_reason"] == "transport_error"
+    assert _warm_rows(path) == []

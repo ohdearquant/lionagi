@@ -1053,7 +1053,6 @@ class AnthropicMessagesEndpoint(Endpoint):
         accounting = _AccountingStreamParser(attempt.key)
         settled = False  # set before each settlement write, so no handler writes a second
         settlement_write = False
-        ending_reason = None
 
         def accounting_usage():
             if not accounting.output_seen or not accounting.output_valid:
@@ -1326,7 +1325,6 @@ class AnthropicMessagesEndpoint(Endpoint):
                             break
                         except Exception as error:
                             transport_error = error
-                            ending_reason = "transport_error"
                             break
                         accounting_events = accounting.feed(raw)
                         for accounting_event in accounting_events:
@@ -1345,6 +1343,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                                 async for chunk in emit_ready(queue_data(data, name)):
                                     yield chunk
                     if transport_error is not None and not settled:
+                        # Settled before the first await after the failure, so a cancellation
+                        # arriving now finds it settled and cannot record it as cancelled.
                         settled = True
                         estimate = early_estimate("transport_error")
                         settlement_write = True
@@ -1400,7 +1400,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                 if not request_entered:
                     await router.settle_not_sent(attempt, caller_cancelled=True)
                 elif not settled:
-                    reason = ending_reason or "cancelled"
+                    reason = "cancelled"
                     estimate = early_estimate(reason)
                     settled = True
                     await router.settle_stream_end(
@@ -1415,9 +1415,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         except GeneratorExit:
             # The consumer closed the stream before message_stop.
             if not settled:
-                reason = ending_reason or (
-                    "stream_error" if accounting.saw_error else "stream_closed"
-                )
+                reason = "stream_error" if accounting.saw_error else "stream_closed"
                 estimate = early_estimate(reason)
                 settled = True
                 await router.settle_stream_end(
