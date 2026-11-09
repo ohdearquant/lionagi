@@ -228,7 +228,7 @@ def test_a_flag_value_that_looks_like_a_switch_stays_a_value(monkeypatch):
     # This test is about argv binding, not profile resolution — "--machine"
     # would otherwise be refused by the pre-spawn profile check before it ever
     # reaches rendering.
-    import lionagi.cli._providers as providers
+    import lionhub.orchestration.spawn as providers
 
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
     # A profile name rather than a working directory: a cwd is checked against

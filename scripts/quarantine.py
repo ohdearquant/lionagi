@@ -12,6 +12,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .test_roots import TestRootConfigError, configured_test_roots
+else:
+    from test_roots import TestRootConfigError, configured_test_roots
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "tests" / "quarantine.txt"
 DEFAULT_MAX_ENTRIES = 15
@@ -58,6 +63,11 @@ def load_manifest(
     except OSError as exc:
         raise QuarantineError(f"cannot read quarantine manifest {path}: {exc}") from exc
 
+    try:
+        roots = configured_test_roots(REPO_ROOT, require_existing=False)
+    except TestRootConfigError as exc:
+        raise QuarantineError(f"cannot determine test roots: {exc}") from exc
+
     entries: list[QuarantineEntry] = []
     seen: set[str] = set()
     for line_number, raw_line in enumerate(lines, start=1):
@@ -80,9 +90,14 @@ def load_manifest(
             ) from exc
         if quarantined_on.isoformat() != raw_date:
             raise QuarantineError(f"{path}:{line_number}: date must use the YYYY-MM-DD form")
-        if not nodeid.startswith("tests/") or "::" not in nodeid:
+        test_file = nodeid.split("::", 1)[0]
+        if (
+            not any(test_file.startswith(f"{root}/") for root in roots)
+            or "::" not in nodeid
+            or ".." in Path(test_file).parts
+        ):
             raise QuarantineError(
-                f"{path}:{line_number}: nodeid must be an exact test under tests/"
+                f"{path}:{line_number}: nodeid must be an exact test under a configured test root"
             )
         if nodeid in seen:
             raise QuarantineError(f"{path}:{line_number}: duplicate nodeid {nodeid}")

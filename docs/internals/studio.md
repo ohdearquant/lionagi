@@ -89,34 +89,33 @@ else the launch bearer, plus a decision capability bound to the page's origin
 (see below). The answer also carries `token_source`: `"launch"` for the launch
 bearer, `"configured"` for the configured token.
 
-The page stores the bearer it is given, whatever `token_source` says
-(`"launch"`, `"configured"`, missing or any other value); it does not read the
-field. An answer from a daemon released before the field carries none, and its
-bearer is stored the same way. The stored bearer is kept in `localStorage` for
-the page's own origin, bound to the daemon's API base, and survives reloads,
-tabs and bookmarks. Before the app mounts, the page checks a
-stored bearer with one authenticated request (`GET /api/casts/`), so nothing
-renders on it unchecked. Only a 2xx answer mounts the app. The first 401, to
-that check or to any later request that carried it, clears that value; a bearer
-another tab stored since is kept. A restarted daemon draws a new launch bearer,
-so its first answer sends the page back to the access-required screen with
-`li studio` as the remedy. Any other answer to the check, or none within 15
-seconds (`PAIRING_TIMEOUT_MS` in `apps/studio/frontend/src/lib/pairing.ts`), shows
-the same screen and keeps the stored bearer for Retry, and a check that does not
-reach the daemon keeps it too.
+The page stores only a bearer identified as `"launch"` in `localStorage`,
+bound to the daemon's API base. A configured bearer, or one whose source is
+missing or unknown (including an answer from an older daemon), stays in
+`sessionStorage` for the tab. Browsers can copy session storage into a new
+window opened with an opener, or into a duplicated or restored tab. Same-origin
+pages in that tab family may hold a copy; pages on other origins cannot read it.
+If storage is unavailable, the bearer remains in memory for the current page
+load. Pairing with a configured or unknown-source
+bearer removes a local bearer for that same API base when storage permits. The
+page never reuses unmarked local bearers saved by older versions and removes them
+when storage permits because it cannot tell whether they are configured
+credentials; an already paired page must pair again once.
 
-Why storing the bearer is acceptable: a daemon with no configured token
-already admits any local caller that sends no `Origin`, a command-line client
-for one, and pages on loopback origins, so the launch bearer gates only pages on
-other origins. The stored value is readable only by scripts served from the
-page's own origin, which receive it at every pairing anyway. It is bound to one
-API base, so a request to any other base does not carry it, and the first
-refusal forgets it. A launch bearer also stops working when the daemon
-restarts. A configured token is a long-lived operator credential, so it stays in
-the browser until the daemon refuses it or the site's data is cleared; an
-operator who does not want it kept there clears the site's data or pairs in a
-private window. The capability is kept in `sessionStorage` for that tab, so it
-survives a reload and is gone with the tab.
+Before the app mounts, the page checks a stored bearer with one authenticated
+request (`GET /api/casts/`). Only a 2xx answer mounts the app. The first 401, to
+that check or to a later request that carried it, clears that value; a bearer
+stored or paired since is kept. A restarted daemon draws a new launch bearer,
+so its first refusal sends the page back to the access-required screen with
+`li studio` as the remedy. Any other answer, or none within 15 seconds
+(`PAIRING_TIMEOUT_MS` in `apps/studio/frontend/src/lib/pairing.ts`), shows the
+same screen and keeps the stored bearer for Retry, as does an unreachable daemon.
+
+The launch bearer gates pages on other origins and stops working when the daemon
+restarts. A configured token is a long-lived operator credential, so the page
+keeps it only in the tab's session storage or memory. Scripts on the page's own
+origin can read storage, and the bearer is sent only to its paired API base. The
+decision capability is also kept in `sessionStorage` for the tab.
 
 **The reconnect socket** (`reconnect.py`) — a unix socket in a `studio/`
 directory beside the StateDB file, created with mode 0600 inside a 0700
@@ -1047,7 +1046,7 @@ server's point of view, exactly like a stale revision against an active row.
 **`_is_protected_system`** — True only when frontmatter carries a present,
 *truthy* `lion_system` key (any YAML/Python-truthy value, not just `True`),
 matching the runtime's own `bool(frontmatter.get("lion_system", True))`
-check in `lionagi/cli/_providers.py`. An absent key does not count as
+check in `lionhub/src/lionhub/orchestration/spawn.py`. An absent key does not count as
 protected — treating a missing key as protected would lock down every
 pre-feature agent file (plain markdown with no frontmatter is common).
 Agents created through the Studio API stamp `lion_system: false` explicitly
@@ -1111,7 +1110,7 @@ a different count) so the dashboard matches the Runs list page.
 `LIONAGI_HOME/mcp_servers.json` (full configs including secret env values,
 enable state, last connection status), and derives the CLI-facing
 `LIONAGI_HOME/.mcp.json` from it on every write, containing only enabled
-servers in the `{"mcpServers": {...}}` shape `lionagi/cli/_mcp_resolve.py`
+servers in the `{"mcpServers": {...}}` shape `lionhub/src/lionhub/orchestration/mcp_config.py`
 parses. A disabled server is simply absent from the derived file, not
 flagged — a run pointed at `--mcp-config ~/.lionagi/.mcp.json` never sees
 one. The registry is kept separate from the derived file (not a passthrough
@@ -1560,13 +1559,21 @@ resolution time would let a race during that gap either write to a run that
 changed ownership or silently no-op in a way the caller couldn't
 distinguish from success.
 
-`cancel_run` additionally reuses `lionagi.cli._kill_service`'s exact primitives
+`cancel_run` additionally reuses `lionhub.orchestration.kill`'s exact primitives
 (`kill_one`, `list_running_children`) so a cancellation from the Operator
 is indistinguishable from one issued through `li kill --recursive`: running
 children are signalled deepest-first so none are orphaned, and
 `_persist_cancel`'s guard against a non-`running` row means a race that lets
-the process finish naturally during the approval window degrades to
-`already_terminal` rather than a double- or wrong-run cancel. `resume_run`
+the same generation finish naturally degrades to `already_terminal` rather
+than a double cancel. A conflicting generation or rejected state update is
+reported as `not_stopped` with its reason and observed side effects. An
+indeterminate state-write failure reports an unknown `run_untouched` value.
+Process signalling
+waits off the Studio event loop. If the request task is cancelled while signalling,
+the command and its final audit finish before cancellation reaches the caller. Each
+target has its own TERM grace before escalation; the complete command has no fixed
+wall-clock bound because targets are processed in order and persistence can take time.
+`resume_run`
 is a distinct operation from un-pausing: the session lifecycle policy
 (`lionagi/state/lifecycle/policy.py`) has no edge back out of a terminal
 status such as `cancelled`, so resuming never reopens the old run's status —
@@ -1588,7 +1595,7 @@ many runs across its life.
 `_resolve_run` both accept the same reference vocabulary: an exact run/session
 id, an id prefix, a label, name or playbook substring (minimum 3
 characters), or the literal `"current"`. Id/prefix resolution reuses
-`lionagi.cli._util.fetch_unique_row`, the same primitive `li kill` uses, so
+`lionhub.orchestration.job.fetch_unique_row`, the same primitive `li kill` uses, so
 a reference this tool accepts resolves identically to one typed at the CLI.
 When the turn names a project, each arm checks that project from the stored
 turn context rather than accepting it as a tool argument, and prefix resolution
@@ -1708,7 +1715,7 @@ A **branch id** (`claim_branch_id`) is a different, longer-lived identity:
 the id every turn of a conversation builds its in-process `Branch` with.
 Before this existed, every turn constructed a brand-new `Branch()` with a
 fresh random id, so the CLI's own persistence path
-(`setup_agent_persist` in `lionagi/cli/_runs.py`) saw a never-before-seen
+(`setup_agent_persist` in `lionhub/src/lionhub/orchestration/runs.py`) saw a never-before-seen
 id each time and created a new `sessions` row per turn instead of one row
 per conversation. Feeding back the same claimed id lets that existing
 "resume" logic run instead — it looks up the id in the `branches` table

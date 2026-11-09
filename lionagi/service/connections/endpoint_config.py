@@ -39,8 +39,11 @@ __all__ = ("AUTHORIZATION_KWARG_NAMES", "RUNTIME_STATE_NAMES", "EndpointConfig")
 # credentials; ``on_spawn`` is a callback whose representation carries whatever
 # object it is bound to. They are named here, in the model that would otherwise
 # serialize them, because that is the one place every route to a written-down
-# config has to pass through.
-RUNTIME_STATE_NAMES: tuple[str, ...] = ("env", "on_spawn")
+# config has to pass through. ``secret_fill_skip`` holds only variable names, the
+# ones the configured secret lookup must not fill into that child's environment;
+# a request restored from a stored config would otherwise run under a skip set
+# that belongs to the run that wrote it.
+RUNTIME_STATE_NAMES: tuple[str, ...] = ("env", "on_spawn", "secret_fill_skip")
 
 # Kwargs that grant the call an authority, kept in ``kwargs`` for the live call
 # and never written down. ``account_connectors`` lets a codex request reach the
@@ -263,13 +266,31 @@ class EndpointConfig(BaseModel):
 
     def validate_payload(self, data: dict[str, Any]) -> dict[str, Any]:
         """Validate payload data against the request_options model."""
+        from pydantic import ValidationError
+
         if not self.request_options:
             return data
 
+        validation_details = None
         try:
             obj = self.request_options.model_validate(data)
             if self.serialize_by_alias:
                 return obj.model_dump(by_alias=True, exclude_none=True)
             return data
+        except ValidationError as exc:
+            validation_details = _safe_validation_details(exc)
         except Exception as e:
             raise ValueError("Invalid payload") from e
+        raise ValueError(f"Invalid payload: {validation_details}") from None
+
+
+def _safe_validation_details(error: Any) -> str:
+    """Count validation failures without rendering caller-controlled details."""
+    from pydantic import ValidationError
+
+    try:
+        count = ValidationError.error_count(error)
+    except Exception:
+        return "validation failed"
+    label = "error" if count == 1 else "errors"
+    return f"{count} validation {label}"

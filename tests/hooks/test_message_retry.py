@@ -12,28 +12,10 @@ from typing import Any
 import pytest
 
 from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
-
-
-class _FakeDB:
-    """Stands in for StateDB._persist_live_message: raises ValueError for ids in
-    `fail_ids` (mirrors _validate_message's deterministic validation failure) and
-    records everything else as persisted."""
-
-    def __init__(self, fail_ids: set[str]) -> None:
-        self.fail_ids = fail_ids
-        self.persisted: list[str] = []
-
-    async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
-        if message["id"] in self.fail_ids:
-            raise ValueError("messages.content is NOT NULL")
-        self.persisted.append(message["id"])
-
-
-def _event(msg_id: str) -> PendingMessageEvent:
-    return PendingMessageEvent(
-        message={"id": msg_id, "content": "x", "role": "user"},
-        session_id="s1",
-    )
+from tests._runs_message_retry_test_support import _deferred_queue as _deferred_queue
+from tests._runs_message_retry_test_support import _event as _event
+from tests._runs_message_retry_test_support import _FakeDB as _FakeDB
+from tests._runs_message_retry_test_support import _RefusingDB as _RefusingDB
 
 
 async def test_permanent_validation_error_does_not_block_later_messages():
@@ -97,26 +79,6 @@ async def test_transient_error_still_head_of_line_blocks_until_deferred():
 
     assert db.persisted == []
     assert queue.pending_count == 2
-
-
-class _RefusingDB:
-    """Refuses every write, the way a contended sqlite does."""
-
-    def __init__(self) -> None:
-        self.persisted: list[str] = []
-        self.attempts = 0
-
-    async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
-        self.attempts += 1
-        raise RuntimeError("database is locked")
-
-
-async def _deferred_queue(db, logger):
-    """A queue driven past its consecutive-failure limit, as real traffic does."""
-    queue = MessagePersistRetryQueue(db, logger=logger, owner="b1")
-    for i in range(4):
-        await queue.submit(_event(f"m{i}"))
-    return queue
 
 
 async def test_a_teardown_that_loses_messages_says_so(caplog):
@@ -203,20 +165,6 @@ async def test_the_bus_reports_whether_its_queues_emptied(caplog):
     assert await bus.flush_message_retries() is True
 
 
-async def test_the_run_teardown_reports_whether_its_queues_emptied():
-    """The second teardown that discarded it. What runs after this reads the
-    run's completion evidence."""
-    from lionagi.cli._runs import _flush_pending_message_events
-
-    logger = logging.getLogger("test")
-    lost = await _deferred_queue(_RefusingDB(), logger)
-    assert await _flush_pending_message_events({"message_retry_queues": [lost]}) is False
-
-    healthy = MessagePersistRetryQueue(_FakeDB(fail_ids=set()), logger=logger, owner="b2")
-    await healthy.submit(_event("good-1"))
-    assert await _flush_pending_message_events({"message_retry_queues": [healthy]}) is True
-
-
 async def test_both_teardown_paths_over_one_queue_report_the_loss_once(caplog):
     """The two teardowns reach the same queue, and neither can see the other.
 
@@ -229,8 +177,8 @@ async def test_both_teardown_paths_over_one_queue_report_the_loss_once(caplog):
     ``flush_final`` twice, because the duplication is a property of the two
     paths meeting, not of the method.
     """
-    from lionagi.cli._runs import _flush_pending_message_events
     from lionagi.hooks.bus import HookBus
+    from lionhub.orchestration.runs import _flush_pending_message_events
 
     logger = logging.getLogger("test")
     queue = await _deferred_queue(_RefusingDB(), logger)

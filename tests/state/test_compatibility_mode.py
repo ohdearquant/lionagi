@@ -12,6 +12,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+import aiosqlite
 import pytest
 from sqlalchemy import text
 
@@ -714,6 +715,18 @@ async def test_a_store_not_in_wal_mode_is_refused_and_left_in_its_mode(tmp_path,
         await db.open()
     assert db._engine is None
     assert _rows(store, "PRAGMA journal_mode") == [("delete",)]
+
+
+async def test_a_driver_without_set_authorizer_is_refused_at_open(store, reference, monkeypatch):
+    """aiosqlite releases before 0.22.0 have no ``Connection.set_authorizer``: the store is not
+    opened unguarded, and the refusal names the release that has it."""
+    monkeypatch.delattr(aiosqlite.Connection, "set_authorizer", raising=False)
+    db = _RunsDB(store, compatibility=_profile(reference))
+    with pytest.raises(StateCompatibilityRefused, match="cannot install an authorizer") as caught:
+        await db.open()
+    assert "aiosqlite 0.22.0 or later" in caught.value.reason
+    assert caught.value.operation == "open"
+    assert db._engine is None
 
 
 async def test_a_missing_store_is_refused_and_never_created(tmp_path, reference):

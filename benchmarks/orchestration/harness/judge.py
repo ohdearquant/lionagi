@@ -15,8 +15,8 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from lionagi.cli._providers import build_imodel_from_spec
 from lionagi.session.branch import Branch
+from lionhub.orchestration.spawn import build_imodel_from_spec
 
 from .cost import cost_of
 from .task import Label, RunResult, ScoredResult

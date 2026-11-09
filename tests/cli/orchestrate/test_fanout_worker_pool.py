@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import argparse
 
-from lionagi._auto import build_cli_parser, seed_for
 from lionagi.cli.orchestrate.fanout import _parse_worker_pool
+from lionhub.cli.catalog import build_cli_parser, seed_for
 
 
 def _fanout_parser() -> argparse.ArgumentParser:

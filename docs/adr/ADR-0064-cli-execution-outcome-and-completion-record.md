@@ -17,7 +17,7 @@ export/evidence source and cannot independently terminalize the canonical Run.
 
 CLI execution persists two different kinds of state. StateDB holds sessions,
 progressions, terminal status, reason codes, evidence, artifact expectations, and
-verification results. `RunDir` in `lionagi/cli/_runs.py` holds branch snapshots, stream
+verification results. `RunDir` in `lionhub/src/lionhub/orchestration/runs.py` holds branch snapshots, stream
 buffers, an optional manifest, an optional flow checkpoint, and the default artifact
 directory. A process return code is derived from execution state but is not itself the
 durable source of truth.
@@ -301,11 +301,11 @@ EXIT_CODE_BY_STATUS = {
 - `li wait` supports session, invocation, play, and schedule-run records. Show and team
   terminal sets exist in StateDB but are not wait-target kinds.
 - The terminal and valid-status maps used by `update_status` are sourced from the
-  lifecycle policy registry (`lionagi/state/db.py:472-526`,
-  `lionagi/state/lifecycle/policy.py:288-301`), which carries the full schema
+  lifecycle policy registry (`lionagi/state/db.py::TERMINAL_STATUSES_BY_ENTITY_TYPE`, `lionagi/state/db.py::VALID_STATUSES_BY_ENTITY_TYPE`,
+  `lionagi/state/lifecycle/policy.py::build_default_registry`), which carries the full schema
   vocabulary including `timed_out`, `waiting_dependency`, and `retry_wait`. `li wait`
   reads the same registry-sourced terminal map, so a `timed_out` schedule run is
-  recognized as terminal (`lionagi/cli/wait.py:181`).
+  recognized as terminal (`lionagi/cli/wait.py::wait_for_terminal`).
 
 **Why this way.** A small status vocabulary supports reliable automation, while reason
 codes and evidence retain the cause without proliferating statuses. Denormalizing the

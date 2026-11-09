@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 from lionagi import Session
 from lionagi._errors import InputTokenCapError
-from lionagi.cli._runs import _make_message_handler
 from lionagi.hooks import route_message_persistence, unroute_message_persistence
 from lionagi.operations.parse.parse import ExtractionError
 from lionagi.protocols.messages.assistant_response import AssistantResponse
@@ -16,6 +15,7 @@ from lionagi.session.branch import Branch
 from lionagi.state.compat import StateCompatibilityRefused
 from lionagi.state.db import StateDB
 from lionagi.testing import LionAGIMockFactory
+from lionhub.orchestration.runs import _make_message_handler
 from tests.state.test_compatibility_owner_ops import (
     OWNER,
     _execute,

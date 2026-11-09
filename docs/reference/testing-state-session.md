@@ -64,7 +64,7 @@ mid-loop call depends on a prior tool result.
 ### IModelKwargCaptor — usage pattern
 
 ```python
-import lionagi.cli._providers as pmod
+import lionhub.orchestration.spawn as pmod
 from lionagi.testing import IModelKwargCaptor
 
 captor = IModelKwargCaptor.fresh()  # pristine subclass, isolated captures list

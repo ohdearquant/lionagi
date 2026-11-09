@@ -63,9 +63,9 @@ class MockStateDB:
 
 async def test_emission_failures_written_to_degraded_outcome_on_completed(monkeypatch):
     """Emission loss is a completed degradation, not a terminal error."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -102,9 +102,9 @@ async def test_emission_failures_written_to_degraded_outcome_on_completed(monkey
 
 async def test_no_emission_failures_error_column_stays_null(monkeypatch):
     """A clean run with no emission failures must leave error=None in the DB."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -136,9 +136,9 @@ async def test_no_emission_failures_error_column_stays_null(monkeypatch):
 
 async def test_engine_without_emission_failures_attr_error_column_stays_null(monkeypatch):
     """Engine objects without emission_failures attr (older subclass) must not crash."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -360,9 +360,9 @@ async def _build_zero_emission_engine():
 
 async def test_real_engine_emission_failure_propagates_to_cli(monkeypatch):
     """A real missing emission survives in the typed degradation envelope."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -391,9 +391,9 @@ async def test_real_engine_emission_failure_propagates_to_cli(monkeypatch):
 async def test_real_engine_clean_run_leaves_error_null(monkeypatch):
     """Integration: real Engine subclass with a branch whose emission arrives →
     engine_runs.error stays NULL (no cross-run leak)."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -443,9 +443,9 @@ async def test_real_engine_clean_run_leaves_error_null(monkeypatch):
 
 async def test_engine_reuse_second_run_resets_emission_failures(monkeypatch):
     """Engine reused for a second clean run must not carry emission_failures from the first run."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -522,9 +522,9 @@ class _DegradedResult(str):
 
 
 async def _run_engine_returning(monkeypatch, capsys, result):
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     warnings: list[str] = []
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)

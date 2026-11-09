@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Workers are told where their output goes, and the run reports where it went."""
 
+import copy
 import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from lionagi.cli._providers import _add_workload_kwarg
 from lionagi.cli.orchestrate._common import (
     BARE_WORKER_SYSTEM,
     bare_worker_system,
@@ -20,6 +20,7 @@ from lionagi.cli.orchestrate._orchestration import (
     collect_worker_artifacts,
 )
 from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
+from lionhub.orchestration.spawn import _add_workload_kwarg
 
 # Half 1: the prompt names the directory
 
@@ -710,9 +711,14 @@ async def _spawned_branch_kwargs(
     role_alias: str | None = None,
     role_contained: bool = False,
     role_provider: str = "claude_code",
+    role_kwargs: dict | None = None,
     handed: list | None = None,
     expected: list | None = None,
     refuses: bool = False,
+    orchestrator_kwargs: dict | None = None,
+    servers: dict | None = None,
+    orchestrator_after: list | None = None,
+    emitter_kwargs: dict | None = None,
 ) -> dict:
     """Run a reactively spawned branch through the setup `_execute_dag` hands the DAG
     runner, and return the request kwargs it leaves on the branch. The spawn is a clone
@@ -725,12 +731,18 @@ async def _spawned_branch_kwargs(
     settings files read (``contain_user_settings``). With *independent* false the request is a
     dependent one, cloned from that worker's branch. With *assignee* the request names a
     role of that name on *role_provider* (Claude unless named), and is cloned from its
-    branch, which *role_contained* runs with no settings files read. *role_alias* plans a
+    branch, which *role_contained* runs with no settings files read and *role_kwargs* adds
+    request settings to (a role's tool set, say). *role_alias* plans a
     worker of that name on the role and has the request name the worker, as a team
     instance (``reviewer-2``) is named. *handed* collects the
     server set each hand-off gives the spawn and whether it is the whole set. *expected*
     collects the spawn ids the run is told to expect a worker for. With *refuses* the node builder must refuse
-    the request, and the refusal's text comes back as ``{"refusal": ...}``."""
+    the request, and the refusal's text comes back as ``{"refusal": ...}``. *orchestrator_kwargs*
+    adds request settings to the orchestrator's model (its profile's tool set, say), *servers*
+    is the server set the run resolved for its workers, *orchestrator_after* collects a
+    copy of the orchestrator's request settings once the spawn is set up, and *emitter_kwargs*
+    adds request settings to the emitting worker's model before it is contained (its role's
+    tool set, say)."""
     import lionhub.orchestration.engines as engines_mod
     from lionagi import Branch, iModel
     from lionagi.casts.emission import SpawnRequest
@@ -791,9 +803,11 @@ async def _spawned_branch_kwargs(
         )
 
     orchestrator = _branch("orchestrator")
+    orchestrator.chat_model.endpoint.config.kwargs.update(copy.deepcopy(orchestrator_kwargs or {}))
     role_branch = None
     if assignee is not None:
         role_branch = _branch(assignee, branch_provider=role_provider)
+        role_branch.chat_model.endpoint.config.kwargs.update(role_kwargs or {})
         if role_contained:
             from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
 
@@ -812,6 +826,8 @@ async def _spawned_branch_kwargs(
         exchange=None,
         expect_worker=(lambda spawn_id: None) if expected is None else expected.append,
     )
+    if servers is not None:
+        env.mcp_servers = servers
     dag_state = SimpleNamespace(
         reactive=True,
         spawn_roles=None,
@@ -841,10 +857,16 @@ async def _spawned_branch_kwargs(
             if emitted_by == "orchestrator"
             else _branch("emitter", emitted_by, emitter_provider or provider)
         )
+        emitter_branch.chat_model.endpoint.config.kwargs.update(copy.deepcopy(emitter_kwargs or {}))
         if emitter_contained:
             from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
 
-            _isolate_worker_cli_config(emitter_branch.chat_model, contain_user_settings=True)
+            _isolate_worker_cli_config(
+                emitter_branch.chat_model,
+                contain_user_settings=True,
+                mcp_server_names=servers or (),
+                role="emitter",
+            )
         captured["executor_ref"]["executor"] = SimpleNamespace(
             operation_branches={emitter.id: emitter_branch}
         )
@@ -866,13 +888,16 @@ async def _spawned_branch_kwargs(
         else:
             assert operation.branch_id is None
             source = orchestrator if independent else emitter_branch
-    orchestrator_kwargs = dict(orchestrator.chat_model.endpoint.config.kwargs)
+    before = copy.deepcopy(orchestrator.chat_model.endpoint.config.kwargs)
     branch = source.clone()
     captured["setup"](operation, branch)
     kwargs = branch.chat_model.endpoint.config.kwargs
     assert kwargs["repo"] == tmp_path / "artifacts" / "spawn-1"
-    # The spawn's setup changes the clone's request, never the orchestrator's own.
-    assert orchestrator.chat_model.endpoint.config.kwargs == orchestrator_kwargs
+    # The spawn's setup changes the clone's request, never the orchestrator's own, lists
+    # inside it included.
+    assert orchestrator.chat_model.endpoint.config.kwargs == before
+    if orchestrator_after is not None:
+        orchestrator_after.append(copy.deepcopy(orchestrator.chat_model.endpoint.config.kwargs))
     return kwargs
 
 
@@ -1135,6 +1160,193 @@ async def test_an_agent_a_contained_claude_worker_asks_for_by_role_reads_no_sett
     assert kwargs["setting_sources"] == ""
     assert kwargs["permission_mode"] == "dontAsk"
     assert kwargs["disallowed_tools"] == ["Agent", "Task"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_contained", [False, True])
+async def test_an_agent_a_contained_worker_asks_for_by_role_keeps_that_roles_narrower_tools(
+    tmp_path, monkeypatch, role_contained
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_contained=role_contained,
+        role_kwargs={"tools": "Read,Grep"},
+    )
+
+    assert kwargs["tools"] == "Read,Grep"
+    assert kwargs["allowed_tools"] == ["Read", "Grep"]
+
+
+# The tool settings of an orchestrator profile, which confine the orchestrator's own process:
+# a tool outside the contained set among them, and a server the run does not hand its workers.
+_ORCHESTRATOR_TOOL_SETTINGS = {
+    "tools": "Read,Task",
+    "allowed_tools": ["mcp__khive__*"],
+    "disallowed_tools": ["WebFetch"],
+}
+_RUN_SERVERS = {"control": {"command": "control-server"}}
+
+
+@pytest.mark.asyncio
+async def test_an_agent_a_contained_worker_asks_for_by_role_cannot_widen_its_tools(
+    tmp_path, monkeypatch
+):
+    """Naming a role is no way past the contained tool set: a role whose tools reach
+    outside it is refused where the spawn is set up, and the error names the role, not
+    the orchestrator's own tool settings."""
+    from lionagi._errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError) as refused:
+        await _spawned_branch_kwargs(
+            tmp_path,
+            monkeypatch,
+            DEFAULT_WORKLOAD,
+            provider="claude_code",
+            emitted_by=DEFAULT_WORKLOAD,
+            emitter_contained=True,
+            assignee="reviewer",
+            role_kwargs={"tools": "Read,NotebookEdit"},
+            orchestrator_kwargs=_ORCHESTRATOR_TOOL_SETTINGS,
+            servers=_RUN_SERVERS,
+        )
+
+    assert "'reviewer'" in str(refused.value)
+    assert "'NotebookEdit'" in str(refused.value)
+    assert "'Task'" not in str(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_an_unrouted_spawn_of_a_contained_worker_does_not_carry_the_orchestrators_tools(
+    tmp_path, monkeypatch
+):
+    """A spawn naming no assignee is a copy of the orchestrator's branch, and the tool
+    settings of the orchestrator's profile confine the orchestrator only. The spawn runs as
+    a contained worker with no role does: the contained tool set, the run's server grant,
+    and Agent and Task denied. It is not refused for tools its orchestrator was given, and
+    the orchestrator keeps its own settings."""
+    after: list = []
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        independent=True,
+        orchestrator_kwargs=_ORCHESTRATOR_TOOL_SETTINGS,
+        servers=_RUN_SERVERS,
+        orchestrator_after=after,
+    )
+
+    contained = ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch"]
+    assert kwargs["setting_sources"] == ""
+    assert kwargs["tools"] == ",".join(contained)
+    assert kwargs["allowed_tools"] == [*contained, "mcp__control__*"]
+    assert kwargs["disallowed_tools"] == ["Agent", "Task"]
+    assert kwargs["permission_mode"] == "dontAsk"
+    assert after[0]["tools"] == "Read,Task"
+    assert after[0]["allowed_tools"] == ["mcp__khive__*"]
+    assert after[0]["disallowed_tools"] == ["WebFetch"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("emitted_by", "independent"),
+    [(DEFAULT_WORKLOAD, True), ("orchestrator", True), ("orchestrator", False)],
+    ids=["asked-by-a-worker", "asked-by-the-orchestrator", "asked-by-the-orchestrator-dependent"],
+)
+async def test_an_unrouted_spawn_of_a_worker_with_its_settings_has_no_tool_settings(
+    tmp_path, monkeypatch, emitted_by, independent
+):
+    """Without containment the copy of the orchestrator's branch still leaves the
+    orchestrator's tool settings behind, whoever asked for it: the spawn runs as a worker
+    with no role does, with none of the three, and the orchestrator keeps its own."""
+    after: list = []
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=emitted_by,
+        independent=independent,
+        orchestrator_kwargs=_ORCHESTRATOR_TOOL_SETTINGS,
+        servers=_RUN_SERVERS,
+        orchestrator_after=after,
+    )
+
+    assert not {"tools", "allowed_tools", "disallowed_tools"} & kwargs.keys()
+    assert kwargs.get("setting_sources") is None
+    assert {k: after[0][k] for k in _ORCHESTRATOR_TOOL_SETTINGS} == _ORCHESTRATOR_TOOL_SETTINGS
+
+
+@pytest.mark.asyncio
+async def test_an_unrouted_spawn_of_a_light_worker_is_denied_by_its_class_not_the_orchestrators_list(
+    tmp_path, monkeypatch
+):
+    """The tools a light agent may not use come from its workload when the command line is
+    built, so a copy of the orchestrator's model that loses the orchestrator's own denials
+    keeps the class's."""
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by="light",
+        independent=True,
+        orchestrator_kwargs=_ORCHESTRATOR_TOOL_SETTINGS,
+    )
+    args = ClaudeCodeRequest(prompt="work", **kwargs).as_cmd_args()
+
+    assert kwargs["workload"] == "light"
+    assert "disallowed_tools" not in kwargs
+    denied = args.index("--disallowedTools") + 1
+    assert args[denied : denied + 3] == ["Edit", "Write", "NotebookEdit"]
+    assert "WebFetch" not in args
+    assert "--tools" not in args
+
+
+@pytest.mark.asyncio
+async def test_a_dependent_spawn_of_a_contained_worker_keeps_the_tools_that_worker_was_narrowed_to(
+    tmp_path, monkeypatch
+):
+    """A dependent agent naming no role copies the asking worker's branch, not the
+    orchestrator's, so it keeps the tools that worker's role narrowed it to. Those settings
+    pass the containment check again without a role to cite, and the orchestrator's own
+    settings, which the worker never took, play no part."""
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        independent=False,
+        emitter_kwargs={
+            "tools": "Read,Grep",
+            "allowed_tools": ["Read(./docs/**)", "mcp__control__search"],
+            "disallowed_tools": ["WebFetch"],
+        },
+        orchestrator_kwargs=_ORCHESTRATOR_TOOL_SETTINGS,
+        servers=_RUN_SERVERS,
+    )
+
+    assert kwargs["tools"] == "Read,Grep"
+    assert kwargs["allowed_tools"] == [
+        "Read",
+        "Grep",
+        "mcp__control__*",
+        "Read(./docs/**)",
+        "mcp__control__search",
+    ]
+    assert kwargs["disallowed_tools"] == ["WebFetch", "Agent", "Task"]
 
 
 @pytest.mark.asyncio

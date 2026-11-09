@@ -3,7 +3,9 @@
 
 """A leg's workload class comes from ``--workload``, else its role's ``workload``, else
 heavy; it reaches the CLI provider on a new run, a resume and every orchestration
-worker; and a leg refused a slot exits 75 with the refusal on one line."""
+worker; and an agent refused a slot exits 75 with the refusal on one line. A role's
+``tools``, ``allowed_tools`` and ``disallowed_tools`` reach a Claude Code agent, and a role
+that declares any of them for another provider is refused."""
 
 from __future__ import annotations
 
@@ -15,158 +17,22 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.cli._providers import (
+from lionagi._errors import ConfigurationError
+from lionagi.cli.agent import _admission_refusal
+from lionagi.service._subagent_admission import SubagentAdmissionRefusedError
+from lionhub.orchestration.spawn import (
     _is_light_codex,
     _parse_profile,
+    _profile_tool_settings,
     build_chat_model,
     build_imodel_from_spec,
     profile_config,
 )
-from lionagi.cli.agent import _admission_refusal
-from lionagi.service._subagent_admission import SubagentAdmissionRefusedError
+from tests._spawn_workload_test_support import _LIGHT_ROLE as _LIGHT_ROLE
+from tests._spawn_workload_test_support import _PLAIN_ROLE as _PLAIN_ROLE
+from tests._spawn_workload_test_support import _named_as_a_whole_word as _named_as_a_whole_word
 from tests.cli.orchestrate.test_worker_artifact_directive import _build_worker
 from tests.cli.test_agent_resume_model_override import _wire_agent_stubs
-
-_LIGHT_ROLE = "---\nmodel: codex/gpt-5.5\nworkload: light\n---\n\nRead.\n"
-_PLAIN_ROLE = "---\nmodel: codex/gpt-5.5\n---\n\nWork.\n"
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        (_LIGHT_ROLE, "light"),
-        ("---\nworkload: heavy\n---\n", "heavy"),
-        (_PLAIN_ROLE, "heavy"),
-    ],
-)
-def test_a_role_declares_its_workload(text, expected):
-    profile = _parse_profile("role", text)
-    assert profile.workload == expected
-    assert "workload" not in profile.extra
-
-
-@pytest.mark.parametrize("raw", ["lite", "LIGHT", "true", "[light]"])
-def test_a_workload_the_role_misspells_reads_as_heavy_with_a_warning(raw, caplog):
-    profile = _parse_profile("role", f"---\nworkload: {raw}\n---\n")
-    assert profile.workload == "heavy"
-    assert "reading it as heavy" in caplog.text
-
-
-def test_discovery_reports_a_light_role_and_leaves_a_heavy_one_unchanged():
-    assert profile_config(_parse_profile("r", _LIGHT_ROLE))["workload"] == "light"
-    assert "workload" not in profile_config(_parse_profile("r", _PLAIN_ROLE))
-
-
-def _kwargs(model) -> dict[str, Any]:
-    return dict(model.endpoint.config.kwargs)
-
-
-@pytest.mark.parametrize(
-    "provider",
-    [
-        "codex",
-        "openai-codex",
-        "claude_code",
-        "claude-code",
-        "claude",
-        "gemini_code",
-        "gemini-cli",
-        "pi",
-        "pi-code",
-        "pi_code",
-    ],
-)
-def test_a_light_cli_leg_hands_its_workload_to_the_provider(provider):
-    model = build_chat_model(provider, "m", False, False, None, workload="light")
-    assert _kwargs(model)["workload"] == "light"
-    spec_model = build_imodel_from_spec(f"{provider}/m", workload="light")
-    assert _kwargs(spec_model)["workload"] == "light"
-
-
-@pytest.mark.parametrize("provider", ["codex", "openai-codex", "Codex"])
-def test_every_codex_spelling_keeps_the_light_class_and_the_containment(provider):
-    asked = {
-        "workload": "light",
-        "contain_account_integrations": True,
-        "account_connectors": ("github",),
-    }
-    for model in (
-        build_imodel_from_spec(f"{provider}/gpt-5.5", **asked),
-        build_chat_model(provider, "gpt-5.5", False, False, None, **asked),
-    ):
-        kwargs = _kwargs(model)
-        assert kwargs["workload"] == "light"
-        assert kwargs["contain_account_integrations"] is True
-        assert kwargs["account_connectors"] == ["github"]
-        assert _is_light_codex(model)
-
-
-def test_a_heavy_leg_adds_nothing_to_the_request():
-    model = build_imodel_from_spec("codex/m")
-    assert "workload" not in _kwargs(model)
-    assert "workload" not in _kwargs(build_imodel_from_spec("codex/m", workload="heavy"))
-
-
-def test_an_api_model_takes_no_workload():
-    model = build_imodel_from_spec("openai/gpt-4.1-mini", workload="light")
-    assert "workload" not in _kwargs(model)
-
-
-def test_a_bare_openai_codex_model_builds_an_api_endpoint_without_a_workload():
-    """A slashless spec falls through to a bare model name, which iModel resolves through the
-    API openai provider: nothing spawns, so there is no workload to hand a CLI."""
-    from lionagi.cli._providers import _add_workload_kwarg
-    from lionagi.service.connections.registry import EndpointRegistry
-
-    model = build_imodel_from_spec("openai-codex", workload="light")
-    assert type(model.endpoint).__name__ == "Endpoint"
-    assert EndpointRegistry.canonical_provider(model.endpoint.config.provider) == "openai"
-    assert "workload" not in _kwargs(model)
-    model.endpoint.config._api_key = "dummy-key"
-    payload, _ = model.endpoint.create_payload({"prompt": "hi"})
-    assert "workload" not in payload
-
-    kwargs: dict = {}
-    _add_workload_kwarg(kwargs, model.endpoint, "light")
-    assert "workload" not in kwargs
-
-
-def test_a_bare_openai_codex_model_takes_no_account_integration_settings():
-    """The containment settings are codex CLI options too, and an API request would carry
-    them as payload keys."""
-    asked = {"contain_account_integrations": True, "account_connectors": ("github",)}
-    model = build_imodel_from_spec("openai-codex", **asked)
-    assert type(model.endpoint).__name__ == "Endpoint"
-    assert not ({"contain_account_integrations", "account_connectors"} & set(_kwargs(model)))
-    model.endpoint.config._api_key = "dummy-key"
-    payload, _ = model.endpoint.create_payload({"prompt": "hi"})
-    assert not ({"contain_account_integrations", "account_connectors"} & set(payload))
-
-
-def test_a_slashless_model_on_a_codex_default_provider_keeps_the_containment(monkeypatch):
-    """A slashless name takes the configured chat provider; when that is codex, the model is a
-    codex agent and gets the containment settings."""
-    from lionagi import config as config_mod
-
-    monkeypatch.setattr(
-        config_mod,
-        "settings",
-        config_mod.settings.model_copy(update={"LIONAGI_CHAT_PROVIDER": "codex"}),
-    )
-    model = build_imodel_from_spec(
-        "gpt-5.5", contain_account_integrations=True, account_connectors=("github",)
-    )
-    assert model.endpoint.is_cli
-    assert _kwargs(model)["contain_account_integrations"] is True
-    assert _kwargs(model)["account_connectors"] == ["github"]
-
-
-def test_a_codex_cli_model_carries_the_workload_and_not_to_an_api_request():
-    model = build_imodel_from_spec("codex/gpt-5.5", workload="light")
-    assert _kwargs(model)["workload"] == "light"
-    payload, _ = model.endpoint.create_payload({"prompt": "hi"})
-    assert payload["request"].workload == "light"
-
 
 _CAPTURED: dict[str, Any] = {}
 
@@ -405,8 +271,8 @@ def test_any_other_failure_keeps_its_exit():
 
 
 def test_the_run_row_names_a_wrapped_refusal_as_a_retryable_provider_failure():
-    from lionagi.cli._runs import resolve_run_reason
     from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration.runs import resolve_run_reason
 
     try:
         try:
@@ -417,3 +283,121 @@ def test_the_run_row_names_a_wrapped_refusal_as_a_retryable_provider_failure():
         code, summary, _ = resolve_run_reason(status="failed", exception=wrapped)
     assert code == RunReasons.FAILED_PROVIDER_RETRYABLE
     assert summary.startswith("SubagentAdmissionRefusedError: subagent admission refused")
+
+
+# ── a role's tool set for a Claude Code agent ─────────────────────────────────
+
+# What each field puts on the command line: ``--tools`` takes one comma-separated token.
+
+
+_CLAUDE_TOOLS_ROLE = (
+    "---\nmodel: claude_code/sonnet\ntools: [Read, Grep, Glob]\n"
+    "allowed_tools: [Read, Grep]\ndisallowed_tools: [WebFetch]\n---\n\nRead.\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_new_run_hands_the_roles_tool_set_to_a_claude_agent(monkeypatch, tmp_path):
+    from lionagi.cli.agent import _run_agent
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, _CLAUDE_TOOLS_ROLE)
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent("claude_code/sonnet", "do the thing", agent_name="role")
+
+    assert captured[-1]["tools"] == "Read,Grep,Glob"
+    assert captured[-1]["allowed_tools"] == ["Read", "Grep"]
+    assert captured[-1]["disallowed_tools"] == ["WebFetch"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["codex/gpt-5.5", "openai/gpt-4.1-mini"])
+async def test_a_new_run_on_another_provider_refuses_the_roles_tool_set(
+    monkeypatch, tmp_path, model
+):
+    from lionagi.cli.agent import _run_agent
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, _CLAUDE_TOOLS_ROLE)
+    _capture_chat_kwargs(monkeypatch)
+
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")):
+        await _run_agent(model, "do the thing", agent_name="role")
+
+
+@pytest.mark.asyncio
+async def test_a_new_run_refuses_a_tool_field_that_is_not_a_list(monkeypatch, tmp_path):
+    from lionagi.cli.agent import _run_agent
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, "---\nmodel: claude_code/sonnet\ntools: Read\n---\n\nRead.\n")
+    _capture_chat_kwargs(monkeypatch)
+
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")):
+        await _run_agent("claude_code/sonnet", "do the thing", agent_name="role")
+
+
+def _stored_branch(tmp_path: Path, provider: str, model: str, **kwargs: Any) -> tuple[str, Path]:
+    from lionagi import Branch, iModel
+
+    branch = Branch(chat_model=iModel(provider=provider, model=model))
+    data = branch.to_dict()
+    data["chat_model"]["endpoint"]["config"]["kwargs"].update(kwargs)
+    path = tmp_path / f"{branch.id}.json"
+    path.write_text(json.dumps(data))
+    return str(branch.id), path
+
+
+_STORED_TOOLS = {"tools": "Bash", "allowed_tools": ["Bash"], "disallowed_tools": ["Write"]}
+
+
+@pytest.mark.asyncio
+async def test_a_resume_takes_the_tool_fields_its_role_declares_and_keeps_the_rest(
+    monkeypatch, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli.agent import _run_agent
+
+    branch_id, path = _stored_branch(tmp_path, "claude_code", "sonnet", **_STORED_TOOLS)
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, "---\nmodel: claude_code/sonnet\ntools: [Read]\n---\n\nRead.\n")
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent(None, "continue", resume=branch_id, agent_name="role")
+
+    assert captured[-1]["tools"] == "Read"
+    assert captured[-1]["allowed_tools"] == ["Bash"]
+    assert captured[-1]["disallowed_tools"] == ["Write"]
+
+
+@pytest.mark.asyncio
+async def test_a_resume_without_a_role_keeps_the_stored_tool_set(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli.agent import _run_agent
+
+    branch_id, path = _stored_branch(tmp_path, "claude_code", "sonnet", **_STORED_TOOLS)
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent(None, "continue", resume=branch_id)
+
+    for field, value in _STORED_TOOLS.items():
+        assert captured[-1][field] == value
+
+
+@pytest.mark.asyncio
+async def test_a_resume_of_another_provider_refuses_the_roles_tool_set(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli.agent import _run_agent
+
+    branch_id, path = _stored_branch(tmp_path, "codex", "gpt-5.5")
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, "---\ntools: [Read]\n---\n\nRead.\n")
+    _capture_chat_kwargs(monkeypatch)
+
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")):
+        await _run_agent(None, "continue", resume=branch_id, agent_name="role")

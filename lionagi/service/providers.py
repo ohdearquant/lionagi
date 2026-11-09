@@ -204,6 +204,9 @@ _CLAUDE_XHIGH_MODELS = frozenset(
         "claude-fable-5",
         "fable-5-1",
         "claude-fable-5-1",
+        "mythos",
+        "mythos-5-1",
+        "claude-mythos-5-1",
     }
 )
 
@@ -425,7 +428,7 @@ class ModelSpec:
         return self.model
 
 
-_CLAUDE_MODEL_PREFIXES = ("opus", "sonnet", "haiku", "fable")
+_CLAUDE_MODEL_PREFIXES = ("opus", "sonnet", "haiku", "fable", "mythos")
 
 
 _CLAUDE_PROVIDER_NAMES = frozenset(

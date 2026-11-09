@@ -502,95 +502,20 @@
       "owner": "cli",
       "target_owner": "pending the CLI location decision (ADR-0139 D1)"
     },
-    "lionagi.cli._argtypes": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.arguments"
-    },
-    "lionagi.cli._code_identity": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.serve.diagnostics"
-    },
     "lionagi.cli._context_from": {
       "layer": "root",
       "owner": "cli",
       "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli._engine_definitions": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.engine_definitions"
-    },
-    "lionagi.cli._inspection": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.inspection"
-    },
-    "lionagi.cli._kill_service": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.kill"
-    },
-    "lionagi.cli._logging": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli._mcp_resolve": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.mcp_config"
-    },
-    "lionagi.cli._mirror_service": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.serve.mirror"
-    },
-    "lionagi.cli._mirror_settings": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.serve.mirror"
     },
     "lionagi.cli._notify_outcomes": {
       "layer": "root",
       "owner": "cli",
       "target_owner": "pending the CLI location decision (ADR-0139 D1)"
     },
-    "lionagi.cli._orchestrate_parsing": {
+    "lionagi.cli._pid_quarantine": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "lionhub.orchestration.flow.parsing"
-    },
-    "lionagi.cli._project": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.project"
-    },
-    "lionagi.cli._providers": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.spawn"
-    },
-    "lionagi.cli._runs": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.runs"
-    },
-    "lionagi.cli._schedule_parsing": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.schedule"
-    },
-    "lionagi.cli._team_service": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.team"
-    },
-    "lionagi.cli._util": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.job"
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
     },
     "lionagi.cli.agent": {
       "layer": "root",
@@ -664,11 +589,6 @@
       "additional_targets": [
         "lionhub.orchestration.flow.parsing"
       ]
-    },
-    "lionagi.cli.orchestrate._checkpoint": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.flow.checkpoint"
     },
     "lionagi.cli.orchestrate._common": {
       "layer": "root",
@@ -1638,6 +1558,10 @@
       "owner": "state"
     },
     "lionagi.state._mirror_common": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state._quarantine_identity": {
       "layer": "adapter",
       "owner": "state"
     },

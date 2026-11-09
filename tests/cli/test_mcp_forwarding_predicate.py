@@ -16,9 +16,9 @@ from lionagi.agent.factory import (
     _forward_mcp_to_cli_request,
     provider_accepts_forwarded_mcp,
 )
-from lionagi.cli._logging import _WARN_LOGGER_NAME
-from lionagi.cli._mcp_resolve import McpResolution
 from lionagi.cli.agent import _report_mcp_resolution
+from lionhub.orchestration.console import _WARN_LOGGER_NAME
+from lionhub.orchestration.mcp_config import McpResolution
 
 # Every provider name the CLI can route a leg to, plus one API provider, so a
 # new CLI backend cannot quietly land on the wrong side of the predicate.
@@ -185,7 +185,7 @@ def test_codex_spawn_that_does_not_forward_still_says_so():
 def test_build_chat_model_still_sets_the_server_kwarg_for_claude_only():
     """The request-field question is narrower than the capability question:
     the codex request model has no such field, so nothing is set there."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     servers = {"khive": {"command": "kkernel"}}
 

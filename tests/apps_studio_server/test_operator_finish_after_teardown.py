@@ -8,10 +8,10 @@ import asyncio
 
 import pytest
 
-from lionagi.cli import _runs as runs_mod
 from lionagi.state.db import StateDB
 from lionagi.studio.operator.coordinator import OperatorCoordinator
 from lionagi.studio.operator.store import OperatorStore
+from lionhub.orchestration import runs as runs_mod
 from tests.apps_studio_server.test_operator_protocol import (
     MessageWritingEngine,
     _patch_state_db,

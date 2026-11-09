@@ -270,7 +270,7 @@ def test_single_session_runs_grade_exactly_as_before():
 def test_severity_order_is_the_shared_exit_code_table_not_a_second_one():
     """completed < completed_empty/failed < timed_out < aborted < cancelled,
     read off EXIT_CODE_BY_STATUS rather than restated here."""
-    from lionagi.cli._util import EXIT_CODE_BY_STATUS
+    from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 
     run = _run(status="completed", invocation_id="inv1")
     invocation = {"id": "inv1", "status": "completed"}

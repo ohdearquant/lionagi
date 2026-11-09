@@ -1483,8 +1483,8 @@ async def test_the_cli_runner_declares_its_drain_so_its_own_runs_stay_steerable(
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
     from lionagi.cli.agent import _run_agent
     from lionagi.service.manager import iModelManager
@@ -1575,9 +1575,9 @@ async def test_a_resumed_session_takes_the_declaration_of_the_leg_running_it_now
     the live leg's. The stale-session doctor reads exactly those two fields to
     decide whether a row belongs to a process that is gone.
     """
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist
+    from lionhub.orchestration.runs import setup_agent_persist
 
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-resumedrun")
 
@@ -1666,10 +1666,10 @@ async def test_a_resume_that_does_not_reopen_keeps_the_row_declaration_one_gap_o
     once already. Both consequences are pinned so neither can be lost to a
     comment.
     """
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
     from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
 
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-noreopen")
 
@@ -1751,10 +1751,10 @@ async def test_a_row_that_never_declared_stays_undeclared_across_a_resume_that_d
     """
     import json as _json
 
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
     from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
+    from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
 
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-undeclared")
 
@@ -1855,9 +1855,9 @@ async def test_a_row_that_never_declared_is_repaired_by_a_resume_that_reopens_it
     """
     import json as _json
 
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist
+    from lionhub.orchestration.runs import setup_agent_persist
 
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-repaired")
     exited_leg = {"pid": 303, "pid_create_time": 3.0}

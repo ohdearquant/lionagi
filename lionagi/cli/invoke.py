@@ -12,8 +12,7 @@ from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import short_id
-
-from ._logging import hint, log_error
+from lionhub.orchestration.console import hint, log_error
 
 # ── async helpers ─────────────────────────────────────────────────────────────
 

@@ -1,7 +1,9 @@
 """Every module that moved out of lionagi keeps its old import path until its removal release.
 
-The table is ``lionagi._moved.MOVED``. For every module under each moved package these
-tests check that the old name imports, that it is the same module object as the new
+The table is ``lionagi._moved.MOVED``; ``CONTRACTS`` (tests/_moved_contracts_test_support.py)
+declares the same rows by hand, and a test compares the two. What each row promises (names,
+shared values, state read through either name, cold import orders) is read from its contract.
+For every module under each moved package these tests check that the old name imports, that it is the same module object as the new
 name, that it warns once and points the warning at the importing code, that the
 removal release is still ahead of this version, that data naming a moved Element
 class by either path loads in a fresh process and saves under the new path, that the
@@ -21,12 +23,27 @@ import re
 import subprocess
 import sys
 import warnings
+from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from lionagi import _moved
 from lionagi.version import __version__
+from tests._moved_contracts_test_support import (
+    COLD_ORDERS,
+    CONTRACTS,
+    MoveContract,
+    assert_cold_ok,
+    assert_contracts_match_moved,
+    contract_for,
+    own_public_callables,
+    public_name_gaps,
+    readme_gaps,
+    readme_rows,
+    run_cold_case,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -40,19 +57,18 @@ def _release(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in match.groups())
 
 
-def _inner_rows(row: _moved.Moved) -> list[_moved.Moved]:
-    """Rows whose new package sits inside ``row``'s new package."""
-    return [other for other in _moved.MOVED if other.new.startswith(row.new + ".")]
+def _inner_rows(row: MoveContract) -> list[MoveContract]:
+    """Contracts whose new package sits inside ``row``'s new package."""
+    return [other for other in CONTRACTS if other.new.startswith(row.new + ".")]
 
 
 def _module_pairs() -> list[tuple[str, str]]:
     pairs = []
-    for row in _moved.MOVED:
+    for row in CONTRACTS:
         package = importlib.import_module(row.new)
         names = [row.new]
-        search_path = getattr(package, "__path__", None)  # a lone module has no submodules
-        if search_path is not None:
-            names += [info.name for info in pkgutil.walk_packages(search_path, row.new + ".")]
+        if row.kind == "package":  # a lone module has no submodules
+            names += [info.name for info in pkgutil.walk_packages(package.__path__, row.new + ".")]
         # A package moved inside this one is paired under its own row, by the name it had.
         inner = tuple(other.new for other in _inner_rows(row))
         names = [n for n in names if not any(n == p or n.startswith(p + ".") for p in inner)]
@@ -64,10 +80,71 @@ PAIRS = _module_pairs()
 
 
 def test_the_table_has_moves_and_every_package_has_modules():
-    assert _moved.MOVED
-    for row in _moved.MOVED:
+    assert CONTRACTS
+    for row in CONTRACTS:
         assert any(new == row.new for _, new in PAIRS), row
-    assert len(PAIRS) > len(_moved.MOVED)
+    assert len(PAIRS) > len(CONTRACTS)
+
+
+def test_the_contracts_declare_exactly_the_moved_rows():
+    assert_contracts_match_moved(CONTRACTS, _moved.MOVED)
+
+
+def test_the_row_comparison_fails_for_a_missing_or_an_extra_contract():
+    # Local copies only: the real contracts and the real table are never changed.
+    contracts = list(CONTRACTS)
+    assert_contracts_match_moved(contracts, _moved.MOVED)
+
+    dropped = contracts.pop()
+    with pytest.raises(AssertionError, match="with no contract") as missing:
+        assert_contracts_match_moved(contracts, _moved.MOVED)
+    assert dropped.old in str(missing.value)
+
+    contracts.append(dropped)
+    extra = replace(dropped, old="lionagi.invented", new="lionhub.invented")
+    with pytest.raises(AssertionError, match="no row in MOVED") as surplus:
+        assert_contracts_match_moved([*contracts, extra], _moved.MOVED)
+    assert extra.old in str(surplus.value)
+
+    # A row whose new name differs is both at once: its pair has no contract, and the
+    # contract's pair has no row.
+    changed = replace(dropped, new=dropped.new + "_elsewhere")
+    with pytest.raises(AssertionError, match="with no contract"):
+        assert_contracts_match_moved([*contracts[:-1], changed], _moved.MOVED)
+
+    with pytest.raises(AssertionError, match="more than one contract"):
+        assert_contracts_match_moved([*contracts, dropped], _moved.MOVED)
+
+
+def test_each_contract_kind_describes_its_new_module():
+    for contract in CONTRACTS:
+        module = importlib.import_module(contract.new)
+        assert hasattr(module, "__path__") == (contract.kind == "package"), contract.old
+        if contract.kind == "value-only":
+            assert own_public_callables(module, contract.new) == [], contract.old
+
+
+README = ROOT / "lionhub" / "README.md"
+
+
+def test_the_readme_tables_agree_with_the_contracts():
+    text = README.read_text(encoding="utf-8")
+    assert readme_rows(text), "the README lists no moved import"
+    assert readme_gaps(text, CONTRACTS) == []
+
+
+@pytest.mark.parametrize("column", ["old", "current"])
+def test_the_readme_check_fails_when_one_cell_is_stale(column):
+    text = README.read_text(encoding="utf-8")
+    old, new = readme_rows(text)[-1]
+    line = f"| `{old}` | `{new}` |"
+    assert text.count(line) == 1
+    stale = f"| `{old}x` | `{new}` |" if column == "old" else f"| `{old}` | `{new}x` |"
+    changed = text.replace(line, stale)
+    assert changed != text
+    assert readme_gaps(text, CONTRACTS) == []
+    gaps = readme_gaps(changed, CONTRACTS)
+    assert len(gaps) == 1 and old in gaps[0], gaps
 
 
 @pytest.mark.parametrize(("old", "new"), PAIRS, ids=[old for old, _ in PAIRS])
@@ -110,7 +187,7 @@ def test_import_statement_warning_points_at_the_importing_line():
 
 
 def test_objects_are_shared_and_pickles_naming_the_old_path_load():
-    checked = {row.old: 0 for row in _moved.MOVED}
+    checked = {row.old: 0 for row in CONTRACTS}
     for old, new in PAIRS:
         importlib.import_module(old)
         assert sys.modules[old] is sys.modules[new]
@@ -124,8 +201,18 @@ def test_objects_are_shared_and_pickles_naming_the_old_path_load():
             payload = pickle.dumps(obj, protocol=0).replace(new.encode(), old.encode())
             assert old.encode() in payload
             assert pickle.loads(payload) is obj  # noqa: S301
-            checked[_moved._row(old).old] += 1
-    assert all(checked.values()), checked
+            checked[contract_for(old, CONTRACTS).old] += 1
+    # A value-only module deliberately exports values rather than pickleable definitions.
+    # Any other row without a callable subject still fails this population check.
+    value_only = [row for row in CONTRACTS if row.kind == "value-only"]
+    for row in value_only:
+        assert {name for name, _ in row.expected_values} <= vars(
+            importlib.import_module(row.new)
+        ).keys()
+    assert all(count for old, count in checked.items() if old not in {r.old for r in value_only}), (
+        checked
+    )
+    assert all(checked[row.old] == 0 for row in value_only), checked
 
 
 def _moved_element_classes() -> list[tuple[str, type]]:
@@ -293,17 +380,19 @@ def test_the_allow_list_adds_only_the_moved_packages_to_lionagi():
 # A module that moved on its own (one file, not a package) is a row of the table too. Its old
 # name sits inside a package that stays in lionagi/, so the finder must serve it while that
 # package is still on disk.
-MOVED_MODULES = (
-    ("lionagi.providers._provider_errors", "lionagi._provider_errors"),
-    ("lionagi.providers._secret_resolution", "lionagi.service.accounts._secret_resolution"),
-    ("lionagi.providers._subagent_admission", "lionagi.service._subagent_admission"),
-    ("lionagi.providers.openai._chat_schemas", "lionagi.service.connections._chat_schemas"),
-)
-_MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
+MODULE_CONTRACTS = tuple(row for row in CONTRACTS if row.kind == "module")
+# The modules that moved into the core, not into lionhub.
+CORE_MODULE_CONTRACTS = tuple(row for row in MODULE_CONTRACTS if row.new.startswith("lionagi."))
+VALUE_ONLY_CONTRACTS = tuple(row for row in CONTRACTS if row.kind == "value-only")
 
 
-@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
-def test_an_old_module_name_warns_once_and_is_the_new_module(old, new):
+def _old_name(contract: MoveContract) -> str:
+    return contract.old
+
+
+@pytest.mark.parametrize("contract", MODULE_CONTRACTS, ids=_old_name)
+def test_an_old_module_name_warns_once_and_is_the_new_module(contract):
+    old, new = contract.old, contract.new
     sys.modules.pop(old, None)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -316,59 +405,15 @@ def test_an_old_module_name_warns_once_and_is_the_new_module(old, new):
     assert sys.modules[old] is module
 
 
-# What each moved module offers its callers. Naming some of it keeps the identity check
-# below from passing on a module that defines nothing.
-MOVED_MODULE_PUBLIC_NAMES = {
-    "lionagi._provider_errors": {"ProviderError", "EmissionError"},
-    "lionagi.service.accounts._secret_resolution": {
-        "SecretLookupResolution",
-        "fill_declared_secrets",
-        "lookup_one_name",
-        "resolve_secret_lookup_config",
-    },
-    "lionagi.service._subagent_admission": {
-        "SubagentLease",
-        "admit_subagent",
-        "child_agent_depth",
-        "refuse_nested_agent",
-    },
-    # The request model, every class it is built from, and the developer-message helper.
-    "lionagi.service.connections._chat_schemas": {
-        "AssistantMessage",
-        "ChatRole",
-        "DeveloperMessage",
-        "FunctionCall",
-        "FunctionDef",
-        "FunctionTool",
-        "ImageURLObject",
-        "ImageURLPart",
-        "JSONSchemaFormat",
-        "OpenAIChatCompletionsRequest",
-        "ResponseFormatJSONObject",
-        "ResponseFormatJSONSchema",
-        "ResponseFormatText",
-        "StreamOptions",
-        "SystemMessage",
-        "TextPart",
-        "ToolCall",
-        "ToolCallFunction",
-        "ToolChoiceFunction",
-        "ToolMessage",
-        "UserMessage",
-        "uses_developer_messages",
-    },
-}
-
-
-@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
-def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_name(old, new):
+@pytest.mark.parametrize("contract", MODULE_CONTRACTS, ids=_old_name)
+def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_name(contract):
+    old, new = contract.old, contract.new
     module = importlib.import_module(new)
-    public = [
-        name
-        for name, obj in vars(module).items()
-        if not name.startswith("_") and callable(obj) and getattr(obj, "__module__", None) == new
-    ]
-    assert MOVED_MODULE_PUBLIC_NAMES[new] <= set(public)
+    public = own_public_callables(module, new)
+    # Naming some of what the module offers keeps this check from passing on a module that
+    # defines nothing; every public callable the module does define is checked below.
+    assert contract.public_names
+    assert public_name_gaps(contract, module) == []
     for name in public:
         namespace: dict = {}
         with warnings.catch_warnings():
@@ -382,8 +427,9 @@ def test_a_moved_module_keeps_the_logger_name_it_had():
     assert module.logger.name == "lionagi.providers._secret_resolution"
 
 
-@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
-def test_a_module_moved_into_the_core_keeps_its_own_row_after_its_package_moved(old, new):
+@pytest.mark.parametrize("contract", CORE_MODULE_CONTRACTS, ids=_old_name)
+def test_a_module_moved_into_the_core_keeps_its_own_row_after_its_package_moved(contract):
+    old, new = contract.old, contract.new
     # The package around each of these modules later moved to lionhub as a whole. The longer,
     # module-level row still wins for the module's own name, and only for it.
     assert not _moved.still_on_disk("lionagi.providers")
@@ -438,11 +484,174 @@ def _run_fresh(code: str, env: dict[str, str] | None = None) -> str:
     return proc.stdout
 
 
+_COLD_CASES = [
+    pytest.param(contract, order, id=f"{contract.old}-{order}")
+    for contract in MODULE_CONTRACTS
+    for order in contract.cold_orders
+]
+_VALUE_ONLY_COLD_CASES = [
+    pytest.param(contract, order, id=f"{contract.old}-{order}")
+    for contract in VALUE_ONLY_CONTRACTS
+    for order in contract.cold_orders
+]
+
+
+def _cold_environment(home: Path) -> dict[str, str]:
+    """The isolated environment of a value-only run, with its state directories under ``home``."""
+    return {
+        **_isolated_environment(home),
+        "LIONAGI_HOME": str(home / "lionagi"),
+        "TMPDIR": str(home),
+    }
+
+
+@pytest.mark.parametrize(("contract", "order"), _COLD_CASES)
+def test_a_moved_module_keeps_its_identity_in_either_cold_import_order(contract, order):
+    assert_cold_ok(run_cold_case(contract, order, root=ROOT))
+
+
+@pytest.mark.parametrize(("contract", "order"), _VALUE_ONLY_COLD_CASES)
+def test_a_constant_only_module_keeps_values_and_patches_in_either_cold_order(
+    contract, order, tmp_path
+):
+    result = run_cold_case(
+        contract,
+        order,
+        root=ROOT,
+        workdir=tmp_path,
+        base_environment=_cold_environment(tmp_path),
+    )
+    assert_cold_ok(result)
+
+
+# A value-only module written under a temporary directory, with a row of its own that the
+# child interpreter adds to the table, so the general runner is driven without a real move.
+_SYNTHETIC_CONSTANTS = (
+    "import os\n\n"
+    'SYNTHETIC_LIMIT: int = int(os.environ["SYNTHETIC_LIMIT_CHARS"])\n'
+    'SYNTHETIC_LABEL: str = "alpha"\n'
+)
+
+
+def _synthetic_value_only(tmp_path: Path) -> tuple[MoveContract, Path]:
+    site = tmp_path / "site"
+    package = site / "synthetic_hub"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "constants.py").write_text(_SYNTHETIC_CONSTANTS, encoding="utf-8")
+    contract = MoveContract(
+        old="lionagi._synthetic_constants",
+        new="synthetic_hub.constants",
+        kind="value-only",
+        expected_values=(("SYNTHETIC_LABEL", "alpha"), ("SYNTHETIC_LIMIT", 41)),
+        environment=(("SYNTHETIC_LIMIT_CHARS", "41"),),
+    )
+    return contract, site
+
+
+def _run_synthetic(contract, site, order, tmp_path, **options):
+    return run_cold_case(
+        contract,
+        order,
+        root=ROOT,
+        workdir=tmp_path,
+        base_environment=_cold_environment(tmp_path),
+        extra_roots=(site,),
+        register_row=True,
+        **options,
+    )
+
+
+@pytest.mark.parametrize("order", COLD_ORDERS)
+def test_a_synthetic_value_only_contract_passes_the_general_runner_in_both_orders(order, tmp_path):
+    contract, site = _synthetic_value_only(tmp_path)
+    assert contract.cold_orders == COLD_ORDERS
+    assert_cold_ok(_run_synthetic(contract, site, order, tmp_path))
+
+
+# Each case breaks one thing the runner checks, so a pass above is not a pass of nothing.
+_SYNTHETIC_FAILURES = {
+    "changed-value": (
+        lambda c: replace(c, expected_values=(c.expected_values[0], ("SYNTHETIC_LIMIT", 42))),
+        "'value'",
+    ),
+    "changed-type": (
+        lambda c: replace(c, expected_values=(c.expected_values[0], ("SYNTHETIC_LIMIT", "41"))),
+        "'type'",
+    ),
+    # The module still defines SYNTHETIC_LIMIT; the contract no longer declares it.
+    "deleted-declaration": (
+        lambda c: replace(c, expected_values=c.expected_values[:1]),
+        "'constants'",
+    ),
+    # The contract declares a constant the module does not define.
+    "undefined-declaration": (
+        lambda c: replace(c, expected_values=(*c.expected_values, ("SYNTHETIC_MISSING", 1))),
+        "'constants'",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", _SYNTHETIC_FAILURES)
+def test_the_general_runner_fails_a_synthetic_value_only_contract_that_is_wrong(case, tmp_path):
+    contract, site = _synthetic_value_only(tmp_path)
+    broken, marker = _SYNTHETIC_FAILURES[case]
+    result = _run_synthetic(broken(contract), site, "old-first", tmp_path)
+    assert result.returncode != 0
+    assert "AssertionError" in result.stderr and marker in result.stderr, result.stderr[-1500:]
+
+
+def test_the_general_runner_fails_a_module_that_comes_from_another_source_file(tmp_path):
+    contract, site = _synthetic_value_only(tmp_path)
+    decoy = tmp_path / "decoy" / "constants.py"
+    decoy.parent.mkdir()
+    decoy.write_text(_SYNTHETIC_CONSTANTS, encoding="utf-8")
+    result = _run_synthetic(contract, site, "old-first", tmp_path, origin=decoy)
+    assert result.returncode != 0
+    assert "AssertionError" in result.stderr and "'origin'" in result.stderr, result.stderr[-1500:]
+
+
+def test_a_declared_public_name_the_module_does_not_define_is_a_gap():
+    module = ModuleType("synthetic_hub.definitions")
+
+    def kept():
+        """Defined by the module."""
+
+    def dropped():
+        """Defined by the module until it is deleted."""
+
+    kept.__module__ = dropped.__module__ = module.__name__
+    module.kept, module.dropped = kept, dropped
+    contract = MoveContract(
+        old="lionagi._synthetic_definitions",
+        new=module.__name__,
+        kind="module",
+        public_names=frozenset({"kept", "dropped"}),
+    )
+    assert public_name_gaps(contract, module) == []
+
+    del module.dropped
+    assert public_name_gaps(contract, module) == ["dropped"]
+
+    # A name the module only imports is not one it defines.
+    module.dropped = json.dumps
+    assert public_name_gaps(contract, module) == ["dropped"]
+
+
+def test_a_contract_cannot_be_emptied_into_a_run_that_checks_nothing():
+    contract = next(row for row in MODULE_CONTRACTS if row.public_names)
+    emptied = replace(contract, public_names=frozenset())
+    with pytest.raises(ValueError, match="declares nothing"):
+        run_cold_case(emptied, "old-first", root=ROOT)
+    with pytest.raises(ValueError, match="value-only"):
+        replace(VALUE_ONLY_CONTRACTS[0], expected_values=())
+
+
 # `python -m <old name>` runs a package's __main__ without importing it, through the
 # loader's code (runpy, as `-m` does). MCP client configs start the server this way.
 _SCRIPT_ROWS = [
     row
-    for row in _moved.MOVED
+    for row in CONTRACTS
     if (ROOT / "lionhub" / "src" / Path(*row.new.split(".")) / "__main__.py").is_file()
 ]
 
@@ -662,7 +871,7 @@ def test_a_package_moved_inside_another_has_one_module_under_every_name():
     # prefix also names the engines ("lionagi.orchestration.engines"), a name that never
     # existed. It imports as the same module object: left to the normal import system it
     # would load a second copy of the engines from the aliased parent package's path.
-    nested = [(outer, inner) for outer in _moved.MOVED for inner in _inner_rows(outer)]
+    nested = [(outer, inner) for outer in CONTRACTS for inner in _inner_rows(outer)]
     assert nested
     for outer, inner in nested:
         name = outer.old + inner.new[len(outer.new) :]
@@ -720,6 +929,14 @@ def _module_of(path: Path) -> str | None:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
+_RETAINED_DEPRECATION_MESSAGES = {
+    "lionhub.orchestration.runs": {
+        "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
+        "use lionagi.cli._runs.teardown_persist instead."
+    }
+}
+
+
 def _old_references(path: Path, source: str | None = None) -> list[str]:
     if source is None:
         source = path.read_text(encoding="utf-8")
@@ -754,12 +971,55 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
                         and (own == new or own.startswith(new + "."))
                     )
                 ]
+            # The original deprecation text names its old callable without importing it.
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "warnings"
+                and func.attr == "warn"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Name)
+                and node.args[1].id == "DeprecationWarning"
+            ):
+                retained = _RETAINED_DEPRECATION_MESSAGES.get(_module_of(path), set())
+                names = [
+                    arg.value
+                    for index, arg in enumerate(node.args)
+                    if isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and not (index == 0 and arg.value in retained)
+                ]
         found += [
             f"{path.relative_to(ROOT)}:{node.lineno}: {name}"
             for name in names
             if _moved.resolve(name) is not None
         ]
     return found
+
+
+def test_reference_check_preserves_only_the_original_own_deprecation_text():
+    path = SOURCE_ROOTS[1] / "orchestration" / "runs.py"
+    other = path.with_name("_probe.py")
+    message = (
+        "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
+        "use lionagi.cli._runs.teardown_persist instead."
+    )
+    warning = f"warnings.warn({message!r}, DeprecationWarning)\n"
+    changed_message = message + " "
+    assert _old_references(path, warning) == []
+    assert _old_references(other, warning)
+    for source in (
+        f"warnings.warn({message!r}, RuntimeWarning)\n",
+        f"other.warn({message!r}, DeprecationWarning)\n",
+        f"warnings.warn({changed_message!r}, DeprecationWarning)\n",
+        f"importlib.import_module({message!r})\n",
+        f"warnings.warn('safe', DeprecationWarning, {message!r})\n",
+    ):
+        assert _old_references(path, source), source
+    repeated = f"warnings.warn({message!r}, DeprecationWarning, {message!r})\n"
+    assert len(_old_references(path, repeated)) == 1
+    imports = "import lionagi.cli._runs\nimportlib.import_module('lionagi.cli._runs')\n"
+    assert len(_old_references(path, warning + imports)) == 2
 
 
 def test_no_source_file_imports_an_old_name():
@@ -807,16 +1067,60 @@ LIONHUB_USERS_UNDER_LIONAGI = frozenset({"agent", "cli", "operations", "service"
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
+def _deprecated_catalog_target_nodes(path: Path, tree: ast.Module) -> set[int]:
+    """Exempt only the declared lazy compatibility targets in the core compiler."""
+    if path != ROOT / "lionagi" / "_auto.py":
+        return set()
+    expected = {
+        name: f"lionhub.cli.catalog.{name}"
+        for name in (
+            "build_cli_parser",
+            "command_exists",
+            "iter_cli_seeds",
+            "load_cli_command",
+            "seed_for",
+        )
+    }
+    for node in tree.body:
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "_DEPRECATED_ALIASES"
+            and isinstance(node.value, ast.Dict)
+            and len(node.value.keys) == len(expected)
+        ):
+            continue
+        targets = {}
+        for key, value in zip(node.value.keys, node.value.values, strict=True):
+            if (
+                isinstance(key, ast.Constant)
+                and key.value in expected
+                and isinstance(value, ast.Tuple)
+                and len(value.elts) == 2
+                and isinstance(value.elts[0], ast.Constant)
+                and value.elts[0].value == expected[key.value]
+            ):
+                targets[key.value] = id(value.elts[0])
+        if targets.keys() == expected.keys():
+            return set(targets.values())
+    return set()
+
+
 def _lionhub_names(path: Path, source: str | None = None) -> list[str]:
     """Every import of lionhub, or string naming a lionhub module, in ``path``."""
     text = path.read_text(encoding="utf-8") if source is None else source
+    tree = ast.parse(text, filename=str(path))
+    compatibility_targets = _deprecated_catalog_target_nodes(path, tree)
     hits = []
-    for node in ast.walk(ast.parse(text, filename=str(path))):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names = [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             names = [node.module or ""]
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in compatibility_targets:
+                continue
             names = [node.value]
         else:
             continue
@@ -845,6 +1149,28 @@ def test_the_lionhub_check_sees_each_form_of_reference():
     )
     hits = _lionhub_names(probe, source)
     assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 3], hits
+
+
+def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
+    path = ROOT / "lionagi" / "_auto.py"
+    names = (
+        "build_cli_parser",
+        "command_exists",
+        "iter_cli_seeds",
+        "load_cli_command",
+        "seed_for",
+    )
+    aliases = {name: (f"lionhub.cli.catalog.{name}", "2.0.0") for name in names}
+    source = f"_DEPRECATED_ALIASES = {aliases!r}\n"
+    assert _lionhub_names(path, source) == []
+    additional = "import lionhub.cli.catalog\nEXTRA = 'lionhub.cli.catalog.seed_for'\n"
+    assert [hit.rsplit(": ", 1)[1] for hit in _lionhub_names(path, source + additional)] == [
+        "lionhub.cli.catalog",
+        "lionhub.cli.catalog.seed_for",
+    ]
+    assert len(_lionhub_names(ROOT / "lionagi" / "_other.py", source)) == len(names)
+    aliases["other"] = ("lionhub.cli.catalog.other", "2.0.0")
+    assert len(_lionhub_names(path, f"_DEPRECATED_ALIASES = {aliases!r}\n")) == len(aliases)
 
 
 # The hub's provider modules, as dotted names. A reference is an import, a from-import or a
@@ -913,6 +1239,8 @@ PROVIDER_INTERIM_EDGES = {
     "agent/factory.py": [
         *["lionhub.providers._cli_subprocess"] * 2,
         *["lionhub.providers.openai._codex_profile"] * 8,
+        # The forwarded-server check reads the project config layers a codex run would load.
+        "lionhub.providers.openai._codex_project_layers",
         *["lionhub.providers.openai.codex"] * 6,
     ],
     "operations/run/run.py": ["lionhub.providers.google.gemini_code"],
@@ -921,11 +1249,6 @@ PROVIDER_INTERIM_EDGES = {
     # ``_MANIFEST_MODULE`` in the compatibility loader: the hub's manifest module, imported on
     # the first call that needs the default provider catalog.
     "service/connections/_provider_compat.py": ["lionhub.providers.manifest"],
-    # The codex profile import is at module level; the Gemini ones are inside functions.
-    "cli/_providers.py": [
-        "lionhub.providers.openai._codex_profile",
-        *["lionhub.providers.google.gemini_code"] * 2,
-    ],
     "cli/agent.py": ["lionhub.providers.google.gemini_code"],
     "cli/orchestrate/_orchestration.py": ["lionhub.providers.openai._codex_profile"],
     "studio/operator/engine.py": [
@@ -1189,13 +1512,6 @@ def test_the_wave_2_check_sees_each_form_of_import():
     )
     hits = _wave_2_imports(probe, source)
     assert sorted(int(hit.split(":")[1]) for hit in hits) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 11], hits
-
-
-def test_changelog_names_every_move():
-    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    for row in _moved.MOVED:
-        line = f"| `{row.old}` | `{row.new}` | {row.removed_in} |"
-        assert line in changelog, row
 
 
 def test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_their_files():

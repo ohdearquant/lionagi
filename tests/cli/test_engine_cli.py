@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tests.cli._import_guard import (
-    COMMAND_IMPORT_PROBES,
     command_module_imports,
     resolved_imports,
     source_with_line,
@@ -79,8 +78,8 @@ def test_add_engine_subparser_registers_engine_command():
 
 def test_all_engine_kinds_are_valid():
     """Every expected kind is accepted by the parser."""
-    from lionagi.cli._engine_definitions import KIND_META
     from lionagi.cli.engine import add_engine_subparser
+    from lionhub.orchestration.engine_definitions import KIND_META
 
     top = argparse.ArgumentParser(prog="li")
     sub = top.add_subparsers(dest="command")
@@ -145,7 +144,7 @@ def test_engine_run_accepts_model_and_depth_flags():
 
 async def test_coding_without_test_cmd_returns_1(monkeypatch):
     """'coding' kind without --test-cmd must return exit code 1."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
 
@@ -161,8 +160,8 @@ async def test_coding_without_test_cmd_returns_1(monkeypatch):
 
 async def test_successful_engine_run_returns_0(monkeypatch, capsys):
     """A mocked engine that returns a string → exit 0 + JSON on stdout."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -190,8 +189,8 @@ async def test_successful_engine_run_returns_0(monkeypatch, capsys):
 
 async def test_engine_failure_returns_1(monkeypatch):
     """A mocked engine that raises → exit 1."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -216,8 +215,8 @@ async def test_engine_failure_returns_1(monkeypatch):
 
 async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
     """CodingEngine's CodeResultRecorded shape is serialized correctly; no crash when export_dir is absent."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -265,9 +264,9 @@ async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
 
 async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
     """--export-dir is written to the DB for 'coding' (CodeResultRecorded has no export_dir field)."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -336,9 +335,9 @@ async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
 
 async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
     """--export-dir is written to the DB for 'hypothesis' (engine returns a plain string)."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -396,9 +395,9 @@ async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
 
 async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
     """No --export-dir → export_dir=None in the DB update (not a stale string)."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -459,9 +458,9 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
 
 async def test_cancelled_error_marks_row_cancelled(monkeypatch):
     """asyncio.CancelledError → row status='cancelled', db closed, error re-raised."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -518,9 +517,9 @@ async def test_cancelled_error_marks_row_cancelled(monkeypatch):
 
 async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
     """KeyboardInterrupt → row status='cancelled', db closed, re-raised."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -575,9 +574,9 @@ async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
 
 async def test_db_insert_called_on_success(monkeypatch, capsys):
     """With no_persist=False, insert_engine_run and update_engine_run are called."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -630,9 +629,9 @@ async def test_db_insert_called_on_success(monkeypatch, capsys):
 
 async def test_no_persist_skips_db(monkeypatch, capsys):
     """--no-persist flag means no DB calls are made."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -667,9 +666,9 @@ async def test_no_persist_skips_db(monkeypatch, capsys):
 
 async def test_import_failure_closes_db(monkeypatch):
     """When import_engine_class raises, the open DB handle must still be closed."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -719,8 +718,8 @@ async def test_import_failure_closes_db(monkeypatch):
 
 def test_run_engine_dispatches_run_subcommand(monkeypatch):
     """run_engine with engine_command='run' calls _do_engine_run via run_async."""
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
+    import lionhub.orchestration.console as log_mod
 
     called_with = []
 
@@ -746,7 +745,7 @@ def test_run_engine_dispatches_run_subcommand(monkeypatch):
 
 def test_run_engine_unknown_subcommand_returns_1(monkeypatch):
     """Unknown engine subcommand → exit 1."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
 
@@ -764,7 +763,7 @@ def test_run_engine_unknown_subcommand_returns_1(monkeypatch):
 
 def test_main_routes_engine_command(monkeypatch):
     """main() routes 'engine run ...' to run_engine."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "configure_cli_logging", lambda *a: None)
 
@@ -772,7 +771,8 @@ def test_main_routes_engine_command(monkeypatch):
     main_module = importlib.import_module("lionagi.cli.main")
     engine_mod = importlib.import_module("lionagi.cli.engine")
 
-    from lionagi._auto import _MARKER_ATTR, _isolated_registry_for_tests
+    from lionagi._auto import _MARKER_ATTR
+    from lionhub.cli import catalog
 
     run_engine_calls = []
 
@@ -791,8 +791,8 @@ def test_main_routes_engine_command(monkeypatch):
     # 'engine run research <spec>' — must be routed to run_engine. The seed
     # registry is isolated so this test's monkeypatch is what gets discovered,
     # regardless of whether another test already realized the "engine" seed.
-    with _isolated_registry_for_tests():
-        rc = main_module.main(["engine", "run", "research", "test topic"])
+    monkeypatch.setattr(catalog, "_cli_realized", {})
+    rc = main_module.main(["engine", "run", "research", "test topic"])
     assert rc == 0
     assert len(run_engine_calls) == 1
     assert run_engine_calls[0].command == "engine"
@@ -857,9 +857,9 @@ async def test_engine_run_skips_signal_binding_on_session_id_collision(
     import functools
     import uuid as uuid_mod
 
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
     from lionagi.state.db import StateDB
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
@@ -975,80 +975,6 @@ async def test_maybe_update_db_mirrors_engines_ended_at_onto_the_session(tmp_pat
     assert session_row["duration_ms"] == pytest.approx(30000.0)
 
 
-@pytest.fixture
-def engine_import_package(tmp_path, monkeypatch):
-    package = tmp_path / "_engine_loader_fixture"
-    package.mkdir()
-    (package / "__init__.py").write_text(
-        "class TaggedImportError(ImportError): pass\n"
-        "broken = TaggedImportError('engine module broke', "
-        "name='forged_optional', path='forged/engine.py')\n"
-        "missing = ModuleNotFoundError('missing engine dependency', "
-        "name='engine_optional', path='dependency/engine.py')\n"
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    for name in (
-        "_engine_loader_fixture",
-        "_engine_loader_fixture.engine",
-        "_engine_loader_fixture.Unexported",
-    ):
-        monkeypatch.setitem(sys.modules, name, None)
-        monkeypatch.delitem(sys.modules, name)
-    errors = importlib.import_module("_engine_loader_fixture")
-    return package, errors
-
-
-def test_engine_class_loader_keeps_class_identity_and_attribute_boundary(engine_import_package):
-    from lionagi.cli._engine_definitions import import_engine_class
-
-    package, _ = engine_import_package
-    (package / "engine.py").write_text("class SelectedEngine: pass\n")
-    selected = import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
-    assert selected is sys.modules["_engine_loader_fixture.engine"].SelectedEngine
-    assert import_engine_class("_engine_loader_fixture.engine", "SelectedEngine") is selected
-
-    marker = package / "child-imported"
-    (package / "Unexported.py").write_text(
-        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
-    )
-    with pytest.raises(AttributeError, match="Unexported"):
-        import_engine_class("_engine_loader_fixture", "Unexported")
-    assert not marker.exists()
-    assert "_engine_loader_fixture.Unexported" not in sys.modules
-
-
-def test_engine_class_loader_keeps_plain_import_error_cause(engine_import_package):
-    from lionagi.cli._engine_definitions import import_engine_class
-
-    package, errors = engine_import_package
-    (package / "engine.py").write_text("from . import broken\nraise broken\n")
-    with pytest.raises(ImportError) as caught:
-        import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
-    assert type(caught.value) is ImportError
-    assert str(caught.value) == (
-        "Failed to import module _engine_loader_fixture.engine: engine module broke"
-    )
-    assert caught.value.__cause__ is errors.broken
-    assert caught.value.name is None
-    assert caught.value.path is None
-    assert caught.value.msg == str(caught.value)
-    assert errors.broken.name == "forged_optional"
-    assert errors.broken.path == "forged/engine.py"
-
-
-def test_engine_class_loader_preserves_original_missing_module(engine_import_package):
-    from lionagi.cli._engine_definitions import import_engine_class
-
-    package, errors = engine_import_package
-    (package / "engine.py").write_text("from . import missing\nraise missing\n")
-    with pytest.raises(ModuleNotFoundError) as caught:
-        import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
-    assert caught.value is errors.missing
-    assert caught.value.name == "engine_optional"
-    assert caught.value.path == "dependency/engine.py"
-    assert caught.value.msg == "missing engine dependency"
-
-
 @pytest.mark.parametrize("failure", ["broken", "missing"])
 async def test_actual_engine_import_failure_is_logged_stored_and_closed(
     engine_import_package, monkeypatch, failure
@@ -1106,10 +1032,10 @@ async def test_actual_engine_import_failure_is_logged_stored_and_closed(
 
 
 def test_engine_definitions_live_in_a_private_module_without_command_imports() -> None:
-    """The engine kind registry and class loader live in `_engine_definitions`,
+    """The engine kind registry and class loader live in the shared definitions module,
     which sits under the engine command and Studio, so it must not import any
     command module."""
-    definitions = importlib.import_module("lionagi.cli._engine_definitions")
+    definitions = importlib.import_module("lionhub.orchestration.engine_definitions")
     engine_module = importlib.import_module("lionagi.cli.engine")
 
     assert isinstance(definitions.KIND_META, dict)
@@ -1117,16 +1043,28 @@ def test_engine_definitions_live_in_a_private_module_without_command_imports() -
     assert not hasattr(engine_module, "_KIND_META")
     assert not hasattr(engine_module, "_import_engine_class")
 
-    assert command_module_imports(resolved_imports(definitions.__file__, "lionagi.cli")) == set()
+    assert (
+        command_module_imports(resolved_imports(definitions.__file__, "lionhub.orchestration"))
+        == set()
+    )
 
 
-@pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
+@pytest.mark.parametrize(
+    "probe",
+    [
+        "from lionagi.cli.status import _x",
+        "from lionagi.cli import status",
+        "import lionagi.cli.status",
+        "from lionagi.cli.orchestrate import _x",
+        "from lionagi.cli import orchestrate",
+    ],
+)
 def test_engine_definitions_guard_rejects_a_command_import(
     probe: str, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The layering guard fails when `_engine_definitions` imports a command module, whether the
-    import is absolute, relative or by name."""
-    definitions = importlib.import_module("lionagi.cli._engine_definitions")
+    """The layering guard rejects CLI command imports from the shared module's package,
+    whether the command is named by its module or imported from its parent."""
+    definitions = importlib.import_module("lionhub.orchestration.engine_definitions")
 
     patched = source_with_line(definitions.__file__, probe, tmp_path)
     monkeypatch.setattr(definitions, "__file__", str(patched))

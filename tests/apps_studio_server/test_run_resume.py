@@ -63,9 +63,9 @@ async def _seed_run(
 
 @pytest.fixture
 def resume_harness(tmp_path: Path, monkeypatch: Any):
-    import lionagi.cli._runs as cli_runs
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.run_resume as resume_svc
+    import lionhub.orchestration.runs as cli_runs
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -193,7 +193,7 @@ def test_resume_terminal_run_launches_exact_cli_contract(resume_harness, termina
 def test_resume_running_run_queues_until_terminal_and_coalesces_duplicate(
     resume_harness, monkeypatch
 ):
-    import lionagi.cli._runs as cli_runs
+    import lionhub.orchestration.runs as cli_runs
 
     _svc, db_path, client, launched = resume_harness
     run_id = str(uuid.uuid4())
@@ -451,7 +451,7 @@ def test_unresolved_installed_cli_returns_503(resume_harness):
 
 
 def test_missing_cli_branch_snapshot_returns_conflict_before_launch(resume_harness, monkeypatch):
-    import lionagi.cli._runs as cli_runs
+    import lionhub.orchestration.runs as cli_runs
 
     _svc, db_path, client, launched = resume_harness
     run_id = str(uuid.uuid4())
@@ -486,7 +486,7 @@ def test_get_and_post_agree_when_the_branch_snapshot_is_missing(resume_harness, 
     reads as not-resumable before the button is ever offered, not just when
     it's pressed.
     """
-    import lionagi.cli._runs as cli_runs
+    import lionhub.orchestration.runs as cli_runs
 
     _svc, db_path, client, launched = resume_harness
     run_id = str(uuid.uuid4())
@@ -520,7 +520,7 @@ def test_get_and_post_agree_when_the_branch_snapshot_is_missing(resume_harness, 
 def test_corrupt_cli_branch_snapshot_returns_conflict_before_launch(
     resume_harness, monkeypatch, tmp_path
 ):
-    import lionagi.cli._runs as cli_runs
+    import lionhub.orchestration.runs as cli_runs
 
     _svc, db_path, client, launched = resume_harness
     run_id = str(uuid.uuid4())

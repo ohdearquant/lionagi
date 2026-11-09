@@ -29,6 +29,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionagi.agent.factory import apply_forwarded_mcp_servers
+from tests.cli.test_agent_preset_mcp_handover import _wire_agent_stubs
 
 CODEX_SPEC = "codex/gpt-5.3-codex"
 
@@ -56,7 +57,7 @@ def codex_launch(monkeypatch, tmp_path):
 
     from lionhub.providers.openai import _codex_project_layers, codex
 
-    async def launch(request, *, argv: bool = False):
+    async def launch(request, *, argv: bool = False, uncontained_prepare=None):
         """Render the launch command; the `-c` values, or the whole argv when `argv`."""
         calls = []
 
@@ -65,6 +66,8 @@ def codex_launch(monkeypatch, tmp_path):
 
         async def fake_stream(cmd, **kwargs):
             prepare = kwargs.get("_prepare_argv")
+            if prepare is None and uncontained_prepare is not None:
+                prepare = lambda env: uncontained_prepare(cmd, env)
             assert prepare is not None
             cmd = prepare(dict(kwargs.get("env") or os.environ))
             calls.append(list(cmd))
@@ -499,9 +502,7 @@ async def test_a_worker_model_disables_the_servers_its_child_config_declares(
     codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
     child_home = tmp_path / "child-codex-home"
     child_home.mkdir()
-    (child_home / "config.toml").write_text(
-        '[mcp_servers.kept]\ncommand = "kept-mcp"\n\n[mcp_servers.leak]\ncommand = "leak-mcp"\n'
-    )
+    (child_home / "config.toml").write_text('[mcp_servers.leak]\ncommand = "leak-mcp"\n')
     model = _codex_model_with_child_home(child_home)
 
     _hand_mcp_servers(model, {"kept": {"command": "kept-mcp"}}, label="w1", exclusive=True)
@@ -778,7 +779,7 @@ def test_a_provider_without_a_transport_reports_that_it_carried_nothing():
 
 
 def test_plain_leg_hands_a_codex_request_the_resolved_set(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({})
     model = build_chat_model("codex", "gpt-5.3-codex", False, False, None, mcp_servers=SERVERS)
@@ -790,7 +791,7 @@ def test_plain_leg_hands_a_codex_request_the_resolved_set(codex_home):
 
 
 def test_plain_leg_still_hands_a_claude_request_the_resolved_set():
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     model = build_chat_model(
         "claude_code", "claude-opus-4-5", False, False, None, mcp_servers=SERVERS
@@ -799,7 +800,7 @@ def test_plain_leg_still_hands_a_claude_request_the_resolved_set():
 
 
 def test_plain_leg_hands_nothing_to_a_provider_without_a_transport():
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     model = build_chat_model(
         "gemini_code", "gemini-3.5-flash", False, False, None, mcp_servers=SERVERS
@@ -810,7 +811,7 @@ def test_plain_leg_hands_nothing_to_a_provider_without_a_transport():
 
 @pytest.mark.asyncio
 async def test_plain_leg_keeps_codex_secret_fields_off_the_command_line(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({})
     model = build_chat_model(
@@ -823,7 +824,7 @@ async def test_plain_leg_keeps_codex_secret_fields_off_the_command_line(codex_ho
 
 
 def test_plain_leg_empty_set_is_the_whole_set_on_both_transports(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
 
@@ -839,7 +840,7 @@ def test_plain_leg_empty_set_is_the_whole_set_on_both_transports(codex_home):
 def test_plain_leg_with_a_declared_empty_set_is_contained_on_both_transports(codex_home):
     """`--no-mcp-config` reaches build_chat_model as a null map; the caller says
     it was declared, so the request is the whole (empty) set."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
 
@@ -858,7 +859,7 @@ def test_plain_leg_with_a_declared_empty_set_is_contained_on_both_transports(cod
 
 @pytest.mark.asyncio
 async def test_plain_leg_empty_set_reaches_the_codex_command_line(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
     from lionhub.providers.openai.codex import _plain_request
 
     codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
@@ -873,7 +874,7 @@ async def test_plain_leg_empty_set_reaches_the_codex_command_line(codex_home):
 def test_plain_leg_derives_no_effort_from_a_user_config_it_ignores(codex_home):
     """The derived default keeps the user config's own effort under the model's
     ceiling; a leg that does not load that config has no such value."""
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     (codex_home.path / "config.toml").write_text('model_reasoning_effort = "ultra"\n')
 
@@ -887,7 +888,7 @@ def test_plain_leg_derives_no_effort_from_a_user_config_it_ignores(codex_home):
 
 
 def test_plain_leg_with_no_set_and_no_declaration_is_left_alone(codex_home):
-    from lionagi.cli._providers import build_chat_model
+    from lionhub.orchestration.spawn import build_chat_model
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
     model = build_chat_model("codex", "gpt-5.3-codex", False, False, None, mcp_servers=None)
@@ -1329,7 +1330,7 @@ async def test_resumed_leg_whose_search_finds_nothing_keeps_the_previous_runs_se
     leaves a new leg to what its CLI finds, and disables none of codex's own."""
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
-    from lionagi.cli._mcp_resolve import McpResolution
+    from lionhub.orchestration.mcp_config import McpResolution
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
     branch_id = _wire_resume_stubs(
@@ -1485,9 +1486,9 @@ async def test_a_set_resolved_on_resume_replaces_the_one_the_codex_leg_had(
 @pytest.mark.asyncio
 async def test_a_resume_whose_recorded_config_is_gone_names_it(monkeypatch, tmp_path):
     """The caller passed no --mcp-config, so the refusal names the config the
-    branch was launched with, and the two ways on."""
+    branch was launched with and says to start a fresh run."""
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
     gone = tmp_path / "gone" / ".mcp.json"
@@ -1501,9 +1502,11 @@ async def test_a_resume_whose_recorded_config_is_gone_names_it(monkeypatch, tmp_
         await agent_mod._run_agent(None, "follow up", resume=branch_id)
 
     message = str(raised.value)
-    assert message.startswith(f"this branch was launched with the MCP config {gone}")
+    assert message.startswith(
+        f"this branch was launched with the MCP config {json.dumps(str(gone))}"
+    )
     assert "which is no longer a readable file" in message
-    assert "--no-mcp-config" in message
+    assert "start a fresh run" in message
 
 
 @pytest.mark.asyncio
@@ -1516,7 +1519,7 @@ async def test_a_recorded_config_that_cannot_even_be_read_is_refused_by_name(
     resume in its own words, before anything is spawned."""
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
     if kind == "not_utf8":
@@ -1546,17 +1549,18 @@ async def test_a_recorded_config_that_cannot_even_be_read_is_refused_by_name(
         await agent_mod._run_agent(None, "follow up", resume=branch_id)
 
     message = str(raised.value)
-    assert message.startswith(f"this branch was launched with the MCP config {recorded}")
-    assert "--no-mcp-config" in message
+    label = json.dumps(recorded) if isinstance(recorded, str) else "<invalid path>"
+    assert label in message
+    assert "start a fresh run" in message
     assert seen == {}
 
 
 @pytest.mark.asyncio
 async def test_a_recorded_config_that_can_no_longer_be_used_names_it(monkeypatch, tmp_path):
     """The file is there but no longer reads as a config. The refusal still names
-    the recorded config and the ways on, not a --mcp-config the caller never passed."""
+    the recorded config without exposing malformed contents, and says to start a fresh run."""
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
     broken = tmp_path / "broken" / ".mcp.json"
@@ -1572,9 +1576,9 @@ async def test_a_recorded_config_that_can_no_longer_be_used_names_it(monkeypatch
         await agent_mod._run_agent(None, "follow up", resume=branch_id)
 
     message = str(raised.value)
-    assert message.startswith(f"this branch was launched with the MCP config {broken}")
-    assert "is not valid JSON" in message
-    assert "--no-mcp-config" in message
+    assert json.dumps(str(broken)) in message
+    assert "{not json" not in message
+    assert "start a fresh run" in message
 
 
 @pytest.mark.asyncio
@@ -1623,7 +1627,7 @@ async def test_a_resume_naming_a_removed_generated_codex_profile_is_refused(
     instead. While the file is there, the leg keeps it."""
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
-    from lionagi.cli._mcp_resolve import McpConfigError
+    from lionhub.orchestration.mcp_config import McpConfigError
 
     if profile_on_disk:
         (codex_home.path / f"{_GENERATED_PROFILE}.config.toml").write_text(
@@ -1681,7 +1685,7 @@ async def test_resumed_antigravity_leg_rejects_an_explicit_server_set(monkeypatc
 def flow_run(monkeypatch, tmp_path):
     """A run launched from a directory whose .mcp.json is the run's server set."""
     import lionagi.cli.orchestrate._orchestration as orch_mod
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     launch_dir = tmp_path / "launch"
     launch_dir.mkdir()
@@ -1782,3 +1786,150 @@ async def test_a_codex_worker_refuses_secret_fields_it_cannot_carry(flow_run, co
 
     assert SECRET not in str(refused.value)
     assert codex_home.profile_files() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_mcp", "cli_disabled", "expected_disabled"),
+    [(True, False, True), (False, True, True), (False, False, False)],
+    ids=["profile", "cli-flag", "no-key"],
+)
+async def test_profile_mcp_containment_reaches_real_codex_argv(
+    monkeypatch, tmp_path, codex_home, codex_launch, profile_mcp, cli_disabled, expected_disabled
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    codex_home.write_config({"ambient": {"command": "synthetic-server"}})
+    agents = tmp_path / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "reviewer.md").write_text(
+        f"---\n{'mcp: none' if profile_mcp else 'model: codex/gpt-5.3-codex'}\n---\nReview.\n"
+    )
+    branches = _wire_agent_stubs(monkeypatch, tmp_path)
+    seen = {}
+
+    async def capture(self, instruction=None, **kwargs):
+        event = await self.chat_model.create_event(prompt="hi", repo=tmp_path)
+        # The uncontained control is rendered before spawn and has no deferred
+        # hook. Supply an explicit identity hook for that case only.
+        uncontained = (lambda cmd, _env: cmd) if not expected_disabled else None
+        seen["argv"] = await codex_launch(
+            event.payload["request"], argv=True, uncontained_prepare=uncontained
+        )
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(CODEX_SPEC, "go", agent_name="reviewer", no_mcp_config=cli_disabled)
+
+    assert ("--ignore-user-config" in seen["argv"]) is expected_disabled
+    metadata = branches[-1].metadata[agent_mod._MCP_LAUNCH_KEY]
+    assert metadata["no_mcp_config"] is expected_disabled
+    if profile_mcp:
+        assert metadata["no_mcp_config_source"] == "profile"
+    else:
+        assert "no_mcp_config_source" not in metadata
+
+
+@pytest.mark.asyncio
+async def test_profile_mcp_none_refuses_explicit_config_before_spawn(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    agents = tmp_path / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "reviewer.md").write_text("---\nmcp: none\n---\nReview.\n")
+    branches = _wire_agent_stubs(monkeypatch, tmp_path)
+    named = _mcp_config_file(tmp_path, SERVERS)
+
+    with pytest.raises(ValueError, match="mcp: none.*--mcp-config"):
+        await agent_mod._run_agent(CODEX_SPEC, "go", agent_name="reviewer", mcp_config=named)
+    assert branches == []
+
+
+@pytest.mark.asyncio
+async def test_resume_replays_profile_containment_into_codex_argv(
+    monkeypatch, tmp_path, codex_home, codex_launch
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    codex_home.write_config({"ambient": {"command": "synthetic-server"}})
+    branch_id = _wire_resume_stubs(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "gpt-5.3-codex",
+        config_overrides={"mcp_servers.old.command": "old-server"},
+    )
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {
+            "mcp_config": None,
+            "no_mcp_config": True,
+            "no_mcp_config_source": "profile",
+            "launch_dir": str(tmp_path),
+        },
+    )
+    seen = {}
+
+    async def capture(self, instruction=None, **kwargs):
+        event = await self.chat_model.create_event(prompt="hi", repo=tmp_path)
+        seen["argv"] = await codex_launch(event.payload["request"], argv=True)
+        seen["metadata"] = self.metadata[agent_mod._MCP_LAUNCH_KEY]
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert "--ignore-user-config" in seen["argv"]
+    assert not any("mcp_servers.old." in value for value in seen["argv"])
+    assert seen["metadata"]["no_mcp_config_source"] == "profile"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config_exists", [True, False], ids=["existing", "missing"])
+@pytest.mark.parametrize("with_profile", [True, False], ids=["profile", "no-profile"])
+async def test_profile_contained_resume_refuses_explicit_config_before_spawn(
+    monkeypatch, tmp_path, codex_home, config_exists, with_profile
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    monkeypatch.chdir(tmp_path)
+    codex_home.write_config({})
+    agents = tmp_path / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "reviewer.md").write_text("---\nmodel: codex/gpt-5.3-codex\n---\nReview.\n")
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "codex", "gpt-5.3-codex")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {
+            "mcp_config": None,
+            "no_mcp_config": True,
+            "no_mcp_config_source": "profile",
+            "launch_dir": str(tmp_path),
+        },
+    )
+    called = AsyncMock()
+    monkeypatch.setattr(Branch, "operate", called)
+    named = _mcp_config_file(tmp_path, SERVERS) if config_exists else str(tmp_path / "missing.json")
+
+    with pytest.raises(ValueError, match="profile mcp: none.*--mcp-config"):
+        await agent_mod._run_agent(
+            None,
+            "follow up",
+            resume=branch_id,
+            mcp_config=named,
+            agent_name="reviewer" if with_profile else None,
+        )
+    called.assert_not_awaited()

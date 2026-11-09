@@ -1,0 +1,270 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Checkpoint persistence and resolution for cross-process flow resume."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from lionagi._checkpoint_version import (
+    CHECKPOINT_VERSION,
+    UnsupportedCheckpointVersionError,
+    load_legacy_checkpoint_json,
+)
+from lionagi._errors import LionError
+from lionagi._paths import RUNS_ROOT
+from lionagi.ln._json_dump import raise_if_non_finite
+from lionhub.orchestration.job import AmbiguousIdError
+from lionhub.orchestration.runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
+
+__all__ = (
+    "CHECKPOINT_VERSION",
+    "CheckpointWriter",
+    "FlowResumeError",
+    "UnsupportedFlowCheckpointVersionError",
+    "load_checkpoint",
+    "resolve_checkpoint_target",
+)
+
+
+class FlowResumeError(LionError):
+    """Raised when a checkpoint cannot be resolved, loaded, or safely resumed."""
+
+
+class UnsupportedFlowCheckpointVersionError(FlowResumeError):
+    """A checkpoint has a version this reader cannot safely resume."""
+
+
+@dataclass
+class CheckpointWriter:
+    """Serializes checkpoint writes so concurrent op completions never tear the file on disk.
+
+    Every write serializes the FULL current state to a unique temp name and
+    renames it into place, so a reader only ever sees a complete file; a lock
+    held across serialize-write-rename keeps renames in acquisition order.
+    """
+
+    path: Path
+    session_id: str
+    prompt: str
+    plan: list[dict]
+    config: dict[str, Any]
+    max_spawn: int | None = None
+    flow_context: dict[str, Any] = field(default_factory=dict)
+    ops: dict[str, dict[str, Any]] = field(default_factory=dict)
+    spawned: list[dict] = field(default_factory=list)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    _seq: int = field(default=0, repr=False, compare=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        checkpoint = {
+            "version": CHECKPOINT_VERSION,
+            "session_id": self.session_id,
+            "prompt": self.prompt,
+            "plan": self.plan,
+            "flow_context": self.flow_context,
+            "ops": self.ops,
+            "spawned": self.spawned,
+            "config": self.config,
+        }
+        if self.max_spawn is not None:
+            checkpoint["max_spawn"] = self.max_spawn
+        return checkpoint
+
+    async def record(
+        self,
+        agent_id: str,
+        *,
+        status: str,
+        response: Any,
+        flow_context: dict[str, Any] | None = None,
+    ) -> None:
+        """Record one planned op's outcome and persist the whole checkpoint atomically.
+
+        flow_context, when given, replaces the writer's snapshot of the
+        shared context workspace — latest wins, since it accumulates rather
+        than being per-op data.
+        """
+        async with self._lock:
+            self.ops[agent_id] = {"agent_id": agent_id, "status": status, "response": response}
+            if flow_context is not None:
+                self.flow_context = flow_context
+            await self._write_locked()
+
+    async def record_spawned(
+        self,
+        node_id: str,
+        *,
+        status: str,
+        response: Any,
+        flow_context: dict[str, Any] | None = None,
+        operation: str | None = None,
+        assignee: str | None = None,
+        instruction: str | None = None,
+        parent_id: str | None = None,
+        spawn_id: str | None = None,
+        context: Any | None = None,
+        emitter_workload: str | None = None,
+        emitter_contains_user_settings: bool = False,
+        profile_mcp_disabled: bool = False,
+    ) -> None:
+        """Record one reactively spawned node's outcome, keyed by its own node id.
+
+        Kept out of the `ops` keyspace so a spawned child's branch name can't
+        collide with and silently overwrite a planned `agent_id` entry.
+        `operation`/`assignee`/`instruction`/`parent_id`/`spawn_id`
+        (CHECKPOINT_VERSION 2) are what resume needs to rebuild the node into
+        a fresh graph; `spawn_id` must accompany `assignee` (the finalize-time
+        scan raises if one appears without the other) — a checkpoint
+        predating this field set has entries with no `operation`, and resume
+        refuses only those nodes, not the whole run. `context` is the node's
+        `parameters["context"]` (e.g. a team round's `prior_team_messages`),
+        distinct from `instruction` (generic boilerplate for a team round);
+        `None` when there's no context payload. `emitter_workload` is the class of
+        the worker that asked for a node naming no assignee, when that class is not
+        the default; resume reads it to refuse re-running such a node at another.
+        `emitter_contains_user_settings` is recorded the same way, when that worker
+        ran with no settings files read.
+        """
+        async with self._lock:
+            entry = {
+                "node_id": node_id,
+                "status": status,
+                "response": response,
+                "operation": operation,
+                "assignee": assignee,
+                "instruction": instruction,
+                "parent_id": parent_id,
+                "spawn_id": spawn_id,
+                "context": context,
+            }
+            if emitter_workload is not None:
+                entry["emitter_workload"] = emitter_workload
+            if emitter_contains_user_settings:
+                entry["emitter_contains_user_settings"] = True
+            if profile_mcp_disabled:
+                entry["profile_mcp_disabled"] = True
+            for i, existing in enumerate(self.spawned):
+                if existing.get("node_id") == node_id:
+                    self.spawned[i] = entry
+                    break
+            else:
+                self.spawned.append(entry)
+            if flow_context is not None:
+                self.flow_context = flow_context
+            await self._write_locked()
+
+    async def flush(self) -> None:
+        """Persist the current state without changing any op entry."""
+        async with self._lock:
+            await self._write_locked()
+
+    async def _write_locked(self) -> None:
+        self._seq += 1
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(f"checkpoint.{self._seq}.tmp")
+        state = self.to_dict()
+        # A non-finite float would be written as the token NaN/Infinity, which
+        # Python reads back and strict readers reject; refuse it at the write.
+        raise_if_non_finite(state, default=str)
+        payload = json.dumps(state, default=str)
+        tmp.write_text(payload)
+        os.replace(tmp, self.path)
+
+
+def load_checkpoint(path: Path) -> dict[str, Any]:
+    try:
+        return load_legacy_checkpoint_json(path.read_text())
+    except UnsupportedCheckpointVersionError as exc:
+        raise UnsupportedFlowCheckpointVersionError(str(exc)) from exc
+
+
+def _find_run_dir_by_id(run_id: str) -> RunDir | None:
+    """Resolve a run id, or an unambiguous prefix of one, to its directory.
+
+    Taking the most recent of several prefix matches would answer a question
+    the caller did not ask: they named a run, not "the newest run starting
+    with this", and the commands built on this act on what comes back.
+    """
+    exact = RUNS_ROOT / run_id
+    if exact.is_dir():
+        return RunDir(run_id=run_id, state_root=exact, artifact_root=exact / "artifacts")
+    if not RUNS_ROOT.exists():
+        return None
+
+    # startswith re-checks the glob: a case-insensitive filesystem matches
+    # names the id does not actually prefix.
+    matches = sorted(
+        p for p in RUNS_ROOT.glob(f"{run_id}*") if p.is_dir() and p.name.startswith(run_id)
+    )
+    if len(matches) > 1:
+        raise AmbiguousIdError(run_id, "run", [p.name for p in matches])
+    if not matches:
+        return None
+    match = matches[0]
+    return RunDir(run_id=match.name, state_root=match, artifact_root=match / "artifacts")
+
+
+def _raise_if_persistence_degraded(run_dir: RunDir) -> None:
+    """Explain a missing checkpoint using state that survived the failed database."""
+    try:
+        reason = run_dir.read_manifest().get(PERSISTENCE_DEGRADED_REASON_FIELD)
+    except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
+        return
+    if isinstance(reason, str) and reason:
+        raise FlowResumeError(
+            f"Cannot resume run {run_dir.run_id!r}: persistence was disabled "
+            f"for that run ({reason}); no checkpoint is available."
+        )
+
+
+async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]]:
+    """Resolve a run_id, or a session/invocation/play id, to (RunDir, checkpoint dict).
+
+    A run_id matches a directory under RUNS_ROOT directly, no DB lookup
+    needed. Anything else is resolved as a session/invocation/play id (same
+    resolution `li o ctl status` uses) to its backing session, whose
+    node_metadata carries the run_id every flow run stamps at startup.
+    """
+    run_dir = _find_run_dir_by_id(target)
+    if run_dir is not None:
+        if run_dir.checkpoint_path.exists():
+            return run_dir, load_checkpoint(run_dir.checkpoint_path)
+        _raise_if_persistence_degraded(run_dir)
+
+    from lionagi.state.db import StateDB
+    from lionhub.orchestration.inspection import resolve_any_target, resolve_primary_session
+
+    async with StateDB() as db:
+        resolved = await resolve_any_target(db, target)
+        if resolved is None:
+            raise FlowResumeError(f"No run, session, invocation, or play found for {target!r}.")
+        entity_type, row = resolved
+        session_row = await resolve_primary_session(db, entity_type, row)
+        if session_row is None:
+            raise FlowResumeError(f"No backing session found for {target!r}.")
+        node_meta = session_row.get("node_metadata") or {}
+        run_id = node_meta.get("run_id")
+
+    if not run_id:
+        raise FlowResumeError(
+            f"Session {session_row['id']} has no run_id on record "
+            "(it predates checkpoint support, or never reached _build_dag)."
+        )
+
+    run_dir = _find_run_dir_by_id(run_id)
+    if run_dir is None:
+        raise FlowResumeError(
+            f"No checkpoint.json found for run {run_id!r} (resolved from {target!r})."
+        )
+    if not run_dir.checkpoint_path.exists():
+        _raise_if_persistence_degraded(run_dir)
+        raise FlowResumeError(
+            f"No checkpoint.json found for run {run_id!r} (resolved from {target!r})."
+        )
+    return run_dir, load_checkpoint(run_dir.checkpoint_path)

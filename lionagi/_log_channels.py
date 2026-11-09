@@ -3,7 +3,7 @@
 """The user-facing output channels (progress, hint, warn, error) as named loggers.
 
 Any part of lionagi can write to them. The CLI decides how they print
-(``lionagi.cli._logging.configure_cli_logging``); with nothing configured they are
+(``lionhub.orchestration.console.configure_cli_logging``); with nothing configured they are
 ordinary loggers.
 """
 

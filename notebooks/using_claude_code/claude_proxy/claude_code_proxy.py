@@ -14,11 +14,12 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
+from loguru import logger
+
 from lionagi.service.connections.providers.claude_code_cli import (
     ClaudeCodeCLIEndpoint,
     ClaudeCodeRequest,
 )
-from loguru import logger
 
 # Configure logging
 logger.remove()

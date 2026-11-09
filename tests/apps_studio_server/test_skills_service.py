@@ -107,9 +107,9 @@ async def test_save_skill_definition_writes_canonical_skill_md_shape(tmp_path, m
     """Saving a skill through the definitions system must always land at
     <name>/SKILL.md -- the shape lionagi/cli/skill.py's resolve_skill_path()
     actually looks for -- never a bare <name>.md."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -139,9 +139,9 @@ async def test_save_skill_definition_normalizes_legacy_bare_md_shape(tmp_path, m
     """An existing skill saved in the legacy bare <name>.md shape still gets
     read correctly, and a save through Studio normalizes it to <name>/SKILL.md
     rather than overwriting the bare file in place."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -177,9 +177,9 @@ async def test_save_skill_definition_normalizes_legacy_bare_md_shape(tmp_path, m
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_save_skill_definition_rejects_broken_frontmatter(tmp_path, monkeypatch):
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -203,9 +203,9 @@ async def test_save_skill_definition_rejects_broken_frontmatter(tmp_path, monkey
 async def test_save_skill_definition_rejects_missing_closing_delimiter(tmp_path, monkeypatch):
     """The save endpoint must reject an opening --- with no closing --- as
     malformed content, not silently store it as a skill with no metadata."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -229,9 +229,9 @@ async def test_save_skill_definition_rejects_missing_closing_delimiter(tmp_path,
 async def test_save_skill_definition_rejects_null_frontmatter(tmp_path, monkeypatch):
     """The save endpoint must reject an explicit YAML null frontmatter
     document instead of coercing it into valid, empty metadata."""
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -255,9 +255,9 @@ async def test_save_skill_definition_rejects_null_frontmatter(tmp_path, monkeypa
 async def test_save_skill_definition_increments_version_and_supports_rollback(
     tmp_path, monkeypatch
 ):
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -292,8 +292,8 @@ async def test_save_skill_definition_increments_version_and_supports_rollback(
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_get_skill_definition_returns_none_for_unknown_skill(tmp_path, monkeypatch):
-    import lionagi.cli._runs as cli_runs_mod
     import lionagi.studio.services.definitions as defs_mod
+    import lionhub.orchestration.runs as cli_runs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()

@@ -249,8 +249,8 @@ async def resolve_run(ref: str, *, allow_unscoped_exact_id: bool = True) -> dict
     within the turn's own project. See docs/internals/studio.md
     ("Resolving a run reference").
     """
-    from lionagi.cli._util import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.job import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
 
     normalized = ref.strip()
     if not normalized:

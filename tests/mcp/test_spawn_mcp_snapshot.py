@@ -13,7 +13,11 @@ import json
 
 import pytest
 
-from lionagi.cli._mcp_resolve import McpConfigError, discover_mcp_config, resolve_spawn_mcp_servers
+from lionhub.orchestration.mcp_config import (
+    McpConfigError,
+    discover_mcp_config,
+    resolve_spawn_mcp_servers,
+)
 from lionhub.serve.mcp import config, dispatch, jobs
 
 
@@ -51,7 +55,7 @@ def submit_dir(monkeypatch, tmp_path):
 
 
 def _config_arg(argv: list[str]) -> str:
-    return argv[argv.index("--mcp-config") + 1]
+    return argv[argv.index("--mcp-submit-snapshot") + 1]
 
 
 def _child_config(argv: list[str]) -> str | None:
@@ -63,9 +67,9 @@ def _child_config(argv: list[str]) -> str | None:
     """
     seen: list[str] = []
     for i, tok in enumerate(argv):
-        if tok == "--mcp-config" and i + 1 < len(argv):
+        if tok in {"--mcp-config", "--mcp-submit-snapshot"} and i + 1 < len(argv):
             seen.append(argv[i + 1])
-        elif tok.startswith("--mcp-config="):
+        elif tok.startswith(("--mcp-config=", "--mcp-submit-snapshot=")):
             seen.append(tok.split("=", 1)[1])
     return seen[-1] if seen else None
 
@@ -110,7 +114,9 @@ def test_spawned_leg_keeps_the_server_set_the_submission_resolved(sandbox, submi
     # The submission is assembled and the child is spawned. Now the file moves.
     source.write_text(json.dumps({"mcpServers": {"s2": {"command": "two"}}}))
 
-    seen = resolve_spawn_mcp_servers(_config_arg(captured["argv"]), launch_dir=submit_dir)
+    seen = resolve_spawn_mcp_servers(
+        launch_dir=submit_dir, submit_snapshot=_config_arg(captured["argv"])
+    )
     assert set(seen.servers) == {"s1"}
     assert handle["mcp_config_reason"] is None
 
@@ -131,7 +137,9 @@ def test_spawned_leg_survives_the_source_config_being_removed(sandbox, submit_di
 
     source.unlink()
 
-    seen = resolve_spawn_mcp_servers(_config_arg(captured["argv"]), launch_dir=submit_dir)
+    seen = resolve_spawn_mcp_servers(
+        launch_dir=submit_dir, submit_snapshot=_config_arg(captured["argv"])
+    )
     assert set(seen.servers) == {"s1"}
 
 
@@ -223,7 +231,9 @@ def test_dispatch_refuses_an_exclusion_when_no_server_set_resolves(
 ):
     """Nothing resolved means nothing to remove, so the exclusion cannot be honoured."""
     if declared is None:
-        monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+        monkeypatch.setattr(
+            "lionhub.orchestration.mcp_config.discover_mcp_config", lambda start: None
+        )
     else:
         (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": declared}))
     spawned: list = []
@@ -252,7 +262,7 @@ def test_no_config_anywhere_is_reported_not_raised(sandbox, submit_dir, monkeypa
     """Nothing configured is a choice, not a failure — the run still starts and
     the handle says why it has no servers."""
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc())
-    monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+    monkeypatch.setattr("lionhub.orchestration.mcp_config.discover_mcp_config", lambda start: None)
 
     handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
     assert handle["mcp_config"] is None
@@ -263,7 +273,7 @@ def test_no_config_anywhere_is_reported_not_raised(sandbox, submit_dir, monkeypa
 def test_the_exclusion_is_recorded_as_asked(sandbox, submit_dir, monkeypatch, asked, recorded):
     """null says no exclusion was asked for; an empty list says one was asked for and named none."""
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc())
-    monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+    monkeypatch.setattr("lionhub.orchestration.mcp_config.discover_mcp_config", lambda start: None)
 
     handle = jobs.submit(
         "agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir), exclude_mcp_servers=asked
@@ -298,6 +308,7 @@ def test_a_caller_who_names_a_config_gets_that_config_and_a_handle_that_says_so(
         {"query": ["a-model"], "prompt": "hi", "mcp_config": str(chosen), "cwd": str(submit_dir)}
     )
 
+    assert "--mcp-submit-snapshot" not in captured["argv"]
     child_sees = _child_config(captured["argv"])
     assert child_sees == str(chosen)
     seen = resolve_spawn_mcp_servers(child_sees, launch_dir=submit_dir)
@@ -330,7 +341,7 @@ def test_the_generated_snapshot_still_wins_when_the_caller_says_nothing(
     assert handle["mcp_config_source"] == str(submit_dir / ".mcp.json")
     # Read as the child reads it, from a directory of its own: the snapshot still names
     # where the submission searched, so the pair rediscovers the same file.
-    seen = resolve_spawn_mcp_servers(str(snapshot), launch_dir=snapshot.parent)
+    seen = resolve_spawn_mcp_servers(launch_dir=snapshot.parent, submit_snapshot=str(snapshot))
     assert set(seen.servers) == {"ambient"}
     assert seen.searched_from == submit_dir.resolve()
     assert discover_mcp_config(seen.searched_from) == seen.source

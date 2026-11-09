@@ -418,12 +418,12 @@ def _write_mcp_server_snapshot(
     """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
 
     *source* is the config the submission found. Naming it in the snapshot is
-    what keeps the child, which reads this file through ``--mcp-config``, from
-    taking a found set for one the caller named. *searched_from* is the directory
+    the source used for provenance; it is not an authorization marker.
+    *searched_from* is the directory
     the submission searched from, which the child records as its provenance in
     place of its own directory.
     """
-    from lionagi.cli._mcp_resolve import SNAPSHOT_SEARCHED_FROM_KEY, SNAPSHOT_SOURCE_KEY
+    from lionhub.orchestration.mcp_config import SNAPSHOT_SEARCHED_FROM_KEY, SNAPSHOT_SOURCE_KEY
 
     document = {
         "mcpServers": servers,
@@ -1329,6 +1329,8 @@ def submit(
     no_mcp_config: bool = False,
     exclude_mcp_servers: list[str] | None = None,
     write_capable: bool = False,
+    profile: Any | None = None,
+    replay_mcp_choice: bool = False,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1352,7 +1354,8 @@ def submit(
     is incompatible with both caller-owned answers. These are passed as values
     (not re-parsed out of *flags*, which are already rendered in
     `--flag=value` form) since this function must decide whether to resolve its
-    own server set.
+    own server set. *profile* is the already-resolved submitting agent profile,
+    so its MCP policy is applied before any ambient config is read.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -1360,6 +1363,13 @@ def submit(
     # detached run checks again, but a server that exits first leaves it outside that tree
     # (ADR-0133 D7).
     refuse_nested_agent()
+
+    profile_disables_mcp = profile is not None and profile.mcp == "none"
+    if profile_disables_mcp and mcp_config is not None:
+        raise SubmitInputError(
+            f"agent profile {profile.name!r} declares mcp: none; "
+            "it cannot be combined with --mcp-config"
+        )
 
     exclusions = [] if exclude_mcp_servers is None else exclude_mcp_servers
     if not isinstance(exclusions, list) or any(
@@ -1380,6 +1390,11 @@ def submit(
         raise SubmitInputError(
             "exclude_mcp_servers cannot be combined with no_mcp_config because no server set "
             "will be resolved"
+        )
+    if excluded_mcp_servers and profile_disables_mcp:
+        raise SubmitInputError(
+            "exclude_mcp_servers cannot be combined with a profile declaring mcp: none "
+            "because no server set will be resolved"
         )
 
     submit_cwd = _submit_cwd()
@@ -1429,6 +1444,8 @@ def submit(
         # positional; options this function adds must go in front or they
         # arrive as text instead of being parsed.
         options, positionals = _split_at_sentinel(flags)
+        if profile_disables_mcp and not no_mcp_config:
+            options = ["--no-mcp-config", *options]
         prompt_path = None
         if prompt is not None:
             if kind == "agent":
@@ -1457,7 +1474,10 @@ def submit(
         # never inspected a set. Providers may merge their own global config,
         # so this is deliberately not called the effective server set.
         declared_mcp_servers: list[str] | None = None
-        if no_mcp_config:
+        if profile_disables_mcp:
+            mcp_config_reason = f"mcp_disabled_by_profile:{profile.name}"
+            declared_mcp_servers = []
+        elif no_mcp_config:
             mcp_config_reason = "mcp_disabled_by_caller"
             declared_mcp_servers = []
         elif mcp_config is not None:
@@ -1467,8 +1487,10 @@ def submit(
             mcp_config_path = mcp_config
             mcp_config_source = mcp_config
             mcp_config_reason = "mcp_config_named_by_caller"
+        elif replay_mcp_choice:
+            mcp_config_reason = "mcp_replayed_from_recorded_run"
         else:
-            from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
+            from lionhub.orchestration.mcp_config import McpConfigError, resolve_spawn_mcp_servers
 
             launch_dir = os.getcwd()
             resolution = resolve_spawn_mcp_servers(launch_dir=launch_dir)
@@ -1511,7 +1533,7 @@ def submit(
                 }
                 mcp_config_source = str(resolution.source) if resolution.source else None
                 mcp_config_searched_from = resolution.searched_from
-                # Absolute: the child resolves --mcp-config from its own cwd,
+                # Absolute: the child resolves the path from its own cwd,
                 # which is the submission's directory, not this server's. A
                 # relative jobs root would otherwise name a file the child
                 # cannot open. Symlinks are kept, so an absolute root reports
@@ -1520,7 +1542,7 @@ def submit(
                 declared_mcp_servers = sorted(
                     mcp_servers
                 )  # readable order; child reads the snapshot file, not this list
-                options = ["--mcp-config", mcp_config_path, *options]
+                options = ["--mcp-submit-snapshot", mcp_config_path, *options]
 
         # Wire the CLI's terminal hook back to the MCP server so we record a reliable
         # finished_at/status (and fire the configured delivery) even across a restart.

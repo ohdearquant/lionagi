@@ -8,10 +8,11 @@ claim in it are load-bearing and both are checked here: what the tree does today
 does not), and how the amendment relates to the accepted records it names (so it
 cannot borrow a contract another record does not own).
 
-The code claims are checked at the exact line the record cites, and the record's
-own citations are checked to match. A test loose enough to survive a moved line
-would let the record drift from the tree while staying green, which is the defect
-class this file exists to catch.
+The code claims are checked inside the def or class the record cites by symbol
+(``path.py::Class.method``), and the record's own citations are checked to name
+those symbols. A test loose enough to survive the cited code moving to another
+def would let the record drift from the tree while staying green, which is the
+defect class this file exists to catch. No check here depends on a line number.
 """
 
 from __future__ import annotations
@@ -35,12 +36,52 @@ def _flat() -> str:
     return " ".join(_text().split())
 
 
-def _line(relpath: str, number: int) -> str:
-    return (ROOT / relpath).read_text(encoding="utf-8").splitlines()[number - 1]
+def _def_source(relpath: str, qualname: str) -> str:
+    """Source of the def or class a record cites as ``relpath::qualname``.
+
+    Nested defs are named by their dotted path (``outer.inner``), as the record does.
+    """
+    text = (ROOT / relpath).read_text(encoding="utf-8")
+
+    def find(node: ast.AST, prefix: str) -> ast.AST | None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                dotted = prefix + child.name
+                if dotted == qualname:
+                    return child
+                found = find(child, dotted + ".")
+            elif isinstance(child, ast.stmt):
+                found = find(child, prefix)
+            else:
+                continue
+            if found is not None:
+                return found
+        return None
+
+    node = find(ast.parse(text), "")
+    assert node is not None, f"{relpath} holds no {qualname}"
+    segment = ast.get_source_segment(text, node)
+    assert segment is not None
+    return segment
 
 
-def _span(relpath: str, start: int, end: int) -> str:
-    return "\n".join((ROOT / relpath).read_text(encoding="utf-8").splitlines()[start - 1 : end])
+def _binding_source(relpath: str, name: str) -> str:
+    """Source of the module-level assignment a record cites as ``relpath::name``."""
+    text = (ROOT / relpath).read_text(encoding="utf-8")
+    for node in ast.parse(text).body:
+        targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            segment = ast.get_source_segment(text, node)
+            assert segment is not None
+            return segment
+    raise AssertionError(f"{relpath} binds no {name}")
+
+
+def _table(relpath: str, name: str) -> str:
+    """The ``CREATE TABLE`` statement for ``name`` in a schema file."""
+    text = (ROOT / relpath).read_text(encoding="utf-8")
+    start = text.index(f"CREATE TABLE IF NOT EXISTS {name} (")
+    return text[start : text.index("\n);", start)]
 
 
 def _tree(relpath: str) -> ast.Module:
@@ -83,28 +124,36 @@ def _amendment_flat() -> str:
 
 
 def test_in_process_spawn_paths_are_present_where_named() -> None:
-    hypothesis = "lionhub/src/lionhub/orchestration/engines/hypothesis.py"
-    assert "run.spawn" in _line(hypothesis, 977)
-    assert "run.spawn" in _line(hypothesis, 1057)
-    assert f"{hypothesis}:977-1057" in _amendment()
-    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/review.py", 737)
-    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 187)
-    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 191)
+    engines = "lionhub/src/lionhub/orchestration/engines"
+    amendment = _amendment()
+    named = {
+        "hypothesis.py": "HypothesisEngine._on_finding",
+        "review.py": "ReviewEngine._on_issue",
+        "research.py": "ResearchEngine._on_finding",
+    }
+    # The amendment cites the hypothesis handlers as the engine class, which holds seven of them.
+    cited = {"hypothesis.py": "HypothesisEngine"}
+    for module, qualname in named.items():
+        assert f"{engines}/{module}::{cited.get(module, qualname)}`" in amendment
+        assert "run.spawn" in _def_source(f"{engines}/{module}", qualname)
+    # Hypothesis spawns from two sites in the handler, not one.
+    assert _def_source(f"{engines}/hypothesis.py", named["hypothesis.py"]).count("run.spawn") >= 2
+    assert f"{engines}/research.py::ResearchEngine._on_depth" in amendment
+    assert "run.spawn" in _def_source(f"{engines}/research.py", "ResearchEngine._on_depth")
 
 
 def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
-    assert "observe(self.spawn_type, self._on_bus_spawn)" in _line(
-        "lionagi/operations/flow.py", 1164
-    )
-    assert "observe(EscalationRequest, self._on_bus_escalation)" in _line(
-        "lionagi/operations/flow.py", 1165
-    )
-    assert "def _inject_request" in _line("lionagi/operations/flow.py", 1457)
+    execute = _def_source("lionagi/operations/flow.py", "ReactiveExecutor.execute")
+    assert "observe(self.spawn_type, self._on_bus_spawn)" in execute
+    assert "observe(EscalationRequest, self._on_bus_escalation)" in execute
+    inject = _def_source("lionagi/operations/flow.py", "ReactiveExecutor._inject_request")
+    assert inject.startswith("def _inject_request")
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
-    # This checks the current method's behavior; the record's cited line range
-    # must be checked separately when the method moves.
+    # This checks the current method's behavior. The record cites the method by symbol
+    # (`lionagi/session/observer.py::SessionObserver.emit`), which is looked up by name here.
+    assert "lionagi/session/observer.py::SessionObserver.emit" in _amendment()
     relpath = "lionagi/session/observer.py"
     source = (ROOT / relpath).read_text(encoding="utf-8")
     emit = _method(_class(ast.parse(source), "SessionObserver"), "emit")
@@ -247,35 +296,44 @@ def test_budget_exhaustion_is_an_engine_notification_not_a_session_signal() -> N
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
-    assert "github_cursor" in _line("lionagi/state/schema.sql", 493)
+    assert "github_cursor" in _table("lionagi/state/schema.sql", "schedules")
+
+
+OUTBOX = "lionhub/src/lionhub/orchestration/dispatch/outbox.py"
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
-    assert "DEFAULT_MAX_ATTEMPTS" in _line(
-        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 52
-    )
-    assert "ack_required: bool = False" in _line(
-        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 170
-    )
-    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line(
-        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 171
-    )
+    assert _binding_source(OUTBOX, "DEFAULT_MAX_ATTEMPTS").startswith("DEFAULT_MAX_ATTEMPTS")
+    enqueue = _def_source(OUTBOX, "enqueue_dispatch")
+    assert "ack_required: bool = False" in enqueue
+    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in enqueue
 
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
+    orchestration = "lionagi/cli/orchestrate/_orchestration.py"
+    check_round = _def_source(orchestration, "TeamLifecycleCoordinator.check_round")
     assert "pending_targets = frozenset(state.pending_targets) | frozenset(exchange_pending)" in (
-        _line("lionagi/cli/orchestrate/_orchestration.py", 1597)
+        check_round
     )
-    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1633)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2089)
+    build = _def_source(orchestration, "TeamLifecycleCoordinator.build_round_operations")
+    assert build.startswith("def build_round_operations")
+    flow = "lionagi/cli/orchestrate/flow.py"
+    assert _def_source(flow, "_execute_dag._on_team_op_complete").startswith(
+        "def _on_team_op_complete"
+    )
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 6076)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7933)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7958)
-    assert "limit: int = 500" in _line("lionagi/state/db.py", 7963)
-    assert "guard_cursor_forward=True" in _line("lionagi/state/db.py", 6212)
+    db = "lionagi/state/db.py"
+    update = _def_source(db, "StateDB._build_update_schedule_stmt")
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in update
+    insert = _def_source(db, "StateDB.insert_session_signal")
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in insert
+    after = _def_source(db, "StateDB.get_session_signals_after")
+    assert after.startswith("async def get_session_signals_after(")
+    assert "limit: int = 500" in after
+    advance = _def_source(db, "StateDB.create_schedule_run_and_advance")
+    assert "guard_cursor_forward=True" in advance
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -295,12 +353,14 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
     assert "lionagi/state/schema.sql:845-849" in flat
-    assert "lionagi/state/db.py:7933-7943" in flat
-    assert "lionagi/state/db.py:7958-7975" in flat
-    assert "(`:7963`)" in flat
+    assert "lionagi/state/db.py::StateDB.insert_session_signal" in flat
+    assert "lionagi/state/db.py::StateDB.get_session_signals_after" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
-    assert "whose forward read defaults to 500 rows (`:7963`)" in flat
+    assert (
+        "whose forward read defaults to 500 rows "
+        "(`lionagi/state/db.py::StateDB.get_session_signals_after`)" in flat
+    )
     assert "`emitter_role`, versioned payload type" in flat
     assert "filter-required data without destructive truncation; every page is read" in flat
     assert "read through a frozen closure cutoff" in flat
@@ -312,28 +372,30 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     flat = _flat()
     assert "Settlement is the exit of the invocation owning this subscription" in flat
     assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
-    assert "lionagi/session/branch.py:479-507" in flat
-    assert "lionagi/operations/run/run.py:835-846" in flat
+    assert "lionagi/session/branch.py::Branch._observed_run" in flat
+    assert "lionagi/operations/run/run.py::run" in flat
     assert "`unbind_db_persistence`" in flat
-    assert "lionagi/session/observer.py:599-616" in flat
+    assert "lionagi/session/observer.py::SessionObserver.unbind_db_persistence" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
     assert "keeps its tail pending for the life of the session" in flat
     assert "no timeout and no new setting" in flat
     assert "no execution attempt object" in flat
     assert "one admitted run, the unit ADR-0123 D1 names" in flat
-    assert "lionagi/session/signal.py:184" in flat
+    assert "lionagi/session/signal.py::RunEnd" in flat
     # No flow- or invocation-terminal signal exists today, and the closure path
     # is named as a prerequisite rather than described as present.
     assert "No flow- or" in flat
     assert "invocation-terminal session Signal exists today" in flat
     assert "the bus carries `RunEnd` per operation" in flat
-    assert "lionagi/state/lifecycle/callbacks.py:85" in flat
-    assert "lionhub/src/lionhub/orchestration/engines/flow_signals.py:148-154" in flat
+    assert "lionagi/state/lifecycle/callbacks.py::RunTerminalEnvelope" in flat
+    assert (
+        "lionhub/src/lionhub/orchestration/engines/flow_signals.py::flow_progress_signals" in flat
+    )
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
-    assert "lionagi/cli/_runs.py:1719" in flat
-    assert "lionagi/studio/services/workflow_run.py:110" in flat
+    assert "lionhub/src/lionhub/orchestration/runs.py::teardown_persist" in flat
+    assert "lionagi/studio/services/workflow_run.py::_teardown_run_persist" in flat
 
 
 def test_settlement_is_an_implicit_wake_outside_the_cap() -> None:
@@ -373,9 +435,11 @@ def test_phase_two_is_a_target_and_the_gate_is_cited_where_it_still_runs() -> No
     flat = _flat()
     assert "Phase 2 already makes" not in text
     assert "Phase 2's target is to make `SessionObservation` signal-only" in flat
-    assert "lionagi/session/observer.py:365-376" in flat
-    assert "lionagi/session/observer.py:371-372`) and then returns at `:376" in flat
-    assert "lionagi/session/observer.py:235-236" not in flat
+    assert (
+        "`except Exception: allowed = False` (`lionagi/session/observer.py::SessionObserver.emit`)"
+        " and then returns at `lionagi/session/observer.py::SessionObserver.emit`" in flat
+    )
+    assert re.search(r"session/observer\.py:\d", flat) is None
 
 
 def test_cursor_advances_in_the_state_transaction_and_borrows_only_dedup_practice() -> None:
@@ -408,8 +472,9 @@ def test_delivery_default_matches_the_outbox_tier_it_cites() -> None:
     assert "`best_effort` is an explicit volatile option with no durable cursor" in flat
     assert "docs/adr/ADR-0059-durable-dispatch-outbox.md:391`, `:609" in flat
     assert "`enqueue_dispatch` inserts a row unconditionally" in flat
-    assert "acknowledgement is the opt-in (`:170`)" in flat
-    assert "the only per-call bound is `max_attempts` (`:171`)" in flat
+    enqueue = "(`lionhub/src/lionhub/orchestration/dispatch/outbox.py::enqueue_dispatch`)"
+    assert f"acknowledgement is the opt-in {enqueue}" in flat
+    assert f"the only per-call bound is `max_attempts` {enqueue}" in flat
 
 
 def test_d1_gains_a_durable_observing_subscriber_row() -> None:
@@ -431,10 +496,10 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
-    assert "lionagi/cli/orchestrate/_orchestration.py:1597" in flat
+    assert "lionagi/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round" in flat
     assert "lionagi/state/schema.sql:493" in flat
-    assert "lionagi/state/db.py:6076-6078" in flat
-    assert "`:6212`" in flat
+    assert "lionagi/state/db.py::StateDB._build_update_schedule_stmt" in flat
+    assert "lionagi/state/db.py::StateDB.create_schedule_run_and_advance" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )
@@ -444,7 +509,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:2089-2134" in flat
+    assert "lionagi/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 
@@ -539,7 +604,11 @@ def test_failure_advances_the_cursor_only_on_success_or_a_durable_dead_letter() 
     assert "`max_attempts` counts total automatic execution attempts, including the first" in flat
     assert "Failure retains the batch and cursor until retry succeeds" in flat
     assert "a dead-letter row is re-queueable regardless of cursor position" in flat
-    assert "lionhub/src/lionhub/orchestration/dispatch/outbox.py:52`, `:520-537`, `:593-623" in flat
+    outbox = "lionhub/src/lionhub/orchestration/dispatch/outbox.py"
+    assert (
+        f"`{outbox}::DEFAULT_MAX_ATTEMPTS`, `{outbox}::_deliver_one_due_row`, "
+        f"`{outbox}::retry_dispatch`" in flat
+    )
     row_four = next(line for line in text.splitlines() if line.startswith("| 4 |"))
     assert "advanced only on a batch's success or its durable dead-letter" in row_four
     assert "re-queueable irrespective of cursor position" in row_four
@@ -584,19 +653,20 @@ def test_d9_introduces_durable_delivery_as_proposed_and_splits_the_amendment() -
     assert "policy adds no second bus and no second record of its own" not in flat
 
 
-def test_amendment_citations_match_the_head_line_ranges() -> None:
+def test_amendment_citations_name_the_code_by_symbol() -> None:
     flat = _flat()
+    # These numbers are lines of this record (decisions D5 and D7), not of a code file.
     assert "idempotency/acknowledgement identity (`:493-498`)" in flat
     assert "terminal delivery (`:563`)" in flat
     assert "already-committed source fact (`:493-498`)" in flat
     assert "durable delivery state (`:493-498`)" in flat
     assert "ADR-0125:495-499" in flat
-    assert "lionagi/session/branch.py:479-507`, `:1210-1262" in flat
-    assert "branch.py:477-505" not in flat
-    assert "`:1197-1250" not in flat
-    assert ":487-494" not in flat
-    assert "(`:559`)" not in flat
-    assert "`:1102-1115" not in flat
+    assert (
+        "`lionagi/session/branch.py::Branch._observed_run`, "
+        "`lionagi/session/branch.py::Branch.ReAct`" in flat
+    )
+    # No citation of a code file by line number remains in the amendment.
+    assert re.search(r"\.py:\d", _amendment()) is None
 
 
 def test_closing_waits_for_a_slot_without_moving_the_previous_wording() -> None:

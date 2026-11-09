@@ -54,7 +54,7 @@ def _command_parser(command: str, *subs: str) -> argparse.ArgumentParser:
     ``option_strings``/``_actions`` off the live parser is immune to
     argparse's rendered-help formatting changing across Python versions.
     """
-    from lionagi._auto import build_cli_parser, seed_for
+    from lionhub.cli.catalog import build_cli_parser, seed_for
 
     seed = seed_for(command)
     parser = build_cli_parser(seed).parser
@@ -82,7 +82,7 @@ def _positional_dests(command: str, *subs: str) -> list[str]:
 
 
 def _top_level_subcommand_set() -> list[str]:
-    from lionagi._auto import build_cli_parser
+    from lionhub.cli.catalog import build_cli_parser
 
     parser = build_cli_parser(None).parser
     sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
@@ -106,6 +106,20 @@ def _run_main(argv: list[str]) -> int:
     except SystemExit as exc:
         code = exc.code
         return code if isinstance(code, int) else 1
+
+
+@pytest.mark.parametrize(
+    ("command", "subs"),
+    [("agent", ()), ("orchestrate", ("flow",)), ("orchestrate", ("fanout",))],
+)
+def test_submit_snapshot_carrier_is_parsed_but_hidden_from_help(command, subs):
+    parser = _command_parser(command, *subs)
+    action = next(a for a in parser._actions if a.dest == "mcp_submit_snapshot")
+    assert action.help == argparse.SUPPRESS
+    assert "--mcp-submit-snapshot" not in parser.format_help()
+    assert parser.parse_args(["--mcp-submit-snapshot", "snapshot.json"]).mcp_submit_snapshot == (
+        "snapshot.json"
+    )
 
 
 # Goldens — sorted flag/positional sets, pinned from the actual parser tree
@@ -146,6 +160,7 @@ ORCHESTRATE_FANOUT_FLAGS = [
     "--invocation",
     "--max-concurrent",
     "--mcp-config",
+    "--mcp-submit-snapshot",
     "--no-mcp-config",
     "--notify",
     "--num-workers",
@@ -186,6 +201,7 @@ ORCHESTRATE_FLOW_FLAGS = [
     "--max-concurrent",
     "--max-ops",
     "--mcp-config",
+    "--mcp-submit-snapshot",
     "--no-mcp-config",
     "--notify",
     "--output",

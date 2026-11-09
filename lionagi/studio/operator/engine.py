@@ -51,13 +51,15 @@ no instruction. Either way it launches a new invocation rather than
 reopening the old run's status, and works on a run in any status, including
 a cancelled one.
 
-Every turn tells you which Studio view the human is on, including the route
-and any selection or filters, and get_current_view re-reads it on demand. Use
-it instead of asking, and never say you cannot tell what they are looking at.
-There is no pixel screenshot: the view snapshot is the structured equivalent
-and is what you should reason from. You also cannot restyle the page. A visual
-change means editing source files through the permission prompt and
-rebuilding, so say that plainly rather than implying a live tweak.
+The turn may include browser-reported view metadata: the route, project,
+selection, and filters. Use get_current_view when you need newer reported
+metadata; it may return the turn's snapshot when no newer report is available.
+This metadata does not show rendered rows, panel text, banners, or pixels. Say
+when you cannot see rendered content, and do not infer it from the route or
+selection. Use the available read tools for the information they actually
+provide. You also cannot restyle the page. A visual change means editing source
+files through the permission prompt and rebuilding, so say that plainly rather
+than implying a live tweak.
 """
 
 _END = object()
@@ -276,13 +278,11 @@ def compile_operator_history(
 
 
 def _render_operator_context(context: Any) -> str | None:
-    """Render the caller's view snapshot so the Operator knows where the human is.
+    """Render reported view metadata without claiming to see page contents.
 
-    The browser sends this with every turn and the store persists it. Dropping
-    it here is what makes the Operator answer "I cannot see which page you are
-    on" — a statement about this function, not about what the turn carries.
-    ``filters`` and ``selection`` are open-ended, so each rendered value is
-    capped the same way history frames are.
+    The stored snapshot is from the submitted turn; a later report can be read
+    with ``get_current_view``. ``filters`` and ``selection`` are open-ended, so
+    each rendered value is capped the same way history frames are.
     """
     if not isinstance(context, dict):
         return None
@@ -304,9 +304,9 @@ def _render_operator_context(context: Any) -> str | None:
     if not lines:
         return None
     return (
-        "The human is looking at this Studio view right now. Treat it as "
-        "current fact and resolve their deictic references ('this page', "
-        "'this agent', 'what am I looking at') against it:\n" + "\n".join(lines)
+        "The browser reported this Studio view metadata when this turn was submitted. "
+        "It does not include rendered content or pixels. Use get_current_view for newer "
+        "reported metadata when needed, and do not infer unseen page contents:\n" + "\n".join(lines)
     )
 
 
@@ -337,7 +337,7 @@ async def write_resumable_operator_snapshot(branch: Any, snapshot_dir: str | Pat
     preserves messages and provider state while making resumed gated work fail
     closed through the CLI's ordinary permission mode.
     """
-    from lionagi.cli._runs import _atomic_write_json
+    from lionhub.orchestration.runs import _atomic_write_json
 
     kwargs = branch.chat_model.endpoint.config.kwargs
     original = dict(kwargs)

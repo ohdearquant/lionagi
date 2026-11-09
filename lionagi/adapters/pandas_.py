@@ -8,9 +8,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ._base import (
+    _ADAPTER_DATA_NODE_BUDGET,
     Adapter,
     AdapterBase,
     AdapterError,
@@ -57,16 +58,33 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
                     resource="DataFrame",
                 )
             if required_columns:
-                missing_cols = set(required_columns) - set(df.columns)
+                columns = df.columns
+                missing_cols = set(required_columns) - set(columns)
                 if missing_cols:
+                    column_count = len(columns)
+                    required_count = len(required_columns)
+                    # The data dict and its two lists consume three nodes.
+                    available = _ADAPTER_DATA_NODE_BUDGET - 3
+                    shown_columns = min(column_count, available)
+                    shown_required = min(required_count, available - shown_columns)
+                    details = {"columns_count": column_count, "required_count": required_count}
+                    if shown_columns < column_count or shown_required < required_count:
+                        details["truncated"] = True
                     raise AdapterValidationError(
-                        f"DataFrame is missing required columns: {sorted(missing_cols)}",
-                        data={"columns": list(df.columns), "required": required_columns},
+                        f"DataFrame is missing {len(missing_cols)} required column(s)",
+                        data={
+                            "columns": ["<redacted>"] * shown_columns,
+                            "required": ["<redacted>"] * shown_required,
+                        },
+                        details=details,
                     )
         except (AdapterResourceError, AdapterValidationError):
             raise
-        except Exception as e:
-            cls._handle_error(e, "validation", data={"columns": list(df.columns)})
+        except Exception:
+            error = cls._record_validation_error()
+        else:
+            return
+        raise error from None
 
     @classmethod
     def _convert_dataframe_to_records(cls, df: Any, many: bool) -> list[dict] | dict:
@@ -81,8 +99,9 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
                 resource="DataFrame",
                 message="Cannot access first row of empty DataFrame",
             )
-        except Exception as e:
-            cls._handle_error(e, "validation", data={"shape": df.shape})
+        except Exception:
+            error = cls._record_validation_error()
+        raise error from None
 
     @classmethod
     def _validate_and_convert_models(
@@ -94,32 +113,55 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
         adapt_kw: dict | None,
         validation_errors: tuple[type[Exception], ...],
     ) -> T | list[T]:
+        def convert(record):
+            try:
+                return dispatch_adapt_meth(adapt_meth, record, adapt_kw, subj_cls)
+            except validation_errors as e:
+                validation_error = e
+            except ValidationError as e:
+                validation_error = e
+            except AdapterError:
+                raise
+            except Exception as e:
+                cls._handle_error(e, "validation", unexpected=True)
+            error = cls._validation_error(validation_error, record)
+            del validation_error
+            raise error from None
+
+        if many:
+            return [convert(record) for record in cls._safe_iterator(records, validation_errors)]
+        return convert(records)
+
+    @classmethod
+    def _safe_iterator(cls, items, validation_errors=None):
+        """Wrap iteration failures without intercepting item callbacks."""
+        caught = (Exception,) if validation_errors is None else validation_errors
         try:
-            if many:
-                return [dispatch_adapt_meth(adapt_meth, r, adapt_kw, subj_cls) for r in records]
-            return dispatch_adapt_meth(adapt_meth, records, adapt_kw, subj_cls)
-        except validation_errors as e:
-            cls._handle_error(
-                e,
-                "validation",
-                data=records[0] if many and isinstance(records, list) else records,
-                errors=e.errors() if hasattr(e, "errors") else None,
-            )
+            yield from items
+        except caught as exc:
+            if validation_errors is None:
+                error = cls._record_validation_error(unexpected=True)
+            else:
+                error = cls._validation_error(exc, items)
+        except ValidationError as exc:
+            error = cls._validation_error(exc, items)
+        else:
+            return
+        raise error from None
 
     @classmethod
     def _models_to_dataframe(
         cls,
-        items: list[T],
-        adapt_meth: str | Callable,
-        adapt_kw: dict | None,
+        records: list[Any],
         **kw,
     ) -> Any:  # pd.DataFrame
         pd = _require_pandas()
+
         try:
-            records = [dispatch_adapt_meth(adapt_meth, i, adapt_kw, type(i)) for i in items]
             return pd.DataFrame(records, **kw)
-        except Exception as e:
-            cls._handle_error(e, "validation", data={"item_count": len(items)})
+        except Exception:
+            error = cls._record_validation_error()
+        raise error from None
 
     @classmethod
     def from_obj(
@@ -141,7 +183,11 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
             validation_errors = (PydanticValidationError,)
 
         try:
-            cls._validate_dataframe_structure(obj, many, required_columns)
+            try:
+                cls._validate_dataframe_structure(obj, many, required_columns)
+            except ImportError as e:
+                # The optional dependency check precedes record processing.
+                cls._handle_error(e, "validation", unexpected=True)
             if obj.empty and many:
                 return []
             records = cls._convert_dataframe_to_records(obj, many)
@@ -150,8 +196,9 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
             )
         except AdapterError:
             raise
-        except Exception as e:
-            cls._handle_error(e, "validation", unexpected=True)
+        except Exception:
+            error = cls._record_validation_error(unexpected=True)
+        raise error from None
 
     @classmethod
     def to_obj(
@@ -166,11 +213,30 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
     ) -> Any:  # pd.DataFrame
         try:
             items = subj if isinstance(subj, list) else [subj]
-            return cls._models_to_dataframe(items, adapt_meth, adapt_kw, **kw)
+            try:
+                _require_pandas()
+            except ImportError as e:
+                cls._handle_error(e, "validation", unexpected=True)
         except AdapterError:
             raise
-        except Exception as e:
-            cls._handle_error(e, "validation", unexpected=True)
+        except Exception:
+            error = cls._record_validation_error(unexpected=True)
+        else:
+            error = None
+        if error is not None:
+            raise error from None
+
+        records = [
+            dispatch_adapt_meth(adapt_meth, item, adapt_kw, type(item))
+            for item in cls._safe_iterator(items)
+        ]
+        try:
+            return cls._models_to_dataframe(records, **kw)
+        except AdapterError:
+            raise
+        except Exception:
+            error = cls._record_validation_error(unexpected=True)
+        raise error from None
 
 
 __all__ = ("DataFrameAdapter",)

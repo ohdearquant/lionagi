@@ -248,18 +248,23 @@ class TestConcurrentRegistrationAndRemoval:
 
         assert EndpointRegistry._alias_owners["old-plugin-provider"] == "old-plugin-provider"
 
-    def test_builtin_collision_rejection_releases_unique_alias_for_replacement(self):
+    def test_builtin_collision_rejection_releases_unique_alias_for_replacement(self, monkeypatch):
         """A plugin entry whose canonical provider collides with a built-in
         (openai) is dropped by ``_reject_builtin_collisions``; its otherwise
-        unique alias must not stay claimed in ``_alias_owners`` afterward."""
+        unique alias must not stay claimed in ``_alias_owners`` afterward.
+        ``register`` refuses a name the bundled catalog declares, so the entry
+        is registered while the catalog cannot be read."""
 
-        @EndpointRegistry.register(
-            provider="openai",
-            endpoint="chat",
-            provider_aliases=["orphan-alias-f2359"],
-        )
-        class _RejectedPluginEndpoint(Endpoint):
-            pass
+        with monkeypatch.context() as patch:
+            _install_catalog(patch, _missing_hub())
+
+            @EndpointRegistry.register(
+                provider="openai",
+                endpoint="chat",
+                provider_aliases=["orphan-alias-f2359"],
+            )
+            class _RejectedPluginEndpoint(Endpoint):
+                pass
 
         entry = next(e for e in EndpointRegistry._entries if e.cls is _RejectedPluginEndpoint)
         entry.plugin_name = "rejected-plugin"
@@ -286,21 +291,24 @@ class TestConcurrentRegistrationAndRemoval:
 
         assert EndpointRegistry._alias_owners["orphan-alias-f2359"] == "replacement-provider-f2359"
 
-    def test_builtin_collision_rejection_covers_helper_module_registration(self):
+    def test_builtin_collision_rejection_covers_helper_module_registration(self, monkeypatch):
         """A provider module may register an endpoint class that a helper or
         generated module supplies. The entry carries the activation's
         provenance but a different ``__module__``, and the built-in must
-        still win."""
+        still win. ``register`` refuses a name the bundled catalog declares,
+        so the entry is registered while the catalog cannot be read."""
 
         class _HelperSuppliedEndpoint(Endpoint):
             pass
 
         _HelperSuppliedEndpoint.__module__ = "helper_plugin._generated_endpoints"
-        EndpointRegistry.register(
-            provider="openai",
-            endpoint="chat",
-            provider_aliases=["orphan-alias-a71c4"],
-        )(_HelperSuppliedEndpoint)
+        with monkeypatch.context() as patch:
+            _install_catalog(patch, _missing_hub())
+            EndpointRegistry.register(
+                provider="openai",
+                endpoint="chat",
+                provider_aliases=["orphan-alias-a71c4"],
+            )(_HelperSuppliedEndpoint)
 
         entry = next(e for e in EndpointRegistry._entries if e.cls is _HelperSuppliedEndpoint)
         entry.plugin_name = "helper-plugin"
@@ -516,6 +524,13 @@ def _install_catalog(monkeypatch, outcome):
     monkeypatch.setattr(_provider_compat, "default_provider_catalog", load)
 
 
+def _missing_hub():
+    """The error ``default_provider_catalog`` raises when the provider hub is not installed."""
+    return MissingFeatureError(
+        feature="provider hub", missing_distribution="lionhub", install_hint="reinstall lionagi"
+    )
+
+
 def _declared(calls, module, name="Endpoint", error=None):
     """A declaration whose factory records its call and then raises ``error`` if one is given."""
 
@@ -562,15 +577,33 @@ def test_cold_load_calls_every_declared_factory_in_catalog_order(
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
-def test_cold_load_warns_for_a_declaration_whose_module_fails_to_import_and_goes_on(
+def test_cold_load_records_a_declaration_whose_module_fails_to_import_and_goes_on(
     monkeypatch, cold_registry, caplog
 ):
     calls = cold_registry
+    # The load fills the record of failed providers and the per-declaration failure cache;
+    # both are put back when the test ends.
+    monkeypatch.setattr(EndpointRegistry, "_failed", ())
+    monkeypatch.setattr(EndpointRegistry, "_activation_failures", {})
     failure = ImportError("No module named 'a_missing_provider_dependency'")
-    catalog = _catalog_of(
-        [_declared(calls, "stub_providers.alpha.chat")],
-        [_declared(calls, "stub_providers.beta.broken", name="BrokenEndpoint", error=failure)],
-        [_declared(calls, "stub_providers.gamma.chat")],
+    broken = _declared(calls, "stub_providers.beta.broken", name="BrokenEndpoint", error=failure)
+    broken.key = "broken"
+    # What the failure is translated from: the catalog's source and the provider's key.
+    catalog = SimpleNamespace(
+        source="a stub source",
+        providers=(
+            SimpleNamespace(
+                key="alpha",
+                aliases=(),
+                endpoints=(_declared(calls, "stub_providers.alpha.chat"),),
+            ),
+            SimpleNamespace(key="beta", aliases=("b",), endpoints=(broken,)),
+            SimpleNamespace(
+                key="gamma",
+                aliases=(),
+                endpoints=(_declared(calls, "stub_providers.gamma.chat"),),
+            ),
+        ),
     )
     _install_catalog(monkeypatch, catalog)
 
@@ -586,9 +619,23 @@ def test_cold_load_warns_for_a_declaration_whose_module_fails_to_import_and_goes
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert warnings[0].name == _registry_mod.logger.name
-    assert "failed to import and was not registered" in warnings[0].getMessage()
-    assert warnings[0].args[0] == "stub_providers.beta.broken"
-    assert warnings[0].args[1] is failure
+    message = warnings[0].getMessage()
+    assert "'beta'" in message and "'broken'" in message
+    assert "activation_failed" in message
+    assert "a_missing_provider_dependency" not in message
+    # The failed provider is recorded with the typed error a selection of it raises.
+    (recorded,) = EndpointRegistry._failed
+    assert (recorded.provider, recorded.names) == ("beta", ("beta", "b"))
+    assert type(recorded.error) is ProviderActivationError
+    assert recorded.error.__cause__ is failure
+    assert EndpointRegistry.failed_providers() == [
+        {
+            "provider": "beta",
+            "endpoint": "broken",
+            "source": "a stub source",
+            "reason": "activation_failed",
+        }
+    ]
     assert EndpointRegistry._loaded is True
 
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from lionagi import ln
@@ -34,13 +34,17 @@ from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
     Redacted,
     SpawnedProcess,
+    _resolve_cli_path,
     build_declarative_cli_args,
+    declarative_cli_flags,
     discover_cli,
     env_as_the_spawn_encodes_it,
     ndjson_from_cli,
     print_readable,
     raise_if_env_is_not_a_string_map,
     redact_runtime_fields_in_place,
+    refuse_oversized_command,
+    refuse_text_strict_utf8_cannot_encode,
     resolve_cli_workspace,
 )
 from lionhub.providers._cli_subprocess import (
@@ -144,6 +148,11 @@ ClaudeInputFormat = Literal["text", "stream-json"]
 
 __all__ = ("ClaudeCodeRequest", "stream_claude_code_cli", "ClaudeCodeCLIEndpoint")
 
+#: The most input the Claude Code CLI reads from a pipe, in bytes. Its documentation states the
+#: cap as 10 MB ("Piped stdin is capped at 10MB"); past it the CLI exits with an error after the
+#: process has started, so the request refuses first.
+CLAUDE_MAX_PIPED_INPUT_BYTES = 10_000_000
+
 
 # --------------------------------------------------------------------------- flag metadata
 # json_schema_extra-driven CLI flag protocol — see docs/internals/runtime.md.
@@ -154,8 +163,24 @@ __all__ = ("ClaudeCodeRequest", "stream_claude_code_cli", "ClaudeCodeCLIEndpoint
 LIGHT_DISALLOWED_TOOLS = ("Edit", "Write", "NotebookEdit")
 
 
+_CLI_PATH_FIELDS = frozenset(
+    {"system_prompt_file", "append_system_prompt_file", "mcp_config", "settings", "add_dir"}
+)
+
+
+def _unencodable_claude_text(value: str, what: str) -> ValueError | None:
+    """Return a value-free refusal without retaining the codec's input-bearing error."""
+    try:
+        str.__str__(value).encode("utf-8")
+    except UnicodeEncodeError:
+        return refuse_text_strict_utf8_cannot_encode(what, "Claude Code CLI")
+    return None
+
+
 class ClaudeCodeRequest(BaseModel):
     """Configuration + prompt for a Claude Code CLI invocation."""
+
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Claude Code")
@@ -301,6 +326,17 @@ class ClaudeCodeRequest(BaseModel):
             "Called once with a SpawnedProcess as soon as the CLI process "
             "exists, for a caller that must record the identity of a process "
             "it did not spawn itself. May be a coroutine function."
+        ),
+    )
+    secret_fill_skip: SkipJsonSchema[frozenset[str]] = Field(
+        default=frozenset(),
+        exclude=True,
+        repr=False,
+        description=(
+            "Environment variable names the configured secret lookup must not "
+            "fill into this CLI process, in addition to the routed account key "
+            "names. Names only, never values. Empty leaves the lookup's fill "
+            "exactly as it is."
         ),
     )
 
@@ -462,9 +498,19 @@ class ClaudeCodeRequest(BaseModel):
         mode="before",
     )
     @classmethod
-    def _validate_path_fields(cls, v):
+    def _validate_path_fields(cls, v, info: ValidationInfo):
         if v is None:
             return v
+        if info.field_name in {"mcp_config", "settings"} and isinstance(v, str):
+            if str.__str__(v).lstrip().startswith("{"):
+                invalid = False
+                try:
+                    json.loads(str.__str__(v))
+                except (ValueError, RecursionError):
+                    invalid = True
+                if invalid:
+                    raise ValueError(f"{info.field_name} contains invalid inline JSON")
+                return v
         check_path_safe(str(v), "system_prompt_file/append_system_prompt_file/mcp_config/settings")
         return v
 
@@ -545,27 +591,32 @@ class ClaudeCodeRequest(BaseModel):
 
         # Workspace bounds check for bypassPermissions
         if self.permission_mode == "bypassPermissions":
-            repo_resolved = self.repo.resolve()
-            cwd_resolved = self.cwd().resolve()
+            repo_resolved = _resolve_cli_path(self.repo, "working directory")
+            cwd_resolved = _resolve_cli_path(self.cwd(), "workspace")
+            outside = False
             try:
                 cwd_resolved.relative_to(repo_resolved)
             except ValueError:
+                outside = True
+            if outside:
                 raise ValueError(
-                    f"With bypassPermissions, workspace must be within "
-                    f"repository bounds. Repository: {repo_resolved}, "
-                    f"Workspace: {cwd_resolved}"
+                    "With bypassPermissions, workspace must be within repository bounds."
                 ) from None
 
         # Repo-containment on write-target path fields; add_dir is excluded
         # (read-only grant, validated separately) — see docs/internals/runtime.md.
-        repo_root = self.repo.resolve()
+        repo_root = _resolve_cli_path(self.repo, "working directory")
         for fname, fval in (
             ("system_prompt_file", self.system_prompt_file),
             ("append_system_prompt_file", self.append_system_prompt_file),
             ("mcp_config", self.mcp_config),
             ("settings", self.settings),
         ):
-            if fval is not None:
+            if fval is not None and not (
+                fname in {"mcp_config", "settings"}
+                and isinstance(fval, str)
+                and str.__str__(fval).lstrip().startswith("{")
+            ):
                 contain_paths_in_repo([str(fval)], repo_root, fname)
 
         return self
@@ -577,14 +628,59 @@ class ClaudeCodeRequest(BaseModel):
 
     # ── CLI command builder ───────────────────────────────────────
 
+    def _prompt_on_stdin(self) -> bool:
+        """Whether the prompt is written to the CLI's stdin rather than passed as an argument.
+
+        It is, unless the input format is ``stream-json``: that format reads JSON messages from
+        stdin, so there the prompt stays an argument.
+        """
+        return self.input_format != "stream-json"
+
     def as_cmd_args(self) -> list[str]:
-        """Build argument list for the Claude Code CLI."""
-        args: list[str] = [
-            "-p",
-            self.prompt,
-            "--output-format",
-            self.output_format,
-        ]
+        """Build argument list for the Claude Code CLI.
+
+        The prompt is not in the list unless the input format is ``stream-json``: ``-p`` then
+        stands alone and the CLI reads the prompt from stdin, where the CLI's own cap
+        (``CLAUDE_MAX_PIPED_INPUT_BYTES``) applies. A command line holds far less, and a long
+        history passed there fails the spawn before any turn runs.
+        """
+        # Path arguments may contain POSIX surrogateescaped bytes; text that the
+        # CLI must decode, including the stdin prompt, must be strict UTF-8.
+        failure = _unencodable_claude_text(self.prompt, "The prompt")
+        if failure is not None:
+            raise failure
+        for name, field in type(self).model_fields.items():
+            extra = field.json_schema_extra
+            if not isinstance(extra, dict) or "cli_flag" not in extra:
+                continue
+            value = getattr(self, name)
+            if name in _CLI_PATH_FIELDS and not (
+                name in {"mcp_config", "settings"}
+                and isinstance(value, str)
+                and str.__str__(value).lstrip().startswith("{")
+            ):
+                continue
+            if isinstance(value, str):
+                failure = _unencodable_claude_text(value, f"The {name} value")
+                if failure is not None:
+                    raise failure
+            elif extra.get("cli_kind") == "list_args" and isinstance(value, list):
+                for index, item in enumerate(value, start=1):
+                    if isinstance(item, str):
+                        failure = _unencodable_claude_text(item, f"The {name} entry {index}")
+                        if failure is not None:
+                            raise failure
+        for name in ("worktree", "debug"):
+            value = getattr(self, name)
+            if isinstance(value, str):
+                failure = _unencodable_claude_text(value, f"The {name} value")
+                if failure is not None:
+                    raise failure
+
+        args: list[str] = ["-p"]
+        if not self._prompt_on_stdin():
+            args.append(self.prompt)
+        args.extend(["--output-format", self.output_format])
 
         source = self
         if self.workload == "light":
@@ -656,6 +752,31 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
     cmd = [resolve_claude_cli(), *request.as_cmd_args()]
+    flags = declarative_cli_flags(ClaudeCodeRequest) | {
+        "-p",
+        "--output-format",
+        "--permission-mode",
+        "--dangerously-skip-permissions",
+        "--max-turns",
+        "--worktree",
+        "--debug",
+        "--mcp-config",
+        "--model",
+        "--verbose",
+    }
+    refuse_oversized_command(cmd, "Claude Code CLI", known_flags=flags)
+    stdin_data: str | None = None
+    if request._prompt_on_stdin():
+        stdin_data = request.prompt
+        # Counted with surrogatepass so a lone surrogate adds its bytes here instead of raising
+        # an error that holds the whole prompt; the spawner's strict encode refuses it.
+        size = len(stdin_data.encode("utf-8", "surrogatepass"))
+        if size > CLAUDE_MAX_PIPED_INPUT_BYTES:
+            raise ValueError(
+                f"The prompt is {size:,} bytes, past the 10 MB ({CLAUDE_MAX_PIPED_INPUT_BYTES:,} "
+                "bytes) of piped input the Claude Code CLI takes. Start a new session and hand "
+                "it the earlier result as a file."
+            )
     # The CLI states a refusal (a session limit, say) on stdout as an error result and then exits
     # nonzero with nothing on stderr; the exit alone would read as a crash, so the result it gave
     # rides the raised error, classified.
@@ -667,10 +788,12 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
                 cmd,
                 cwd=workspace,
                 env=request.env,
+                stdin_data=stdin_data,
                 tail_repair=_claude_tail_repair,
                 on_spawn=request.on_spawn,
                 engine="claude",
                 workload=request.workload,
+                secret_fill_skip=request.secret_fill_skip,
             )
         ) as stream:
             async for obj in stream:
@@ -680,7 +803,14 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     except RuntimeError as exc:
         if refusal is None or isinstance(exc, ProviderError):
             raise
-        said = str(refusal.get("result") or "").strip() or "an error result with no text"
+        said = str(refusal.get("result") or "").strip()
+        if not said and isinstance(refusal.get("errors"), list):
+            # A result with no text of its own names its failure in ``errors``.
+            listed = [e.get("message") if isinstance(e, dict) else e for e in refusal["errors"]]
+            said = "; ".join(
+                dict.fromkeys(e.strip() for e in listed if isinstance(e, str) and e.strip())
+            )
+        said = said or "an error result with no text"
         status = refusal.get("api_error_status")
         if status is not None:
             said = f"{said} (api_error_status {status})"
@@ -1037,10 +1167,11 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CLAUDE_HANDLER_PARAMS
     _handler_kwarg = "claude_handlers"
     _request_model = ClaudeCodeRequest
-    _runtime_state_fields = ("env", "on_spawn")
+    _runtime_state_fields = ("env", "on_spawn", "secret_fill_skip")
     # Claude Code streams a "system" event as soon as the CLI session starts,
     # well before the run completes — see stream_cc_cli() above.
     streams_first_output_early = True
+    restores_session_id = True
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("claude_handlers", None)
@@ -1121,7 +1252,7 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             # supervisor callback would otherwise silently stop being the
             # original one that holds the durable process accounting.
             req2 = request.model_copy(deep=True)
-            for _runtime_field in ("env", "on_spawn"):
+            for _runtime_field in ("env", "on_spawn", "secret_fill_skip"):
                 object.__setattr__(req2, _runtime_field, getattr(request, _runtime_field))
             req2.prompt = "Please provide a the final result message only"
             req2.max_turns = 1

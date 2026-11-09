@@ -88,6 +88,7 @@ import json
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from functools import lru_cache
 from pathlib import Path
 
@@ -186,97 +187,448 @@ _CLASS_DECORATORS = frozenset(
 
 
 # A shape the scan cannot read is refused by default; the entries here are the
-# production shapes audited and accepted, each with the reason it is safe. The key is
-# ``module:line:column`` of the refused node, as the scan reports it. Every other
-# refusal fails the gate, so a new shape cannot pass unnoticed.
-_ALLOWLIST: dict[str, str] = {
+# production shapes audited and accepted, each with the reason it is safe. The key is the
+# refusal's identity: the module, the qualified name of the class or function scope the
+# refused node sits in (``<module>`` at the top level), the role of the refusal, and the
+# ``ast.dump`` of the refused node. The role is a short constant naming the kind of site in
+# the scan that refused the node, so a node refused by two different rules is two
+# identities. A line or column is not part of the key: an edit that only moves an audited
+# node leaves its entry in place, while a changed node, a node in another scope or one
+# refused by another rule is a new refusal. A class base, keyword or decorator sits in the
+# scope of the class that declares it. Every other refusal fails the gate, so a new shape
+# cannot pass unnoticed; an entry that matches no refusal, and two refusals that share an
+# identity, fail it as well.
+_ALLOWLIST: dict[tuple[str, str, str, str], str] = {
     # ``setattr`` writes an attribute through a name the scan does not read as a
     # literal. Each is a dynamic attribute name on an already-mutable object or an
     # object's own field slot, none of them a class's ``__hash__`` or a class
     # authority:
-    "lionagi._auto:315:9": "a marker written onto a handler function, not a model",
-    "lionagi.ln.types.base:224:13": "a declared field set from its layout during init",
-    "lionagi.ln.types.base:367:13": "a declared field copied by name during update",
-    "lionagi.models.operable_model:132:13": "an extra field set by name",
-    "lionagi.models.operable_model:142:17": "an extra field reset to its default",
-    "lionagi.models.operable_model:145:17": "an extra field reset from its factory",
-    "lionagi.models.operable_model:255:9": "an extra field set by name",
-    "lionagi.models.operable_model:275:13": "a field attribute set by name on a field object",
-    "lionagi.protocols.generic.pile:539:13": "a field attribute copied by name while copying",
-    "lionagi.protocols.messages.instruction:101:17": "a declared field set by name",
-    "lionagi.protocols.messages.instruction:147:17": "a declared field set by name",
-    "lionagi.protocols.messages.message:186:9": "a declared field set by name",
-    "lionagi.protocols.messages.message:198:13": "a render-input field set by name",
-    "lionhub.providers.anthropic.claude_code:1125:17": "a runtime field copied by name",
-    "lionagi.service.connections.endpoint_config:258:17": "a config key set by name",
-    "lionagi.service.connections.mcp_wrapper:86:9": "a probe attribute set on an exception",
-    "lionagi.state.compat:1702:13": (
-        "a frozen dataclass folding its own string fields in __post_init__"
-    ),
+    (
+        "lionagi._auto",
+        "auto_register.<locals>.decorator",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='fn', ctx=Load()), Name(id='_MARKER_ATTR', ctx=Load()), Name(id='marker', ctx=Load())], keywords=[])",
+    ): "a marker written onto a handler function, not a model",
+    (
+        "lionagi.ln.types.base",
+        "Params.__init__",
+        "setattr-arguments",
+        "Call(func=Attribute(value=Name(id='object', ctx=Load()), attr='__setattr__', ctx=Load()), args=[Name(id='self', ctx=Load()), Attribute(value=Name(id='field_info', ctx=Load()), attr='name', ctx=Load()), Name(id='value', ctx=Load())], keywords=[])",
+    ): "a declared field set from its layout during init",
+    (
+        "lionagi.ln.types.base",
+        "DataClass.with_updates",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='updated', ctx=Load()), Attribute(value=Name(id='field_info', ctx=Load()), attr='name', ctx=Load()), Subscript(value=Name(id='dict_', ctx=Load()), slice=Attribute(value=Name(id='field_info', ctx=Load()), attr='name', ctx=Load()), ctx=Load())], keywords=[])",
+    ): "a declared field copied by name during update",
+    (
+        "lionagi.models.operable_model",
+        "OperableModel.__setattr__",
+        "setattr-arguments",
+        "Call(func=Attribute(value=Name(id='object', ctx=Load()), attr='__setattr__', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='field_name', ctx=Load()), Name(id='value', ctx=Load())], keywords=[])",
+    ): "an extra field set by name",
+    (
+        "lionagi.models.operable_model",
+        "OperableModel.__delattr__",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='field_name', ctx=Load()), Attribute(value=Subscript(value=Attribute(value=Name(id='self', ctx=Load()), attr='extra_fields', ctx=Load()), slice=Name(id='field_name', ctx=Load()), ctx=Load()), attr='default', ctx=Load())], keywords=[])",
+    ): "an extra field reset to its default",
+    (
+        "lionagi.models.operable_model",
+        "OperableModel.__delattr__",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='field_name', ctx=Load()), Call(func=Attribute(value=Subscript(value=Attribute(value=Name(id='self', ctx=Load()), attr='extra_fields', ctx=Load()), slice=Name(id='field_name', ctx=Load()), ctx=Load()), attr='default_factory', ctx=Load()), args=[], keywords=[])], keywords=[])",
+    ): "an extra field reset from its factory",
+    (
+        "lionagi.models.operable_model",
+        "OperableModel.update_field",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='field_name', ctx=Load()), Name(id='value', ctx=Load())], keywords=[])",
+    ): "an extra field set by name",
+    (
+        "lionagi.models.operable_model",
+        "OperableModel.field_setattr",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='field_obj', ctx=Load()), Name(id='attr', ctx=Load()), Name(id='value', ctx=Load())], keywords=[])",
+    ): "a field attribute set by name on a field object",
+    (
+        "lionagi.protocols.generic.pile",
+        "Pile.__deepcopy__",
+        "setattr-arguments",
+        "Call(func=Attribute(value=Name(id='object', ctx=Load()), attr='__setattr__', ctx=Load()), args=[Name(id='result', ctx=Load()), Name(id='k', ctx=Load()), Call(func=Attribute(value=Name(id='copy', ctx=Load()), attr='deepcopy', ctx=Load()), args=[Name(id='v', ctx=Load()), Name(id='memo', ctx=Load())], keywords=[])], keywords=[])",
+    ): "a field attribute copied by name while copying",
+    (
+        "lionagi.protocols.messages.instruction",
+        "InstructionContent.__setstate__",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='name', ctx=Load()), Name(id='value', ctx=Load())], keywords=[])",
+    ): "a declared field set by name",
+    (
+        "lionagi.protocols.messages.instruction",
+        "InstructionContent.from_dict",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='inst', ctx=Load()), Name(id='k', ctx=Load()), Subscript(value=Name(id='data', ctx=Load()), slice=Name(id='k', ctx=Load()), ctx=Load())], keywords=[])",
+    ): "a declared field set by name",
+    (
+        "lionagi.protocols.messages.message",
+        "MessageContent.__setattr__",
+        "setattr-arguments",
+        "Call(func=Attribute(value=Name(id='object', ctx=Load()), attr='__setattr__', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='name', ctx=Load()), Name(id='value', ctx=Load())], keywords=[])",
+    ): "a declared field set by name",
+    (
+        "lionagi.protocols.messages.message",
+        "MessageContent._track_render_inputs",
+        "setattr-arguments",
+        "Call(func=Attribute(value=Name(id='object', ctx=Load()), attr='__setattr__', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='name', ctx=Load()), Call(func=Name(id='_track_mutable', ctx=Load()), args=[Call(func=Name(id='getattr', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='name', ctx=Load())], keywords=[]), Attribute(value=Name(id='self', ctx=Load()), attr='_touch_revision', ctx=Load())], keywords=[])], keywords=[])",
+    ): "a render-input field set by name",
+    (
+        "lionhub.providers.anthropic.claude_code",
+        "ClaudeCodeCLIEndpoint._call",
+        "setattr-arguments",
+        "Call(func=Attribute(value=Name(id='object', ctx=Load()), attr='__setattr__', ctx=Load()), args=[Name(id='req2', ctx=Load()), Name(id='_runtime_field', ctx=Load()), Call(func=Name(id='getattr', ctx=Load()), args=[Name(id='request', ctx=Load()), Name(id='_runtime_field', ctx=Load())], keywords=[])], keywords=[])",
+    ): "a runtime field copied by name",
+    (
+        "lionagi.service.connections.endpoint_config",
+        "EndpointConfig.update",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='key', ctx=Load()), Name(id='value', ctx=Load())], keywords=[])",
+    ): "a config key set by name",
+    (
+        "lionagi.service.connections.mcp_wrapper",
+        "_attach_mcp_transport_probe",
+        "setattr-arguments",
+        "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='exc', ctx=Load()), Name(id='_MCP_TRANSPORT_PROBE_ATTR', ctx=Load()), Name(id='probe', ctx=Load())], keywords=[])",
+    ): "a probe attribute set on an exception",
+    (
+        "lionagi.state.compat",
+        "OwnerRule.__post_init__",
+        "setattr-arguments",
+        "Call(func=Attribute(value=Name(id='object', ctx=Load()), attr='__setattr__', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='name', ctx=Load()), Call(func=Name(id='_fold', ctx=Load()), args=[Name(id='value', ctx=Load())], keywords=[])], keywords=[])",
+    ): ("a frozen dataclass folding its own string fields in __post_init__"),
     # A class base the scan cannot read: a base subscripted by a type parameter. Each
     # declares no hash authority of its own; the refused node is the subscript.
-    "lionagi.adapters._base:305:15": "``Protocol[T]``, a protocol parameterized by a type",
-    "lionagi.adapters._base:482:20": "``Protocol[T]``, a protocol parameterized by a type",
-    "lionagi.adapters.async_postgres_adapter:21:39": "``AsyncPostgresAdapter[T]``, an imported adapter",
-    "lionagi.adapters.csv_:26:31": "``Adapter[T]``, the runtime-checkable protocol base",
-    "lionagi.adapters.json_:26:32": "``Adapter[T]``, the runtime-checkable protocol base",
-    "lionagi.adapters.pandas_:37:37": "``Adapter[T]``, the runtime-checkable protocol base",
-    "lionagi.adapters.toml_:33:32": "``Adapter[T]``, the runtime-checkable protocol base",
-    "lionagi.ln._cache:19:23": "``Generic[K, V]``, the typing generic base",
-    "lionagi.ln.concurrency.primitives:126:13": "``Generic[T]``, the typing generic base",
-    "lionagi.ln.types.registry:95:29": "``Generic[ItemT]``, the typing generic base",
-    "lionagi.ln.types.registry:108:32": "``Generic[ItemT]``, the typing generic base",
-    "lionagi.ln.types.registry:193:30": "``Generic[ItemT]``, the typing generic base",
-    "lionagi.ln.types.registry:208:32": "``Generic[ItemT]``, the typing generic base",
-    "lionagi.ln.types.registry:381:24": "``Generic[ItemT]``, the typing generic base",
-    "lionagi.protocols._concepts:110:21": "``Generic[E]``, the typing generic base",
-    "lionagi.protocols._concepts:98:23": "``Generic[E]``, the typing generic base",
-    "lionagi.protocols.generic.element:301:10": "``Generic[E]``, the typing generic base",
-    "lionagi.protocols.generic.flow:25:21": "``Generic[E, P]``, the typing generic base",
-    "lionagi.protocols.generic.pile:187:21": "``Collective[T]``, the collection base on ``Element``",
-    "lionagi.protocols.generic.pile:187:36": "``Generic[T]``, the typing generic base",
-    "lionagi.protocols.generic.progression:139:28": "``Ordering[T]``, the ordering base on ``Element``",
-    "lionagi.protocols.generic.progression:139:41": "``Generic[T]``, the typing generic base",
-    "lionagi.protocols.graph.graph:33:34": "``Generic[T]``, the typing generic base",
-    "lionagi.service.accounts._ledger:62:18": "``Generic[_T]``, the typing generic base",
+    (
+        "lionagi.adapters._base",
+        "Adapter",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Protocol', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Protocol[T]``, a protocol parameterized by a type",
+    (
+        "lionagi.adapters._base",
+        "AsyncAdapter",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Protocol', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Protocol[T]``, a protocol parameterized by a type",
+    (
+        "lionagi.adapters.async_postgres_adapter",
+        "create_lionagi_async_postgres_adapter.<locals>.LionAGIAsyncPostgresAdapter",
+        "class-base-subscript",
+        "Subscript(value=Name(id='AsyncPostgresAdapter', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``AsyncPostgresAdapter[T]``, an imported adapter",
+    (
+        "lionagi.adapters.csv_",
+        "CsvAdapter",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Adapter', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Adapter[T]``, the runtime-checkable protocol base",
+    (
+        "lionagi.adapters.json_",
+        "JsonAdapter",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Adapter', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Adapter[T]``, the runtime-checkable protocol base",
+    (
+        "lionagi.adapters.pandas_",
+        "DataFrameAdapter",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Adapter', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Adapter[T]``, the runtime-checkable protocol base",
+    (
+        "lionagi.adapters.toml_",
+        "TomlAdapter",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Adapter', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Adapter[T]``, the runtime-checkable protocol base",
+    (
+        "lionagi.ln._cache",
+        "BoundedLRUCache",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Tuple(elts=[Name(id='K', ctx=Load()), Name(id='V', ctx=Load())], ctx=Load()), ctx=Load())",
+    ): "``Generic[K, V]``, the typing generic base",
+    (
+        "lionagi.ln.concurrency.primitives",
+        "Queue",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Generic[T]``, the typing generic base",
+    (
+        "lionagi.ln.types.registry",
+        "RegistryEntry",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='ItemT', ctx=Load()), ctx=Load())",
+    ): "``Generic[ItemT]``, the typing generic base",
+    (
+        "lionagi.ln.types.registry",
+        "RegistryFragment",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='ItemT', ctx=Load()), ctx=Load())",
+    ): "``Generic[ItemT]``, the typing generic base",
+    (
+        "lionagi.ln.types.registry",
+        "RegistryRecord",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='ItemT', ctx=Load()), ctx=Load())",
+    ): "``Generic[ItemT]``, the typing generic base",
+    (
+        "lionagi.ln.types.registry",
+        "RegistryOverride",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='ItemT', ctx=Load()), ctx=Load())",
+    ): "``Generic[ItemT]``, the typing generic base",
+    (
+        "lionagi.ln.types.registry",
+        "Registry",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='ItemT', ctx=Load()), ctx=Load())",
+    ): "``Generic[ItemT]``, the typing generic base",
+    (
+        "lionagi.protocols._concepts",
+        "Ordering",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='E', ctx=Load()), ctx=Load())",
+    ): "``Generic[E]``, the typing generic base",
+    (
+        "lionagi.protocols._concepts",
+        "Collective",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='E', ctx=Load()), ctx=Load())",
+    ): "``Generic[E]``, the typing generic base",
+    (
+        "lionagi.protocols.generic.element",
+        "ID",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='E', ctx=Load()), ctx=Load())",
+    ): "``Generic[E]``, the typing generic base",
+    (
+        "lionagi.protocols.generic.flow",
+        "Flow",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Tuple(elts=[Name(id='E', ctx=Load()), Name(id='P', ctx=Load())], ctx=Load()), ctx=Load())",
+    ): "``Generic[E, P]``, the typing generic base",
+    (
+        "lionagi.protocols.generic.pile",
+        "Pile",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Collective', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Collective[T]``, the collection base on ``Element``",
+    (
+        "lionagi.protocols.generic.pile",
+        "Pile",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Generic[T]``, the typing generic base",
+    (
+        "lionagi.protocols.generic.progression",
+        "Progression",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Ordering', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Ordering[T]``, the ordering base on ``Element``",
+    (
+        "lionagi.protocols.generic.progression",
+        "Progression",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Generic[T]``, the typing generic base",
+    (
+        "lionagi.protocols.graph.graph",
+        "Graph",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
+    ): "``Generic[T]``, the typing generic base",
+    (
+        "lionagi.service.accounts._ledger",
+        "_TimedCall",
+        "class-base-subscript",
+        "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='_T', ctx=Load()), ctx=Load())",
+    ): "``Generic[_T]``, the typing generic base",
     # A class base whose module is imported inside the function that defines the class,
     # so the scan cannot resolve the name; the class is an exception, not a model:
-    "lionagi.service.connections.endpoint:97:36": "``httpx.ConnectError``, imported lazily",
+    (
+        "lionagi.service.connections.endpoint",
+        "_refused_redirect_error.<locals>.RefusedRedirectError",
+        "class-base-unresolved",
+        "Attribute(value=Name(id='httpx', ctx=Load()), attr='ConnectError', ctx=Load())",
+    ): "``httpx.ConnectError``, imported lazily",
     # A base reached through a submodule import (``import importlib.abc``), which the scan
     # does not resolve; each class is an import hook, not a model:
-    "lionagi._moved:143:20": "``importlib.abc.Loader``, the import system's loader base",
-    "lionagi._moved:175:20": "``importlib.abc.MetaPathFinder``, the import system's finder base",
+    (
+        "lionagi._moved",
+        "_AliasLoader",
+        "class-base-unresolved",
+        "Attribute(value=Attribute(value=Name(id='importlib', ctx=Load()), attr='abc', ctx=Load()), attr='Loader', ctx=Load())",
+    ): "``importlib.abc.Loader``, the import system's loader base",
+    (
+        "lionagi._moved",
+        "_MovedFinder",
+        "class-base-unresolved",
+        "Attribute(value=Attribute(value=Name(id='importlib', ctx=Load()), attr='abc', ctx=Load()), attr='MetaPathFinder', ctx=Load())",
+    ): "``importlib.abc.MetaPathFinder``, the import system's finder base",
     # A metaclass the scan does not inventory; the class declares no hash authority
     # and is outside the mutable family:
-    "lionagi.ln.types._sentinel:38:1": "a singleton metaclass, not a mutable model",
+    (
+        "lionagi.ln.types._sentinel",
+        "SingletonType",
+        "class-metaclass",
+        "keyword(arg='metaclass', value=Name(id='_SingletonMeta', ctx=Load()))",
+    ): "a singleton metaclass, not a mutable model",
     # An attribute assignment whose owner is an item of a list, not a name or a
     # dotted attribute; the scan refuses that owner shape, and here it writes an
     # edge's label on an already-built edge:
-    "lionagi.operations.flow:1546:21": "an edge label on a list item, not a class attribute",
+    (
+        "lionagi.operations.flow",
+        "ReactiveExecutor._accept_node",
+        "attribute-owner-shape",
+        "Attribute(value=Subscript(value=Name(id='edges', ctx=Load()), slice=Constant(value=0), ctx=Load()), attr='label', ctx=Store())",
+    ): "an edge label on a list item, not a class attribute",
     # A class built at runtime by a factory from a parameter; it is outside what the
     # scan proves, and it declares no hash authority:
-    "lionagi.protocols.graph.node_factory:144:11": "a node class built by a factory",
+    (
+        "lionagi.protocols.graph.node_factory",
+        "create_node",
+        "type-call",
+        "Call(func=Name(id='type', ctx=Load()), args=[Name(id='name', ctx=Load()), Tuple(elts=[Name(id='Node', ctx=Load())], ctx=Load()), Name(id='namespace', ctx=Load())], keywords=[])",
+    ): "a node class built by a factory",
     # An assignment to a class authority outside a class body; here it rebinds one
     # connection object's class to a stop-once subclass, on an object the scan does
     # not inventory:
-    "lionagi.state.engine:244:9": "a connection object taking a runtime subclass",
+    (
+        "lionagi.state.engine",
+        "_stop_aiosqlite_once",
+        "class-authority-assignment",
+        "Attribute(value=Name(id='driver_connection', ctx=Load()), attr='__class__', ctx=Store())",
+    ): "a connection object taking a runtime subclass",
     # A class whose base is a function parameter: the scan cannot see the class the
     # parameter holds, and each declares no hash authority of its own:
-    "lionagi.state.engine:182:30": "a subclass of a caller-supplied connection class",
-    "lionagi.testing.helpers:228:22": "a subclass of the class a classmethod is called on",
+    (
+        "lionagi.state.engine",
+        "_stop_once_class.<locals>.StopOnceConnection",
+        "class-base-unresolved",
+        "Name(id='cls', ctx=Load())",
+    ): "a subclass of a caller-supplied connection class",
+    (
+        "lionagi.testing.helpers",
+        "IModelKwargCaptor.fresh.<locals>._Local",
+        "class-base-unresolved",
+        "Name(id='cls', ctx=Load())",
+    ): "a subclass of the class a classmethod is called on",
     # A ``model_config`` the scan cannot read in full: ``SettingsConfigDict`` is the
     # settings analogue of ``ConfigDict``, and the entry below passes a callable rather
     # than a constant. Neither sets a frozen configuration, so neither class hashes:
-    "lionagi.config:171:5": "a pydantic settings config, which sets no frozen option",
-    "lionagi.studio.operator.types:52:5": "a config whose alias generator is a callable",
+    (
+        "lionagi.config",
+        "AppSettings",
+        "model-config-value",
+        "Assign(targets=[Name(id='model_config', ctx=Store())], value=Call(func=Name(id='SettingsConfigDict', ctx=Load()), args=[], keywords=[keyword(arg='env_file', value=Tuple(elts=[BinOp(left=Name(id='LIONAGI_HOME', ctx=Load()), op=Div(), right=Constant(value='.env')), Constant(value='.env'), Constant(value='.env.local'), Constant(value='.secrets.env')], ctx=Load())), keyword(arg='env_file_encoding', value=Constant(value='utf-8')), keyword(arg='case_sensitive', value=Constant(value=False)), keyword(arg='extra', value=Constant(value='ignore'))]))",
+    ): "a pydantic settings config, which sets no frozen option",
+    (
+        "lionagi.studio.operator.types",
+        "WireModel",
+        "model-config-value",
+        "Assign(targets=[Name(id='model_config', ctx=Store())], value=Call(func=Name(id='ConfigDict', ctx=Load()), args=[], keywords=[keyword(arg='alias_generator', value=Name(id='_to_camel', ctx=Load())), keyword(arg='populate_by_name', value=Constant(value=True)), keyword(arg='extra', value=Constant(value='forbid'))]))",
+    ): "a config whose alias generator is a callable",
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
-    "lionagi.studio.scheduler.signals:218:17": "a counter field on a dict-held object",
-    "lionagi.service.accounts._router:726:13": (
-        "a counter on a held character popped from a list, not a class attribute"
-    ),
-    "lionagi.studio.scheduler.signals:221:17": "a counter field on a dict-held object",
+    (
+        "lionagi.studio.scheduler.signals",
+        "SchedulerSignalBus.emit.<locals>._invoke",
+        "attribute-owner-shape",
+        "Attribute(value=Subscript(value=Attribute(value=Name(id='self', ctx=Load()), attr='_counters', ctx=Load()), slice=Name(id='run_id', ctx=Load()), ctx=Load()), attr='received', ctx=Store())",
+    ): "a counter field on a dict-held object",
+    (
+        "lionagi.service.accounts._router",
+        "StreamTextRedactor._feed",
+        "attribute-owner-shape",
+        "Attribute(value=Call(func=Attribute(value=Attribute(value=Name(id='join', ctx=Load()), attr='pending', ctx=Load()), attr='pop', ctx=Load()), args=[Constant(value=0)], keywords=[]), attr='open', ctx=Store())",
+    ): ("a counter on a held character popped from a list, not a class attribute"),
+    (
+        "lionagi.studio.scheduler.signals",
+        "SchedulerSignalBus.emit.<locals>._invoke",
+        "attribute-owner-shape",
+        "Attribute(value=Subscript(value=Attribute(value=Name(id='self', ctx=Load()), attr='_counters', ctx=Load()), slice=Name(id='run_id', ctx=Load()), ctx=Load()), attr='acted_on', ctx=Store())",
+    ): "a counter field on a dict-held object",
 }
+
+
+def _dump(node: ast.AST) -> str:
+    """The text of *node* as ``ast.dump`` writes it, without positions.
+
+    Python 3.13 stopped writing empty list fields unless asked to, so they are asked for
+    there and the text matches the one older interpreters write.
+    """
+    if sys.version_info >= (3, 13):
+        return ast.dump(node, annotate_fields=True, include_attributes=False, show_empty=True)
+    return ast.dump(node, annotate_fields=True, include_attributes=False)
+
+
+def _qualified(module: str, scope: str) -> str:
+    """The dotted class and function names of *scope* below *module*, or ``<module>``.
+
+    The scan tracks the body of a function as ``<function>.<locals>``; a node in that body
+    sits in the function, so the trailing marker is dropped and the name is the function's
+    own qualified name.
+    """
+    if scope == module:
+        return "<module>"
+    return scope.removeprefix(f"{module}.").removesuffix(".<locals>")
+
+
+@dataclass(frozen=True)
+class _Refusal:
+    """A shape the scan refused, identified the way the allowlist identifies it.
+
+    The identity is the module, the qualified name of the class or function scope the
+    refused node sits in (``<module>`` at the top level), the role of the refusal -- the
+    kind of site that refused it -- and the ``ast.dump`` of the node. The position and the
+    message are kept to name the node in a failure; they take no part in equality or in
+    allowlist membership, so an edit that only moves a refused node leaves its allowance in
+    place, and an edit that changes the node, its scope or the rule that refuses it does not.
+    """
+
+    module: str
+    scope: str
+    role: str
+    dump: str
+    reason: str = dataclass_field(compare=False)
+    location: str = dataclass_field(compare=False)
+
+    @property
+    def identity(self) -> tuple[str, str, str, str]:
+        return (self.module, self.scope, self.role, self.dump)
+
+
+@dataclass(frozen=True)
+class _Site:
+    """A node a refusal can name, with the module and scope it sits in and its position.
+
+    A refusal decided after every module is scanned is built from the site recorded when
+    the node was walked, so it keeps the scope the node sat in rather than the scope the
+    deferred check runs in.
+    """
+
+    module: str
+    scope: str
+    node: ast.AST
+    location: str
+
+    def refuse(self, role: str, reason: str) -> _Refusal:
+        return _Refusal(
+            self.module,
+            _qualified(self.module, self.scope),
+            role,
+            _dump(self.node),
+            reason,
+            self.location,
+        )
 
 
 @dataclass
@@ -291,7 +643,7 @@ class _Class:
 class _Mutation:
     """A write the walk reads, resolved once every module's bindings are known."""
 
-    location: str
+    site: _Site
     kind: str
     module: str
     owner: ast.AST
@@ -311,7 +663,7 @@ class _Scan:
     aliases: dict[str, set[str]]
     symbols: set[str]
     writes: list[tuple[str, str]]
-    refusals: list[tuple[str, str]]
+    refusals: list[_Refusal]
     # How many times each name was given a new value, by the alias key of its scope -- an
     # assignment, a walrus or a loop target. A name given a second value holds more than
     # one, and which a reference receives is decided by runtime order the scan does not
@@ -1294,15 +1646,17 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
     result = _Scan({}, {}, set(), [], [], {}, set(), set(), [], set(), {}, 0, {})
     calls: list[tuple[str, frozenset[str], str, str]] = []
     setattr_calls: list[
-        tuple[str | None, str, str, ast.Call, dict[str, str], dict[str, frozenset[str]] | None, str]
+        tuple[
+            str | None, _Site, str, ast.Call, dict[str, str], dict[str, frozenset[str]] | None, str
+        ]
     ] = []
-    type_calls: list[tuple[str, str, bool]] = []
-    base_refusals: list[tuple[str, ast.AST, dict[str, str], str, str | None]] = []
-    decorator_refusals: list[tuple[str, ast.AST, str, dict[str, str], str | None]] = []
-    refusals: list[tuple[str, str]] = []
+    type_calls: list[tuple[str, _Site, bool]] = []
+    base_refusals: list[tuple[_Site, ast.AST, dict[str, str], str, str | None]] = []
+    decorator_refusals: list[tuple[_Site, ast.AST, str, dict[str, str], str | None]] = []
+    refusals: list[_Refusal] = []
     # The calls that are not in a decorator position, kept until every alias resolves so a
     # call through a re-exported ``dataclass`` is judged after its alias is known.
-    dataclass_calls: list[tuple[str | None, str]] = []
+    dataclass_calls: list[tuple[str | None, _Site]] = []
     # A call that carries a hash keyword -- ``unsafe_hash=`` or ``frozen=`` -- with a
     # value other than false, and is not the read decorator form. Whether it writes hash
     # authority is decided after every alias resolves, so a call through a re-exported
@@ -1310,14 +1664,14 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
     hash_calls: list[
         tuple[
             str | None,
-            str,
+            _Site,
             tuple[tuple[str, dict[str, str], dict[str, frozenset[str]] | None, str], ...],
         ]
     ] = []
     # A bare ``super()`` write is read only when the name still resolves to the builtin
     # in its whole scope. A local ``super`` may be assigned after the call, so the check
     # waits until the module walk has seen every binding.
-    super_calls: list[tuple[str, str]] = []
+    super_calls: list[tuple[_Site, str]] = []
     for module, (package, source) in sources.items():
         tree = ast.parse(source, filename=module)
         # The nodes a class decorator is written as, so a ``dataclass`` call written as a
@@ -1329,6 +1683,24 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
             if isinstance(node, ast.ClassDef)
             for decorator in node.decorator_list
         }
+
+        def site(scope: str, node: ast.AST, location: str | None = None) -> _Site:
+            """The site of *node* in *scope*; *location* overrides the node's own position."""
+            return _Site(
+                module,
+                scope,
+                node,
+                location or f"{module}:{node.lineno}:{node.col_offset + 1}",
+            )
+
+        def refuse(
+            scope: str,
+            node: ast.AST,
+            role: str,
+            reason: str,
+            location: str | None = None,
+        ) -> None:
+            refusals.append(site(scope, node, location).refuse(role, reason))
 
         def walk(
             body: list[ast.stmt],
@@ -1371,9 +1743,6 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         if key == f"{module}.{name}" or key.endswith(f".{name}"):
                             result.aliases.setdefault(key, set()).add(_UNRESOLVED)
 
-            def refuse(lineno: int, col: int, reason: str) -> None:
-                refusals.append((f"{module}:{lineno}:{col + 1}", reason))
-
             def record_mutation(
                 statement: ast.AST,
                 reason: str,
@@ -1397,7 +1766,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                     return
                 result.mutations.append(
                     _Mutation(
-                        f"{module}:{statement.lineno}:{statement.col_offset + 1}",
+                        site(current_scope, statement),
                         reason,
                         module,
                         owner,
@@ -1433,11 +1802,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                     )
                 elif isinstance(target, ast.Attribute):
                     if not _plain_dotted(target.value):
-                        refusals.append(
-                            (
-                                f"{module}:{target.lineno}:{target.col_offset + 1}",
-                                "an attribute assignment whose owner is not a plain name",
-                            )
+                        refuse(
+                            scope,
+                            target,
+                            "attribute-owner-shape",
+                            "an attribute assignment whose owner is not a plain name",
                         )
                         return
                     if target.attr in _CLASS_AUTHORITY:
@@ -1445,11 +1814,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         # configuration it inherits after its declaration, so a class the
                         # scan inventories could take another base, metaclass or
                         # configuration without any declaration to read.
-                        refusals.append(
-                            (
-                                f"{module}:{target.lineno}:{target.col_offset + 1}",
-                                f"an assignment to {target.attr!r} outside a class body",
-                            )
+                        refuse(
+                            scope,
+                            target,
+                            "class-authority-assignment",
+                            f"an assignment to {target.attr!r} outside a class body",
                         )
                     elif target.attr in {"__hash__", "__eq__", "model_config", "Config"}:
                         owner = _symbol(target.value, bindings, module)
@@ -1459,11 +1828,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                             # item of a list, or a name the function declared ``global``
                             # -- so the write is refused rather than recorded against a
                             # class the scan cannot name.
-                            refusals.append(
-                                (
-                                    f"{module}:{target.lineno}:{target.col_offset + 1}",
-                                    "an attribute assignment whose owner the scan cannot read",
-                                )
+                            refuse(
+                                scope,
+                                target,
+                                "attribute-owner-unresolved",
+                                "an attribute assignment whose owner the scan cannot read",
                             )
                         elif owner and not _none(value):
                             # The owner is resolved once every module is scanned, so a
@@ -1514,11 +1883,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                     # refused; a plain name is left unresolved, so a base, decorator or
                     # configuration it supplies is refused where it is used.
                     if _contains_attribute(target):
-                        refusals.append(
-                            (
-                                f"{module}:{target.lineno}:{target.col_offset + 1}",
-                                "a starred assignment target the scan cannot read",
-                            )
+                        refuse(
+                            scope,
+                            target,
+                            "starred-target",
+                            "a starred assignment target the scan cannot read",
                         )
                     else:
                         for element in target.elts:
@@ -1544,11 +1913,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                     if write is not None:
                         owner, names = write
                         if names is None:
-                            refusals.append(
-                                (
-                                    f"{module}:{target.lineno}:{target.col_offset + 1}",
-                                    "a class dictionary write the scan cannot read",
-                                )
+                            refuse(
+                                scope,
+                                target,
+                                "class-dictionary-write",
+                                "a class dictionary write the scan cannot read",
                             )
                         for item_name in names or ():
                             record_mutation(
@@ -1579,11 +1948,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                 # go unread. A subscript target writes no class attribute and is left.
                 if isinstance(target, (ast.Tuple, ast.List, ast.Set, ast.Starred)):
                     if _contains_attribute(target):
-                        refusals.append(
-                            (
-                                f"{module}:{target.lineno}:{target.col_offset + 1}",
-                                "a loop, with or comprehension target the scan cannot read",
-                            )
+                        refuse(
+                            scope,
+                            target,
+                            "loop-target",
+                            "a loop, with or comprehension target the scan cannot read",
                         )
                         return
                 # A name iterating a literal tuple, list or set takes each element in turn;
@@ -1633,11 +2002,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                 # A configuration bound inside an expression is not a
                                 # statement the scan reads as a setting, so the class it
                                 # configures could be frozen unread.
-                                refusals.append(
-                                    (
-                                        f"{module}:{item.lineno}:{item.col_offset + 1}",
-                                        "a model_config target the scan cannot read",
-                                    )
+                                refuse(
+                                    scope,
+                                    item,
+                                    "model-config-walrus",
+                                    "a model_config target the scan cannot read",
                                 )
                             else:
                                 assignment(item.target, item.value)
@@ -1681,27 +2050,27 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         # subscript base takes one item of a value the scan does not read,
                         # so it is refused at once rather than resolved.
                         if isinstance(base, ast.Subscript):
-                            refusals.append(
-                                (
-                                    f"{module}:{base.lineno}:{base.col_offset + 1}",
-                                    "a class base the scan cannot read",
-                                )
+                            refuse(
+                                fqn,
+                                base,
+                                "class-base-subscript",
+                                "a class base the scan cannot read",
                             )
                             continue
                         if not _plain_dotted(base):
                             # A base that is not a plain name or a dotted chain -- a call,
                             # a lambda, a conditional expression, a tuple joined together
                             # -- is a value the scan does not follow.
-                            refusals.append(
-                                (
-                                    f"{module}:{base.lineno}:{base.col_offset + 1}",
-                                    "a class base the scan cannot read",
-                                )
+                            refuse(
+                                fqn,
+                                base,
+                                "class-base-expression",
+                                "a class base the scan cannot read",
                             )
                             continue
                         base_refusals.append(
                             (
-                                f"{module}:{base.lineno}:{base.col_offset + 1}",
+                                site(fqn, base),
                                 base,
                                 dict(bindings),
                                 module,
@@ -1719,34 +2088,37 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         )
                     for keyword in node.keywords:
                         if keyword.arg is None:
-                            refusals.append(
-                                (
-                                    f"{module}:{node.lineno}:{node.col_offset + 1}",
-                                    "a class keyword the scan cannot read",
-                                )
+                            refuse(
+                                fqn,
+                                keyword,
+                                "class-keyword-unpack",
+                                "a class keyword the scan cannot read",
+                                location,
                             )
                         elif keyword.arg == "metaclass":
-                            refusals.append(
-                                (
-                                    location,
-                                    "a class whose metaclass the scan cannot inventory",
-                                )
+                            refuse(
+                                fqn,
+                                keyword,
+                                "class-metaclass",
+                                "a class whose metaclass the scan cannot inventory",
+                                location,
                             )
                         elif keyword.arg not in _HASH_KEYWORDS and not isinstance(
                             keyword.value, ast.Constant
                         ):
-                            refusals.append(
-                                (
-                                    location,
-                                    f"a class keyword {keyword.arg!r} the scan cannot read",
-                                )
+                            refuse(
+                                fqn,
+                                keyword,
+                                "class-keyword-value",
+                                f"a class keyword {keyword.arg!r} the scan cannot read",
+                                location,
                             )
                     for decorator in node.decorator_list:
                         # A decorator is read when it resolves to a named allow-list
                         # entry, so this too waits until every module is scanned.
                         decorator_refusals.append(
                             (
-                                f"{module}:{decorator.lineno}:{decorator.col_offset + 1}",
+                                site(fqn, decorator),
                                 decorator,
                                 module,
                                 dict(bindings),
@@ -1776,11 +2148,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                 # scan reads: a tuple, list, starred or loop target, a
                                 # walrus, an augmented assignment, a `with ... as`
                                 # target, a call, or a name bound to another variable.
-                                refusals.append(
-                                    (
-                                        f"{module}:{statement.lineno}:{statement.col_offset + 1}",
-                                        f"a binding of {name!r} the scan cannot read",
-                                    )
+                                refuse(
+                                    fqn,
+                                    statement,
+                                    "authority-binding",
+                                    f"a binding of {name!r} the scan cannot read",
                                 )
                             elif name == "model_config" and not _readable_config(
                                 statement.value,
@@ -1790,18 +2162,18 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                 bindings,
                                 _alias_key(statement.value, scope),
                             ):
-                                refusals.append(
-                                    (
-                                        f"{module}:{statement.lineno}:{statement.col_offset + 1}",
-                                        "a model_config value the scan cannot read",
-                                    )
+                                refuse(
+                                    fqn,
+                                    statement,
+                                    "model-config-value",
+                                    "a model_config value the scan cannot read",
                                 )
                             elif name == "Config" and not _reads_config_class(statement):
-                                refusals.append(
-                                    (
-                                        f"{module}:{statement.lineno}:{statement.col_offset + 1}",
-                                        "a Config body the scan cannot read",
-                                    )
+                                refuse(
+                                    fqn,
+                                    statement,
+                                    "config-body",
+                                    "a Config body the scan cannot read",
                                 )
                     bases = tuple(
                         symbol
@@ -1824,11 +2196,12 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         # The same class name declared twice in one scope leaves only the
                         # last definition, so a descendant, a frozen configuration or a
                         # declared hash in the first could be dropped unread.
-                        refusals.append(
-                            (
-                                location,
-                                f"a second declaration of {fqn} the scan cannot read",
-                            )
+                        refuse(
+                            fqn,
+                            node,
+                            "class-redeclared",
+                            f"a second declaration of {fqn} the scan cannot read",
+                            location,
                         )
                     result.classes[fqn] = _Class(node, location, bases, decorators)
                     result.symbols.add(fqn)
@@ -1881,11 +2254,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         if not isinstance(target, ast.Attribute):
                             continue
                         if not _plain_dotted(target.value):
-                            refusals.append(
-                                (
-                                    f"{module}:{target.lineno}:{target.col_offset + 1}",
-                                    "an attribute deletion whose owner is not a plain name",
-                                )
+                            refuse(
+                                scope,
+                                target,
+                                "attribute-delete-owner",
+                                "an attribute deletion whose owner is not a plain name",
                             )
                             continue
                         if target.attr in _CLASS_AUTHORITY | {"__hash__", "__eq__"}:
@@ -1966,7 +2339,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         # class, so the inner call's function is what identifies it.
                         function = _symbol(call.func.func, bindings, module)
                     canonical = _canonicals(function, result.aliases) if function else frozenset()
-                    location = f"{module}:{call.lineno}:{call.col_offset + 1}"
+                    call_site = site(scope, call)
                     # ``type(value)`` reads a type, which is not a class the scan has
                     # to inventory, and the meta-type it returns may be called as an
                     # ordinary constructor. A three-argument call builds a class, as
@@ -1990,7 +2363,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                             or isinstance(call.args[0], ast.Starred)
                         )
                     if builds_a_class:
-                        type_calls.append((function, location, True))
+                        type_calls.append((function, call_site, True))
                     if "builtins.type" in canonical:
                         continue
                     attribute_writer = (
@@ -2016,14 +2389,19 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                             else None
                         )
                         if resolved and resolved <= {"builtins.super"}:
-                            super_calls.append((location, f"{scope}.super"))
+                            super_calls.append((call_site, f"{scope}.super"))
                             # The bare ``super()`` form writes an instance field through the
                             # class's own ``__setattr__``, not a class authority, so it is
                             # read. The name must resolve to nothing but ``builtins.super``:
                             # a name bound more than once -- a local ``super`` beside the
                             # builtin -- could name any object, so it is refused.
                             continue
-                        refusals.append((location, "a setattr call the scan cannot read"))
+                        refuse(
+                            scope,
+                            call,
+                            "setattr-receiver",
+                            "a setattr call the scan cannot read",
+                        )
                         continue
                     if not function and not attribute_writer:
                         continue
@@ -2032,7 +2410,12 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         # A call through an attribute-writing name whose function the
                         # scan cannot resolve is refused: the class it writes may be one
                         # the scan inventories and the write would otherwise go unread.
-                        refusals.append((location, "a setattr call the scan cannot read"))
+                        refuse(
+                            scope,
+                            call,
+                            "setattr-writer",
+                            "a setattr call the scan cannot read",
+                        )
                         continue
                     if not call.args and not call.keywords:
                         # A bare call -- ``ConfigDict()``, ``Field()`` -- is a value the
@@ -2054,7 +2437,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                     setattr_calls.append(
                         (
                             function,
-                            location,
+                            call_site,
                             owner or "",
                             call,
                             dict(bindings),
@@ -2073,7 +2456,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         # refused. Whether the name IS ``dataclass`` is decided after every
                         # module is scanned: a call through a re-exported alias is judged
                         # once that alias resolves, not before.
-                        dataclass_calls.append((function, location))
+                        dataclass_calls.append((function, call_site))
                         if any(
                             kw.arg in _HASH_KEYWORDS and not _false(kw.value)
                             for kw in call.keywords
@@ -2085,7 +2468,12 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                             if any(
                                 isinstance(argument, ast.Starred) for argument in call.args
                             ) or any(kw.arg is None for kw in call.keywords):
-                                refusals.append((location, "a decorator call the scan cannot read"))
+                                refuse(
+                                    scope,
+                                    call,
+                                    "hash-call-unpack",
+                                    "a decorator call the scan cannot read",
+                                )
                                 continue
                             arguments = []
                             for argument in call.args:
@@ -2206,7 +2594,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                             hash_calls.append(
                                 (
                                     function,
-                                    location,
+                                    call_site,
                                     tuple(arguments),
                                 )
                             )
@@ -2217,18 +2605,25 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                             # ``partial(decorate, unsafe_hash=True)(Known)`` applies a
                             # curried call that carries a hash keyword, which the scan
                             # does not follow.
-                            refusals.append((location, "a decorator call the scan cannot read"))
+                            refuse(
+                                scope,
+                                call,
+                                "hash-call-partial",
+                                "a decorator call the scan cannot read",
+                            )
 
         walk(tree.body, {}, module)
-    for location, key in super_calls:
+    for call_site, key in super_calls:
         if key in result.aliases or (result.binds or {}).get(key):
             # A local ``super`` shadows the builtin for every reference in its scope,
             # including one written before the assignment, so the write target could be
             # any object. It is refused rather than read as the builtin.
-            refusals.append((location, "a setattr call the scan cannot read"))
+            refusals.append(
+                call_site.refuse("setattr-shadowed-super", "a setattr call the scan cannot read")
+            )
     # A base is read only when its spine resolves to a class the scan inventories,
     # whichever module declares it, so this runs once every module has been scanned.
-    for location, base, bindings, module, key, owner, before, scope in base_refusals:
+    for base_site, base, bindings, module, key, owner, before, scope in base_refusals:
         if not _readable_base(
             base,
             result.aliases,
@@ -2246,8 +2641,19 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
             result.declaration_counts,
             result.alias_first,
         ):
-            refusals.append((location, "a class base the scan cannot read"))
-    for location, decorator, module, bindings, key, owner, before, scope in decorator_refusals:
+            refusals.append(
+                base_site.refuse("class-base-unresolved", "a class base the scan cannot read")
+            )
+    for (
+        decorator_site,
+        decorator,
+        module,
+        bindings,
+        key,
+        owner,
+        before,
+        scope,
+    ) in decorator_refusals:
         if not _readable_decorator(
             decorator,
             result.aliases,
@@ -2264,12 +2670,16 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
             result.declaration_counts,
             result.alias_first,
         ):
-            refusals.append((location, "a decorator the scan cannot read"))
-    for function, location in dataclass_calls:
+            refusals.append(
+                decorator_site.refuse("decorator-unresolved", "a decorator the scan cannot read")
+            )
+    for function, call_site in dataclass_calls:
         if function and "dataclasses.dataclass" in _canonicals(function, result.aliases):
-            refusals.append((location, "a dataclass call that is not a decorator"))
+            refusals.append(
+                call_site.refuse("dataclass-call", "a dataclass call that is not a decorator")
+            )
     declared_classes = set(result.classes)
-    for function, location, arguments in hash_calls:
+    for function, call_site, arguments in hash_calls:
         if function and "dataclasses.dataclass" in _canonicals(function, result.aliases):
             # A ``dataclass`` call outside a decorator position is refused above; it does
             # not need a second refusal here.
@@ -2288,16 +2698,18 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
             # The call passes a class the scan inventories and a hash keyword that is not
             # false, so it can turn on a generated hash for that class. The scan does not
             # follow what the call does with it, so the call is refused rather than read.
-            refusals.append((location, "a decorator call the scan cannot read"))
-    for function, location, builds_a_class in type_calls:
+            refusals.append(
+                call_site.refuse("hash-call-class", "a decorator call the scan cannot read")
+            )
+    for function, call_site, builds_a_class in type_calls:
         if not builds_a_class or not function:
             continue
         if "builtins.type" in _canonicals(function, result.aliases):
-            refusals.append((location, "a class built with type()"))
+            refusals.append(call_site.refuse("type-call", "a class built with type()"))
     for function, expected, owner, description in calls:
         if _canonicals(function, result.aliases) & expected:
             result.writes.append((owner, description))
-    for function, location, owner, call, bindings, before, scope in setattr_calls:
+    for function, call_site, owner, call, bindings, before, scope in setattr_calls:
         canonical = _canonicals(function, result.aliases)
         if not (canonical & _SETATTR):
             continue
@@ -2329,13 +2741,20 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
             # A setattr whose owner, attribute and value the scan cannot read as three
             # literal arguments is refused, and so is every delattr, which takes two:
             # writing or removing a class authority through it would go unread.
-            refusals.append((location, "a setattr call the scan cannot read"))
+            refusals.append(
+                call_site.refuse("setattr-arguments", "a setattr call the scan cannot read")
+            )
         elif second.value in _CLASS_AUTHORITY:
             # Writing ``__bases__``, ``__class__``, ``__mro__`` or ``model_config``
             # through ``setattr`` rebinds what the class is or the configuration it
             # inherits after its declaration, so it is refused rather than reported as a
             # class write the inventory could follow.
-            refusals.append((location, f"a setattr write of {second.value!r} the scan cannot read"))
+            refusals.append(
+                call_site.refuse(
+                    "setattr-authority",
+                    f"a setattr write of {second.value!r} the scan cannot read",
+                )
+            )
         elif second.value in {"__hash__", "__eq__"} and owner and not _none(call.args[2]):
             result.writes.append((owner, f"setattr {second.value}"))
         elif owner:
@@ -2397,7 +2816,9 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                 and _mutation_target_is_readable(mutation, result)
             )
         ):
-            refusals.append((mutation.location, f"{mutation.kind} the scan cannot read"))
+            refusals.append(
+                mutation.site.refuse("mutation-target", f"{mutation.kind} the scan cannot read")
+            )
             if mutation.attribute in _AUTHORITY_NAMES:
                 continue
         owner = _symbol(mutation.owner, mutation.bindings, mutation.module)
@@ -2407,7 +2828,9 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                 # The owner chain takes a value the scan cannot read -- a loop or
                 # ``with`` target, a subscript, or a parameter -- so the write could land
                 # on any class. It is refused rather than reported against a name.
-                refusals.append((mutation.location, f"{mutation.kind} the scan cannot read"))
+                refusals.append(
+                    mutation.site.refuse("mutation-owner", f"{mutation.kind} the scan cannot read")
+                )
                 continue
         if owner and mutation.attribute in _AUTHORITY_NAMES:
             result.writes.append((owner, mutation.kind))
@@ -2511,7 +2934,24 @@ def _generation(declaration: _Class, aliases: dict[str, set[str]], module: str) 
     return False
 
 
-def _violations(scan: _Scan, expected: set[str]) -> list[str]:
+def _unmatched_allowances(
+    scan: _Scan, allowlist: dict[tuple[str, str, str, str], str]
+) -> list[str]:
+    """The allowance identities no refusal in *scan* carries.
+
+    An allowance that matches nothing is stale: the shape it audited is gone or has
+    changed, so it must leave the allowlist rather than wait to excuse a later shape.
+    """
+    refused = {refusal.identity for refusal in scan.refusals}
+    return [f"{identity!r}" for identity in allowlist if identity not in refused]
+
+
+def _violations(
+    scan: _Scan,
+    expected: set[str],
+    allowlist: dict[tuple[str, str, str, str], str] | None = None,
+) -> list[str]:
+    audited = _ALLOWLIST if allowlist is None else allowlist
     selected = _selected(scan)
     violations = []
     if selected != expected:
@@ -2521,9 +2961,19 @@ def _violations(scan: _Scan, expected: set[str]) -> list[str]:
     for owner, description in scan.writes:
         for resolved in _canonicals(owner, scan.aliases) & selected:
             violations.append(f"{resolved}: {description}")
-    for location, reason in scan.refusals:
-        if location not in _ALLOWLIST:
-            violations.append(f"{location}: {reason}")
+    seen: set[tuple[str, str, str, str]] = set()
+    for refusal in scan.refusals:
+        if refusal.identity in seen:
+            # One allowance audits one occurrence. A second refusal with the same identity
+            # is a shape the audit never looked at, whatever the allowlist holds.
+            violations.append(
+                f"{refusal.location}: {refusal.reason}; an identical refusal "
+                "(same module, scope, role and node) is already in this scan"
+            )
+            continue
+        seen.add(refusal.identity)
+        if refusal.identity not in audited:
+            violations.append(f"{refusal.location}: {refusal.reason}")
     for name, declaration in scan.classes.items():
         if any(_UNRESOLVED in _canonicals(base, scan.aliases) for base in declaration.bases):
             violations.append(
@@ -3607,7 +4057,7 @@ def test_a_class_shape_the_scan_cannot_read_is_reported(case):
     scan = _sample(source, _UNREADABLE_SHAPE_MODULES.get(name))
     errors = _violations(scan, {*_ROOTS, "sample.Known"})
     assert errors, f"shape was neither reported nor allowlisted: {snippet!r}"
-    assert not any(error in _ALLOWLIST for error in errors), errors
+    assert not any(refusal.identity in _ALLOWLIST for refusal in scan.refusals), scan.refusals
     assert all(error.split(": ", 1)[0].count(":") == 2 for error in errors), errors
 
 
@@ -3919,12 +4369,206 @@ def test_a_shape_the_scan_cannot_read_is_refused_or_allowlisted(case_id, snippet
 
 
 def test_the_scan_allowlist_names_exactly_the_production_refusals_with_a_reason():
-    """The allowlist and the production refusals name the same locations: a site that
+    """The allowlist and the production refusals name the same identities: a shape that
     is no longer refused must leave the allowlist, and a new refusal must not pass
-    silently. Each key is ``module:line:column`` with a reason.
+    silently. Each key is ``(module, qualified scope, role, node dump)`` with a reason.
     """
     assert _ALLOWLIST, "the allowlist must carry the audited production shapes"
-    for location, reason in _ALLOWLIST.items():
-        assert location.count(":") == 2, location
-        assert reason.strip(), location
-    assert set(_ALLOWLIST) == {location for location, _ in _production().refusals}
+    for identity, reason in _ALLOWLIST.items():
+        assert len(identity) == 4 and all(part.strip() for part in identity), identity
+        assert reason.strip(), identity
+    scan = _production()
+    identities = [refusal.identity for refusal in scan.refusals]
+    assert len(identities) == len(set(identities)), "two production refusals share an identity"
+    assert _unmatched_allowances(scan, _ALLOWLIST) == []
+    assert set(_ALLOWLIST) == set(identities)
+
+
+def _audit(scan: _Scan) -> dict[tuple[str, str, str, str], str]:
+    """An allowlist that audits every refusal in *scan*, as the production one audits its own."""
+    return {refusal.identity: "an audited fixture shape" for refusal in scan.refusals}
+
+
+def _gate(scan: _Scan, allowlist: dict[tuple[str, str, str, str], str]) -> list[str]:
+    """Everything the allowlist gate reports for *scan*: refusals it does not excuse and
+    allowances that match no refusal."""
+    return [
+        *_violations(scan, {*_ROOTS}, allowlist),
+        *(
+            f"unmatched allowance: {identity}"
+            for identity in _unmatched_allowances(scan, allowlist)
+        ),
+    ]
+
+
+_BOX = "from typing import Generic, TypeVar\nT = TypeVar('T')\nclass Box(Generic[T]):\n    pass\n"
+_POKE = "def poke(owner, name):\n    setattr(owner, name, 1)\n"
+
+
+def test_a_node_dump_spells_out_empty_lists_on_every_python():
+    """The allowlist holds node dumps as text. Python 3.13 left empty list fields out of
+    ``ast.dump`` unless asked, so the dump of one call is the same text on every supported
+    interpreter only because the helper asks."""
+    call = ast.parse("f(a)", mode="eval").body
+    assert _dump(call) == (
+        "Call(func=Name(id='f', ctx=Load()), args=[Name(id='a', ctx=Load())], keywords=[])"
+    )
+
+
+@pytest.mark.parametrize(
+    "source, scope",
+    [
+        ("ITEMS = [object()]\nITEMS[0].label = 1\n", "<module>"),
+        ("class Holder:\n    ITEMS = [object()]\n    ITEMS[0].label = 1\n", "Holder"),
+        ("def build():\n    ITEMS = [object()]\n    ITEMS[0].label = 1\n", "build"),
+        (
+            "class Holder:\n    def method(self):\n        self.items[0].label = 1\n",
+            "Holder.method",
+        ),
+        ("def build():\n    class Local(Base[T]):\n        pass\n", "build.<locals>.Local"),
+        ("class Outer:\n    class Inner(Base[T]):\n        pass\n", "Outer.Inner"),
+    ],
+    ids=["module", "class body", "function", "method", "class in a function", "nested class"],
+)
+def test_a_refusal_names_the_scope_it_sits_in(source, scope):
+    refusals = _sample(source).refusals
+    assert [(refusal.module, refusal.scope) for refusal in refusals] == [("sample", scope)]
+
+
+@pytest.mark.parametrize(
+    "above, refused",
+    [
+        pytest.param(
+            "from typing import Generic, TypeVar\nT = TypeVar('T')\n",
+            "class Box(Generic[T]):\n    pass\n",
+            id="a subscripted class base",
+        ),
+        pytest.param("OWNER = None\n", _POKE, id="a setattr through a name"),
+    ],
+)
+def test_an_allowance_survives_lines_added_above_the_refused_node(above, refused):
+    audited = _sample(above + refused)
+    moved = _sample(above + "\n\n# a note above the node\n\n# and another\n\n" + refused)
+    assert audited.refusals, "the fixture must be refused"
+    allowlist = _audit(audited)
+    assert _violations(moved, {*_ROOTS}, {}) != [], "the fixture must be gated by the allowlist"
+
+    # The node sits on other lines, and nothing else about the refusal changed.
+    assert [r.location for r in moved.refusals] != [r.location for r in audited.refusals]
+    assert [r.identity for r in moved.refusals] == [r.identity for r in audited.refusals]
+    assert moved.refusals == audited.refusals
+    assert _gate(audited, allowlist) == []
+    assert _gate(moved, allowlist) == []
+
+
+@pytest.mark.parametrize(
+    "audited, changed",
+    [
+        pytest.param(
+            _BOX,
+            _BOX.replace("Generic[T]", "Sequence[T]").replace(
+                "class Box", "from collections.abc import Sequence\nclass Box"
+            ),
+            id="the base is another expression",
+        ),
+        pytest.param(
+            _POKE,
+            _POKE.replace("name, 1", "name, 2"),
+            id="the call takes another argument",
+        ),
+        pytest.param(
+            _POKE,
+            _POKE.replace("setattr(", "object.__setattr__("),
+            id="the call is another function",
+        ),
+    ],
+)
+def test_an_allowance_does_not_cover_a_different_node(audited, changed):
+    allowlist = _audit(_sample(audited))
+    scan = _sample(changed)
+    (refusal,) = scan.refusals
+    ((stale, _),) = allowlist.items()
+    assert refusal.identity != stale
+    assert _gate(scan, allowlist) == [
+        f"{refusal.location}: {refusal.reason}",
+        f"unmatched allowance: {stale}",
+    ]
+
+
+def test_a_second_unreadable_base_under_an_audited_class_is_refused():
+    allowlist = _audit(_sample(_BOX))
+    scan = _sample(
+        "from collections.abc import Sequence\n"
+        + _BOX.replace("Generic[T]", "Generic[T], Sequence[T]")
+    )
+    (kept, added) = scan.refusals
+    assert kept.scope == added.scope == "Box"
+    assert kept.identity in allowlist
+    assert _gate(scan, allowlist) == [f"{added.location}: {added.reason}"]
+
+
+@pytest.mark.parametrize(
+    "audited, moved",
+    [
+        pytest.param(_BOX, _BOX.replace("Box", "Crate"), id="a class renamed"),
+        pytest.param(
+            _BOX,
+            _BOX.replace("class Box", "class Outer:\n    class Box").replace(
+                "    pass", "        pass"
+            ),
+            id="a class nested in a class",
+        ),
+        pytest.param(
+            _BOX,
+            _BOX.replace("class Box", "def build():\n    class Box").replace(
+                "    pass", "        pass"
+            ),
+            id="a class nested in a function",
+        ),
+        pytest.param(_POKE, _POKE.replace("poke", "prod"), id="a function renamed"),
+        pytest.param(
+            _POKE,
+            "def outer():\n    " + _POKE.replace("\n    ", "\n        "),
+            id="a function nested in a function",
+        ),
+    ],
+)
+def test_an_allowance_does_not_follow_a_node_into_another_scope(audited, moved):
+    allowlist = _audit(_sample(audited))
+    ((module, scope, role, dump),) = allowlist
+    scan = _sample(moved)
+    (refusal,) = scan.refusals
+    # Only the qualified name differs, so it is the name that separates the two.
+    assert (refusal.module, refusal.role, refusal.dump) == (module, role, dump)
+    assert refusal.scope != scope
+    assert _gate(scan, allowlist) == [
+        f"{refusal.location}: {refusal.reason}",
+        f"unmatched allowance: {(module, scope, role, dump)}",
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            "def poke(owner, name):\n    setattr(owner, name, 1)\n    setattr(owner, name, 1)\n",
+            id="a call repeated in one function",
+        ),
+        pytest.param(
+            _BOX.replace("Generic[T]", "Generic[T], Generic[T]"),
+            id="a base repeated under one class",
+        ),
+    ],
+)
+def test_an_identical_refusal_in_one_scan_fails_even_when_audited(source):
+    scan = _sample(source)
+    first, second = scan.refusals
+    assert first.identity == second.identity
+    assert first.location != second.location
+    # The allowlist names the identity, and a dictionary names it once, so one allowance
+    # cannot stand for both occurrences.
+    allowlist = _audit(scan)
+    assert list(allowlist) == [first.identity]
+    (problem,) = _gate(scan, allowlist)
+    assert problem.startswith(f"{second.location}: {second.reason}")
+    assert "an identical refusal" in problem

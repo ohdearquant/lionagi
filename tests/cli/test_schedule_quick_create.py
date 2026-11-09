@@ -32,7 +32,7 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     itself carrying no project markers (git/config.toml) so quick-create
     project auto-detection resolves to None -- see test_schedule_declaration.py
     for the identical rationale on pinning _find_lionagi_dirs directly."""
-    import lionagi.cli._providers as providers_mod
+    import lionhub.orchestration.spawn as providers_mod
 
     agents_dir = tmp_path / ".lionagi" / "agents"
     agents_dir.mkdir(parents=True)

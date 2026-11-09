@@ -132,8 +132,8 @@ async def test_run_agent_persists_execution_provenance(monkeypatch, tmp_path):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
     from lionagi.service.manager import iModelManager
 

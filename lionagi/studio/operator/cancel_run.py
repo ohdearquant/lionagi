@@ -18,12 +18,15 @@ un-gate of a cancelled run's status.
 
 from __future__ import annotations
 
+import asyncio
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.concurrency import sleep
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.state.session_naming import resolve_display_name
 
 from . import _common
@@ -183,7 +186,7 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
     it and hide a match behind them. See docs/internals/studio.md
     ("Resolving a run reference").
     """
-    from lionagi.cli._util import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
+    from lionhub.orchestration.job import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
 
     ref = ref.strip()
     if not ref:
@@ -282,31 +285,49 @@ async def _resolve_reference(store: OperatorStore, request_id: str, ref: str) ->
 
 
 def _redacted_cancel_result(proposal: dict[str, Any], run_id: str) -> dict[str, Any]:
+    raw = proposal.get("result")
+    result = raw if isinstance(raw, dict) else {}
     if proposal["status"] != "succeeded":
+        if proposal.get("errorCode") == "cancel_state_write_failed":
+            return {
+                "cancelled": False,
+                "status": "indeterminate",
+                "reason": "cancel_state_write_failed",
+                "signal_sent": result.get("signal_sent"),
+                "failed_entity_kind": result.get("failed_entity_kind"),
+                "run_untouched": None,
+                "id": run_id,
+            }
         reason = "denied" if proposal["status"] == "cancelled" else proposal["status"]
         return {
             "cancelled": False,
             "reason": reason,
-            "run_untouched": True,
+            "run_untouched": True if proposal["status"] in {"cancelled", "expired"} else None,
             "id": run_id,
         }
-    raw = proposal.get("result")
-    result = raw if isinstance(raw, dict) else {}
     # A "succeeded" proposal only means the executor ran without raising --
     # it says nothing about whether the run was actually cancelled.
     # `execute_cancel_command` names its outcome in `status`; "terminal" is
     # the only value that means the database row now holds "cancelled". Every
-    # other outcome (not_found, already_terminal, identity_mismatch) is the
-    # process staying exactly as it was, so `cancelled` must say so.
+    # other outcome must not be described as a successful cancellation.
     status = result.get("status", "unknown")
     cancelled = status == "terminal"
-    return {
+    untouched = result.get("run_untouched")
+    if "run_untouched" not in result:
+        untouched = (
+            False if cancelled else True if status in {"not_found", "already_terminal"} else None
+        )
+    output = {
         "cancelled": cancelled,
         "status": status,
         "id": run_id,
         "signal": result.get("signal"),
-        "run_untouched": not cancelled,
+        "run_untouched": untouched,
     }
+    for field in ("reason", "signal_sent"):
+        if field in result:
+            output[field] = result[field]
+    return output
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -433,9 +454,46 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
     (``list_running_children``/``kill_one``) so a still-running owning
     invocation is reaped exactly the way ``li kill --recursive`` does,
     rather than orphaned when the parent session goes terminal.
+
+    If the caller is cancelled after this work starts, complete the signalling
+    and persistence before delivering cancellation. Each process has its own
+    termination grace; the complete command has no fixed wall-clock bound.
     """
-    from lionagi.cli._kill_service import NOT_STOPPED_SIGNALS, kill_one, list_running_children
-    from lionagi.state.db import StateDB
+    return await _await_deferred_cancel(_execute_cancel_command(command))
+
+
+@dataclass(frozen=True)
+class _DeferredCancelResult:
+    result: dict[str, Any]
+    error: Exception
+
+
+async def _await_deferred_cancel(operation):
+    """Finish an owned operation before delivering cancellation to its caller."""
+    task = asyncio.create_task(operation)
+    cancelled = None
+    while not task.done():
+        try:
+            await shield_quietly(task)
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancelled = exc
+        except Exception:
+            break
+    result = task.result()
+    if isinstance(result, _DeferredCancelResult):
+        if cancelled is not None:
+            raise result.error
+        return result.result
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
+async def _execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+    from lionhub.orchestration.kill import NOT_STOPPED_SIGNALS, kill_one, list_running_children
 
     run_id = command.get("session_id")
     if not isinstance(run_id, str) or not run_id:
@@ -471,8 +529,26 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         # Best-effort per child -- an identity-mismatched or already-gone
         # child does not block the parent's own cancellation below.
         children = await list_running_children(db, "session", run_id)
+        signal_record: list[int] = []
+        state_record: list[bool] = []
+
+        def effects() -> dict[str, bool]:
+            return {
+                "signal_sent": bool(signal_record),
+                "run_untouched": not (signal_record or state_record),
+            }
+
         for _table, child_type, child_row in children:
-            await kill_one(db, child_type, child_row["id"], child_row, user_reason=user_reason)
+            await kill_one(
+                db,
+                child_type,
+                child_row["id"],
+                child_row,
+                user_reason=user_reason,
+                offload_signals=True,
+                _signal_record=signal_record,
+                _state_record=state_record,
+            )
 
         outcome = await kill_one(
             db,
@@ -480,11 +556,24 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
             run_id,
             row_dict,
             user_reason=user_reason,
+            offload_signals=True,
+            _signal_record=signal_record,
+            _state_record=state_record,
         )
         if outcome["signal"] in NOT_STOPPED_SIGNALS:
             # kill_one() leaves the row unchanged when it cannot stop the
             # process. Preserve that distinction from an already-terminal row.
-            return {"status": "not_stopped", "id": run_id, "signal": outcome["signal"]}
+            return {"status": "not_stopped", "id": run_id, "signal": outcome["signal"], **effects()}
+
+        cancel_status = outcome.get("cancel_status")
+        if cancel_status in {"conflict", "missing", "rejected", "generation_unavailable"}:
+            return {
+                "status": "not_stopped",
+                "id": run_id,
+                "signal": outcome["signal"],
+                "reason": cancel_status,
+                **effects(),
+            }
 
         # `_persist_cancel` guards its write on the row still being 'running'
         # at persist time (lionagi/cli/kill.py) -- a race that lets the run
@@ -492,8 +581,30 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         # a no-op rather than an overwrite. Re-read the row instead of
         # inferring success from the OS-signal outcome, so this adapter never
         # claims a cancellation the database does not actually hold.
-        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
-        after_status = db._row_to_dict(after).get("status") if after is not None else None
+        after = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (run_id,))
+        after_dict = db._row_to_dict(after) if after is not None else None
 
-    status = "terminal" if after_status == "cancelled" else "already_terminal"
-    return {"status": status, "id": run_id, "signal": outcome["signal"]}
+    if after_dict is None:
+        reason = "missing"
+    elif after_dict.get("cli_worker_generation") != row_dict.get("cli_worker_generation"):
+        reason = "conflict"
+    elif after_dict.get("status") == "cancelled" and (
+        cancel_status == "applied" or (cancel_status == "already_terminal" and signal_record)
+    ):
+        return {"status": "terminal", "id": run_id, "signal": outcome["signal"]}
+    elif after_dict.get("status") in SESSION_TERMINAL_STATUSES:
+        return {
+            "status": "already_terminal",
+            "id": run_id,
+            "signal": outcome["signal"],
+            **effects(),
+        }
+    else:
+        reason = "not_terminal"
+    return {
+        "status": "not_stopped",
+        "id": run_id,
+        "signal": outcome["signal"],
+        "reason": reason,
+        **effects(),
+    }

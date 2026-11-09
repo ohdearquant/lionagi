@@ -639,5 +639,5 @@ missing disposition retains legacy replacement behavior with a typed warning.
 
 Source evidence for the current gaps: `lionagi/casts/pack.py`,
 `lionagi/casts/catalog.py`, `lionagi/agent/spec.py`,
-`lionagi/cli/_providers.py`, and
+`lionhub/src/lionhub/orchestration/spawn.py`, and
 `lionagi/cli/orchestrate/_orchestration.py`.

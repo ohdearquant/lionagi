@@ -12,6 +12,7 @@ on whether a helper was called.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import tempfile
@@ -21,9 +22,10 @@ from types import SimpleNamespace
 import pytest
 
 import lionagi.cli.orchestrate._orchestration as orch_mod
-from lionagi.cli._providers import AgentProfile
-from lionagi.cli._runs import RunDir
+from lionagi._errors import ConfigurationError
 from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
+from lionhub.orchestration.runs import RunDir
+from lionhub.orchestration.spawn import AgentProfile
 from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 from lionhub.providers.openai import _codex_project_layers as project_layers
 from lionhub.providers.openai import codex as codex_mod
@@ -70,6 +72,7 @@ async def _setup(
     *,
     no_mcp_config: bool,
     mcp_config: str | None = None,
+    mcp_submit_snapshot: str | None = None,
     model_spec: str = "claude_code/sonnet",
     effort: str | None = None,
 ):
@@ -85,6 +88,7 @@ async def _setup(
         theme=None,
         mcp_config=mcp_config,
         no_mcp_config=no_mcp_config,
+        mcp_submit_snapshot=mcp_submit_snapshot,
     )
 
 
@@ -96,13 +100,15 @@ async def _cli_args(imodel) -> list[str]:
     return request.as_cmd_args()
 
 
-async def _codex_cli_args(imodel) -> list[str]:
+async def _codex_cli_args(imodel, *, hook_expected: bool = True) -> list[str]:
     """The argv the codex child would be spawned with, off the live request.
 
     A worker that ignores the user config gets its command line at launch, from
     the spawn helper's argv hook; the request's own ``as_cmd_args`` refuses that
     shape. So the request goes through the same launch path with only the spawn
-    itself stubbed: no process starts and no host config is read.
+    itself stubbed: no process starts and no host config is read. A request that
+    loads the user config and selects no servers by name has no hook, and
+    ``hook_expected=False`` reads its command line as given.
     """
     api_call = await imodel.create_event(prompt="hi")
     request = api_call.payload["request"]
@@ -111,10 +117,14 @@ async def _codex_cli_args(imodel) -> list[str]:
 
     async def _stub_stream(cmd, **kwargs):
         prepare = kwargs.get("_prepare_argv")
-        assert prepare is not None, (
-            "a worker that ignores the user config is launched through the argv hook"
-        )
-        cmd = prepare(dict(kwargs.get("env") or os.environ))
+        if hook_expected:
+            assert prepare is not None, (
+                "a worker that ignores the user config is launched through the argv hook"
+            )
+        else:
+            assert prepare is None, "a request that selects no servers has no argv hook"
+        if prepare is not None:
+            cmd = prepare(dict(kwargs.get("env") or os.environ))
         spawned.append(list(cmd))
         return
         yield
@@ -127,6 +137,150 @@ async def _codex_cli_args(imodel) -> list[str]:
         [_ async for _ in codex_mod._ndjson_from_cli(request)]
     assert len(spawned) == 1
     return spawned[0]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_profile_disables_mcp_and_records_source(
+    tmp_run, monkeypatch, codex_home
+):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": {"example": {"command": "x"}}}))
+    codex_home.write_config({"hidden": {"command": "x"}})
+    profile = AgentProfile(name="isolated", model="codex/gpt-5", mcp="none")
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)
+
+    env = await setup_orchestration(
+        pattern_name="Fanout",
+        model_spec="codex/gpt-5",
+        agent_name="isolated",
+        save_dir=None,
+        cwd=None,
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+    )
+    args = await _codex_cli_args(env.orc_branch.chat_model)
+
+    assert env.mcp_servers == {}
+    assert "--ignore-user-config" in args
+    assert not any("example" in arg or "hidden" in arg for arg in args)
+    assert env.orc_branch.metadata["mcp_launch"] == {
+        "mcp_config": None,
+        "no_mcp_config": True,
+        "no_mcp_config_source": "profile",
+        "launch_dir": str(tmp_run.resolve()),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ["orchestrator", "checkpoint", "cli"])
+async def test_worker_inherits_profile_origin_for_resume(tmp_run, monkeypatch, codex_home, origin):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": {"example": {"command": "x"}}}))
+    codex_home.write_config({"hidden": {"command": "x"}})
+    original_load = orch_mod.load_agent_profile
+
+    def load_profile(name):
+        if name == "isolated":
+            return AgentProfile(name=name, model="codex/gpt-5", mcp="none")
+        return original_load(name)
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", load_profile)
+    env = await setup_orchestration(
+        pattern_name="Fanout",
+        model_spec="codex/gpt-5",
+        agent_name="isolated" if origin == "orchestrator" else None,
+        save_dir=None,
+        cwd=None,
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+        no_mcp_config=origin != "orchestrator",
+        no_mcp_config_source="profile" if origin == "checkpoint" else None,
+    )
+    branch, _, _, _ = await build_worker_branch(env, agent_id="w1", role="implementer")
+    args = await _codex_cli_args(branch.chat_model)
+
+    assert "--ignore-user-config" in args
+    assert not any("example" in arg or "hidden" in arg for arg in args)
+    if origin == "cli":
+        assert "mcp_launch" not in branch.metadata
+    else:
+        assert branch.metadata["mcp_launch"] == {
+            "mcp_config": None,
+            "no_mcp_config": True,
+            "no_mcp_config_source": "profile",
+            "launch_dir": str(tmp_run.resolve()),
+        }
+
+
+@pytest.mark.asyncio
+async def test_worker_profile_disables_ambient_mcp_and_records_source(
+    tmp_run, monkeypatch, codex_home
+):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": {"example": {"command": "x"}}}))
+    codex_home.write_config({"hidden": {"command": "x"}})
+    env = await _setup(no_mcp_config=False)
+    profile = AgentProfile(name="isolated", model="codex/gpt-5", mcp="none")
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)
+
+    branch, _, _, _ = await build_worker_branch(env, agent_id="w1", role="isolated")
+    args = await _codex_cli_args(branch.chat_model)
+
+    assert set(env.mcp_servers) == {"example"}
+    assert "--ignore-user-config" in args
+    assert not any("example" in arg or "hidden" in arg for arg in args)
+    assert branch.metadata["mcp_launch"]["no_mcp_config"] is True
+    assert branch.metadata["mcp_launch"]["no_mcp_config_source"] == "profile"
+
+
+@pytest.mark.asyncio
+async def test_worker_profile_refuses_explicit_config_before_model_build(tmp_run, monkeypatch):
+    named = tmp_run / "named.json"
+    named.write_text(json.dumps({"mcpServers": {"example": {"command": "x"}}}))
+    env = await _setup(no_mcp_config=False, mcp_config=str(named))
+    profile = AgentProfile(name="isolated", model="codex/gpt-5", mcp="none")
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)
+    built = []
+    monkeypatch.setattr(orch_mod, "build_imodel_from_spec", lambda *a, **kw: built.append(True))
+
+    with pytest.raises(ConfigurationError, match="mcp: none.*--mcp-config"):
+        await build_worker_branch(env, agent_id="w1", role="isolated")
+    assert built == []
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_profile_refuses_explicit_config_before_discovery(tmp_run, monkeypatch):
+    import lionhub.orchestration.mcp_config as mcp_mod
+
+    profile = AgentProfile(name="isolated", model="codex/gpt-5", mcp="none")
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)
+    discovered = []
+    monkeypatch.setattr(mcp_mod, "resolve_spawn_mcp_servers", lambda *a, **kw: discovered.append(1))
+
+    with pytest.raises(ConfigurationError, match="mcp: none.*--mcp-config"):
+        await setup_orchestration(
+            pattern_name="Fanout",
+            model_spec="codex/gpt-5",
+            agent_name="isolated",
+            save_dir=None,
+            cwd=None,
+            yolo=False,
+            verbose=False,
+            effort=None,
+            theme=None,
+            mcp_config="named.json",
+        )
+    assert discovered == []
+
+
+def test_namespaced_profile_validation_error_is_not_treated_as_a_model(monkeypatch):
+    def invalid_profile(_name):
+        raise ConfigurationError("agent profile 'pack/reviewer': mcp must be 'none'")
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", invalid_profile)
+    with pytest.raises(ConfigurationError, match="mcp must be"):
+        orch_mod.resolve_worker_spec("pack/reviewer")
 
 
 @pytest.mark.asyncio
@@ -165,7 +319,7 @@ async def test_setup_persists_execution_provenance(tmp_run, monkeypatch, tmp_pat
     from types import SimpleNamespace
 
     import lionagi.casts.catalog as catalog
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
 
     target_dir = tmp_path / "target"
@@ -348,7 +502,7 @@ def test_refusal_reaches_a_codex_worker_as_an_ignored_user_config(caplog, codex_
     servers that config declares."""
     import logging
 
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
     imodel = build_imodel_from_spec("codex/gpt-5")
@@ -366,7 +520,7 @@ def test_a_resolved_set_reaches_a_codex_worker(caplog, codex_home):
     provider has for one."""
     import logging
 
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     codex_home.write_config({})
     imodel = build_imodel_from_spec("codex/gpt-5")
@@ -384,7 +538,7 @@ def test_refusal_is_reported_when_the_provider_cannot_carry_it(caplog):
     set is empty. Saying so is the point — the caller passed a flag."""
     import logging
 
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     imodel = build_imodel_from_spec("gemini-cli/gemini-3.5-flash")
     provider = imodel.endpoint.config.provider
@@ -402,7 +556,7 @@ def test_a_dropped_grant_is_reported_as_well_as_a_dropped_refusal(caplog):
     instructions assume, which is worth at least as much of a word as a refusal."""
     import logging
 
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     imodel = build_imodel_from_spec("gemini-cli/gemini-3.5-flash")
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
@@ -419,7 +573,7 @@ def test_the_unforwardable_warning_says_only_what_holds_for_each_provider(caplog
     cannot carry a set, so the refusal cannot be applied."""
     import logging
 
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     imodel = build_imodel_from_spec(spec)
     provider = imodel.endpoint.config.provider
@@ -626,8 +780,8 @@ _CONTROL_AND_KNOWLEDGE = {
 @pytest.mark.asyncio
 async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_run, tmp_path):
     """A run submitted through the MCP server is pointed at a snapshot of the
-    config the submission found, with the same --mcp-config a caller names a
-    file with. Found is still found: the snapshot grants nothing by name."""
+    config the submission found, carried as ambient. Found is still found:
+    the snapshot grants nothing by name."""
     from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
 
     snapshot = tmp_path / "job" / "mcp.json"
@@ -636,7 +790,7 @@ async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_ru
         snapshot, _CONTROL_AND_KNOWLEDGE, source=tmp_run / ".mcp.json", searched_from=tmp_run
     )
 
-    env = await _setup(no_mcp_config=False, mcp_config=str(snapshot))
+    env = await _setup(no_mcp_config=False, mcp_submit_snapshot=str(snapshot))
     branch, _, _, _ = await build_worker_branch(
         env,
         agent_id="w1",
@@ -958,6 +1112,93 @@ async def test_a_codex_orchestrator_handed_an_empty_set_takes_no_effort_from_the
     assert env.effort == expected
 
 
+def _config_values(args: list[str]) -> list[str]:
+    """The ``-c`` values on a codex command line."""
+    return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "-c"]
+
+
+@pytest.mark.asyncio
+async def test_a_codex_orchestrator_takes_a_named_server_set_as_its_whole_set(
+    tmp_run, tmp_path, codex_home
+):
+    """A set named with ``--mcp-config`` is the whole set for the orchestrator, as for a
+    worker: the servers the user's own codex config declares are not loaded beside it, in
+    the planning call or in any later call on that model."""
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    named = tmp_path / "named.json"
+    named.write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=False, mcp_config=str(named), model_spec="codex/gpt-5")
+
+    kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
+    assert kwargs.get("exclusive_mcp_names") == ["run-set"]
+    args = await _codex_cli_args(env.orc_branch.chat_model)
+    config = _config_values(args)
+    # A non-empty set keeps the user config loaded and disables, by name, what it declares
+    # outside the set; only the empty set takes the flag.
+    assert "mcp_servers.ambient.enabled=false" in config
+    assert "--ignore-user-config" not in args
+    assert 'mcp_servers.run-set.command="run-set-server"' in config
+    assert 'mcp_servers.ambient.command="ambient-mcp"' not in config
+
+
+@pytest.mark.asyncio
+async def test_a_codex_orchestrator_adds_a_discovered_server_set_to_its_own(tmp_run, codex_home):
+    """A set found by the ambient ``.mcp.json`` lookup is not the caller's word that it is
+    the whole set, so the orchestrator keeps the servers its own codex config declares."""
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5")
+    args = await _codex_cli_args(env.orc_branch.chat_model, hook_expected=False)
+
+    kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
+    config = _config_values(args)
+    assert "ignore_user_config" not in kwargs
+    assert "exclusive_mcp_names" not in kwargs
+    assert "--ignore-user-config" not in args
+    assert 'mcp_servers.run-set.command="run-set-server"' in config
+    assert not [value for value in config if value.startswith("mcp_servers.ambient.")]
+
+
+@pytest.mark.asyncio
+async def test_a_codex_orchestrator_under_no_mcp_config_loads_no_user_config(tmp_run, codex_home):
+    """``--no-mcp-config`` is the empty set, whole: the orchestrator runs with no user
+    config, and a ``.mcp.json`` it could have found adds nothing."""
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=True, model_spec="codex/gpt-5")
+    args = await _codex_cli_args(env.orc_branch.chat_model)
+
+    assert env.orc_branch.chat_model.endpoint.config.kwargs["ignore_user_config"] is True
+    assert "--ignore-user-config" in args
+    assert not [value for value in _config_values(args) if value.startswith("mcp_servers.")]
+
+
+@pytest.mark.asyncio
+async def test_a_named_server_set_is_the_claude_orchestrators_whole_set(tmp_run, tmp_path):
+    named = tmp_path / "named.json"
+    named.write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=False, mcp_config=str(named))
+    args = await _cli_args(env.orc_branch.chat_model)
+
+    assert _mcp_config_arg(args) == {"mcpServers": _RUN_SERVER}
+    assert "--strict-mcp-config" in args
+
+
+@pytest.mark.asyncio
+async def test_a_discovered_server_set_is_added_to_the_claude_orchestrators_own(tmp_run):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=False)
+    args = await _cli_args(env.orc_branch.chat_model)
+
+    assert _mcp_config_arg(args) == {"mcpServers": _RUN_SERVER}
+    assert "--strict-mcp-config" not in args
+
+
 class _RecordReached(Exception):
     pass
 
@@ -1163,11 +1404,428 @@ async def test_a_contained_light_claude_worker_keeps_its_class(tmp_run, monkeypa
     assert _flag_values(args, "--setting-sources") == [""]
 
 
+_READER_TOOLS = {
+    "tools": ["Read", "Grep"],
+    "allowed_tools": ["Bash(git status:*)"],
+    "disallowed_tools": ["WebFetch"],
+}
+
+
+@pytest.mark.asyncio
+async def test_a_worker_runs_with_the_tool_set_its_role_declares(tmp_run, monkeypatch):
+    """A role's ``tools``, ``allowed_tools`` and ``disallowed_tools`` reach the worker's
+    command line; a role in the same run that declares none gets none of those flags."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(reader={"extra": dict(_READER_TOOLS)}, plain={}),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "reader")
+    control = await _worker_args(env, "plain")
+
+    assert _flag_values(args, "--tools") == ["Read,Grep"]
+    assert _flag_values(args, "--allowedTools") == ["Bash(git status:*)"]
+    assert _flag_values(args, "--disallowedTools") == ["WebFetch"]
+    assert [f for f in ("--tools", "--allowedTools", "--disallowedTools") if f in control] == []
+
+
+@pytest.mark.asyncio
+async def test_a_light_worker_denies_its_roles_tools_and_the_file_writing_ones(
+    tmp_run, monkeypatch
+):
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(reader={"workload": "light", "extra": dict(_READER_TOOLS)}),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "reader")
+
+    assert args.count("--disallowedTools") == 1
+    assert _flag_values(args, "--disallowedTools") == [
+        "WebFetch",
+        "Edit",
+        "Write",
+        "NotebookEdit",
+    ]
+    assert _flag_values(args, "--tools") == ["Read,Grep"]
+
+
+def _hand_knowledge_server(tmp_run) -> None:
+    (tmp_run / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"knowledge": {"command": "kkernel", "args": ["mcp"]}}})
+    )
+
+
+def _contained_role(**fields) -> dict:
+    """A contained role whose frontmatter declares *fields* (as a loaded profile keeps them)."""
+    return {"contain_user_settings": True, "extra": fields}
+
+
+async def _contained_worker_args(monkeypatch, tmp_run, role: dict):
+    """The argv of a contained worker with *role* and of a contained one that declares nothing,
+    in a run that hands its workers one server, ``knowledge``."""
+    _hand_knowledge_server(tmp_run)
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(reader=role, plain={"contain_user_settings": True}),
+    )
+    env = await _setup(no_mcp_config=False)
+    return await _worker_args(env, "reader"), await _worker_args(env, "plain")
+
+
+@pytest.mark.asyncio
+async def test_a_contained_worker_whose_role_narrows_tools_runs_with_that_list(
+    tmp_run, monkeypatch
+):
+    """Containment names a default tool list, and a role that names its own narrower one
+    runs with it: the worker is not handed the tools the role left out, nor pre-approved
+    for them. What the role allows (inside its own tools or the handed servers) and denies
+    is added to the contained grants and denials."""
+    args, control = await _contained_worker_args(
+        monkeypatch,
+        tmp_run,
+        _contained_role(
+            tools=["Read", "Grep"],
+            allowed_tools=["Read(./docs/**)", "mcp__knowledge__search"],
+            disallowed_tools=["WebFetch"],
+        ),
+    )
+
+    assert _flag_values(args, "--tools") == ["Read,Grep"]
+    assert _flag_values(args, "--allowedTools") == [
+        "Read",
+        "Grep",
+        "mcp__knowledge__*",
+        "Read(./docs/**)",
+        "mcp__knowledge__search",
+    ]
+    assert _flag_values(args, "--disallowedTools") == ["WebFetch", "Agent", "Task"]
+    assert _flag_values(args, "--permission-mode") == ["dontAsk"]
+    assert _flag_values(control, "--tools") == [",".join(_CONTAINED_TOOLS)]
+    assert _flag_values(control, "--allowedTools") == [*_CONTAINED_TOOLS, "mcp__knowledge__*"]
+
+
+@pytest.mark.asyncio
+async def test_a_contained_worker_grants_a_tool_with_an_argument_pattern_by_its_name(
+    tmp_run, monkeypatch
+):
+    """``Bash(git status:*)`` narrows one tool's use, so it is judged by the tool it names:
+    granted when the worker has Bash, refused when its role's tools leave Bash out."""
+    args, _ = await _contained_worker_args(
+        monkeypatch, tmp_run, _contained_role(allowed_tools=["Bash(git status:*)"])
+    )
+    assert _flag_values(args, "--allowedTools")[-1] == "Bash(git status:*)"
+
+    with pytest.raises(ConfigurationError, match=r"Bash\(git status:\*\)"):
+        await _contained_worker_args(
+            monkeypatch,
+            tmp_run,
+            _contained_role(tools=["Read", "Grep"], allowed_tools=["Bash(git status:*)"]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_contained_worker_grants_the_tools_of_a_server_the_run_hands_it(
+    tmp_run, monkeypatch
+):
+    args, _ = await _contained_worker_args(
+        monkeypatch,
+        tmp_run,
+        _contained_role(allowed_tools=["mcp__knowledge__search", "mcp__knowledge"]),
+    )
+
+    assert _flag_values(args, "--allowedTools") == [
+        *_CONTAINED_TOOLS,
+        "mcp__knowledge__*",
+        "mcp__knowledge__search",
+        "mcp__knowledge",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["NotebookEdit", "Skill", "Agent", "Task", "default", "bash"])
+@pytest.mark.parametrize("with_grant", [False, True], ids=["tool-only", "and-allowed"])
+async def test_a_contained_worker_whose_role_widens_tools_is_refused(
+    tmp_run, monkeypatch, name, with_grant
+):
+    """A tool outside the contained set stays outside it, whether the role only lists it in
+    ``tools`` or grants it in ``allowed_tools`` as well; the error names the tool, the role
+    and the set, and nothing is built."""
+    fields = {"tools": ["Read", name]}
+    if with_grant:
+        fields["allowed_tools"] = [name]
+    _hand_knowledge_server(tmp_run)
+    monkeypatch.setattr(
+        orch_mod, "load_agent_profile", _claude_roles(reader=_contained_role(**fields))
+    )
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError) as refused:
+        await build_worker_branch(env, agent_id="reader", role="reader")
+
+    message = str(refused.value)
+    assert repr(name) in message
+    assert "'reader'" in message
+    assert ", ".join(_CONTAINED_TOOLS) in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tools", "allowed"),
+    [
+        (None, "Skill"),
+        (None, "NotebookEdit"),
+        (None, "Agent"),
+        (["Read", "Grep"], "Bash"),
+        (["Read", "Grep"], "Edit"),
+        (None, "mcp__other__search"),
+        (None, "mcp__knowledgebase__search"),
+        (None, "mcp__*"),
+    ],
+)
+async def test_a_contained_worker_whose_role_allows_a_tool_it_does_not_have_is_refused(
+    tmp_run, monkeypatch, tools, allowed
+):
+    """An allow entry may name a tool the worker has or a tool of a server the run hands
+    it. A server name that only begins like a handed one is not that server."""
+    fields = {"allowed_tools": [allowed]}
+    if tools is not None:
+        fields["tools"] = tools
+    _hand_knowledge_server(tmp_run)
+    monkeypatch.setattr(
+        orch_mod, "load_agent_profile", _claude_roles(reader=_contained_role(**fields))
+    )
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError) as refused:
+        await build_worker_branch(env, agent_id="reader", role="reader")
+
+    message = str(refused.value)
+    assert repr(allowed) in message
+    assert "'reader'" in message
+    assert "allowed_tools" in message
+    assert ", ".join(_CONTAINED_TOOLS) in message
+
+
+@pytest.mark.asyncio
+async def test_a_contained_worker_given_no_servers_is_granted_the_tools_of_none(
+    tmp_run, monkeypatch
+):
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(reader=_contained_role(allowed_tools=["mcp__knowledge__search"])),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError, match="mcp__knowledge__search"):
+        await build_worker_branch(env, agent_id="reader", role="reader")
+
+
+@pytest.mark.asyncio
+async def test_a_role_that_is_not_contained_keeps_the_tools_it_declares(tmp_run, monkeypatch):
+    """The subset rule belongs to containment: a role that runs on the operator's settings
+    is bounded by them, and may name any tool."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(
+            reader={
+                "extra": {"tools": ["Read", "Skill"], "allowed_tools": ["Skill", "mcp__any__x"]}
+            }
+        ),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "reader")
+
+    assert _flag_values(args, "--tools") == ["Read,Skill"]
+    assert _flag_values(args, "--allowedTools") == ["Skill", "mcp__any__x"]
+
+
+def _contained_tool_model(**tool_settings):
+    from lionhub.orchestration.spawn import build_imodel_from_spec
+
+    return build_imodel_from_spec("claude_code/sonnet", tool_settings=tool_settings)
+
+
+@pytest.mark.parametrize(
+    ("settings", "refused"),
+    [
+        ({"tools": "Read,NotebookEdit"}, "NotebookEdit"),
+        ({"allowed_tools": ["Read", "Skill"]}, "Skill"),
+        ({"allowed_tools": ["Read", "Read(x) mcp__evil__*"]}, "mcp__evil__"),
+    ],
+    ids=["tools", "allow-outside", "allow-two-rules"],
+)
+def test_a_refused_containment_leaves_the_model_as_it_was(settings, refused):
+    """The refusal comes before containment changes anything, so the model is not left
+    half contained, and the lists it holds are the ones it held."""
+    model = _contained_tool_model(disallowed_tools=["WebFetch"], **settings)
+    before = copy.deepcopy(model.endpoint.config.kwargs)
+
+    with pytest.raises(ConfigurationError, match=refused):
+        orch_mod._isolate_worker_cli_config(model, contain_user_settings=True, role="reader")
+
+    assert model.endpoint.config.kwargs == before
+    assert not orch_mod._claude_worker_contained(model)
+
+
+def test_the_second_containment_pass_of_a_narrowed_worker_changes_nothing():
+    model = _contained_tool_model(
+        tools="Read,Grep",
+        allowed_tools=["Read(./docs/**)", "mcp__a__search"],
+        disallowed_tools=["WebFetch"],
+    )
+    kwargs = model.endpoint.config.kwargs
+
+    orch_mod._isolate_worker_cli_config(
+        model, contain_user_settings=True, mcp_server_names=["b", "a"], role="reader"
+    )
+    once = copy.deepcopy(kwargs)
+    orch_mod._isolate_worker_cli_config(
+        model, contain_user_settings=True, mcp_server_names=["b", "a"], role="reader"
+    )
+
+    assert kwargs == once
+    assert kwargs["tools"] == "Read,Grep"
+    assert kwargs["allowed_tools"] == [
+        "Read",
+        "Grep",
+        "mcp__a__*",
+        "mcp__b__*",
+        "Read(./docs/**)",
+        "mcp__a__search",
+    ]
+    assert kwargs["disallowed_tools"] == ["WebFetch", "Agent", "Task"]
+
+
+def test_a_refusal_without_a_known_role_names_the_workers_tool_settings_not_a_profile():
+    """A worker copied from another worker's branch has no role of its own to cite: the
+    tools came from the settings that branch carries, and the message says so."""
+    model = _contained_tool_model(tools="Skill")
+
+    with pytest.raises(ConfigurationError, match="'Skill'") as refused:
+        orch_mod._isolate_worker_cli_config(model, contain_user_settings=True)
+
+    assert str(refused.value).startswith("the worker's tool settings: tools include 'Skill'")
+    assert "agent profile" not in str(refused.value)
+
+
+_ONE_RULE_REFUSED = [
+    "Read(./docs/**) mcp__evil__*",
+    "Read, Grep",
+    "Read,Grep",
+    " Read",
+    "",
+    "Bash(a,b)",
+    "Bash(x) ",
+    "Bash(x",
+    "Bash(a)(b)",
+    "(anything)",
+]
+_ONE_RULE_ACCEPTED = ["Bash(git status:*)", "mcp__control__*", "Read", "Bash(a(b))"]
+
+
+@pytest.mark.parametrize("entry", _ONE_RULE_REFUSED, ids=lambda e: repr(e))
+def test_a_contained_worker_refuses_an_allow_entry_that_is_not_one_rule(entry):
+    """The CLI takes each ``allowed_tools`` entry as one argument and the check cannot know how
+    it would split one that carries two rules, so an entry is a tool name, optionally followed
+    by one parenthesised pattern closing at its last character."""
+    model = _contained_tool_model(allowed_tools=[entry])
+    before = copy.deepcopy(model.endpoint.config.kwargs)
+
+    with pytest.raises(ConfigurationError) as refused:
+        orch_mod._isolate_worker_cli_config(
+            model, contain_user_settings=True, mcp_server_names=["control"], role="reader"
+        )
+
+    assert str(refused.value).startswith(
+        f"agent profile 'reader': allowed_tools entry {entry!r} is not one rule."
+    )
+    assert model.endpoint.config.kwargs == before
+
+
+@pytest.mark.parametrize("entry", _ONE_RULE_ACCEPTED, ids=lambda e: repr(e))
+def test_a_contained_worker_accepts_an_allow_entry_that_is_one_rule(entry):
+    model = _contained_tool_model(allowed_tools=[entry])
+
+    orch_mod._isolate_worker_cli_config(
+        model, contain_user_settings=True, mcp_server_names=["control"], role="reader"
+    )
+
+    assert model.endpoint.config.kwargs["allowed_tools"].count(entry) == 1
+
+
+@pytest.mark.parametrize("entry", ["Read(./docs/**) mcp__evil__*", "Read, Grep", ""])
+def test_an_allow_entry_that_is_not_one_rule_is_left_alone_without_containment(entry):
+    """Containment is what bounds the entries; a worker that runs on the operator's settings
+    keeps what its role declares."""
+    model = _contained_tool_model(allowed_tools=[entry])
+
+    orch_mod._isolate_worker_cli_config(model, mcp_server_names=["control"], role="reader")
+
+    assert model.endpoint.config.kwargs["allowed_tools"] == [entry]
+
+
+@pytest.mark.asyncio
+async def test_a_worker_whose_role_declares_a_tool_set_for_another_provider_is_refused(
+    tmp_run, monkeypatch
+):
+    def _load_profile(name):
+        body = "Use the configured provider."
+        return AgentProfile(
+            name=name,
+            model="codex/gpt-5",
+            system_prompt=body,
+            raw_body=body,
+            extra={"tools": ["Read"]},
+        )
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", _load_profile)
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError, match=r"(?<![a-z_])tools(?![a-z_])") as refused:
+        await build_worker_branch(env, agent_id="reader", role="reader")
+    assert "codex" in str(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_the_orchestrator_runs_with_the_tool_set_its_role_declares(tmp_run, monkeypatch):
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(lead={"extra": dict(_READER_TOOLS)}),
+    )
+
+    env = await setup_orchestration(
+        pattern_name="Fanout",
+        model_spec=None,
+        agent_name="lead",
+        save_dir=None,
+        cwd=None,
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+    )
+    args = await _cli_args(env.orc_branch.chat_model)
+
+    assert _flag_values(args, "--tools") == ["Read,Grep"]
+    assert _flag_values(args, "--allowedTools") == ["Bash(git status:*)"]
+    assert _flag_values(args, "--disallowedTools") == ["WebFetch"]
+
+
 def test_the_contained_boundary_keeps_what_a_worker_denies_and_is_idempotent():
     """Settings, agents and a skipped permission check the model already carries are
     dropped; tools it already denies stay denied; applying the boundary twice changes
     nothing."""
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     claude = build_imodel_from_spec("claude_code/sonnet")
     kwargs = claude.endpoint.config.kwargs
@@ -1236,484 +1894,10 @@ def test_the_contained_boundary_leaves_a_claude_model_with_no_cli_alone():
     assert kwargs == {"temperature": 0.1}
 
 
-@pytest.mark.parametrize(
-    ("line", "expected", "warned"),
-    [
-        ("", False, False),
-        ("contain_user_settings: false\n", False, False),
-        ("contain_user_settings: true\n", True, False),
-        ("contain_user_settings: maybe\n", True, True),
-        ("contain_user_settings: 0\n", True, True),
-        ("contain_user_settings:\n", True, True),
-        ("contain_user_settings: null\n", True, True),
-        ("contain_user_settings: True\n", True, False),
-        ("contain_user_settings: FALSE\n", False, False),
-        ("contain_user_settings: off\n", True, True),
-        ("contain_user_settings: no\n", True, True),
-        ("contain_user_settings: yes\n", True, True),
-        ('contain_user_settings: "false"\n', True, True),
-    ],
-)
-def test_the_profile_flag_reads_true_or_false_and_contains_otherwise(
-    caplog, line, expected, warned
-):
-    import logging
-
-    from lionagi.cli._providers import _parse_profile, profile_config
-
-    text = f"---\nmodel: claude_code/sonnet\n{line}---\n\nWork.\n"
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.contain_user_settings is expected
-    assert profile_config(profile).get("contain_user_settings") is (True if expected else None)
-    assert "contain_user_settings" not in profile.extra
-    assert ("is not true or false; containing" in caplog.text) is warned
-
-
-@pytest.mark.parametrize(
-    ("frontmatter", "contained"),
-    [
-        ("model: claude_code/sonnet\nnotes: [unclosed\n", False),
-        ("- model: claude_code/sonnet\n- contain_user_settings: true\n", True),
-    ],
-)
-def test_a_profile_whose_frontmatter_does_not_read_warns_that_its_settings_are_ignored(
-    caplog, frontmatter, contained
-):
-    """A frontmatter block that does not read as YAML settings gives the profile none, so
-    loading it says so rather than run the role on defaults in silence."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    text = f"---\n{frontmatter}---\n\nWork.\n"
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model is None
-    assert profile.contain_user_settings is contained
-    assert "does not read as YAML settings" in caplog.text
-    assert "every setting in it is ignored" in caplog.text
-    assert ("its worker is contained" in caplog.text) is contained
-
-
-@pytest.mark.parametrize(
-    "lines",
-    [
-        ["contain_user_settings: true"],
-        ["contain_user_settings : true"],
-        ["contain_user_settings: false"],
-        ["contain_user_settings: maybe"],
-        ["contain_user_settings: [true"],
-        ["  contain_user_settings: false"],
-        ["? contain_user_settings", ": false"],
-        ['"contain_user_settings": false'],
-        ["'contain_user_settings': false"],
-        ["contain_user_settings: false", "contain_user_settings: false"],
-        ["# contain_user_settings: false"],
-    ],
-)
-def test_a_frontmatter_that_does_not_read_contains_when_it_names_the_flag(caplog, lines):
-    """A block that does not read has no value of the flag to trust, so naming it anywhere in
-    the block, in any form, contains the worker: a broken line cannot turn containment off."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    flag = "".join(f"{line}\n" for line in lines)
-    text = f"---\nmodel: claude_code/sonnet\n{flag}notes: [unclosed\n---\n\nWork.\n"
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model is None
-    assert profile.contain_user_settings is True
-    assert "contain_user_settings" not in profile.extra
-    assert "every setting in it is ignored, and its worker is contained" in caplog.text
-
-
-@pytest.mark.parametrize("newline", ["\n", "\r\n"])
-@pytest.mark.parametrize(
-    "prefix",
-    ["\ufeff", "\ufeff\ufeff", "\n\ufeff", " \ufeff", "\ufeff\n", "\u200b", "\u2060\t"],
-)
-def test_a_profile_that_starts_with_a_byte_order_mark_keeps_its_settings(caplog, newline, prefix):
-    """Whitespace and invisible format characters ahead of the opening delimiter, in any
-    order, do not hide the frontmatter."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    text = prefix + newline.join(
-        ["---", "model: claude_code/sonnet", "contain_user_settings: true", "---", "", "Work."]
-    )
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model == "claude_code/sonnet"
-    assert profile.contain_user_settings is True
-    assert not {"\ufeff", "\u200b", "\u2060"} & set(profile.raw_body)
-    assert "every setting in it is ignored" not in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("lines", "expected"),
-    [
-        (["contain_user_settings: true", "contain_user_settings: false"], True),
-        (["contain_user_settings: false", "contain_user_settings: true"], True),
-        (["contain_user_settings: maybe", "contain_user_settings: false"], True),
-        (['"contain_user_settings": true', "contain_user_settings: false"], True),
-        (["contain_user_settings: true", "? contain_user_settings", ": false"], True),
-        (["contain_user_settings: false", "contain_user_settings: null"], True),
-        (["contain_user_settings: false", "contain_user_settings: 0"], True),
-        (["contain_user_settings: false", "contain_user_settings: off"], True),
-        (["contain_user_settings: false", "contain_user_settings: false"], False),
-    ],
-)
-def test_no_key_of_a_frontmatter_that_reads_turns_containment_off_alone(caplog, lines, expected):
-    """YAML keeps the last of a repeated key, so the flag is read from every key naming it,
-    in any spelling of the key: it is off only when every one reads false."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    flag = "".join(f"{line}\n" for line in lines)
-    text = f"---\nmodel: claude_code/sonnet\n{flag}---\n\nWork.\n"
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model == "claude_code/sonnet"
-    assert profile.contain_user_settings is expected
-    assert "contain_user_settings is set 2 times" in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("block", "expected"),
-    [
-        ("  model: claude_code/sonnet\n  contain_user_settings: true\n", True),
-        ("base: &base\n  contain_user_settings: true\n<<: *base\n", True),
-        ("base: &base\n  contain_user_settings: off\n<<: *base\n", True),
-        ("<<: {contain_user_settings: false}\n", False),
-        ("<<: [{contain_user_settings: false}, {contain_user_settings: off}]\n", True),
-        ("<<: {contain_user_settings: true}\ncontain_user_settings: false\n", False),
-    ],
-)
-def test_the_flag_is_read_from_every_form_of_a_block_that_reads(caplog, block, expected):
-    """An indented block and a merge key give the flag as YAML does, an explicit key winning
-    over a merged one; a merged ``off`` reads as neither true nor false, and contains."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", f"---\n{block}---\n\nWork.\n")
-
-    assert profile.contain_user_settings is expected
-    assert "every setting in it is ignored" not in caplog.text
-
-
-@pytest.mark.parametrize("newline", ["\n", "\r\n"])
-@pytest.mark.parametrize(
-    "prefix",
-    ["\ufe0f", "\u034f", "\u3164", "\u2800", "\u115f", "\x00", "x", "Notes "],
-)
-@pytest.mark.parametrize(
-    "flag",
-    [
-        "contain_user_settings: true",
-        "contain_user_settings: false",
-        "  contain_user_settings: true",
-    ],
-)
-def test_text_ahead_of_a_frontmatter_that_names_the_flag_contains(caplog, newline, prefix, flag):
-    """A character ahead of the opening delimiter, on its line, that is neither whitespace nor
-    a format character hides the block, and with it every setting; a block that names the flag
-    after such text contains, whatever value it gives."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    text = prefix + newline.join(["---", "model: claude_code/sonnet", flag, "---", "", "Work."])
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model is None
-    assert profile.contain_user_settings is True
-    assert "hides the frontmatter after it" in caplog.text
-    assert "its worker is contained" in caplog.text
-
-
-def test_text_ahead_of_a_frontmatter_on_its_line_warns_that_its_settings_are_ignored(caplog):
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    text = "\u3164---\nmodel: claude_code/sonnet\nyolo: true\n---\n\nWork.\n"
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model is None
-    assert profile.yolo is False
-    assert profile.contain_user_settings is False
-    assert "text ahead of the --- on line 1 hides the frontmatter after it" in caplog.text
-    assert "every setting in it is ignored" in caplog.text
-    assert "its worker is contained" not in caplog.text
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Work.\n\n```yaml\ncontain_user_settings: true\n```\n",
-        "Work.\ncontain_user_settings: true\n",
-        "# notes\n---\nmodel: claude_code/sonnet\n---\n\nWork.\n",
-        "Work.\n\n---\n\nMore work.\n",
-        "Scope\n---\nDo not touch contain_user_settings.\n",
-        "Work.\n\n---\n\nNever set contain_user_settings here.\n\n---\n\nMore work.\n",
-        "Notes ---\nWork on the task.\n",
-        "Notes ---\nWork on the task.\n---\n\nMore work.\n",
-        "Notes ---\nWork: do this: then that\n",
-        "Title\n-----\nmodel: claude_code/sonnet\n---\n\nWork.\n",
-        "---\n# contain_user_settings: true\n---\n\nWork.\n",
-        "Work.\n\n---\n\n- Never set contain_user_settings here.\n\n---\n\nMore work.\n",
-    ],
-)
-def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
-    """Text on lines of its own ahead of any delimiter makes the profile one with no block, so
-    nothing in it is a setting, as before; prose or a list after it is prompt too, even where
-    it names the flag, as is a hidden block of prose, closed or not, that names no flag."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model is None
-    assert profile.contain_user_settings is False
-    assert "every setting in it is ignored" not in caplog.text
-    assert "follows text on lines of its own" not in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("text", "contained", "warns"),
-    [
-        ("\u3164---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n", False, True),
-        (
-            "# notes\n---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n",
-            False,
-            False,
-        ),
-        (
-            "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: false\n"
-            "notes: [unclosed\n---\n\nWork.\n",
-            False,
-            False,
-        ),
-        (
-            "\u3164---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n\nWork.\n",
-            True,
-            True,
-        ),
-        ("\u3164---\nmodel: claude_code/sonnet\n# contain_user_settings: true\n---\n", False, True),
-    ],
-)
-def test_a_hidden_block_ends_at_its_closing_delimiter(caplog, text, contained, warns):
-    """A hidden block runs to its closing ``---`` line, so a flag in the body after it is
-    prompt text; one that does not read runs to the end when it has no closing line."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model is None
-    assert profile.contain_user_settings is contained
-    assert ("hides the frontmatter after it" in caplog.text) is warns
-    assert ("its worker is contained" in caplog.text) is contained
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Notes ---\n- contain_user_settings: true\n---\n\nWork.\n",
-        "Notes ---\ncontain_user_settings\n---\n\nWork.\n",
-        "Notes ---\nDo not touch contain_user_settings.\n",
-        "ㅤ---\n- model: claude_code/sonnet\n- contain_user_settings: false\n---\n\nWork.\n",
-    ],
-)
-def test_a_hidden_block_that_reads_as_a_list_or_text_contains_when_it_names_the_flag(caplog, text):
-    """A hidden block that reads as a list or a line of text holds no settings, so it is read
-    as a frontmatter that does not read as settings is: naming the flag anywhere in it
-    contains the worker, with a warning, as the same block opening the profile does."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model is None
-    assert profile.contain_user_settings is True
-    assert "hides the frontmatter after it" in caplog.text
-    assert "its worker is contained" in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("text", "line"),
-    [
-        ("# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n---\n\nWork.\n", 2),
-        (
-            "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: false\n---\n\nWork.\n",
-            2,
-        ),
-        (
-            "PROSE work.\n\n---\n\nmodel: claude_code/sonnet\ncontain_user_settings: false\n"
-            "\n---\n\nMore.\n",
-            3,
-        ),
-        (
-            "# notes\r\n---\r\nmodel: claude_code/sonnet\r\ncontain_user_settings: true\r\n"
-            "---\r\n\r\nWork.\r\n",
-            2,
-        ),
-        (
-            "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n"
-            "notes: [unclosed\n---\n\nWork.\n",
-            2,
-        ),
-        ("# notes\n---\nnotes: [unclosed, contain_user_settings\n", 2),
-        ("Title\n-----\nmodel: claude_code/sonnet\ncontain_user_settings: true\n---\n\nWork.\n", 2),
-        ("Work.\n\n---\n\n- contain_user_settings: true\n\n---\n\nMore work.\n", 3),
-        ("Work.\n---\ncontain_user_settings: true\n", 2),
-        ("Work.\r\n---\r\ncontain_user_settings: true\r\n", 2),
-        ("Work.\n---\ncontain_user_settings:true\n---\nMore.\n", 2),
-        ("Work.\n---\n{contain_user_settings: true}\n---\nMore.\n", 2),
-        ("Work.\n---\n---\ncontain_user_settings: true\n", 3),
-        (
-            "Work.\n---\nmodel: claude_code/sonnet\n---\nNotes.\n---\n"
-            "contain_user_settings: true\n---\nMore.\n",
-            6,
-        ),
-    ],
-)
-def test_a_block_after_text_on_lines_of_its_own_names_the_flag_without_containing(
-    caplog, text, line
-):
-    """Text on lines of its own ahead of the first ``---`` line leaves the profile all prompt,
-    as before, so a block after it sets nothing, the flag included, whatever value it gives.
-    Any block after that text, closed or not and whichever it is, that sets the flag as a key
-    or does not read and names it warns rather than lose it in silence; a block runs from a
-    line of three or more dashes to the next such line."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model is None
-    assert profile.contain_user_settings is False
-    assert f"the --- block on line {line} follows text on lines of its own" in caplog.text
-    assert "its worker is not contained, though the block names" in caplog.text
-    assert "hides the frontmatter" not in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("block", "key"),
-    [
-        ("worker:\n  contain_user_settings: true\n", "worker.contain_user_settings"),
-        ("workers:\n  - contain_user_settings: true\n", "workers[0].contain_user_settings"),
-        ("Contain_User_Settings: true\n", "Contain_User_Settings"),
-        ("contain-user-settings: true\n", "contain-user-settings"),
-    ],
-)
-def test_a_key_that_reads_as_the_flag_but_is_not_it_warns_without_containing(caplog, block, key):
-    """The flag is read only as a top-level key spelled exactly so: a key spelled like it, or
-    the flag under another setting, warns that it does not set the flag, and the rest of the
-    frontmatter still applies."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    text = "---\nmodel: claude_code/sonnet\n" + block + "---\n\nWork.\n"
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model == "claude_code/sonnet"
-    assert profile.contain_user_settings is False
-    assert f"it is not set by {key!r}, and its worker is not contained" in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("block", "contained"),
-    [
-        ("contain_user_settings: true\nworker:\n  contain_user_settings: false\n", True),
-        ("contain_user_settings: false\n", False),
-        ("notes: do not touch contain_user_settings\n", False),
-    ],
-)
-def test_a_frontmatter_that_sets_the_flag_or_names_it_in_a_value_has_no_key_warning(
-    caplog, block, contained
-):
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    text = "---\nmodel: claude_code/sonnet\n" + block + "---\n\nWork.\n"
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.contain_user_settings is contained
-    assert "counts only as a top-level key" not in caplog.text
-
-
-def test_a_false_in_the_body_of_an_unclosed_frontmatter_does_not_turn_containment_off(caplog):
-    """With no closing delimiter, where the block ends is not known, so it runs to the end and
-    a line in the body cannot undo the flag the block set."""
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    text = (
-        "---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n\n"
-        "Work.\ncontain_user_settings: false\n"
-    )
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
-
-    assert profile.model is None
-    assert profile.contain_user_settings is True
-    assert "every setting in it is ignored, and its worker is contained" in caplog.text
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Work.\n",
-        "---\n---\n\nWork.\n",
-        "---\n# a note only\n---\n\nWork.\n",
-        "---\n# a note\n\n# and another\n---\n\nWork.\n",
-        "---\nmodel: claude_code/sonnet\n---\n\nWork.\n",
-        "\u3164---\n---\n\nWork.\n",
-        "\u3164---\n# a note only\n---\n\nWork.\n",
-    ],
-)
-def test_a_profile_with_no_settings_to_lose_does_not_warn(caplog, text):
-    import logging
-
-    from lionagi.cli._providers import _parse_profile
-
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        _parse_profile("role", text)
-
-    assert "every setting in it is ignored" not in caplog.text
-
-
 def test_the_boundary_drops_a_codex_profile_and_leaves_a_claude_settings_file(codex_home):
     """A `-p` profile is part of the codex user config and does not reach a
     worker; a Claude settings file does."""
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     codex = build_imodel_from_spec("codex/gpt-5")
     codex.endpoint.config.kwargs["profile"] = "work"

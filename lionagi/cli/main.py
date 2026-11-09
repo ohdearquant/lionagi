@@ -8,17 +8,56 @@ import argparse
 import signal
 import sys
 import traceback
+from typing import get_args
 
-from lionagi._auto import build_cli_parser, seed_for
+from lionagi._feature_errors import MissingFeatureError
 from lionagi.ln import import_module
 
-from ._logging import configure_cli_logging, log_error
-from ._util import (
-    EXIT_CODE_ENVIRONMENT_ERROR,
-    begin_invocation,
-    end_invocation,
-    run_was_allocated,
-)
+try:
+    from lionhub.cli.catalog import build_cli_parser, seed_for
+except ModuleNotFoundError as exc:
+    _catalog_import_error: ModuleNotFoundError | None = exc
+else:
+    _catalog_import_error = None
+
+from lionagi._log_channels import log_error
+
+# The canonical exit constant lives in the module whose absence this startup path reports.
+_STARTUP_ENVIRONMENT_EXIT = 78
+_job_import_error: ModuleNotFoundError | None = None
+if _catalog_import_error is None:
+    try:
+        from lionhub.orchestration.job import (
+            EXIT_CODE_ENVIRONMENT_ERROR,
+            begin_invocation,
+            end_invocation,
+            run_was_allocated,
+        )
+    except ModuleNotFoundError as exc:
+        _job_import_error = exc
+
+# The errors that mean the installation lacks something the command needs: the union for
+# annotations, the tuple for ``except`` clauses. The tuple is read from the union, so adding a
+# type is one edit.
+_EnvironmentFault = ModuleNotFoundError | MissingFeatureError
+_ENVIRONMENT_FAULTS = get_args(_EnvironmentFault)
+
+
+def _missing_requirement(exc: _EnvironmentFault) -> tuple[str, str]:
+    """What the environment lacks, as the report names it, and the guidance that follows it.
+
+    A ``ModuleNotFoundError`` names its module and carries no guidance. A
+    ``MissingFeatureError`` is what the provider registry raises for a selected provider whose
+    declared dependency, or whose bundled provider hub, is not installed: it names the missing
+    import root when it has one and otherwise the distribution, and it carries the guidance for
+    putting it right. That guidance is a short install command for a declared dependency and a
+    whole sentence for the hub, so the report states it as a sentence of its own after the one
+    that names what is missing, never inside it. The guidance is returned with its leading
+    space, to be appended to the report as it stands, and is empty when there is none.
+    """
+    if isinstance(exc, MissingFeatureError):
+        return exc.name or exc.missing_distribution, f" Guidance: {exc.install_hint}"
+    return exc.name or "a required module", ""
 
 
 def _load_orchestrate():
@@ -119,21 +158,21 @@ def _handle_play_check(argv: list[str]) -> int:
     agent_name = spec.get("agent")
     if agent_name:
         try:
-            from lionagi.cli._providers import load_agent_profile
+            from lionhub.orchestration.spawn import load_agent_profile
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
-        except ModuleNotFoundError as exc:
+        except _ENVIRONMENT_FAULTS as exc:
             # The profile is fine; this installation cannot load it. Nothing has
             # run, so this is the environment, and returning the ordinary
             # failure code here would make it indistinguishable from a check
             # that found a genuinely broken playbook.
-            missing = exc.name or "a required module"
+            missing, guidance = _missing_requirement(exc)
             log_error(
                 f"playbook '{name}' references agent profile '{agent_name}', "
                 f"which needs {missing}, and it is not installed in this "
                 f"environment. Nothing was checked and no run was started. "
-                f"Install the missing dependency, then re-run."
+                f"Install the missing dependency, then re-run.{guidance}"
             )
             return EXIT_CODE_ENVIRONMENT_ERROR
         except Exception as exc:  # noqa: BLE001 — match runtime behaviour
@@ -290,6 +329,13 @@ def _parse_prompt_args(parser: argparse.ArgumentParser, tail: list[str]) -> argp
 
 
 def _run(argv: list[str] | None = None) -> int:
+    if _catalog_import_error is not None:
+        raise _catalog_import_error
+
+    # Defer setup so missing dependencies reach the environment-fault wrapper,
+    # while any saved catalog fault takes precedence.
+    from lionhub.orchestration.console import configure_cli_logging
+
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).
     _argv = argv if argv is not None else sys.argv[1:]
     # Scan only before the '--' sentinel so a scheduled action_prompt
@@ -367,14 +413,14 @@ def _run(argv: list[str] | None = None) -> int:
     selected = seed_for(_argv[0]) if _argv else None
     try:
         build = build_cli_parser(selected)
-    except ModuleNotFoundError as exc:
+    except _ENVIRONMENT_FAULTS as exc:
         # An environment fault, not a command-scoped one — nothing ran, so
         # exit 78 rather than the 1 a started-and-failed run would return.
-        missing = exc.name or "a required module"
+        missing, guidance = _missing_requirement(exc)
         log_error(
             f"command {_argv[0]!r} cannot run: {missing} is not installed in this "
             "environment. No run was started, so this is an unusable environment "
-            "rather than a failed run. Install the missing dependency, then re-run."
+            f"rather than a failed run. Install the missing dependency, then re-run.{guidance}"
         )
         return EXIT_CODE_ENVIRONMENT_ERROR
     except Exception as exc:
@@ -434,7 +480,7 @@ def _run(argv: list[str] | None = None) -> int:
             return _load_studio().run_schedule_quick_create(_argv[2], _argv[3:])
         ns, extras = schedule_parser.parse_known_args(_argv[1:])
         if extras:
-            from lionagi.cli._schedule_parsing import suggest_schedule_flag
+            from lionhub.orchestration.schedule.parsing import suggest_schedule_flag
 
             # Did-you-mean only applies to dash-prefixed tokens; a bare
             # positional has no "real flag" to guess.
@@ -458,11 +504,13 @@ def _run(argv: list[str] | None = None) -> int:
     return 1
 
 
-def _report_broken_environment(exc: ModuleNotFoundError) -> int:
+def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int) -> int:
     """Report a missing import as an environment fault, not a failed run.
 
     A ``ModuleNotFoundError`` reaching the top of the CLI means some import
-    failed and nothing along the way handled it. Reporting it the way a failed
+    failed and nothing along the way handled it, and so does the
+    ``MissingFeatureError`` the provider registry raises for a selected provider
+    whose declared dependency is not installed. Reporting it the way a failed
     run is reported tells every caller the wrong thing: the command looks like
     it executed and came back empty. That is how a dependency dropping out of an
     environment reads downstream as a crashed agent.
@@ -476,13 +524,13 @@ def _report_broken_environment(exc: ModuleNotFoundError) -> int:
     stderr still receives the diagnosis rather than the middle of a stack.
     """
     traceback.print_exc()
-    missing = exc.name or "a required module"
+    missing, guidance = _missing_requirement(exc)
     log_error(
         f"cannot start: {missing} is not installed in this environment. "
         "No run was started, so this is an unusable environment rather than a "
-        "failed run. Install the missing dependency, then re-run."
+        f"failed run. Install the missing dependency, then re-run.{guidance}"
     )
-    return EXIT_CODE_ENVIRONMENT_ERROR
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -497,13 +545,21 @@ def main(argv: list[str] | None = None) -> int:
     allocation marker decides, and once a run exists the error is left to
     propagate and be reported the way any other failure during a run is.
     """
+    startup_error = (
+        _catalog_import_error if _catalog_import_error is not None else _job_import_error
+    )
+    if startup_error is not None:
+        try:
+            raise startup_error
+        except _ENVIRONMENT_FAULTS as exc:
+            return _report_broken_environment(exc, exit_code=_STARTUP_ENVIRONMENT_EXIT)
     begin_invocation()
     try:
         return _run(argv)
-    except ModuleNotFoundError as exc:
+    except _ENVIRONMENT_FAULTS as exc:
         if run_was_allocated():
             raise
-        return _report_broken_environment(exc)
+        return _report_broken_environment(exc, exit_code=EXIT_CODE_ENVIRONMENT_ERROR)
     finally:
         end_invocation()
 

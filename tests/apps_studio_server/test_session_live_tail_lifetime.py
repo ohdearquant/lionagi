@@ -349,7 +349,7 @@ async def test_registry_close_error_does_not_bypass_other_application_cleanup(mo
     from lionagi.ln.concurrency import ExceptionGroup
 
     app = import_module("lionagi.studio.app")
-    identity = import_module("lionagi.cli._code_identity")
+    identity = import_module("lionhub.serve.diagnostics")
     daemon_log = import_module("lionagi.studio.daemon_log")
     engine = import_module("lionagi.studio.scheduler.engine")
     lifecycle = import_module("lionagi.studio.services.lifecycle")

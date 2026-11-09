@@ -236,7 +236,7 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
 
     if not MIRROR_CLAUDE_ENABLED:
         return None, None
-    from lionagi.cli._mirror_service import CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR, mirror_forever
+    from lionhub.serve.mirror import CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR, mirror_forever
 
     claude_root = MIRROR_CLAUDE_ROOT
     codex_root = MIRROR_CODEX_ROOT
@@ -346,7 +346,7 @@ async def _finalize_warmup(task: asyncio.Task | None) -> None:
 
 @asynccontextmanager
 async def lifespan(app_instance):
-    from lionagi.cli._code_identity import snapshot_git_position
+    from lionhub.serve.diagnostics import snapshot_git_position
 
     from .daemon_log import daemon_log_handler
     from .scheduler.engine import scheduler

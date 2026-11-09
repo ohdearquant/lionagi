@@ -2042,7 +2042,7 @@ async def test_startup_policy_survives_usage_and_terminal_writes(
     import copy
 
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._runs import RunDir
+    from lionhub.orchestration.runs import RunDir
 
     policy = {
         "prompt_caching": True,

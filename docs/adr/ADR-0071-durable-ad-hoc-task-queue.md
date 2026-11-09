@@ -246,7 +246,7 @@ async def transition(
 ```
 
 The shipped schedule-run graph is registered in the lifecycle policy registry
-(`lionagi/state/lifecycle/policy.py:288-330`):
+(`lionagi/state/lifecycle/policy.py::build_default_registry`):
 
 ```text
 queued ──► waiting_dependency | running | skipped | cancelled

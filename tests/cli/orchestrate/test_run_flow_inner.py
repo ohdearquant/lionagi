@@ -535,7 +535,7 @@ async def test_a_reactively_spawned_cli_leaf_gets_the_worker_set_not_the_orchest
     from types import SimpleNamespace
 
     from lionagi.agent.factory import apply_forwarded_mcp_servers
-    from lionagi.cli._providers import build_imodel_from_spec
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     control = {"command": "li", "args": ["mcp"]}
     knowledge = {"command": "kkernel", "args": ["mcp"]}

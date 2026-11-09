@@ -324,7 +324,7 @@ async def test_a_status_and_its_transition_record_land_together_or_not_at_all(
 
 async def test_teardown_hands_a_compatibility_store_only_its_own_metadata_keys(db, store):
     """A key another writer changes between teardown's read and its write keeps its value (A.2)."""
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     await _setup_run(db)
     _execute(store, """UPDATE sessions SET node_metadata = '{"managed": "old"}' WHERE id = 's1'""")
@@ -368,7 +368,7 @@ async def test_teardown_hands_a_compatibility_store_only_its_own_metadata_keys(d
 async def test_teardowns_own_node_metadata_write_still_merges(db, store):
     """The teardown's node_metadata-only write goes through the same by-key merge, so a key
     another writer stored survives it."""
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     await _setup_run(db)
     _execute(store, """UPDATE sessions SET node_metadata = '{"managed": "kept"}' WHERE id = 's1'""")
@@ -390,8 +390,8 @@ async def test_teardowns_own_node_metadata_write_still_merges(db, store):
 async def test_a_profile_that_admits_the_phase_lets_teardown_clear_it(tmp_path):
     """A profile that grants ``sessions.current_phase`` admits the clear, and a phase the run
     wrote is gone beside the terminal status."""
-    from lionagi.cli import _runs
     from lionagi.state.compat import TableWrites
+    from lionhub.orchestration import runs as _runs
 
     store = await _managed_store(tmp_path / "phase.db")
     base = _profile(store)
@@ -427,7 +427,7 @@ async def test_a_profile_that_admits_the_phase_lets_teardown_clear_it(tmp_path):
 
 async def test_a_native_teardown_still_clears_the_phase(tmp_path):
     """Natively the run owns the column, so the terminal write clears it as it always has."""
-    from lionagi.cli import _runs
+    from lionhub.orchestration import runs as _runs
 
     db = StateDB(tmp_path / "native.db")
     await db.open()
@@ -520,9 +520,9 @@ async def test_the_teardowns_own_handle_finalizes_its_branch(tmp_path, monkeypat
     """The teardown hands its handle to the default BRANCH_END handler, which finalizes the run's
     branch through it: the branch is the run's own, so the write is admitted and the run
     completes."""
-    from lionagi.cli import _runs
     from lionagi.session.session import Session
     from lionagi.state import db as db_mod
+    from lionhub.orchestration import runs as _runs
 
     store = await _managed_store(tmp_path / "managed.db")
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
@@ -556,9 +556,9 @@ async def test_an_unregistered_handle_never_reaches_a_foreign_branch(tmp_path, m
     """With the run's handle unregistered, the default BRANCH_END handler still writes through the
     handle the teardown handed it, so a branch row another principal owns is left untouched and no
     native handle is opened for the file."""
-    from lionagi.cli import _runs
     from lionagi.session.session import Session
     from lionagi.state import db as db_mod
+    from lionhub.orchestration import runs as _runs
 
     store = await _managed_store(tmp_path / "managed.db")
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
@@ -626,9 +626,9 @@ async def test_a_refusal_recorded_during_the_emits_leaves_the_run_failed(tmp_pat
     """The terminal status write is the run's last store write, so a refusal the signal sink
     records while the emits run -- kept, not raised -- leaves the run failed with that refusal
     rather than beside a status the run had already written."""
-    from lionagi.cli import _runs
     from lionagi.session.session import Session
     from lionagi.state import db as db_mod
+    from lionhub.orchestration import runs as _runs
 
     store = await _managed_store(tmp_path / "managed.db")
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
@@ -664,8 +664,8 @@ async def test_a_refusal_recorded_during_the_emits_leaves_the_run_failed(tmp_pat
 
 async def test_the_terminal_status_write_happens_once(db, store):
     """A teardown with no refusal writes the terminal status exactly once, after the emits."""
-    from lionagi.cli import _runs
     from lionagi.session.session import Session
+    from lionhub.orchestration import runs as _runs
 
     await _setup_run(db)
     session = Session()
@@ -720,9 +720,9 @@ async def test_a_failed_teardown_writes_the_terminal_status_without_a_node_metad
 ) -> None:
     """The lifecycle emit a teardown owns writes no error into ``node_metadata``, so a profile that
     admits no such column still takes the terminal status write."""
-    from lionagi.cli import _runs
     from lionagi.session.session import Session
     from lionagi.state import db as db_mod
+    from lionhub.orchestration import runs as _runs
 
     store = await _managed_store(tmp_path / "managed.db")
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
@@ -756,9 +756,9 @@ async def test_a_concurrent_node_metadata_update_survives_a_failed_teardown(
 ) -> None:
     """The handler reads the session before the teardown writes; a write another writer lands
     between those points is not merged over from that earlier read."""
-    from lionagi.cli import _runs
     from lionagi.session.session import Session
     from lionagi.state import db as db_mod
+    from lionhub.orchestration import runs as _runs
 
     store = await _managed_store(tmp_path / "managed.db")
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
@@ -819,12 +819,12 @@ async def test_a_registered_branch_with_no_messages_does_not_fail_the_teardown(
     """A fanout registers each worker lazily; a worker that produced no message has no branch row,
     so the teardown emits no BRANCH_END write for it and still closes the session."""
     from lionagi import Branch
-    from lionagi.cli import _runs
     from lionagi.cli.orchestrate import _orchestration
     from lionagi.cli.orchestrate._orchestration import setup_orchestration_persist
     from lionagi.session.session import Session
     from lionagi.state import db as db_mod
     from lionagi.state.compat import CompatibilityProfile, TableWrites
+    from lionhub.orchestration import runs as _runs
 
     store = await _managed_store(tmp_path / "managed.db")
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
@@ -895,10 +895,10 @@ async def test_teardown_signals_carry_no_store_handle(
 ) -> None:
     """The observer record of a lifecycle emit keeps the event's data but not the run's handle, so
     no closed store is retained on the observer flow or serialized into a stored signal."""
-    from lionagi.cli import _runs
     from lionagi.hooks.bus import HookSignal
     from lionagi.session.session import Session
     from lionagi.state import db as db_mod
+    from lionhub.orchestration import runs as _runs
 
     store = await _managed_store(tmp_path / "managed.db")
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)

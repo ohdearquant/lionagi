@@ -19,6 +19,7 @@ import pydantic
 import pytest
 
 from lionagi._errors import CLIInputRefusedError
+from lionhub.providers._cli_subprocess import CLI_ARGUMENT_MAX_BYTES as ARGUMENT_MAX_BYTES
 from lionhub.providers.openai import codex as codex_mod
 from lionhub.providers.openai.codex import (
     CODEX_MAX_TURN_INPUT_CHARS,
@@ -32,7 +33,6 @@ try:
 except ModuleNotFoundError:  # Python 3.10 has no tomllib
     tomllib = None  # type: ignore[assignment]
 
-ARGUMENT_MAX_BYTES = codex_mod._CLI_ARGUMENT_MAX_BYTES
 # developer_instructions=<system prompt> is one argument; the prefix counts toward it, and
 # the prompt is written as a TOML string, so its two quotes do too.
 PREFIX = len("developer_instructions=")
@@ -219,8 +219,8 @@ async def test_a_branch_whose_transcript_is_past_the_limit_starts_nothing_and_ga
     The transcript alternates turns as a real one does: instructions with no reply between them
     are not all sent, so stacking them would test a shorter input than it seems to."""
     from lionagi import Branch
-    from lionagi.cli._providers import build_imodel_from_spec
     from lionagi.protocols.messages import Instruction
+    from lionhub.orchestration.spawn import build_imodel_from_spec
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("the Codex CLI was started")

@@ -29,14 +29,14 @@ it, and the operation emits `RunStart`, `RunEnd`, or `RunFailed`. Those signals 
 `run_id`. A Session can execute many such turns, so treating each signal pair as a product Run
 would create a different identity boundary from Studio and the CLI.
 
-**P2 — the engine creates a second Run identity.** `lionagi/engines/engine.py::EngineRun` is a
+**P2 — the engine creates a second Run identity.** `lionhub/src/lionhub/orchestration/engines/engine.py::EngineRun` is a
 mutable per-call context containing a Session, semaphore, task set, budget, deduplication set, and
 callbacks. Its constructor mints a twelve-hex-character `run_id`. The CLI also persists an
 `engine_runs` row with an independent lifecycle and `spec_json`. An engine is an execution
 strategy inside an attempt; it is not evidence that a second user-visible attempt began.
 
 **P3 — the CLI creates a third Run identity and lets a directory act as the record.**
-`lionagi/cli/_runs.py::allocate_run()` mints a timestamp-and-random-suffix ID, creates
+`lionhub/src/lionhub/orchestration/runs.py::allocate_run()` mints a timestamp-and-random-suffix ID, creates
 `~/.lionagi/runs/{run_id}/`, and writes `run.json`. `RunDir` owns manifest, checkpoint, branch,
 stream, notification, and artifact paths. Some readers infer status and timestamps from the
 presence and modification times of those files. A workspace is a resource used by an attempt;
@@ -272,8 +272,8 @@ The first legacy mapping is complete and evidence-sensitive:
 
 One row shape is not in the table above and exists in production data today: a Session carrying
 `status="running"` together with a non-null `ended_at`. The read path already meets it and names
-it. `_status_ended_at_mismatch` (`lionagi/studio/services/runs.py:246-254`) detects exactly that
-combination and the page summary reports a `status_ended_at_mismatches` count at `:279`, so the
+it. `_status_ended_at_mismatch` (`lionagi/studio/services/runs.py::_status_ended_at_mismatch`) detects exactly that
+combination and the page summary reports a `status_ended_at_mismatches` count at `lionagi/studio/services/runs.py::paginate_runs`, so the
 importer must classify it rather than encounter it. That row is self-contradictory evidence, not a
 running attempt, and it imports through the `legacy_evidence_conflict` outcome below rather than
 being read as either live or cleanly terminal. Its reverse, a terminal status with a null

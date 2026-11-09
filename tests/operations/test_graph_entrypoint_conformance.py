@@ -246,7 +246,7 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="li-engine-run-planning",
-        symbol="lionagi.cli._engine_definitions.KIND_META['planning']",
+        symbol="lionhub.orchestration.engine_definitions.KIND_META['planning']",
         location=None,
         role="alias",
         expected_target="PlanningEngine.run",
@@ -3393,7 +3393,7 @@ def test_manifest_keys_and_symbols_are_unique():
     [
         "lionagi.session.session.Session.flow",
         "lionagi.cli.orchestrate.flow._resume_flow",
-        "lionagi.cli._engine_definitions.KIND_META['planning']",
+        "lionhub.orchestration.engine_definitions.KIND_META['planning']",
         "lionagi.operations.builder.OperationGraphBuilder",
     ],
 )
@@ -3410,7 +3410,7 @@ def test_symbol_resolves_accepts_real_symbols(symbol):
         "lionagi.session.session.Session.nonexistent_method",
         "lionagi.session.session.NonexistentClass.flow",
         "lionagi.nonexistent.module.thing",
-        "lionagi.cli._engine_definitions.KIND_META['nonexistent_kind']",
+        "lionhub.orchestration.engine_definitions.KIND_META['nonexistent_kind']",
         "not a symbol at all",
     ],
 )
@@ -3459,9 +3459,9 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     from types import SimpleNamespace as _SimpleNamespace
     from uuid import UUID
 
-    import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
+    import lionhub.orchestration.console as log_mod
     from lionagi.casts.emission import TaskAssignment
     from lionagi.state.db import StateDB
     from lionhub.orchestration.engines.engine import EngineRun
@@ -3545,7 +3545,7 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
 
 
 def test_engine_kind_planning_is_the_only_registered_graph_kind():
-    from lionagi.cli._engine_definitions import KIND_META
+    from lionhub.orchestration.engine_definitions import KIND_META
 
     assert KIND_META["planning"]["cls_path"] == ("lionhub.orchestration.engines", "PlanningEngine")
 
@@ -3800,8 +3800,8 @@ def _persistence_seam_env(tmp_path):
     unlike the generic tests/cli/orchestrate/test_live_persist.py fixture,
     the tests below never call start_live_persist directly."""
     from lionagi import Branch, Session
-    from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
+    from lionhub.orchestration.runs import RunDir
 
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
@@ -3878,7 +3878,7 @@ async def test_run_flow_persists_session_via_start_live_persist(tmp_path, monkey
     """cli-o-flow-exec/cli-o-flow-synth persistence: drives the REAL
     `_run_flow` wrapper (only `setup_orchestration` and the heavy
     `_run_flow_inner` execution are stubbed — the wrapper's own
-    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:3281 is NOT)
+    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:3291 is NOT)
     and asserts a real StateDB session row exists afterward, closing the
     same gap as test_run_fanout_persists_session_via_start_live_persist for
     the flow CLI. HOME is isolated so the finally block's
@@ -4027,7 +4027,7 @@ async def test_synthesize_calls_execution_engine_with_builder_graph(tmp_path):
 async def test_resume_flow_calls_run_flow_with_resolved_checkpoint(tmp_path):
     import json as _json
 
-    import lionagi.cli.orchestrate._checkpoint as ckmod
+    import lionhub.orchestration.flow.checkpoint as ckmod
     from lionagi.cli.orchestrate import flow as flow_mod
 
     runs_root = tmp_path / "runs"
@@ -4136,7 +4136,7 @@ async def test_run_workflow_def_delegates_to_session_flow_with_progress_wrapper(
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
-    import lionagi.cli._engine_definitions as cli_engine
+    import lionhub.orchestration.engine_definitions as cli_engine
     from tests.apps_studio_server.test_workflow_run import _FakeEngine, _mock_chat_branch, _spec
 
     monkeypatch.setitem(

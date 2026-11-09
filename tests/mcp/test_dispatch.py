@@ -57,7 +57,7 @@ def submitted(monkeypatch):
     files happen to exist on the machine running them — that resolution is
     covered on its own in test_roster.py and test_admission_*.py.
     """
-    import lionagi.cli._providers as providers
+    import lionhub.orchestration.spawn as providers
 
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
     seen: dict = {}
@@ -1471,7 +1471,7 @@ def test_one_refused_op_carries_no_reference():
 def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypatch, tmp_path):
     # Refused in the server, not left to the detached run: a server that exits first
     # would leave that run outside the agent's process tree.
-    import lionagi.cli._providers as providers
+    import lionhub.orchestration.spawn as providers
     from lionagi.service import _subagent_admission
     from lionhub.serve.mcp import config
 
@@ -1496,7 +1496,7 @@ def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypa
 
 
 def test_a_play_inside_an_agent_is_refused_before_any_job_exists(a_playbook, monkeypatch, tmp_path):
-    import lionagi.cli._providers as providers
+    import lionhub.orchestration.spawn as providers
     from lionagi.service import _subagent_admission
     from lionhub.serve.mcp import config
 

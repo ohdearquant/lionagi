@@ -76,8 +76,8 @@ class TestSinglePositional:
 
 
 def test_list_profiles_prints_catalog_without_requiring_prompt(monkeypatch, capsys):
-    from lionagi.cli import _providers
     from lionagi.cli.main import main
+    from lionhub.orchestration import spawn as _providers
 
     monkeypatch.setattr(
         _providers,

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.cli._providers import _parse_profile
+from lionhub.orchestration.spawn import _parse_profile
 from tests.cli.orchestrate.test_worker_artifact_directive import _build_worker
 from tests.cli.test_agent_resume_model_override import _wire_agent_stubs
 

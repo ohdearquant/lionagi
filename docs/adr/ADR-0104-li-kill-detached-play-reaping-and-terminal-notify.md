@@ -437,8 +437,8 @@ the part-2 cutover and their exclusion from authoritative use.
 With no recorded creation time, the existing session check can identify a process
 from a matching session marker alone. A descendant can inherit that marker, so a
 matching marker is not proof that the process has the recorded birth. The child
-environment is copied in `lionagi/ln/_proc.py:78-85`, and the provider passes it
-to a new-session child in `lionagi/providers/_cli_subprocess.py:1090-1109` at
+environment is copied in `lionagi/ln/_proc.py::prepare_process_group_env`, and the provider passes it
+to a new-session child in `lionhub/src/lionhub/providers/_cli_subprocess.py::ndjson_from_cli` at
 the source revision named below. A marker-only positive can authorize a recovery
 signal to a descendant carrying the inherited marker instead of the recorded
 process. Phase 1 retains this behavior on every platform and does not close that

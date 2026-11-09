@@ -340,7 +340,7 @@ async def test_pack_profile_collision_discloses_each_setting_source(tmp_path, mo
 
     from lionagi import iModel
     from lionagi.casts.pack import Pack, RoleConfig
-    from lionagi.cli._providers import AgentProfile
+    from lionhub.orchestration.spawn import AgentProfile
 
     class _Session:
         def include_branches(self, _branch):
@@ -433,7 +433,7 @@ async def test_pack_profile_collision_model_source_is_profile_when_profile_has_n
 
     from lionagi import iModel
     from lionagi.casts.pack import Pack, RoleConfig
-    from lionagi.cli._providers import AgentProfile
+    from lionhub.orchestration.spawn import AgentProfile
 
     class _Session:
         def include_branches(self, _branch):

@@ -67,7 +67,7 @@ for minimal templates of each.
 
 ## Shared run flags
 
-Available on `li agent`, `li o fanout`, `li o flow`. Source: `cli/_providers.py`
+Available on `li agent`, `li o fanout`, `li o flow`. Source: `lionhub/src/lionhub/orchestration/spawn.py`
 
 | Flag | Default | Notes |
 |------|---------|-------|
@@ -84,9 +84,9 @@ Available on `li agent`, `li o fanout`, `li o flow`. Source: `cli/_providers.py`
 
 MCP servers are resolved once per launch, from the directory the command was run in:
 `--mcp-config PATH` names a file, `--no-mcp-config` states that there are none, and otherwise the
-nearest `.mcp.json` at or above that directory is used. On `li o fanout` and `li o flow`, every
-worker the launch builds is handed that one result, so no worker starts with servers the run did
-not resolve; `li agent` resolves the same way and warns when it hands a leg no servers because no
+nearest `.mcp.json` at or above that directory is used. On `li o fanout` and `li o flow`, each
+worker is handed that result or the empty set its profile requires, so no worker starts with servers
+the run did not resolve; `li agent` resolves the same way and warns when it hands a leg no servers because no
 config was found. A set read from a file named with `--mcp-config` is exclusive: the agent
 starts with those servers and no others. A set found by the `.mcp.json` lookup is additive and
 joins the servers the provider already configures.
@@ -215,7 +215,7 @@ other, whether or not a cap is set.
 | Workload | Counts against | Worker confinement |
 |----------|----------------|--------------------|
 | `heavy` (default) | the total cap, the heavy cap and its engine cap | as configured (`--yolo`, `--bypass`, profile settings) |
-| `light` | the total cap and its engine cap | codex: `--sandbox workspace-write` with no extra writable roots, no network, and the account's apps and plugins turned off, and settings that would lift the sandbox, `account_connectors` among them, are refused; the sandbox still keeps the temporary directories writable, and the MCP servers the leg is given run outside it; gemini: `--sandbox`; claude: runs without `Edit`, `Write` and `NotebookEdit` (Bash stays, and Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a Bash command can still write anywhere); pi: refused, it has no sandbox lionagi can pin |
+| `light` | the total cap and its engine cap | codex: `--sandbox workspace-write` with no extra writable roots, no network, and the account's apps and plugins turned off, and settings that would lift the sandbox, `account_connectors` among them, are refused; the agent writes only its working directory, since `/tmp` and `$TMPDIR` are excluded from the sandbox's writable set, and the MCP servers the agent is given run outside the sandbox; gemini: `--sandbox`; claude: runs without `Edit`, `Write` and `NotebookEdit`, added to any `disallowed_tools` the role declares (Bash stays, and Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a Bash command can still write anywhere); pi: refused, it has no sandbox lionagi can pin |
 
 A resumed leg (`-r`, `-c`) runs with the class this launch resolves: `--workload`, else the
 profile's, else `heavy`. Resuming a `light` leg without `-a` or `--workload light` therefore runs
@@ -706,17 +706,35 @@ li kill abc123 --recursive            # kill + direct children (session -> invoc
 li kill --all-stale                   # sweep dead-PID sessions/invocations
 li kill --all-stale --threshold 3600  # only rows older than 1h
 li kill --all-stale --dry-run
+li kill abc123 --resolve-quarantine failed --reason 'investigated'
 ```
 
 | Arg/Flag | Default | Notes |
 |----------|---------|-------|
 | `id` | none | Entity ID or prefix: run/session/invocation/play |
-| `--reason` | `""` | Recorded in `status_transitions` |
+| `--reason` | `""` | Recorded in `status_transitions`; required for a quarantine disposition |
 | `--recursive` | false | Also kill direct child entities |
 | `--all-stale` | false | Sweep stale sessions/invocations (and their child-derived plays/shows) |
 | `--threshold SECS` | 3600 | Only sweep entities started more than this long ago |
 | `--dry-run` | false | Only valid with `--all-stale`; prints without cancelling |
+| `--resolve-quarantine {failed,aborted,cancelled}` | none | Record an investigated disposition for one quarantined session or invocation without signalling its PID |
 | `--grace SECS` | 5.0 | Wait after SIGTERM before escalating to SIGKILL |
+
+**Unverifiable process identities.** When a stale sweep cannot inspect a locally
+recorded process, it leaves the row running and records the observation. Three
+consecutive unverifiable observations of the same bound process identity mark the
+row as quarantined; the sweep summary and `li monitor` show this state. A verified
+live observation clears the evidence, and a changed recorded identity starts a new
+observation history. PID information found only in a `.pid` file or `run.json`
+cannot be bound to the row and is reported without recording quarantine.
+
+After investigating, an operator can select `failed`, `aborted`, or `cancelled`
+with `--resolve-quarantine` and a non-empty `--reason`. This records the
+operator's disposition and never signals the process. The command rechecks the
+identity and refuses if the row changed or the process can now be verified; use
+normal `li kill` in that case. If a PID changes away and back between observations
+without any sweep seeing the intermediate identity, those observations cannot
+reveal the change.
 
 **`--recursive` scope boundary.** Recursion only reaches PID-bearing workers,
 and an orchestrator row reaches them only through a link it recorded:
@@ -1174,7 +1192,8 @@ yolo: true
 You are an implementer. Write production code, not stubs...
 ```
 
-All frontmatter fields are optional; matching CLI flags override them at invocation.
+All frontmatter fields are optional; matching CLI flags override them at invocation, except that
+`mcp: none` cannot be combined with `--mcp-config`.
 
 | Field | Notes |
 |-------|-------|
@@ -1182,15 +1201,33 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `effort` | Reasoning effort level (e.g. `high`, `xhigh`) |
 | `yolo` | Auto-approve tool calls |
 | `fast_mode` | Route via the OpenAI priority tier (codex only) |
+| `mcp` | Set to `none` to launch the agent or worker with no MCP servers, as with `--no-mcp-config`. Any other value is refused. An explicit `--mcp-config` conflicts with this setting and is refused before that agent starts. A resumed branch retains profile-origin containment and refuses `--mcp-config`, whether or not a profile is named on resume; a resumed flow retains its orchestrator's recorded choice. The flow planner runs under the orchestrator's profile and its containment; each worker uses its own profile. |
 | `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`). Default `false` |
 | `account_connectors` | Codex only. List of the account's app connectors the role is for. Naming any leaves both features as the account and config set them, even when contained. Never written into run records or branch snapshots |
-| `contain_user_settings` | Claude only, for this role's workers in `li o flow` and `li o fanout`, and for every Claude agent such a worker spawns, whatever role it names: a codex one runs with `--ignore-user-config`, as every codex worker does, under its own role's sandbox and approval settings, and a spawn on any other CLI is refused. `true` has the CLI load no settings files for the worker (`--setting-sources ""`): your user, project and local settings do not apply to it, so **your own hooks, PreToolUse guards included, and your permission rules stop gating that worker**, and its plugins, subagent definitions and slash commands are gone too. The files stay on disk, where the worker's own Read and Bash tools can still open them. In their place the worker gets the built-in tools Read, Glob, Grep, Edit, Write, Bash, WebFetch and WebSearch and only the MCP servers the run hands it, none when the run resolves no set, runs those without asking (`--permission-mode dontAsk`, which also replaces `yolo`), and cannot start Agent or Task subagents. The flag is read from the block's top-level keys as YAML parses them, its key matched as written, so a key nested under another setting, or spelled in another letter case or with dashes, is not the flag, and when no top-level key sets the flag such a key warns that it does not: an indented block, a quoted or `?` key and a `<<` merge key all count, an explicit key wins over a merged one, and a key given more than once, of which YAML keeps the last, warns and leaves the flag off only when every one reads `false`. A value other than `true` or `false` warns and contains: an empty one, `null`, `0` and the YAML 1.1 words `off`, `no`, `yes` and `on` included. A profile whose frontmatter does not read as YAML warns that every setting in it is ignored, and contains when the block names `contain_user_settings` anywhere; a block with no closing `---` runs to the end of the file. A block with no settings in it, empty or comments only, neither warns nor contains, even when a comment names the flag. A byte-order mark or another invisible format character ahead of the frontmatter does not hide it. Any other character on the delimiter's line hides the block and every setting in it, with a warning when the block reads as settings, names the flag, or does not read and ends at a closing `---`. Such a block contains when it sets the flag, whatever value it gives, or names it anywhere while reading as a list or a line of text or not reading at all, as a frontmatter that does not read does: a block that opens the profile was written as its frontmatter and none of its settings apply, so the worker is contained rather than run on your settings, and your own hooks and permission rules do not gate it until the profile is fixed. Text on lines of its own ahead of the first line that is exactly `---` leaves the profile all prompt, as before, and nothing after it applies, the flag included, so its worker runs on your settings even where a block after that text sets the flag to `true`: containing it would drop your hooks and permission rules for a profile that earlier releases ran as a prompt, on a block that is not read. Every block after that text, closed or not, that has a line setting the flag as a key, reads as settings that set it, or does not read and names it, warns that its worker is not contained; a block there runs from a line of three or more dashes to the next such line. Containment is unchanged for `li agent -a`, which prints the same profile warnings. Default `false` |
+| `contain_user_settings` | Claude only, for this role's workers in `li o flow` and `li o fanout`, and for every Claude agent such a worker spawns, whatever role it names: a codex one runs with `--ignore-user-config`, as every codex worker does, under its own role's sandbox and approval settings, and a spawn on any other CLI is refused. `true` has the CLI load no settings files for the worker (`--setting-sources ""`): your user, project and local settings do not apply to it, so **your own hooks, PreToolUse guards included, and your permission rules stop gating that worker**, and its plugins, subagent definitions and slash commands are gone too. The files stay on disk, where the worker's own Read and Bash tools can still open them. In their place the worker gets the built-in tools Read, Glob, Grep, Edit, Write, Bash, WebFetch and WebSearch and only the MCP servers the run hands it, none when the run resolves no set, runs those without asking (`--permission-mode dontAsk`, which also replaces `yolo`), and cannot start Agent or Task subagents. The role's tool fields can narrow that and never widen it: its `tools` replace the list of eight and must all lie within it; its `allowed_tools` may name only those tools or the tools of the servers the run hands the worker (`mcp__<name>` or `mcp__<name>__...`), each entry as one rule, which is a tool name with no whitespace, comma or parenthesis, optionally followed by one parenthesised argument pattern that closes at the end of the entry (`Bash(git status:*)` is judged by `Bash`); its `disallowed_tools` are denied beside Agent and Task. Anything else is refused when the worker is built, naming the tool or entry, the role and the contained set, and the worker is granted only the tools it has. An agent such a worker spawns with no role named takes none of the orchestrator profile's tool fields (see below), so it gets the eight tools and the run's servers. The flag is read from the block's top-level keys as YAML parses them, its key matched as written, so a key nested under another setting, or spelled in another letter case or with dashes, is not the flag, and when no top-level key sets the flag such a key warns that it does not: an indented block, a quoted or `?` key and a `<<` merge key all count, an explicit key wins over a merged one, and a key given more than once, of which YAML keeps the last, warns and leaves the flag off only when every one reads `false`. A value other than `true` or `false` warns and contains: an empty one, `null`, `0` and the YAML 1.1 words `off`, `no`, `yes` and `on` included. A profile whose frontmatter does not read as YAML warns that every setting in it is ignored, and contains when the block names `contain_user_settings` anywhere; a block with no closing `---` runs to the end of the file. A block with no settings in it, empty or comments only, neither warns nor contains, even when a comment names the flag. A byte-order mark or another invisible format character ahead of the frontmatter does not hide it. Any other character on the delimiter's line hides the block and every setting in it, with a warning when the block reads as settings, names the flag, or does not read and ends at a closing `---`. Such a block contains when it sets the flag, whatever value it gives, or names it anywhere while reading as a list or a line of text or not reading at all, as a frontmatter that does not read does: a block that opens the profile was written as its frontmatter and none of its settings apply, so the worker is contained rather than run on your settings, and your own hooks and permission rules do not gate it until the profile is fixed. Text on lines of its own ahead of the first line that is exactly `---` leaves the profile all prompt, as before, and nothing after it applies, the flag included, so its worker runs on your settings even where a block after that text sets the flag to `true`: containing it would drop your hooks and permission rules for a profile that earlier releases ran as a prompt, on a block that is not read. Every block after that text, closed or not, that has a line setting the flag as a key, reads as settings that set it, or does not read and names it, warns that its worker is not contained; a block there runs from a line of three or more dashes to the next such line. Containment is unchanged for `li agent -a`, which prints the same profile warnings. Default `false` |
+| `tools` | Claude Code only. List of the built-in tools the agent has at all, for example `[Read, Grep, Glob]`; it becomes `--tools`. Each entry is a non-empty string and the list must name at least one tool: an empty list is refused rather than read as "no tools" or "no restriction". Leave the field out to keep every built-in tool |
+| `allowed_tools` | Claude Code only. List of tools (or tool patterns such as `Bash(git status:*)`) the agent may use without asking; it becomes `--allowedTools`. Each entry is a non-empty string |
+| `disallowed_tools` | Claude Code only. List of tools the agent may not use; it becomes `--disallowedTools`. Each entry is a non-empty string. A `light` workload adds `Edit`, `Write` and `NotebookEdit` to this list |
 | `timeout` | Default hard timeout in seconds |
 | `idle_timeout` | Seconds of silence from an answering worker before the run counts as stalled; defaults to `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`). `--idle-timeout` overrides it |
 | `workload` | `light` or `heavy` (default). Sets how the role's CLI workers count against the agent caps and how they are confined; see [Agent caps and workload](#agent-caps-and-workload). Any other value reads as `heavy` with a warning. `--workload` overrides it, and orchestration workers take their own profile's value |
 | `resume_on_timeout` | Set to `once` for one bounded automatic continuation |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |
 | `artifact_defaults` | Expected-artifact defaults; see [ADR-0064](adr/ADR-0064-cli-execution-outcome-and-completion-record.md) |
+
+`tools`, `allowed_tools` and `disallowed_tools` are checked when an agent launches. A value that is
+not a list of non-empty strings is refused with the field named, and so is a role that declares
+any of them while the agent's model runs on another provider, with the field and the provider
+named: a field that would be ignored is an error. On `li agent -r`, a field the role declares
+replaces the stored one and a field it leaves out keeps the stored value. In `li o flow` and
+`li o fanout` the orchestrator and each worker take their own profile's fields; a bare worker
+has no profile. An agent a worker spawns takes the fields of the role it names. One that names
+no role is a copy of the orchestrator's branch, and the orchestrator profile's fields confine
+the orchestrator's own process only, so the copy does not carry them: it runs as a worker with
+no role does, with the contained tools and the run's servers when the worker that asked for it
+is run with `contain_user_settings`, and with none of the three fields otherwise. The denials
+of a `light` workload do not depend on these fields: the copy takes the workload of the worker
+that asked for it.
 
 When `lion_system: true`, the global Lion system preamble is prepended to the body
 to form the system prompt. Set it to `false` for a verbatim body (e.g. when the
@@ -1202,7 +1239,7 @@ profile already carries its own complete system prompt).
 
 Task-producing `agent`, fan-out, flow, and playbook invocations allocate a run
 directory. Administrative commands such as `doctor` and `monitor` do not. Run
-IDs use the format `YYYYMMDDTHHMMSS-{6hex}`. Source: `cli/_runs.py`.
+IDs use the format `YYYYMMDDTHHMMSS-{6hex}`. Source: `lionhub/src/lionhub/orchestration/runs.py`.
 
 ```text
 ~/.lionagi/runs/{run_id}/
@@ -1232,7 +1269,7 @@ li agent -c "continue most recent"
 
 | Variable | Purpose | Source |
 |----------|---------|--------|
-| `LIONAGI_RUN_ID` | When explicitly set for a task-producing child process, reuse the supplied run ID | `cli/_runs.py` |
+| `LIONAGI_RUN_ID` | When explicitly set for a task-producing child process, reuse the supplied run ID | `lionhub/src/lionhub/orchestration/runs.py` |
 | `LIONAGI_HOME` | Override `~/.lionagi/` base dir | `lionagi/utils.py` |
 | `LIONAGI_WORKER_LIVENESS_TIMEOUT` | Seconds `run()` waits for a CLI worker's first stream chunk before retrying once, then raising `WorkerLivenessError`; default `120`, `0` disables. Applied by default only to endpoints that stream output early (`claude_code`, `codex`) — buffered endpoints (`gemini-cli`, `pi`) are unaffected unless `liveness_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
 | `LIONAGI_WORKER_IDLE_TIMEOUT` | Maximum silence between chunks from an early-streaming CLI worker; resets per chunk, defaults to `600`, and `0` disables. A miss after partial output raises `WorkerLivenessError` (`worker.stream_idle`) without retry. Buffered endpoints are unaffected unless `idle_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
@@ -1245,6 +1282,6 @@ li agent -c "continue most recent"
 
 ---
 
-*Sources: `cli/agent.py` · `cli/team.py` · `cli/orchestrate/__init__.py` · `cli/orchestrate/fanout.py` · `cli/orchestrate/flow.py` · `cli/_providers.py` · `cli/_runs.py`*
+*Sources: `cli/agent.py` · `cli/team.py` · `cli/orchestrate/__init__.py` · `cli/orchestrate/fanout.py` · `cli/orchestrate/flow.py` · `lionhub/src/lionhub/orchestration/spawn.py` · `lionhub/src/lionhub/orchestration/runs.py`*
 
 Next: [Python API reference](api/index.md)

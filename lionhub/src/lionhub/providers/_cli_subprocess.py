@@ -31,7 +31,12 @@ from lionagi._errors import (
     _ExclusiveMcpSelectionError,
 )
 from lionagi._provider_errors import ProviderTeardownError, _WorkerSpawnAdmissionError
-from lionagi.libs.path_safety import contain_and_resolve, has_traversal
+from lionagi.libs.path_safety import (
+    _path_error_category,
+    _resolve_allow_missing,
+    contain_and_resolve,
+    has_traversal,
+)
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
     SignalGate,
@@ -47,6 +52,7 @@ from lionagi.ln._proc import (
     _await_child_exit as _wait_owned_child_exit,
 )
 from lionagi.ln.concurrency.cancel import CancelScope, move_on_after
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.service._subagent_admission import (
     AGENT_DEPTH_ENV,
@@ -55,7 +61,10 @@ from lionagi.service._subagent_admission import (
     child_agent_depth,
     refuse_nested_agent,
 )
-from lionagi.service.accounts._secret_resolution import fill_declared_secrets_and_names
+from lionagi.service.accounts._secret_resolution import (
+    _routed_account_key_names,
+    fill_declared_secrets_and_names,
+)
 
 log = logging.getLogger("lionagi.providers._cli_subprocess")
 
@@ -1296,6 +1305,7 @@ async def ndjson_from_cli(
     on_spawn: Callable[[SpawnedProcess], None | Awaitable[None]] | None = None,
     engine: str | None = None,
     workload: str = DEFAULT_WORKLOAD,
+    secret_fill_skip: frozenset[str] = frozenset(),
     _prepare_argv: Callable[[dict[str, str]], list[str]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
@@ -1306,7 +1316,9 @@ async def ndjson_from_cli(
     propagates through the teardown below, which ends the child's group.
     Before the spawn the agent takes a machine-wide slot for ``engine`` and
     ``workload`` (see ``lionagi.service._subagent_admission``), held until the child's group
-    has ended. See docs/internals/providers.md#cli-subprocess-lifecycle.
+    has ended. ``secret_fill_skip`` names variables the configured secret lookup
+    must not fill into this child, on top of the routed account key names; empty
+    leaves the fill as it is. See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # An agent lionagi started cannot start another through lionagi, by its shell or by an
     # MCP server it was given; refused here, before any slot is waited for.
@@ -1325,7 +1337,15 @@ async def ndjson_from_cli(
     # One config read for both: re-resolving after the fill's await would let a
     # settings edit in that window hand the child a value the redactor is not
     # told to remove.
-    child_env, declared = await fill_declared_secrets_and_names(env)
+    # A name in ``secret_fill_skip`` is never looked up for this child. Only the
+    # fill's skip set changes: ``declared`` still holds every configured name, so
+    # the redactor covers a value the child inherits under one of them.
+    if secret_fill_skip:
+        child_env, declared = await fill_declared_secrets_and_names(
+            env, account_key_names=_routed_account_key_names() | secret_fill_skip
+        )
+    else:
+        child_env, declared = await fill_declared_secrets_and_names(env)
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env, spawn_marker = prepare_process_group_env(child_env)
@@ -1458,7 +1478,7 @@ async def ndjson_from_cli(
     _retain_cli_task(spawn, admission)
     spawn_permitted.set()
     try:
-        proc, spawned = await asyncio.shield(spawn)
+        proc, spawned = await shield_quietly(spawn)
     except BaseException:
 
         def _end_late_spawn(task: asyncio.Future) -> None:
@@ -1729,11 +1749,11 @@ async def ndjson_from_cli(
 
         # Same pipe-gating hazard as above: proc.wait() here would block on the
         # orphans' copy of the pipe after a grace-bounded end of stream.
-        rc = await asyncio.shield(exit_task)
+        rc = await shield_quietly(exit_task)
         if rc != 0:
             drain_truncated = False
             try:
-                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
+                await asyncio.wait_for(shield_quietly(stderr_task), timeout=2.0)
             except asyncio.TimeoutError:
                 drain_truncated = True
             except asyncio.CancelledError:
@@ -1807,25 +1827,52 @@ async def ndjson_from_cli(
     )
 
 
+def _resolve_cli_path(path: Path, field_name: str) -> Path:
+    """Resolve without retaining the path; refuse with ValueError, OSError, or RuntimeError."""
+    failure = None
+    try:
+        resolved = _resolve_allow_missing(path)
+    except (ValueError, OSError, RuntimeError) as exc:
+        failure = _path_error_category(exc)
+    if failure is not None:
+        raise failure(f"{field_name} cannot be resolved") from None
+    return resolved
+
+
 def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
     if repo is None:
         repo = Path.cwd()
     # Fail here, before any caller spawns into a nonexistent cwd — every
     # CLI-backed provider's spawn path shares this helper.
-    if not repo.is_dir():
-        raise ValueError(f"cwd does not exist or is not a directory: {repo}")
+    inspection_failure = None
+    try:
+        is_directory = repo.is_dir()
+    except (ValueError, OSError, RuntimeError) as exc:
+        inspection_failure = _path_error_category(exc)
+    if inspection_failure is not None:
+        raise inspection_failure("cwd cannot be inspected") from None
+    if not is_directory:
+        raise ValueError("cwd does not exist or is not a directory")
     if not workspace:
         return repo
 
     ws_path = Path(workspace)
 
     if ws_path.is_absolute():
-        raise ValueError(f"Workspace path must be relative, got absolute: {workspace}")
+        raise ValueError("Workspace path must be relative, got absolute path")
 
     if has_traversal(ws_path):
-        raise ValueError(f"Directory traversal detected in workspace path: {workspace}")
+        raise ValueError("Directory traversal detected in workspace path")
 
-    return contain_and_resolve(ws_path, repo)
+    failure = None
+    try:
+        _resolve_allow_missing(repo / ws_path)
+        resolved = contain_and_resolve(ws_path, repo)
+    except (ValueError, OSError, RuntimeError) as exc:
+        failure = _path_error_category(exc)
+    if failure is not None:
+        raise failure("Workspace path cannot be resolved within repository bounds") from None
+    return resolved
 
 
 def validate_message_prompt(data: dict) -> dict:
@@ -1943,4 +1990,91 @@ def make_cli_flag(
     return d
 
 
+def declarative_cli_flags(model: type) -> frozenset[str]:
+    """Collect the fixed flag spellings emitted by a declarative CLI builder."""
+    return frozenset(
+        flag
+        for field in model.model_fields.values()
+        for flag in (
+            (field.json_schema_extra or {}).get("cli_flag"),
+            (field.json_schema_extra or {}).get("cli_neg_flag"),
+        )
+        if isinstance(flag, str)
+    )
+
+
 print_readable = partial(as_readable, md=True, display_str=True)
+
+
+# A system prompt, a `-c` override or any other long value reaches a CLI as a single
+# command-line argument. macOS refuses an argument list, environment included, past ARG_MAX
+# (1,048,576 bytes from `getconf ARG_MAX`); Linux refuses one argument past MAX_ARG_STRLEN, 32
+# pages (131,072 bytes with 4 KiB pages). So an argument of this many bytes does not start the
+# CLI on macOS or on Linux with 4 KiB pages. A shorter one can still be refused there when the
+# process starts, with the operating system's error. The bound is the same on every platform,
+# so it also refuses an argument Linux with larger pages would take.
+CLI_ARGUMENT_MAX_BYTES = 1_048_576
+
+
+def refuse_oversized_argument(argument: bytes, what: str, cli: str) -> None:
+    """Refuse ``argument`` when it is ``CLI_ARGUMENT_MAX_BYTES`` bytes or more. ``what`` names
+    it in the refusal and ``cli`` names the program it was meant for, e.g. ``"Codex CLI"``."""
+    size = len(argument)
+    if size >= CLI_ARGUMENT_MAX_BYTES:
+        raise ValueError(
+            f"{what} reaches the {cli} as one command-line argument of {size:,} bytes, "
+            f"and an argument of {CLI_ARGUMENT_MAX_BYTES:,} bytes or more does not start the "
+            "CLI on macOS or on Linux with 4 KiB pages."
+        )
+
+
+def refuse_text_strict_utf8_cannot_encode(what: str, cli: str) -> ValueError:
+    """The refusal for text holding a character strict UTF-8 cannot encode — a lone
+    surrogate, which a child process cannot decode. Returned rather than raised so the
+    caller names the input at the point it encodes it."""
+    return ValueError(
+        f"{what} holds a character strict UTF-8 cannot encode: a lone surrogate cannot "
+        f"be passed to the {cli}."
+    )
+
+
+def nul_refusal_message(what: str) -> str:
+    return f"{what} holds a NUL character, which no command-line argument can hold."
+
+
+def refuse_oversized_command(
+    cmd: list[str], cli: str, *, known_flags: frozenset[str] = frozenset()
+) -> None:
+    """Refuse arguments holding a NUL or at least ``CLI_ARGUMENT_MAX_BYTES`` bytes.
+
+    ``cli`` names the program. Only a preceding token in ``known_flags`` is
+    named as a flag; otherwise the argument is named by position. A known
+    ``-c`` override is named by position even when its key looks printable.
+    """
+    for position, argument in enumerate(cmd[1:], start=1):
+        previous = cmd[position - 1] if position > 1 else ""
+        flag = str.__str__(previous) if isinstance(previous, str) else ""
+        if flag == "-c" and flag in known_flags:
+            # Named by position: an override's key can hold a secret as its value can.
+            what = f"The -c override at argument {position}"
+        elif flag in known_flags:
+            what = f"The value of {flag}"
+        else:
+            what = f"Command-line argument {position}"
+        # Measured in the bytes exec passes: os.fsencode is how an argument is encoded for
+        # exec, so a path holding a byte that is not UTF-8 counts that byte once. The
+        # argument is read with `str.__str__` first, so a caller's own `encode` is never
+        # called here; a character the text cannot encode is refused after the handler,
+        # naming the argument by its position or its flag, since the codec's error holds
+        # the whole argument.
+        if not issubclass(type(argument), str):
+            raise TypeError(f"{what} must be text, not {type(argument).__name__}")
+        try:
+            encoded = os.fsencode(str.__str__(argument))
+        except UnicodeEncodeError:
+            encoded = None
+        if encoded is None:
+            raise refuse_text_strict_utf8_cannot_encode(what, cli)
+        if b"\x00" in encoded:
+            raise ValueError(nul_refusal_message(what))
+        refuse_oversized_argument(encoded, what, cli)

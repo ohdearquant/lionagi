@@ -174,7 +174,7 @@ def test_non_sqlite_refusal_is_visible_in_human_and_machine_modes(monkeypatch, c
 
     errors = []
     monkeypatch.setattr(state_cli, "_terminal_consumer_list_data", fake_data)
-    monkeypatch.setattr("lionagi.cli._logging.log_error", errors.append)
+    monkeypatch.setattr("lionhub.orchestration.console.log_error", errors.append)
     args = _parser().parse_args(["state", "terminal-consumer", "list"])
     assert state_cli.run_state(args) == 1
     assert capsys.readouterr().out == ""

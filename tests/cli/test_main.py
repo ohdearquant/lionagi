@@ -9,9 +9,10 @@ import sys
 import pytest
 import yaml
 
-from lionagi.cli._util import EXIT_CODE_ENVIRONMENT_ERROR
+from lionagi._feature_errors import MissingFeatureError
 from lionagi.cli.main import _handle_play_shortcut, main
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 
 
 def test_main_resolves_notify_settings_project_dir_from_cwd_flag(monkeypatch):
@@ -195,7 +196,7 @@ def test_handle_play_shortcut_resume_passthrough():
 
 def test_handle_play_shortcut_rejects_flag_before_name(monkeypatch):
     """play --bad returns exit code 1 because flag comes before name."""
-    import lionagi.cli._logging as log_mod
+    import lionhub.orchestration.console as log_mod
 
     monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
     result = _handle_play_shortcut(["play", "--bad"])
@@ -286,6 +287,16 @@ def test_play_check_playbook_with_contract(tmp_path, monkeypatch, capsys):
     ("raised", "expected_code", "expected_text"),
     [
         (ModuleNotFoundError("No module named 'thing'", name="thing"), 78, "thing"),
+        (
+            MissingFeatureError(
+                feature="providers",
+                missing_distribution="thing-dist",
+                install_hint="pip install lionagi[thing]",
+                import_root="thing",
+            ),
+            78,
+            "pip install lionagi[thing]",
+        ),
         (RuntimeError("profile is malformed"), 1, "could not be loaded"),
     ],
 )
@@ -313,13 +324,77 @@ def test_play_check_separates_a_missing_module_from_a_bad_profile(
 
     monkeypatch.setattr(_orch, "_resolve_playbook_path", fake_resolve)
     monkeypatch.setattr("lionagi.cli.main._resolve_playbook_path", fake_resolve, raising=False)
-    monkeypatch.setattr("lionagi.cli._providers.load_agent_profile", fake_load)
+    monkeypatch.setattr("lionhub.orchestration.spawn.load_agent_profile", fake_load)
 
     with caplog.at_level("ERROR"):
         result = _handle_play_shortcut(["play", "check", "withagent"])
 
     assert result == expected_code
     assert expected_text in caplog.text
+
+
+_PLAY_CHECK_NOT_INSTALLED = (
+    "playbook 'withagent' references agent profile 'someprofile', which needs {missing}, "
+    "and it is not installed in this environment. Nothing was checked and no run was "
+    "started. Install the missing dependency, then re-run.{guidance}"
+)
+
+
+@pytest.mark.parametrize(
+    ("raised", "missing", "guidance"),
+    [
+        (ModuleNotFoundError("No module named 'thing'", name="thing"), "thing", ""),
+        (
+            MissingFeatureError(
+                feature="providers",
+                missing_distribution="thing-dist",
+                install_hint="pip install lionagi[thing]",
+                import_root="thing",
+            ),
+            "thing",
+            " Guidance: pip install lionagi[thing]",
+        ),
+        (
+            MissingFeatureError(
+                feature="providers",
+                missing_distribution="lionagi",
+                install_hint=(
+                    "the bundled provider hub is missing from this installation; "
+                    "reinstall the matching lionagi release to restore it"
+                ),
+                import_root="lionhub",
+            ),
+            "lionhub",
+            " Guidance: the bundled provider hub is missing from this installation; "
+            "reinstall the matching lionagi release to restore it",
+        ),
+    ],
+    ids=["missing-module", "install-command-hint", "sentence-hint"],
+)
+def test_play_check_names_what_is_missing_then_gives_the_guidance(
+    tmp_path, monkeypatch, raised, missing, guidance
+):
+    """The report names what the profile needs; the hint of a typed error follows it as its own
+    sentence, whether the hint is a short install command or a whole sentence."""
+    pb_path = tmp_path / "withagent.playbook.yaml"
+    pb_path.write_text("name: withagent\nmodel: claude/sonnet\nprompt: do z\nagent: someprofile\n")
+
+    from lionagi.cli import orchestrate as _orch
+
+    def fake_resolve(name):
+        return (pb_path, None) if name == "withagent" else _orch._resolve_playbook_path(name)
+
+    def fake_load(name):
+        raise raised
+
+    reported: list[str] = []
+    monkeypatch.setattr(_orch, "_resolve_playbook_path", fake_resolve)
+    monkeypatch.setattr("lionagi.cli.main._resolve_playbook_path", fake_resolve, raising=False)
+    monkeypatch.setattr("lionhub.orchestration.spawn.load_agent_profile", fake_load)
+    monkeypatch.setattr("lionagi.cli.main.log_error", reported.append)
+
+    assert _handle_play_shortcut(["play", "check", "withagent"]) == EXIT_CODE_ENVIRONMENT_ERROR
+    assert reported == [_PLAY_CHECK_NOT_INSTALLED.format(missing=missing, guidance=guidance)]
 
 
 def test_play_check_playbook_without_contract(tmp_path, monkeypatch, capsys):
@@ -387,7 +462,7 @@ def test_cli_package_init_is_lazy():
     """Importing lionagi.cli (or any submodule of it, e.g. via
     lionagi.studio.cli) must not pull in lionagi.cli.main — main.py imports
     lionagi.studio.cli at module level, so an eager package init would make
-    every studio->cli._logging import re-enter a partially-initialized
+    every studio import of a CLI submodule re-enter a partially-initialized
     module. `from lionagi.cli import main` still resolves to the callable
     via the package's lazy __getattr__ re-export."""
     import subprocess
@@ -431,7 +506,7 @@ def test_cli_package_getattr_raises_for_unknown_attr():
 
 def test_command_registry_loaders_expose_parser_and_handler():
     """Every registry entry resolves before a command-specific parse needs it."""
-    from lionagi._auto import build_cli_parser, iter_cli_seeds
+    from lionhub.cli.catalog import build_cli_parser, iter_cli_seeds
 
     for seed in iter_cli_seeds():
         build = build_cli_parser(seed)

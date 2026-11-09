@@ -1279,6 +1279,7 @@ def apply_forwarded_mcp_servers(
     # `env`/`http_headers` may carry secrets and must never land on argv, so
     # they route to the on-disk profile instead of a `-c` override.
     secret_fields: dict[str, dict[str, Any]] = {}
+    forwarded_names: list[str] = []
     for server_name, server_cfg in servers.items():
         if not isinstance(server_cfg, dict) or not ("command" in server_cfg or "url" in server_cfg):
             continue
@@ -1289,6 +1290,7 @@ def apply_forwarded_mcp_servers(
                 "the codex CLI's `-c mcp_servers.<name>.<field>` passthrough "
                 f"does not support. Supported fields: {sorted(_CODEX_MCP_SERVER_FIELDS)!r}."
             )
+        forwarded_names.append(server_name)
         for field_key in _CODEX_MCP_SERVER_FIELDS:
             value = server_cfg.get(field_key)
             if value is None:
@@ -1297,6 +1299,23 @@ def apply_forwarded_mcp_servers(
                 secret_fields.setdefault(server_name, {})[field_key] = value
             else:
                 overrides[f"mcp_servers.{server_name}.{field_key}"] = value
+
+    if forwarded_names:
+        from lionhub.providers.openai._codex_project_layers import (
+            refuse_forwarded_name_in_config_layers,
+        )
+
+        # Codex merges a config file's server with a forwarded one of the same name key by
+        # key, so the file's credentials, headers, arguments and environment would reach the
+        # forwarded server. The system config, the user config the child's environment names
+        # and a profile the caller named are read here; the project layers depend on the
+        # directory the child runs in and are read at launch.
+        refuse_forwarded_name_in_config_layers(
+            forwarded_names,
+            child_env,
+            profile=kwargs.get("profile"),
+            ignore_user_config=bool(kwargs.get("ignore_user_config")),
+        )
 
     if exclusive:
         # Carry the set to each launch, where config is read afresh and only

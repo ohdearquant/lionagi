@@ -12,6 +12,8 @@
   outcome/evidence behavior; depends on ADR-0119 (deterministic declaration substrate) and
   ADR-0120 (interception and observation planes); coordinates with ADR-0123 (canonical Run)
 
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+
 ## Context
 
 LionAGI currently has the ingredients of an execution system without one authoritative execution
@@ -22,12 +24,12 @@ contract.
 `request_permission(**event.request)` seam. `RateLimitedAPIExecutor` uses that boolean for quota
 admission. `FunctionCalling` invokes a Python callable directly, with no hook layer, which its
 owning manager's docstring already documents. `ActionManager.invoke()`
-(`lionagi/protocols/action/manager.py:266`) does run the tool-pre and tool-post hooks; what it
+(`lionagi/protocols/action/manager.py::ActionManager.invoke`) does run the tool-pre and tool-post hooks; what it
 never calls is `authorize`. So the three routes carry three different control sets rather than
 one route carrying controls and the others carrying none, and the missing control on the manager
 route is Session authorization specifically. Session authorization is reached only through the
 `_act` operation, whose sole operational caller in the package is
-`lionagi/operations/act/act.py:135-139`, while Agent factory paths attach tool preprocessors one
+`lionagi/operations/act/act.py::_act`, while Agent factory paths attach tool preprocessors one
 registration at a time. A caller that holds an `ActionManager`, a fresh plugin Tool, or a callable
 can therefore select a path that does not pass every intended control.
 
@@ -64,11 +66,11 @@ mutable dataclass, and `mode` can be reassigned after construction on an instanc
 holds.
 
 The reconstruction gap is on the write side, not the read side. `_resolve_permissions`
-(`lionagi/agent/spec.py:301-323`) accepts a `PermissionPolicy`, accepts a mapping through
+(`lionagi/agent/spec.py::_resolve_permissions`) accepts a `PermissionPolicy`, accepts a mapping through
 `PermissionPolicy.from_dict`, accepts the four preset names, and raises `TypeError` or `ValueError`
 on anything else, so a declared mapping is read and applied. What is missing is the inverse:
 `PermissionPolicy` defines `from_dict` and no `to_dict`, and `AgentSpec.to_yaml`
-(`spec.py:230-260`) emits no `permissions` key at all. Measured: a spec composed with
+(`lionagi/agent/spec.py::AgentSpec.to_yaml`) emits no `permissions` key at all. Measured: a spec composed with
 `{"mode": "rules", "deny": {"bash": ["rm"]}}` round-trips through `to_yaml` then `from_yaml` to
 `permissions=None`, while `model` survives the identical round trip. A reconstructed agent
 therefore has a different effective policy from the declared agent, and the direction of the
@@ -892,7 +894,7 @@ a request for its server like any other: the server is identified by the name it
 has in the selected MCP configuration, and opting in is refused before spawn unless the resolved
 grant names that server and the captured parent permits it. The option's server configuration
 names a server in one of two ways, told apart by the test the connection pool itself applies
-(`lionagi/service/connections/mcp_wrapper.py:1686`, `:1860`): a mapping with a top-level
+(`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._resolve_config`, `lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._resolve_identity`): a mapping with a top-level
 `server` key is a reference, whatever else it carries, and any other mapping is an inline
 transport configuration. A reference names its server by the value of `server` alone, compared
 exactly, case-sensitively and without normalization. The pool resolves that name and ignores
@@ -905,22 +907,22 @@ nested key beginning with `_` is part of the transport and is compared. The top-
 configuration. The connection pool drops
 every one of them, whatever its name, when it fingerprints a transport:
 `material = {k: v for k, v in config.items() if not k.startswith("_")}`
-(`lionagi/service/connections/mcp_wrapper.py:1630`), and a registered tool proxy drops them before
+(`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._policy_key`), and a registered tool proxy drops them before
 it reconnects: `config_for_client = {k: v for k, v in mcp_config.items() if not k.startswith("_")}`
-(`:2121`). When the pool builds a client it reads only the transport keys it names and ignores the
-rest (`:1960-2042`). The one such key read after a tool is built, `_original_tool_name`, names the
-tool that admission checks (`lionagi/protocols/action/manager.py:154`) and picks the tool to call
-on the server already chosen (`mcp_wrapper.py:2119`). It never selects the transport, so these keys
+(`lionagi/service/connections/mcp_wrapper.py::create_mcp_tool.mcp_callable`). When the pool builds a client it reads only the transport keys it names and ignores the
+rest (`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._handshake_timeout`, `lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._server_label`, `lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._stdio_handshake_mode`, `lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._create_client`). The one such key read after a tool is built, `_original_tool_name`, names the
+tool that admission checks (`lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`) and picks the tool to call
+on the server already chosen (`lionagi/service/connections/mcp_wrapper.py::create_mcp_tool.mcp_callable`). It never selects the transport, so these keys
 are no part of it. Equal means the two have the same canonical form, compared exactly as text: the
 typed serialization that the pool's `_policy_key` builds with `server_name=None` before hashing it
-(`lionagi/service/connections/mcp_wrapper.py:1606-1631`). The form tags value types recursively,
+(`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._policy_key`). The form tags value types recursively,
 orders dictionary entries by their typed keys, preserves sequence order, and writes floats with
 `float.hex()`, so `1` and `1.0` differ, parsed `1e2` and `100.0` match, and a list and a tuple
 differ. A configuration holding a value with no JSON form at any depth, a float that is not finite
 or a dictionary key that is not a string, is refused before the comparison, as are a value of a
 type the form does not support, a cyclic container and a repeated key (above). That refusal is the
-check's own: the form accepts a non-finite float and a non-string key (`:1612-1613`,
-`:1622-1625`), and it orders two NaN keys by insertion.
+check's own: the form accepts a non-finite float and a non-string key (`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._policy_key.typed`,
+`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._policy_key.typed`), and it orders two NaN keys by insertion.
 Nothing is expanded before the comparison: an entry is compared as the selected configuration
 declares it and an inline configuration as the option gives it, so an environment or secret
 reference and any placeholder are compared as the text they are written as. Two configurations
@@ -929,7 +931,7 @@ through their resolved values; the opt-in is refused instead. The comparison is 
 client-cache key, which also carries the effective security policy and, for a reference, the
 server name. An inline configuration's cache key does not depend on the mapping object's identity,
 so two equal inline configurations under one security policy share a client
-(`lionagi/service/connections/mcp_wrapper.py:1847-1869`). An inline
+(`lionagi/service/connections/mcp_wrapper.py::MCPConnectionPool._resolve_identity`). An inline
 configuration equal to more than one entry is refused as ambiguous.
 A `khive_injection` whose configuration matches no named server is permitted only under ambient
 discovery, never under a declared or inherited grant. Every requested

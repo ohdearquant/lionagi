@@ -697,7 +697,7 @@ async def test_doctor_leaves_an_old_session_whose_process_is_still_running(
 
 
 async def test_doctor_preserves_a_live_imported_degraded_run(tmp_path, temp_db_path, monkeypatch):
-    from lionagi.cli._runs import PERSISTENCE_DEGRADED_REASON_FIELD
+    from lionhub.orchestration.runs import PERSISTENCE_DEGRADED_REASON_FIELD
 
     old = time.time() - (48 * 3600)
     run_id = str(uuid.uuid4())
@@ -715,13 +715,13 @@ async def test_doctor_preserves_a_live_imported_degraded_run(tmp_path, temp_db_p
             }
         )
     )
-    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", runs_root)
     patched_pid_alive = lambda _pid: True
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     patched_check_pid_identity = lambda *a, **kw: "ours"
     monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", patched_check_pid_identity)
-    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionhub.orchestration.kill.check_pid_identity", patched_check_pid_identity)
 
     async with StateDB() as db:
         progression_id = str(uuid.uuid4())
@@ -749,7 +749,7 @@ async def test_doctor_preserves_a_live_imported_degraded_run(tmp_path, temp_db_p
 async def test_doctor_keeps_an_imported_degraded_run_whose_identity_cannot_be_checked(
     tmp_path, temp_db_path, monkeypatch, reason
 ):
-    from lionagi.cli._runs import PERSISTENCE_DEGRADED_REASON_FIELD
+    from lionhub.orchestration.runs import PERSISTENCE_DEGRADED_REASON_FIELD
 
     old = time.time() - (48 * 3600)
     run_id = str(uuid.uuid4())
@@ -767,17 +767,17 @@ async def test_doctor_keeps_an_imported_degraded_run_whose_identity_cannot_be_ch
             }
         )
     )
-    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", runs_root)
     patched_pid_alive = lambda _pid: True
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
 
     def cannot_check(*args, _reason_out=None, **kwargs):
         _reason_out.append(reason)
         return "unverifiable"
 
     monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", cannot_check)
-    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", cannot_check)
+    monkeypatch.setattr("lionhub.orchestration.kill.check_pid_identity", cannot_check)
 
     async with StateDB() as db:
         progression_id = str(uuid.uuid4())
@@ -880,10 +880,10 @@ async def test_doctor_judges_an_imported_run_by_its_recorded_process(
             else _imported_running_manifest(run_id, **manifest)
         )
         (run_dir / "run.json").write_text(text)
-    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", runs_root)
     patched_pid_alive = lambda _pid: alive
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
 
     def judged(*args, _reason_out=None, **kwargs):
         if _reason_out is not None and identity[1] is not None:
@@ -891,7 +891,7 @@ async def test_doctor_judges_an_imported_run_by_its_recorded_process(
         return identity[0]
 
     monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", judged)
-    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", judged)
+    monkeypatch.setattr("lionhub.orchestration.kill.check_pid_identity", judged)
 
     async with StateDB() as db:
         progression_id = str(uuid.uuid4())
@@ -943,9 +943,9 @@ async def test_doctor_sweeps_a_session_whose_pid_was_recycled(
 async def test_doctor_create_time_mismatch_is_platform_specific(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, linux: bool
 ):
-    import lionagi.cli._kill_service as kill_service
-    from lionagi.cli import _util
+    import lionhub.orchestration.kill as kill_service
     from lionagi.cli import kill as kill_mod
+    from lionhub.orchestration import job as _util
 
     monkeypatch.setattr(psutil, "LINUX", linux)
     monkeypatch.setattr(psutil, "Process", lambda _pid: object())
@@ -1182,7 +1182,7 @@ async def test_doctor_skips_runtimes_it_cannot_judge(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """`state doctor` asks this host's process table, so it may only judge rows about it — a shared-process or unmanaged-runtime row has no pid to contest the sweep and was wrongly marked aborted."""
-    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
 
     old = time.time() - (48 * 3600)
     async with StateDB() as db:

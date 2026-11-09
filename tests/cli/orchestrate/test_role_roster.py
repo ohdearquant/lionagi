@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.cli._providers import AgentProfile
 from lionagi.cli.orchestrate import _orchestration as orch
+from lionhub.orchestration.spawn import AgentProfile
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ class TestRoleBlurb:
         gives every profile a system prompt, so a hand-built one with an empty
         system prompt would test a shape that never occurs."""
         from lionagi.casts.pattern import Role
-        from lionagi.cli._providers import _parse_profile
+        from lionhub.orchestration.spawn import _parse_profile
 
         profile = _parse_profile("critic", "---\nmodel: codex/gpt-5\n---\n")
         assert not profile.raw_body
@@ -197,7 +197,7 @@ class TestAuthoredBodySelection:
     async def test_frontmatter_only_profile_leaves_the_role_composing(
         self, worker_env, stub_profiles
     ):
-        from lionagi.cli._providers import _parse_profile
+        from lionhub.orchestration.spawn import _parse_profile
 
         stub_profiles["critic"] = _parse_profile("critic", "---\neffort: high\n---\n")
         branch, *_ = await orch.build_worker_branch(
@@ -208,7 +208,7 @@ class TestAuthoredBodySelection:
 
     @pytest.mark.asyncio
     async def test_authored_body_replaces_the_role(self, worker_env, stub_profiles):
-        from lionagi.cli._providers import _parse_profile
+        from lionhub.orchestration.spawn import _parse_profile
 
         stub_profiles["critic"] = _parse_profile(
             "critic", "---\neffort: high\n---\n# Critic\n\n**Mission**: gate the release.\n"
@@ -284,7 +284,7 @@ class TestAvailableRoles:
         assert orch.available_roles() == ["deck-hand"]
 
     def test_roster_carries_one_line_for_a_role_spelled_both_ways(self, monkeypatch, stub_profiles):
-        from lionagi.cli._providers import _parse_profile
+        from lionhub.orchestration.spawn import _parse_profile
 
         stub_profiles["postmortem_lead"] = _parse_profile(
             "postmortem_lead", "---\nmodel: codex/gpt-5\n---\n"

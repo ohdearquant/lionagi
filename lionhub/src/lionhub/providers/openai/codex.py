@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 import toml
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
@@ -54,19 +55,23 @@ from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
     Redacted,
     SpawnedProcess,
+    _resolve_cli_path,
     build_declarative_cli_args,
+    declarative_cli_flags,
     discover_cli,
     env_as_the_spawn_encodes_it,
+    make_cli_flag,
     ndjson_from_cli,
+    nul_refusal_message,
     print_readable,
     raise_if_env_is_not_a_string_map,
     redact_runtime_fields_in_place,
+    refuse_oversized_argument,
+    refuse_oversized_command,
+    refuse_text_strict_utf8_cannot_encode,
     resolve_cli_workspace,
     reveal_redacted,
     validate_message_prompt,
-)
-from lionhub.providers._cli_subprocess import (
-    make_cli_flag as _cli,
 )
 
 from ._codex_profile import (
@@ -83,6 +88,7 @@ from ._codex_project_layers import (
     parse_failure,
     project_layers,
     project_mcp_server_names,
+    refuse_forwarded_name_in_project_layers,
     refuse_unsafe_exclusive_profile,
     system_mcp_server_names,
 )
@@ -359,55 +365,30 @@ def _call_markup_error_chunk(session: CLISession, event: Mapping[str, Any]) -> S
 #: after the process has started; the request refuses first.
 CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
 
-# The system prompt and each `-c` override reach the CLI as single command-line arguments.
-# macOS refuses an argument list, environment included, past ARG_MAX (1,048,576 bytes from
-# `getconf ARG_MAX`); Linux refuses one argument past MAX_ARG_STRLEN, 32 pages (131,072 bytes
-# with 4 KiB pages). So an argument of this many bytes does not start the CLI on macOS or on
-# Linux with 4 KiB pages. A shorter one can still be refused there when the process starts,
-# with the operating system's error. The bound is the same on every platform, so it also
-# refuses an argument Linux with larger pages would take.
-_CLI_ARGUMENT_MAX_BYTES = 1_048_576
-
-
-def _refuse_oversized_argument(argument: bytes, what: str) -> None:
-    size = len(argument)
-    if size >= _CLI_ARGUMENT_MAX_BYTES:
-        raise ValueError(
-            f"{what} reaches the Codex CLI as one command-line argument of {size:,} bytes, "
-            f"and an argument of {_CLI_ARGUMENT_MAX_BYTES:,} bytes or more does not start the "
-            "CLI on macOS or on Linux with 4 KiB pages."
-        )
+# The refusals shared with the other CLI providers name the program they guard; here they
+# name the Codex CLI.
+_refuse_oversized_argument = functools.partial(refuse_oversized_argument, cli="Codex CLI")
 
 
 def _refuse_oversized_command(cmd: list[str]) -> None:
-    """Refuse ``cmd`` when any argument after the program holds a NUL or is
-    ``_CLI_ARGUMENT_MAX_BYTES`` bytes or more."""
-    for position, argument in enumerate(cmd[1:], start=1):
-        flag = cmd[position - 1] if position > 1 else ""
-        if flag == "-c":
-            # Named by position: an override's key can hold a secret as its value can.
-            what = f"The -c override at argument {position}"
-        elif flag.startswith("-"):
-            what = f"The value of {flag}"
-        else:
-            what = f"Command-line argument {position}"
-        # Measured in the bytes exec passes: os.fsencode is how an argument is encoded for
-        # exec, so a path holding a byte that is not UTF-8 counts that byte once. The
-        # argument is read with `str.__str__` first, so a caller's own `encode` is never
-        # called here; a character the text cannot encode is refused after the handler,
-        # naming the argument by its position or its flag, since the codec's error holds
-        # the whole argument.
-        if not issubclass(type(argument), str):
-            raise TypeError(f"{what} must be text, not {type(argument).__name__}")
-        try:
-            encoded = os.fsencode(str.__str__(argument))
-        except UnicodeEncodeError:
-            encoded = None
-        if encoded is None:
-            raise _refuse_text_strict_utf8_cannot_encode(what)
-        if b"\x00" in encoded:
-            raise ValueError(_nul_refusal_message(what))
-        _refuse_oversized_argument(encoded, what)
+    flags = declarative_cli_flags(CodexCodeRequest) | {
+        "--json",
+        "--add-dir",
+        "--sandbox",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-s",
+        "--enable",
+        "--disable",
+        "-i",
+        "-C",
+        "-c",
+    }
+    refuse_oversized_command(cmd, "Codex CLI", known_flags=flags)
+
+
+_refuse_text_strict_utf8_cannot_encode = functools.partial(
+    refuse_text_strict_utf8_cannot_encode, cli="Codex CLI"
+)
 
 
 def _contain_override(key: str, value: Any, what: str) -> tuple[bool, Any]:
@@ -436,16 +417,6 @@ def _contain_override(key: str, value: Any, what: str) -> tuple[bool, Any]:
     return True, value
 
 
-def _refuse_text_strict_utf8_cannot_encode(what: str) -> ValueError:
-    """The refusal for text holding a character strict UTF-8 cannot encode — a lone
-    surrogate, which a child process cannot decode. Returned rather than raised so the
-    caller names the input at the point it encodes it."""
-    return ValueError(
-        f"{what} holds a character strict UTF-8 cannot encode: a lone surrogate cannot "
-        "be passed to the Codex CLI."
-    )
-
-
 def _strict_utf8_failure(text: str, what: str) -> ValueError | None:
     """The refusal for ``text`` when strict UTF-8 cannot encode it, else None.
 
@@ -458,10 +429,6 @@ def _strict_utf8_failure(text: str, what: str) -> ValueError | None:
     except UnicodeEncodeError:
         return _refuse_text_strict_utf8_cannot_encode(what)
     return None
-
-
-def _nul_refusal_message(what: str) -> str:
-    return f"{what} holds a NUL character, which no command-line argument can hold."
 
 
 def _equals_in_key_refusal(index: int) -> ValueError:
@@ -479,7 +446,7 @@ def _argument_text_failure(text: str, what: str) -> ValueError | None:
     None: strict UTF-8 must encode it, and it may not hold a NUL, which exec refuses."""
     failure = _strict_utf8_failure(text, what)
     if failure is None and "\x00" in text:
-        failure = ValueError(_nul_refusal_message(what))
+        failure = ValueError(nul_refusal_message(what))
     return failure
 
 
@@ -1176,6 +1143,8 @@ def _linked_worktree_git_writable_roots(cwd: Path) -> tuple[Path, ...]:
 class CodexCodeRequest(BaseModel):
     """Configuration + prompt for an OpenAI Codex CLI invocation."""
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Codex CLI")
 
@@ -1183,17 +1152,17 @@ class CodexCodeRequest(BaseModel):
     model: str | None = Field(
         default="gpt-5.3-codex",
         description="Codex model to use",
-        json_schema_extra=_cli("-m", 10),
+        json_schema_extra=make_cli_flag("-m", 10),
     )
     profile: str | None = Field(
         default=None,
         description="Configuration profile from ~/.codex/config.toml",
-        json_schema_extra=_cli("-p", 11),
+        json_schema_extra=make_cli_flag("-p", 11),
     )
     oss: bool = Field(
         default=False,
         description="Use local open-source model provider (Ollama)",
-        json_schema_extra=_cli("--oss", 12, "bool"),
+        json_schema_extra=make_cli_flag("--oss", 12, "bool"),
     )
     search: bool = Field(
         default=False,
@@ -1231,7 +1200,7 @@ class CodexCodeRequest(BaseModel):
     add_dir: list[str] | None = Field(
         default=None,
         description="Additional directories to grant write access",
-        json_schema_extra=_cli("--add-dir", 30, "repeat"),
+        json_schema_extra=make_cli_flag("--add-dir", 30, "repeat"),
     )
 
     # ── process (runtime-only, never rendered as CLI args) ─────────
@@ -1354,17 +1323,17 @@ class CodexCodeRequest(BaseModel):
     output_schema: str | Path | None = Field(
         default=None,
         description="Path to JSON Schema file for structured output",
-        json_schema_extra=_cli("--output-schema", 50),
+        json_schema_extra=make_cli_flag("--output-schema", 50),
     )
     output_last_message: str | Path | None = Field(
         default=None,
         description="Write the final message to a file",
-        json_schema_extra=_cli("--output-last-message", 51),
+        json_schema_extra=make_cli_flag("--output-last-message", 51),
     )
     color: CodexColorMode | None = Field(
         default=None,
         description="ANSI color mode",
-        json_schema_extra=_cli("--color", 52),
+        json_schema_extra=make_cli_flag("--color", 52),
     )
 
     # ── features (order 60–69) ────────────────────────────────────
@@ -1375,22 +1344,22 @@ class CodexCodeRequest(BaseModel):
             "run in per-task artifact dirs that are not git repos, where codex would "
             "otherwise refuse with 'Not inside a trusted directory'."
         ),
-        json_schema_extra=_cli("--skip-git-repo-check", 60, "bool"),
+        json_schema_extra=make_cli_flag("--skip-git-repo-check", 60, "bool"),
     )
     ephemeral: bool = Field(
         default=False,
         description="Don't persist session to disk",
-        json_schema_extra=_cli("--ephemeral", 61, "bool"),
+        json_schema_extra=make_cli_flag("--ephemeral", 61, "bool"),
     )
     no_alt_screen: bool = Field(
         default=False,
         description="Disable alternate screen mode for TUI",
-        json_schema_extra=_cli("--no-alt-screen", 62, "bool"),
+        json_schema_extra=make_cli_flag("--no-alt-screen", 62, "bool"),
     )
     include_plan_tool: bool = Field(
         default=False,
         description="Include the plan tool in the conversation",
-        json_schema_extra=_cli("--include-plan-tool", 63, "bool"),
+        json_schema_extra=make_cli_flag("--include-plan-tool", 63, "bool"),
     )
     ignore_user_config: bool = Field(
         default=False,
@@ -1410,19 +1379,19 @@ class CodexCodeRequest(BaseModel):
             "flag. A `profile`, or overrides that select one, are refused with the flag, since "
             "codex then loads no profile."
         ),
-        json_schema_extra=_cli("--ignore-user-config", 64, "bool"),
+        json_schema_extra=make_cli_flag("--ignore-user-config", 64, "bool"),
     )
 
     # ── feature flags (order 70–79) ───────────────────────────────
     enable_features: list[str] | None = Field(
         default=None,
         description="Feature flags to enable",
-        json_schema_extra=_cli("--enable", 70, "repeat"),
+        json_schema_extra=make_cli_flag("--enable", 70, "repeat"),
     )
     disable_features: list[str] | None = Field(
         default=None,
         description="Feature flags to disable",
-        json_schema_extra=_cli("--disable", 71, "repeat"),
+        json_schema_extra=make_cli_flag("--disable", 71, "repeat"),
     )
     contain_account_integrations: bool = Field(
         default=False,
@@ -1633,7 +1602,7 @@ class CodexCodeRequest(BaseModel):
         exclude=True,
         description=(
             "'light' runs codex in its workspace-write sandbox (writable in its working "
-            "directory and the temporary directories that sandbox keeps writable) with no "
+            "directory only: /tmp and $TMPDIR are excluded) with no "
             "network, with the account's apps and plugins turned off as "
             "`contain_account_integrations` turns them off, and counts against the total and "
             "codex agent caps. The MCP servers it is given run outside that sandbox. 'heavy' "
@@ -1719,43 +1688,55 @@ class CodexCodeRequest(BaseModel):
         exist, or that this process cannot list and enter leaves the walk with
         nothing it can read, so a caller cannot tell which codex configs apply
         and containment cannot be enforced. Each is refused before the request
-        is used, naming the directory and the reason, chained from the error
-        the filesystem raised.
+        is used, naming the reason without retaining the path or filesystem error.
         """
         if not self._contains_account_integrations():
             return
-        repo = str(self.repo)
+        unresolved = False
         try:
             self.repo.resolve()
-        except (RuntimeError, OSError) as exc:
+        except (RuntimeError, OSError):
+            unresolved = True
+        if unresolved:
             raise ContainmentRefusedError(
-                f"contain_account_integrations cannot use the working directory "
-                f"{repo!r}: it cannot be resolved ({exc})"
-            ) from exc
-        # The same validation the spawn path uses, so the refusal names the
-        # directory the same way and is chained from the value error it raises.
+                "contain_account_integrations cannot use the working directory: it cannot be resolved"
+            ) from None
+        unavailable = False
         try:
             resolve_cli_workspace(self.repo, None)
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError):
+            unavailable = True
+        if unavailable:
             raise ContainmentRefusedError(
-                f"contain_account_integrations cannot use the working directory: {exc}"
-            ) from exc
+                "contain_account_integrations cannot use the working directory: it is unavailable"
+            ) from None
         if not os.access(self.repo, os.R_OK | os.X_OK):
             raise ContainmentRefusedError(
-                f"contain_account_integrations cannot use the working directory "
-                f"{repo!r}: this process cannot list and enter it"
+                "contain_account_integrations cannot use the working directory: "
+                "this process cannot list and enter it"
             )
 
     @model_validator(mode="after")
     def _contain_path_fields_in_repo(self):
+        value_refused = False
         try:
-            repo_root = self.repo.resolve()
-        except RuntimeError:
+            repo_root = _resolve_cli_path(self.repo, "working directory")
+        except ValueError:
+            if not self._contains_account_integrations():
+                raise
+            value_refused = True
+        except (RuntimeError, OSError):
             if self._contains_account_integrations():
                 # Deferred to __init__, which raises the refusal outside
                 # pydantic's validation and so keeps its own type.
                 return self
             raise
+        if value_refused:
+            message = (
+                "contain_account_integrations cannot use the working directory: "
+                "it cannot be resolved"
+            )
+            raise CLIInputRefusedError(message) from ContainmentRefusedError(message)
         # Each path is read the way the snapshot reads it, `str.__str__(os.fspath(x))`, so
         # the text this check contains is the text the command line renders: a path-like
         # value whose own `__str__` answers differently on a later read cannot pass here
@@ -2001,11 +1982,15 @@ class CodexCodeRequest(BaseModel):
             args.extend(["-c", f"projects={rendered}"])
         if light:
             # Pinned against the user's config, read by codex or carried above, which may
-            # grant extra writable roots or the network to every workspace-write session.
-            # Emitted after every caller override and carried setting, so codex, which keeps
-            # the last `-c` of a key, reads these whatever came before.
+            # grant extra writable roots or the network to every workspace-write session, or
+            # leave /tmp and $TMPDIR writable. Together the pins leave the working directory
+            # the only place a light agent writes. Emitted after every caller override and
+            # carried setting, so codex, which keeps the last `-c` of a key, reads these
+            # whatever came before.
             args.extend(["-c", "sandbox_workspace_write.writable_roots=[]"])
             args.extend(["-c", "sandbox_workspace_write.network_access=false"])
+            args.extend(["-c", "sandbox_workspace_write.exclude_slash_tmp=true"])
+            args.extend(["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"])
 
         # Working directory (always emit)
         args.extend(["-C", str(cwd)])
@@ -2630,6 +2615,25 @@ def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:
         )
 
 
+def _refuse_forwarded_project_collisions(
+    plain: _PlainRequest, cwd: Path, env: Mapping[str, str]
+) -> None:
+    """Refuse a launch whose forwarded MCP server shares a name with one a project layer
+    declares. Codex merges the two key by key, so the layer's settings would reach the
+    forwarded server. A forwarded server is one the run's ``mcp_servers.<name>`` overrides
+    give a ``command`` or a ``url``; the project layers depend on ``cwd``, so they are read
+    here, before each process starts."""
+    servers = _command_line_layer(plain).get("mcp_servers")
+    if not isinstance(servers, Mapping):
+        return
+    forwarded = [
+        name
+        for name, fields in servers.items()
+        if isinstance(fields, Mapping) and ("command" in fields or "url" in fields)
+    ]
+    refuse_forwarded_name_in_project_layers(forwarded, cwd, env)
+
+
 # --------------------------------------------------------------------------- NDJSON stream
 
 
@@ -2728,6 +2732,7 @@ def _exclusive_cmd_args(
             set(plain.exclusive_mcp_names),
             include_user=True,
         )
+        _refuse_forwarded_project_collisions(plain, cwd, child_env)
         # The caller's own -c options retain their existing precedence.
         plain = replace(
             plain,
@@ -2790,6 +2795,9 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         def prepare_argv(child_env):
             return _exclusive_cmd_args(request, plain, cwd, child_env)
     else:
+        _refuse_forwarded_project_collisions(
+            plain, cwd, os.environ if plain.env is None else plain.env
+        )
         cmd = [CODEX_CLI, *request._cmd_args(plain, cwd)]
         _refuse_oversized_command(cmd)
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;

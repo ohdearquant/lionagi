@@ -9,12 +9,12 @@ import uuid
 
 import pytest
 
-import lionagi.cli._kill_service as kill_service
+import lionhub.orchestration.kill as kill_service
 from lionagi.cli import kill as kill_mod
-from lionagi.cli._runs import _reopen_session_for_resume
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
+from lionhub.orchestration.runs import _reopen_session_for_resume
 
 
 @pytest.mark.asyncio

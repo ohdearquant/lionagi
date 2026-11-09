@@ -271,7 +271,7 @@ async def test_prefix_matched_resume_id_emits_hint(monkeypatch, tmp_path, caplog
     import lionagi.cli.agent as agent_mod
 
     # find_branch() is what actually performs the prefix glob-match in the
-    # real code path (lionagi/cli/_runs.py); stub it directly to return the
+    # real code path (lionhub/src/lionhub/orchestration/runs.py); stub it directly to return the
     # already-resolved full-id path, mirroring what a real prefix match does.
     monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", branch_path))
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")

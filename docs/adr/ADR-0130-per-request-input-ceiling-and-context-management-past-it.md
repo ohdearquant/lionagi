@@ -39,32 +39,32 @@ rejected by the provider.
 
 **P1 — price tiers change at a prompt size, and nothing in the request path knows it.** The pricing
 table prices some models by prompt length: `claude-haiku-5-5` carries a first tier bounded at
-100,000 prompt tokens (`lionagi/service/accounts/_pricing.py:128-149`, `PriceTier.max_prompt_tokens`
-at `:57`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
-`ModelPrice.max_input_tokens` (`:67`) is the model's capacity, one million, and is used to reserve
+100,000 prompt tokens (`lionagi/service/accounts/_pricing.py` `"claude-haiku-5-5": ModelPrice(`, `PriceTier.max_prompt_tokens`
+at `lionagi/service/accounts/_pricing.py::PriceTier`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
+`ModelPrice.max_input_tokens` (`lionagi/service/accounts/_pricing.py::ModelPrice`) is the model's capacity, one million, and is used to reserve
 spend; it is not the size a caller wants to stay under. No code before a send compares the request
 against either number.
 
 **P2 — the model's own context tools exist, and nothing calls them for it.** `ContextTool`
-(`lionagi/tools/context/context.py:136`) gives a model `status` (`:345-361`, an estimate from
-`TokenCalculator` over message content, `:198-201`), `evict` (`:390`), `evict_action_results` (`:406`),
-`restore` (`:425`) and `compact` (`:484`). Eviction removes messages from the branch's active view
+(`lionagi/tools/context/context.py::ContextTool`) gives a model `status` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`, an estimate from
+`TokenCalculator` over message content, `lionagi/tools/context/context.py::ContextTool.bind._tokens`), `evict` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`), `evict_action_results` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`),
+`restore` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`) and `compact` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`). Eviction removes messages from the branch's active view
 and keeps them in the full record, so `restore` brings them back. A model that never calls the tool
 keeps growing its request until the provider refuses it or bills it at the next tier.
 
 **P3 — a dependent spawned child inherits its emitter's whole conversation.** A reactively spawned
 child with no branch of its own is built from its emitter's branch
-(`lionagi/operations/flow.py:1613-1641`, `_assign_injected_branch`), as `base.clone(...)`; the
+(`lionagi/operations/flow.py::ReactiveExecutor._assign_injected_branch`, `_assign_injected_branch`), as `base.clone(...)`; the
 clone copies every message and maps the emitter's active view onto the copies
-(`lionagi/session/branch.py:655-666`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
+(`lionagi/session/branch.py::Branch.clone`). Branch setup runs after the clone (`lionagi/operations/flow.py::ReactiveExecutor._assign_injected_branch`). A child
 cloned from a long emitter starts at the emitter's size, before it has done anything. Observed: a
 child whose inherited history rendered to 3,477,964 characters was started on a CLI provider whose
 turn input is limited to 1,048,576 characters, and died at turn start.
 
 **P4 — what one "request" is differs by provider.** API providers send the message list each turn.
 The Codex and fresh Gemini CLI paths flatten the non-system messages into one turn input
-(`lionagi/providers/_cli_subprocess.py:1832-1855`), and Codex carries the system text as a separate
-argument (`lionagi/providers/openai/codex.py:1930-1936`). A provider that resumes a session it holds
+(`lionhub/src/lionhub/providers/_cli_subprocess.py::validate_message_prompt`), and Codex carries the system text as a separate
+argument (`lionhub/src/lionhub/providers/openai/codex.py::CodexCodeRequest._cmd_args`). A provider that resumes a session it holds
 sends only the new turn and keeps the history remotely, where nothing on this side can fold it.
 
 ## Decision
@@ -85,8 +85,8 @@ distinct from the pricing table's `ModelPrice.max_input_tokens`, which keeps its
 **D2 — `"auto"` resolves to the model's first price-tier boundary.** For a request whose model the
 pricing table prices by prompt length, `"auto"` is the first tier's `max_prompt_tokens` (100,000 for
 `claude-haiku-5-5`). The table prices the requests it is consulted for, the Anthropic Messages path
-and the account router (`lionagi/providers/anthropic/messages.py:988`,
-`lionagi/service/accounts/_router.py:137`); a provider the table does not price, such as a command-line
+and the account router (`lionagi/providers/anthropic/messages.py:988@2a8b69c9`,
+`lionagi/service/accounts/_router.py::AccountRouter.begin`); a provider the table does not price, such as a command-line
 agent billed by subscription, has no tier here, so unset leaves it unchanged. For a model with one flat
 tier, or none in the table, `"auto"` resolves to no ceiling, and the resolution says so in the
 decision event (D7) rather than inventing a number. A
@@ -111,12 +111,12 @@ be measured, and under a ceiling are refused with that reason, never sent unmeas
 provider holds the history remotely, and whether a count it reports is for one request, is that
 provider adapter's statement, not an inference from a `resume` argument. The Codex adapter
 renders branch history for every turn and does not resume a Codex thread
-(`lionagi/providers/openai/codex.py:2824-2829`). Today no resuming adapter makes
+(`lionhub/src/lionhub/providers/openai/codex.py::CODEX_TOOL_OUTPUT_MAX_CHARS`). Today no resuming adapter makes
 that statement: the Claude Code adapter yields only its terminal `result` usage, a total
 whenever the session ran more than one request. The run attaches that metadata to an
-`AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py:544-563`),
+`AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py::run._flush_response`),
 although it separately accumulates usage and passes it to `API_POST_CALL` even without a text
-response (`lionagi/operations/run/run.py:715-720,825-833`). The Gemini CLI path reports one
+response (`lionagi/operations/run/run.py::run`). The Gemini CLI path reports one
 summary per invocation. Landing step 2 makes the Claude Code adapter report the input count of the
 session's last request from that request's own event, and the run keep it when the turn produced no
 text; a Gemini CLI summary for more than one turn, or one with no turn count, counts as a total.
@@ -133,7 +133,7 @@ text; a Gemini CLI summary for more than one turn, or one with no turn count, co
    the tool name, the call id, the original size and how to read it back; the original stays in the
    branch's full record and the model reads it back, in ranges, with its `context` tool (whose output
    is measured like any other result). The context tool previews a message in 120 characters and
-   restores the original to the active view (`lionagi/tools/context/context.py:203-208`, `:425-482`);
+   restores the original to the active view (`lionagi/tools/context/context.py::ContextTool.bind._preview`, `lionagi/tools/context/context.py::ContextTool.bind.context_tool`);
    Amendment 2 below specifies ranged reading. A run whose model has no `context` tool (a profile with `context_management` off) is not
    folded, because it could not read the original back; it is refused as in 3. A fold never leaves a
    tool call without its result in the request, never touches the system text, the instruction, or
@@ -165,7 +165,7 @@ iModel, call, the default for an unset policy, `"auto"` with the tier it read, a
 or none because nothing prices the model by prompt length), the measurement method, the size before and
 after, the action (`notice`, `fold`, `refuse`), the folded call ids, and for a refusal that no
 request was sent. It is an additive signal type under `SIGNAL_SCHEMA_VERSION`
-(`lionagi/session/signal.py:41`); its readers are told before it ships.
+(`lionagi/session/signal.py::SIGNAL_SCHEMA_VERSION`); its readers are told before it ships.
 
 ## Landing order
 

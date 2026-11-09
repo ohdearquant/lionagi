@@ -44,7 +44,7 @@ def test_find_branch_locates_pre_turn_checkpoint(tmp_path, monkeypatch):
     """find_branch() must locate a checkpoint written before the turn ever
     completed — the same lookup a completed-turn snapshot uses.
     """
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
 
     run_dir = tmp_path / "runs" / "r1"
     branches_dir = run_dir / "branches"
@@ -64,7 +64,7 @@ def test_find_branch_locates_pre_turn_checkpoint(tmp_path, monkeypatch):
 def test_find_branch_prefix_match_on_pre_turn_checkpoint(tmp_path, monkeypatch):
     """A truncated id (as a user might paste) still prefix-matches a
     pre-turn checkpoint."""
-    import lionagi.cli._runs as runs_mod
+    import lionhub.orchestration.runs as runs_mod
 
     run_dir = tmp_path / "runs" / "r1"
     branches_dir = run_dir / "branches"

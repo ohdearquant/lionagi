@@ -191,10 +191,10 @@ def test_run_agent_outer_logs_failed_exception_before_reraising(monkeypatch):
 
 def test_run_agent_outer_handles_sigterm_interrupt(monkeypatch):
     """SigtermInterrupt from run_async() must warn + exit 'cancelled' (143), not raise."""
-    import lionagi.cli._logging as logging_mod
     import lionagi.cli.agent as agent_mod
-    from lionagi.cli._util import EXIT_CODE_BY_STATUS
+    import lionhub.orchestration.console as logging_mod
     from lionagi.ln.concurrency import SigtermInterrupt
+    from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 
     warnings_emitted: list[str] = []
     monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
@@ -218,8 +218,8 @@ def test_run_agent_outer_handles_sigterm_interrupt(monkeypatch):
 
 def test_run_agent_outer_sigterm_not_caught_as_generic_failure(monkeypatch):
     """SigtermInterrupt must be dispatched by its own branch, not fall into the failed-bucket log."""
-    import lionagi.cli._logging as logging_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.console as logging_mod
     from lionagi.ln.concurrency import SigtermInterrupt
 
     errors_emitted: list[str] = []
@@ -242,22 +242,6 @@ def test_run_agent_outer_sigterm_not_caught_as_generic_failure(monkeypatch):
 
 
 # _util.classify_exception: SigtermInterrupt maps to the "cancelled" bucket
-
-
-def test_classify_exception_sigterm_interrupt_maps_to_cancelled():
-    """classify_exception(SigtermInterrupt(...)) must return 'cancelled' (exit code 143)."""
-    from lionagi.cli._util import classify_exception
-    from lionagi.ln.concurrency import SigtermInterrupt
-
-    assert classify_exception(SigtermInterrupt("received SIGTERM")) == "cancelled"
-
-
-def test_classify_exception_sigterm_interrupt_distinct_from_aborted():
-    """SigtermInterrupt must not be classified as 'aborted' (that bucket is SIGINT/Ctrl-C only)."""
-    from lionagi.cli._util import classify_exception
-    from lionagi.ln.concurrency import SigtermInterrupt
-
-    assert classify_exception(SigtermInterrupt("received SIGTERM")) != "aborted"
 
 
 # Both handlers write the typed cause the MCP job record reads

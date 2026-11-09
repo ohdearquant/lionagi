@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli._providers import load_agent_profile, profile_config
+from lionhub.orchestration.spawn import load_agent_profile, profile_config
 from lionhub.serve.mcp import dispatch
 
 
@@ -372,7 +372,7 @@ def test_placement_names_no_source_where_the_loader_refuses_to_choose(roots):
     loader is called here in the same directory as the control — a placement
     answer is only wrong relative to what a run would actually get.
     """
-    from lionagi.cli._providers import AmbiguousProfileNameError, load_agent_profile
+    from lionhub.orchestration.spawn import AmbiguousProfileNameError, load_agent_profile
     from lionhub.serve.mcp.roster import _placement
 
     write_profile(roots.proj, "post_mortem_lead", "---\nmodel: under\n---\nbody\n")

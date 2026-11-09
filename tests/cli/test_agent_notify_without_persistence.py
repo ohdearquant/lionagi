@@ -43,11 +43,11 @@ def _wire_agent_stubs(monkeypatch, tmp_path: Path, *, persist: dict | None):
     the assertion about the stand-in. *persist* is what setup_agent_persist
     returns, None being the failure this module is about.
     """
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
-    from lionagi.cli._runs import allocate_run
     from lionagi.service.manager import iModelManager
+    from lionhub.orchestration.runs import allocate_run
 
     monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
     monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/model")
@@ -231,7 +231,7 @@ async def test_a_leg_that_will_auto_resume_leaves_the_notice_to_the_resumed_leg(
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
     from lionagi._errors import TimeoutError as LionTimeoutError
-    from lionagi.cli._runs import allocate_run as real_allocate_run
+    from lionhub.orchestration.runs import allocate_run as real_allocate_run
 
     monkeypatch.setattr(agent_mod, "allocate_run", real_allocate_run)
 
@@ -355,8 +355,8 @@ async def test_a_failed_pointer_write_does_not_cost_the_run_its_notice(
     """
     _wire_agent_stubs(monkeypatch, tmp_path, persist=None)
 
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
+    import lionhub.orchestration.runs as runs_mod
 
     marker = tmp_path / "delivered.txt"
     script = _write_fake_notifier(tmp_path)

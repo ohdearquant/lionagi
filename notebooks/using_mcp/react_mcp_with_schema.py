@@ -5,12 +5,12 @@ Test ReAct reasoning with MCP search tools and proper Pydantic schemas
 
 import asyncio
 
-from lionagi.service.third_party.exa_models import ExaSearchRequest
-from lionagi.service.third_party.pplx_models import PerplexityChatRequest
 from pydantic import BaseModel
 
 from lionagi import Branch, iModel
 from lionagi.protocols.action.manager import load_mcp_tools
+from lionagi.service.third_party.exa_models import ExaSearchRequest
+from lionagi.service.third_party.pplx_models import PerplexityChatRequest
 
 
 class ExaRequest(BaseModel):

@@ -29,7 +29,9 @@ dependencies = [
     # lionagi/state/engine.py reads the private Connection._thread; widen the
     # bound once a new release is checked (tests/state/test_failed_open_worker.py).
     "aiosqlite>=0.22.0,<0.23",
-    "sqlalchemy[asyncio]>=2.0.0",
+    # 2.0.38 is the first release whose aiosqlite dialect pools file databases;
+    # compatibility mode is tested only with pooled connections.
+    "sqlalchemy[asyncio]>=2.0.38",
     "orjson>=3.11.8",
     "psutil>=5.9.0",
     "pyyaml>=6.0",
@@ -178,6 +180,10 @@ ignore = [
     "W293",   # blank line whitespace (handled by formatter)
 ]
 
+[tool.ruff.lint.isort]
+# Keep first-party classification stable when a module file moves between roots.
+known-first-party = ["lionagi", "lionhub"]
+
 [tool.ruff.lint.flake8-bugbear]
 # pydantic.Field in a default is the documented way to attach a description to a
 # parameter; the FieldInfo it returns is inert, so B008's mutable-default hazard
@@ -200,6 +206,7 @@ extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
     "UP045",  # X | None annotation (3.10 compat)
     "N",      # naming relaxed in tests
 ]
+"lionhub/tests/**" = ["S", "A", "B", "E402", "E721", "E731", "F401", "F601", "F841", "UP045", "N"]
 "cookbooks/**" = ["S101", "B904", "N"]
 "scripts/**" = ["S", "E731"]
 # LOG_CONFIG property mirrors the legacy Settings.Config.LOG attribute name.
@@ -240,7 +247,7 @@ addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n aut
 # pytest_asyncio.fixture.
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "session"
-testpaths = ["tests"]
+testpaths = ["tests", "lionhub/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

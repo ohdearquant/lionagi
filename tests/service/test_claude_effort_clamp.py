@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.service.providers import _clamp_claude_effort
+from lionagi.service.providers import _clamp_claude_effort, _normalize_model
 
 # Every spelling callers pass for a Claude model with a documented xhigh tier.
 # Callers pass the bare
@@ -46,6 +46,10 @@ XHIGH_IDENTIFIERS = [
     "fable-5-1",
     "claude-fable-5-1",
     "claude/claude-fable-5-1",
+    "mythos",
+    "mythos-5-1",
+    "claude-mythos-5-1",
+    "claude/claude-mythos-5-1",
 ]
 
 # Older Claude models without a documented xhigh tier guard against granting
@@ -84,3 +88,8 @@ def test_ultra_is_not_a_claude_tier_and_becomes_max(model):
 @pytest.mark.parametrize("model", ["opus", "claude-opus-5", "claude-sonnet-5"])
 def test_ordinary_tiers_pass_through_untouched(effort, model):
     assert _clamp_claude_effort(effort, model) == effort
+
+
+@pytest.mark.parametrize("provider", ["claude", "claude_code"])
+def test_a_bare_mythos_id_under_a_claude_provider_gets_the_claude_prefix(provider):
+    assert _normalize_model("mythos-5-1", provider) == "claude-mythos-5-1"

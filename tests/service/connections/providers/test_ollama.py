@@ -1,6 +1,7 @@
 """Tests for lionhub.providers.ollama.chat module."""
 
 import contextlib
+import importlib.util
 import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,17 +17,38 @@ mock_ollama.__spec__ = MagicMock()  # Required for importlib.util.find_spec
 
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
+_OLLAMA_ENDPOINT_MODULES = (
+    "lionhub.providers.ollama.chat",
+    "lionhub.providers.ollama.embed",
+    "lionhub.providers.ollama.generate",
+)
+
 
 @pytest.fixture(autouse=True, scope="module")
 def _patch_ollama_module():
     """Install and teardown the ollama mock in sys.modules for this module only."""
-    _prior = sys.modules.get("ollama")
+    # Each endpoint module computes its _HAS_OLLAMA flag once, when it is first imported, and
+    # keeps it for the life of the process. Import them before the stand-in is installed so the
+    # flag reflects the real environment: a flag computed while the stand-in is present would
+    # stay set after it is removed, and the endpoints would then fail on a missing package.
+    for name in _OLLAMA_ENDPOINT_MODULES:
+        importlib.import_module(name)
+    # A prior entry of None marks the package as blocked, so it is told apart from no entry.
+    _absent = object()
+    _prior = sys.modules.get("ollama", _absent)
     sys.modules["ollama"] = mock_ollama
     yield mock_ollama
-    if _prior is None:
+    if _prior is _absent:
         sys.modules.pop("ollama", None)
     else:
         sys.modules["ollama"] = _prior
+    installed = importlib.util.find_spec("ollama") is not None
+    for name in _OLLAMA_ENDPOINT_MODULES:
+        flag = importlib.import_module(name)._HAS_OLLAMA
+        assert flag == installed, (
+            f"{name}._HAS_OLLAMA is {flag} after the stand-in was removed, but ollama is "
+            f"{'installed' if installed else 'not installed'}"
+        )
 
 
 def _get_ollama_config(

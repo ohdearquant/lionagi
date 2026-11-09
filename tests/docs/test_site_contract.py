@@ -161,7 +161,7 @@ def test_stale_pages_are_excluded_from_the_published_site() -> None:
 
 
 def test_cli_reference_covers_every_shipped_surface() -> None:
-    from lionagi._auto import iter_cli_seeds
+    from lionhub.cli.catalog import iter_cli_seeds
 
     reference = (DOCS / "cli-reference.md").read_text().lower()
     aliases = {

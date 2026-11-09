@@ -103,7 +103,7 @@ supervision code duplicates or ignores it.
 **P6 — lionagi has no run lineage/generation concept.** Every run (a `sessions` row) is
 a single physical attempt with no `root_run_id`/`generation` pair; a resume today is
 either a fresh session or, for the auto-resume handoff (`defer_terminal` in
-`cli/_runs.py`), an in-place continuation of the *same* session row rather than a new
+`lionhub/src/lionhub/orchestration/runs.py`), an in-place continuation of the *same* session row rather than a new
 child row. This ADR's Phase 1 and Phase 2 do not require lineage; Phase 3 does, and is
 deferred rather than assumed.
 
