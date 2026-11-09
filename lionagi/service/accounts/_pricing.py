@@ -23,7 +23,9 @@ from ._types import (
     INT64_MAX,
     AccountRoutingError,
     CompleteUsage,
+    PricingInputs,
     Quote,
+    Rate,
     RouterErrorCode,
     UnknownOutcome,
 )
@@ -185,6 +187,11 @@ def revision_by_id(revision_id: str) -> PriceRevision:
         return _REVISIONS[revision_id]
     except (KeyError, TypeError):
         raise AccountRoutingError(RouterErrorCode.UNSUPPORTED_PRICING) from None
+
+
+def registered_revisions() -> Mapping[str, PriceRevision]:
+    """Return the immutable registry of retained pricing revisions."""
+    return _REVISIONS
 
 
 # ---------------------------------------------------------------------------
@@ -432,11 +439,20 @@ def quote_ceiling(revision: PriceRevision, body: bytes) -> Quote:
     ceiling = math.ceil((price.max_input_tokens * p_in + max_tokens * p_out) * geo)
     if not 1 <= ceiling <= INT64_MAX:
         raise _refuse()
+    output_rate_max = max(tier.output for tier in price.tiers) * geo
     return Quote(
         requested_model=model,
         ceiling_nusd=ceiling,
         price_revision=revision.id,
         request_digest=hashlib.sha256(body).hexdigest(),
+        pricing_inputs=PricingInputs(
+            output_bound=max_tokens,
+            cache_ttls=tuple(ttl for ttl in ("5m", "1h") if ttl in ttls),
+            single_ttl=next(iter(ttls)) if len(ttls) == 1 else None,
+            feature_profile="messages_standard_v1",
+            tier_selector="max_applicable_at_reserve",
+            output_rate_max=Rate(output_rate_max.numerator, output_rate_max.denominator),
+        ),
     )
 
 

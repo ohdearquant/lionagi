@@ -204,6 +204,11 @@ def _attempts(path):
         ).fetchall()
 
 
+def _http_statuses(path):
+    with sqlite3.connect(path) as connection:
+        return connection.execute("SELECT http_status FROM attempt ORDER BY rowid").fetchall()
+
+
 def _cleanup_router():
     router_module._reset_router_test_dependencies()
 
@@ -2601,6 +2606,7 @@ async def test_a_consumer_closing_the_stream_early_records_why(monkeypatch, tmp_
 
     row = _attempts(path)[0]
     assert row[2:] == ("open", None, "stream_closed")
+    assert _http_statuses(path) == [(200,)]
 
 
 @pytest.mark.asyncio
@@ -2631,6 +2637,7 @@ async def test_a_stream_cancelled_after_its_request_was_sent_records_why(monkeyp
 
     row = _attempts(path)[0]
     assert row[2:] == ("open", None, "cancelled")
+    assert _http_statuses(path) == [(200,)]
 
 
 def _text_block(index) -> dict:
@@ -3699,6 +3706,7 @@ async def test_a_cancellation_before_the_request_enters_leaves_the_warm_rows(
 
     assert len(_attempts(path)) == 2
     assert _attempts(path)[-1][4] != "transport_error"
+    assert _http_statuses(path)[-1] == (None,)
     assert _warm_rows(path) == rows
 
 
@@ -4674,12 +4682,12 @@ async def test_a_native_cancel_inside_a_stream_status_write_records_no_second_ou
     in_write = asyncio.Event()
     never_set = asyncio.Event()
 
-    async def hold_status_write(self, attempt, reason):
+    async def hold_status_write(self, attempt, reason, **kwargs):
         recorded.append(("settle_unknown", reason))
         in_write.set()
         await never_set.wait()
 
-    async def record_stream_end(self, attempt, usage, *, reason="usage_incomplete"):
+    async def record_stream_end(self, attempt, usage, *, reason="usage_incomplete", **kwargs):
         recorded.append(("settle_stream_end", reason))
 
     monkeypatch.setattr(router_module.AccountRouter, "settle_unknown", hold_status_write)

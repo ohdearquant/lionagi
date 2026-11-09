@@ -8,6 +8,7 @@ import json
 import re
 import threading
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Mapping
 from uuid import UUID, uuid4
 
@@ -24,6 +25,7 @@ from ._pricing import (
     PriceRevision,
     freeze_request,
     quote_ceiling,
+    registered_revisions,
     request_ttls,
     usage_outcome,
 )
@@ -32,9 +34,11 @@ from ._types import (
     AccountSpec,
     CompleteUsage,
     ProvenNotSent,
+    RejectionZero,
     Reservation,
     RouterErrorCode,
     Scope,
+    StreamUsageEstimate,
     UnknownOutcome,
 )
 
@@ -94,6 +98,10 @@ class AccountRouter:
         self.ledger = ledger
         self.accounts = accounts
         self.revision = revision
+        if hasattr(self.ledger, "price_revisions"):
+            self.ledger.price_revisions = MappingProxyType(
+                {**self.ledger.price_revisions, revision.id: revision}
+            )
 
     async def begin(
         self,
@@ -180,7 +188,9 @@ class AccountRouter:
         note_attempt(label)
         return attempt
 
-    async def settle_response(self, attempt: RouterAttempt, body: Any) -> None:
+    async def settle_response(
+        self, attempt: RouterAttempt, body: Any, *, http_status: int | None = None
+    ) -> None:
         evidence: CompleteUsage | UnknownOutcome = UnknownOutcome("usage_incomplete")
         if isinstance(body, Mapping):
             evidence = usage_outcome(
@@ -192,12 +202,14 @@ class AccountRouter:
             )
         # Shielded so a cancelled caller cannot leave the write undone.
         with CancelScope(shield=True):
+            status_kwargs = {} if http_status is None else {"http_status": http_status}
             await self.ledger.settle(
                 attempt.attempt_id,
                 evidence,
                 cert=attempt.cert,
                 hour_after_key=attempt.hour_after_key,
                 server_tools=attempt.server_tools,
+                **status_kwargs,
             )
 
     async def settle_unknown(
@@ -207,8 +219,10 @@ class AccountRouter:
         *,
         provider_error_type: str | None = None,
         rejection_class: str | None = None,
+        http_status: int | None = None,
     ) -> None:
         with CancelScope(shield=True):
+            status_kwargs = {} if http_status is None else {"http_status": http_status}
             await self.ledger.settle(
                 attempt.attempt_id,
                 UnknownOutcome(
@@ -216,6 +230,7 @@ class AccountRouter:
                     provider_error_type=provider_error_type,
                     rejection_class=rejection_class,
                 ),
+                **status_kwargs,
             )
 
     async def settle_not_sent(
@@ -240,21 +255,36 @@ class AccountRouter:
     async def settle_stream_end(
         self,
         attempt: RouterAttempt,
-        usage: CompleteUsage | UnknownOutcome | None,
+        usage: CompleteUsage | UnknownOutcome | StreamUsageEstimate | None,
         *,
-        reason: str = "usage_incomplete",
+        reason: str | None = None,
+        http_status: int | None = None,
     ) -> None:
+        if isinstance(usage, StreamUsageEstimate):
+            if reason is not None and reason != usage.original_reason:
+                raise ValueError("stream reason differs from estimate")
+            reason = usage.original_reason
+        if reason is None:
+            reason = "usage_incomplete"
         evidence = usage or UnknownOutcome(reason)
         # The write runs in a worker thread that is not abandoned on cancellation, so the
         # shield keeps an anyio cancel scope from returning before it commits.
         with CancelScope(shield=True):
+            status_kwargs = {} if http_status is None else {"http_status": http_status}
             await self.ledger.settle(
                 attempt.attempt_id,
                 evidence,
                 cert=attempt.cert,
                 hour_after_key=attempt.hour_after_key,
                 server_tools=attempt.server_tools,
+                **status_kwargs,
             )
+
+    async def settle_rejection(
+        self, attempt: RouterAttempt, evidence: RejectionZero, *, http_status: int | None = None
+    ) -> None:
+        with CancelScope(shield=True):
+            await self.ledger.settle(attempt.attempt_id, evidence, http_status=http_status)
 
 
 def _has_hour_mark(value: Any) -> bool:
@@ -457,7 +487,7 @@ def get_router() -> AccountRouter:
         path = default_ledger_path() if _test_ledger_path is _UNSET else _test_ledger_path
         _router = AccountRouter(
             sources=sources,
-            ledger=CredentialLedger(path),
+            ledger=CredentialLedger(path, price_revisions=registered_revisions()),
             accounts=accounts,
             revision=CURRENT_REVISION,
         )
