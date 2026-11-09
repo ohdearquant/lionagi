@@ -1172,6 +1172,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                         # The raised error, and so the retry, is the same either way.
                         overloaded = False
                         if status == 529:
+                            # The body read is shielded and bounded by _REJECTION_READ_SECONDS,
+                            # so a 529 whose body stalls raises after at most that long.
                             error_type, _ = await _classify_streamed_rejection(response)
                             overloaded = error_type == "overloaded_error"
                         if overloaded:

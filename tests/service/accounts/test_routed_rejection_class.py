@@ -707,6 +707,8 @@ async def test_a_pending_cancellation_is_delivered_after_a_classified_rejection_
         (404, _envelope({"type": INVALID}), False, INVALID, "other"),
         (500, b"", False, "other", "other"),
         (503, b"", False, "other", "other"),
+        (500, _envelope({"type": "overloaded_error"}), False, "overloaded_error", None),
+        (503, _envelope({"type": "overloaded_error"}), False, "overloaded_error", None),
     ],
     ids=[
         "400-known",
@@ -723,6 +725,8 @@ async def test_a_pending_cancellation_is_delivered_after_a_classified_rejection_
         "404",
         "500",
         "503",
+        "500-overloaded",
+        "503-overloaded",
     ],
 )
 async def test_status_rejection_settlement_is_typed_and_bounded(
