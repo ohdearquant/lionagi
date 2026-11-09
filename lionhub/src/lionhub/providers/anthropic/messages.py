@@ -609,6 +609,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         request_headers["x-api-key"] = attempt.key.get_secret_value()
 
         request_entered = False
+        status = None
         failure: Exception | None = None
         try:
             async with self._create_http_session(session_kwargs, timeout=timeout) as client:
@@ -628,7 +629,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                     # the attempt's reason only keeps its ceiling held, while losing the block
                     # would leave the refused key free to be reserved again.
                     await router.block(attempt, "auth_required")
-                    await router.settle_unknown(attempt, "auth_required")
+                    await router.settle_unknown(attempt, "auth_required", http_status=status)
                     raise _RoutedNoRetryError(
                         RouterErrorCode.AUTH_FAILED.value,
                         account=attempt.account,
@@ -636,7 +637,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         http_status=status,
                     )
                 if status == 429:
-                    await router.settle_unknown(attempt, "rate_limited")
+                    await router.settle_unknown(attempt, "rate_limited", http_status=status)
                     raise _RoutedRetryableError(
                         RouterErrorCode.RATE_LIMITED.value,
                         account=attempt.account,
@@ -644,7 +645,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         http_status=status,
                     )
                 if status >= 500:
-                    await router.settle_unknown(attempt, "provider_error")
+                    await router.settle_unknown(attempt, "provider_error", http_status=status)
                     raise _RoutedRetryableError(
                         RouterErrorCode.PROVIDER_ERROR.value,
                         account=attempt.account,
@@ -662,6 +663,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         "request_rejected",
                         provider_error_type=provider_error_type,
                         rejection_class=rejection_class,
+                        http_status=status,
                     )
                     raise _RoutedNoRetryError(
                         RouterErrorCode.REQUEST_REJECTED.value,
@@ -679,7 +681,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                 except Exception:
                     unreadable = True
                 if unreadable:
-                    await router.settle_unknown(attempt, "usage_incomplete")
+                    await router.settle_unknown(attempt, "usage_incomplete", http_status=status)
                     raise _RoutedNoRetryError(
                         RouterErrorCode.PROVIDER_ERROR.value,
                         account=attempt.account,
@@ -689,14 +691,14 @@ class AnthropicMessagesEndpoint(Endpoint):
 
                 if isinstance(payload, dict) and "messages" in payload and isinstance(body, dict):
                     if body.get("error") and "choices" not in body and "object" not in body:
-                        await router.settle_unknown(attempt, "usage_incomplete")
+                        await router.settle_unknown(attempt, "usage_incomplete", http_status=status)
                         raise _RoutedNoRetryError(
                             RouterErrorCode.PROVIDER_ERROR.value,
                             account=attempt.account,
                             attempt_id=attempt.attempt_id,
                             http_status=status,
                         )
-                await router.settle_response(attempt, body)
+                await router.settle_response(attempt, body, http_status=status)
                 return redact_value(_mask_content_runs(body, attempt.key), attempt.key)
         except get_cancelled_exc_class():
             # The request may have reached the provider, so the attempt stays open with its
@@ -710,7 +712,9 @@ class AnthropicMessagesEndpoint(Endpoint):
                 if not request_entered:
                     await router.settle_not_sent(attempt, caller_cancelled=True)
                 else:
-                    await router.settle_stream_end(attempt, None, reason="cancelled")
+                    await router.settle_stream_end(
+                        attempt, None, reason="cancelled", http_status=status
+                    )
             except Exception:  # noqa: S110 - the caller must see the cancellation
                 pass
             raise
@@ -742,7 +746,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         # or the response.
         if failure is not None:
             if request_entered:
-                await router.settle_unknown(attempt, "transport_error")
+                await router.settle_unknown(attempt, "transport_error", http_status=status)
             else:
                 await router.settle_not_sent(attempt)
             await anyio.lowlevel.checkpoint()
@@ -897,6 +901,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         request_headers["x-api-key"] = attempt.key.get_secret_value()
 
         request_entered = False
+        status = None
         failure: Exception | None = None
         redactor = StreamingSecretRedactor(attempt.key)
         # The byte redactor sees the JSON framing between two deltas, so a key split
@@ -1078,7 +1083,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         else None
                     )
                     settled = True
-                    await router.settle_stream_end(attempt, outcome)
+                    await router.settle_stream_end(attempt, outcome, http_status=status)
                 chunk = self._line_to_stream_chunk(data, sse_event=sse_event)
                 if chunk is not None:
                     if chunk.metadata.get("call_failed"):
@@ -1116,7 +1121,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         # a cancellation arriving during them does not record a second outcome.
                         settled = True
                         await router.block(attempt, "auth_required")
-                        await router.settle_unknown(attempt, "auth_required")
+                        await router.settle_unknown(attempt, "auth_required", http_status=status)
                         raise AccountRoutingError(
                             RouterErrorCode.AUTH_FAILED,
                             account=attempt.account,
@@ -1125,7 +1130,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         ) from None
                     if status == 429:
                         settled = True
-                        await router.settle_unknown(attempt, "rate_limited")
+                        await router.settle_unknown(attempt, "rate_limited", http_status=status)
                         raise _RoutedRetryableError(
                             RouterErrorCode.RATE_LIMITED.value,
                             account=attempt.account,
@@ -1134,7 +1139,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         )
                     if status >= 500:
                         settled = True
-                        await router.settle_unknown(attempt, "provider_error")
+                        await router.settle_unknown(attempt, "provider_error", http_status=status)
                         raise _RoutedRetryableError(
                             RouterErrorCode.PROVIDER_ERROR.value,
                             account=attempt.account,
@@ -1154,6 +1159,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                             "request_rejected",
                             provider_error_type=provider_error_type,
                             rejection_class=rejection_class,
+                            http_status=status,
                         )
                         raise AccountRoutingError(
                             RouterErrorCode.REQUEST_REJECTED,
@@ -1214,7 +1220,9 @@ class AnthropicMessagesEndpoint(Endpoint):
                         # The stream ended before message_stop, so its usage is incomplete.
                         reason = "stream_error" if saw_error_event else "stream_truncated"
                         settled = True
-                        await router.settle_stream_end(attempt, None, reason=reason)
+                        await router.settle_stream_end(
+                            attempt, None, reason=reason, http_status=status
+                        )
         except get_cancelled_exc_class():
             # A write that fails records nothing; the cancellation still reaches the caller.
             # As on the call path, a native task.cancel() returns before the write commits.
@@ -1222,7 +1230,9 @@ class AnthropicMessagesEndpoint(Endpoint):
                 if not request_entered:
                     await router.settle_not_sent(attempt, caller_cancelled=True)
                 elif not settled:
-                    await router.settle_stream_end(attempt, None, reason="cancelled")
+                    await router.settle_stream_end(
+                        attempt, None, reason="cancelled", http_status=status
+                    )
             except Exception:  # noqa: S110 - the caller must see the cancellation
                 pass
             raise
@@ -1230,7 +1240,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             # The consumer closed the stream before message_stop.
             if not settled:
                 reason = "stream_error" if saw_error_event else "stream_closed"
-                await router.settle_stream_end(attempt, None, reason=reason)
+                await router.settle_stream_end(attempt, None, reason=reason, http_status=status)
             raise
         except AccountRoutingError:
             await anyio.lowlevel.checkpoint()
@@ -1250,7 +1260,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         if failure is not None:
             if not settled:
                 if request_entered:
-                    await router.settle_unknown(attempt, "transport_error")
+                    await router.settle_unknown(attempt, "transport_error", http_status=status)
                 else:
                     await router.settle_not_sent(attempt)
             await anyio.lowlevel.checkpoint()

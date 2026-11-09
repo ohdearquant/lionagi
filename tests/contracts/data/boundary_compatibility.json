@@ -888,7 +888,7 @@
       "__all__ = (\n    \"OneNameLookup\",\n    \"ResolvedSecretLookup\",\n    \"SecretLookupResolution\",\n    \"fill_declared_secrets\",\n    \"fill_declared_secrets_and_names\",\n    \"lookup_one_name\",\n    \"resolve_secret_lookup_config\",\n)"
     ],
     "lionagi/service/accounts/_types.py": [
-      "__all__ = (\n    \"INT64_MAX\",\n    \"NANODOLLARS_PER_USD\",\n    \"AccountRoutingError\",\n    \"AccountSpec\",\n    \"CompleteUsage\",\n    \"Evidence\",\n    \"ProvenNotSent\",\n    \"Quote\",\n    \"Reservation\",\n    \"RouterErrorCode\",\n    \"Scope\",\n    \"ScopeKind\",\n    \"SettleResult\",\n    \"UnknownOutcome\",\n)"
+      "__all__ = (\n    \"INT64_MAX\",\n    \"NANODOLLARS_PER_USD\",\n    \"AccountRoutingError\",\n    \"AccountSpec\",\n    \"CompleteUsage\",\n    \"Evidence\",\n    \"Rate\",\n    \"PricingInputs\",\n    \"UsageCounts\",\n    \"UsageRates\",\n    \"RejectionZero\",\n    \"StreamUsageEstimate\",\n    \"ProvenNotSent\",\n    \"Quote\",\n    \"Reservation\",\n    \"RouterErrorCode\",\n    \"Scope\",\n    \"ScopeKind\",\n    \"SettleResult\",\n    \"UnknownOutcome\",\n)"
     ],
     "lionagi/service/broadcaster.py": [
       "__all__ = (\"Broadcaster\",)"
@@ -2525,6 +2525,7 @@
       "freeze_request",
       "price_usage",
       "quote_ceiling",
+      "registered_revisions",
       "request_ttls",
       "revision_by_id",
       "usage_outcome"
@@ -2560,12 +2561,18 @@
       "AccountRoutingError",
       "AccountSpec",
       "CompleteUsage",
+      "PricingInputs",
       "ProvenNotSent",
       "Quote",
+      "Rate",
+      "RejectionZero",
       "Reservation",
       "RouterErrorCode",
       "Scope",
-      "UnknownOutcome"
+      "StreamUsageEstimate",
+      "UnknownOutcome",
+      "UsageCounts",
+      "UsageRates"
     ],
     "lionagi/service/broadcaster.py": [
       "Broadcaster"

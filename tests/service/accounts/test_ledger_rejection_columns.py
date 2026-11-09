@@ -25,7 +25,7 @@ from lionagi.service.accounts._types import (
     UnknownOutcome,
 )
 
-NEW_COLUMNS = ("provider_error_type", "rejection_class")
+NEW_COLUMNS = ("provider_error_type", "rejection_class", "settlement_evidence_json", "http_status")
 ERROR_TYPE = min(_PROVIDER_ERROR_TYPES)
 REJECTION_CLASS = min(_REJECTION_CLASSES)
 SENTINEL = "sentinel-outside-every-set"
@@ -79,7 +79,8 @@ def add_columns_elsewhere(path: Path) -> None:
     """What another process opening the same older ledger does first."""
     with closing(sqlite3.connect(path)) as connection:
         for name in NEW_COLUMNS:
-            connection.execute(f'ALTER TABLE attempt ADD COLUMN "{name}" TEXT')
+            column_type = "INTEGER" if name == "http_status" else "TEXT"
+            connection.execute(f'ALTER TABLE attempt ADD COLUMN "{name}" {column_type}')
         connection.commit()
 
 
@@ -106,8 +107,35 @@ async def test_a_new_ledger_attempt_table_lists_both_columns(tmp_path):
         info = {row[1]: row for row in connection.execute('PRAGMA table_info("attempt")')}
     for name in NEW_COLUMNS:
         assert name in info, sorted(info)
-        assert info[name][2] == "TEXT"
+        assert info[name][2] == ("INTEGER" if name == "http_status" else "TEXT")
         assert info[name][3] == 0
+    with closing(sqlite3.connect(path)) as connection:
+        assert (
+            connection.execute(
+                "SELECT http_status, settlement_evidence_json FROM attempt"
+            ).fetchall()
+            == []
+        )
+
+
+@pytest.mark.anyio
+async def test_http_status_is_first_value_only_and_rejects_invalid_values_before_write(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = make_ledger(path)
+    attempt_id = await open_attempt(ledger)
+    with pytest.raises(ValueError):
+        await ledger.settle(attempt_id, UnknownOutcome("rate_limited"), http_status=True)
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute(
+            "SELECT http_status FROM attempt WHERE id=?", (str(attempt_id),)
+        ).fetchone() == (None,)
+
+    await ledger.settle(attempt_id, UnknownOutcome("rate_limited"), http_status=429)
+    await ledger.settle(attempt_id, UnknownOutcome("rate_limited"), http_status=500)
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute(
+            "SELECT http_status FROM attempt WHERE id=?", (str(attempt_id),)
+        ).fetchone() == (429,)
 
 
 @pytest.mark.anyio
@@ -258,7 +286,7 @@ async def test_a_ledger_missing_one_column_is_not_passed_by_the_fast_path(tmp_pa
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("field", NEW_COLUMNS)
+@pytest.mark.parametrize("field", ("provider_error_type", "rejection_class"))
 async def test_the_ledger_refuses_a_value_outside_its_set(tmp_path, field):
     path = tmp_path / "ledger.sqlite3"
     ledger = make_ledger(path)

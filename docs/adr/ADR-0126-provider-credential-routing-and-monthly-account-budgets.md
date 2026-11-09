@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01 and 2026-11-02 (see Amendments 1 to 9).
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01, 2026-11-02 and 2026-11-09 (see Amendments 1 to 10).
 - **Kind**: Aspirational
 - **Implementation-status**: partial — D1 to D5 and Amendments 1 to 8 are implemented, and so are
   D6's failure classes and shielded settlement. Within that accepted scope, two clauses remain. D4's single-use runtime ticket:
@@ -1092,6 +1092,22 @@ Rejections qualifying under the policy can stop consuming local budget. A stream
 MAY implement the two settlement variants and the bounded diagnostic exception. MAY NOT broaden the zero table, estimate missing dimensions, reuse another attempt's evidence, release a ceiling on time alone, or silently sweep old rows. Verify both HTTP paths for exact pairs, class `other`, mismatched or missing types, unreadable bodies and read cancellation. Verify that a stream ending after `message_start` with no qualifying `message_delta` keeps the ceiling, later cumulative stream counts, missing usage, invalid replacements, ambiguous models, every ending in Decision 2, full terminal success, E greater than C, no retry after output, cancellation during write and failed commits. Verify concurrent duplicate/conflicting settlements, locked migration races, legacy null evidence, current-month operator qualification and the specified warmth rules, including block precedence and reconciliation exceptions. Verify diagnostic access controls, byte bounds, redaction, expiry and failure isolation, and Amendment 7's sentinel checks outside the one explicitly enabled file.
 
 Verify that an account that keeps returning typed zero rejections stays a candidate, its zeros move its utilization, and an operator block removes it from selection. Verify daily zero-filled counts, UTC boundary and offset conversion, both settlement origins, duplicate no-ops, legacy null/quote-only exclusion, invalid-data refusal with `ledger_unavailable`, inconsistent null evidence on typed outcomes, 529 exclusion, the five-minute closing-snapshot window, and recovery that reuses the original snapshot or leaves the day unknown; three seven/one/one days with a successful other account enabled/unblocked in each retained closing snapshot reopen the decision, while an even spread, two days, fewer than seven, or absent other-account service does not.
+
+## Amendment 10 (2026-11-09) — the ledger records the HTTP status that ended an attempt
+
+Attempts that end without a priced response stay open at their ceiling, and the ledger keeps no record of the HTTP status that ended them, so an operator cannot tell a pre-execution rejection from a lost response after the fact (issue #4257: 115 open reservations in one month on one ledger).
+
+### Decision
+
+1. **One nullable column.** Add `http_status INTEGER` to the attempt table, in the same schema transaction that adds Amendment 9's `settlement_evidence_json`, keeping `user_version=1`. The unlocked completeness check requires it beside the other columns, the locked re-read adds it when missing, and fresh creation includes it. Rows written before this amendment keep null; there is no backfill.
+
+2. **Written by every routed ending that received a response.** When a routed attempt's settlement or ending-reason write follows an HTTP response for that physical attempt, the same transaction stores that response's status: 200 for complete usage and for a stream that later ends early, and the actual status for every non-success response, whether or not Amendment 9 qualifies it. An ending with no response (connection failure before headers, cancellation before headers, a not-sent proof, process death) leaves it null. The value is an integer from 100 to 599; any other value, including a boolean, raises `ValueError` before a write. A row whose column is already non-null keeps its first value: a later write for the same attempt neither overwrites nor clears it, and a differing later value is ignored rather than treated as a conflict.
+
+3. **Display and diagnostics only.** No admission, routing, account choice, warm-prefix, settlement, blocking, retry or reconciliation decision reads the column. Amendment 9's qualification reads its own typed evidence, and its rejection-zero evidence keeps its own `http_status` field; the column neither substitutes for that evidence nor is checked against it. The open-attempt list is the column's reader. Amendment 9 Decision 4's statement that the ledger row keeps no HTTP status describes rows written before this amendment.
+
+### Consequences and verification
+
+An operator can split open holds by the status that ended them, and a 200 that ended early is distinguishable from a rejection that never executed. The column does not prove what the provider billed, and older rows remain unexplained. Older processes ignore the column and write null, which reads as "no status recorded", never as "no response". Verify fresh creation and the locked upgrade of a version 1 ledger without the column, the null default on every pre-existing row, the status write for complete usage, a non-success response, a stream that ends after a 200 and an attempt with no response, first-value retention on a repeated write, and refusal of out-of-range and boolean values.
 
 ## Requirements
 

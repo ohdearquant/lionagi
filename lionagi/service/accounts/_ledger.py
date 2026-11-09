@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -29,12 +30,15 @@ from lionagi.service.accounts._types import (
     AccountSpec,
     CompleteUsage,
     Evidence,
+    PricingInputs,
     ProvenNotSent,
     Quote,
+    RejectionZero,
     Reservation,
     RouterErrorCode,
     Scope,
     SettleResult,
+    StreamUsageEstimate,
     UnknownOutcome,
     _check_member,
 )
@@ -49,6 +53,7 @@ _INT64_MIN = -(INT64_MAX + 1)
 _TABLES = {"account", "month", "binding", "attempt", "adjustment"}
 # Attempt columns added after a ledger could already exist; opening an older ledger adds them.
 _REJECTION_COLUMNS = ("provider_error_type", "rejection_class")
+_EVIDENCE_COLUMNS = ("settlement_evidence_json", "http_status")
 _T = TypeVar("_T")
 _LOGGER = logging.getLogger(__name__)
 # How long one ledger call waits for a worker thread before it is refused as busy. The
@@ -313,6 +318,357 @@ def _sum_rows(rows: list[tuple[int]]) -> int:
     return sum(row[0] for row in rows)
 
 
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+
+
+def _stored_evidence(
+    value: str | None,
+    *,
+    revision: str,
+    model: str,
+    outcome: str | None,
+    cost: int | None,
+    provider_error_type: str | None,
+    rejection_class: str | None,
+    request_id: str | None,
+) -> dict[str, object] | None:
+    """Read and validate the complete versioned settlement envelope."""
+    if value is None:
+        return None
+    try:
+
+        def pairs(items):
+            result = {}
+            for key, item in items:
+                if key in result:
+                    raise ValueError("duplicate key")
+                result[key] = item
+            return result
+
+        def reject_float(_):
+            raise ValueError("float")
+
+        envelope = json.loads(
+            value, object_pairs_hook=pairs, parse_float=reject_float, parse_constant=reject_float
+        )
+        top = {
+            "schema_version",
+            "rule_revision",
+            "quote",
+            "basis",
+            "origin",
+            "source_ref",
+            "first_failure",
+            "evidence",
+        }
+        if not isinstance(envelope, dict) or set(envelope) != top:
+            raise ValueError("envelope keys")
+        if type(envelope["schema_version"]) is not int or envelope["schema_version"] != 1:
+            raise ValueError("version")
+        if envelope["rule_revision"] != "adr0126-am9-2026-11-02-v1":
+            raise ValueError("revision")
+        quote = envelope["quote"]
+        if quote is not None:
+            if not isinstance(quote, dict) or set(quote) != {
+                "requested_model",
+                "price_revision",
+                "pricing_inputs",
+                "quote_origin",
+            }:
+                raise ValueError("quote")
+            if quote["requested_model"] != model or quote["price_revision"] != revision:
+                raise ValueError("quote identity")
+            pi = quote["pricing_inputs"]
+            if not isinstance(pi, dict) or set(pi) != {
+                "output_bound",
+                "cache_ttls",
+                "single_ttl",
+                "feature_profile",
+                "tier_selector",
+                "output_rate_max",
+            }:
+                raise ValueError("pricing inputs")
+            _checked_int(pi["output_bound"], minimum=1, maximum=INT64_MAX, label="output bound")
+            if type(pi["cache_ttls"]) is not list or pi["cache_ttls"] not in (
+                [],
+                ["1h"],
+                ["5m"],
+                ["5m", "1h"],
+            ):
+                raise ValueError("TTLs")
+            if pi["single_ttl"] != (pi["cache_ttls"][0] if len(pi["cache_ttls"]) == 1 else None):
+                raise ValueError("single TTL")
+            if (
+                pi["feature_profile"] != "messages_standard_v1"
+                or pi["tier_selector"] != "max_applicable_at_reserve"
+            ):
+                raise ValueError("selector")
+            rate = pi["output_rate_max"]
+            if not isinstance(rate, dict) or set(rate) != {"numerator", "denominator"}:
+                raise ValueError("rate")
+            _checked_int(rate["numerator"], minimum=0, maximum=INT64_MAX, label="rate")
+            _checked_int(rate["denominator"], minimum=1, maximum=INT64_MAX, label="rate")
+            if math.gcd(rate["numerator"], rate["denominator"]) != 1:
+                raise ValueError("unreduced rate")
+            if quote["quote_origin"] not in ("reservation", "operator"):
+                raise ValueError("quote origin")
+        basis = envelope["basis"]
+        if basis is None:
+            if any(
+                envelope[key] is not None
+                for key in ("origin", "source_ref", "first_failure", "evidence")
+            ):
+                raise ValueError("open envelope")
+        else:
+            if basis not in ("rejection_zero", "stream_usage_estimate") or envelope[
+                "origin"
+            ] not in ("runtime", "operator"):
+                raise ValueError("basis/origin")
+            if outcome != basis:
+                raise ValueError("outcome")
+            if (envelope["origin"] == "runtime") != (envelope["source_ref"] is None):
+                raise ValueError("source reference")
+            if envelope["origin"] == "operator":
+                source = envelope["source_ref"]
+                if (
+                    not isinstance(source, str)
+                    or re.fullmatch(
+                        r"evidence:[A-Za-z0-9][A-Za-z0-9._-]{0,127}", source, flags=re.ASCII
+                    )
+                    is None
+                ):
+                    raise ValueError("operator source reference")
+            first = envelope["first_failure"]
+            if not isinstance(first, dict) or set(first) != {
+                "reason",
+                "provider_error_type",
+                "rejection_class",
+            }:
+                raise ValueError("first failure")
+            if first["reason"] is not None and (
+                not isinstance(first["reason"], str)
+                or _REASON_RE.fullmatch(first["reason"]) is None
+            ):
+                raise ValueError("first reason")
+            _check_member(
+                "provider_error_type", first["provider_error_type"], _PROVIDER_ERROR_TYPES
+            )
+            _check_member("rejection_class", first["rejection_class"], _REJECTION_CLASSES)
+            ev = envelope["evidence"]
+            if basis == "rejection_zero":
+                if not isinstance(ev, dict) or set(ev) != {
+                    "http_status",
+                    "provider_error_type",
+                    "rejection_class",
+                    "original_reason",
+                    "cost_nusd",
+                }:
+                    raise ValueError("rejection evidence")
+                _checked_int(ev["http_status"], minimum=100, maximum=599, label="status")
+                _checked_int(ev["cost_nusd"], minimum=0, maximum=INT64_MAX, label="cost")
+                _check_member(
+                    "provider_error_type", ev["provider_error_type"], _PROVIDER_ERROR_TYPES
+                )
+                _check_member("rejection_class", ev["rejection_class"], _REJECTION_CLASSES)
+                expected = (
+                    (400, "invalid_request_error", "request_rejected")
+                    if ev["http_status"] == 400
+                    else (529, "overloaded_error", "provider_error")
+                    if ev["http_status"] == 529
+                    else None
+                )
+                if (
+                    expected is None
+                    or (ev["http_status"], ev["provider_error_type"], ev["original_reason"])
+                    != expected
+                    or ev["cost_nusd"] != 0
+                ):
+                    raise ValueError("rejection values")
+                if cost != 0:
+                    raise ValueError("rejection row cost")
+                prior_reason = first["reason"]
+                if ev["http_status"] == 400:
+                    if prior_reason is None and ev["rejection_class"] is None:
+                        raise ValueError("missing normalized rejection class")
+                    if prior_reason not in (None, "request_rejected"):
+                        raise ValueError("rejection first reason")
+                    if first["provider_error_type"] not in (None, "invalid_request_error"):
+                        raise ValueError("rejection first type")
+                    expected_type = first["provider_error_type"] or "invalid_request_error"
+                    expected_class = (
+                        first["rejection_class"]
+                        if prior_reason == "request_rejected"
+                        else ev["rejection_class"]
+                    )
+                    if (provider_error_type, rejection_class) != (expected_type, expected_class):
+                        raise ValueError("rejection columns")
+                elif (
+                    ev["rejection_class"] is not None
+                    or prior_reason not in (None, "provider_error")
+                    or (first["provider_error_type"], first["rejection_class"]) != (None, None)
+                    or (provider_error_type, rejection_class)
+                    != (
+                        first["provider_error_type"],
+                        first["rejection_class"],
+                    )
+                ):
+                    raise ValueError("overload columns")
+            else:
+                expected = {
+                    "original_reason",
+                    "served_model",
+                    "counts",
+                    "request_id",
+                    "pricing_inputs",
+                    "quote_origin",
+                    "rates",
+                    "observed_cost_nusd",
+                    "margin_tokens",
+                    "margin_nusd",
+                    "cost_nusd",
+                }
+                if not isinstance(ev, dict) or set(ev) != expected or quote is None:
+                    raise ValueError("stream evidence")
+                counts = ev["counts"]
+                count_names = {
+                    "input_tokens",
+                    "cache_read_input_tokens",
+                    "cache_write_5m_tokens",
+                    "cache_write_1h_tokens",
+                    "output_tokens",
+                }
+                if not isinstance(counts, dict) or set(counts) != count_names:
+                    raise ValueError("counts")
+                for name, count in counts.items():
+                    _checked_int(count, minimum=0, maximum=INT64_MAX, label=name)
+                for name in ("observed_cost_nusd", "margin_tokens", "margin_nusd", "cost_nusd"):
+                    _checked_int(ev[name], minimum=0, maximum=INT64_MAX, label=name)
+                if ev["cost_nusd"] != ev["observed_cost_nusd"] + ev["margin_nusd"]:
+                    raise ValueError("stream amount")
+                if (
+                    ev["quote_origin"] not in ("reservation", "operator")
+                    or ev["served_model"] != model
+                ):
+                    raise ValueError("stream provenance")
+                if envelope["origin"] == "runtime" and ev["quote_origin"] != "reservation":
+                    raise ValueError("runtime quote provenance")
+                if (
+                    ev["pricing_inputs"] != quote["pricing_inputs"]
+                    or ev["quote_origin"] != quote["quote_origin"]
+                ):
+                    raise ValueError("stream quote correspondence")
+                rates = ev["rates"]
+                rate_names = {"input", "cache_read", "cache_write_5m", "cache_write_1h", "output"}
+                if not isinstance(rates, dict) or set(rates) != rate_names:
+                    raise ValueError("rates")
+                for rate in rates.values():
+                    if not isinstance(rate, dict) or set(rate) != {"numerator", "denominator"}:
+                        raise ValueError("rate")
+                    _checked_int(rate["numerator"], minimum=0, maximum=INT64_MAX, label="rate")
+                    _checked_int(rate["denominator"], minimum=1, maximum=INT64_MAX, label="rate")
+                    if math.gcd(rate["numerator"], rate["denominator"]) != 1:
+                        raise ValueError("unreduced rate")
+                envelope_request_id = ev["request_id"]
+                if envelope_request_id is not None and (
+                    not isinstance(envelope_request_id, str)
+                    or _REQUEST_ID_RE.fullmatch(envelope_request_id) is None
+                ):
+                    envelope_request_id = None
+                if ev["original_reason"] not in {
+                    "cancelled",
+                    "stream_closed",
+                    "transport_error",
+                    "stream_truncated",
+                    "stream_error",
+                }:
+                    raise ValueError("stream reason")
+                prior_reason = first["reason"]
+                if prior_reason is not None and prior_reason != ev["original_reason"]:
+                    raise ValueError("stream first reason")
+                if (provider_error_type, rejection_class) != (
+                    first["provider_error_type"],
+                    first["rejection_class"],
+                ):
+                    raise ValueError("stream rejection columns")
+                if request_id != envelope_request_id:
+                    raise ValueError("stream request id")
+                if cost != ev["cost_nusd"]:
+                    raise ValueError("stream row cost")
+        return envelope
+    except Exception:
+        raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
+
+
+def _pricing_inputs_dict(inputs: PricingInputs) -> dict[str, object]:
+    return {
+        "output_bound": inputs.output_bound,
+        "cache_ttls": list(inputs.cache_ttls),
+        "single_ttl": inputs.single_ttl,
+        "feature_profile": inputs.feature_profile,
+        "tier_selector": inputs.tier_selector,
+        "output_rate_max": {
+            "numerator": inputs.output_rate_max.numerator,
+            "denominator": inputs.output_rate_max.denominator,
+        },
+    }
+
+
+def _quote_envelope(quote: Quote) -> str:
+    if quote.pricing_inputs is None:
+        return ""
+    return _canonical_json(
+        {
+            "schema_version": 1,
+            "rule_revision": "adr0126-am9-2026-11-02-v1",
+            "quote": {
+                "requested_model": quote.requested_model,
+                "price_revision": quote.price_revision,
+                "pricing_inputs": _pricing_inputs_dict(quote.pricing_inputs),
+                "quote_origin": "reservation",
+            },
+            "basis": None,
+            "origin": None,
+            "source_ref": None,
+            "first_failure": None,
+            "evidence": None,
+        }
+    )
+
+
+def _stream_evidence_dict(evidence: StreamUsageEstimate) -> dict[str, object]:
+    return {
+        "original_reason": evidence.original_reason,
+        "served_model": evidence.served_model,
+        "counts": {
+            name: getattr(evidence.counts, name)
+            for name in (
+                "input_tokens",
+                "cache_read_input_tokens",
+                "cache_write_5m_tokens",
+                "cache_write_1h_tokens",
+                "output_tokens",
+            )
+        },
+        "request_id": evidence.request_id,
+        "pricing_inputs": _pricing_inputs_dict(evidence.pricing_inputs),
+        "quote_origin": evidence.quote_origin,
+        "rates": {
+            name: {
+                "numerator": getattr(evidence.rates, name).numerator,
+                "denominator": getattr(evidence.rates, name).denominator,
+            }
+            for name in ("input", "cache_read", "cache_write_5m", "cache_write_1h", "output")
+        },
+        "observed_cost_nusd": evidence.observed_cost_nusd,
+        "margin_tokens": evidence.margin_tokens,
+        "margin_nusd": evidence.margin_nusd,
+        "cost_nusd": evidence.cost_nusd,
+    }
+
+
 class CredentialLedger:
     """Persist account bindings and attempt costs in a local SQLite file."""
 
@@ -322,10 +678,14 @@ class CredentialLedger:
         *,
         busy_timeout_s: float = 5.0,
         clock: Callable[[], datetime] | None = None,
+        price_revisions: Mapping[str, object] | None = None,
     ) -> None:
         self.path = Path(path)
         self.busy_timeout_s = busy_timeout_s
         self._clock = clock or (lambda: now_utc())
+        from types import MappingProxyType
+
+        self.price_revisions = MappingProxyType(dict(price_revisions or {}))
 
     async def _run(self, operation: Callable[[], _T]) -> _T:
         """Run one ledger operation in a worker thread.
@@ -425,6 +785,7 @@ class CredentialLedger:
             and (_TABLES | {"warm_prefix"}).issubset(self._table_names(connection))
             and {"warm_prefix_cert", "warm_prefix_expiry"}.issubset(self._index_names(connection))
             and set(_REJECTION_COLUMNS).issubset(self._attempt_columns(connection))
+            and set(_EVIDENCE_COLUMNS).issubset(self._attempt_columns(connection))
         ):
             return
 
@@ -462,6 +823,13 @@ class CredentialLedger:
                 for column in _REJECTION_COLUMNS:
                     if column not in columns:
                         connection.execute(f'ALTER TABLE attempt ADD COLUMN "{column}" TEXT')
+                columns = self._attempt_columns(connection)
+                if "settlement_evidence_json" not in columns:
+                    connection.execute(
+                        'ALTER TABLE attempt ADD COLUMN "settlement_evidence_json" TEXT'
+                    )
+                if "http_status" not in columns:
+                    connection.execute('ALTER TABLE attempt ADD COLUMN "http_status" INTEGER')
                 return
             if version != 0 or tables:
                 raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
@@ -525,6 +893,8 @@ class CredentialLedger:
                     settled_at TEXT,
                     provider_error_type TEXT,
                     rejection_class TEXT,
+                    settlement_evidence_json TEXT,
+                    http_status INTEGER,
                     CHECK (
                         (state = 'settled' AND typeof(cost_nusd) = 'integer'
                          AND cost_nusd >= 0)
@@ -648,9 +1018,55 @@ class CredentialLedger:
         accounts: Sequence[AccountSpec],
         cert: str | None = None,
     ) -> Reservation:
+        _validate_quote(quote)
+        if quote.pricing_inputs is not None:
+            inputs = quote.pricing_inputs
+            if not isinstance(inputs, PricingInputs):
+                raise ValueError("invalid pricing inputs")
+            inputs = PricingInputs(
+                inputs.output_bound,
+                inputs.cache_ttls,
+                inputs.single_ttl,
+                inputs.feature_profile,
+                inputs.tier_selector,
+                inputs.output_rate_max,
+            )
+            revision = self.price_revisions.get(quote.price_revision)
+            if revision is None:
+                raise _routing_error(RouterErrorCode.UNSUPPORTED_PRICING)
+            model = revision.models.get(quote.requested_model)
+            if model is None:
+                raise _routing_error(RouterErrorCode.UNSUPPORTED_PRICING)
+            if inputs.output_bound > model.max_output_tokens:
+                raise ValueError("output bound exceeds model maximum")
+            geo = max(revision.geo_multipliers.values())
+            max_out = max(tier.output for tier in model.tiers) * geo
+            if (inputs.output_rate_max.numerator, inputs.output_rate_max.denominator) != (
+                max_out.numerator,
+                max_out.denominator,
+            ):
+                raise ValueError("maximum output rate differs from retained revision")
+            p_in = (
+                max(
+                    rate
+                    for tier in model.tiers
+                    for rate in (
+                        tier.input,
+                        tier.read,
+                        *([tier.write_5m] if "5m" in inputs.cache_ttls else []),
+                        *([tier.write_1h] if "1h" in inputs.cache_ttls else []),
+                    )
+                )
+                * geo
+            )
+            expected_ceiling = model.max_input_tokens * p_in + inputs.output_bound * max_out
+            expected_ceiling = (
+                expected_ceiling.numerator + expected_ceiling.denominator - 1
+            ) // expected_ceiling.denominator
+            if quote.ceiling_nusd != expected_ceiling:
+                raise ValueError("quote ceiling differs from retained pricing inputs")
         with closing(self._connect()) as connection:
             with _transaction(connection):
-                _validate_quote(quote)
                 if not accounts:
                     raise ValueError("at least one account is required")
                 specs: dict[str, AccountSpec] = {}
@@ -810,8 +1226,8 @@ class CredentialLedger:
                     INSERT INTO attempt(
                         id, scope_kind, scope_id, provider, account, month_utc,
                         ceiling_nusd, price_revision, requested_model, request_digest,
-                        state, cost_nusd, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL, ?)
+                        state, cost_nusd, created_at, settlement_evidence_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL, ?, ?)
                     """,
                     (
                         str(attempt_id),
@@ -825,6 +1241,7 @@ class CredentialLedger:
                         quote.requested_model,
                         quote.request_digest,
                         created_at,
+                        _quote_envelope(quote) or None,
                     ),
                 )
         return Reservation(attempt_id, scope, selected.name, month_utc, quote)
@@ -852,6 +1269,7 @@ class CredentialLedger:
         cert: str | None = None,
         hour_after_key: bool = False,
         server_tools: bool = False,
+        http_status: int | None = None,
     ) -> SettleResult:
         usage_json: str | None = None
         request_id: str | None = None
@@ -875,6 +1293,12 @@ class CredentialLedger:
             provider_error_type = evidence.provider_error_type
             rejection_class = evidence.rejection_class
             cost_nusd = 0
+        elif isinstance(evidence, RejectionZero):
+            cost_nusd = 0
+            outcome = "rejection_zero"
+        elif isinstance(evidence, StreamUsageEstimate):
+            cost_nusd = evidence.cost_nusd
+            outcome = "stream_usage_estimate"
         else:
             raise ValueError("invalid settlement evidence")
 
@@ -885,7 +1309,9 @@ class CredentialLedger:
                 row = connection.execute(
                     """
                     SELECT provider, account, month_utc, ceiling_nusd, state, cost_nusd,
-                           usage_json, request_id, outcome, created_at
+                           usage_json, request_id, outcome, created_at,
+                           provider_error_type, rejection_class, settlement_evidence_json,
+                           price_revision, requested_model
                     FROM attempt WHERE id = ?
                     """,
                     (str(attempt_id),),
@@ -903,7 +1329,27 @@ class CredentialLedger:
                     old_request,
                     old_outcome,
                     created_at,
+                    old_type,
+                    old_class,
+                    old_evidence_json,
+                    stored_revision,
+                    stored_model,
                 ) = row
+                stored_envelope = _stored_evidence(
+                    old_evidence_json,
+                    revision=stored_revision,
+                    model=stored_model,
+                    outcome=old_outcome,
+                    cost=old_cost,
+                    provider_error_type=old_type,
+                    rejection_class=old_class,
+                    request_id=old_request,
+                )
+                if http_status is not None and state == "open":
+                    connection.execute(
+                        "UPDATE attempt SET http_status = COALESCE(http_status, ?) WHERE id = ?",
+                        (http_status, str(attempt_id)),
+                    )
                 if isinstance(evidence, UnknownOutcome):
                     if state == "settled":
                         return "already_settled"
@@ -919,6 +1365,356 @@ class CredentialLedger:
                     if outcome not in ("cancelled", "stream_closed"):
                         _clear_warm_prefix(connection, provider, account)
                     result = "still_open"
+                elif isinstance(evidence, StreamUsageEstimate):
+                    if state == "settled":
+                        candidate = dict(stored_envelope) if stored_envelope else None
+                        if candidate is not None:
+                            candidate["basis"] = outcome
+                            candidate["origin"] = "runtime"
+                            candidate["source_ref"] = None
+                            candidate["first_failure"] = stored_envelope.get("first_failure")
+                            candidate["evidence"] = _stream_evidence_dict(evidence)
+                        if (
+                            old_outcome == outcome
+                            and old_cost == cost_nusd
+                            and candidate is not None
+                            and _canonical_json(candidate) == _canonical_json(stored_envelope)
+                        ):
+                            return "already_settled"
+                        connection.execute(
+                            "UPDATE account SET block_reason='settlement_conflict' WHERE provider=? AND name=?",
+                            (provider, account),
+                        )
+                        _clear_warm_prefix(connection, provider, account)
+                        conflict = (account, str(attempt_id))
+                        result = "settled"
+                    else:
+                        prior_reasons = {
+                            None,
+                            "cancelled",
+                            "stream_closed",
+                            "transport_error",
+                            "stream_truncated",
+                            "stream_error",
+                        }
+                        if old_outcome not in prior_reasons or (
+                            old_outcome is not None and old_outcome != evidence.original_reason
+                        ):
+                            connection.execute(
+                                "UPDATE account SET block_reason='settlement_conflict' WHERE provider=? AND name=?",
+                                (provider, account),
+                            )
+                            _clear_warm_prefix(connection, provider, account)
+                            conflict = (account, str(attempt_id))
+                            result = "still_open"
+                        else:
+                            envelope = stored_envelope
+                            quote_obj = (
+                                envelope.get("quote") if isinstance(envelope, dict) else None
+                            )
+                            if not isinstance(quote_obj, dict):
+                                raise ValueError("stream estimate lacks a matching quote")
+                            if (
+                                quote_obj.get("price_revision") != stored_revision
+                                or quote_obj.get("requested_model") != stored_model
+                            ):
+                                raise ValueError("stored quote identity is inconsistent")
+                            revision = self.price_revisions.get(quote_obj.get("price_revision"))
+                            if revision is None:
+                                raise _routing_error(RouterErrorCode.UNSUPPORTED_PRICING)
+                            retained_inputs = quote_obj.get("pricing_inputs")
+                            supplied_inputs = _pricing_inputs_dict(evidence.pricing_inputs)
+                            if (
+                                retained_inputs != supplied_inputs
+                                or stored_model != evidence.served_model
+                            ):
+                                raise ValueError(
+                                    "stream estimate pricing inputs differ from reservation"
+                                )
+                            from lionagi.service.accounts._pricing import price_usage
+
+                            model = revision.models.get(evidence.served_model)
+                            if model is None:
+                                raise ValueError("stream model is not in retained revision")
+                            tier = model.tier_for(
+                                evidence.counts.input_tokens
+                                + evidence.counts.cache_read_input_tokens
+                                + evidence.counts.cache_write_5m_tokens
+                                + evidence.counts.cache_write_1h_tokens
+                            )
+                            # The observed counts carry no region, so the usage is priced at
+                            # the highest regional multiplier, as the ceiling and the stored
+                            # rates are; the stored rates then reproduce the observed cost.
+                            geo_region = max(
+                                revision.geo_multipliers,
+                                key=lambda region: revision.geo_multipliers[region],
+                            )
+                            geo = revision.geo_multipliers[geo_region]
+                            rates = (
+                                tier.input * geo,
+                                tier.read * geo,
+                                tier.write_5m * geo,
+                                tier.write_1h * geo,
+                                tier.output * geo,
+                            )
+                            rate_pairs = tuple((r.numerator, r.denominator) for r in rates)
+                            supplied_pairs = tuple(
+                                (
+                                    getattr(evidence.rates, n).numerator,
+                                    getattr(evidence.rates, n).denominator,
+                                )
+                                for n in (
+                                    "input",
+                                    "cache_read",
+                                    "cache_write_5m",
+                                    "cache_write_1h",
+                                    "output",
+                                )
+                            )
+                            if rate_pairs != supplied_pairs:
+                                raise ValueError("stream rates differ from retained revision")
+                            usage = {
+                                "input_tokens": evidence.counts.input_tokens,
+                                "cache_read_input_tokens": evidence.counts.cache_read_input_tokens,
+                                "cache_creation_input_tokens": evidence.counts.cache_write_5m_tokens
+                                + evidence.counts.cache_write_1h_tokens,
+                                "cache_creation": {
+                                    "ephemeral_5m_input_tokens": evidence.counts.cache_write_5m_tokens,
+                                    "ephemeral_1h_input_tokens": evidence.counts.cache_write_1h_tokens,
+                                },
+                                "output_tokens": evidence.counts.output_tokens,
+                                "inference_geo": geo_region,
+                            }
+                            priced = price_usage(
+                                revision,
+                                frozenset(evidence.pricing_inputs.cache_ttls),
+                                evidence.served_model,
+                                usage,
+                                evidence.request_id,
+                            )
+                            if priced is None:
+                                raise ValueError("observed stream usage is not priceable")
+                            margin_tokens = max(1024, (evidence.counts.output_tokens + 9) // 10)
+                            margin_numerator = (
+                                margin_tokens * evidence.pricing_inputs.output_rate_max.numerator
+                            )
+                            margin_denominator = evidence.pricing_inputs.output_rate_max.denominator
+                            margin_nusd = (
+                                margin_numerator + margin_denominator - 1
+                            ) // margin_denominator
+                            expected_cost = priced.cost_nusd + margin_nusd
+                            if (priced.cost_nusd, margin_tokens, margin_nusd, expected_cost) != (
+                                evidence.observed_cost_nusd,
+                                evidence.margin_tokens,
+                                evidence.margin_nusd,
+                                evidence.cost_nusd,
+                            ):
+                                raise ValueError(
+                                    "stream estimate cost differs from recomputed amount"
+                                )
+                            if (
+                                evidence.quote_origin != "reservation"
+                                or evidence.cost_nusd > INT64_MAX
+                            ):
+                                raise ValueError("invalid runtime stream estimate provenance")
+                            usage_data = {
+                                name: getattr(evidence.counts, name)
+                                for name in (
+                                    "input_tokens",
+                                    "cache_read_input_tokens",
+                                    "cache_write_5m_tokens",
+                                    "cache_write_1h_tokens",
+                                    "output_tokens",
+                                )
+                            }
+                            rate_data = {
+                                name: {
+                                    "numerator": getattr(evidence.rates, name).numerator,
+                                    "denominator": getattr(evidence.rates, name).denominator,
+                                }
+                                for name in (
+                                    "input",
+                                    "cache_read",
+                                    "cache_write_5m",
+                                    "cache_write_1h",
+                                    "output",
+                                )
+                            }
+                            stream_data = {
+                                "original_reason": evidence.original_reason,
+                                "served_model": evidence.served_model,
+                                "counts": usage_data,
+                                "request_id": evidence.request_id,
+                                "pricing_inputs": supplied_inputs,
+                                "quote_origin": evidence.quote_origin,
+                                "rates": rate_data,
+                                "observed_cost_nusd": evidence.observed_cost_nusd,
+                                "margin_tokens": evidence.margin_tokens,
+                                "margin_nusd": evidence.margin_nusd,
+                                "cost_nusd": evidence.cost_nusd,
+                            }
+                            evidence_json = _canonical_json(
+                                {
+                                    "schema_version": 1,
+                                    "rule_revision": "adr0126-am9-2026-11-02-v1",
+                                    "quote": quote_obj,
+                                    "basis": outcome,
+                                    "origin": "runtime",
+                                    "source_ref": None,
+                                    "first_failure": {
+                                        "reason": old_outcome,
+                                        "provider_error_type": old_type,
+                                        "rejection_class": old_class,
+                                    },
+                                    "evidence": stream_data,
+                                }
+                            )
+                            settled, adjustments, opened, _ = self._spend_parts(
+                                connection, provider, account, month_utc
+                            )
+                            rest = opened - ceiling
+                            if rest < 0 or settled + cost_nusd + adjustments + rest > INT64_MAX:
+                                raise _routing_error(
+                                    RouterErrorCode.BUDGET_EXHAUSTED,
+                                    account=account,
+                                    attempt_id=attempt_id,
+                                )
+                            _, settled_at = _month_and_iso(self._clock)
+                            connection.execute(
+                                "UPDATE attempt SET state='settled', cost_nusd=?, usage_json=NULL, request_id=?, outcome=?, settled_at=?, settlement_evidence_json=? WHERE id=? AND state='open'",
+                                (
+                                    cost_nusd,
+                                    evidence.request_id,
+                                    outcome,
+                                    settled_at,
+                                    evidence_json,
+                                    str(attempt_id),
+                                ),
+                            )
+                            if cost_nusd > ceiling:
+                                connection.execute(
+                                    "UPDATE account SET block_reason='ceiling_exceeded' WHERE provider=? AND name=?",
+                                    (provider, account),
+                                )
+                            if cost_nusd > ceiling or evidence.original_reason in (
+                                "transport_error",
+                                "stream_truncated",
+                                "stream_error",
+                            ):
+                                _clear_warm_prefix(connection, provider, account)
+                            result = "settled"
+                elif isinstance(evidence, RejectionZero):
+                    expected_reason = (
+                        "request_rejected" if evidence.http_status == 400 else "provider_error"
+                    )
+                    compatible = (
+                        state != "open" or old_outcome is None or old_outcome == expected_reason
+                    )
+                    if (
+                        state == "open"
+                        and evidence.http_status == 400
+                        and old_type
+                        not in (
+                            None,
+                            "invalid_request_error",
+                        )
+                    ):
+                        compatible = False
+                    if (
+                        state == "open"
+                        and evidence.http_status == 529
+                        and (old_type is not None or old_class is not None)
+                    ):
+                        compatible = False
+                    if not compatible:
+                        connection.execute(
+                            "UPDATE account SET block_reason = 'settlement_conflict' WHERE provider = ? AND name = ?",
+                            (provider, account),
+                        )
+                        _clear_warm_prefix(connection, provider, account)
+                        conflict = (account, str(attempt_id))
+                        result = "still_open"
+                    elif state == "settled":
+                        stored_settlement = (
+                            stored_envelope.get("evidence")
+                            if isinstance(stored_envelope, dict)
+                            else None
+                        )
+                        if isinstance(stored_envelope, dict) and isinstance(
+                            stored_settlement, dict
+                        ):
+                            candidate = dict(stored_envelope)
+                            candidate["evidence"] = dict(stored_settlement)
+                            candidate["evidence"].update(
+                                http_status=evidence.http_status,
+                                provider_error_type=evidence.provider_error_type,
+                                rejection_class=stored_settlement.get("rejection_class"),
+                                original_reason=expected_reason,
+                                cost_nusd=0,
+                            )
+                            identical = (
+                                old_outcome == outcome
+                                and old_cost == 0
+                                and _canonical_json(candidate) == _canonical_json(stored_envelope)
+                            )
+                        else:
+                            identical = False
+                        result = "already_settled" if identical else "settled"
+                        if result == "settled":
+                            connection.execute(
+                                "UPDATE account SET block_reason = 'settlement_conflict' WHERE provider = ? AND name = ?",
+                                (provider, account),
+                            )
+                            _clear_warm_prefix(connection, provider, account)
+                            conflict = (account, str(attempt_id))
+                    else:
+                        stored_class = (
+                            old_class
+                            if old_outcome == "request_rejected"
+                            else evidence.rejection_class
+                        )
+                        if evidence.http_status == 529:
+                            stored_class = None
+                        evidence_json = _canonical_json(
+                            {
+                                "schema_version": 1,
+                                "rule_revision": "adr0126-am9-2026-11-02-v1",
+                                "quote": stored_envelope.get("quote") if stored_envelope else None,
+                                "basis": "rejection_zero",
+                                "origin": "runtime",
+                                "source_ref": None,
+                                "first_failure": {
+                                    "reason": old_outcome,
+                                    "provider_error_type": old_type,
+                                    "rejection_class": old_class,
+                                },
+                                "evidence": {
+                                    "http_status": evidence.http_status,
+                                    "provider_error_type": evidence.provider_error_type,
+                                    "rejection_class": stored_class,
+                                    "original_reason": expected_reason,
+                                    "cost_nusd": 0,
+                                },
+                            }
+                        )
+                        _, settled_at = _month_and_iso(self._clock)
+                        connection.execute(
+                            "UPDATE attempt SET state='settled', cost_nusd=0, usage_json=NULL, request_id=NULL, outcome=?, settled_at=?, settlement_evidence_json=?, provider_error_type=?, rejection_class=? WHERE id=? AND state='open'",
+                            (
+                                outcome,
+                                settled_at,
+                                evidence_json,
+                                (
+                                    evidence.provider_error_type
+                                    if evidence.http_status == 400
+                                    else old_type
+                                ),
+                                stored_class,
+                                str(attempt_id),
+                            ),
+                        )
+                        _clear_warm_prefix(connection, provider, account)
+                        result = "settled"
                 elif state == "settled":
                     identical = (
                         old_outcome == outcome
@@ -1001,6 +1797,7 @@ class CredentialLedger:
         cert: str | None = None,
         hour_after_key: bool = False,
         server_tools: bool = False,
+        http_status: int | None = None,
     ) -> SettleResult:
         """Apply evidence to an attempt using its stored account and month.
 
@@ -1008,8 +1805,14 @@ class CredentialLedger:
         account's warm prefix; ``hour_after_key`` and ``server_tools`` mark a request
         whose cached prefix length cannot be inferred from its token counts.
         """
+        if http_status is not None and (
+            type(http_status) is not int or not 100 <= http_status <= 599
+        ):
+            raise ValueError("invalid HTTP status")
         return await self._run(
-            lambda: self._settle_sync(attempt_id, evidence, cert, hour_after_key, server_tools)
+            lambda: self._settle_sync(
+                attempt_id, evidence, cert, hour_after_key, server_tools, http_status
+            )
         )
 
     def _block_sync(self, provider: str, account: str, reason: str) -> None:
