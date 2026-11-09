@@ -180,7 +180,7 @@ class Policies(BaseModel):
     @model_validator(mode="after")
     def _valid_rate_limit(self) -> Policies:
         # Same validator the fire-time engine admission path uses
-        # (lionagi.studio.services._schedule_validation.validate_rate_limit) -- an open
+        # (lionhub.orchestration.schedule.validation.validate_rate_limit) -- an open
         # dict[str, Any] would otherwise let a malformed rateLimit commit
         # and only fail (or silently no-op) at fire time.
         from lionhub.orchestration.schedule.validation import validate_rate_limit
