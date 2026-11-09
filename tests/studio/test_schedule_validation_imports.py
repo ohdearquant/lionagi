@@ -45,7 +45,6 @@ def test_router_reexports_the_same_validation_objects(name):
             (
                 "_validate_github_repo",
                 "merged_page_limit",
-                "_MERGED_MODE_MAX_PAGES",
                 "_GITHUB_OWNER_MAX",
                 "_GITHUB_REPO_MAX",
                 "_GITHUB_OWNER_RE",
