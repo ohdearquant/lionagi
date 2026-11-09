@@ -3860,7 +3860,6 @@ async def test_fire_deadline_records_one_timed_out_terminal_and_releases_slot(
 ):
     """A launcher deadline is a timed-out outcome, not a generic failed exception."""
     import lionagi.studio.config as studio_config
-    import lionagi.studio.services.schedule_timing as schedule_timing
     from lionagi.studio.scheduler import subprocess as subprocess_mod
     from lionagi.studio.scheduler.engine import SchedulerEngine
 

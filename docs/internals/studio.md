@@ -461,7 +461,7 @@ a newer schema migrates it on open, as an upgrade does.
   covers transient contention; if both fail, the row keeps its stale
   `next_fire_at` — healed only by the daemon-startup recompute, or by firing
   once on the stale timestamp and recomputing from there.
-- **`_svc_validate_github_repo`** — Delegates to `github._validate_github_repo`
+- **`_svc_validate_github_repo`** — Delegates to `_validate_github_repo` in `services/_schedule_validation.py`
   (owner/name regex, CWE-918 guard) so the pattern lives in one place. `None`
   = field not supplied (no-op); `""` = explicit invalid value, forwarded for
   rejection.
