@@ -53,11 +53,28 @@ New:
 > ## Amendment 11 (2026-11-09)
 Reason: the amendment is accepted.
 
-### A11.7 — Amendment 11, Decision 2 (written in the same pull request, before acceptance)
+### A11.7 — Amendment 11, Decision 2
 
 Old:
 > Age is `now - created_at` read with the ledger's clock; a row exactly at the lease is still live.
 New:
 > Age is `now - created_at` read with the ledger's clock; a row exactly at the lease is still live. An admission that is refused rolls its transaction back, closure included: it closes nothing, and `status()` keeps counting an expired hold as open until the next committed admission closes it. Each admission decides on the totals after its own closure, so the refusal itself is correct.
 Reason: a refused admission rolls the closure back; the record says so.
+
+### A11.8 — Amendment 9, implementation limits
+
+Old:
+> MAY NOT broaden the zero table, estimate missing dimensions, reuse another attempt's evidence, release a ceiling on time alone, or silently sweep old rows.
+New:
+> MAY NOT broaden the zero table, estimate missing dimensions, reuse another attempt's evidence, release a ceiling on time alone before the lease of Amendment 11 has passed, or silently sweep old rows.
+Reason: Amendment 11 releases a ceiling on age once the lease has passed.
+
+### A11.9 — Amendment 9, attempt identity rules
+
+Old:
+> Age or crash alone authorizes no release.
+New:
+> Age or crash alone authorizes no release until the lease of Amendment 11 has passed.
+Reason: same as A11.8.
+
 ````

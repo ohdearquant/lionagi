@@ -188,12 +188,11 @@ async def test_late_complete_usage_is_recorded_as_a_correction_without_a_block(t
     assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == 3
 
 
-@pytest.mark.anyio
-async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(tmp_path):
+async def closed_priced_hold(tmp_path):
     import json
 
     from lionagi.service.accounts._pricing import quote_ceiling
-    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
+    from tests.service.accounts.test_ledger_settlement_evidence import priced_revision
 
     revision = priced_revision()
     priced = quote_ceiling(
@@ -213,6 +212,14 @@ async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(
     held = await ledger.reserve(scope(), uuid4(), priced, (big,))
     clock.now = T0 + LEASE + timedelta(minutes=5)
     await ledger.reserve(scope(), uuid4(), quote(1), (big,))
+    return ledger, held, priced, revision
+
+
+@pytest.mark.anyio
+async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(tmp_path):
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate
+
+    ledger, held, priced, revision = await closed_priced_hold(tmp_path)
     late = estimate(priced, revision, "stream_error", output_tokens=40)
 
     assert await ledger.settle(held.attempt_id, late) == "settled"
@@ -221,6 +228,70 @@ async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(
     [(kind, attempt_id, delta, source_ref, _)] = corrections(ledger.path)
     assert (kind, attempt_id, delta) == ("correction", str(held.attempt_id), late.cost_nusd)
     assert "origin runtime" in source_ref
+    assert block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+async def test_a_mismatched_late_stream_estimate_is_refused_like_one_on_an_open_attempt(tmp_path):
+    import dataclasses
+
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate
+
+    ledger, held, priced, revision = await closed_priced_hold(tmp_path)
+    late = dataclasses.replace(
+        estimate(priced, revision, "stream_error", output_tokens=40), served_model="model-b"
+    )
+
+    with pytest.raises(ValueError, match="pricing inputs differ from reservation"):
+        await ledger.settle(held.attempt_id, late)
+
+    assert corrections(ledger.path) == [] and block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+async def test_late_complete_usage_above_the_ceiling_is_a_correction_and_blocks_nothing(tmp_path):
+    ledger, held = await closed_hold(tmp_path, ceiling=4)
+
+    result = await ledger.settle(
+        held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 9, "late")
+    )
+
+    assert result == "settled"
+    [(_, _, delta, _, _)] = corrections(ledger.path)
+    assert delta == 9
+    assert block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["not_sent", "rejection_zero"])
+async def test_late_typed_zero_evidence_agrees_with_the_closure_and_changes_nothing(tmp_path, kind):
+    from lionagi.service.accounts._types import ProvenNotSent, RejectionZero
+
+    ledger, held = await closed_hold(tmp_path)
+    evidence = (
+        ProvenNotSent()
+        if kind == "not_sent"
+        else RejectionZero(400, "invalid_request_error", None, "request_rejected")
+    )
+
+    assert await ledger.settle(held.attempt_id, evidence) == "already_settled"
+
+    assert corrections(ledger.path) == [] and block_reason(ledger.path) is None
+    assert attempt_row(ledger.path, held.attempt_id)[1] == 0
+
+
+@pytest.mark.anyio
+async def test_a_second_late_arrival_at_another_cost_changes_nothing_and_blocks_nothing(tmp_path):
+    ledger, held = await closed_hold(tmp_path)
+
+    await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late"))
+    second = await ledger.settle(
+        held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 4, "late2")
+    )
+
+    assert second == "already_settled"
+    [(_, _, delta, _, _)] = corrections(ledger.path)
+    assert delta == 3
     assert block_reason(ledger.path) is None
 
 
