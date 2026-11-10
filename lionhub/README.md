@@ -8,7 +8,7 @@ includes both `lionagi` and `lionhub`.
 
 | Path (from repository root) | Contents |
 | --- | --- |
-| `lionhub/src/lionhub/cli/` | Built-in CLI command catalog and lazy command discovery. |
+| `lionhub/src/lionhub/cli/` | Built-in CLI command catalog, lazy command discovery, and the `li studio` and `li schedule` command adapters. |
 | `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, and work forms. |
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |

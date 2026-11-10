@@ -410,7 +410,7 @@ class TestCliActionKindChoices:
     def test_action_kind_choices_include_command(self):
         import argparse
 
-        from lionagi.studio.cli import add_schedule_subparser
+        from lionhub.orchestration.schedule.parsing import add_schedule_subparser
 
         parser = argparse.ArgumentParser()
         sub = parser.add_subparsers(dest="command")
@@ -506,7 +506,7 @@ class TestCmdCreateActionCommandArgsJSON:
     def _parse(self, argv: list[str]):
         import argparse
 
-        from lionagi.studio.cli import add_schedule_subparser
+        from lionhub.orchestration.schedule.parsing import add_schedule_subparser
 
         parser = argparse.ArgumentParser()
         sub = parser.add_subparsers(dest="command")
@@ -536,7 +536,7 @@ class TestCmdCreateActionCommandArgsJSON:
         rejects a bad value itself and exits 2 the way it does for every other
         malformed argument, rather than a handler decoding the string later and
         returning 1."""
-        with patch("lionagi.studio.cli._api") as mock_api:
+        with patch("lionhub.cli.schedule._api") as mock_api:
             with pytest.raises(SystemExit) as excinfo:
                 self._parse(self._argv("{not valid json"))
 
@@ -549,7 +549,7 @@ class TestCmdCreateActionCommandArgsJSON:
     def test_valid_json_non_array_rejected_before_api_call(self, capsys):
         """Valid JSON that parses to a non-array (e.g. an object) is refused
         while parsing, so no handler runs and nothing reaches the HTTP layer."""
-        with patch("lionagi.studio.cli._api") as mock_api:
+        with patch("lionhub.cli.schedule._api") as mock_api:
             with pytest.raises(SystemExit) as excinfo:
                 self._parse(self._argv('{"not": "an array"}'))
 
@@ -562,11 +562,11 @@ class TestCmdCreateActionCommandArgsJSON:
     def test_valid_json_array_parsed_and_forwarded(self):
         """A well-formed JSON array must be parsed and forwarded as the
         action_command_args field of the POST body."""
-        from lionagi.studio.cli import _cmd_create
+        from lionhub.cli.schedule import _cmd_create
 
         args = self._parse(self._argv('["review-pr", "--repo", "{{repo}}"]'))
         with patch(
-            "lionagi.studio.cli._api",
+            "lionhub.cli.schedule._api",
             return_value={"id": "sid1", "name": "cli-command-json-test"},
         ) as mock_api:
             rc = _cmd_create(args)

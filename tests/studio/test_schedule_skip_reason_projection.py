@@ -14,9 +14,9 @@ from sqlalchemy import event
 
 from lionagi.cli import machine_schedule
 from lionagi.state.db import StateDB
-from lionagi.studio import cli as schedule_cli
 from lionagi.studio.services import run_view, schedules
 from lionagi.studio.services.scheduler_state import _DBSchedulerStateService, create_skipped_run
+from lionhub.cli import schedule as schedule_cli
 
 _CAPACITY_REASON = "schedule.deferred.capacity"
 _CAPACITY_SUMMARY = (
