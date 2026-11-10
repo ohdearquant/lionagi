@@ -1341,6 +1341,52 @@ class CredentialLedger:
         """
         return await self._run(lambda: self._reserve_sync(scope, attempt_id, quote, accounts, cert))
 
+    def _settle_after_lease_closure(
+        self,
+        connection: sqlite3.Connection,
+        attempt_id: UUID,
+        row: tuple[str, str, str, int],
+        evidence: Evidence,
+        cost_nusd: int,
+        request_id: str | None,
+        outcome: str,
+    ) -> SettleResult | None:
+        """Account for evidence that arrives after the lease closed its attempt at zero.
+
+        The spend is real, so it is recorded as one correction adjustment at the evidence's cost,
+        with no block. A second identical arrival changes nothing. None means the attempt was
+        not closed by a lease, or the arrival differs from the correction already written, and
+        the caller applies the ordinary rule for a settled row.
+        """
+        provider, account, month_utc, ceiling = row
+        closure = connection.execute(
+            "SELECT id FROM adjustment WHERE id = ? AND kind = 'reconciliation' AND attempt_id = ?",
+            (str(uuid5(_LEASE_NAMESPACE, f"lease-expiry:{attempt_id}")), str(attempt_id)),
+        ).fetchone()
+        if closure is None:
+            return None
+        correction_id = uuid5(_LEASE_NAMESPACE, f"lease-late:{attempt_id}")
+        existing = self._adjustment_row(connection, correction_id)
+        if existing is not None:
+            return "already_settled" if existing[5] == cost_nusd and existing[0] == "correction" else None
+        source_ref = _validate_source(
+            f"late runtime evidence ({outcome}), origin runtime, for attempt {attempt_id} closed by "
+            f"lease expiry (adjustment {closure[0]}); cost {cost_nusd} nusd; request "
+            f"{request_id or 'none'}"
+        )
+        _, recorded_at = _month_and_iso(self._clock)
+        self._insert_adjustment(
+            connection, correction_id, "correction", attempt_id, provider, account, month_utc,
+            cost_nusd, source_ref, recorded_at,
+        )
+        if isinstance(evidence, CompleteUsage) and cost_nusd > ceiling:
+            connection.execute(
+                "UPDATE account SET block_reason = 'ceiling_exceeded' WHERE provider = ? AND name = ?",
+                (provider, account),
+            )
+            _clear_warm_prefix(connection, provider, account)
+        return "settled"
+
     def _settle_sync(
         self,
         attempt_id: UUID,
@@ -1429,6 +1475,22 @@ class CredentialLedger:
                         "UPDATE attempt SET http_status = COALESCE(http_status, ?) WHERE id = ?",
                         (http_status, str(attempt_id)),
                     )
+                if (
+                    state == "settled"
+                    and old_outcome == "reconciled"
+                    and isinstance(evidence, (CompleteUsage, StreamUsageEstimate))
+                ):
+                    late = self._settle_after_lease_closure(
+                        connection,
+                        attempt_id,
+                        (provider, account, month_utc, ceiling),
+                        evidence,
+                        cost_nusd,
+                        request_id,
+                        outcome,
+                    )
+                    if late is not None:
+                        return late
                 if isinstance(evidence, UnknownOutcome):
                     if state == "settled":
                         return "already_settled"

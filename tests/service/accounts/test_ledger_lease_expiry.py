@@ -132,25 +132,118 @@ async def test_the_closure_names_a_later_settled_attempt_on_the_same_scope(tmp_p
 
 
 @pytest.mark.anyio
-async def test_a_closed_hold_is_closed_once_and_a_late_settlement_cannot_reopen_it(tmp_path):
+async def test_a_hold_is_closed_once(tmp_path):
     clock = Clock(T0)
     ledger = make_ledger(tmp_path, clock)
-    held = await ledger.reserve(scope(), uuid4(), quote(4), (spec(),))
+    await ledger.reserve(scope(), uuid4(), quote(4), (spec(),))
     clock.now = T0 + LEASE + timedelta(minutes=5)
     await ledger.reserve(scope(), uuid4(), quote(1), (spec(),))
     await ledger.reserve(scope(), uuid4(), quote(1), (spec(),))
 
     assert len(adjustments(ledger.path)) == 1
-    # A settlement arriving after the closure meets a settled row, so it is a conflict that blocks
-    # the account until an operator looks, exactly as for any reconciled row.
+
+
+def block_reason(path):
+    with sqlite3.connect(path) as connection:
+        return connection.execute("SELECT block_reason FROM account WHERE name = 'alpha'").fetchone()[0]
+
+
+async def closed_hold(tmp_path, ceiling: int = 4):
+    clock = Clock(T0)
+    ledger = make_ledger(tmp_path, clock)
+    held = await ledger.reserve(scope(), uuid4(), quote(ceiling), (spec(),))
+    clock.now = T0 + LEASE + timedelta(minutes=5)
+    await ledger.reserve(scope(), uuid4(), quote(1), (spec(),))
+    return ledger, held
+
+
+def corrections(path):
+    return [row for row in adjustments(path) if row[0] == "correction"]
+
+
+@pytest.mark.anyio
+async def test_late_complete_usage_is_recorded_as_a_correction_without_a_block(tmp_path):
+    ledger, held = await closed_hold(tmp_path)
+
+    first = await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late"))
+    again = await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late"))
+
+    assert (first, again) == ("settled", "already_settled")
+    [(kind, attempt_id, delta, source_ref, month)] = corrections(ledger.path)
+    assert (kind, attempt_id, delta, month) == ("correction", str(held.attempt_id), 3, "2026-01")
+    assert f"attempt {held.attempt_id}" in source_ref and "origin runtime" in source_ref
+    assert "lease expiry" in source_ref
+    assert block_reason(ledger.path) is None
+    assert attempt_row(ledger.path, held.attempt_id)[1] == 0
+    assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == 3
+
+
+@pytest.mark.anyio
+async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(tmp_path):
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
+    from lionagi.service.accounts._pricing import quote_ceiling
+    import json
+
+    revision = priced_revision()
+    priced = quote_ceiling(
+        revision,
+        json.dumps({"model": "model-a", "messages": [{"role": "user", "content": "x"}],
+                    "max_tokens": 1024, "service_tier": "standard_only"}).encode(),
+    )
+    clock = Clock(T0)
+    ledger = make_ledger(tmp_path, clock, price_revisions={revision.id: revision})
+    big = AccountSpec("alpha", "ALPHA_KEY", 100_000)
+    held = await ledger.reserve(scope(), uuid4(), priced, (big,))
+    clock.now = T0 + LEASE + timedelta(minutes=5)
+    await ledger.reserve(scope(), uuid4(), quote(1), (big,))
+    late = estimate(priced, revision, "stream_error", output_tokens=40)
+
+    assert await ledger.settle(held.attempt_id, late) == "settled"
+    assert await ledger.settle(held.attempt_id, late) == "already_settled"
+
+    [(kind, attempt_id, delta, source_ref, _)] = corrections(ledger.path)
+    assert (kind, attempt_id, delta) == ("correction", str(held.attempt_id), late.cost_nusd)
+    assert "origin runtime" in source_ref
+    assert block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+async def test_late_reason_only_evidence_stays_already_settled(tmp_path):
+    from lionagi.service.accounts._types import UnknownOutcome
+
+    ledger, held = await closed_hold(tmp_path)
+
+    assert await ledger.settle(held.attempt_id, UnknownOutcome("timeout")) == "already_settled"
+    assert corrections(ledger.path) == [] and block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+async def test_an_operator_reconciled_row_keeps_the_conflict_rule(tmp_path):
+    ledger = make_ledger(tmp_path, Clock(T0))
+    held = await ledger.reserve(scope(), uuid4(), quote(4), (spec(),))
+    await ledger.reconcile(uuid4(), held.attempt_id, 0, "operator closure")
+
     with pytest.raises(AccountRoutingError) as caught:
         await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late"))
+
     assert caught.value.code == RouterErrorCode.SETTLEMENT_CONFLICT
-    assert attempt_row(ledger.path, held.attempt_id)[1] == 0
-    with sqlite3.connect(ledger.path) as connection:
-        assert connection.execute("SELECT block_reason FROM account WHERE name = 'alpha'").fetchone() == (
-            "settlement_conflict",
-        )
+    assert block_reason(ledger.path) == "settlement_conflict"
+    assert corrections(ledger.path) == []
+
+
+@pytest.mark.anyio
+async def test_a_refused_admission_closes_nothing(tmp_path):
+    clock = Clock(T0)
+    ledger = make_ledger(tmp_path, clock)
+    held = await ledger.reserve(scope(), uuid4(), quote(4), (spec(budget=10),))
+    clock.now = T0 + LEASE + timedelta(minutes=5)
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.reserve(scope(), uuid4(), quote(11), (spec(budget=10),))
+
+    assert caught.value.code == RouterErrorCode.BUDGET_EXHAUSTED
+    assert attempt_row(ledger.path, held.attempt_id)[0] == "open"
+    assert adjustments(ledger.path) == []
 
 
 @pytest.mark.anyio
