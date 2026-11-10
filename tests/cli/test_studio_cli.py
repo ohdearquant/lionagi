@@ -398,6 +398,17 @@ def test_find_repo_root_returns_path_from_source_checkout():
         assert (root / "apps" / "studio").is_dir()
 
 
+def test_find_repo_root_characterization(monkeypatch, tmp_path):
+    import lionagi
+    import lionagi.studio.cli as studio_cli
+
+    assert studio_cli._find_repo_root() == Path(__file__).resolve().parents[2]
+    package_dir = tmp_path / "site-packages" / "lionagi"
+    package_dir.mkdir(parents=True)
+    monkeypatch.setattr(lionagi, "__file__", str(package_dir / "__init__.py"))
+    assert studio_cli._find_repo_root() is None
+
+
 def test_ensure_apps_importable_from_non_repo_cwd(tmp_path, monkeypatch):
     """_ensure_apps_importable returns False when outside the repo (no apps/ dir)."""
     import lionagi.studio.cli as studio_mod
