@@ -91,6 +91,9 @@ from lionhub.cli.studio import (
     add_studio_subparser,  # noqa: F401 -- preserve the compatibility import
     run_studio,  # noqa: F401 -- preserve the compatibility import
 )
+from lionhub.orchestration.console import (
+    _refused_inside_an_agent,  # noqa: F401 -- preserve the compatibility import
+)
 from lionhub.orchestration.schedule.parsing import (
     QUICK_CREATE_KINDS,  # noqa: F401 -- preserve the compatibility import
     _base_url,  # noqa: F401 -- preserve the compatibility import

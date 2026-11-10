@@ -1894,6 +1894,28 @@ def test_schedule_parsing_names_live_in_the_shared_module(name):
     assert getattr(studio_cli, name) is obj
 
 
+@pytest.mark.parametrize(
+    ("owner", "name"),
+    [
+        ("lionhub.orchestration.schedule.parsing", "QUICK_CREATE_KINDS"),
+        ("lionhub.orchestration.schedule.parsing", "_quick_create_add_trigger_flags"),
+        ("lionhub.orchestration.schedule.parsing", "_quick_create_add_policy_flags"),
+        ("lionhub.orchestration.schedule.parsing", "build_quick_create_parser"),
+        ("lionhub.orchestration.console", "_refused_inside_an_agent"),
+    ],
+)
+def test_studio_cli_still_exposes_the_definitions_moved_into_lionhub_orchestration(owner, name):
+    """The quick-create parser pieces and the nested-agent refusal printer left the Studio
+    command module for their shared owners; the old module still exposes each one as the
+    very same object."""
+    import importlib
+
+    import lionagi.studio.cli as studio_cli
+
+    obj = getattr(importlib.import_module(owner), name)
+    assert getattr(studio_cli, name) is obj
+
+
 def test_schedule_parsing_module_stays_below_the_command_layer():
     """The shared parsing module imports no CLI command module and nothing from Studio, at
     module level or inside a function. The chain-depth cap, the action-kind vocabulary and the
