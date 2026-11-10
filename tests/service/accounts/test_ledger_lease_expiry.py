@@ -300,6 +300,24 @@ async def test_a_larger_late_arrival_after_an_estimate_records_the_larger_cost(t
 
 
 @pytest.mark.anyio
+async def test_a_late_cost_that_would_overflow_the_account_total_is_refused(tmp_path):
+    from lionagi.service.accounts._types import INT64_MAX
+
+    ledger, held = await closed_hold(
+        tmp_path
+    )  # a second hold of 1 is open, so INT64_MAX more cannot fit
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.settle(
+            held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, INT64_MAX, "late")
+        )
+
+    assert caught.value.code == RouterErrorCode.BUDGET_EXHAUSTED
+    assert corrections(ledger.path) == []
+    assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == 0  # still readable
+
+
+@pytest.mark.anyio
 async def test_the_first_late_correction_keeps_the_id_a_single_correction_was_written_under(
     tmp_path,
 ):

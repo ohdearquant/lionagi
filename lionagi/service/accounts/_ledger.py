@@ -1462,6 +1462,19 @@ class CredentialLedger:
             f"lease expiry (adjustment {closure[0]}); cost {cost_nusd} nusd, recorded before "
             f"{recorded} nusd; request {request_id or 'none'}"
         )
+        # The same range the open-row settle and the operator adjustment hold the account to: a correction that would push settled
+        # spend, adjustments and open reservations past a signed 64-bit total would leave status() unreadable.
+        settled, adjustments, opened, _ = self._spend_parts(
+            connection, provider, account, month_utc
+        )
+        updated_adjustments = adjustments + (cost_nusd - recorded)
+        if (
+            not _INT64_MIN <= updated_adjustments <= INT64_MAX
+            or settled + updated_adjustments + opened > INT64_MAX
+        ):
+            raise _routing_error(
+                RouterErrorCode.BUDGET_EXHAUSTED, account=account, attempt_id=attempt_id
+            )
         _, recorded_at = _month_and_iso(self._clock)
         self._insert_adjustment(
             connection,
