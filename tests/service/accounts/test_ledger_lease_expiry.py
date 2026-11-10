@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 import pytest
 
@@ -294,9 +294,28 @@ async def test_a_larger_late_arrival_after_an_estimate_records_the_larger_cost(t
         == "settled"
     )
 
-    assert [row[2] for row in corrections(ledger.path)] == [first.cost_nusd, 4]
+    assert sorted(row[2] for row in corrections(ledger.path)) == sorted([first.cost_nusd, 4])
     assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == bill
     assert block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+async def test_the_first_late_correction_keeps_the_id_a_single_correction_was_written_under(
+    tmp_path,
+):
+    ledger, held = await closed_hold(tmp_path)
+    evidence = CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late")
+    namespace = UUID("5f0d3c0e-8a54-5c52-9d63-3b0b6c3f2a11")
+
+    assert await ledger.settle(held.attempt_id, evidence) == "settled"
+
+    with sqlite3.connect(ledger.path) as connection:
+        ids = {
+            row[0]
+            for row in connection.execute("SELECT id FROM adjustment WHERE kind = 'correction'")
+        }
+    assert ids == {str(uuid5(namespace, f"lease-late:{held.attempt_id}"))}
+    assert await ledger.settle(held.attempt_id, evidence) == "already_settled"
 
 
 @pytest.mark.anyio

@@ -74,6 +74,12 @@ def _lease_adjustment_id(kind: str, attempt_id: object) -> UUID:
     return uuid5(_LEASE_NAMESPACE, f"{kind}:{attempt_id}")
 
 
+def _late_correction_id(attempt_id: UUID, ordinal: int) -> UUID:
+    """Id of the ordinal-th late correction on a lease-closed attempt, counting from 1."""
+    kind = "lease-late" if ordinal == 1 else f"lease-late-{ordinal}"
+    return _lease_adjustment_id(kind, attempt_id)
+
+
 class _TimedCall(Generic[_T]):
     """Run an operation in a worker thread and record when it started and finished.
 
@@ -1431,12 +1437,12 @@ class CredentialLedger:
             self._validate_stream_estimate(evidence, stored_envelope, stored_revision, stored_model)
         elif not isinstance(evidence, CompleteUsage):
             return "already_settled"
-        # The recorded cost is the sum of this attempt's late corrections, numbered from 1.
+        # The recorded cost is the sum of this attempt's late corrections. The first one keeps the
+        # id the single-correction form used, so a row written under it is counted and a replay
+        # of that evidence writes nothing; later ones are numbered from 2.
         recorded, count = 0, 0
         while True:
-            earlier = self._adjustment_row(
-                connection, _lease_adjustment_id(f"lease-late-{count + 1}", attempt_id)
-            )
+            earlier = self._adjustment_row(connection, _late_correction_id(attempt_id, count + 1))
             if earlier is None:
                 break
             recorded += earlier[5]
@@ -1459,7 +1465,7 @@ class CredentialLedger:
         _, recorded_at = _month_and_iso(self._clock)
         self._insert_adjustment(
             connection,
-            _lease_adjustment_id(f"lease-late-{count + 1}", attempt_id),
+            _late_correction_id(attempt_id, count + 1),
             "correction",
             attempt_id,
             provider,
