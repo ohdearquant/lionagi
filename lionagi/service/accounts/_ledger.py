@@ -69,6 +69,17 @@ _OPEN_LEASE = timedelta(hours=2)
 _LEASE_NAMESPACE = UUID("5f0d3c0e-8a54-5c52-9d63-3b0b6c3f2a11")
 
 
+def _lease_adjustment_id(kind: str, attempt_id: object) -> UUID:
+    """The adjustment id for a lease record of this attempt; the one place the key is built."""
+    return uuid5(_LEASE_NAMESPACE, f"{kind}:{attempt_id}")
+
+
+def _late_correction_id(attempt_id: UUID, ordinal: int) -> UUID:
+    """Id of the ordinal-th late correction on a lease-closed attempt, counting from 1."""
+    kind = "lease-late" if ordinal == 1 else f"lease-late-{ordinal}"
+    return _lease_adjustment_id(kind, attempt_id)
+
+
 class _TimedCall(Generic[_T]):
     """Run an operation in a worker thread and record when it started and finished.
 
@@ -1077,7 +1088,7 @@ class CredentialLedger:
                 if changed:
                     self._insert_adjustment(
                         connection,
-                        uuid5(_LEASE_NAMESPACE, f"lease-expiry:{attempt_id}"),
+                        _lease_adjustment_id("lease-expiry", attempt_id),
                         "reconciliation",
                         UUID(attempt_id),
                         provider,
@@ -1341,62 +1352,142 @@ class CredentialLedger:
         """
         return await self._run(lambda: self._reserve_sync(scope, attempt_id, quote, accounts, cert))
 
+    def _validate_stream_estimate(
+        self,
+        evidence: StreamUsageEstimate,
+        stored_envelope: dict[str, object] | None,
+        stored_revision: str,
+        stored_model: str,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        """Check a stream estimate against the quote stored at reservation.
+
+        Returns the stored quote and the supplied pricing inputs. Raises ValueError when the
+        estimate does not correspond to the reservation, is not the recomputed amount or
+        lacks runtime provenance.
+        """
+        envelope = stored_envelope
+        quote_obj = envelope.get("quote") if isinstance(envelope, dict) else None
+        if not isinstance(quote_obj, dict):
+            raise ValueError("stream estimate lacks a matching quote")
+        if (
+            quote_obj.get("price_revision") != stored_revision
+            or quote_obj.get("requested_model") != stored_model
+        ):
+            raise ValueError("stored quote identity is inconsistent")
+        revision = self.price_revisions.get(quote_obj.get("price_revision"))
+        if revision is None:
+            raise _routing_error(RouterErrorCode.UNSUPPORTED_PRICING)
+        retained_inputs = quote_obj.get("pricing_inputs")
+        supplied_inputs = _pricing_inputs_dict(evidence.pricing_inputs)
+        if retained_inputs != supplied_inputs or stored_model != evidence.served_model:
+            raise ValueError("stream estimate pricing inputs differ from reservation")
+        from lionagi.service.accounts._pricing import stream_usage_estimate
+
+        recomputed = stream_usage_estimate(
+            revision,
+            evidence.pricing_inputs,
+            evidence.served_model,
+            evidence.counts,
+            evidence.request_id,
+            evidence.original_reason,
+        )
+        if recomputed is None:
+            raise ValueError("observed stream usage is not priceable")
+        if recomputed != evidence:
+            raise ValueError("stream estimate differs from recomputed amount")
+        if evidence.quote_origin != "reservation" or evidence.cost_nusd > INT64_MAX:
+            raise ValueError("invalid runtime stream estimate provenance")
+        return quote_obj, supplied_inputs
+
     def _settle_after_lease_closure(
         self,
         connection: sqlite3.Connection,
         attempt_id: UUID,
-        row: tuple[str, str, str, int],
+        row: tuple[str, str, str],
         evidence: Evidence,
         cost_nusd: int,
         request_id: str | None,
         outcome: str,
+        stored_envelope: dict[str, object] | None,
+        stored_revision: str,
+        stored_model: str,
     ) -> SettleResult | None:
         """Account for evidence that arrives after the lease closed its attempt at zero.
 
-        The spend is real, so it is recorded as one correction adjustment at the evidence's cost,
-        with no block. A second identical arrival changes nothing. None means the attempt was
-        not closed by a lease, or the arrival differs from the correction already written, and
-        the caller applies the ordinary rule for a settled row.
+        None means the attempt was not closed by a lease, and the caller applies the ordinary
+        rule for a settled row. Otherwise nothing here blocks the account:
+
+        - typed zero evidence (not sent, rejection zero) agrees with the closure and changes
+          nothing;
+        - complete usage or a stream estimate is real spend and is recorded as one correction
+          adjustment at its cost; a stream estimate first passes the checks the open-row path
+          applies, so a mismatched one raises ValueError and writes nothing;
+        - the recorded cost is the largest cost seen across late arrivals: an arrival above it
+          writes a further correction for the difference, one at or below it writes nothing and
+          one below it is logged.
         """
-        provider, account, month_utc, ceiling = row
+        provider, account, month_utc = row
         closure = connection.execute(
             "SELECT id FROM adjustment WHERE id = ? AND kind = 'reconciliation' AND attempt_id = ?",
-            (str(uuid5(_LEASE_NAMESPACE, f"lease-expiry:{attempt_id}")), str(attempt_id)),
+            (str(_lease_adjustment_id("lease-expiry", attempt_id)), str(attempt_id)),
         ).fetchone()
         if closure is None:
             return None
-        correction_id = uuid5(_LEASE_NAMESPACE, f"lease-late:{attempt_id}")
-        existing = self._adjustment_row(connection, correction_id)
-        if existing is not None:
-            return (
-                "already_settled"
-                if existing[5] == cost_nusd and existing[0] == "correction"
-                else None
-            )
+        if isinstance(evidence, StreamUsageEstimate):
+            self._validate_stream_estimate(evidence, stored_envelope, stored_revision, stored_model)
+        elif not isinstance(evidence, CompleteUsage):
+            return "already_settled"
+        # The recorded cost is the sum of this attempt's late corrections. The first one keeps the
+        # id the single-correction form used, so a row written under it is counted and a replay
+        # of that evidence writes nothing; later ones are numbered from 2.
+        recorded, count = 0, 0
+        while True:
+            earlier = self._adjustment_row(connection, _late_correction_id(attempt_id, count + 1))
+            if earlier is None:
+                break
+            recorded += earlier[5]
+            count += 1
+        if cost_nusd <= recorded:
+            if cost_nusd < recorded:
+                _LOGGER.info(
+                    "late evidence below the cost already recorded for a lease-closed attempt "
+                    "is dropped: attempt %s, arrived %s nusd, recorded %s nusd",
+                    attempt_id,
+                    cost_nusd,
+                    recorded,
+                )
+            return "already_settled"
         source_ref = _validate_source(
             f"late runtime evidence ({outcome}), origin runtime, for attempt {attempt_id} closed by "
-            f"lease expiry (adjustment {closure[0]}); cost {cost_nusd} nusd; request "
-            f"{request_id or 'none'}"
+            f"lease expiry (adjustment {closure[0]}); cost {cost_nusd} nusd, recorded before "
+            f"{recorded} nusd; request {request_id or 'none'}"
         )
+        # The same range the open-row settle and the operator adjustment hold the account to: a correction that would push settled
+        # spend, adjustments and open reservations past a signed 64-bit total would leave status() unreadable.
+        settled, adjustments, opened, _ = self._spend_parts(
+            connection, provider, account, month_utc
+        )
+        updated_adjustments = adjustments + (cost_nusd - recorded)
+        if (
+            not _INT64_MIN <= updated_adjustments <= INT64_MAX
+            or settled + updated_adjustments + opened > INT64_MAX
+        ):
+            raise _routing_error(
+                RouterErrorCode.BUDGET_EXHAUSTED, account=account, attempt_id=attempt_id
+            )
         _, recorded_at = _month_and_iso(self._clock)
         self._insert_adjustment(
             connection,
-            correction_id,
+            _late_correction_id(attempt_id, count + 1),
             "correction",
             attempt_id,
             provider,
             account,
             month_utc,
-            cost_nusd,
+            cost_nusd - recorded,
             source_ref,
             recorded_at,
         )
-        if isinstance(evidence, CompleteUsage) and cost_nusd > ceiling:
-            connection.execute(
-                "UPDATE account SET block_reason = 'ceiling_exceeded' WHERE provider = ? AND name = ?",
-                (provider, account),
-            )
-            _clear_warm_prefix(connection, provider, account)
         return "settled"
 
     def _settle_sync(
@@ -1490,16 +1581,19 @@ class CredentialLedger:
                 if (
                     state == "settled"
                     and old_outcome == "reconciled"
-                    and isinstance(evidence, (CompleteUsage, StreamUsageEstimate))
+                    and not isinstance(evidence, UnknownOutcome)
                 ):
                     late = self._settle_after_lease_closure(
                         connection,
                         attempt_id,
-                        (provider, account, month_utc, ceiling),
+                        (provider, account, month_utc),
                         evidence,
                         cost_nusd,
                         request_id,
                         outcome,
+                        stored_envelope,
+                        stored_revision,
+                        stored_model,
                     )
                     if late is not None:
                         return late
@@ -1561,48 +1655,9 @@ class CredentialLedger:
                             conflict = (account, str(attempt_id))
                             result = "still_open"
                         else:
-                            envelope = stored_envelope
-                            quote_obj = (
-                                envelope.get("quote") if isinstance(envelope, dict) else None
+                            quote_obj, supplied_inputs = self._validate_stream_estimate(
+                                evidence, stored_envelope, stored_revision, stored_model
                             )
-                            if not isinstance(quote_obj, dict):
-                                raise ValueError("stream estimate lacks a matching quote")
-                            if (
-                                quote_obj.get("price_revision") != stored_revision
-                                or quote_obj.get("requested_model") != stored_model
-                            ):
-                                raise ValueError("stored quote identity is inconsistent")
-                            revision = self.price_revisions.get(quote_obj.get("price_revision"))
-                            if revision is None:
-                                raise _routing_error(RouterErrorCode.UNSUPPORTED_PRICING)
-                            retained_inputs = quote_obj.get("pricing_inputs")
-                            supplied_inputs = _pricing_inputs_dict(evidence.pricing_inputs)
-                            if (
-                                retained_inputs != supplied_inputs
-                                or stored_model != evidence.served_model
-                            ):
-                                raise ValueError(
-                                    "stream estimate pricing inputs differ from reservation"
-                                )
-                            from lionagi.service.accounts._pricing import stream_usage_estimate
-
-                            recomputed = stream_usage_estimate(
-                                revision,
-                                evidence.pricing_inputs,
-                                evidence.served_model,
-                                evidence.counts,
-                                evidence.request_id,
-                                evidence.original_reason,
-                            )
-                            if recomputed is None:
-                                raise ValueError("observed stream usage is not priceable")
-                            if recomputed != evidence:
-                                raise ValueError("stream estimate differs from recomputed amount")
-                            if (
-                                evidence.quote_origin != "reservation"
-                                or evidence.cost_nusd > INT64_MAX
-                            ):
-                                raise ValueError("invalid runtime stream estimate provenance")
                             usage_data = {
                                 name: getattr(evidence.counts, name)
                                 for name in (

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 import pytest
 
@@ -188,12 +188,11 @@ async def test_late_complete_usage_is_recorded_as_a_correction_without_a_block(t
     assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == 3
 
 
-@pytest.mark.anyio
-async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(tmp_path):
+async def closed_priced_hold(tmp_path):
     import json
 
     from lionagi.service.accounts._pricing import quote_ceiling
-    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
+    from tests.service.accounts.test_ledger_settlement_evidence import priced_revision
 
     revision = priced_revision()
     priced = quote_ceiling(
@@ -213,6 +212,14 @@ async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(
     held = await ledger.reserve(scope(), uuid4(), priced, (big,))
     clock.now = T0 + LEASE + timedelta(minutes=5)
     await ledger.reserve(scope(), uuid4(), quote(1), (big,))
+    return ledger, held, priced, revision
+
+
+@pytest.mark.anyio
+async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(tmp_path):
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate
+
+    ledger, held, priced, revision = await closed_priced_hold(tmp_path)
     late = estimate(priced, revision, "stream_error", output_tokens=40)
 
     assert await ledger.settle(held.attempt_id, late) == "settled"
@@ -221,6 +228,132 @@ async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(
     [(kind, attempt_id, delta, source_ref, _)] = corrections(ledger.path)
     assert (kind, attempt_id, delta) == ("correction", str(held.attempt_id), late.cost_nusd)
     assert "origin runtime" in source_ref
+    assert block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+async def test_a_mismatched_late_stream_estimate_is_refused_like_one_on_an_open_attempt(tmp_path):
+    import dataclasses
+
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate
+
+    ledger, held, priced, revision = await closed_priced_hold(tmp_path)
+    late = dataclasses.replace(
+        estimate(priced, revision, "stream_error", output_tokens=40), served_model="model-b"
+    )
+
+    with pytest.raises(ValueError, match="pricing inputs differ from reservation"):
+        await ledger.settle(held.attempt_id, late)
+
+    assert corrections(ledger.path) == [] and block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+async def test_late_complete_usage_above_the_ceiling_is_a_correction_and_blocks_nothing(tmp_path):
+    ledger, held = await closed_hold(tmp_path, ceiling=4)
+
+    result = await ledger.settle(
+        held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 9, "late")
+    )
+
+    assert result == "settled"
+    [(_, _, delta, _, _)] = corrections(ledger.path)
+    assert delta == 9
+    assert block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["not_sent", "rejection_zero"])
+async def test_late_typed_zero_evidence_agrees_with_the_closure_and_changes_nothing(tmp_path, kind):
+    from lionagi.service.accounts._types import ProvenNotSent, RejectionZero
+
+    ledger, held = await closed_hold(tmp_path)
+    evidence = (
+        ProvenNotSent()
+        if kind == "not_sent"
+        else RejectionZero(400, "invalid_request_error", None, "request_rejected")
+    )
+
+    assert await ledger.settle(held.attempt_id, evidence) == "already_settled"
+
+    assert corrections(ledger.path) == [] and block_reason(ledger.path) is None
+    assert attempt_row(ledger.path, held.attempt_id)[1] == 0
+
+
+@pytest.mark.anyio
+async def test_a_larger_late_arrival_after_an_estimate_records_the_larger_cost(tmp_path):
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate
+
+    ledger, held, priced, revision = await closed_priced_hold(tmp_path)
+    first = estimate(priced, revision, "stream_error", output_tokens=40)
+    bill = first.cost_nusd + 4
+
+    assert await ledger.settle(held.attempt_id, first) == "settled"
+    assert (
+        await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, bill, "late"))
+        == "settled"
+    )
+
+    assert sorted(row[2] for row in corrections(ledger.path)) == sorted([first.cost_nusd, 4])
+    assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == bill
+    assert block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+async def test_a_late_cost_that_would_overflow_the_account_total_is_refused(tmp_path):
+    from lionagi.service.accounts._types import INT64_MAX
+
+    ledger, held = await closed_hold(
+        tmp_path
+    )  # a second hold of 1 is open, so INT64_MAX more cannot fit
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.settle(
+            held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, INT64_MAX, "late")
+        )
+
+    assert caught.value.code == RouterErrorCode.BUDGET_EXHAUSTED
+    assert corrections(ledger.path) == []
+    assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == 0  # still readable
+
+
+@pytest.mark.anyio
+async def test_the_first_late_correction_keeps_the_id_a_single_correction_was_written_under(
+    tmp_path,
+):
+    ledger, held = await closed_hold(tmp_path)
+    evidence = CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late")
+    namespace = UUID("5f0d3c0e-8a54-5c52-9d63-3b0b6c3f2a11")
+
+    assert await ledger.settle(held.attempt_id, evidence) == "settled"
+
+    with sqlite3.connect(ledger.path) as connection:
+        ids = {
+            row[0]
+            for row in connection.execute("SELECT id FROM adjustment WHERE kind = 'correction'")
+        }
+    assert ids == {str(uuid5(namespace, f"lease-late:{held.attempt_id}"))}
+    assert await ledger.settle(held.attempt_id, evidence) == "already_settled"
+
+
+@pytest.mark.anyio
+async def test_a_smaller_late_arrival_after_the_bill_writes_nothing_and_logs_the_drop(
+    tmp_path, caplog
+):
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate
+
+    ledger, held, priced, revision = await closed_priced_hold(tmp_path)
+    small = estimate(priced, revision, "stream_error", output_tokens=40)
+    bill = small.cost_nusd + 4
+    await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, bill, "late"))
+
+    with caplog.at_level("INFO", logger="lionagi.service.accounts._ledger"):
+        result = await ledger.settle(held.attempt_id, small)
+
+    assert result == "already_settled"
+    assert [row[2] for row in corrections(ledger.path)] == [bill]
+    drops = [r.getMessage() for r in caplog.records if str(held.attempt_id) in r.getMessage()]
+    assert len(drops) == 1 and str(small.cost_nusd) in drops[0] and str(bill) in drops[0]
     assert block_reason(ledger.path) is None
 
 
