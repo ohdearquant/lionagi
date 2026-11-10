@@ -23,6 +23,7 @@ from lionhub.orchestration.schedule.parsing import (
     _is_schedule_request_timeout,
     _normalize_schedule_reason,
     _schedule_request_timeout_message,
+    _validate_identifier,
     add_schedule_subparser,
     build_create_body,
     build_quick_create_parser,
@@ -794,7 +795,6 @@ def run_schedule_quick_create(kind: str, argv: list[str]) -> int:
     # path; any failure here must never block schedule creation.
     project: str | None = None
     with contextlib.suppress(Exception):
-        from lionagi.studio.scheduler.subprocess import _validate_identifier
         from lionhub.orchestration.project import detect_project
 
         detected, _source = detect_project(cwd)

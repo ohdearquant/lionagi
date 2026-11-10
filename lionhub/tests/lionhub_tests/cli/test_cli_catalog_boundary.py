@@ -278,7 +278,12 @@ def test_cli_move_preserves_behavior():
     assert "--port PORT" in studio.format_help()
     assert "--host HOST" in studio.format_help()
     assert "--frontend-port FRONTEND_PORT" in studio.format_help()
-    assert "--web | --docker | --no-frontend | --dev" in studio.format_help()
+    # The group's options and their order, read from the parser: how argparse wraps the usage
+    # line differs between Python versions and terminal widths.
+    assert [
+        [action.option_strings for action in group._group_actions]
+        for group in studio._mutually_exclusive_groups
+    ] == [[["--web"], ["--docker"], ["--no-frontend"], ["--dev"]]]
     assert "--json" in schedule_choices["validate"].format_help()
     assert "--dry-run" in schedule_choices["apply"].format_help()
     assert "--output" in schedule_choices["export"].format_help()

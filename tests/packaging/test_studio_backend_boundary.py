@@ -95,9 +95,9 @@ def test_fresh_wheel_schedule_validate_and_export_without_backend() -> None:
         assert code == 0, (argv, code, out.getvalue(), err.getvalue())
         return out.getvalue(), err.getvalue()
     human_validate, _ = run(["schedule", "validate", manifest])
-    assert "VALID" in human_validate
+    assert "VALID" in human_validate, human_validate
     machine_validate, _ = run(["--machine", "schedule", "validate", manifest])
-    assert json.loads(machine_validate)["data"]["valid"] is True
+    assert json.loads(machine_validate)["data"]["valid"] is True, machine_validate
     expected_export_yaml = """apiVersion: lionagi.io/v1alpha1
     kind: ScheduleSet
     metadata:
@@ -106,9 +106,13 @@ def test_fresh_wheel_schedule_validate_and_export_without_backend() -> None:
       scope: null
     schedules: {}
     """
-    human_export, human_export_report = run(["schedule", "export"])
-    assert human_export == expected_export_yaml
-    assert human_export_report == "0 ready, 0 blocked\n"
+    # The report goes to a file: stderr also carries the store's one-time warning on a
+    # runtime linked to an SQLite without the WAL-reset fix.
+    report_file = Path.cwd() / "export-report.txt"
+    human_export, _ = run(["schedule", "export", "--report", str(report_file)])
+    assert human_export == expected_export_yaml, repr(human_export)
+    human_export_report = report_file.read_text()
+    assert human_export_report == "0 ready, 0 blocked\n", repr(human_export_report)
     machine_export, _ = run(["--machine", "schedule", "export"])
     assert json.loads(machine_export) == {
         "ok": True,
@@ -120,7 +124,7 @@ def test_fresh_wheel_schedule_validate_and_export_without_backend() -> None:
             "ready_count": 0,
         },
         "error": None,
-    }
+    }, machine_export
     assert refused == [], refused
     try:
         import apps.studio
@@ -146,6 +150,6 @@ def test_fresh_wheel_schedule_validate_and_export_without_backend() -> None:
             check=False,
         )
         assert result.returncode == 0, result.stderr
-        assert "PASS: human and machine validate/export succeed" in result.stdout
+        assert "PASS: human and machine validate/export succeed" in result.stdout, result.stdout
     finally:
         shutil.rmtree(tmp_path, ignore_errors=True)
