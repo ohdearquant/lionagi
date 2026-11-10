@@ -1416,8 +1416,9 @@ class CredentialLedger:
         - complete usage or a stream estimate is real spend and is recorded as one correction
           adjustment at its cost; a stream estimate first passes the checks the open-row path
           applies, so a mismatched one raises ValueError and writes nothing;
-        - the first correction stands: a later arrival, at the same cost or another, changes
-          nothing.
+        - the recorded cost is the largest cost seen across late arrivals: an arrival above it
+          writes a further correction for the difference, one at or below it writes nothing and
+          one below it is logged.
         """
         provider, account, month_utc = row
         closure = connection.execute(
@@ -1430,24 +1431,41 @@ class CredentialLedger:
             self._validate_stream_estimate(evidence, stored_envelope, stored_revision, stored_model)
         elif not isinstance(evidence, CompleteUsage):
             return "already_settled"
-        correction_id = _lease_adjustment_id("lease-late", attempt_id)
-        if self._adjustment_row(connection, correction_id) is not None:
+        # The recorded cost is the sum of this attempt's late corrections, numbered from 1.
+        recorded, count = 0, 0
+        while True:
+            earlier = self._adjustment_row(
+                connection, _lease_adjustment_id(f"lease-late-{count + 1}", attempt_id)
+            )
+            if earlier is None:
+                break
+            recorded += earlier[5]
+            count += 1
+        if cost_nusd <= recorded:
+            if cost_nusd < recorded:
+                _LOGGER.info(
+                    "late evidence below the cost already recorded for a lease-closed attempt "
+                    "is dropped: attempt %s, arrived %s nusd, recorded %s nusd",
+                    attempt_id,
+                    cost_nusd,
+                    recorded,
+                )
             return "already_settled"
         source_ref = _validate_source(
             f"late runtime evidence ({outcome}), origin runtime, for attempt {attempt_id} closed by "
-            f"lease expiry (adjustment {closure[0]}); cost {cost_nusd} nusd; request "
-            f"{request_id or 'none'}"
+            f"lease expiry (adjustment {closure[0]}); cost {cost_nusd} nusd, recorded before "
+            f"{recorded} nusd; request {request_id or 'none'}"
         )
         _, recorded_at = _month_and_iso(self._clock)
         self._insert_adjustment(
             connection,
-            correction_id,
+            _lease_adjustment_id(f"lease-late-{count + 1}", attempt_id),
             "correction",
             attempt_id,
             provider,
             account,
             month_utc,
-            cost_nusd,
+            cost_nusd - recorded,
             source_ref,
             recorded_at,
         )

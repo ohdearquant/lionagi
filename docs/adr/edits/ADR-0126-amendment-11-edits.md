@@ -53,7 +53,7 @@ New:
 > ## Amendment 11 (2026-11-09)
 Reason: the amendment is accepted.
 
-### A11.7 — Amendment 11, Decision 2
+### A11.7 — Amendment 11, Decision 2 (written in the same pull request, before acceptance)
 
 Old:
 > Age is `now - created_at` read with the ledger's clock; a row exactly at the lease is still live.
@@ -76,5 +76,13 @@ Old:
 New:
 > Age or crash alone authorizes no release until the lease of Amendment 11 has passed.
 Reason: same as A11.8.
+
+### A11.10 — heading of entry A11.7
+
+Old:
+> ### A11.7 — Amendment 11, Decision 2 (written in the same pull request, before acceptance)
+New (not applied, kept for the record):
+> ### A11.7 — Amendment 11, Decision 2
+Reason: the parenthesis was proposed for removal as process narration; the entry keeps its original heading and this entry records the proposal.
 
 ````

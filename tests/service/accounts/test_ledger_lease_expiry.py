@@ -281,17 +281,42 @@ async def test_late_typed_zero_evidence_agrees_with_the_closure_and_changes_noth
 
 
 @pytest.mark.anyio
-async def test_a_second_late_arrival_at_another_cost_changes_nothing_and_blocks_nothing(tmp_path):
-    ledger, held = await closed_hold(tmp_path)
+async def test_a_larger_late_arrival_after_an_estimate_records_the_larger_cost(tmp_path):
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate
 
-    await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late"))
-    second = await ledger.settle(
-        held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 4, "late2")
+    ledger, held, priced, revision = await closed_priced_hold(tmp_path)
+    first = estimate(priced, revision, "stream_error", output_tokens=40)
+    bill = first.cost_nusd + 4
+
+    assert await ledger.settle(held.attempt_id, first) == "settled"
+    assert (
+        await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, bill, "late"))
+        == "settled"
     )
 
-    assert second == "already_settled"
-    [(_, _, delta, _, _)] = corrections(ledger.path)
-    assert delta == 3
+    assert [row[2] for row in corrections(ledger.path)] == [first.cost_nusd, 4]
+    assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == bill
+    assert block_reason(ledger.path) is None
+
+
+@pytest.mark.anyio
+async def test_a_smaller_late_arrival_after_the_bill_writes_nothing_and_logs_the_drop(
+    tmp_path, caplog
+):
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate
+
+    ledger, held, priced, revision = await closed_priced_hold(tmp_path)
+    small = estimate(priced, revision, "stream_error", output_tokens=40)
+    bill = small.cost_nusd + 4
+    await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, bill, "late"))
+
+    with caplog.at_level("INFO", logger="lionagi.service.accounts._ledger"):
+        result = await ledger.settle(held.attempt_id, small)
+
+    assert result == "already_settled"
+    assert [row[2] for row in corrections(ledger.path)] == [bill]
+    drops = [r.getMessage() for r in caplog.records if str(held.attempt_id) in r.getMessage()]
+    assert len(drops) == 1 and str(small.cost_nusd) in drops[0] and str(bill) in drops[0]
     assert block_reason(ledger.path) is None
 
 
