@@ -1368,7 +1368,11 @@ class CredentialLedger:
         correction_id = uuid5(_LEASE_NAMESPACE, f"lease-late:{attempt_id}")
         existing = self._adjustment_row(connection, correction_id)
         if existing is not None:
-            return "already_settled" if existing[5] == cost_nusd and existing[0] == "correction" else None
+            return (
+                "already_settled"
+                if existing[5] == cost_nusd and existing[0] == "correction"
+                else None
+            )
         source_ref = _validate_source(
             f"late runtime evidence ({outcome}), origin runtime, for attempt {attempt_id} closed by "
             f"lease expiry (adjustment {closure[0]}); cost {cost_nusd} nusd; request "
@@ -1376,8 +1380,16 @@ class CredentialLedger:
         )
         _, recorded_at = _month_and_iso(self._clock)
         self._insert_adjustment(
-            connection, correction_id, "correction", attempt_id, provider, account, month_utc,
-            cost_nusd, source_ref, recorded_at,
+            connection,
+            correction_id,
+            "correction",
+            attempt_id,
+            provider,
+            account,
+            month_utc,
+            cost_nusd,
+            source_ref,
+            recorded_at,
         )
         if isinstance(evidence, CompleteUsage) and cost_nusd > ceiling:
             connection.execute(

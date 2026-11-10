@@ -80,7 +80,12 @@ async def test_an_expired_hold_is_closed_at_zero_and_frees_the_budget(tmp_path):
     status = (await ledger.status("anthropic", "2026-01"))[0]
     assert (status.settled_nusd, status.open_ceiling_nusd, status.open_attempts) == (0, 8, 1)
     [(kind, attempt_id, delta, source_ref, month)] = adjustments(ledger.path)
-    assert (kind, attempt_id, delta, month) == ("reconciliation", str(held.attempt_id), 0, "2026-01")
+    assert (kind, attempt_id, delta, month) == (
+        "reconciliation",
+        str(held.attempt_id),
+        0,
+        "2026-01",
+    )
     assert f"attempt {held.attempt_id}" in source_ref
     assert "open 7201s, lease 7200s" in source_ref
     assert "later settled attempt on this scope: no" in source_ref
@@ -121,7 +126,10 @@ async def test_the_closure_names_a_later_settled_attempt_on_the_same_scope(tmp_p
     held = await ledger.reserve(shared, uuid4(), quote(2), (spec(),))
     clock.now = T0 + timedelta(minutes=10)
     retry = await ledger.reserve(shared, uuid4(), quote(2), (spec(),))
-    assert await ledger.settle(retry.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 1, "r1")) == "settled"
+    assert (
+        await ledger.settle(retry.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 1, "r1"))
+        == "settled"
+    )
 
     clock.now = T0 + LEASE + timedelta(minutes=1)
     await ledger.reserve(scope(), uuid4(), quote(1), (spec(),))
@@ -145,7 +153,9 @@ async def test_a_hold_is_closed_once(tmp_path):
 
 def block_reason(path):
     with sqlite3.connect(path) as connection:
-        return connection.execute("SELECT block_reason FROM account WHERE name = 'alpha'").fetchone()[0]
+        return connection.execute(
+            "SELECT block_reason FROM account WHERE name = 'alpha'"
+        ).fetchone()[0]
 
 
 async def closed_hold(tmp_path, ceiling: int = 4):
@@ -180,15 +190,22 @@ async def test_late_complete_usage_is_recorded_as_a_correction_without_a_block(t
 
 @pytest.mark.anyio
 async def test_late_stream_estimate_is_recorded_as_a_correction_without_a_block(tmp_path):
-    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
-    from lionagi.service.accounts._pricing import quote_ceiling
     import json
+
+    from lionagi.service.accounts._pricing import quote_ceiling
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
 
     revision = priced_revision()
     priced = quote_ceiling(
         revision,
-        json.dumps({"model": "model-a", "messages": [{"role": "user", "content": "x"}],
-                    "max_tokens": 1024, "service_tier": "standard_only"}).encode(),
+        json.dumps(
+            {
+                "model": "model-a",
+                "messages": [{"role": "user", "content": "x"}],
+                "max_tokens": 1024,
+                "service_tier": "standard_only",
+            }
+        ).encode(),
     )
     clock = Clock(T0)
     ledger = make_ledger(tmp_path, clock, price_revisions={revision.id: revision})
