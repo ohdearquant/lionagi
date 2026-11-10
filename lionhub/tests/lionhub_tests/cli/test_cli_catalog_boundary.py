@@ -300,9 +300,15 @@ def test_cli_move_preserves_behavior():
         3000,
     )
     assert schedule_choices["validate"].parse_args(["file.yaml"]).as_json is False
-    assert (
-        start.format_help()
-        == """usage: li studio start [-h] [--port PORT] [--host HOST]
+
+    def usage_words_and_body(text):
+        # argparse wraps the usage line differently across Python versions, so the usage
+        # is compared word by word and the rest of the help exactly.
+        usage, _, body = text.partition("\n\n")
+        return " ".join(usage.split()), body
+
+    assert usage_words_and_body(start.format_help()) == usage_words_and_body(
+        """usage: li studio start [-h] [--port PORT] [--host HOST]
                        [--frontend-port FRONTEND_PORT] [--no-open]
                        [--web | --docker | --no-frontend | --dev]
 
@@ -327,9 +333,8 @@ options:
                         build step)
 """
     )
-    assert (
-        schedule.format_help()
-        == """usage: li schedule [-h]
+    assert usage_words_and_body(schedule.format_help()) == usage_words_and_body(
+        """usage: li schedule [-h]
                    {list,get,limits,create,validate,apply,export,enable,disable,delete,trigger,runs,run,status}
                    ...
 
