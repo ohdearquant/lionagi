@@ -1083,7 +1083,7 @@ The diagnostic JSON file has exactly `schema_version` (1), `attempt_id` (validat
 
 ### What does not change
 
-Ambiguous non-streamed failures, other 5xx and attempts without priceable observed stream usage retain their ceilings. There is no age-based expiry, retry-success release, cross-account failover or provider-usage-report integration. Sending long non-streamed calls through streaming is a later amendment. The unconfigured path, account affinity, admission ceiling, price revision selection, not-sent proof and ordinary success results are unchanged. Provider text remains absent from the ledger and public errors. This amendment creates no new blocking, routing or retry action based on rejection class.
+Ambiguous non-streamed failures, other 5xx and attempts without priceable observed stream usage retain their ceilings. Amendment 11 adds an age-based expiry; there is still no retry-success release, cross-account failover or provider-usage-report integration. Sending long non-streamed calls through streaming is a later amendment. The unconfigured path, account affinity, admission ceiling, price revision selection, not-sent proof and ordinary success results are unchanged. Provider text remains absent from the ledger and public errors. This amendment creates no new blocking, routing or retry action based on rejection class.
 
 ### Consequences and verification
 
@@ -1108,6 +1108,26 @@ Attempts that end without a priced response stay open at their ceiling, and the 
 ### Consequences and verification
 
 An operator can split open holds by the status that ended them, and a 200 that ended early is distinguishable from a rejection that never executed. The column does not prove what the provider billed, and older rows remain unexplained. Older processes ignore the column and write null, which reads as "no status recorded", never as "no response". Verify fresh creation and the locked upgrade of a version 1 ledger without the column, the null default on every pre-existing row, the status write for complete usage, a non-success response, a stream that ends after a 200 and an attempt with no response, first-value retention on a repeated write, and refusal of out-of-range and boolean values.
+
+## Amendment 11 (proposed, 2026-11-09) — an open reservation past its lease is closed at zero by the next admission
+
+An attempt that never settles keeps its ceiling in the account's open total, and nothing ends it: Amendment 9 states that there is no age-based expiry, and Amendment 10 only records why a hold ended. On one ledger, 114 reservations from one credit period stayed open for seven to ten days and held most of the budget the four routable accounts had left, so every large reservation was refused (issue #4257 is the same pattern, 115 open holds).
+
+### Decision
+
+1. **A lease.** An open attempt whose age exceeds the ledger's `open_lease` is closed by the next admission for its provider. The default is two hours. One reservation covers one provider call, not a run: over 29,824 completed attempts on one ledger the longest took 575 seconds and 99.9% took under 223 seconds, so two hours is more than twelve times the longest observed call. A caller may pass another positive duration.
+
+2. **Same transaction as the admission.** The closure runs inside the admission transaction, before the account's spend is summed, for the accounts named in that admission and only for the current credit period. Rows of an earlier period are left as they are. Age is `now - created_at` read with the ledger's clock; a row exactly at the lease is still live.
+
+3. **Closed through reconciliation.** Each closed attempt becomes `settled` at zero cost with outcome `reconciled`, and one `reconciliation` adjustment of delta zero is written in the same transaction, with an id derived from the attempt id so a repeat writes nothing. Its source reference names the attempt, its age, the lease, the attempt's scope, whether the ledger holds a later settled attempt on that scope, and that the ledger saw no provider usage for it. The ledger reads no run record, so the closure says nothing about whether the provider billed.
+
+4. **A late settlement conflicts.** Evidence for a closed attempt that arrives afterwards meets a settled row, so it follows the existing rule for a reconciled row: `settlement_conflict`, with the account blocked until an operator clears it. Given Decision 1 this is an event two hours past any observed call, and the block is the existing signal that the ledger and the provider disagree.
+
+5. **Nothing else reads it.** Account choice, warm-prefix state, blocking, retry and the schema are unchanged. No migration is needed and `user_version` stays 1.
+
+### Consequences and verification
+
+A hold that leaked stops consuming budget after two hours without an operator act. A zero closure can understate spend by the cost of a call that billed but never reported: the expected size is the average settled cost per call, a few cents on the ledger measured, per closed hold. Tests pin the closure, the exact boundary, the budget a stale hold was refusing, the earlier-period exemption, once-only closure, the named later-settled attempt, and the conflict on a late settlement; removing the call or moving the boundary fails them.
 
 ## Requirements
 

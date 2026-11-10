@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from functools import cmp_to_key
 from pathlib import Path
 from typing import Generic, TypeVar, cast
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from lionagi.ln import now_utc
 from lionagi.ln.concurrency import move_on_after, run_sync
@@ -62,6 +62,11 @@ _ADMISSION_BOUND_S = 5.0
 # Expired rows are deleted by text order with a margin wider than an offset moves the text (a day),
 # so an isoformat() row goes only after it expired; a row lost early only loses a routing hint.
 _WARM_PURGE_MARGIN = timedelta(hours=25)
+# An open reservation older than this with no settlement is closed at zero cost by the next admission
+# of its provider (ADR-0126 Amendment 11). One reservation covers one provider call, and the longest
+# call a ledger has settled took under ten minutes, so two hours is far past any live call.
+_OPEN_LEASE = timedelta(hours=2)
+_LEASE_NAMESPACE = UUID("5f0d3c0e-8a54-5c52-9d63-3b0b6c3f2a11")
 
 
 class _TimedCall(Generic[_T]):
@@ -679,8 +684,12 @@ class CredentialLedger:
         busy_timeout_s: float = 5.0,
         clock: Callable[[], datetime] | None = None,
         price_revisions: Mapping[str, object] | None = None,
+        open_lease: timedelta = _OPEN_LEASE,
     ) -> None:
+        if not isinstance(open_lease, timedelta) or open_lease <= timedelta(0):
+            raise ValueError("open lease must be a positive duration")
         self.path = Path(path)
+        self.open_lease = open_lease
         self.busy_timeout_s = busy_timeout_s
         self._clock = clock or (lambda: now_utc())
         from types import MappingProxyType
@@ -1010,6 +1019,75 @@ class CredentialLedger:
             return -1 if left_spec.name < right_spec.name else 1
         return 0
 
+    def _void_expired_leases(
+        self,
+        connection: sqlite3.Connection,
+        provider: str,
+        names: Sequence[str],
+        month_utc: str,
+        now_iso: str,
+    ) -> None:
+        """Close, at zero cost, each open reservation of this month that outlived the lease.
+
+        Runs inside the admission transaction, so a closed hold stops counting against the
+        account in the same read that decides whether a new reservation fits. Each closure is
+        a reconciliation adjustment whose source reference names the attempt, its age, its
+        scope and whether the ledger holds a later settled attempt on that scope. Only the
+        current month is read: an earlier month's open rows are left as they are.
+        """
+        now = _aware_instant(now_iso)
+        if now is None:
+            return
+        cutoff = now - self.open_lease
+        for name in names:
+            rows = connection.execute(
+                """
+                SELECT id, scope_kind, scope_id, created_at FROM attempt
+                WHERE provider = ? AND account = ? AND month_utc = ? AND state = 'open'
+                """,
+                (provider, name, month_utc),
+            ).fetchall()
+            for attempt_id, scope_kind, scope_id, opened_at in rows:
+                opened = _aware_instant(opened_at)
+                if opened is None or opened >= cutoff:
+                    continue
+                later = connection.execute(
+                    """
+                    SELECT 1 FROM attempt
+                    WHERE provider = ? AND scope_kind = ? AND scope_id = ?
+                      AND state = 'settled' AND created_at > ? LIMIT 1
+                    """,
+                    (provider, scope_kind, scope_id, opened_at),
+                ).fetchone()
+                source_ref = (
+                    f"lease expiry: open {int((now - opened).total_seconds())}s, lease "
+                    f"{int(self.open_lease.total_seconds())}s; attempt {attempt_id}; "
+                    f"scope {scope_kind}:{scope_id}; "
+                    f"later settled attempt on this scope: {'yes' if later else 'no'}; "
+                    "no provider usage seen by the ledger"
+                )
+                changed = connection.execute(
+                    """
+                    UPDATE attempt SET state = 'settled', cost_nusd = 0, usage_json = NULL,
+                        request_id = NULL, outcome = 'reconciled', settled_at = ?
+                    WHERE id = ? AND state = 'open'
+                    """,
+                    (now_iso, attempt_id),
+                ).rowcount
+                if changed:
+                    self._insert_adjustment(
+                        connection,
+                        uuid5(_LEASE_NAMESPACE, f"lease-expiry:{attempt_id}"),
+                        "reconciliation",
+                        UUID(attempt_id),
+                        provider,
+                        name,
+                        month_utc,
+                        0,
+                        _validate_source(source_ref),
+                        now_iso,
+                    )
+
     def _reserve_sync(
         self,
         scope: Scope,
@@ -1123,6 +1201,7 @@ class CredentialLedger:
                         (provider, spec.name, spec.key_env),
                     )
 
+                self._void_expired_leases(connection, provider, list(specs), month_utc, created_at)
                 binding = connection.execute(
                     """
                     SELECT account FROM binding
