@@ -163,7 +163,11 @@ def _import_hook(
     if ":" not in import_path:
         return None
     module_path, _, func_name = import_path.rpartition(":")
-    if module_path not in trusted_hook_modules:
+    from lionagi import _moved
+
+    canonical_module = _moved.resolve(module_path) or module_path
+    trusted_modules = {_moved.resolve(name) or name for name in trusted_hook_modules}
+    if canonical_module not in trusted_modules:
         raise PermissionError(
             f"Untrusted hook module {module_path!r}. Add it to trusted_hook_modules to allow."
         )
