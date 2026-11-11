@@ -15,7 +15,7 @@ import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import StateDB
 from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
 from lionagi.state.lifecycle.deliveries import is_acknowledged
-from lionagi.studio.services import terminal_reconciliation as terminal
+from lionhub.orchestration.scheduler import terminal_reconciliation as terminal
 
 
 async def _seed(db: StateDB, count: int) -> list[str]:

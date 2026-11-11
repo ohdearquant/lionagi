@@ -30,8 +30,8 @@ from fastapi.testclient import TestClient
 from lionagi.studio.app import app
 
 _SCHED = "lionagi.studio.scheduler.engine.scheduler"
-_RECON = "lionagi.studio.services.lifecycle.run_startup_reconciliation"
-_CKPT = "lionagi.studio.services.db_maintenance.checkpoint_state_db"
+_RECON = "lionhub.orchestration.scheduler.lifecycle.run_startup_reconciliation"
+_CKPT = "lionhub.orchestration.scheduler.db_maintenance.checkpoint_state_db"
 
 
 class _FakeScheduler:

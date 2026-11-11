@@ -593,8 +593,8 @@ def test_the_serving_daemon_signs_with_the_key_its_reconnect_socket_hands_out(
 
     import lionagi.studio.app as app_mod
     import lionagi.studio.services.launches as launches_mod
-    import lionagi.studio.services.lifecycle as lifecycle_mod
     import lionagi.studio.services.operator as operator_mod
+    import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
     import lionhub.serve.diagnostics as code_identity
     from lionagi.studio.scheduler.engine import scheduler
 

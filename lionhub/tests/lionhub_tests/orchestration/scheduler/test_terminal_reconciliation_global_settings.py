@@ -17,7 +17,7 @@ from lionagi.state.db import StateDB
 from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
 from lionagi.state.lifecycle.deliveries import is_acknowledged
 from lionagi.state.lifecycle.reconciler import TerminalReconciler
-from lionagi.studio.services import terminal_reconciliation as terminal
+from lionhub.orchestration.scheduler import terminal_reconciliation as terminal
 
 
 @pytest.mark.parametrize("global_enabled", [False, True], ids=["project-only", "global-control"])

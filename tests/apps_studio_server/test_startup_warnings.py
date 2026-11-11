@@ -84,9 +84,9 @@ def _neutralize_heavy_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
     The scheduler, reconciliation, and checkpoint paths are covered elsewhere.
     """
     import lionagi.studio.scheduler.engine as engine_mod
-    import lionagi.studio.services.db_maintenance as db_maintenance_mod
     import lionagi.studio.services.launches as launches_mod
-    import lionagi.studio.services.lifecycle as lifecycle_mod
+    import lionhub.orchestration.scheduler.db_maintenance as db_maintenance_mod
+    import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
 
     monkeypatch.setattr(engine_mod.scheduler, "start", _anoop)
     monkeypatch.setattr(engine_mod.scheduler, "stop", _anoop)

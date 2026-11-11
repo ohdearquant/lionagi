@@ -113,7 +113,7 @@ class TransitionBody(BaseModel):
 
 
 def db_health() -> dict[str, int | bool]:
-    from .db_maintenance import get_db_size_alert
+    from lionhub.orchestration.scheduler.db_maintenance import get_db_size_alert
 
     db_path = Path(store_path())
     size_bytes = db_path.stat().st_size if db_path.exists() else 0
@@ -761,7 +761,7 @@ async def prune_sessions(session_ids: list[str]) -> int:
     if not unique_ids or not store_exists():
         return 0
 
-    from lionagi.studio.services.db_maintenance import prune_terminal_sessions_by_id
+    from lionhub.orchestration.scheduler.db_maintenance import prune_terminal_sessions_by_id
 
     pruned = await prune_terminal_sessions_by_id(unique_ids)
     from lionagi.state.db import StateDB
@@ -779,7 +779,7 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
     """Transition phantom sessions to 'failed' via the sanctioned status path;
     rows are preserved so reason history and artifacts stay inspectable."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.lifecycle import reap_phantom_sessions_detailed
+    from lionhub.orchestration.scheduler.lifecycle import reap_phantom_sessions_detailed
 
     count, session_ids = await reap_phantom_sessions_detailed(
         stale_hours=stale_hours, actor="admin_prune"
@@ -895,7 +895,7 @@ async def admin_events_route(
 )
 async def prune_old_data_route(body: PruneOldDataBody) -> dict[str, int]:
     """Remove terminal sessions/runs older than keep_days (default from config)."""
-    from ..services.db_maintenance import prune_old_data as _prune
+    from lionhub.orchestration.scheduler.db_maintenance import prune_old_data as _prune
 
     return await _prune(keep_days=body.keep_days, actor="admin")
 
@@ -909,7 +909,7 @@ async def prune_old_data_route(body: PruneOldDataBody) -> dict[str, int]:
 async def run_maintenance_route(body: MaintenanceBody) -> dict[str, Any]:
     """Run a DB maintenance action (vacuum | checkpoint | prune). Returns 409,
     not 500, when SQLite can't acquire the write lock — a retryable signal."""
-    from ..services.db_maintenance import (
+    from lionhub.orchestration.scheduler.db_maintenance import (
         checkpoint_state_db,
         prune_old_data,
         vacuum_state_db,

@@ -17,7 +17,7 @@ import pytest
 import lionagi.state.db as state_db_mod
 import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import StateDB
-from lionagi.studio.services.retention_archive import (
+from lionhub.orchestration.scheduler.retention_archive import (
     ArchiveVerificationError,
     ArchiveWriteError,
     read_archive_chunk,
@@ -186,7 +186,7 @@ def test_write_archive_chunk_removes_published_file_on_post_rename_verify_failur
 ):
     """If verification of the *published* (post-rename) file fails, the
     final path must not be left behind under its final name."""
-    import lionagi.studio.services.retention_archive as ra_mod
+    import lionhub.orchestration.scheduler.retention_archive as ra_mod
 
     dest = tmp_path / "archive"
     dest.mkdir()
@@ -255,7 +255,7 @@ def test_write_archive_chunk_missing_destination_raises_and_leaves_no_tmp(tmp_pa
 
 def test_unset_archive_dir_preserves_no_archive_contract(tmp_path, monkeypatch):
     """No LIONAGI_STUDIO_PRUNE_ARCHIVE_DIR configured -> unchanged behaviour, no files written."""
-    from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.scheduler import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -281,7 +281,7 @@ def test_unset_archive_dir_preserves_no_archive_contract(tmp_path, monkeypatch):
 
 
 def test_archive_before_delete_writes_compressed_receipt_for_pruned_rows(tmp_path, monkeypatch):
-    from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.scheduler import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     archive_dir = tmp_path / "archive"
@@ -314,7 +314,7 @@ def test_archive_before_delete_writes_compressed_receipt_for_pruned_rows(tmp_pat
 
 def test_archive_write_failure_refuses_deletion_for_that_chunk(tmp_path, monkeypatch):
     """A failing archive write must not delete the rows it failed to archive."""
-    from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.scheduler import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     # A file, not a directory: every write_archive_chunk call inside prune
@@ -345,7 +345,7 @@ def test_archive_write_failure_refuses_deletion_for_that_chunk(tmp_path, monkeyp
 
 def test_chunk_selection_is_stable_and_bounded(tmp_path, monkeypatch):
     """PRUNE_CHUNK_ROWS=2 over 5 candidates -> chunks of [2, 2, 1], no id repeats."""
-    from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.scheduler import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -386,7 +386,7 @@ def test_candidate_selection_is_read_one_chunk_at_a_time(tmp_path, monkeypatch):
     largest. The result rows look identical either way, so this reads the SQL
     the pass issued rather than what it returned.
     """
-    from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.scheduler import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -430,7 +430,7 @@ def test_candidate_selection_is_read_one_chunk_at_a_time(tmp_path, monkeypatch):
 
 def test_interrupt_after_n_chunks_keeps_completed_chunks(tmp_path, monkeypatch):
     """An exception after N chunks commit must leave those N chunks' deletions in place."""
-    from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.scheduler import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -474,7 +474,7 @@ def test_interrupt_after_n_chunks_keeps_completed_chunks(tmp_path, monkeypatch):
 def test_rerun_after_interruption_prunes_only_remaining_and_keeps_prior_archives(
     tmp_path, monkeypatch
 ):
-    from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.scheduler import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     archive_dir = tmp_path / "archive"

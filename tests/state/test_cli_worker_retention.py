@@ -138,7 +138,7 @@ def _archive_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 async def _maintenance(kind: str, ids: list[str]) -> int:
-    from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.scheduler import db_maintenance as maint
 
     if kind == "explicit":
         return await maint.prune_terminal_sessions_by_id(ids)
@@ -150,7 +150,7 @@ async def _maintenance(kind: str, ids: list[str]) -> int:
 async def test_maintenance_preserves_unresolved_graph_and_archives_only_settled_parent(
     db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    from lionagi.studio.services.retention_archive import read_archive_chunk
+    from lionhub.orchestration.scheduler.retention_archive import read_archive_chunk
 
     archive = _archive_config(tmp_path, monkeypatch)
     async with StateDB(db_path) as db:
@@ -265,7 +265,7 @@ async def _insert_unresolved(conn: AsyncConnection, worker: dict[str, Any]) -> N
 async def test_maintenance_rechecks_workers_after_candidate_selection(
     db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.scheduler import db_maintenance as maint
 
     archive = _archive_config(tmp_path, monkeypatch)
     async with StateDB(db_path) as db:

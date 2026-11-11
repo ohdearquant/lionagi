@@ -47,8 +47,8 @@ def _patches(*, last_prune, interval=DAY, prune=None):
     prune = prune if prune is not None else AsyncMock(return_value={"sessions_pruned": 0})
     return (
         patch("lionhub.orchestration.scheduler.settings.RETENTION_INTERVAL_SECONDS", int(interval)),
-        patch("lionagi.studio.services.db_maintenance.get_last_prune_at", new=last),
-        patch("lionagi.studio.services.db_maintenance.prune_old_data", new=prune),
+        patch("lionhub.orchestration.scheduler.db_maintenance.get_last_prune_at", new=last),
+        patch("lionhub.orchestration.scheduler.db_maintenance.prune_old_data", new=prune),
         prune,
         last,
     )
@@ -161,7 +161,7 @@ async def test_a_failing_prune_is_not_retried_on_every_tick():
     with (
         p_interval,
         p_last,
-        patch("lionagi.studio.services.db_maintenance.prune_old_data", new=failing),
+        patch("lionhub.orchestration.scheduler.db_maintenance.prune_old_data", new=failing),
     ):
         engine._maybe_start_prune(now)
         await engine._retention_task
@@ -184,7 +184,7 @@ async def test_the_pass_never_vacuums():
         p_interval,
         p_last,
         p_prune,
-        patch("lionagi.studio.services.db_maintenance.vacuum_state_db", new=vacuum),
+        patch("lionhub.orchestration.scheduler.db_maintenance.vacuum_state_db", new=vacuum),
     ):
         engine._maybe_start_prune(time.time())
         await engine._retention_task
@@ -308,7 +308,7 @@ async def test_stopping_cancels_a_prune_still_in_flight():
 def test_every_status_the_reconciler_writes_as_final_is_prunable():
     """A status written as final but absent from the retention predicate accumulates forever."""
     from lionagi.studio.scheduler.engine import _SCHEDULE_RUN_STATUS_FROM_INVOCATION
-    from lionagi.studio.services.db_maintenance import _TERMINAL_RUN_STATUSES
+    from lionhub.orchestration.scheduler.db_maintenance import _TERMINAL_RUN_STATUSES
 
     # Derived from the writer, not restated: a new terminal status added to the
     # map reaches this assertion without anyone remembering to edit it.

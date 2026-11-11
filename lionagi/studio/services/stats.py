@@ -246,7 +246,10 @@ async def _pragmas(db: Any) -> dict[str, Any]:
 
 
 async def get_db_stats() -> dict[str, Any]:
-    from .db_maintenance import get_db_size_alert, get_last_checkpoint_at
+    from lionhub.orchestration.scheduler.db_maintenance import (
+        get_db_size_alert,
+        get_last_checkpoint_at,
+    )
 
     require_file_store()
     db_path = Path(store_path())
@@ -306,7 +309,7 @@ async def get_db_stats() -> dict[str, Any]:
 
 
 async def get_stats() -> dict[str, Any]:
-    from lionagi.studio.services.lifecycle import get_phantom_count
+    from lionhub.orchestration.scheduler.lifecycle import get_phantom_count
 
     # Refuse before composing a response from StateDB-backed values and the
     # SQLite-direct diagnostics below.  Otherwise a server-backed deployment

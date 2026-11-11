@@ -134,7 +134,7 @@ def test_reap_stale_shows_all_merged_reaped(tmp_path, monkeypatch):
 
     show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 1
@@ -161,7 +161,7 @@ def test_reap_stale_shows_abort_marker_reaped(tmp_path, monkeypatch):
 
     show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 1
@@ -185,7 +185,7 @@ def test_reap_stale_shows_skips_still_in_flight_on_disk(tmp_path, monkeypatch):
 
     show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 0
@@ -209,11 +209,11 @@ def test_reap_stale_shows_skips_live_child_session(tmp_path, monkeypatch):
     show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
     run_async(_seed_play_row(db_path, show_id, status="merged", session_id=session_id))
 
-    import lionagi.studio.services.lifecycle as lc_mod
+    import lionhub.orchestration.scheduler.lifecycle as lc_mod
 
     monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: True)
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 0
@@ -234,11 +234,11 @@ def test_reap_stale_shows_reaps_dead_child_session(tmp_path, monkeypatch):
     show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
     run_async(_seed_play_row(db_path, show_id, status="merged", session_id=session_id))
 
-    import lionagi.studio.services.lifecycle as lc_mod
+    import lionhub.orchestration.scheduler.lifecycle as lc_mod
 
     monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 1
@@ -261,7 +261,7 @@ def test_reap_stale_shows_skips_live_unlinked_play_pid(tmp_path, monkeypatch):
     show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
     run_async(_seed_play_row(db_path, show_id, play_id=play_id, session_id=None))
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 0
@@ -286,7 +286,7 @@ def test_reap_stale_shows_reaps_dead_unlinked_play_pid(tmp_path, monkeypatch):
     show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
     run_async(_seed_play_row(db_path, show_id, play_id=play_id, session_id=None))
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 1
@@ -308,7 +308,7 @@ def test_reap_stale_shows_skips_already_terminal(tmp_path, monkeypatch):
 
     show_id = run_async(_seed_show(db_path, show_dir, status="completed", updated_at=_STALE))
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 0
@@ -330,7 +330,7 @@ def test_reap_stale_shows_skips_fresh(tmp_path, monkeypatch):
 
     show_id = run_async(_seed_show(db_path, show_dir, updated_at=time.time()))
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 0
@@ -369,7 +369,7 @@ def test_reap_stale_shows_version_guard_skips_claimed_row(tmp_path, monkeypatch)
 
     monkeypatch.setattr(state_db_mod.StateDB, "update_status", _claim_then_update)
 
-    from lionagi.studio.services.lifecycle import reap_stale_shows
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_shows
 
     count = run_async(reap_stale_shows(stale_hours=6.0))
     assert count == 0
@@ -385,7 +385,7 @@ def test_run_startup_reconciliation_includes_stale_shows_key(tmp_path, monkeypat
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    from lionagi.studio.services.lifecycle import run_startup_reconciliation
+    from lionhub.orchestration.scheduler.lifecycle import run_startup_reconciliation
 
     results = run_async(run_startup_reconciliation())
     assert "stale_shows" in results
@@ -396,7 +396,7 @@ def test_run_periodic_reapers_includes_stale_shows_key(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    from lionagi.studio.services.lifecycle import run_periodic_reapers
+    from lionhub.orchestration.scheduler.lifecycle import run_periodic_reapers
 
     results = run_async(run_periodic_reapers())
     assert "stale_shows" in results

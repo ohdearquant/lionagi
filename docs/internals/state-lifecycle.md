@@ -56,7 +56,7 @@ single-transaction consistency, not a promise that all lifecycle callers are syn
 
 ## The reaper guard pattern
 
-Reapers throughout `lionagi/studio/services/lifecycle.py` guard a stale-row transition on
+Reapers throughout `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py` guard a stale-row transition on
 **both** `expected_statuses` and `expected_updated_at`. Dropping the `expected_updated_at`
 half is easy to miss: a change that drops it still passes every status-only test, because
 status membership alone cannot distinguish "still stale" from "just re-touched between the

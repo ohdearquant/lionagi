@@ -15,7 +15,7 @@ import pytest
 
 from lionagi.state.lifecycle import notify_settings, settings_delivery
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome
-from lionagi.studio.services import terminal_reconciliation as service
+from lionhub.orchestration.scheduler import terminal_reconciliation as service
 
 
 def _forbid(*_args, **_kwargs):

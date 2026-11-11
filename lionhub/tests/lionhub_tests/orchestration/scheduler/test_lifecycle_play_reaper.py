@@ -126,7 +126,7 @@ def test_reap_stale_plays_orphan_reaped(tmp_path, monkeypatch, status):
         _seed_play(db_path, show_id, status=status, session_id=None, updated_at=_STALE)
     )
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 1
@@ -152,7 +152,7 @@ def test_reap_stale_plays_never_reaps_gated(tmp_path, monkeypatch):
         _seed_play(db_path, show_id, status="gated", session_id=None, updated_at=_STALE)
     )
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 0
@@ -171,7 +171,7 @@ def test_reap_stale_plays_never_reaps_pending(tmp_path, monkeypatch):
         _seed_play(db_path, show_id, status="pending", session_id=None, updated_at=_STALE)
     )
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 0
@@ -190,7 +190,7 @@ def test_reap_stale_plays_skips_terminal(tmp_path, monkeypatch):
         _seed_play(db_path, show_id, status="merged", session_id=None, updated_at=_STALE)
     )
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 0
@@ -213,11 +213,11 @@ def test_reap_stale_plays_skips_live_child_session(tmp_path, monkeypatch):
         _seed_play(db_path, show_id, status="running", session_id=session_id, updated_at=_STALE)
     )
 
-    import lionagi.studio.services.lifecycle as lc_mod
+    import lionhub.orchestration.scheduler.lifecycle as lc_mod
 
     monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: True)
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 0
@@ -237,11 +237,11 @@ def test_reap_stale_plays_reaps_dead_child_session(tmp_path, monkeypatch):
         _seed_play(db_path, show_id, status="running", session_id=session_id, updated_at=_STALE)
     )
 
-    import lionagi.studio.services.lifecycle as lc_mod
+    import lionhub.orchestration.scheduler.lifecycle as lc_mod
 
     monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 1
@@ -263,7 +263,7 @@ def test_reap_stale_plays_skips_fresh(tmp_path, monkeypatch):
         _seed_play(db_path, show_id, status="running", session_id=None, updated_at=time.time())
     )
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 0
@@ -279,7 +279,7 @@ def test_run_startup_reconciliation_includes_stale_plays_key(tmp_path, monkeypat
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    from lionagi.studio.services.lifecycle import run_startup_reconciliation
+    from lionhub.orchestration.scheduler.lifecycle import run_startup_reconciliation
 
     results = run_async(run_startup_reconciliation())
     assert "stale_plays" in results
@@ -290,7 +290,7 @@ def test_run_periodic_reapers_includes_stale_plays_key(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    from lionagi.studio.services.lifecycle import run_periodic_reapers
+    from lionhub.orchestration.scheduler.lifecycle import run_periodic_reapers
 
     results = run_async(run_periodic_reapers())
     assert "stale_plays" in results
@@ -324,7 +324,7 @@ def test_reap_stale_plays_cas_guard_skips_concurrently_transitioned_row(tmp_path
 
     monkeypatch.setattr(state_db_mod.StateDB, "update_status", _flip_then_call)
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 0
@@ -363,7 +363,7 @@ def test_reap_stale_plays_skips_row_claimed_between_scan_and_write(tmp_path, mon
 
     monkeypatch.setattr(state_db_mod.StateDB, "fetch_one", _claim_then_fetch)
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 0
@@ -405,7 +405,7 @@ def test_reap_stale_plays_version_guard_skips_claim_after_revalidation(tmp_path,
 
     monkeypatch.setattr(state_db_mod.StateDB, "update_status", _claim_then_update)
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 0
@@ -433,7 +433,7 @@ def test_reap_stale_plays_write_is_atomic_with_ended_at(tmp_path, monkeypatch):
 
     monkeypatch.setattr(state_db_mod.StateDB, "update_play", _boom)
 
-    from lionagi.studio.services.lifecycle import reap_stale_plays
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_plays
 
     count = run_async(reap_stale_plays(stale_hours=6.0))
     assert count == 1

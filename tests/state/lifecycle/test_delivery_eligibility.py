@@ -162,7 +162,7 @@ async def test_real_execution_edge_matrix_push_equals_stored_and_replay(db, kind
 @pytest.mark.asyncio
 async def test_actual_null_status_reaper_push_equals_stored_and_replay(tmp_path, monkeypatch):
     import lionagi.state.db as db_module
-    import lionagi.studio.services.lifecycle as reaper
+    import lionhub.orchestration.scheduler.lifecycle as reaper
     import lionhub.orchestration.scheduler.liveness as scheduler_liveness
 
     path = tmp_path / "state.db"

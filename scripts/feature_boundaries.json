@@ -1897,10 +1897,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.db_maintenance": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.services.definitions": {
       "layer": "root",
       "owner": "studio"
@@ -1937,10 +1933,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.lifecycle": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.services.mcp_servers": {
       "layer": "root",
       "owner": "studio"
@@ -1971,10 +1963,6 @@
       "owner": "studio"
     },
     "lionagi.studio.services.redaction": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.retention_archive": {
       "layer": "root",
       "owner": "studio"
     },
@@ -2039,10 +2027,6 @@
       "owner": "studio"
     },
     "lionagi.studio.services.teams": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.terminal_reconciliation": {
       "layer": "root",
       "owner": "studio"
     },

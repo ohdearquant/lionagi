@@ -20,7 +20,7 @@ from lionagi.state.db import (
     state_db_file,
     state_db_known_absent,
 )
-from lionagi.studio.services.retention_archive import archive_chunk_id, write_archive_chunk
+from lionhub.orchestration.scheduler.retention_archive import archive_chunk_id, write_archive_chunk
 
 _log = logging.getLogger("lionagi.studio.services.db_maintenance")
 

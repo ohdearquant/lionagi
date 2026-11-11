@@ -930,6 +930,30 @@ CONTRACTS: tuple[MoveContract, ...] = (
         public_names=frozenset({"get_project"}),
     ),
     MoveContract(
+        old="lionagi.studio.services.db_maintenance",
+        new="lionhub.orchestration.scheduler.db_maintenance",
+        kind="module",
+        public_names=frozenset({"checkpoint_state_db", "prune_old_data"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.retention_archive",
+        new="lionhub.orchestration.scheduler.retention_archive",
+        kind="module",
+        public_names=frozenset({"ArchiveWriteError", "write_archive_chunk"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.lifecycle",
+        new="lionhub.orchestration.scheduler.lifecycle",
+        kind="module",
+        public_names=frozenset({"run_periodic_reapers", "reap_stale_plays"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.terminal_reconciliation",
+        new="lionhub.orchestration.scheduler.terminal_reconciliation",
+        kind="module",
+        public_names=frozenset({"run_terminal_reconciliation"}),
+    ),
+    MoveContract(
         old="lionagi.studio.services._db",
         new="lionhub.orchestration.state_store",
         kind="module",
