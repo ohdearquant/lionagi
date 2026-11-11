@@ -131,7 +131,7 @@ async def test_a_secrets_lookup_command_does_not_see_the_store(probe, tmp_path):
 
 
 def test_a_command_an_agent_runs_does_not_see_the_store(probe, tmp_path):
-    from lionagi.tools._subprocess import _subprocess_sync
+    from lionhub.tools._subprocess import _subprocess_sync
 
     out = tmp_path / "agent-command.txt"
     result = _subprocess_sync([str(probe), str(out)], False, 30, str(tmp_path))
@@ -191,7 +191,7 @@ async def test_a_store_url_a_configured_mcp_server_names_is_passed_as_given(prob
 async def test_an_environment_a_caller_names_is_passed_as_given(probe, tmp_path):
     """Only what a command would inherit is scrubbed: a store URL its caller names is the
     caller's choice."""
-    from lionagi.tools._subprocess import _subprocess_sync
+    from lionhub.tools._subprocess import _subprocess_sync
 
     chosen = "sqlite:////chosen/store.db"
     agent_out, notify_out = tmp_path / "agent-explicit.txt", tmp_path / "notify-explicit.txt"

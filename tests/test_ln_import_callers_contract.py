@@ -10,7 +10,7 @@ import types
 import pytest
 
 import lionagi._class_registry as registry
-import lionagi.agent.settings as settings
+import lionhub.agent.settings as settings
 from lionagi import ln
 from lionagi.ln import _utils as ln_utils
 
@@ -104,11 +104,11 @@ class TestHookImportBehavior:
         assert calls == []
 
     def test_builtin_callable_identity_is_preserved(self):
-        from lionagi.agent.hooks import guard_destructive
+        from lionhub.agent.hooks import guard_destructive
 
         assert (
             settings._import_hook(
-                "lionagi.agent.hooks:guard_destructive",
+                "lionhub.agent.hooks:guard_destructive",
                 trusted_hook_modules={"lionagi.agent.hooks"},
             )
             is guard_destructive

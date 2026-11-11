@@ -237,8 +237,8 @@ def test_log_tool_use_emits_deprecation_warning():
 
 
 def test_agent_log_tool_use_emits_deprecation_warning():
-    """lionagi.agent.hooks.log_tool_use must emit DeprecationWarning."""
-    from lionagi.agent.hooks import log_tool_use
+    """lionhub.agent.hooks.log_tool_use must emit DeprecationWarning."""
+    from lionhub.agent.hooks import log_tool_use
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

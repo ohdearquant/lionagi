@@ -19,12 +19,12 @@ from lionagi.ln.concurrency import (
     move_on_after,
 )
 from lionagi.session.exchange import Exchange
-from lionagi.tools.communication.messenger import LionMessenger
 from lionhub.orchestration import plan
 from lionhub.orchestration.console import log_error, progress, warn
 from lionhub.orchestration.job import classify_exception
 from lionhub.orchestration.prompts import SYNTHESIS_INSTRUCTION
 from lionhub.orchestration.spawn import parse_model_spec, strip_connector_grant
+from lionhub.tools.communication.messenger import LionMessenger
 
 from .._agent_depth import stamp_worker_depth
 from ._common import (
@@ -93,7 +93,7 @@ def _is_assignment_shaped_synthesis(value: object) -> bool:
 
 async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"):
     """Build a clean synthesizer branch without the planner conversation."""
-    from lionagi.agent import AgentSpec, create_agent
+    from lionhub.agent import AgentSpec, create_agent
 
     spec = AgentSpec.compose(
         "synthesizer",
@@ -117,8 +117,8 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"
         # An empty set left this copy loading no user config, so the effort the
         # orchestrator's model derived from that config goes too, as it does for an
         # orchestrator handed an empty set (setup_orchestration).
-        from lionagi.agent.factory import _canonical_provider
         from lionagi.service.providers import PROVIDER_EFFORT_KWARG
+        from lionhub.agent.factory import _canonical_provider
 
         effort_kwarg = PROVIDER_EFFORT_KWARG.get(
             _canonical_provider(chat_model.endpoint.config.provider)

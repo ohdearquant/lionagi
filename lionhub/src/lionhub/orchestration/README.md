@@ -104,3 +104,5 @@ Tests of this package live in `lionhub/tests/lionhub_tests/orchestration/`, with
 services under its `schedule/` directory and the run store in `test_state_store.py`. Tests that
 also exercise the Studio application, its HTTP routes, the `li` commands, the scheduler engine or
 its subprocess runner stay under `tests/`.
+
+Agent and tool packages now live at `lionhub.agent` and `lionhub.tools`.

@@ -5,8 +5,8 @@
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.agent.factory import create_agent
-from lionagi.agent.spec import AgentSpec
+from lionhub.agent.factory import create_agent
+from lionhub.agent.spec import AgentSpec
 
 
 @pytest.mark.asyncio

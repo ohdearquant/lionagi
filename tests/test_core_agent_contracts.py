@@ -14,9 +14,9 @@ import pytest
 import yaml
 
 from lionagi import _settings
-from lionagi.agent import gate as agent_gate
-from lionagi.agent import settings as agent_settings
 from lionagi.protocols.action import gate as core_gate
+from lionhub.agent import gate as agent_gate
+from lionhub.agent import settings as agent_settings
 
 _GATE_EXPORTS = (
     "ControlUnavailableError",
@@ -51,7 +51,7 @@ def test_new_gate_pickles_name_core_and_old_names_still_load(errored):
     payload = pickle.dumps(error, protocol=2)
     core_global = b"clionagi.protocols.action.gate\n"
     assert core_global in payload
-    old_payload = payload.replace(core_global, b"clionagi.agent.gate\n")
+    old_payload = payload.replace(core_global, b"clionhub.agent.gate\n")
     restored = pickle.loads(old_payload)
     copied = copy.deepcopy(error)
     for clone in (restored, copied):

@@ -50,8 +50,8 @@ class TestTheStudioOperatorSeam:
 
 class TestTheGenericAgentFactorySeam:
     async def test_an_effortless_codex_spec_carries_the_clamped_default(self, global_ultra):
-        from lionagi.agent.factory import create_agent
-        from lionagi.agent.spec import AgentSpec
+        from lionhub.agent.factory import create_agent
+        from lionhub.agent.spec import AgentSpec
 
         # AgentSpec.coding() supplies effort="high" by default; effort=None is
         # what a caller that states no opinion actually produces.
@@ -62,8 +62,8 @@ class TestTheGenericAgentFactorySeam:
         assert branch.chat_model.endpoint.config.kwargs["reasoning_effort"] == "xhigh"
 
     async def test_an_explicit_spec_effort_still_wins(self, global_ultra):
-        from lionagi.agent.factory import create_agent
-        from lionagi.agent.spec import AgentSpec
+        from lionhub.agent.factory import create_agent
+        from lionhub.agent.spec import AgentSpec
 
         branch = await create_agent(
             AgentSpec.coding(model="codex/gpt-5.3-codex-spark", effort="low"),

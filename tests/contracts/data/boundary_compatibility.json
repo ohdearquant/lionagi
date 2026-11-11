@@ -94,39 +94,6 @@
     "lionagi/adapters/toml_.py": [
       "__all__ = (\"TomlAdapter\",)"
     ],
-    "lionagi/agent/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AgentSpec\": (\"spec\", None),\n    \"HooksMixin\": (\"spec\", None),\n    \"PermissionPolicy\": (\"permissions\", None),\n    \"create_agent\": (\"factory\", None),\n    \"load_settings\": (\"settings\", None),\n    \"apply_hooks_from_settings\": (\"settings\", None),\n}",
-      "def __getattr__(name: str) -> object:\n    if name in _SUBMODULES:\n        import importlib\n\n        return importlib.import_module(f\"{__name__}.{name}\")\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = (\n    \"AgentSpec\",\n    \"HooksMixin\",\n    \"PermissionPolicy\",\n    \"create_agent\",\n    \"load_settings\",\n    \"apply_hooks_from_settings\",\n)"
-    ],
-    "lionagi/agent/_email_in_headers.py": [
-      "__all__ = (\n    \"ALLOWED_DOMAIN_RE\",\n    \"EMAIL_RE\",\n    \"HEADER_TOKEN_RE\",\n    \"X_HEADER_RE\",\n    \"SHORT_HEADER_FLAG_RE\",\n    \"find_leak\",\n    \"find_leak_with_allowed\",\n)"
-    ],
-    "lionagi/agent/context_fold.py": [
-      "__all__ = (\"ContextFold\", \"estimate_next_request_tokens\", \"install_context_fold\")"
-    ],
-    "lionagi/agent/factory.py": [
-      "__all__ = (\n    \"create_agent\",\n    \"CREATE_AGENT_BRANCH_ORIGIN_KEY\",\n    \"_chain_pre_hooks\",\n    \"_chain_post_hooks\",\n)"
-    ],
-    "lionagi/agent/gate.py": [
-      "__all__ = (\n    \"ControlUnavailableError\",\n    \"GateDeniedError\",\n    \"GateEvaluator\",\n    \"GateResult\",\n    \"adapt_legacy_hook\",\n    \"adapt_session_gate\",\n    \"run_gate_pass\",\n)"
-    ],
-    "lionagi/agent/hooks.py": [
-      "__all__ = (\n    \"auto_format_python\",\n    \"guard_destructive\",\n    \"guard_email_in_headers\",\n    \"guard_paths\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
-    ],
-    "lionagi/agent/nudge.py": [
-      "__all__ = (\n    \"NudgeContext\",\n    \"NudgeEngine\",\n    \"NudgeRule\",\n    \"ToolCallRecord\",\n    \"default_nudge_rules\",\n)"
-    ],
-    "lionagi/agent/permissions.py": [
-      "__all__ = (\n    \"PermissionDecision\",\n    \"PermissionPolicy\",\n)"
-    ],
-    "lionagi/agent/settings.py": [
-      "__all__ = (\n    \"apply_hooks_from_settings\",\n    \"load_settings\",\n    \"parse_external_hooks\",\n)"
-    ],
-    "lionagi/agent/spec.py": [
-      "__all__ = (\"AgentSpec\", \"HooksMixin\")"
-    ],
     "lionagi/casts/__init__.py": [
       "from ..ln._lazy_init import lazy_import",
       "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"build_catalog\": (\"catalog\", None),\n    \"SPAWN_ALLOWED_OPERATIONS\": (\"emission\", None),\n    \"AnalysisResult\": (\"emission\", None),\n    \"ArtifactProduced\": (\"emission\", None),\n    \"ComplexityScore\": (\"emission\", None),\n    \"ComplianceVerdict\": (\"emission\", None),\n    \"Conflict\": (\"emission\", None),\n    \"DesignSpec\": (\"emission\", None),\n    \"Diagnosis\": (\"emission\", None),\n    \"Document\": (\"emission\", None),\n    \"EscalationRequest\": (\"emission\", None),\n    \"ExecutionPlan\": (\"emission\", None),\n    \"Finding\": (\"emission\", None),\n    \"Gap\": (\"emission\", None),\n    \"Objection\": (\"emission\", None),\n    \"OperationOutcome\": (\"emission\", None),\n    \"Postmortem\": (\"emission\", None),\n    \"Proposal\": (\"emission\", None),\n    \"Recommendation\": (\"emission\", None),\n    \"RiskAssessment\": (\"emission\", None),\n    \"SpawnRequest\": (\"emission\", None),\n    \"Synthesis\": (\"emission\", None),\n    \"TaskAssignment\": (\"emission\", None),\n    \"Verdict\": (\"emission\", None),\n    \"VerificationResult\": (\"emission\", None),\n    \"build_emission_operable\": (\"emission\", None),\n    \"field_name_for\": (\"emission\", None),\n    \"Pack\": (\"pack\", None),\n    \"RoleConfig\": (\"pack\", None),\n    \"RolePolicy\": (\"pack\", None),\n    \"Mode\": (\"pattern\", None),\n    \"Pattern\": (\"pattern\", None),\n    \"PatternKind\": (\"pattern\", None),\n    \"Role\": (\"pattern\", None),\n    \"list_modes\": (\"pattern\", None),\n    \"list_roles\": (\"pattern\", None),\n    \"Profile\": (\"profile\", None),\n}",
@@ -918,49 +885,44 @@
     "lionagi/testing/pytest_plugin.py": [
       "__all__ = ()"
     ],
-    "lionagi/tools/code/__init__.py": [
-      "from .ast_search import AstSearchTool",
-      "from .bash import BashTool",
-      "from .check import CodeCheckTool",
-      "from .nav import NavTool",
-      "from .search import SearchTool",
-      "__all__ = (\"AstSearchTool\", \"BashTool\", \"CodeCheckTool\", \"NavTool\", \"SearchTool\")"
-    ],
-    "lionagi/tools/code/ast_search.py": [
-      "__all__ = (\n    \"AstSearchRequest\",\n    \"AstSearchResponse\",\n    \"AstSearchTool\",\n)"
-    ],
-    "lionagi/tools/code/nav.py": [
-      "__all__ = (\n    \"NavRequest\",\n    \"NavResponse\",\n    \"NavTool\",\n)"
-    ],
-    "lionagi/tools/code/search.py": [
-      "__all__ = (\n    \"SearchAction\",\n    \"SearchRequest\",\n    \"SearchResponse\",\n    \"SearchTool\",\n)"
-    ],
-    "lionagi/tools/communication/__init__.py": [
-      "from .messenger import LionMessenger",
-      "__all__ = (\"LionMessenger\",)"
-    ],
-    "lionagi/tools/communication/messenger.py": [
-      "__all__ = (\"LionMessenger\",)"
-    ],
-    "lionagi/tools/file/__init__.py": [
-      "from .editor import EditorTool",
-      "from .reader import ReaderTool",
-      "__all__ = (\"ReaderTool\", \"EditorTool\")"
-    ],
-    "lionagi/tools/khive_injection.py": [
-      "__all__ = (\n    \"RecallPolicy\",\n    \"ComposePolicy\",\n    \"WritebackPolicy\",\n    \"KhiveInjectionPolicy\",\n    \"KhiveInjectionProvider\",\n)"
-    ],
-    "lionagi/tools/sandbox_backend.py": [
-      "__all__ = (\n    \"ExecutionLimits\",\n    \"ExecutionTarget\",\n    \"SubstrateStreamEvent\",\n    \"BackendName\",\n    \"CellKind\",\n    \"ColdStartClass\",\n    \"Capabilities\",\n    \"ProvisionSpec\",\n    \"Handle\",\n    \"Cell\",\n    \"CellResult\",\n    \"SandboxBackend\",\n    \"DIFF_ARTIFACT\",\n    \"LocalWorktreeBackend\",\n    \"DaytonaBackend\",\n    \"get_backend\",\n    \"select_backend_for_cell\",\n)"
-    ],
-    "lionagi/tools/types.py": [
-      "__all__ = (\n    \"CodingToolkit\",\n    \"ReaderTool\",\n    \"EditorTool\",\n    \"BashTool\",\n    \"SearchTool\",\n    \"ContextTool\",\n    \"chunk\",\n)"
-    ],
     "lionagi/utils.py": [
       "__all__ = (\n    \"UndefinedType\",\n    \"KeysDict\",\n    \"Params\",\n    \"DataClass\",\n    \"UNDEFINED\",\n    \"copy\",\n    \"is_same_dtype\",\n    \"is_coro_func\",\n    \"to_list\",\n    \"create_path\",\n    \"get_bins\",\n    \"logger\",\n    \"Enum\",\n    \"hash_dict\",\n    \"is_union_type\",\n    \"union_members\",\n    \"Unset\",\n    \"UnsetType\",\n    \"Undefined\",\n    \"MaybeSentinel\",\n    \"MaybeUndefined\",\n    \"MaybeUnset\",\n    \"is_import_installed\",\n    \"import_module\",\n    \"to_dict\",\n    \"LIONAGI_HOME\",\n)"
     ],
     "lionhub/src/lionhub/__init__.py": [
       "__all__ = ()"
+    ],
+    "lionhub/src/lionhub/agent/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AgentSpec\": (\"spec\", None),\n    \"HooksMixin\": (\"spec\", None),\n    \"PermissionPolicy\": (\"permissions\", None),\n    \"create_agent\": (\"factory\", None),\n    \"load_settings\": (\"settings\", None),\n    \"apply_hooks_from_settings\": (\"settings\", None),\n}",
+      "def __getattr__(name: str) -> object:\n    if name in _SUBMODULES:\n        import importlib\n\n        return importlib.import_module(f\"{__name__}.{name}\")\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = (\n    \"AgentSpec\",\n    \"HooksMixin\",\n    \"PermissionPolicy\",\n    \"create_agent\",\n    \"load_settings\",\n    \"apply_hooks_from_settings\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/_email_in_headers.py": [
+      "__all__ = (\n    \"ALLOWED_DOMAIN_RE\",\n    \"EMAIL_RE\",\n    \"HEADER_TOKEN_RE\",\n    \"X_HEADER_RE\",\n    \"SHORT_HEADER_FLAG_RE\",\n    \"find_leak\",\n    \"find_leak_with_allowed\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/context_fold.py": [
+      "__all__ = (\"ContextFold\", \"estimate_next_request_tokens\", \"install_context_fold\")"
+    ],
+    "lionhub/src/lionhub/agent/factory.py": [
+      "__all__ = (\n    \"create_agent\",\n    \"CREATE_AGENT_BRANCH_ORIGIN_KEY\",\n    \"_chain_pre_hooks\",\n    \"_chain_post_hooks\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/gate.py": [
+      "__all__ = (\n    \"ControlUnavailableError\",\n    \"GateDeniedError\",\n    \"GateEvaluator\",\n    \"GateResult\",\n    \"adapt_legacy_hook\",\n    \"adapt_session_gate\",\n    \"run_gate_pass\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/hooks.py": [
+      "__all__ = (\n    \"auto_format_python\",\n    \"guard_destructive\",\n    \"guard_email_in_headers\",\n    \"guard_paths\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/nudge.py": [
+      "__all__ = (\n    \"NudgeContext\",\n    \"NudgeEngine\",\n    \"NudgeRule\",\n    \"ToolCallRecord\",\n    \"default_nudge_rules\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/permissions.py": [
+      "__all__ = (\n    \"PermissionDecision\",\n    \"PermissionPolicy\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/settings.py": [
+      "__all__ = (\n    \"apply_hooks_from_settings\",\n    \"load_settings\",\n    \"parse_external_hooks\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/spec.py": [
+      "__all__ = (\"AgentSpec\", \"HooksMixin\")"
     ],
     "lionhub/src/lionhub/cli/catalog.py": [
       "__all__ = (\n    \"build_cli_parser\",\n    \"command_exists\",\n    \"iter_cli_seeds\",\n    \"load_cli_command\",\n    \"seed_for\",\n)"
@@ -1406,6 +1368,44 @@
     ],
     "lionhub/src/lionhub/serve/mcp/verbs.py": [
       "__all__ = (\n    \"Verb\",\n    \"AbsentVerb\",\n    \"VERBS\",\n    \"ABSENT\",\n    \"FENCED_PATHS\",\n    \"MAX_OPS\",\n    \"catalog_names\",\n)"
+    ],
+    "lionhub/src/lionhub/tools/code/__init__.py": [
+      "from .ast_search import AstSearchTool",
+      "from .bash import BashTool",
+      "from .check import CodeCheckTool",
+      "from .nav import NavTool",
+      "from .search import SearchTool",
+      "__all__ = (\"AstSearchTool\", \"BashTool\", \"CodeCheckTool\", \"NavTool\", \"SearchTool\")"
+    ],
+    "lionhub/src/lionhub/tools/code/ast_search.py": [
+      "__all__ = (\n    \"AstSearchRequest\",\n    \"AstSearchResponse\",\n    \"AstSearchTool\",\n)"
+    ],
+    "lionhub/src/lionhub/tools/code/nav.py": [
+      "__all__ = (\n    \"NavRequest\",\n    \"NavResponse\",\n    \"NavTool\",\n)"
+    ],
+    "lionhub/src/lionhub/tools/code/search.py": [
+      "__all__ = (\n    \"SearchAction\",\n    \"SearchRequest\",\n    \"SearchResponse\",\n    \"SearchTool\",\n)"
+    ],
+    "lionhub/src/lionhub/tools/communication/__init__.py": [
+      "from .messenger import LionMessenger",
+      "__all__ = (\"LionMessenger\",)"
+    ],
+    "lionhub/src/lionhub/tools/communication/messenger.py": [
+      "__all__ = (\"LionMessenger\",)"
+    ],
+    "lionhub/src/lionhub/tools/file/__init__.py": [
+      "from .editor import EditorTool",
+      "from .reader import ReaderTool",
+      "__all__ = (\"ReaderTool\", \"EditorTool\")"
+    ],
+    "lionhub/src/lionhub/tools/khive_injection.py": [
+      "__all__ = (\n    \"RecallPolicy\",\n    \"ComposePolicy\",\n    \"WritebackPolicy\",\n    \"KhiveInjectionPolicy\",\n    \"KhiveInjectionProvider\",\n)"
+    ],
+    "lionhub/src/lionhub/tools/sandbox_backend.py": [
+      "__all__ = (\n    \"ExecutionLimits\",\n    \"ExecutionTarget\",\n    \"SubstrateStreamEvent\",\n    \"BackendName\",\n    \"CellKind\",\n    \"ColdStartClass\",\n    \"Capabilities\",\n    \"ProvisionSpec\",\n    \"Handle\",\n    \"Cell\",\n    \"CellResult\",\n    \"SandboxBackend\",\n    \"DIFF_ARTIFACT\",\n    \"LocalWorktreeBackend\",\n    \"DaytonaBackend\",\n    \"get_backend\",\n    \"select_backend_for_cell\",\n)"
+    ],
+    "lionhub/src/lionhub/tools/types.py": [
+      "__all__ = (\n    \"CodingToolkit\",\n    \"ReaderTool\",\n    \"EditorTool\",\n    \"BashTool\",\n    \"SearchTool\",\n    \"ContextTool\",\n    \"chunk\",\n)"
     ]
   },
   "public_definitions": {
@@ -1583,50 +1583,6 @@
     ],
     "lionagi/adapters/toml_.py": [
       "TomlAdapter"
-    ],
-    "lionagi/agent/_email_in_headers.py": [
-      "find_leak",
-      "find_leak_with_allowed"
-    ],
-    "lionagi/agent/context_fold.py": [
-      "ContextFold",
-      "estimate_next_request_tokens",
-      "install_context_fold"
-    ],
-    "lionagi/agent/factory.py": [
-      "apply_forwarded_mcp_servers",
-      "create_agent",
-      "provider_accepts_forwarded_mcp",
-      "register_profile_injection",
-      "request_carries_forwarded_mcp",
-      "request_kwargs_carry_forwarded_mcp"
-    ],
-    "lionagi/agent/hooks.py": [
-      "auto_format_python",
-      "guard_destructive",
-      "guard_email_in_headers",
-      "guard_paths",
-      "log_tool_call",
-      "log_tool_use"
-    ],
-    "lionagi/agent/nudge.py": [
-      "NudgeContext",
-      "NudgeEngine",
-      "NudgeRule",
-      "ToolCallRecord",
-      "default_nudge_rules"
-    ],
-    "lionagi/agent/permissions.py": [
-      "PermissionDecision",
-      "PermissionPolicy"
-    ],
-    "lionagi/agent/settings.py": [
-      "apply_hooks_from_settings",
-      "parse_external_hooks"
-    ],
-    "lionagi/agent/spec.py": [
-      "AgentSpec",
-      "HooksMixin"
     ],
     "lionagi/casts/catalog.py": [
       "build_catalog"
@@ -3936,108 +3892,49 @@
       "test_payload",
       "validation_helpers"
     ],
-    "lionagi/tools/_seatbelt.py": [
-      "SeatbeltPolicy",
-      "seatbelt_available"
+    "lionhub/src/lionhub/agent/_email_in_headers.py": [
+      "find_leak",
+      "find_leak_with_allowed"
     ],
-    "lionagi/tools/base.py": [
-      "Prompt",
-      "Resource",
-      "ResourceCategory",
-      "ResourceMeta"
+    "lionhub/src/lionhub/agent/context_fold.py": [
+      "ContextFold",
+      "estimate_next_request_tokens",
+      "install_context_fold"
     ],
-    "lionagi/tools/code/ast_search.py": [
-      "AstSearchMatch",
-      "AstSearchRequest",
-      "AstSearchResponse",
-      "AstSearchTool"
+    "lionhub/src/lionhub/agent/factory.py": [
+      "apply_forwarded_mcp_servers",
+      "create_agent",
+      "provider_accepts_forwarded_mcp",
+      "register_profile_injection",
+      "request_carries_forwarded_mcp",
+      "request_kwargs_carry_forwarded_mcp"
     ],
-    "lionagi/tools/code/bash.py": [
-      "BashRequest",
-      "BashResponse",
-      "BashTool"
+    "lionhub/src/lionhub/agent/hooks.py": [
+      "auto_format_python",
+      "guard_destructive",
+      "guard_email_in_headers",
+      "guard_paths",
+      "log_tool_call",
+      "log_tool_use"
     ],
-    "lionagi/tools/code/check.py": [
-      "CodeCheckRequest",
-      "CodeCheckResponse",
-      "CodeCheckTool",
-      "CodeDiagnostic"
+    "lionhub/src/lionhub/agent/nudge.py": [
+      "NudgeContext",
+      "NudgeEngine",
+      "NudgeRule",
+      "ToolCallRecord",
+      "default_nudge_rules"
     ],
-    "lionagi/tools/code/nav.py": [
-      "NavItem",
-      "NavRequest",
-      "NavResponse",
-      "NavTool"
+    "lionhub/src/lionhub/agent/permissions.py": [
+      "PermissionDecision",
+      "PermissionPolicy"
     ],
-    "lionagi/tools/code/search.py": [
-      "SearchAction",
-      "SearchRequest",
-      "SearchResponse",
-      "SearchTool"
+    "lionhub/src/lionhub/agent/settings.py": [
+      "apply_hooks_from_settings",
+      "parse_external_hooks"
     ],
-    "lionagi/tools/coding.py": [
-      "CodingToolkit",
-      "SandboxAction",
-      "SandboxRequest",
-      "SubagentRequest"
-    ],
-    "lionagi/tools/communication/messenger.py": [
-      "LionMessenger",
-      "MessengerAction",
-      "MessengerRequest"
-    ],
-    "lionagi/tools/context/context.py": [
-      "ContextAction",
-      "ContextRequest",
-      "ContextTool"
-    ],
-    "lionagi/tools/daytona.py": [
-      "DaytonaSandbox",
-      "ExecResult",
-      "ensure_snapshot",
-      "lionagi_image"
-    ],
-    "lionagi/tools/file/editor.py": [
-      "EditorAction",
-      "EditorRequest",
-      "EditorResponse",
-      "EditorTool"
-    ],
-    "lionagi/tools/file/reader.py": [
-      "ReaderAction",
-      "ReaderRequest",
-      "ReaderResponse",
-      "ReaderTool"
-    ],
-    "lionagi/tools/khive_injection.py": [
-      "ComposePolicy",
-      "KhiveInjectionPolicy",
-      "KhiveInjectionProvider",
-      "RecallPolicy",
-      "WritebackPolicy"
-    ],
-    "lionagi/tools/sandbox.py": [
-      "SandboxSession",
-      "create_sandbox",
-      "sandbox_commit",
-      "sandbox_diff",
-      "sandbox_discard",
-      "sandbox_merge"
-    ],
-    "lionagi/tools/sandbox_backend.py": [
-      "Capabilities",
-      "Cell",
-      "CellResult",
-      "DaytonaBackend",
-      "ExecutionLimits",
-      "ExecutionTarget",
-      "Handle",
-      "LocalWorktreeBackend",
-      "ProvisionSpec",
-      "SandboxBackend",
-      "SubstrateStreamEvent",
-      "get_backend",
-      "select_backend_for_cell"
+    "lionhub/src/lionhub/agent/spec.py": [
+      "AgentSpec",
+      "HooksMixin"
     ],
     "lionhub/src/lionhub/cli/catalog.py": [
       "build_cli_parser",
@@ -4929,14 +4826,114 @@
     ],
     "lionhub/src/lionhub/serve/mirror.py": [
       "mirror_forever"
+    ],
+    "lionhub/src/lionhub/tools/_seatbelt.py": [
+      "SeatbeltPolicy",
+      "seatbelt_available"
+    ],
+    "lionhub/src/lionhub/tools/base.py": [
+      "Prompt",
+      "Resource",
+      "ResourceCategory",
+      "ResourceMeta"
+    ],
+    "lionhub/src/lionhub/tools/code/ast_search.py": [
+      "AstSearchMatch",
+      "AstSearchRequest",
+      "AstSearchResponse",
+      "AstSearchTool"
+    ],
+    "lionhub/src/lionhub/tools/code/bash.py": [
+      "BashRequest",
+      "BashResponse",
+      "BashTool"
+    ],
+    "lionhub/src/lionhub/tools/code/check.py": [
+      "CodeCheckRequest",
+      "CodeCheckResponse",
+      "CodeCheckTool",
+      "CodeDiagnostic"
+    ],
+    "lionhub/src/lionhub/tools/code/nav.py": [
+      "NavItem",
+      "NavRequest",
+      "NavResponse",
+      "NavTool"
+    ],
+    "lionhub/src/lionhub/tools/code/search.py": [
+      "SearchAction",
+      "SearchRequest",
+      "SearchResponse",
+      "SearchTool"
+    ],
+    "lionhub/src/lionhub/tools/coding.py": [
+      "CodingToolkit",
+      "SandboxAction",
+      "SandboxRequest",
+      "SubagentRequest"
+    ],
+    "lionhub/src/lionhub/tools/communication/messenger.py": [
+      "LionMessenger",
+      "MessengerAction",
+      "MessengerRequest"
+    ],
+    "lionhub/src/lionhub/tools/context/context.py": [
+      "ContextAction",
+      "ContextRequest",
+      "ContextTool"
+    ],
+    "lionhub/src/lionhub/tools/daytona.py": [
+      "DaytonaSandbox",
+      "ExecResult",
+      "ensure_snapshot",
+      "lionagi_image"
+    ],
+    "lionhub/src/lionhub/tools/file/editor.py": [
+      "EditorAction",
+      "EditorRequest",
+      "EditorResponse",
+      "EditorTool"
+    ],
+    "lionhub/src/lionhub/tools/file/reader.py": [
+      "ReaderAction",
+      "ReaderRequest",
+      "ReaderResponse",
+      "ReaderTool"
+    ],
+    "lionhub/src/lionhub/tools/khive_injection.py": [
+      "ComposePolicy",
+      "KhiveInjectionPolicy",
+      "KhiveInjectionProvider",
+      "RecallPolicy",
+      "WritebackPolicy"
+    ],
+    "lionhub/src/lionhub/tools/sandbox.py": [
+      "SandboxSession",
+      "create_sandbox",
+      "sandbox_commit",
+      "sandbox_diff",
+      "sandbox_discard",
+      "sandbox_merge"
+    ],
+    "lionhub/src/lionhub/tools/sandbox_backend.py": [
+      "Capabilities",
+      "Cell",
+      "CellResult",
+      "DaytonaBackend",
+      "ExecutionLimits",
+      "ExecutionTarget",
+      "Handle",
+      "LocalWorktreeBackend",
+      "ProvisionSpec",
+      "SandboxBackend",
+      "SubstrateStreamEvent",
+      "get_backend",
+      "select_backend_for_cell"
     ]
   },
   "environment_lookups": {
     "lionagi/_paths.py": [
       "os.environ.get:\"LIONAGI_HOME\""
-    ],
-    "lionagi/agent/factory.py": [
-      "os.getenv:\"LIONAGI_KHIVE_INJECTION\""
     ],
     "lionagi/cli/_agent_depth.py": [
       "os.environ.get:SEAT_PROFILES_ENV"
@@ -5055,12 +5052,8 @@
       "os.environ:ENV_SCRIPT_PATH",
       "os.environ:key"
     ],
-    "lionagi/tools/_seatbelt.py": [
-      "os.environ.get:\"UV_CACHE_DIR\"",
-      "os.environ.get:\"XDG_CACHE_HOME\""
-    ],
-    "lionagi/tools/sandbox_backend.py": [
-      "os.environ:k"
+    "lionhub/src/lionhub/agent/factory.py": [
+      "os.getenv:\"LIONAGI_KHIVE_INJECTION\""
     ],
     "lionhub/src/lionhub/cli/studio.py": [
       "os.environ.get:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
@@ -5144,9 +5137,16 @@
     ],
     "lionhub/src/lionhub/serve/mirror_settings.py": [
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS\""
+    ],
+    "lionhub/src/lionhub/tools/_seatbelt.py": [
+      "os.environ.get:\"UV_CACHE_DIR\"",
+      "os.environ.get:\"XDG_CACHE_HOME\""
+    ],
+    "lionhub/src/lionhub/tools/sandbox_backend.py": [
+      "os.environ:k"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._project\", \"lionhub.orchestration.project\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mcp_resolve\", \"lionhub.orchestration.mcp_config\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._team_service\", \"lionhub.orchestration.team\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._engine_definitions\",\n        \"lionhub.orchestration.engine_definitions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._util\", \"lionhub.orchestration.job\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._inspection\", \"lionhub.orchestration.inspection\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._providers\", \"lionhub.orchestration.spawn\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._orchestrate_parsing\", \"lionhub.orchestration.flow.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.cli._schedule_parsing\", \"lionhub.orchestration.schedule.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.cli._mirror_service\", \"lionhub.serve.mirror\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._runs\", \"lionhub.orchestration.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._kill_service\", \"lionhub.orchestration.kill\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli.orchestrate._checkpoint\",\n        \"lionhub.orchestration.flow.checkpoint\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._schedule_validation\",\n        \"lionhub.orchestration.schedule.validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_action_validation\",\n        \"lionhub.orchestration.schedule.action_validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_timing\",\n        \"lionhub.orchestration.schedule.timing\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio._timezone_rules\",\n        \"lionhub.orchestration.schedule._timezone_rules\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_execution_root\",\n        \"lionhub.orchestration.schedule.execution_root\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_declaration\",\n        \"lionhub.orchestration.schedule.declaration\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_export\",\n        \"lionhub.orchestration.schedule.export\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.project_lookup\",\n        \"lionhub.orchestration.project_store\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.scheduler\", \"lionhub.orchestration.scheduler\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services.scheduler_state\",\n        \"lionhub.orchestration.scheduler.scheduler_state\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.db_maintenance\",\n        \"lionhub.orchestration.scheduler.db_maintenance\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.retention_archive\",\n        \"lionhub.orchestration.scheduler.retention_archive\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.lifecycle\",\n        \"lionhub.orchestration.scheduler.lifecycle\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.terminal_reconciliation\",\n        \"lionhub.orchestration.scheduler.terminal_reconciliation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.services._db\", \"lionhub.orchestration.state_store\", \"0.38.0\", \"2.0.0\"),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.tools\", \"lionhub.tools\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.agent\", \"lionhub.agent\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._project\", \"lionhub.orchestration.project\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mcp_resolve\", \"lionhub.orchestration.mcp_config\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._team_service\", \"lionhub.orchestration.team\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._engine_definitions\",\n        \"lionhub.orchestration.engine_definitions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._util\", \"lionhub.orchestration.job\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._inspection\", \"lionhub.orchestration.inspection\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._providers\", \"lionhub.orchestration.spawn\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._orchestrate_parsing\", \"lionhub.orchestration.flow.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.cli._schedule_parsing\", \"lionhub.orchestration.schedule.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.cli._mirror_service\", \"lionhub.serve.mirror\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._runs\", \"lionhub.orchestration.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._kill_service\", \"lionhub.orchestration.kill\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli.orchestrate._checkpoint\",\n        \"lionhub.orchestration.flow.checkpoint\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._schedule_validation\",\n        \"lionhub.orchestration.schedule.validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_action_validation\",\n        \"lionhub.orchestration.schedule.action_validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_timing\",\n        \"lionhub.orchestration.schedule.timing\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio._timezone_rules\",\n        \"lionhub.orchestration.schedule._timezone_rules\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_execution_root\",\n        \"lionhub.orchestration.schedule.execution_root\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_declaration\",\n        \"lionhub.orchestration.schedule.declaration\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_export\",\n        \"lionhub.orchestration.schedule.export\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.project_lookup\",\n        \"lionhub.orchestration.project_store\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.scheduler\", \"lionhub.orchestration.scheduler\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services.scheduler_state\",\n        \"lionhub.orchestration.scheduler.scheduler_state\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.db_maintenance\",\n        \"lionhub.orchestration.scheduler.db_maintenance\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.retention_archive\",\n        \"lionhub.orchestration.scheduler.retention_archive\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.lifecycle\",\n        \"lionhub.orchestration.scheduler.lifecycle\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.terminal_reconciliation\",\n        \"lionhub.orchestration.scheduler.terminal_reconciliation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.services._db\", \"lionhub.orchestration.state_store\", \"0.38.0\", \"2.0.0\"),\n)",
   "settings_declarations": [
     "model_config = SettingsConfigDict(\n        # A later file overrides an earlier one and the environment overrides every file, so the\n        # user-wide file under LIONAGI_HOME supplies defaults the working directory can replace.\n        env_file=(LIONAGI_HOME / \".env\", \".env\", \".env.local\", \".secrets.env\"),\n        env_file_encoding=\"utf-8\",\n        case_sensitive=False,\n        extra=\"ignore\",\n    )",
     "aiocache_config: CacheConfig = Field(\n        default_factory=CacheConfig, description=\"Cache settings for aiocache\"\n    )",

@@ -94,7 +94,7 @@ from lionagi import FieldModel, OperableModel, load_mcp_tools
 Feature-specific APIs intentionally live in their subpackages:
 
 ```python
-from lionagi.agent import AgentSpec, PermissionPolicy, create_agent
+from lionhub.agent import AgentSpec, PermissionPolicy, create_agent
 from lionhub.orchestration.engines import ResearchEngine, ReviewEngine, CodingEngine
 from lionagi.hooks import HookBus, HookPoint, hook
 from lionagi.testing import ScriptModel, ScriptedEndpoint, TestBranch

@@ -1191,7 +1191,7 @@ profile for this decision — the profile reloaded this leg (`has_role_key`) des
 was passed to *this* `-a`, not how the persisted branch was originally built; resuming a
 role-composed branch under a different, plain profile (or the same profile with `role:` since
 removed) would then make the guard treat it as plain and clobber its composed message. Instead,
-`create_agent` (`lionagi/agent/factory.py`) stamps every branch it builds with an immutable
+`create_agent` (`lionhub/src/lionhub/agent/factory.py`) stamps every branch it builds with an immutable
 `CREATE_AGENT_BRANCH_ORIGIN_KEY` marker in `branch.metadata`, which round-trips through
 `Branch.to_dict()`/`from_dict()` with the rest of `metadata`. On a resumed/continued leg,
 `_run_agent` consults that marker on the reloaded branch instead of re-deriving the guard from
@@ -1238,7 +1238,7 @@ before plus a pointer to the opt-in:
   permissions.
 - `api_tools: write` — the read set plus `editor` and `bash`, on macOS only (ADR-0041
   Amendment 2). `_make_api_agent_spec` sets `AgentSpec.seatbelt` to
-  `SeatbeltPolicy.for_workspace(cwd)` (`lionagi/tools/_seatbelt.py`), and every bash command and
+  `SeatbeltPolicy.for_workspace(cwd)` (`lionhub/src/lionhub/tools/_seatbelt.py`), and every bash command and
   the final write of every editor `write` or `edit` run as `sandbox-exec -D ... -p <policy> --
   <argv>`: deny by default, reads unrestricted, writes under the resolved `cwd`, the uv cache
   and the temporary directory, `cwd/.git` read-only. The editor's write child is
@@ -1278,7 +1278,7 @@ before plus a pointer to the opt-in:
   instruction standing in for the one about to be sent) reaches 80% of the ceiling, the host folds
   older tool calls and results into a note
   that lists them, then, if that is not enough, older reasoning into a summary from one model call,
-  down toward 60% (`lionagi/agent/context_fold.py`). A request the ceiling still refuses is folded
+  down toward 60% (`lionhub/src/lionhub/agent/context_fold.py`). A request the ceiling still refuses is folded
   and the loop continues, at most twice per turn (the task, or one queued message); a refusal the
   fold cannot clear fails the turn.
   The run's `run.json` records every fold under `context_folds`. Any other value, or

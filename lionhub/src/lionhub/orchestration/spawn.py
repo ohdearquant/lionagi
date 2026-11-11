@@ -383,7 +383,7 @@ def build_chat_model(
             model, codex_profile_overrides = resolved_profile
             progress(f"codex profile {profile_name!r} resolves to model {model!r}")
     if mcp_servers is not None or mcp_exclusive:
-        from lionagi.agent.factory import apply_forwarded_mcp_servers
+        from lionhub.agent.factory import apply_forwarded_mcp_servers
 
         # Whether/how this provider accepts a server set (e.g. codex via config
         # overrides) is decided by apply_forwarded_mcp_servers, not here. An

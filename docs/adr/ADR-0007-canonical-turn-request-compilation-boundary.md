@@ -574,14 +574,14 @@ lines:
   code;
 - an eviction path exists outside the compiler: the context tool's `evict` and
   `evict_action_results` actions remove messages from the active view
-  (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`) by excluding them from
-  `metadata["current_progression"]` (`lionagi/tools/context/context.py::ContextTool.bind._ensure_cp`), which `Branch.progression` returns in place of
+  (`lionhub/src/lionhub/tools/context/context.py::ContextTool.bind.context_tool`) by excluding them from
+  `metadata["current_progression"]` (`lionhub/src/lionhub/tools/context/context.py::ContextTool.bind._ensure_cp`), which `Branch.progression` returns in place of
   the manager's progression when it is present (`lionagi/session/branch.py::Branch.progression`). An evicted
   message vanishes from the compiled prompt with no marker and no left-out entry, so
   "an empty `left_out` means nothing was left out" is false today for any evicted message;
 - a compaction path exists there too: the context tool's `compact` action replaces a span of
   messages with one assistant summary carrying `[CONTEXT COMPACTION]` and excludes the originals
-  from the active view (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`, the summary at `lionagi/tools/context/context.py` `note = await msgs.a_add_message(`).
+  from the active view (`lionhub/src/lionhub/tools/context/context.py::ContextTool.bind.context_tool`, the summary at `lionhub/src/lionhub/tools/context/context.py` `note = await msgs.a_add_message(`).
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
@@ -625,7 +625,7 @@ lines:
   than by a bound. What exists for history and tool results is the model-window lookup
   (`lookup_context_window()`, `lionagi/service/token_budget.py::lookup_context_window`, reached through
   `get_context_window()` at `lionagi/service/token_budget.py::get_context_window`, the limit `get_token_budget()` at `lionagi/service/token_budget.py::get_token_budget` measures usage
-  against), whose result informs the nudger (`lionagi/agent/nudge.py::NudgeEngine._build_context`) rather than the compiler, so it never
+  against), whose result informs the nudger (`lionhub/src/lionhub/agent/nudge.py::NudgeEngine._build_context`) rather than the compiler, so it never
   cuts or records anything.
 
 ### D7 — Every bound has two visible states

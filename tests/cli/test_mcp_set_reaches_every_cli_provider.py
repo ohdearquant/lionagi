@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.agent.factory import apply_forwarded_mcp_servers
+from lionhub.agent.factory import apply_forwarded_mcp_servers
 from tests.cli.test_agent_preset_mcp_handover import _wire_agent_stubs
 
 CODEX_SPEC = "codex/gpt-5.3-codex"
@@ -472,9 +472,9 @@ def _codex_model_with_child_home(child_home: Path):
 def test_an_agent_model_holding_the_child_env_is_judged_by_that_env(codex_home, tmp_path):
     """create_agent's hand-off reads the root `profile` key from the config the model's own
     child env names, though that env is not in the request kwargs."""
-    from lionagi.agent.factory import _forward_mcp_to_cli_request
-    from lionagi.agent.spec import AgentSpec
     from lionagi.session.branch import Branch
+    from lionhub.agent.factory import _forward_mcp_to_cli_request
+    from lionhub.agent.spec import AgentSpec
 
     codex_home.write_config({"kept": {"command": "kept-mcp"}})
     child_home = tmp_path / "child-codex-home"
@@ -640,7 +640,7 @@ def test_secret_fields_are_refused_on_a_request_that_ignores_the_user_config(cod
 
 
 def test_an_ignored_user_config_is_a_carried_set_and_a_disable_is_not():
-    from lionagi.agent.factory import request_kwargs_carry_forwarded_mcp
+    from lionhub.agent.factory import request_kwargs_carry_forwarded_mcp
 
     assert request_kwargs_carry_forwarded_mcp({"ignore_user_config": True})
     assert not request_kwargs_carry_forwarded_mcp({"ignore_user_config": False})
@@ -715,9 +715,9 @@ async def test_codex_disables_only_servers_its_own_config_declares(
     to disable only the names its own config declares: an
     `mcp_servers.<name>.enabled=false` override for any other name is a table
     with no server in it, which codex refuses to start with."""
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.spec import AgentSpec
     from lionagi.protocols.action.manager import ActionManager
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
 
     async def skip_native_registration(self, *args, **kwargs):
         return {}

@@ -28,13 +28,13 @@ ENUMS = [
     ("lionagi.service.resilience", "CircuitState"),
     ("lionagi.session.control", "LoopDirective"),
     ("lionagi.state.health", "SessionHealth"),
-    ("lionagi.tools.base", "ResourceCategory"),
-    ("lionagi.tools.code.search", "SearchAction"),
-    ("lionagi.tools.coding", "SandboxAction"),
-    ("lionagi.tools.communication.messenger", "MessengerAction"),
-    ("lionagi.tools.context.context", "ContextAction"),
-    ("lionagi.tools.file.editor", "EditorAction"),
-    ("lionagi.tools.file.reader", "ReaderAction"),
+    ("lionhub.tools.base", "ResourceCategory"),
+    ("lionhub.tools.code.search", "SearchAction"),
+    ("lionhub.tools.coding", "SandboxAction"),
+    ("lionhub.tools.communication.messenger", "MessengerAction"),
+    ("lionhub.tools.context.context", "ContextAction"),
+    ("lionhub.tools.file.editor", "EditorAction"),
+    ("lionhub.tools.file.reader", "ReaderAction"),
 ]
 
 

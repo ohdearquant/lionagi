@@ -800,7 +800,7 @@ def capture_import_laziness() -> dict[str, Any]:
 
 COMPAT_MODULES: tuple[str, ...] = (
     "lionagi.protocols.types",
-    "lionagi.tools.types",
+    "lionhub.tools.types",
     "lionagi.operations.parse",
     "lionagi.service.connections.cli_endpoint",
     "lionagi.dispatch.revival",

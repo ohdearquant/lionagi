@@ -26,7 +26,7 @@ from lionagi.cli.orchestrate._orchestration import (
 )
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.session.exchange import Exchange
-from lionagi.tools.communication.messenger import LionMessenger
+from lionhub.tools.communication.messenger import LionMessenger
 
 
 class _FakeObserver:

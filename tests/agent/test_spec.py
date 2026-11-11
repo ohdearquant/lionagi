@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.agent.factory import create_agent
-from lionagi.agent.permissions import PermissionPolicy
-from lionagi.agent.spec import AgentSpec, _resolve_permissions
 from lionagi.casts.profile import Profile
 from lionagi.session.branch import Branch
+from lionhub.agent.factory import create_agent
+from lionhub.agent.permissions import PermissionPolicy
+from lionhub.agent.spec import AgentSpec, _resolve_permissions
 
 
 class TestResolvePermissions:
@@ -308,7 +308,7 @@ class TestCreateAgentWithSpec:
         assert isinstance(branch, Branch)
 
     async def test_load_settings_false_no_call(self, monkeypatch):
-        import lionagi.agent.settings as settings_mod
+        import lionhub.agent.settings as settings_mod
 
         calls = []
 

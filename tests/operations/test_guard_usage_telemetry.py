@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.agent.gate import GateDeniedError, GateResult
 from lionagi.cli._api_usage import APIUsageCollector
 from lionagi.hooks.bus import HookBus, HookPoint
 from lionagi.operations.act.act import _act
@@ -15,6 +14,7 @@ from lionagi.protocols.action.tool_hooks import ToolHookDeniedError, ToolPreDeci
 from lionagi.service._api_telemetry import collect_api_turn
 from lionagi.session import Session
 from lionagi.state.compat import StateCompatibilityRefused
+from lionhub.agent.gate import GateDeniedError, GateResult
 from tests.operations.test_act import _make_branch_with_tool
 
 REQUEST = {"function": "add", "arguments": {"a": 2, "b": 3}}

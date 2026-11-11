@@ -8,8 +8,8 @@ omit =
     lionagi/service/connections/providers/*
     lionagi/service/third_party/*
     lionagi/operations/_visualize_graph.py
-    lionagi/tools/file/reader.py
-    lionagi/tools/types.py
+    lionhub/src/lionhub/tools/file/reader.py
+    lionhub/src/lionhub/tools/types.py
     lionagi/_types.py
     lionagi/version.py
 

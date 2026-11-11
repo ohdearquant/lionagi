@@ -12,7 +12,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from lionagi import FieldModel
-from lionagi.agent import AgentSpec, create_agent
 from lionagi.casts.emission import (
     SPAWN_ALLOWED_OPERATIONS,
     SpawnRequest,
@@ -22,6 +21,7 @@ from lionagi.casts.emission import (
 from lionagi.operations.node import Operation, create_operation
 from lionagi.protocols.graph.edge import Edge
 from lionagi.protocols.graph.graph import Graph
+from lionhub.agent import AgentSpec, create_agent
 
 from .prompts import (
     DECOMPOSE_DAG_INSTRUCTION,

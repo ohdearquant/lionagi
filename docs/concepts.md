@@ -216,8 +216,8 @@ a role/profile with model, tools, permissions, policy pack, context management, 
 tool hooks, then `create_agent()` wires a ready-to-use `Branch`.
 
 ```python
-from lionagi.agent import AgentSpec, create_agent
-from lionagi.agent.hooks import log_tool_call
+from lionhub.agent import AgentSpec, create_agent
+from lionhub.agent.hooks import log_tool_call
 
 spec = AgentSpec.coding(
     model="openai/gpt-4.1",
@@ -259,7 +259,7 @@ graph, prefer graph edges unless workers genuinely need asynchronous messages.
 `SandboxSession` creates an isolated git worktree for reversible code changes.
 
 ```python
-from lionagi.tools.sandbox import create_sandbox, sandbox_diff, sandbox_discard
+from lionhub.tools.sandbox import create_sandbox, sandbox_diff, sandbox_discard
 
 sandbox = await create_sandbox(repo_root="/path/to/project")
 agent = await create_agent(AgentSpec.coding(cwd=sandbox.worktree_path))

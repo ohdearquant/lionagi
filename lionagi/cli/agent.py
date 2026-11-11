@@ -414,7 +414,7 @@ def _make_coding_preset(
     role: str = "implementer",
 ):
     """Construct an AgentSpec.coding() instance; isolated for test monkeypatching."""
-    from lionagi.agent.spec import AgentSpec
+    from lionhub.agent.spec import AgentSpec
 
     return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt, role=role)
 
@@ -506,7 +506,7 @@ def _profile_api_launch(profile) -> dict | None:
 
 def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -> dict:
     """Validate requested settings, preserving unset values separately from defaults."""
-    from lionagi.agent.context_fold import _FOLD_AT, _FOLD_TARGET, _TAIL_MARGIN
+    from lionhub.agent.context_fold import _FOLD_AT, _FOLD_TARGET, _TAIL_MARGIN
 
     settings = {key: values.get(key) for key in _API_POLICY_KEYS}
     for key, value in settings.items():
@@ -553,7 +553,7 @@ def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -
 
 
 def _require_seatbelt(tools: str, *, label: str) -> None:
-    from lionagi.tools._seatbelt import SANDBOX_EXEC, seatbelt_available
+    from lionhub.tools._seatbelt import SANDBOX_EXEC, seatbelt_available
 
     if tools in _API_CONFINED_TOOL_SETS and not seatbelt_available():
         raise ConfigurationError(
@@ -624,14 +624,14 @@ def _make_api_agent_spec(
 ):
     """The AgentSpec for an API-model leg: the named tool set, path-guarded to cwd, and for
     the write set the Seatbelt policy its editor and bash run under."""
-    from lionagi.agent.spec import AgentSpec, _wire_secure_guards
+    from lionhub.agent.spec import AgentSpec, _wire_secure_guards
 
     spec = AgentSpec.compose(
         role, effort=effort, tools=["coding"], system_prompt=system_prompt, cwd=cwd
     )
     spec.coding_tools = _API_TOOL_SETS[tools]
     if tools in _API_CONFINED_TOOL_SETS:
-        from lionagi.tools._seatbelt import SeatbeltPolicy
+        from lionhub.tools._seatbelt import SeatbeltPolicy
 
         spec.seatbelt = SeatbeltPolicy.for_workspace(
             cwd or Path.cwd(), network=network, _command_env_names=_command_env_names
@@ -715,13 +715,13 @@ def _install_api_input_cap(
     An Anthropic model that names no output limit is given ``_API_MAX_OUTPUT_TOKENS``.
     Returns the branch's ContextFold, or None when the leg runs without a cap.
     """
-    from lionagi.agent.context_fold import (
+    from lionagi.ln import copy
+    from lionhub.agent.context_fold import (
         _FOLD_AT,
         _FOLD_TARGET,
         _TAIL_MARGIN,
         install_context_fold,
     )
-    from lionagi.ln import copy
 
     # Profile nulls have already been refused. Here None is an unset requested value.
     _api_requested_settings(
@@ -836,7 +836,7 @@ async def _run_api_turn(
 
     A refusal by the input cap fails the turn even when the loop caught it: a refused
     request must never hand back an earlier round's text as the answer. With a *fold*
-    (lionagi.agent.context_fold), a request the cap refused despite the fold's own
+    (lionhub.agent.context_fold), a request the cap refused despite the fold's own
     threshold is folded instead, calibrated by the refusal's estimate, and the loop
     continues, at most ``_API_FOLD_RESUMES`` times; a refusal the fold cannot get under the
     cap fails the turn as before.
@@ -2075,7 +2075,7 @@ async def _run_agent(
                 )
 
         if model_str is not None:
-            from lionagi.agent.factory import _parse_agent_model_spec
+            from lionhub.agent.factory import _parse_agent_model_spec
 
             ms = _parse_agent_model_spec(model_str, origin=model_origin)
             if branch is not None and "/" not in ms.model and ms.model not in BACKENDS:
@@ -2106,7 +2106,7 @@ async def _run_agent(
                 "or use --resume / --continue-last to reopen an existing one."
             )
 
-        from lionagi.agent.factory import _canonical_provider, _reject_unforwardable_explicit_mcp
+        from lionhub.agent.factory import _canonical_provider, _reject_unforwardable_explicit_mcp
 
         try:
             _reject_unforwardable_explicit_mcp(
@@ -2166,7 +2166,7 @@ async def _run_agent(
 
                 chat_model = iModel(model=chat_model)
             if not chat_model.is_cli and effort is not None:
-                from lionagi.agent.factory import _set_api_effort
+                from lionhub.agent.factory import _set_api_effort
 
                 if not _set_api_effort(
                     chat_model.endpoint.config.kwargs,
@@ -2177,7 +2177,7 @@ async def _run_agent(
                 ):
                     effort = None
             elif not chat_model.is_cli and requested_effort is not None:
-                from lionagi.agent.factory import _set_api_effort
+                from lionhub.agent.factory import _set_api_effort
 
                 if _set_api_effort(
                     chat_model.endpoint.config.kwargs,
@@ -2204,7 +2204,7 @@ async def _run_agent(
             # message waits for the request that call produces (below).
             takes_create_agent_path = preset == "coding" or has_role_key or api_launch is not None
             if not takes_create_agent_path:
-                from lionagi.agent.factory import request_kwargs_carry_forwarded_mcp
+                from lionhub.agent.factory import request_kwargs_carry_forwarded_mcp
 
                 # Read the request build_chat_model produced: the two transports
                 # put the set in different places, and a provider name is what got
@@ -2223,7 +2223,7 @@ async def _run_agent(
                 took_create_agent_path = True
                 # Use create_agent so CodingToolkit tools and path-guards are wired;
                 # compose the profile extension into the spec before calling it.
-                from lionagi.agent.factory import (
+                from lionhub.agent.factory import (
                     create_agent,
                     request_carries_forwarded_mcp,
                 )
@@ -2318,7 +2318,7 @@ async def _run_agent(
                 # agent_name (guaranteed non-empty here), NOT profile.name — the latter's
                 # eager attribute access fires before the helper's guard can early-return.
                 if profile is not None:
-                    from lionagi.agent.factory import register_profile_injection
+                    from lionhub.agent.factory import register_profile_injection
 
                     register_profile_injection(branch, agent_name, profile)
 
@@ -2344,7 +2344,7 @@ async def _run_agent(
             )
             candidate = None
             if on_tool_loop:
-                from lionagi.agent.factory import _set_api_effort
+                from lionhub.agent.factory import _set_api_effort
 
                 actual_provider = _canonical_provider(branch.chat_model.endpoint.config.provider)
                 if model_str is not None and canonical != actual_provider:
@@ -2455,7 +2455,7 @@ async def _run_agent(
             # to it just as a new one does; the persisted branch carries the model,
             # not the caller's directory. Which providers can be given a set, and
             # over which transport, is not this call site's question to answer.
-            from lionagi.agent.factory import (
+            from lionhub.agent.factory import (
                 _drop_forwarded_mcp_servers,
                 _missing_generated_codex_profile,
                 apply_forwarded_mcp_servers,
@@ -2543,7 +2543,7 @@ async def _run_agent(
             if is_resumed_branch:
                 # A stored branch keeps its messages, not its tools, so the read set
                 # is bound again, guarded to this invocation's working directory.
-                from lionagi.agent.factory import _register_coding_tools
+                from lionhub.agent.factory import _register_coding_tools
 
                 command_names = None
                 if api_launch["tools"] in _API_CONFINED_TOOL_SETS:
@@ -2612,7 +2612,7 @@ async def _run_agent(
             }
 
         if is_resumed_branch:
-            from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
+            from lionhub.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
 
             composed_via_create_agent = bool(branch.metadata.get(CREATE_AGENT_BRANCH_ORIGIN_KEY))
         else:

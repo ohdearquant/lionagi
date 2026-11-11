@@ -374,7 +374,7 @@ Then the moves:
 
 1. `tools`, `agent` and `casts` in one change, after the seams and after the CLI catalog has left the core (A4,
    step 3). `tools/coding.py` imports `agent` at 6 sites and `agent` imports `tools` at 12 sites in five files
-   (`lionagi/agent/permissions.py::_SHELL_CONTROL` at module scope, and `agent/factory.py`, `context_fold.py`, `hooks.py`,
+   (`lionagi/agent/permissions.py:14@b9bb1deb` at module scope, and `agent/factory.py`, `context_fold.py`, `hooks.py`,
    `nudge.py`), so neither can move first without a package under `lionagi/` naming `lionhub`. `casts` may join
    this change or follow it: `agent` imports `casts` and `casts` does not import `agent`. `agent` goes to
    `lionhub.agent`; `casts` goes to `lionhub.agent.casts` with its own row, so neither package initializer

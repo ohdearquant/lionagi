@@ -213,6 +213,8 @@ assert legacy_writer.to_dict.__func__ is canonical.CheckpointWriter.to_dict
 # One contract for each row of the move table, in the table's order. They are written out
 # here and never derived from it: assert_contracts_match_moved compares the two.
 CONTRACTS: tuple[MoveContract, ...] = (
+    MoveContract(old="lionagi.tools", new="lionhub.tools", kind="package"),
+    MoveContract(old="lionagi.agent", new="lionhub.agent", kind="package"),
     MoveContract(
         old="lionagi.orchestration",
         new="lionhub.orchestration",

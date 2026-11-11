@@ -44,7 +44,7 @@ and the local `bash` tool's cwd is per-call (concurrent local tasks would race o
 process cwd). Daytona cloud sandboxes give one isolated environment per task,
 parallelism, and a clean place to run the oracle. A Daytona-backed execution
 backend for lionagi's coding tools is the integration (extends
-`lionagi/tools/sandbox.py`, which today only does local git worktrees).
+`lionhub/src/lionhub/tools/sandbox.py`, which today only does local git worktrees).
 
 ## Status
 

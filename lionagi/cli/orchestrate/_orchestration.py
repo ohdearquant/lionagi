@@ -23,18 +23,18 @@ if TYPE_CHECKING:
 
     from lionagi.casts.pack import Pack
     from lionagi.session.exchange import Exchange
-    from lionagi.tools.communication.messenger import LionMessenger
+    from lionhub.tools.communication.messenger import LionMessenger
 
 from lionagi import Branch, Session
 from lionagi._errors import ConfigurationError
-from lionagi.agent import AgentSpec, create_agent
-from lionagi.agent.factory import register_profile_injection
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes, sleep
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
+from lionhub.agent import AgentSpec, create_agent
+from lionhub.agent.factory import register_profile_injection
 from lionhub.orchestration.console import hint, warn
 from lionhub.orchestration.job import validate_cwd_exists
 from lionhub.orchestration.runs import (
@@ -333,7 +333,7 @@ def casts_role_system(role: str, modes: list[str] | None = None) -> str | None:
         r = Role.load(role)
     except ValueError:
         return None
-    from lionagi.agent import AgentSpec
+    from lionhub.agent import AgentSpec
 
     msg = AgentSpec.compose(r, modes=list(modes) if modes else None).build_system_message()
     if not msg:
@@ -759,8 +759,8 @@ def _isolate_worker_cli_config(
     """
     if not getattr(imodel, "is_cli", False):
         return
-    from lionagi.agent.factory import _canonical_provider
     from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+    from lionhub.agent.factory import _canonical_provider
 
     kwargs = imodel.endpoint.config.kwargs
     provider = _canonical_provider(imodel.endpoint.config.provider)
@@ -887,8 +887,8 @@ def _uncontainable_cli_provider(imodel) -> str | None:
     """
     if not getattr(imodel, "is_cli", False):
         return None
-    from lionagi.agent.factory import _canonical_provider
     from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+    from lionhub.agent.factory import _canonical_provider
 
     provider = _canonical_provider(imodel.endpoint.config.provider)
     if provider == "codex" or provider in _CLAUDE_PROVIDER_NAMES:
@@ -910,7 +910,7 @@ def _check_orchestrator_clone_mcp_set(env: OrchestrationEnv) -> None:
     imodel = getattr(env.orc_branch, "chat_model", None)
     if not servers or not getattr(imodel, "is_cli", False):
         return
-    from lionagi.agent.factory import _canonical_provider, apply_forwarded_mcp_servers
+    from lionhub.agent.factory import _canonical_provider, apply_forwarded_mcp_servers
 
     provider = imodel.endpoint.config.provider
     if _canonical_provider(provider) != "codex":
@@ -936,7 +936,7 @@ def _check_orchestrator_clone_profile(env: OrchestrationEnv) -> None:
     imodel = getattr(env.orc_branch, "chat_model", None)
     if not getattr(imodel, "is_cli", False):
         return
-    from lionagi.agent.factory import _canonical_provider
+    from lionhub.agent.factory import _canonical_provider
     from lionhub.providers.openai._codex_profile import (
         refuse_codex_profile_run_settings,
         resolve_codex_config_profile,
@@ -973,7 +973,7 @@ def _hand_mcp_servers(
     """
     if servers is None:
         return
-    from lionagi.agent.factory import apply_forwarded_mcp_servers
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
 
     provider = imodel.endpoint.config.provider
     applied = apply_forwarded_mcp_servers(
@@ -1145,8 +1145,8 @@ async def setup_orchestration(
         # An empty set left the orchestrator loading no user config, so the effort
         # build_imodel_from_spec derived from that config goes too (create_agent
         # drops it the same way).
-        from lionagi.agent.factory import _canonical_provider
         from lionagi.service.providers import PROVIDER_EFFORT_KWARG
+        from lionhub.agent.factory import _canonical_provider
 
         effort_kwarg = PROVIDER_EFFORT_KWARG.get(_canonical_provider(_orc_provider))
         if effort_kwarg:

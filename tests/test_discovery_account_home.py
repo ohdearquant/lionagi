@@ -17,8 +17,8 @@ import pytest
 
 from lionagi import _paths
 from lionagi import _settings as settings_mod
-from lionagi.agent.factory import _resolve_mcp_path
-from lionagi.agent.settings import load_settings
+from lionhub.agent.factory import _resolve_mcp_path
+from lionhub.agent.settings import load_settings
 
 
 def _lionagi(root: Path, *, mcp: bool = False, settings: str | None = None) -> Path:

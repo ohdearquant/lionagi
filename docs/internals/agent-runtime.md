@@ -1,13 +1,13 @@
 # Agent runtime internals
 
 Reference material extracted from comments/docstrings in `lionagi/ln/`,
-`lionagi/agent/`, `lionagi/session/`, and `lionagi/tools/` during the
+`lionhub/src/lionhub/agent/`, `lionagi/session/`, and `lionhub/src/lionhub/tools/` during the
 comment/docstring density pass. Each heading is pointed to by a
 `# See docs/internals/agent-runtime.md#<anchor>` comment at its call site.
 
 ## create-agent-branch-origin
 
-`CREATE_AGENT_BRANCH_ORIGIN_KEY` (`lionagi/agent/factory.py`) is stamped into
+`CREATE_AGENT_BRANCH_ORIGIN_KEY` (`lionhub/src/lionhub/agent/factory.py`) is stamped into
 `branch.metadata` for every `Branch` `create_agent` produces. The key's
 presence — not the current invocation's profile — is the durable, immutable
 record that a branch's system message was composed via `create_agent` (role
@@ -21,7 +21,7 @@ or may have since dropped its `role:` key). See `lionagi/cli/agent.py`
 
 ## external-hook-wiring
 
-`_wire_external_hooks` (`lionagi/agent/factory.py`) attaches
+`_wire_external_hooks` (`lionhub/src/lionhub/agent/factory.py`) attaches
 `hooks_external` entries (parsed by `apply_hooks_from_settings`) to the seam
 their event maps to.
 
@@ -42,7 +42,7 @@ reparented to another one, rather than silently never firing.
 
 `ActionManager.load_mcp_config()` no longer implies trust when its
 `mcp_security` argument is omitted (an omitted policy falls through to the
-wrapper's fail-closed default instead). `_load_mcp` (`lionagi/agent/factory.py`)
+wrapper's fail-closed default instead). `_load_mcp` (`lionhub/src/lionhub/agent/factory.py`)
 reaching the point where it calls `MCPSecurityConfig.trusted()` already
 required an explicit trust act: either `spec.mcp_config_path` was set
 directly, or `mcp_path` resolved from the operator's own home-level
@@ -54,7 +54,7 @@ consumer — not a silent default buried in the generic library call.
 
 ## mcp-server-forwarding
 
-`apply_forwarded_mcp_servers` (`lionagi/agent/factory.py`) writes a resolved
+`apply_forwarded_mcp_servers` (`lionhub/src/lionhub/agent/factory.py`) writes a resolved
 MCP server set into a CLI request's kwargs. Every spawn path that resolves a
 server set applies it here, so "can this leg be given a set?" has one answer
 and one implementation.
@@ -274,7 +274,7 @@ attachment.
 A standalone branch built via `create_agent` has no bus yet, so
 `hooks_external` entries bound to bus-only events (`UserPromptSubmit`,
 `SessionStart`/`SessionEnd`/`PostToolUseFailure`) cannot attach at config
-time; `lionagi.agent.factory._wire_external_hooks` queues them onto
+time; `lionhub.agent.factory._wire_external_hooks` queues them onto
 `_pending_hook_bus_entries` instead of dropping them. That list is retained
 for the branch's lifetime, not cleared after the first flush, so a branch
 moved between sessions (`Session.remove_branch` then
@@ -363,7 +363,7 @@ main thread, where `signal.signal` raises. `li monitor run` and the
 
 ## untrusted-recall-wrapper
 
-`KhiveInjectionProvider` (`lionagi/tools/khive_injection.py`) wraps recalled
+`KhiveInjectionProvider` (`lionhub/src/lionhub/tools/khive_injection.py`) wraps recalled
 content in an `<untrusted-context>` block before injecting it into a
 branch's context, because that content originates from prior (possibly
 attacker-influenced) tool output and repo content and must not be mistaken

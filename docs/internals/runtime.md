@@ -2,8 +2,8 @@
 
 Terse, per-module reference for invariants, protocol contracts, and non-obvious design
 rationale that used to live as long-form docstrings/comments in the runtime source
-(`lionagi/state/`, `lionagi/service/`, `lionhub/src/lionhub/providers/`, `lionagi/tools/`,
-`lionagi/agent/`, `lionagi/testing/`, `lionhub/src/lionhub/orchestration/dispatch/`, `lionagi/hooks/`). The source
+(`lionagi/state/`, `lionagi/service/`, `lionhub/src/lionhub/providers/`, `lionhub/src/lionhub/tools/`,
+`lionhub/src/lionhub/agent/`, `lionagi/testing/`, `lionhub/src/lionhub/orchestration/dispatch/`, `lionagi/hooks/`). The source
 now carries a 1-2 line pointer; this file carries the substance. Organized by module path.
 
 ## lionagi/state/
@@ -940,7 +940,7 @@ propertyNames) deny by default for executor-signaling tools instead of admitting
   than enumerating `_configs` afterward, since it may contain servers from earlier, unrelated
   calls in the same process.
 
-## lionagi/agent/, lionhub/src/lionhub/orchestration/dispatch/, lionagi/hooks/
+## lionhub/src/lionhub/agent/, lionhub/src/lionhub/orchestration/dispatch/, lionagi/hooks/
 
 ### `agent/factory.py`
 
@@ -1680,7 +1680,7 @@ since each clone only needs its own future calls tracked, not a defensively-copi
   entries are exhausted. This order (when-matchers-first, then positional) is the core scripted-
   fixture replay semantic and isn't obvious from the fixture's public surface alone.
 
-## lionagi/tools/
+## lionhub/src/lionhub/tools/
 
 ### `sandbox_backend.py`
 

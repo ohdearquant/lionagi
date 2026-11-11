@@ -423,7 +423,7 @@ async def test_a_read_set_run_continues_with_only_the_read_tools(
 @pytest.fixture
 def seatbelt(monkeypatch, tmp_path):
     """The macOS sandbox the write set needs is reported available, as on a Mac."""
-    from lionagi.tools import _seatbelt
+    from lionhub.tools import _seatbelt
 
     monkeypatch.setattr(_seatbelt, "seatbelt_available", lambda: True)
     monkeypatch.setattr(
