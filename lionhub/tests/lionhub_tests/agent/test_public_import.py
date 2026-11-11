@@ -26,11 +26,13 @@ def test_pyyaml_is_a_core_dependency():
     Importing lionhub.agent requires PyYAML at module load time; if it regresses
     to an optional extra, a base install breaks again. This pins the contract.
     """
-    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    if not pyproject.is_file():
+    root = Path(__file__).resolve().parents[4]
+    pyproject = root / "pyproject.toml"
+    if not (root / "lionagi" / "__init__.py").is_file():
         import pytest
 
-        pytest.skip("pyproject.toml not available (installed package)")
+        pytest.skip("not a source checkout (installed package)")
+    assert pyproject.is_file(), f"source checkout without {pyproject}"
 
     data = toml.load(pyproject)
     core_deps = data["project"]["dependencies"]
