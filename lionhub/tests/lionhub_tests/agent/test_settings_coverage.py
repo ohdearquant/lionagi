@@ -50,8 +50,24 @@ def test_import_hook_warns_and_skips_nonexistent_trusted_module(caplog):
         trusted_hook_modules={"lionhub.agent.hooks_nonexistent"},
     )
     assert result is None
-    assert "Could not import configured hook lionhub.agent.hooks_nonexistent:fn" in caplog.text
+    assert (
+        "Could not import the module of configured hook lionhub.agent.hooks_nonexistent:fn"
+        in caplog.text
+    )
     assert "No module named" in caplog.text
+
+
+def test_import_hook_warns_on_a_missing_attribute(caplog):
+    result = _import_hook(
+        "lionhub.agent.hooks:nonexistent_function_xyz_abc",
+        trusted_hook_modules={"lionagi.agent.hooks"},
+    )
+    assert result is None
+    assert (
+        "Configured hook lionhub.agent.hooks:nonexistent_function_xyz_abc names no attribute"
+        in caplog.text
+    )
+    assert "Could not import the module" not in caplog.text
 
 
 def test_apply_hooks_warns_and_skips_unavailable_hook(caplog):
@@ -62,7 +78,10 @@ def test_apply_hooks_warns_and_skips_unavailable_hook(caplog):
         trusted_hook_modules={"lionhub.agent.hooks_nonexistent"},
     )
     assert result is config
-    assert "Could not import configured hook lionhub.agent.hooks_nonexistent:fn" in caplog.text
+    assert (
+        "Could not import the module of configured hook lionhub.agent.hooks_nonexistent:fn"
+        in caplog.text
+    )
     assert "No module named" in caplog.text
     assert config.hook_handlers == {}
 

@@ -26,7 +26,7 @@ _CLI_LOGGERS = (
 )
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def _restore_cli_logging():
     """Restore logger state after scheduler tests exercise CLI behavior."""
     import logging

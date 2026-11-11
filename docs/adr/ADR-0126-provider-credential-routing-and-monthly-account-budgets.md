@@ -1131,7 +1131,9 @@ A hold that leaked stops consuming budget after two hours without an operator ac
 
 ## Amendment 12 (2026-11-10) — a rejection for the account's billing state blocks that account
 
-On 2026-11-10 an account whose prepaid credit had run out kept being chosen. Two routed runs failed at their first call with `request_rejected` and class `credit_balance_low`, and the ledger still listed the account as unblocked, so D3's utilisation-ratio ordering chose it for every new scope until an operator blocked it. Amendment 8 Decision 2 and Amendment 9 Decision 7 make that the designed behaviour: the class is diagnosis only and only an operator block removes the account. The caller saw a rejection and nothing that named the block as the remedy.
+On 2026-11-10 an account whose prepaid credit had run out kept being chosen. Two routed runs failed at their first call with `request_rejected` and class `credit_balance_low`, and the ledger still listed the account as unblocked, so D3's order (the account had the least spend) chose it for every new scope until an operator blocked it. Amendment 8 Decision 2 and Amendment 9 Decision 7 make that the designed behaviour: the class is diagnosis only and only an operator block removes the account. The caller saw a rejection and nothing that named the block as the remedy.
+
+Correction (2026-11-11): D3 orders candidates by utilisation ratio, not by least spend. The account was chosen under that ordering; the record above is otherwise unchanged.
 
 Amendment 8 declined to block on a class because that keys financial control on message text. For the two billing classes that cost is small and bounded. The response is HTTP 400 `invalid_request_error`, which Amendment 9 already settles at zero. The rule below matches the start of the message against fixed texts that describe the account, not the request. And the block is undone by `unblock`: a false match costs one account's availability until an operator lifts it, while a miss sends every new scope's first call to an account that cannot serve it.
 
