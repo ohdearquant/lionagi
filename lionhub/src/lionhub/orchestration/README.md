@@ -55,7 +55,10 @@ The Studio routes, the `lionhub.cli.schedule` adapter and the scheduler engine c
 Three moved modules keep the logger names they had before the move, so existing log filters keep
 matching: `state_store` logs as `lionagi.studio.services._db`, `schedule.timing` as
 `lionagi.studio.config`, and `schedule.timing` and `schedule.execution_root` log scheduler decisions
-as `lionhub.orchestration.scheduler.engine`.
+as `lionagi.studio.scheduler.engine`. Every module in `scheduler/` likewise logs under its pre-move
+name: `lionagi.studio.scheduler.*` for the package modules and `lionagi.studio.services.*` for the
+services that moved in. A handler or filter attaches to those names, not to
+`lionhub.orchestration.scheduler`.
 
 ## Moved here
 
