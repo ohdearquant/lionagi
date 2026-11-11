@@ -23,8 +23,7 @@ from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
-
-from ._scheduler_claims import claim_and_advance
+from tests._scheduler_claims import claim_and_advance
 
 
 def _schedule_row(schedule_id: str, **overrides) -> dict:

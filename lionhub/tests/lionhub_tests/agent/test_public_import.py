@@ -12,7 +12,7 @@ import pytest
 import toml
 
 
-def test_lionagi_agent_public_surface_imports():
+def test_lionhub_agent_public_surface_imports():
     """``import lionhub.agent`` exposes its documented public surface."""
     mod = importlib.import_module("lionhub.agent")
 

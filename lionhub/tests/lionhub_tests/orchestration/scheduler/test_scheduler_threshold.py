@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ._scheduler_claims import fire_with_claim
+from tests._scheduler_claims import fire_with_claim
 
 
 def _minimal_schedule(**overrides) -> dict:

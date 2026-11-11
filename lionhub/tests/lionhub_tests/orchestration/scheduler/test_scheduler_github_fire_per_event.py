@@ -572,7 +572,7 @@ def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None =
 @pytest.mark.asyncio
 async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(monkeypatch):
     """A capped scan releases nothing; a complete retry dispatches every merge once."""
-    from ._scheduler_claims import claiming_advance, persisting_update_schedule
+    from tests._scheduler_claims import claiming_advance, persisting_update_schedule
 
     initial_cursor = _cursor_for("2026-07-01T00:00:00Z", 1)
     schedule = _minimal_schedule(
@@ -795,7 +795,7 @@ async def test_every_event_in_a_batch_is_written_though_each_one_advances_the_cu
     claimed the cursor the poll started with, only the first could ever be written and a
     multi-event batch would silently serialize into one event per poll.
     """
-    from ._scheduler_claims import claiming_advance
+    from tests._scheduler_claims import claiming_advance
 
     schedule = _minimal_schedule(next_fire_at=9_000.0, poll_interval_sec=60, github_cursor=None)
     svc = _make_svc()
@@ -842,7 +842,7 @@ async def test_a_concurrent_advance_between_events_refuses_the_later_write():
     them may write it, and the cursor is what decides: next_fire_at is identical for every
     event of one poll, so claiming that instead would let both through.
     """
-    from ._scheduler_claims import claiming_advance
+    from tests._scheduler_claims import claiming_advance
 
     schedule = _minimal_schedule(next_fire_at=9_000.0, poll_interval_sec=60, github_cursor=None)
     svc = _make_svc()
@@ -910,7 +910,7 @@ async def test_a_filtered_event_between_two_dispatched_ones_does_not_break_the_c
     that followed the read position would name a value no transaction ever put in the row
     and every event after the first filtered one would be refused.
     """
-    from ._scheduler_claims import claiming_advance
+    from tests._scheduler_claims import claiming_advance
 
     schedule = _minimal_schedule(next_fire_at=9_000.0, poll_interval_sec=60, github_cursor=None)
     svc = _make_svc()

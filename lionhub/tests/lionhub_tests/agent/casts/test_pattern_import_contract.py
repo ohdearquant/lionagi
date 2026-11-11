@@ -126,7 +126,9 @@ def test_other_import_error_has_module_prefix_and_original_cause(pattern_sources
 
 
 def test_importing_casts_keeps_the_agent_parent_lazy():
-    root = __import__("pathlib").Path(__file__).resolve().parents[5]
+    from importlib.resources import files
+
+    package_src = files("lionhub.agent.casts").joinpath("../../..")
     result = subprocess.run(
         [
             sys.executable,
@@ -135,7 +137,7 @@ def test_importing_casts_keeps_the_agent_parent_lazy():
             "assert not any('lionhub.agent.' + name in sys.modules for name in "
             "('factory', 'spec', 'settings', 'permissions'))",
         ],
-        cwd=root,
+        cwd=package_src,
         capture_output=True,
         text=True,
         check=False,

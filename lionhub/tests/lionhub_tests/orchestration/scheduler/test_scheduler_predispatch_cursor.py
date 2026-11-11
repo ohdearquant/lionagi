@@ -29,8 +29,7 @@ from lionhub.orchestration.scheduler.github import (
     GithubPollResult,
     _cursor_for,
 )
-
-from ._scheduler_claims import fire_with_claim
+from tests._scheduler_claims import fire_with_claim
 
 CURSOR_AT_TICK_START = "2026-07-07T09:00:00Z"
 FIRST_EVENT_AT = "2026-07-07T10:00:00Z"

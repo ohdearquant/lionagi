@@ -50,6 +50,7 @@ The move carries D6's seven items. For this package they are:
 
 - `tests/integrations/` moves to `lionhub/tests/lionhub_tests/integrations/`, under D6 item 7.
 - `examples/ruvector_memory.py` and the scripts in `benchmarks/ruvector/` import the new path.
+- The move regenerates `tests/contracts/data/boundary_compatibility.json` for the new package paths, as D6 item 6 requires.
 - Recorded benchmark results under `benchmarks/ruvector/` keep the paths they were written with, as
   D6 item 6 requires for recorded runs.
 - `lionhub/README.md` lists the package.
