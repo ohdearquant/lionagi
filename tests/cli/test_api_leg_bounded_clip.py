@@ -8,8 +8,8 @@ import re
 
 import pytest
 
-from lionagi.agent.context_fold import ContextFold, estimate_next_request_tokens
 from lionagi.protocols.messages._result_projection import _projection_session
+from lionhub.agent.context_fold import ContextFold, estimate_next_request_tokens
 from tests.cli.test_agent_api_context_fold import (
     _active_results,
     _clip_fixture,
@@ -387,10 +387,10 @@ async def test_small_deficit_clips_effective_largest_then_oldest_only(priority):
 
 @pytest.mark.asyncio
 async def test_bounded_sixteen_undelivered_results_reach_one_real_request(monkeypatch):
-    from lionagi.agent.context_fold import install_context_fold
     from lionagi.cli.agent import _tool_results
     from lionagi.protocols.messages import ActionResponse
     from lionagi.service.connections.api_calling import estimate_payload_input_tokens
+    from lionhub.agent.context_fold import install_context_fold
     from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
     from tests.cli.test_agent_api_provider import _text
     from tests.cli.test_api_leg_bounded_results import _check_output, _sent_results
@@ -470,7 +470,7 @@ async def test_bounded_sixteen_undelivered_results_reach_one_real_request(monkey
 async def test_bounded_old_copy_survives_tightening_clone_reload_and_range_restore():
     from lionagi.cli.agent import _tool_results
     from lionagi.session.branch import Branch
-    from lionagi.tools.context.context import ContextTool
+    from lionhub.tools.context.context import ContextTool
     from tests.cli.test_api_leg_bounded_results import _check_output, _sent_results
 
     output = ("original é🦁 雪 evidence 0123456789\n" * 5000)[:100045]
@@ -682,10 +682,10 @@ async def test_bounded_forecast_differs_from_long_actual_instruction_without_cut
     monkeypatch,
 ):
     from lionagi._errors import InputTokenCapError
-    from lionagi.agent.context_fold import install_context_fold
     from lionagi.operations.chat._prepare import _prepare_run_kwargs
     from lionagi.operations.types import ChatParam
     from lionagi.service.connections.api_calling import estimate_payload_input_tokens
+    from lionhub.agent.context_fold import install_context_fold
     from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
     from tests.cli.test_api_leg_bounded_results import _check_output, _sent_results
     from tests.cli.test_api_leg_unset_payload_identity import _payload_text
@@ -760,9 +760,9 @@ async def test_bounded_unrenderable_value_refuses_before_any_clip(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_bounded_recovery_page_is_clip_protected_until_main_completion(monkeypatch):
-    from lionagi.agent.context_fold import install_context_fold
-    from lionagi.tools.context.context import ContextTool
+    from lionhub.agent.context_fold import install_context_fold
     from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
+    from lionhub.tools.context.context import ContextTool
     from tests.cli.test_agent_api_provider import _text
     from tests.cli.test_api_leg_bounded_results import _sent_results
 
@@ -843,7 +843,7 @@ async def test_bounded_recovery_page_is_clip_protected_until_main_completion(mon
 
 @pytest.mark.asyncio
 async def test_bounded_context_estimates_stay_advisory_beside_real_compiled_count():
-    from lionagi.tools.context.context import ContextTool, TokenCalculator
+    from lionhub.tools.context.context import ContextTool, TokenCalculator
 
     output = ("evidence é🦁 0123456789\n" * 6000)[:100045]
     branch, _requests, originals = await _clip_fixture([output], cap=1000000)

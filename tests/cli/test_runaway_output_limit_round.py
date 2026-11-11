@@ -136,7 +136,7 @@ async def test_a_turn_whose_first_response_ran_away_at_its_output_limit_still_an
 @pytest.mark.usefixtures("offline_tokens")
 @pytest.mark.asyncio
 async def test_a_view_over_the_cap_because_of_one_runaway_text_can_be_folded(monkeypatch):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, _message = _branch_with_long_text(monkeypatch, _runaway())
     fold = ContextFold(branch, cap=_CAP)
@@ -151,7 +151,7 @@ async def test_a_view_over_the_cap_because_of_one_runaway_text_can_be_folded(mon
 @pytest.mark.usefixtures("offline_tokens")
 @pytest.mark.asyncio
 async def test_a_runaway_text_followed_by_two_short_messages_can_be_folded(monkeypatch):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, _message = _branch_with_long_text(monkeypatch, _runaway(), short_after=2)
     fold = ContextFold(branch, cap=_CAP)
@@ -177,7 +177,7 @@ async def test_a_runaway_text_followed_by_two_short_messages_can_be_folded(monke
 async def test_a_long_text_whose_response_ended_normally_is_never_clipped(
     monkeypatch, short_after, landed_expected, still_in_view
 ):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, message = _branch_with_long_text(
         monkeypatch, _ended_normally(), short_after=short_after
@@ -198,7 +198,7 @@ async def test_a_long_text_whose_response_ended_normally_is_never_clipped(
 @pytest.mark.usefixtures("offline_tokens")
 @pytest.mark.asyncio
 async def test_a_clipped_runaway_text_is_a_copy_that_records_the_original(monkeypatch):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, original = _branch_with_long_text(monkeypatch, _runaway())
     fold = ContextFold(branch, cap=_CAP)

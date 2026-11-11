@@ -23,14 +23,14 @@ import pickle
 
 import pytest
 
-from lionagi.agent.gate import (
+from lionhub.agent.gate import (
     ControlUnavailableError,
     GateDeniedError,
     GateResult,
     adapt_legacy_hook,
     run_gate_pass,
 )
-from lionagi.agent.permissions import PermissionPolicy
+from lionhub.agent.permissions import PermissionPolicy
 
 
 def _policy(**kw) -> PermissionPolicy:

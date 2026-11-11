@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from lionagi._errors import ConfigurationError, _ExclusiveMcpSelectionError
-from lionagi.agent.factory import apply_forwarded_mcp_servers
+from lionhub.agent.factory import apply_forwarded_mcp_servers
 from lionhub.providers.openai import _codex_project_layers as project_layers
 from lionhub.providers.openai import codex as codex_mod
 from lionhub.providers.openai.codex import CodexCodeRequest
@@ -707,7 +707,7 @@ async def test_generated_profile_missing_refuses(fixture):
 
 @pytest.mark.asyncio
 async def test_factory_written_generated_secret_profile_passes(fixture):
-    from lionagi.agent.factory import _write_codex_mcp_secret_profile
+    from lionhub.agent.factory import _write_codex_mcp_secret_profile
 
     project, env, calls = fixture
     kwargs = {}
@@ -913,9 +913,9 @@ async def test_endpoint_empty_mcp_override_uses_empty_selection_guard(fixture):
 
 @pytest.mark.asyncio
 async def test_factory_model_roundtrip_checks_project_layer_added_later(fixture):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.spec import AgentSpec
     from lionagi.service.imodel import iModel
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
 
     project, env, calls = fixture
     spec = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(project))
@@ -937,8 +937,8 @@ async def test_factory_model_roundtrip_checks_project_layer_added_later(fixture)
 
 @pytest.mark.asyncio
 async def test_factory_named_mcp_config_file_set_is_exclusive_without_spec_selection(fixture):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.spec import AgentSpec
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
 
     project, env, calls = fixture
     spec = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(project))
@@ -963,8 +963,8 @@ async def test_factory_named_mcp_config_file_set_is_exclusive_without_spec_selec
 
 @pytest.mark.asyncio
 async def test_factory_ambient_mcp_set_stays_non_exclusive(fixture):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.spec import AgentSpec
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
 
     project, env, calls = fixture
     spec = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(project))
@@ -989,8 +989,8 @@ async def test_factory_ambient_mcp_set_stays_non_exclusive(fixture):
 
 @pytest.mark.asyncio
 async def test_factory_empty_named_mcp_config_set_ignores_user_config(fixture):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.spec import AgentSpec
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
 
     project, env, calls = fixture
     spec = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(project))

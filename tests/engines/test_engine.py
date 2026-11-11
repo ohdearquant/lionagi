@@ -698,8 +698,8 @@ async def test_planning_dag_clones_keep_injection(monkeypatch, tmp_path, spawn_b
     from lionagi.casts.emission import SpawnRequest
     from lionagi.operations.flow import ReactiveExecutor
     from lionagi.testing import scripted_imodel
-    from lionagi.tools.khive_injection import KhiveInjectionProvider
     from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.tools.khive_injection import KhiveInjectionProvider
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     namespaces = []
@@ -893,8 +893,8 @@ async def test_planning_clones_keep_the_worker_role_for_injection(
 
     from lionagi.operations.fields import ActionResponseModel
     from lionagi.testing import scripted_imodel
-    from lionagi.tools.khive_injection import KhiveInjectionProvider
     from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.tools.khive_injection import KhiveInjectionProvider
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     queries: list[str] = []
@@ -918,7 +918,7 @@ async def test_planning_clones_keep_the_worker_role_for_injection(
             "status": "success",
         }
     )
-    monkeypatch.setattr("lionagi.tools.khive_injection._call_khive", call_khive)
+    monkeypatch.setattr("lionhub.tools.khive_injection._call_khive", call_khive)
 
     for worker in workers:
         role = worker.metadata["clone_from"].name

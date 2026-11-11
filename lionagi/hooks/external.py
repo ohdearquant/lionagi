@@ -9,7 +9,7 @@ to: the tool pre/post hook chain for ``PreToolUse``/``PostToolUse``, or a
 subprocess, writes the JSON envelope to stdin, parses stdout/exit code back
 into a decision.
 
-Distinct from ``lionagi.agent.settings._make_shell_hook`` (legacy
+Distinct from ``lionhub.agent.settings._make_shell_hook`` (legacy
 ``hooks: {pre,post,on_error}`` shape, never reads stdout) and from the
 ``hooks_external`` field on a plugin manifest (parsed as inert disclosure
 data only — this module is what actually runs a command).

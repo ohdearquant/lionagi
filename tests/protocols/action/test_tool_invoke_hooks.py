@@ -14,8 +14,6 @@ registered.
 import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, Field
 
-from lionagi.agent.factory import _chain_pre_hooks
-from lionagi.agent.gate import GateDeniedError
 from lionagi.protocols.action.function_calling import FunctionCalling
 from lionagi.protocols.action.manager import ActionManager
 from lionagi.protocols.action.tool import Tool
@@ -25,6 +23,8 @@ from lionagi.protocols.action.tool_hooks import (
     ToolPreDecision,
 )
 from lionagi.protocols.generic.event import EventStatus
+from lionhub.agent.factory import _chain_pre_hooks
+from lionhub.agent.gate import GateDeniedError
 
 
 class AddArgs(BaseModel):

@@ -46,9 +46,9 @@ spend; it is not the size a caller wants to stay under. No code before a send co
 against either number.
 
 **P2 — the model's own context tools exist, and nothing calls them for it.** `ContextTool`
-(`lionagi/tools/context/context.py::ContextTool`) gives a model `status` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`, an estimate from
-`TokenCalculator` over message content, `lionagi/tools/context/context.py::ContextTool.bind._tokens`), `evict` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`), `evict_action_results` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`),
-`restore` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`) and `compact` (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`). Eviction removes messages from the branch's active view
+(`lionhub/src/lionhub/tools/context/context.py::ContextTool`) gives a model `status` (`lionhub/src/lionhub/tools/context/context.py::ContextTool.bind.context_tool`, an estimate from
+`TokenCalculator` over message content, `lionhub/src/lionhub/tools/context/context.py::ContextTool.bind._tokens`), `evict` (`lionhub/src/lionhub/tools/context/context.py::ContextTool.bind.context_tool`), `evict_action_results` (`lionhub/src/lionhub/tools/context/context.py::ContextTool.bind.context_tool`),
+`restore` (`lionhub/src/lionhub/tools/context/context.py::ContextTool.bind.context_tool`) and `compact` (`lionhub/src/lionhub/tools/context/context.py::ContextTool.bind.context_tool`). Eviction removes messages from the branch's active view
 and keeps them in the full record, so `restore` brings them back. A model that never calls the tool
 keeps growing its request until the provider refuses it or bills it at the next tier.
 
@@ -133,7 +133,7 @@ text; a Gemini CLI summary for more than one turn, or one with no turn count, co
    the tool name, the call id, the original size and how to read it back; the original stays in the
    branch's full record and the model reads it back, in ranges, with its `context` tool (whose output
    is measured like any other result). The context tool previews a message in 120 characters and
-   restores the original to the active view (`lionagi/tools/context/context.py::ContextTool.bind._preview`, `lionagi/tools/context/context.py::ContextTool.bind.context_tool`);
+   restores the original to the active view (`lionhub/src/lionhub/tools/context/context.py::ContextTool.bind._preview`, `lionhub/src/lionhub/tools/context/context.py::ContextTool.bind.context_tool`);
    Amendment 2 below specifies ranged reading. A run whose model has no `context` tool (a profile with `context_management` off) is not
    folded, because it could not read the original back; it is refused as in 3. A fold never leaves a
    tool call without its result in the request, never touches the system text, the instruction, or
@@ -272,7 +272,7 @@ resumed-session and remote-history provisions, the Claude Code adapter's per-req
 Gemini CLI rule. Command-line providers are unchanged.
 
 **D4, amended: a refusal before the send, then a host fold in two stages, the second a summary.**
-`ContextFold` (`lionagi/agent/context_fold.py`), installed on the leg's branch at `API_PRE_CALL`,
+`ContextFold` (`lionhub/src/lionhub/agent/context_fold.py`), installed on the leg's branch at `API_PRE_CALL`,
 estimates the next request before it is compiled: the chat compiler is run over the active view, with
 the newest instruction standing in for the one about to be sent, and the result is counted and scaled
 as the cap counts. At or past 80% of the ceiling it folds the active view toward 60% with the `context`

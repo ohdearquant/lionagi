@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lionagi.agent.context_fold import ContextFold, install_context_fold
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
+from lionhub.agent.context_fold import ContextFold, install_context_fold
 from lionhub.providers.anthropic import _prompt_cache as planner
 
 _CAP = 100_000
@@ -121,7 +121,7 @@ async def test_a_zero_margin_never_skips_a_turn_mark(monkeypatch, estimate):
 
 @pytest.mark.asyncio
 async def test_the_fold_summary_request_clears_the_previous_decision(monkeypatch):
-    from lionagi.tools.context.context import _automatic_summary
+    from lionhub.tools.context.context import _automatic_summary
 
     fold = _fold(monkeypatch, [89_000])
     await fold.on_api_pre_call()

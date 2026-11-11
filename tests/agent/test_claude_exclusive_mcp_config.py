@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.agent.factory import apply_forwarded_mcp_servers, create_agent
-from lionagi.agent.spec import AgentSpec
 from lionagi.service.imodel import iModel
+from lionhub.agent.factory import apply_forwarded_mcp_servers, create_agent
+from lionhub.agent.spec import AgentSpec
 from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
 

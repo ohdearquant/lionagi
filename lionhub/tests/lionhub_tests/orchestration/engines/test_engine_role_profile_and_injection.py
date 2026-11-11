@@ -14,8 +14,8 @@ import pytest
 
 import lionhub.orchestration.engines.engine as engine_mod
 import lionhub.orchestration.spawn as providers_mod
-from lionagi.tools.khive_injection import KhiveInjectionProvider
 from lionhub.orchestration.engines.engine import Engine
+from lionhub.tools.khive_injection import KhiveInjectionProvider
 
 # Role-profile cache: keyed by (role, cwd), never caches an exception fallback
 

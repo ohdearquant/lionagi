@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.tools._seatbelt import _uv_cache_dir as _real_uv_cache_dir
+from lionhub.tools._seatbelt import _uv_cache_dir as _real_uv_cache_dir
 from tests.cli.test_agent_api_write_set import roots as roots
 
 _CANARY = "SOMEVENDOR_API_KEY"
@@ -62,8 +62,8 @@ def _branch():
 
 
 def _bound_tools(scope, *, grant=False, confined=False, tools=("bash",)):
-    from lionagi.tools._seatbelt import SeatbeltPolicy, seatbelt_available
-    from lionagi.tools.coding import CodingToolkit
+    from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
+    from lionhub.tools.coding import CodingToolkit
 
     policy = None
     if confined:
@@ -143,9 +143,9 @@ async def test_declared_lookup_reference_is_removed_from_real_bash(command_scope
 )
 async def test_selected_mcp_auth_reference_reaches_bound_bash_policy(command_scope, kind, selected):
     from lionagi._command_env_metadata import configured_command_env_names
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.spec import AgentSpec
     from lionagi.service.imodel import iModel
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
 
     target = _BEARER if kind == "bearer" else _HEADER
     other = _HEADER if kind == "bearer" else _BEARER
@@ -181,10 +181,10 @@ async def test_selected_mcp_auth_reference_reaches_bound_bash_policy(command_sco
 async def test_cli_forwarding_reuses_the_mapping_read_before_tool_registration(
     command_scope, monkeypatch
 ):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.spec import AgentSpec
     from lionagi.protocols.action.manager import ActionManager
     from lionagi.service.imodel import iModel
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
 
     initial = {
         "protected": {
@@ -287,8 +287,8 @@ async def test_default_commands_and_explicit_execution_cells_keep_distinct_grant
     command_scope, boundary
 ):
     from lionagi.ln.concurrency import run_sync
-    from lionagi.tools._subprocess import _subprocess_sync
-    from lionagi.tools.sandbox_backend import Cell, Handle, LocalWorktreeBackend
+    from lionhub.tools._subprocess import _subprocess_sync
+    from lionhub.tools.sandbox_backend import Cell, Handle, LocalWorktreeBackend
 
     script = command_scope.workspace / "inspect_child.py"
     script.write_text(_INSPECT_CHILD, encoding="utf-8")
@@ -345,8 +345,8 @@ async def test_shell_startup_file_is_not_loaded_without_an_operator_grant(comman
 
 
 def test_operator_grants_roundtrip_without_entering_tool_request_schemas(command_scope):
-    from lionagi.agent.spec import AgentSpec
-    from lionagi.tools.code.bash import BashRequest
+    from lionhub.agent.spec import AgentSpec
+    from lionhub.tools.code.bash import BashRequest
 
     spec = AgentSpec.compose("implementer", tools=("coding",), command_env_allowlist=(_CANARY,))
     path = command_scope.workspace / "agent.yaml"
@@ -363,7 +363,7 @@ def test_operator_grants_roundtrip_without_entering_tool_request_schemas(command
 
 
 def test_uv_cache_probe_receives_scrubbed_environment(command_scope, monkeypatch):
-    from lionagi.tools import _seatbelt
+    from lionhub.tools import _seatbelt
 
     captured = []
     expected = command_scope.root / "reported-cache"

@@ -520,7 +520,7 @@ declare the same tool name (ADR-0088 D6) — a hard error, not a miss.
 chokepoint: the mutation-capable layer outermost around every tool call,
 deliberately separate from `lionagi.hooks.bus.HookBus` (summary-payload
 audit plane) and the per-`Tool` `preprocessor`/`postprocessor` chain wired
-by `lionagi.agent.spec.HooksMixin` (spec-level security/user chain, runs
+by `lionhub.agent.spec.HooksMixin` (spec-level security/user chain, runs
 innermost). A pre hook returns `None` (allow, unchanged), a plain `dict`
 (allow, replace arguments), or a `ToolPreDecision` (`"allow"` optionally
 with `updated_input`, `"deny"`, `"ask"` — fails closed, no interactive

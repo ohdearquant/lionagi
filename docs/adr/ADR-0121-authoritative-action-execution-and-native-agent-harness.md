@@ -66,11 +66,11 @@ mutable dataclass, and `mode` can be reassigned after construction on an instanc
 holds.
 
 The reconstruction gap is on the write side, not the read side. `_resolve_permissions`
-(`lionagi/agent/spec.py::_resolve_permissions`) accepts a `PermissionPolicy`, accepts a mapping through
+(`lionhub/src/lionhub/agent/spec.py::_resolve_permissions`) accepts a `PermissionPolicy`, accepts a mapping through
 `PermissionPolicy.from_dict`, accepts the four preset names, and raises `TypeError` or `ValueError`
 on anything else, so a declared mapping is read and applied. What is missing is the inverse:
 `PermissionPolicy` defines `from_dict` and no `to_dict`, and `AgentSpec.to_yaml`
-(`lionagi/agent/spec.py::AgentSpec.to_yaml`) emits no `permissions` key at all. Measured: a spec composed with
+(`lionhub/src/lionhub/agent/spec.py::AgentSpec.to_yaml`) emits no `permissions` key at all. Measured: a spec composed with
 `{"mode": "rules", "deny": {"bash": ["rm"]}}` round-trips through `to_yaml` then `from_yaml` to
 `permissions=None`, while `model` survives the identical round trip. A reconstructed agent
 therefore has a different effective policy from the declared agent, and the direction of the

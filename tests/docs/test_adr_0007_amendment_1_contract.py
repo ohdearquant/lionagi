@@ -548,7 +548,7 @@ def test_header_carries_the_required_implementation_status() -> None:
 # --- what the record says the code does today ------------------------------
 
 _PREPARE = "lionagi/operations/chat/_prepare.py"
-_CONTEXT = "lionagi/tools/context/context.py"
+_CONTEXT = "lionhub/src/lionhub/tools/context/context.py"
 _BRANCH = "lionagi/session/branch.py"
 _PROVIDERS = "lionagi/protocols/context_providers.py"
 _CODEX = "lionhub/src/lionhub/providers/openai/codex.py"
@@ -766,7 +766,9 @@ def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
     )
     _in_symbol(budget, "get_token_budget", "def get_token_budget(branch: Branch)")
     _in_symbol(
-        "lionagi/agent/nudge.py", "NudgeEngine._build_context", "get_token_budget(self.branch)"
+        "lionhub/src/lionhub/agent/nudge.py",
+        "NudgeEngine._build_context",
+        "get_token_budget(self.branch)",
     )
     assert "the model-window lookup" in _normalized(_amendment_body())
 

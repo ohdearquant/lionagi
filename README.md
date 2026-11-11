@@ -170,7 +170,7 @@ result = await b.operate(instruction="Summarize this text.", response_format=Sum
 **Tools + ReAct**
 
 ```python
-from lionagi.tools.types import ReaderTool
+from lionhub.tools.types import ReaderTool
 
 branch = Branch(tools=[ReaderTool])
 result = await branch.ReAct(

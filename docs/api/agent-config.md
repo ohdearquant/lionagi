@@ -1,8 +1,8 @@
 # `AgentSpec` and `create_agent()`
 
 ```python
-from lionagi.agent import AgentSpec, create_agent, PermissionPolicy
-from lionagi.agent.hooks import guard_destructive, guard_paths, log_tool_call
+from lionhub.agent import AgentSpec, create_agent, PermissionPolicy
+from lionhub.agent.hooks import guard_destructive, guard_paths, log_tool_call
 ```
 
 `AgentSpec` captures what an agent needs — role/identity, model, tools, hooks, permissions,
@@ -18,7 +18,7 @@ ready-to-use `Branch`.
 class AgentSpec(HooksMixin)
 ```
 
-Source: `lionagi/agent/spec.py`
+Source: `lionhub/src/lionhub/agent/spec.py`
 
 An `AgentSpec` pairs a `Profile` (role + modes identity) with runtime concerns. Build one with
 `AgentSpec.compose(role, ...)` or the `AgentSpec.coding()` preset rather than constructing the
@@ -197,7 +197,7 @@ async def create_agent(
 ) -> Branch
 ```
 
-Source: `lionagi/agent/factory.py`
+Source: `lionhub/src/lionhub/agent/factory.py`
 
 Creates a fully configured `Branch` from an `AgentSpec`. Wires: settings → hooks →
 system prompt → model → tools → MCP → emissions.
@@ -208,7 +208,7 @@ system prompt → model → tools → MCP → emissions.
 | `load_settings` | `bool` | `True` | Load hooks from `~/.lionagi/settings.yaml` |
 | `project_dir` | `str \| None` | `None` | Project root for settings resolution; auto-detected if `None` |
 | `trust_project_settings` | `bool` | `False` | Also load `.lionagi/settings.yaml` from the project dir |
-| `trusted_hook_modules` | `set[str] \| None` | `None` | Python modules allowed for import-based hooks; defaults to `{"lionagi.agent.hooks"}` |
+| `trusted_hook_modules` | `set[str] \| None` | `None` | Python modules allowed for import-based hooks; defaults to `{"lionhub.agent.hooks"}` |
 | `chat_model` | `iModel \| None` | `None` | Prebuilt model to use verbatim; skips `spec.model` parsing |
 | `log_config` | `DataLoggerConfig \| dict \| None` | `None` | Logging config forwarded to the `Branch` |
 
@@ -241,7 +241,7 @@ an iterative tool workflow.
 class PermissionPolicy
 ```
 
-Source: `lionagi/agent/permissions.py`
+Source: `lionhub/src/lionhub/agent/permissions.py`
 
 Per-tool allow/deny/escalate rules evaluated before each tool call. Three modes:
 
@@ -322,7 +322,7 @@ spec.permissions = PermissionPolicy.safe()
 
 ## Built-in hooks
 
-Source: `lionagi/agent/hooks.py`
+Source: `lionhub/src/lionhub/agent/hooks.py`
 
 ### `guard_destructive`
 

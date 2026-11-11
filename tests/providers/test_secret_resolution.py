@@ -249,7 +249,7 @@ class TestACheckedOutRepoCannotNameTheProgram:
         # The plant is real: the same file IS picked up by a project-merging
         # load. Without this arm, an unreadable or misplaced fixture would make
         # the assertion below pass for the wrong reason.
-        from lionagi.agent.settings import load_settings
+        from lionhub.agent.settings import load_settings
 
         assert load_settings()["secrets"]["lookup"]["names"] == [NAME]
 

@@ -664,7 +664,7 @@ is documented in the class docstring and mirrored in the test fixture (`tests/ad
 No adapter module is added until the substrate (P15-P17) and flow governance (P18) are complete
 and verified. An adapter claiming governance before the substrate exists is a false claim.
 
-### 8.5 `lionagi/tools/`
+### 8.5 `lionhub/src/lionhub/tools/`
 
 | Change | Details |
 |--------|---------|

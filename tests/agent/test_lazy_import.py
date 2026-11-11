@@ -11,22 +11,23 @@ import textwrap
 
 import pytest
 
-from lionagi.agent import __all__
+from lionhub.agent import __all__
 
 
 def test_import_agent_does_not_load_export_modules_in_a_fresh_process():
     script = textwrap.dedent(
         """
         import sys
-        import lionagi.agent
+        import lionhub.agent
 
         assert not any(
             name in sys.modules
             for name in (
-                "lionagi.agent.factory",
-                "lionagi.agent.permissions",
-                "lionagi.agent.settings",
-                "lionagi.agent.spec",
+                "lionhub.agent.factory",
+                "lionhub.agent.gate",
+                "lionhub.agent.permissions",
+                "lionhub.agent.settings",
+                "lionhub.agent.spec",
             )
         )
         """
@@ -48,8 +49,8 @@ def test_import_agent_does_not_load_export_modules_in_a_fresh_process():
 def test_exports_resolve_to_their_submodule_objects(name: str, module_name: str):
     import importlib
 
-    package = importlib.import_module("lionagi.agent")
-    module = importlib.import_module(f"lionagi.agent.{module_name}")
+    package = importlib.import_module("lionhub.agent")
+    module = importlib.import_module(f"lionhub.agent.{module_name}")
 
     assert getattr(package, name) is getattr(module, name)
 
@@ -60,24 +61,24 @@ def test_submodule_resolves_as_attribute_in_a_fresh_process(submodule: str):
         f"""
         import importlib
         import sys
-        import lionagi.agent
+        import lionhub.agent
 
-        assert "lionagi.agent.{submodule}" not in sys.modules
-        module = lionagi.agent.{submodule}
-        assert module is importlib.import_module("lionagi.agent.{submodule}")
+        assert "lionhub.agent.{submodule}" not in sys.modules
+        module = lionhub.agent.{submodule}
+        assert module is importlib.import_module("lionhub.agent.{submodule}")
         """
     )
     subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_unknown_attribute_raises_attribute_error():
-    import lionagi.agent as agent
+    import lionhub.agent as agent
 
     with pytest.raises(AttributeError):
         agent.unknown_export
 
 
 def test_dir_lists_all_public_exports():
-    import lionagi.agent as agent
+    import lionhub.agent as agent
 
     assert set(__all__).issubset(dir(agent))

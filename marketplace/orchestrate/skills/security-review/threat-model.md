@@ -109,10 +109,10 @@ CWE reference: CWE-400 (uncontrolled resource consumption), CWE-770 (allocation 
 
 | File | Purpose |
 |---|---|
-| `lionagi/agent/permissions.py` | PermissionPolicy — `allow_all`, `deny_all` and `rules` modes, the last carrying allow/deny/escalate rule sets |
-| `lionagi/agent/hooks.py` | guard_destructive, guard_paths, log_tool_call built-in hooks (`log_tool_use` is a deprecated alias) |
-| `lionagi/agent/spec.py` | AgentSpec presets (coding) with path policies |
-| `lionagi/tools/sandbox.py` | SandboxSession — git worktree isolation for speculative edits |
+| `lionhub/src/lionhub/agent/permissions.py` | PermissionPolicy — `allow_all`, `deny_all` and `rules` modes, the last carrying allow/deny/escalate rule sets |
+| `lionhub/src/lionhub/agent/hooks.py` | guard_destructive, guard_paths, log_tool_call built-in hooks (`log_tool_use` is a deprecated alias) |
+| `lionhub/src/lionhub/agent/spec.py` | AgentSpec presets (coding) with path policies |
+| `lionhub/src/lionhub/tools/sandbox.py` | SandboxSession — git worktree isolation for speculative edits |
 | `lionhub/src/lionhub/providers/` | Provider wrappers, one package each (OpenAI, Anthropic, Gemini, Ollama, etc.) |
 | `lionagi/protocols/action/` | Tool registration and MCP integration |
 | `lionagi/libs/schema/function_to_schema.py` | Tool schema generation from a function signature |

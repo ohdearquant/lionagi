@@ -85,7 +85,7 @@ async def test_openai_cache_counts_reach_real_run_manifest(leg, monkeypatch, tmp
 async def test_real_manifest_retains_all_usage_fields_and_actual_selected_account(
     leg, monkeypatch, tmp_path
 ):
-    import lionagi.agent.factory as factory
+    import lionhub.agent.factory as factory
 
     path = routed._install_accounts(monkeypatch, tmp_path)
     replies = [
@@ -340,7 +340,7 @@ async def test_teardown_failure_cannot_leave_inherited_observation_scope_live(
 
 @pytest.mark.asyncio
 async def test_summary_requests_share_the_turn_and_manifest(leg, monkeypatch, tmp_path):
-    import lionagi.agent.factory as factory
+    import lionhub.agent.factory as factory
 
     original_create = factory.create_agent
     original_call = AnthropicMessagesEndpoint.call

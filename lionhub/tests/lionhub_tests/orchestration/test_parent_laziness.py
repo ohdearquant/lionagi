@@ -32,7 +32,7 @@ exports = (
     "grant_spawn",
     "normalize_dep_indices",
 )
-blocked = ("lionhub.orchestration.patterns", "lionagi.agent")
+blocked = ("lionhub.orchestration.patterns", "lionhub.agent")
 legacy_names = set(exports) | {
     "__all__", "__builtins__", "__cached__", "__doc__", "__file__",
     "__loader__", "__name__", "__package__", "__path__", "__spec__",
@@ -137,7 +137,7 @@ assert_cold()
 from lionhub.orchestration import fanout
 
 assert "lionhub.orchestration.patterns" in sys.modules
-assert "lionagi.agent" in sys.modules
+assert "lionhub.agent" in sys.modules
 patterns = sys.modules["lionhub.orchestration.patterns"]
 assert_source(parent, "lionhub/src/lionhub/orchestration/__init__.py")
 assert_source(patterns, "lionhub/src/lionhub/orchestration/patterns.py")

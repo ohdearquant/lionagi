@@ -73,7 +73,7 @@ def test_branch_does_not_adapt_unrelated_duck():
 
 
 def test_legacy_alias_is_core_lion_tool():
-    from lionagi.tools.base import LionTool as LegacyLionTool
+    from lionhub.tools.base import LionTool as LegacyLionTool
 
     assert LegacyLionTool is LionTool
     assert LionTool.__module__ == "lionagi.protocols.action.lion_tool"
@@ -84,32 +84,33 @@ def test_new_pickle_uses_core_module():
     payload = pickle.dumps(LionTool, protocol=0)
 
     assert b"clionagi.protocols.action.lion_tool\nLionTool\n" in payload
-    assert b"clionagi.tools.base\nLionTool\n" not in payload
+    assert b"clionhub.tools.base\nLionTool\n" not in payload
     assert pickle.loads(payload) is LionTool
 
 
 def test_cold_branch_import_and_legacy_pickle():
     source_root = Path(__file__).resolve().parents[1]
     code = """
+import importlib
 import json
 import pickle
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-assert not any(name == "lionagi.tools" or name.startswith("lionagi.tools.") for name in sys.modules)
+assert not any(name == "lionhub.tools" or name.startswith("lionhub.tools.") for name in sys.modules)
 from lionagi.session.branch import Branch
 from lionagi.protocols.action.lion_tool import LionTool
 
 tools_after_branch = sorted(
-    name for name in sys.modules if name == "lionagi.tools" or name.startswith("lionagi.tools.")
+    name for name in sys.modules if name == "lionhub.tools" or name.startswith("lionhub.tools.")
 )
 assert Path(sys.modules[Branch.__module__].__file__).resolve() == root / "lionagi/session/branch.py"
 assert Path(sys.modules[LionTool.__module__].__file__).resolve() == root / "lionagi/protocols/action/lion_tool.py"
 assert not tools_after_branch, tools_after_branch
-assert pickle.loads(b"clionagi.tools.base\\nLionTool\\n.") is LionTool
-legacy = sys.modules["lionagi.tools.base"]
-assert Path(legacy.__file__).resolve() == root / "lionagi/tools/base.py"
+assert pickle.loads(b"clionhub.tools.base\\nLionTool\\n.") is LionTool
+legacy = importlib.import_module("lionagi.tools.base")
+assert Path(legacy.__file__).resolve() == root / "lionhub/src/lionhub/tools/base.py"
 assert legacy.LionTool is LionTool
 print(json.dumps({
     "branch_module": Branch.__module__,

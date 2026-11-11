@@ -93,6 +93,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/_auto.py:157-161@5f3672b2",
         "lionagi/_auto.py:175@5f3672b2",
         "lionagi/_auto.py:180@5f3672b2",
+        "lionagi/agent/permissions.py:14@b9bb1deb",
         "lionagi/lndl/extract.py:12-27@c4abb363",
         "lionagi/operations/flow.py:1126@c4abb363",
         "lionagi/operations/flow.py:1162@c4abb363",

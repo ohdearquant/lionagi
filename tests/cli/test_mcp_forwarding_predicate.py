@@ -12,11 +12,11 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.agent.factory import (
+from lionagi.cli.agent import _report_mcp_resolution
+from lionhub.agent.factory import (
     _forward_mcp_to_cli_request,
     provider_accepts_forwarded_mcp,
 )
-from lionagi.cli.agent import _report_mcp_resolution
 from lionhub.orchestration.console import _WARN_LOGGER_NAME
 from lionhub.orchestration.mcp_config import McpResolution
 

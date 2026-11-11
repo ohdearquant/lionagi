@@ -6,8 +6,8 @@
 import pytest
 
 from lionagi import _moved, ln
-from lionagi.agent.settings import _import_hook, apply_hooks_from_settings, load_settings
-from lionagi.agent.spec import AgentSpec
+from lionhub.agent.settings import _import_hook, apply_hooks_from_settings, load_settings
+from lionhub.agent.spec import AgentSpec
 
 
 def test_load_settings_skips_project_settings_when_untrusted(tmp_path, monkeypatch):
@@ -15,7 +15,7 @@ def test_load_settings_skips_project_settings_when_untrusted(tmp_path, monkeypat
     project = tmp_path / "project"
     (project / ".lionagi").mkdir(parents=True)
     (project / ".lionagi" / "settings.yaml").write_text(
-        "hooks:\n  pre:\n    bash:\n      - python: lionagi.agent.hooks:guard_destructive\n"
+        "hooks:\n  pre:\n    bash:\n      - python: lionhub.agent.hooks:guard_destructive\n"
     )
     monkeypatch.setenv("HOME", str(home))
 
@@ -27,14 +27,14 @@ def test_load_settings_includes_project_settings_when_trusted(tmp_path, monkeypa
     project = tmp_path / "project"
     (project / ".lionagi").mkdir(parents=True)
     (project / ".lionagi" / "settings.yaml").write_text(
-        "hooks:\n  pre:\n    bash:\n      - python: lionagi.agent.hooks:guard_destructive\n"
+        "hooks:\n  pre:\n    bash:\n      - python: lionhub.agent.hooks:guard_destructive\n"
     )
     monkeypatch.setenv("HOME", str(home))
 
     settings = load_settings(project, include_project=True)
 
     assert settings["hooks"]["pre"]["bash"][0]["python"] == (
-        "lionagi.agent.hooks:guard_destructive"
+        "lionhub.agent.hooks:guard_destructive"
     )
 
 
@@ -166,7 +166,7 @@ def test_custom_trusted_module_is_unchanged(monkeypatch):
     assert loaded == ["custom.hooks"]
 
 
-@pytest.mark.parametrize("module", ["lionagi.agent.hooks.child", "lionagi.agent.hooks_extra"])
+@pytest.mark.parametrize("module", ["lionhub.agent.hooks.child", "lionhub.agent.hooks_extra"])
 def test_hook_trust_does_not_extend_to_descendants_or_siblings(module: str):
     with pytest.raises(
         PermissionError,
@@ -190,7 +190,7 @@ async def test_shell_pre_hook_raises_permission_error_on_nonzero_exit(monkeypatc
     import asyncio
     from unittest.mock import AsyncMock, MagicMock
 
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     mock_proc = MagicMock()
     mock_proc.returncode = 7
@@ -210,7 +210,7 @@ async def test_pre_hook_timeout_passes_spawn_bound_group_witnesses(monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
     import lionagi.ln._proc as proc_mod
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     mock_proc = MagicMock()
     mock_proc.pid = 9999
@@ -254,7 +254,7 @@ async def test_post_hook_timeout_passes_spawn_bound_group_witnesses(monkeypatch)
     from unittest.mock import AsyncMock, MagicMock
 
     import lionagi.ln._proc as proc_mod
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     mock_proc = MagicMock()
     mock_proc.pid = 8888
@@ -316,7 +316,7 @@ async def test_a_cancelled_hook_ends_its_process_group(monkeypatch, phase):
     import asyncio
     from unittest.mock import AsyncMock, MagicMock
 
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     mock_proc = MagicMock()
     mock_proc.pid = 7777
@@ -341,7 +341,7 @@ async def test_a_pre_hook_payload_that_cannot_be_serialized_refuses_without_spaw
 ):
     from unittest.mock import MagicMock
 
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     spawn, cleanup = _patch_hook_spawn(monkeypatch, MagicMock(), 1.0, ())
 
@@ -358,7 +358,7 @@ async def test_a_post_hook_result_that_cannot_be_serialized_is_dropped_without_s
 ):
     from unittest.mock import MagicMock
 
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     spawn, cleanup = _patch_hook_spawn(monkeypatch, MagicMock(), 1.0, ())
 
@@ -373,7 +373,7 @@ async def test_a_post_hook_result_that_cannot_be_serialized_is_dropped_without_s
 async def test_a_hook_whose_exchange_fails_ends_its_process_group(monkeypatch, phase):
     from unittest.mock import AsyncMock, MagicMock
 
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     mock_proc = MagicMock()
     mock_proc.pid = 6666
@@ -411,7 +411,7 @@ async def test_cancelling_a_pre_hook_kills_the_hook_and_the_process_it_started(t
     import signal
     import sys
 
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     pids_file = tmp_path / "pids"
     script = tmp_path / "hook.py"
@@ -460,7 +460,7 @@ async def test_cancelling_a_hook_that_exited_kills_the_process_it_left_running(t
     import signal
     import sys
 
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     pids_file = tmp_path / "pids"
     script = tmp_path / "hook.py"
@@ -517,7 +517,7 @@ async def test_a_hook_cancelled_while_it_is_being_spawned_is_killed_once_it_exis
     import signal
     import sys
 
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     real_create = asyncio.create_subprocess_exec
     release = asyncio.Event()
@@ -577,7 +577,7 @@ async def test_a_scope_cancelled_while_a_failed_hook_is_ended_stays_cancelled(mo
 
     import anyio
 
-    from lionagi.agent.settings import _make_shell_hook
+    from lionhub.agent.settings import _make_shell_hook
 
     scopes: list[anyio.CancelScope] = []
 
@@ -607,8 +607,8 @@ async def test_a_scope_cancelled_while_a_failed_hook_is_ended_stays_cancelled(mo
 async def test_any_payload_serialization_failure_is_handled_without_spawning(monkeypatch, phase):
     from unittest.mock import MagicMock
 
-    import lionagi.agent.settings as settings_mod
-    from lionagi.agent.settings import _make_shell_hook
+    import lionhub.agent.settings as settings_mod
+    from lionhub.agent.settings import _make_shell_hook
 
     def too_deep(*args, **kwargs):
         raise RecursionError("maximum recursion depth exceeded while encoding")

@@ -31,7 +31,7 @@
   operation results and final context.
 - The curated top-level exports live in `lionagi/__init__.py`. Agent
   configuration (`AgentSpec`, `PermissionPolicy`, `create_agent`) lives under
-  `lionagi.agent`.
+  `lionhub.agent`.
 
 ## Start
 

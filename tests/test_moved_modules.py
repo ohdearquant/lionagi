@@ -86,16 +86,22 @@ def test_the_table_has_moves_and_every_package_has_modules():
     assert len(PAIRS) > len(CONTRACTS)
 
 
-def test_scheduler_package_row_resolves_existing_and_new_only_descendants():
-    package = next(row for row in CONTRACTS if row.old == "lionagi.studio.scheduler")
-    engine_old = "lionagi.studio.scheduler.engine"
-    liveness_old = "lionagi.studio.scheduler.liveness"
-    assert contract_for(engine_old, CONTRACTS) is package
-    assert _moved.resolve(engine_old) == "lionhub.orchestration.scheduler.engine"
-    assert _moved.resolve(liveness_old) == "lionhub.orchestration.scheduler.liveness"
-    assert importlib.import_module(liveness_old) is importlib.import_module(
-        "lionhub.orchestration.scheduler.liveness"
-    )
+@pytest.mark.parametrize(
+    ("old", "new", "descendant"),
+    [
+        ("lionagi.agent", "lionhub.agent", "factory"),
+        ("lionagi.tools", "lionhub.tools", "coding"),
+    ],
+)
+def test_moved_package_row_resolves_existing_and_new_only_descendants(old, new, descendant):
+    package = next(row for row in CONTRACTS if row.old == old)
+    old_child = f"{old}.{descendant}"
+    new_child = f"{new}.{descendant}"
+    assert contract_for(old_child, CONTRACTS) is package
+    assert _moved.resolve(old_child) == new_child
+    assert importlib.import_module(old_child) is importlib.import_module(new_child)
+    new_only = f"{old}.__new_only_probe__"
+    assert _moved.resolve(new_only) == f"{new}.__new_only_probe__"
 
 
 def test_the_contracts_declare_exactly_the_moved_rows():
@@ -258,6 +264,13 @@ SAMPLES = {
     "lionhub.orchestration.scheduler.signals.ScheduleRunSucceeded": lambda cls: cls(),
     "lionhub.orchestration.scheduler.signals.ScheduleRunFailed": lambda cls: cls(),
     "lionhub.orchestration.scheduler.signals.ScheduleRunCancelled": lambda cls: cls(),
+    "lionhub.tools.base.Resource": lambda cls: cls(
+        content={"prompt": {"metadata": {"label": "nested prompt metadata"}}},
+        metadata={"nested": {"label": "nested resource metadata"}},
+    ),
+    "lionhub.tools.base.Prompt": lambda cls: cls(
+        content="prompt", metadata={"nested": {"label": "nested resource metadata"}}
+    ),
 }
 
 # Runs in a fresh interpreter, where nothing from lionhub is imported until the data
@@ -468,6 +481,25 @@ def test_runtime_reassigned_state_is_only_bound_on_its_owner(old_module, name, o
 def test_a_moved_module_keeps_the_logger_name_it_had():
     module = importlib.import_module("lionagi.service.accounts._secret_resolution")
     assert module.logger.name == "lionagi.providers._secret_resolution"
+
+
+@pytest.mark.parametrize(
+    ("module_name", "logger_name"),
+    [
+        ("lionhub.agent.context_fold", "lionagi.agent.context_fold"),
+        ("lionhub.agent.factory", "lionagi.agent.factory"),
+        ("lionhub.agent.hooks", "lionagi.agent.hooks"),
+        ("lionhub.agent.nudge", "lionagi.agent.nudge"),
+        ("lionhub.agent.permissions", "lionagi.agent.permissions"),
+        ("lionhub.agent.settings", "lionagi.agent.settings"),
+        ("lionhub.tools.coding", "lionagi.tools.coding"),
+        ("lionhub.tools.communication.messenger", "lionagi.tools.communication.messenger"),
+        ("lionhub.tools.khive_injection", "lionagi.tools.khive_injection"),
+    ],
+)
+def test_agent_and_tool_loggers_keep_their_original_names(module_name, logger_name):
+    module = importlib.import_module(module_name)
+    assert module.logger.name == logger_name
 
 
 @pytest.mark.parametrize("contract", CORE_MODULE_CONTRACTS, ids=_old_name)
@@ -722,7 +754,7 @@ _TWO_OLD_NAMES_AT_ONCE = """
 import importlib, sys, threading
 from lionagi import _moved
 
-row = _moved.MOVED[0]
+row = next(row for row in _moved.MOVED if row.old == "lionagi.studio.scheduler")
 twin = row.old + "_twin"
 _moved.MOVED = _moved.MOVED + (_moved.Moved(twin, row.new, row.deprecated_in, row.removed_in),)
 old, new = {old!r}, {new!r}
@@ -776,7 +808,8 @@ print(moved.__spec__.name, moved.__name__)
 
 
 def test_two_old_names_imported_at_once_leave_the_module_spec_alone():
-    old, new = next((o, n) for o, n in PAIRS if n.count(".") > _moved.MOVED[0].new.count("."))
+    package = next(row for row in CONTRACTS if row.old == "lionagi.studio.scheduler")
+    old, new = next((o, n) for o, n in PAIRS if o == package.old + ".engine")
     out = _run_fresh(_TWO_OLD_NAMES_AT_ONCE.format(old=old, new=new))
     assert out.split() == [new, new]
 
@@ -1009,7 +1042,11 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
                     name
                     for name in names
                     if not (
-                        name.startswith("lionagi.studio.scheduler.")
+                        (
+                            path == ROOT / "lionagi/protocols/action/gate.py"
+                            and name == "lionagi.agent.gate"
+                        )
+                        or name.startswith("lionagi.studio.scheduler.")
                         or name == "lionagi.studio.scheduler"
                         or name.startswith("lionagi.studio.services.scheduler_state")
                         or (
@@ -1103,6 +1140,9 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
     )
     hits = _old_references(inside, source)
     assert [int(hit.split(":")[1]) for hit in hits] == [3], hits
+    other_core = ROOT / "lionagi" / "protocols" / "action" / "tool.py"
+    claimed = _old_references(other_core, 'logging.getLogger("lionagi.agent.hooks")')
+    assert len(claimed) == 1, claimed
 
 
 # The core packages under lionagi/ that name a lionhub module: they hold a listed
@@ -1110,7 +1150,7 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
 # studio, import a hub orchestration or serve module. Every other package never names
 # lionhub. The set must match what the tree does, and it shrinks as each interim edge is
 # removed, so a package that stops naming lionhub is removed from it too.
-LIONHUB_USERS_UNDER_LIONAGI = frozenset({"agent", "cli", "operations", "service", "studio"})
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"cli", "operations", "service", "studio"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
@@ -1284,13 +1324,6 @@ def _provider_inventory() -> dict[str, list[str]]:
 # table changes when an edge is removed or a new one is added, never as a side effect.
 PROVIDER_INTERIM_EDGES = {
     # Every import here is inside a function (see the test of that below).
-    "agent/factory.py": [
-        *["lionhub.providers._cli_subprocess"] * 2,
-        *["lionhub.providers.openai._codex_profile"] * 8,
-        # The forwarded-server check reads the project config layers a codex run would load.
-        "lionhub.providers.openai._codex_project_layers",
-        *["lionhub.providers.openai.codex"] * 6,
-    ],
     "operations/run/run.py": ["lionhub.providers.google.gemini_code"],
     "service/accounts/_router.py": ["lionhub.providers.anthropic._prompt_cache"] * 2,
     "service/providers.py": ["lionhub.providers.openai._codex_profile"],
@@ -1312,8 +1345,8 @@ def test_provider_interim_edge_inventory():
 
 
 def test_the_agent_factory_imports_the_hub_providers_only_inside_functions():
-    hits = _provider_references(SOURCE_ROOTS[0] / "agent" / "factory.py")
-    assert hits, "agent/factory.py names no hub provider module, so this checks nothing"
+    hits = _provider_references(SOURCE_ROOTS[1] / "agent" / "factory.py")
+    assert hits, "lionhub/agent/factory.py names no hub provider module, so this checks nothing"
     assert [hit for hit in hits if hit[2] == "module"] == []
 
 

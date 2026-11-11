@@ -475,7 +475,7 @@
       ],
       "warning_categories": []
     },
-    "lionagi.tools.types": {
+    "lionhub.tools.types": {
       "ok": true,
       "dir": [
         "BashTool",
@@ -550,7 +550,7 @@
       "orchestrate": {
         "seed": "orchestrate",
         "module": "lionagi.cli.orchestrate",
-        "new_lionagi_module_count": 159,
+        "new_lionagi_module_count": 146,
         "other_seed_modules_imported": [
           "lionagi.cli.team"
         ],

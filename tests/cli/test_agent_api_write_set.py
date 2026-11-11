@@ -22,9 +22,9 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionagi.session.branch import Branch
-from lionagi.tools import _seatbelt
-from lionagi.tools._seatbelt import SeatbeltPolicy, seatbelt_available
-from lionagi.tools.coding import CodingToolkit
+from lionhub.tools import _seatbelt
+from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
+from lionhub.tools.coding import CodingToolkit
 from tests.cli import test_agent_api_provider as _provider_tests
 from tests.cli.test_agent_api_provider import _answer, _last_round, _profile, _reply
 

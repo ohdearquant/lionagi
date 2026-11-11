@@ -19,8 +19,8 @@ from lionagi._errors import (
     InputTokenCapError,
 )
 from lionagi._provider_errors import NestedAgentRefusedError
-from lionagi.agent.factory import _AgentSettingError
 from lionagi.ln.concurrency._compat import ExceptionGroup
+from lionhub.agent.factory import _AgentSettingError
 from lionhub.orchestration.engines.engine import _JUDGE_REFUSALS, Engine, EngineBudgetError
 
 pytestmark = pytest.mark.asyncio

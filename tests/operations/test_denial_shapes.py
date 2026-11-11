@@ -17,8 +17,6 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from lionagi.agent.factory import _chain_pre_hooks
-from lionagi.agent.gate import ControlUnavailableError, GateDeniedError
 from lionagi.hooks.bus import HookBus, HookPoint, HookSignal, StopHook
 from lionagi.operations.act.act import _act
 from lionagi.operations.fields import ActionResponseModel
@@ -34,6 +32,8 @@ from lionagi.session.branch import Branch
 from lionagi.session.observer import SessionObserver
 from lionagi.session.session import Session
 from lionagi.session.signal import GateDenied, Signal
+from lionhub.agent.factory import _chain_pre_hooks
+from lionhub.agent.gate import ControlUnavailableError, GateDeniedError
 
 # Every test that reaches ActionManager.match_tool runs the plugin-shadow lookup,
 # which scans `.lionagi` from the git root, the cwd and its parents, and $HOME.

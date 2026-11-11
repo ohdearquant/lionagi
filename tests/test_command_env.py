@@ -443,7 +443,7 @@ async def test_mcp_pattern_override_does_not_narrow_coding_deny(monkeypatch, tmp
     from lionagi.service.connections import mcp_wrapper
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch
-    from lionagi.tools.coding import CodingToolkit
+    from lionhub.tools.coding import CodingToolkit
 
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"

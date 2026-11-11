@@ -30,14 +30,14 @@ governance.
 attach a `PermissionPolicy` to tool preprocessors. Its result is a mutable dataclass whose
 `behavior` field is a string, and enforcement is ultimately a `PermissionError`. There is no
 policy version, operation ID, or durable decision identifier
-(`lionagi/agent/permissions.py`).
+(`lionhub/src/lionhub/agent/permissions.py`).
 
 **P2 — Security behavior depends on factory wiring.** `AgentSpec.coding()` adds destructive
 command and workspace-path guards when `secure=True`. `create_agent()` converts a configured
 permission policy into a security hook, attaches hooks while registering local tools, and
 orders security hooks around user argument transforms. The `Tool` itself does not know whether
-the factory performed this wiring (`lionagi/agent/spec.py`; `lionagi/agent/factory.py`;
-`lionagi/tools/coding.py`).
+the factory performed this wiring (`lionhub/src/lionhub/agent/spec.py`; `lionhub/src/lionhub/agent/factory.py`;
+`lionhub/src/lionhub/tools/coding.py`).
 
 **P3 — The callable boundary has processors, not an authorization protocol.** `Tool` exposes
 optional pre- and postprocessors. `FunctionCalling` invokes them around the callable and the
@@ -93,7 +93,7 @@ This ADR does **not** decide:
 ### D1 — `PermissionPolicy` remains a local preprocessor policy
 
 The shipped permission contract is two dataclasses and a pre-hook adapter
-(`lionagi/agent/permissions.py`):
+(`lionhub/src/lionhub/agent/permissions.py`):
 
 ```python
 @dataclass
@@ -186,7 +186,7 @@ sets, so this ADR does not infer one.
 ### D2 — Factory wiring chains policy and guard hooks per tool
 
 The relevant construction-time shape is the `AgentSpec` dataclass
-(`lionagi/agent/spec.py`):
+(`lionhub/src/lionhub/agent/spec.py`):
 
 ```python
 @dataclass
@@ -234,7 +234,7 @@ def on_error(self, tool_name: str, handler: Callable) -> HooksMixin: ...
 ```
 
 The factory entry point and pre-hook compositor are
-(`lionagi/agent/factory.py`):
+(`lionhub/src/lionhub/agent/factory.py`):
 
 ```python
 async def create_agent(
@@ -277,8 +277,8 @@ Exact semantics:
 - `permissions is None` adds no policy hook. A `PermissionPolicy` is inserted at the front of
   `security_pre:*`; unsupported runtime values in the field are ignored by `_apply_permissions`.
 - `AgentSpec.coding(secure=True)` registers `guard_destructive` for bash and one `guard_paths`
-  instance for reader and editor (`_wire_secure_guards` in `lionagi/agent/spec.py`; the guards
-  are defined in `lionagi/agent/hooks.py`). These register through `.security_pre()` into the
+  instance for reader and editor (`_wire_secure_guards` in `lionhub/src/lionhub/agent/spec.py`; the guards
+  are defined in `lionhub/src/lionhub/agent/hooks.py`). These register through `.security_pre()` into the
   `security_pre:<tool>` bucket, so the built-in guards participate in the security → user →
   security composition the same way an explicit `PermissionPolicy` does. The path
   guard's only allowed root is `cwd`, or `Path.cwd()` when `cwd` is absent. `secure=False`
@@ -814,7 +814,7 @@ Cost of reversal by decision:
 
 | # | Delta | Size | Issue |
 |---|---|---|---|
-| 1 | Define one immutable `GateResult` contract and adapters for `PermissionPolicy`, built-in guards, and the session gate; accept when each configured control runs exactly once, an evaluator exception produces a recorded deny result, and every security-relevant control (built-in coding guards included) evaluates the final post-mutation arguments — closing the current asymmetry in which only an explicit `PermissionPolicy` is re-run after a mutating user pre-hook. Security-relevant. | M | Resolved on main (`lionagi/agent/factory.py::_chain_pre_hooks`) |
+| 1 | Define one immutable `GateResult` contract and adapters for `PermissionPolicy`, built-in guards, and the session gate; accept when each configured control runs exactly once, an evaluator exception produces a recorded deny result, and every security-relevant control (built-in coding guards included) evaluates the final post-mutation arguments — closing the current asymmetry in which only an explicit `PermissionPolicy` is re-run after a mutating user pre-hook. Security-relevant. | M | Resolved on main (`lionhub/src/lionhub/agent/factory.py::_chain_pre_hooks`) |
 | 2 | MCP-discovered Tools now receive `_attach_hooks()`. Direct `FunctionCalling`, public direct manager/callable access, `branch.acts`, and fresh plugin Tool resolution still demonstrate that construction-time attachment is not a non-bypassable controller. ADR-0121 decides one authoritative ActionExecutor and makes ActionManager registry/resolution-only; retain route-specific compatibility tests during migration. | L | ADR-0121 breakdown |
 | 3 | Add an append-only evidence store and verifier independent of `DataLogger` and session signals; accept when permit, denial, callable failure, and completion records verify as one chain, mutation is detected, and an append failure blocks governed execution. | L | (filled at issue-open time) |
 | 4 | Bind an immutable policy snapshot and operation provenance to governed execution; accept when concurrent calls cannot exchange gate results, every evidence record names the active policy version, and historical snapshots remain retrievable. | L | (filled at issue-open time) |

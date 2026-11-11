@@ -96,7 +96,7 @@ def backoff_seconds(attempt: int) -> float:
 
 def resolve_notify_template(project_dir: str | Path | None = None) -> list[str] | None:
     """Read the ``dispatch.notify_template`` argv list from .lionagi/settings.yaml, or None."""
-    from lionagi.agent.settings import load_settings
+    from lionhub.agent.settings import load_settings
 
     settings = load_settings(project_dir)
     dispatch_cfg = settings.get("dispatch") if isinstance(settings, dict) else None
