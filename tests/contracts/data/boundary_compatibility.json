@@ -42,7 +42,7 @@
       "__all__ = (\n    \"ERROR_LOGGER_NAME\",\n    \"HINT_LOGGER_NAME\",\n    \"PROGRESS_LOGGER_NAME\",\n    \"WARN_LOGGER_NAME\",\n    \"hint\",\n    \"log_error\",\n    \"progress\",\n    \"warn\",\n)"
     ],
     "lionagi/_moved.py": [
-      "__all__ = (\"MOVED\", \"Moved\", \"install\", \"resolve\", \"still_on_disk\")",
+      "__all__ = (\"MOVED\", \"Moved\", \"install\", \"resolve\", \"resolve_legacy\", \"still_on_disk\")",
       "_LAZY_EXPORT_FRAMES = frozenset(\n    {\n        (os.path.join(os.path.dirname(__file__), \"__init__.py\"), \"__getattr__\"),\n        (os.path.join(os.path.dirname(__file__), \"ln\", \"_lazy_init.py\"), \"lazy_import\"),\n    }\n)"
     ],
     "lionagi/_paths.py": [
@@ -95,10 +95,9 @@
       "__all__ = (\"TomlAdapter\",)"
     ],
     "lionagi/agent/__init__.py": [
-      "from .factory import create_agent",
-      "from .permissions import PermissionPolicy",
-      "from .settings import apply_hooks_from_settings, load_settings",
-      "from .spec import AgentSpec, HooksMixin",
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AgentSpec\": (\"spec\", None),\n    \"HooksMixin\": (\"spec\", None),\n    \"PermissionPolicy\": (\"permissions\", None),\n    \"create_agent\": (\"factory\", None),\n    \"load_settings\": (\"settings\", None),\n    \"apply_hooks_from_settings\": (\"settings\", None),\n}",
+      "def __getattr__(name: str) -> object:\n    if name in _SUBMODULES:\n        import importlib\n\n        return importlib.import_module(f\"{__name__}.{name}\")\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
       "__all__ = (\n    \"AgentSpec\",\n    \"HooksMixin\",\n    \"PermissionPolicy\",\n    \"create_agent\",\n    \"load_settings\",\n    \"apply_hooks_from_settings\",\n)"
     ],
     "lionagi/agent/_email_in_headers.py": [
@@ -1506,6 +1505,7 @@
       "Moved",
       "install",
       "resolve",
+      "resolve_legacy",
       "still_on_disk"
     ],
     "lionagi/_paths.py": [

@@ -30,7 +30,7 @@ from collections.abc import Iterable, Mapping
 from types import CodeType, MappingProxyType, ModuleType
 from typing import NamedTuple
 
-__all__ = ("MOVED", "Moved", "install", "resolve", "still_on_disk")
+__all__ = ("MOVED", "Moved", "install", "resolve", "resolve_legacy", "still_on_disk")
 
 _LIONAGI_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -226,6 +226,40 @@ def resolve(fullname: str) -> str | None:
     if row is None:
         return None
     return row.new + fullname[len(row.old) :]
+
+
+def _index_by_new_first_component(
+    table: tuple[Moved, ...],
+) -> Mapping[str, tuple[Moved, ...]]:
+    return MappingProxyType(
+        {
+            first: tuple(row for row in table if row.new.split(".", 1)[0] == first)
+            for first in {row.new.split(".", 1)[0] for row in table}
+        }
+    )
+
+
+_REVERSE_INDEX: tuple[tuple[Moved, ...], Mapping[str, tuple[Moved, ...]]] = (
+    MOVED,
+    _index_by_new_first_component(MOVED),
+)
+
+
+def resolve_legacy(fullname: str) -> str | None:
+    """Return the legacy dotted name for a current name covered by a move, or None."""
+    global _REVERSE_INDEX
+    table = MOVED
+    pair = _REVERSE_INDEX
+    if pair[0] is not table:
+        pair = _REVERSE_INDEX = (table, _index_by_new_first_component(table))
+    best: Moved | None = None
+    for row in pair[1].get(fullname.split(".", 1)[0], ()):
+        if fullname == row.new or fullname.startswith(row.new + "."):
+            if best is None or len(row.new) > len(best.new):
+                best = row
+    if best is None:
+        return None
+    return best.old + fullname[len(best.new) :]
 
 
 def still_on_disk(fullname: str) -> bool:

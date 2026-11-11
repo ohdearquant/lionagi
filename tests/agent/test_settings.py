@@ -5,7 +5,8 @@
 
 import pytest
 
-from lionagi.agent.settings import apply_hooks_from_settings, load_settings
+from lionagi import _moved, ln
+from lionagi.agent.settings import _import_hook, apply_hooks_from_settings, load_settings
 from lionagi.agent.spec import AgentSpec
 
 
@@ -115,6 +116,74 @@ def test_apply_hooks_from_settings_rejects_untrusted_python_hook():
             settings,
             trusted_hook_modules={"lionagi.agent.hooks"},
         )
+
+
+@pytest.mark.parametrize(
+    ("requested", "trusted"),
+    [
+        ("legacy.hooks", "legacy.hooks"),
+        ("legacy.hooks", "current.hooks"),
+        ("current.hooks", "legacy.hooks"),
+        ("current.hooks", "current.hooks"),
+    ],
+)
+def test_hook_trust_compares_moved_module_names_canonically(
+    monkeypatch, requested: str, trusted: str
+):
+    row = _moved.Moved("legacy.hooks", "current.hooks", "0.0.0", "2.0.0")
+    monkeypatch.setattr(_moved, "MOVED", (row,))
+    loaded: list[str] = []
+
+    class HookModule:
+        handler = object()
+
+    def import_module(name: str):
+        loaded.append(name)
+        return HookModule
+
+    monkeypatch.setattr(ln, "import_module", import_module)
+
+    assert (
+        _import_hook(f"{requested}:handler", trusted_hook_modules={trusted}) is HookModule.handler
+    )
+    # Trust is decided on canonical names; the import uses the name as written, so an old
+    # path still goes through the moved-module finder and its deprecation warning.
+    assert loaded == [requested]
+
+
+def test_custom_trusted_module_is_unchanged(monkeypatch):
+    loaded: list[str] = []
+
+    class HookModule:
+        handler = object()
+
+    monkeypatch.setattr(ln, "import_module", lambda name: (loaded.append(name), HookModule)[1])
+
+    assert (
+        _import_hook("custom.hooks:handler", trusted_hook_modules={"custom.hooks"})
+        is HookModule.handler
+    )
+    assert loaded == ["custom.hooks"]
+
+
+@pytest.mark.parametrize("module", ["lionagi.agent.hooks.child", "lionagi.agent.hooks_extra"])
+def test_hook_trust_does_not_extend_to_descendants_or_siblings(module: str):
+    with pytest.raises(
+        PermissionError,
+        match=(
+            rf"^Untrusted hook module {module!r}\. "
+            r"Add it to trusted_hook_modules to allow\."
+        ),
+    ):
+        _import_hook(f"{module}:handler", trusted_hook_modules={"lionagi.agent.hooks"})
+
+
+def test_hook_trust_permission_error_text_is_unchanged():
+    with pytest.raises(PermissionError) as exc:
+        _import_hook("os:path", trusted_hook_modules={"lionagi.agent.hooks"})
+    assert str(exc.value) == (
+        "Untrusted hook module 'os'. Add it to trusted_hook_modules to allow."
+    )
 
 
 async def test_shell_pre_hook_raises_permission_error_on_nonzero_exit(monkeypatch):
