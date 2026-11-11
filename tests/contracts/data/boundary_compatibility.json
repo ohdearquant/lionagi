@@ -97,7 +97,7 @@
     "lionagi/agent/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
       "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AgentSpec\": (\"spec\", None),\n    \"HooksMixin\": (\"spec\", None),\n    \"PermissionPolicy\": (\"permissions\", None),\n    \"create_agent\": (\"factory\", None),\n    \"load_settings\": (\"settings\", None),\n    \"apply_hooks_from_settings\": (\"settings\", None),\n}",
-      "def __getattr__(name: str) -> object:\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "def __getattr__(name: str) -> object:\n    if name in _SUBMODULES:\n        import importlib\n\n        return importlib.import_module(f\"{__name__}.{name}\")\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
       "__all__ = (\n    \"AgentSpec\",\n    \"HooksMixin\",\n    \"PermissionPolicy\",\n    \"create_agent\",\n    \"load_settings\",\n    \"apply_hooks_from_settings\",\n)"
     ],
     "lionagi/agent/_email_in_headers.py": [

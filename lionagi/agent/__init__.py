@@ -13,7 +13,15 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
 }
 
 
+# Submodules the eager imports used to load, so they stay reachable as attributes.
+_SUBMODULES = frozenset({"factory", "gate", "permissions", "settings", "spec"})
+
+
 def __getattr__(name: str) -> object:
+    if name in _SUBMODULES:
+        import importlib
+
+        return importlib.import_module(f"{__name__}.{name}")
     return lazy_import(name, _LAZY_MAP, __name__, globals())
 
 

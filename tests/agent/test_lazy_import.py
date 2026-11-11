@@ -54,6 +54,22 @@ def test_exports_resolve_to_their_submodule_objects(name: str, module_name: str)
     assert getattr(package, name) is getattr(module, name)
 
 
+@pytest.mark.parametrize("submodule", ["factory", "gate", "permissions", "settings", "spec"])
+def test_submodule_resolves_as_attribute_in_a_fresh_process(submodule: str):
+    script = textwrap.dedent(
+        f"""
+        import importlib
+        import sys
+        import lionagi.agent
+
+        assert "lionagi.agent.{submodule}" not in sys.modules
+        module = lionagi.agent.{submodule}
+        assert module is importlib.import_module("lionagi.agent.{submodule}")
+        """
+    )
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
 def test_unknown_attribute_raises_attribute_error():
     import lionagi.agent as agent
 
