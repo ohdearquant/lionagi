@@ -97,6 +97,7 @@ _REJECTION_CLASSES = frozenset(
         "other",
     }
 )
+_BILLING_BLOCKS = frozenset({"credit_balance_low", "spend_limit_reached"})
 _REQUEST_ID_RE = __import__("re").compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
@@ -110,7 +111,7 @@ class AccountRoutingError(Exception):
     """A routed call's refusal or failure, carrying only a code and validated fields.
 
     The message is built from the code and those validated fields alone (ids, an HTTP
-    status, and two strings checked against closed sets), so no provider text, request
+    status, and strings checked against closed sets), so no provider text, request
     content or key material can reach it. Raise it ``from None`` where it replaces
     another exception, so a traceback does not print the replaced one. That exception
     stays reachable as ``__context__``, so it must carry no key material either.
@@ -128,9 +129,11 @@ class AccountRoutingError(Exception):
         http_status: int | None = None,
         provider_error_type: str | None = None,
         rejection_class: str | None = None,
+        billing_block: str | None = None,
     ) -> None:
         _check_member("provider_error_type", provider_error_type, _PROVIDER_ERROR_TYPES)
         _check_member("rejection_class", rejection_class, _REJECTION_CLASSES)
+        _check_member("billing_block", billing_block, _BILLING_BLOCKS)
         if (
             provider_error_type is not None or rejection_class is not None
         ) and code is not RouterErrorCode.REQUEST_REJECTED:
@@ -143,6 +146,7 @@ class AccountRoutingError(Exception):
         self.http_status = http_status
         self.provider_error_type = provider_error_type
         self.rejection_class = rejection_class
+        self.billing_block = billing_block
         parts = [code.value]
         if account is not None:
             parts.append(f"account={account}")
@@ -154,6 +158,16 @@ class AccountRoutingError(Exception):
             parts.append(f"type={provider_error_type}")
         if rejection_class is not None:
             parts.append(f"class={rejection_class}")
+        if billing_block is not None:
+            parts.append(f"billing_block={billing_block}")
+            if billing_block == "credit_balance_low":
+                parts.append(
+                    "The account stays blocked until an operator unblocks it after the credit is topped up."
+                )
+            else:
+                parts.append(
+                    "The account stays blocked until an operator unblocks it after the spend limit resets."
+                )
         super().__init__(" ".join(parts))
 
 

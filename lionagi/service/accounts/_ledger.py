@@ -146,8 +146,11 @@ def _routing_error(
     *,
     account: str | None = None,
     attempt_id: UUID | None = None,
+    billing_block: str | None = None,
 ) -> AccountRoutingError:
-    return AccountRoutingError(code, account=account, attempt_id=attempt_id)
+    return AccountRoutingError(
+        code, account=account, attempt_id=attempt_id, billing_block=billing_block
+    )
 
 
 def _checked_int(value: object, *, minimum: int, maximum: int, label: str) -> int:
@@ -203,6 +206,17 @@ def _clear_warm_prefix(connection: sqlite3.Connection, provider: str, account: s
     connection.execute(
         "DELETE FROM warm_prefix WHERE provider = ? AND account = ?",
         (provider, account),
+    )
+
+
+def _block_billing_rejection(
+    connection: sqlite3.Connection, provider: str, account: str, reason: str
+) -> None:
+    """Block an account for a billing rejection without replacing an existing reason."""
+    connection.execute(
+        "UPDATE account SET block_reason = COALESCE(block_reason, ?) "
+        "WHERE provider = ? AND name = ?",
+        (reason, provider, account),
     )
 
 
@@ -1233,6 +1247,13 @@ class CredentialLedger:
                             RouterErrorCode.ACCOUNT_BLOCKED,
                             account=bound_name,
                             attempt_id=attempt_id,
+                            billing_block=(
+                                account_state[0]
+                                if account_state is not None
+                                and account_state[0]
+                                in ("credit_balance_low", "spend_limit_reached")
+                                else None
+                            ),
                         )
                     settled, adjustments, opened, _ = self._spend_parts(
                         connection, provider, bound_name, month_utc
@@ -1498,7 +1519,10 @@ class CredentialLedger:
         hour_after_key: bool = False,
         server_tools: bool = False,
         http_status: int | None = None,
-    ) -> SettleResult:
+        billing_rejection: bool = False,
+    ) -> tuple[SettleResult, str | None]:
+        """Apply evidence in one transaction; return its result and, for a billing
+        rejection, the account's block reason read inside that transaction."""
         usage_json: str | None = None
         request_id: str | None = None
         provider_error_type: str | None = None
@@ -1533,6 +1557,7 @@ class CredentialLedger:
         with closing(self._connect()) as connection:
             conflict: tuple[str, str] | None = None
             result: SettleResult
+            billing_reason: str | None = None
             with _transaction(connection):
                 row = connection.execute(
                     """
@@ -1596,10 +1621,10 @@ class CredentialLedger:
                         stored_model,
                     )
                     if late is not None:
-                        return late
+                        return late, None
                 if isinstance(evidence, UnknownOutcome):
                     if state == "settled":
-                        return "already_settled"
+                        return "already_settled", None
                     # The first reason recorded on an open attempt stands: a later write (a
                     # cancellation arriving after a rate limit was recorded) keeps it, and the
                     # rejection fields are written with the reason or not at all.
@@ -1627,7 +1652,7 @@ class CredentialLedger:
                             and candidate is not None
                             and _canonical_json(candidate) == _canonical_json(stored_envelope)
                         ):
-                            return "already_settled"
+                            return "already_settled", None
                         connection.execute(
                             "UPDATE account SET block_reason='settlement_conflict' WHERE provider=? AND name=?",
                             (provider, account),
@@ -1855,6 +1880,21 @@ class CredentialLedger:
                             ),
                         )
                         _clear_warm_prefix(connection, provider, account)
+                        if (
+                            billing_rejection
+                            and evidence.http_status == 400
+                            and evidence.provider_error_type == "invalid_request_error"
+                            and evidence.rejection_class
+                            in ("credit_balance_low", "spend_limit_reached")
+                        ):
+                            _block_billing_rejection(
+                                connection, provider, account, evidence.rejection_class
+                            )
+                            block_row = connection.execute(
+                                "SELECT block_reason FROM account WHERE provider = ? AND name = ?",
+                                (provider, account),
+                            ).fetchone()
+                            billing_reason = None if block_row is None else block_row[0]
                         result = "settled"
                 elif state == "settled":
                     identical = (
@@ -1864,7 +1904,7 @@ class CredentialLedger:
                         and old_request == request_id
                     )
                     if identical:
-                        return "already_settled"
+                        return "already_settled", None
                     connection.execute(
                         "UPDATE account SET block_reason = 'settlement_conflict' "
                         "WHERE provider = ? AND name = ?",
@@ -1928,7 +1968,7 @@ class CredentialLedger:
                     account=conflict[0],
                     attempt_id=attempt_id,
                 ) from None
-        return result
+        return result, billing_reason
 
     async def settle(
         self,
@@ -1950,9 +1990,33 @@ class CredentialLedger:
             type(http_status) is not int or not 100 <= http_status <= 599
         ):
             raise ValueError("invalid HTTP status")
-        return await self._run(
+        result, _ = await self._run(
             lambda: self._settle_sync(
                 attempt_id, evidence, cert, hour_after_key, server_tools, http_status
+            )
+        )
+        return result
+
+    async def settle_billing_rejection(
+        self,
+        attempt_id: UUID,
+        evidence: RejectionZero,
+        *,
+        http_status: int | None = None,
+    ) -> tuple[SettleResult, str | None]:
+        """Settle a billing rejection at zero and block its account in the same transaction.
+
+        The block is written only when this settle is the attempt's first closure and only
+        if the account has no block reason yet. Returns the settle result and the account's
+        block reason read inside that transaction, or ``None`` when no closure happened.
+        """
+        if http_status is not None and (
+            type(http_status) is not int or not 100 <= http_status <= 599
+        ):
+            raise ValueError("invalid HTTP status")
+        return await self._run(
+            lambda: self._settle_sync(
+                attempt_id, evidence, None, False, False, http_status, billing_rejection=True
             )
         )
 
