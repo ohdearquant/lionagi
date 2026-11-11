@@ -88,7 +88,7 @@ async def test_a_notify_command_does_not_see_the_store(probe, tmp_path):
 
 @pytest.mark.asyncio
 async def test_an_external_hook_does_not_see_the_store(probe, tmp_path):
-    from lionagi.hooks.external import _run_hook_process
+    from lionhub.hooks.external import _run_hook_process
 
     out = tmp_path / "external-hook.txt"
     # A hook reads the envelope on its stdin; this one reads it, then runs the probe.

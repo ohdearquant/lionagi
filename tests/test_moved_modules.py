@@ -109,6 +109,40 @@ def test_the_contracts_declare_exactly_the_moved_rows():
     assert_contracts_match_moved(CONTRACTS, _moved.MOVED)
 
 
+def test_external_hooks_move_uses_the_declared_compatibility_releases():
+    row = next(row for row in _moved.MOVED if row.old == "lionagi.hooks.external")
+    assert row == _moved.Moved(
+        "lionagi.hooks.external", "lionhub.hooks.external", "0.38.0", "2.0.0"
+    )
+
+
+def test_importing_core_hooks_does_not_load_external_adapter():
+    script = "\n".join(
+        (
+            "import sys, warnings",
+            "import lionagi.hooks",
+            "assert 'lionhub.hooks.external' not in sys.modules",
+            "with warnings.catch_warnings(record=True) as caught:",
+            "    warnings.simplefilter('always')",
+            "    import lionagi.hooks.external as old",
+            "import lionhub.hooks.external as new",
+            "assert old is new",
+            "assert 'lionhub.hooks.external' in sys.modules",
+            "items = [w for w in caught if issubclass(w.category, DeprecationWarning)]",
+            "assert len(items) == 1",
+            "assert items[0].filename == '<string>'",
+        )
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_casts_move_uses_the_declared_compatibility_releases():
     row = next(row for row in _moved.MOVED if row.old == "lionagi.casts")
     assert row == _moved.Moved("lionagi.casts", "lionhub.agent.casts", "0.38.0", "2.0.0")

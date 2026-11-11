@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.hooks.external import ExternalHookConfigError
 from lionhub.agent.settings import apply_hooks_from_settings, parse_external_hooks
 from lionhub.agent.spec import AgentSpec
+from lionhub.hooks.external import ExternalHookConfigError
 
 
 def test_parse_external_hooks_basic_entry():

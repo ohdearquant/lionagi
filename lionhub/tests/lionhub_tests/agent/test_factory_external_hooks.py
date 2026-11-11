@@ -198,7 +198,7 @@ def test_multiple_entries_wire_independently():
 class _FakeStream:
     """Minimal async-read stand-in for a StreamReader: returns *data* on the
     first ``read()`` call, then EOF -- matches how ``_read_capped``'s
-    read-until-empty loop drains a real pipe (see ``lionagi.hooks.external``)."""
+    read-until-empty loop drains a real pipe (see ``lionhub.hooks.external``)."""
 
     def __init__(self, data: bytes = b""):
         self._data = data

@@ -82,7 +82,7 @@ def parse_external_hooks(external_config: dict[str, Any]) -> list[dict[str, Any]
     first unmappable event, non-``command`` type, or invalid argv -- config
     load fails loud rather than silently dropping a declared guard.
     """
-    from lionagi.hooks.external import (
+    from lionhub.hooks.external import (
         SUPPORTED_EVENTS,
         ExternalHookConfigError,
         validate_argv,

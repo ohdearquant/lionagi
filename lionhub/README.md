@@ -37,6 +37,7 @@ Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0. The a
 | `lionagi.tools` | `lionhub.tools` |
 | `lionagi.agent` | `lionhub.agent` |
 | `lionagi.casts` | `lionhub.agent.casts` |
+| `lionagi.hooks.external` | `lionhub.hooks.external` |
 | `lionagi.operations.lndl_middle` | `lionhub.lndl.middle` |
 | `lionagi.providers._provider_errors` | `lionagi._provider_errors` |
 | `lionagi.providers._secret_resolution` | `lionagi.service.accounts._secret_resolution` |

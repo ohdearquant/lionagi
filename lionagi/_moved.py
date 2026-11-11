@@ -55,6 +55,7 @@ MOVED: tuple[Moved, ...] = (
     Moved("lionagi.tools", "lionhub.tools", "0.38.0", "2.0.0"),
     Moved("lionagi.agent", "lionhub.agent", "0.38.0", "2.0.0"),
     Moved("lionagi.casts", "lionhub.agent.casts", "0.38.0", "2.0.0"),
+    Moved("lionagi.hooks.external", "lionhub.hooks.external", "0.38.0", "2.0.0"),
     Moved("lionagi.operations.lndl_middle", "lionhub.lndl.middle", "0.37.0", "2.0.0"),
     Moved("lionagi.providers._provider_errors", "lionagi._provider_errors", "0.37.0", "2.0.0"),
     Moved(

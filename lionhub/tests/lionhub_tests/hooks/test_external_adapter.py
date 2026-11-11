@@ -17,7 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lionagi.hooks.external import (
+from lionagi.protocols.action.tool_hooks import ToolPostDecision, ToolPreDecision
+from lionhub.hooks.external import (
     ExternalHookConfigError,
     build_envelope,
     compute_command_hash,
@@ -29,7 +30,6 @@ from lionagi.hooks.external import (
     resolve_hook_executable,
     validate_argv,
 )
-from lionagi.protocols.action.tool_hooks import ToolPostDecision, ToolPreDecision
 
 
 def test_validate_argv_accepts_nonempty_string_list():
@@ -193,7 +193,7 @@ def test_open_executable_fd_non_posix_fallback_opens_regular_file(tmp_path, monk
     executable must still open successfully via the fallback."""
     import os as os_mod
 
-    import lionagi.hooks.external as ext_mod
+    import lionhub.hooks.external as ext_mod
 
     monkeypatch.setattr(ext_mod, "_POSIX_NOFOLLOW_OPEN", False)
     script = tmp_path / "guard"
@@ -211,7 +211,7 @@ def test_open_executable_fd_non_posix_fallback_refuses_symlink(tmp_path, monkeyp
     """Same fallback, but the resolved path is a symlink -- the non-atomic
     pre-check must refuse it since `O_NOFOLLOW` isn't available to enforce
     this atomically."""
-    import lionagi.hooks.external as ext_mod
+    import lionhub.hooks.external as ext_mod
 
     monkeypatch.setattr(ext_mod, "_POSIX_NOFOLLOW_OPEN", False)
     target = tmp_path / "real-guard"
@@ -556,7 +556,7 @@ async def test_post_tool_use_error_result_maps_tool_response_to_error_dict(monke
 
 
 async def test_pre_tool_use_timeout_passes_spawn_bound_witnesses_and_denies(monkeypatch):
-    import lionagi.hooks.external as external_mod
+    import lionhub.hooks.external as external_mod
 
     proc = MagicMock()
     proc.pid = 9999
@@ -744,7 +744,7 @@ async def test_content_pinned_trust_survives_same_path_replacement_after_prepare
     behavior (not the attacker's exit-2/``ATTACKER-RAN``) must be what
     executed."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    import lionagi.hooks.external as ext_mod
+    import lionhub.hooks.external as ext_mod
     from lionagi.plugins._user_settings import write_user_settings
 
     approved_dir = tmp_path / "approved"
@@ -782,7 +782,7 @@ async def test_content_pinned_trust_survives_symlink_swap_after_prepare(monkeypa
     """Same race as above, via a symlink retarget instead of an in-place
     overwrite, swapped after ``_prepare_trusted_execution`` returns."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    import lionagi.hooks.external as ext_mod
+    import lionhub.hooks.external as ext_mod
     from lionagi.plugins._user_settings import write_user_settings
 
     approved_dir = tmp_path / "approved"
@@ -835,7 +835,7 @@ async def test_content_pinned_trust_survives_overwrite_between_copy_and_hash(mon
     too late to matter and the original (exit 0) approved bytes are what
     execute -- the attacker's exit-2/'ATTACKER-RAN' must never appear."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    import lionagi.hooks.external as ext_mod
+    import lionhub.hooks.external as ext_mod
     from lionagi.plugins._user_settings import write_user_settings
 
     approved_dir = tmp_path / "approved"
@@ -914,7 +914,7 @@ async def test_trusted_exec_spawns_a_private_copy_not_the_configured_path(monkey
 
 
 async def test_read_capped_truncates_and_logs(caplog):
-    from lionagi.hooks.external import _MAX_STDOUT_BYTES, _read_capped
+    from lionhub.hooks.external import _MAX_STDOUT_BYTES, _read_capped
 
     oversized = b"x" * (_MAX_STDOUT_BYTES + 1000)
     with caplog.at_level(logging.WARNING, logger="lionagi.hooks.external"):
@@ -926,7 +926,7 @@ async def test_read_capped_truncates_and_logs(caplog):
 
 
 async def test_read_capped_under_cap_returns_everything_untruncated():
-    from lionagi.hooks.external import _read_capped
+    from lionhub.hooks.external import _read_capped
 
     data = b"hello hook output"
     result = await _read_capped(_FakeStream(data), 1_048_576, "stdout")
@@ -935,7 +935,7 @@ async def test_read_capped_under_cap_returns_everything_untruncated():
 
 
 async def test_read_capped_none_stream_returns_empty():
-    from lionagi.hooks.external import _read_capped
+    from lionhub.hooks.external import _read_capped
 
     result = await _read_capped(None, 1_048_576, "stdout")
     assert result.data == b""
@@ -950,7 +950,7 @@ async def test_truncated_stdout_on_blocking_seam_denies_even_with_a_complete_all
     data. Before the fix, the cap silently dropped the trailing bytes and
     the retained prefix parsed clean -- allow. Truncation must now deny
     regardless of what the retained prefix says."""
-    from lionagi.hooks.external import _MAX_STDOUT_BYTES
+    from lionhub.hooks.external import _MAX_STDOUT_BYTES
 
     allow_json = json.dumps({"decision": "allow"}).encode()
     padding = b" " * (_MAX_STDOUT_BYTES - len(allow_json) + 1)  # pushes total past the cap
@@ -968,7 +968,7 @@ async def test_truncated_stderr_on_exit_two_does_not_change_deny_decision(monkey
     """Stderr truncation only shortens the displayed reason on an exit-2
     block -- the decision was already deny, so this must not error or
     silently allow."""
-    from lionagi.hooks.external import _MAX_STDERR_BYTES
+    from lionhub.hooks.external import _MAX_STDERR_BYTES
 
     oversized_stderr = b"e" * (_MAX_STDERR_BYTES + 500)
     monkeypatch.setattr(
@@ -983,7 +983,7 @@ async def test_truncated_stderr_on_exit_two_does_not_change_deny_decision(monkey
 
 
 async def test_truncated_stdout_on_advisory_seam_is_error_not_allow(monkeypatch):
-    from lionagi.hooks.external import _MAX_STDOUT_BYTES
+    from lionhub.hooks.external import _MAX_STDOUT_BYTES
 
     allow_json = json.dumps({"decision": "allow"}).encode()
     padding = b" " * (_MAX_STDOUT_BYTES - len(allow_json) + 1)
@@ -1000,7 +1000,7 @@ async def test_truncated_stdout_on_advisory_seam_is_error_not_allow(monkeypatch)
 async def test_stderr_is_capped_independently_of_stdout(monkeypatch):
     """Before the fix, the advertised cap applied to stdout only -- stderr
     was read via the same `communicate()` call but never capped at all."""
-    from lionagi.hooks.external import _MAX_STDERR_BYTES
+    from lionhub.hooks.external import _MAX_STDERR_BYTES
 
     oversized_stderr = b"e" * (_MAX_STDERR_BYTES + 500)
     proc = _mock_proc(2, stdout=b"", stderr=oversized_stderr)
@@ -1053,7 +1053,7 @@ async def test_hook_that_exits_without_reading_stdin_is_not_a_run_error(tmp_path
     buffer to a hook that exits at once closes the read end before the write
     completes, so the runner must treat that broken pipe as the hook's valid
     early exit rather than as its own failure."""
-    from lionagi.hooks.external import _run_hook_process
+    from lionhub.hooks.external import _run_hook_process
 
     envelope = b"x" * (4 * 1024 * 1024)
     returncode, stdout, stderr = await asyncio.wait_for(
@@ -1075,7 +1075,7 @@ async def test_hook_that_exits_without_reading_stdin_is_not_a_run_error(tmp_path
 async def test_write_stdin_propagates_non_pipe_errors():
     """Only a closed input pipe is harmless. Every other write failure still
     raises, so a real I/O fault is not mistaken for a hook ignoring stdin."""
-    from lionagi.hooks.external import _write_stdin
+    from lionhub.hooks.external import _write_stdin
 
     class _BrokenStdin:
         def write(self, data: bytes) -> None:
@@ -1104,7 +1104,7 @@ class _Unserializable:
 
 
 def test_json_safe_passes_through_serializable_values():
-    from lionagi.hooks.external import _json_safe
+    from lionhub.hooks.external import _json_safe
 
     assert _json_safe({"a": 1}) == {"a": 1}
     assert _json_safe([1, 2, 3]) == [1, 2, 3]
@@ -1112,7 +1112,7 @@ def test_json_safe_passes_through_serializable_values():
 
 
 def test_json_safe_stringifies_non_serializable_value():
-    from lionagi.hooks.external import _json_safe
+    from lionhub.hooks.external import _json_safe
 
     obj = _Unserializable()
     assert _json_safe(obj) == str(obj)
@@ -1154,7 +1154,7 @@ async def test_execute_hook_serializes_before_spawning_never_orphans_a_process(m
     tool_response fallback), the subprocess must never be spawned at all.
     The old bug spawned first and lost the process handle when json.dumps
     raised afterward, orphaning it."""
-    from lionagi.hooks.external import _execute_hook
+    from lionhub.hooks.external import _execute_hook
 
     spawn = AsyncMock()
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
@@ -1171,7 +1171,7 @@ async def test_execute_hook_serializes_before_spawning_never_orphans_a_process(m
 
 
 async def test_execute_hook_serialization_failure_fails_closed_on_blocking_seam(monkeypatch):
-    from lionagi.hooks.external import _execute_hook
+    from lionhub.hooks.external import _execute_hook
 
     spawn = AsyncMock()
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
@@ -1184,3 +1184,9 @@ async def test_execute_hook_serialization_failure_fails_closed_on_blocking_seam(
     )
     assert verdict.outcome == "deny"
     spawn.assert_not_called()
+
+
+def test_external_adapter_keeps_its_legacy_logger_name():
+    import lionhub.hooks.external as external
+
+    assert external.logger.name == "lionagi.hooks.external"

@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lionagi.hooks.external import compute_trust_record, external_hook_adapter
 from lionagi.plugins._user_settings import write_user_settings
 from lionagi.protocols.action.tool_hooks import ToolPreDecision
+from lionhub.hooks.external import compute_trust_record, external_hook_adapter
 
 
 def _write_guard(directory: Path, marker: Path, *, exit_code: int = 0) -> Path:

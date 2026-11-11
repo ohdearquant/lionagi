@@ -43,7 +43,7 @@ from lionagi.ln import (
 from lionagi.ln._proc import env_without_state_db_url
 from lionagi.protocols.action.tool_hooks import ToolPostDecision, ToolPreDecision
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("lionagi.hooks.external")
 
 __all__ = (
     "BLOCKING_EVENTS",

@@ -969,6 +969,26 @@ CONTRACTS: tuple[MoveContract, ...] = (
         public_names=frozenset({"run_terminal_reconciliation"}),
     ),
     MoveContract(
+        old="lionagi.hooks.external",
+        new="lionhub.hooks.external",
+        kind="module",
+        public_names=frozenset(
+            {
+                "ExternalHookConfigError",
+                "HookVerdict",
+                "build_envelope",
+                "compute_command_hash",
+                "compute_executable_digest",
+                "compute_trust_record",
+                "external_hook_adapter",
+                "is_command_trusted",
+                "match_hook",
+                "resolve_hook_executable",
+                "validate_argv",
+            }
+        ),
+    ),
+    MoveContract(
         old="lionagi.studio.services._db",
         new="lionhub.orchestration.state_store",
         kind="module",

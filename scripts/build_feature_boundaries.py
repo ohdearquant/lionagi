@@ -86,7 +86,6 @@ ROOT_MODULES = {
 TARGET_RULES = {
     "lionagi.agent": "lionhub (destination not yet recorded)",
     "lionhub.agent.casts": "lionhub.agent.casts",
-    "lionagi.hooks.external": "lionhub (destination not yet recorded)",
     "lionagi.integrations": "lionhub (destination not yet recorded)",
     "lionagi.tools": "lionhub (destination not yet recorded)",
     "lionagi.cli": "pending the CLI location decision (ADR-0139 D1)",
