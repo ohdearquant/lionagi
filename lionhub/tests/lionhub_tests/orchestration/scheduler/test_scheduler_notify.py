@@ -113,7 +113,7 @@ async def test_unregistered_scope_never_fires():
 
 from unittest.mock import AsyncMock, patch  # noqa: E402
 
-from ._scheduler_claims import fire_inner_with_claim, fire_with_claim
+from tests._scheduler_claims import fire_inner_with_claim, fire_with_claim
 
 
 def _notify_schedule(**overrides) -> dict:

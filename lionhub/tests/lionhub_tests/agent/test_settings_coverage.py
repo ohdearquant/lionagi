@@ -44,12 +44,27 @@ def test_import_hook_trusted_module_returns_callable():
     assert callable(result)
 
 
-def test_import_hook_nonexistent_module_in_trusted_set_returns_none():
+def test_import_hook_warns_and_skips_nonexistent_trusted_module(caplog):
     result = _import_hook(
         "lionhub.agent.hooks_nonexistent:fn",
         trusted_hook_modules={"lionhub.agent.hooks_nonexistent"},
     )
     assert result is None
+    assert "Could not import configured hook lionhub.agent.hooks_nonexistent:fn" in caplog.text
+    assert "No module named" in caplog.text
+
+
+def test_apply_hooks_warns_and_skips_unavailable_hook(caplog):
+    config = AgentSpec.compose("implementer")
+    result = apply_hooks_from_settings(
+        config,
+        {"hooks": {"pre": {"bash": ["lionhub.agent.hooks_nonexistent:fn"]}}},
+        trusted_hook_modules={"lionhub.agent.hooks_nonexistent"},
+    )
+    assert result is config
+    assert "Could not import configured hook lionhub.agent.hooks_nonexistent:fn" in caplog.text
+    assert "No module named" in caplog.text
+    assert config.hook_handlers == {}
 
 
 def test_resolve_hook_spec_string_shorthand_trusted():

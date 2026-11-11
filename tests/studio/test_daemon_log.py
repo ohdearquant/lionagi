@@ -237,7 +237,7 @@ def test_records_outside_the_scheduler_are_left_to_the_root_handlers(loggers, ro
 
 @pytest.mark.asyncio
 async def test_a_spawn_prints_none_of_its_arguments_while_serving(loggers, capsys, tmp_path):
-    from lionagi.studio.scheduler.subprocess import spawn_and_wait
+    from lionhub.orchestration.scheduler.subprocess import spawn_and_wait
 
     child = tmp_path / "quiet-child"
     child.write_text("#!/bin/sh\nexit 0\n")

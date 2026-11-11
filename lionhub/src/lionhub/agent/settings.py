@@ -176,7 +176,8 @@ def _import_hook(
 
         module = ln.import_module(module_path)
         return getattr(module, func_name)
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError) as exc:
+        logger.warning("Could not import configured hook %s: %s", import_path, exc)
         return None
 
 

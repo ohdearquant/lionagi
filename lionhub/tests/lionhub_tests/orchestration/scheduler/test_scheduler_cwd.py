@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ._scheduler_claims import fire_with_claim
+from tests._scheduler_claims import fire_with_claim
 
 # _resolve_action_cwd's action_project branch imports lionagi.studio.services.projects,
 # which requires fastapi (the `studio` extra); skip gracefully in a bare-core install.
