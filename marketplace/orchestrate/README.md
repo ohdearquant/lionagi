@@ -184,4 +184,4 @@ runs the same playbook in the foreground.
 - Playbooks: `~/.lionagi/playbooks/*.playbook.yaml`
 - State DB schema: `lionagi/state/schema.sql`
 - Studio: `lionagi/studio/` (backend), `apps/studio/frontend/` (UI)
-- Scheduler: `lionagi/studio/scheduler/`
+- Scheduler: `lionhub/src/lionhub/orchestration/scheduler/`

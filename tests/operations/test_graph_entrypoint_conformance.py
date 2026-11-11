@@ -365,7 +365,7 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="scheduler-launch-actions",
-        symbol="lionagi.studio.scheduler.subprocess.build_argv",
+        symbol="lionhub.orchestration.scheduler.subprocess.build_argv",
         location=None,
         role="alias",
         expected_target='["o", "flow"] or ["o", "fanout"]',
@@ -4073,7 +4073,7 @@ def test_play_shortcut_rewrites_to_registered_o_flow_subcommand():
 
 
 def test_scheduler_build_argv_only_dispatches_registered_o_subcommands():
-    from lionagi.studio.scheduler.subprocess import build_argv
+    from lionhub.orchestration.scheduler.subprocess import build_argv
 
     flow_argv, _tmp = build_argv(
         {"action_kind": "flow", "action_model": "codex/gpt-5.5", "action_prompt": "do it"}, {}

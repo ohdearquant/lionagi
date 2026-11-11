@@ -20,9 +20,8 @@ from sqlalchemy.types import JSON
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
-
-from ..scheduler import capabilities
-from ..scheduler.admit import (
+from lionhub.orchestration.scheduler import capabilities
+from lionhub.orchestration.scheduler.admit import (
     DEFAULT_KEY_CONCURRENCY,
     DEFAULT_WAITER_CAP_MULTIPLIER,
     allows_deferred_over_cap,
@@ -30,8 +29,8 @@ from ..scheduler.admit import (
     holder_is_running,
     waiter_ahead_count,
 )
-from ..scheduler.subprocess import _ALIAS_ACTION_KINDS, _VALID_ACTION_KINDS
-from ..scheduler.worker import DEFAULT_LEASE_TTL_SECONDS
+from lionhub.orchestration.scheduler.subprocess import _ALIAS_ACTION_KINDS, _VALID_ACTION_KINDS
+from lionhub.orchestration.scheduler.worker import DEFAULT_LEASE_TTL_SECONDS
 
 __all__ = ("AdmissionRejectedError", "TaskApplication", "cancel_task", "submit_task")
 

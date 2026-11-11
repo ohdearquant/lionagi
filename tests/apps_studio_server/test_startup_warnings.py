@@ -83,9 +83,9 @@ def _neutralize_heavy_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
     consistent OOM kills in xdist workers and leaked writes into DEFAULT_DB_PATH.
     The scheduler, reconciliation, and checkpoint paths are covered elsewhere.
     """
-    import lionagi.studio.scheduler.engine as engine_mod
     import lionagi.studio.services.launches as launches_mod
     import lionhub.orchestration.scheduler.db_maintenance as db_maintenance_mod
+    import lionhub.orchestration.scheduler.engine as engine_mod
     import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
 
     monkeypatch.setattr(engine_mod.scheduler, "start", _anoop)
@@ -645,7 +645,7 @@ def test_the_lifespan_prints_a_schedule_firing_however_the_app_is_served(
     is as it was once the app stops. ``scheduler.start()`` only spawns the tick loop, so the line
     that matters is the one emitted while serving."""
     import lionagi.studio.app as app_mod
-    import lionagi.studio.scheduler.engine as engine_mod
+    import lionhub.orchestration.scheduler.engine as engine_mod
 
     engine_log = logging.getLogger("lionagi.studio.scheduler.engine")
     started = "Scheduler engine starting"

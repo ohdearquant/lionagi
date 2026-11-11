@@ -65,7 +65,7 @@ def test_fresh_wheel_schedule_validate_and_export_without_backend() -> None:
         "apps.studio",
         "lionagi.studio.app",
         "lionagi.studio.routes",
-        "lionagi.studio.scheduler.routes",
+        "lionhub.orchestration.scheduler.routes",
     )
     refused = []
     class RefuseApplication(importlib.abc.MetaPathFinder):

@@ -180,7 +180,7 @@ This is separate from `settings.yaml` (which is gitignored/local). The detection
 
 ## Scheduled Runs
 
-Lion Studio can fire agent work on a schedule. The scheduler engine runs in-process inside the Studio server (`apps/studio/server/scheduler/engine.py`) and ticks every 30 seconds.
+Lion Studio can fire agent work on a schedule. The scheduler engine (`lionhub/src/lionhub/orchestration/scheduler/engine.py`) runs in-process inside the Studio server and ticks every 30 seconds.
 
 **CLI** (`lionhub/src/lionhub/cli/schedule.py`):
 

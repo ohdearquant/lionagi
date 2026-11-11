@@ -86,9 +86,9 @@ PUBLIC_IMPORTS = (
         "lionagi.state.lifecycle.callbacks",
     ),
     (
-        "lionagi.studio.scheduler.signals",
+        "lionhub.orchestration.scheduler.signals",
         "SchedulerSignalBus",
-        "lionagi.studio.scheduler.signals",
+        "lionhub.orchestration.scheduler.signals",
     ),
 )
 

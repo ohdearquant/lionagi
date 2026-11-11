@@ -199,7 +199,7 @@ assert 'lionagi.studio.cli' not in sys.modules
 if {selected!r} == 'schedule':
     assert 'fastapi' not in sys.modules
     assert 'uvicorn' not in sys.modules
-    assert 'lionagi.studio.scheduler.engine' not in sys.modules
+    assert 'lionhub.orchestration.scheduler.engine' not in sys.modules
 """)
 
     _fresh("""
@@ -223,7 +223,7 @@ def test_adapter_import_boundaries_in_fresh_processes():
                 "apps.studio",
                 "lionagi.studio.app",
                 "lionagi.studio.routes",
-                "lionagi.studio.scheduler.engine",
+                "lionhub.orchestration.scheduler.engine",
                 "fastapi",
                 "uvicorn",
             ),

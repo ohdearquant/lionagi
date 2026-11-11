@@ -133,4 +133,4 @@ For someone working inside a lionagi checkout — informational, not part of the
 | Agent CLI | `lionagi/cli/agent.py` |
 | Teams | `lionagi/cli/team.py` |
 | Invocations | `lionagi/cli/invoke.py` |
-| Scheduler engine | `lionagi/studio/scheduler/engine.py` |
+| Scheduler engine | `lionhub/src/lionhub/orchestration/scheduler/engine.py` |

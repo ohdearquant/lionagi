@@ -655,8 +655,8 @@ async def test_postgres_capability_claim(pg_url):
     Postgres, and the keyset pager's cursor-less first page must not send a
     nullable bind parameter asyncpg cannot type.
     """
-    from lionagi.studio.scheduler.worker import claim_and_execute, register_heartbeat
     from lionagi.studio.services.task_applications import TaskApplication, submit_task
+    from lionhub.orchestration.scheduler.worker import claim_and_execute, register_heartbeat
 
     db = StateDB(url=pg_url)
     await db.open()
@@ -2112,7 +2112,7 @@ async def test_postgres_recent_run_summary_projects_both_trigger_facts(pg_url):
     create_skipped_run with the scheduler's context keys, and a run naming neither."""
     from lionagi.state.reasons import ScheduleReasons
     from lionagi.studio.services import schedules
-    from lionagi.studio.services.scheduler_state import create_skipped_run
+    from lionhub.orchestration.scheduler.scheduler_state import create_skipped_run
 
     sid = f"pg-facts-{_uid()}"
     db = StateDB(url=pg_url)

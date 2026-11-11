@@ -22,7 +22,7 @@ def test_import_blocker_rejects_scheduler_runtime():
     result = _run_child(
         """
         try:
-            import lionagi.studio.scheduler.engine
+            import lionhub.orchestration.scheduler.engine
         except ImportError:
             pass
         else:
@@ -30,4 +30,4 @@ def test_import_blocker_rejects_scheduler_runtime():
         print(json.dumps({"refused": refused}))
         """
     )
-    assert "lionagi.studio.scheduler" in result["refused"]
+    assert "lionhub.orchestration.scheduler" in result["refused"]

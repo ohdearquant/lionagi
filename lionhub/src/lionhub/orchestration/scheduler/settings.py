@@ -19,7 +19,7 @@ MAX_LAUNCHES: int = int(os.environ.get("LIONAGI_STUDIO_MAX_LAUNCHES", "4"))
 # 0 = unlimited. When saturated, a due fire defers to the next tick (never dropped).
 MAX_SCHEDULED_CONCURRENT: int = int(os.environ.get("LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT", "4"))
 
-# Maximum concurrent ad-hoc task-worker executions (lionagi.studio.scheduler.worker),
+# Maximum concurrent ad-hoc task-worker executions (lionhub.orchestration.scheduler.worker),
 # reserved from its own capacity pool -- deliberately independent of
 # MAX_SCHEDULED_CONCURRENT. A shared cap between the two lanes lets a
 # continuously replenished stream of scheduled fires reacquire every freed

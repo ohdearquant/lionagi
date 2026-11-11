@@ -36,7 +36,7 @@ durable end-to-end:
    'terminal_notify' | ...`) and already carries `session_id`/`schedule_run_id`
    provenance columns, but **nothing in the codebase today calls `enqueue_dispatch()`
    with `kind='terminal_notify'`** — the anticipated kind is unused.
-3. **`lionagi/studio/scheduler/worker.py`**'s lease-and-reaper pass (the ADR-0071/0072
+3. **`lionhub/src/lionhub/orchestration/scheduler/worker.py`**'s lease-and-reaper pass (the ADR-0071/0072
    durable task queue) is the only process-liveness recovery mechanism that exists for
    scheduled work: a worker claims a `schedule_runs` row by writing
    `leased_by`/`lease_expires_at`/`lease_attempts` under a guarded CAS

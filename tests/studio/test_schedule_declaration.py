@@ -85,7 +85,7 @@ async def test_a_declared_playbook_target_passes_its_args_to_the_launch(
     reads only the one-shot args field drops them and the play runs with its
     defaults, silently.
     """
-    from lionagi.studio.scheduler.subprocess import build_argv
+    from lionhub.orchestration.scheduler.subprocess import build_argv
 
     doc = parse_schedule_set(
         _manifest_with_target("nightly", cwd=agent_profile, target=_PLAY_TARGET_WITH_ARGS_BLOCK)
@@ -180,7 +180,7 @@ schedules:
 
         # The adopted row keeps the declared args in its resolved target, which is
         # where the launch reads them, so the play fires with what the member wrote.
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         await apply_schedule_set(db, doc, agent_profile, adopt=True)
         row = await db.get_schedule_by_name("demo/audit")
@@ -203,7 +203,7 @@ def test_a_templated_arg_rendering_to_a_flag_is_still_refused(tmp_path):
     from trigger context, which an attacker may influence, so the rendered
     result is what gets checked — and it is checked where rendering happens.
     """
-    from lionagi.studio.scheduler.subprocess import _render_command_arg
+    from lionhub.orchestration.scheduler.subprocess import _render_command_arg
 
     assert _render_command_arg("--repo", {}) == "--repo"
     assert _render_command_arg("{{pr}}", {"pr": "123"}) == "123"
@@ -256,7 +256,7 @@ def test_a_resolved_manifest_still_refuses_an_injected_flag_at_fire_time(tmp_pat
     takes what the resolver persisted, hands it to ``build_argv``, and asserts
     a trigger-supplied flag is refused there.
     """
-    from lionagi.studio.scheduler.subprocess import build_argv
+    from lionhub.orchestration.scheduler.subprocess import build_argv
 
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
     manifest = _command_manifest(
@@ -310,9 +310,15 @@ _GITHUB_TRIGGER_BLOCK = "      github:\n        repo: acme/widgets\n"
 async def test_github_apply_target_change_fences_old_inflight_poll(
     temp_db_path, agent_profile, monkeypatch
 ):
-    from lionagi.studio.scheduler import github
-    from lionagi.studio.scheduler.engine import SchedulerEngine
-    from tests.studio.test_github_poll_stagnation import _NOW, _Client, _reap, _Service
+    from lionhub_tests.orchestration.scheduler.test_github_poll_stagnation import (
+        _NOW,
+        _Client,
+        _reap,
+        _Service,
+    )
+
+    from lionhub.orchestration.scheduler import github
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     def doc(repo, limit):
         trigger = (
@@ -1050,7 +1056,7 @@ def test_the_comparison_walk_covers_every_kind_a_launch_can_carry():
     """The walk varies every launch kind, and the table's kind sets name only ones
     the walk covers -- so a kind the table names cannot be added without the walk
     varying it."""
-    from lionagi.studio.scheduler.subprocess import (
+    from lionhub.orchestration.scheduler.subprocess import (
         _ALIAS_ACTION_KINDS,
         _VALID_ACTION_KINDS,
     )

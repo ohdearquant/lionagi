@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import lionagi.state.db as state_db_mod
-from lionagi.studio.scheduler.subprocess import SubprocessDeadlineExceededError
+from lionhub.orchestration.scheduler.subprocess import SubprocessDeadlineExceededError
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
@@ -488,7 +488,7 @@ class TestSpawnDetachedTerminalUpdate:
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
             MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
             with patch(
-                "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
                 side_effect=_fake_spawn,
             ):
                 asyncio.run(launches._spawn_detached(["uv", "run", "li"], "inv1", tmp_path=None))
@@ -545,7 +545,7 @@ class TestSpawnDetachedEndedAtAtomicity:
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
             MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
             with patch(
-                "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
                 side_effect=_fake_spawn,
             ):
                 asyncio.run(
@@ -578,7 +578,7 @@ class TestSpawnDetachedEndedAtAtomicity:
                     MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
                     MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
                     with patch(
-                        "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                        "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
                         side_effect=_blocking_spawn,
                     ):
                         await launches._spawn_detached(
@@ -735,7 +735,7 @@ class TestShutdownDrains:
                     MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
                     MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
                     with patch(
-                        "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                        "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
                         side_effect=_blocking_spawn,
                     ):
                         await svc._spawn_detached(["uv", "run", "li"], "inv-cancel", tmp_path=None)
@@ -1006,7 +1006,7 @@ class TestEngineScheduleAssembly:
 
 class TestBuildArgvEngineKind:
     def test_basic_shape(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         schedule = {
             "action_kind": "engine",
@@ -1026,7 +1026,7 @@ class TestBuildArgvEngineKind:
         assert flags_part[flags_part.index("--model") + 1] == "gpt-4o"
 
     def test_exact_argv_with_all_options(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         schedule = {
             "action_kind": "engine",
@@ -1061,7 +1061,7 @@ class TestBuildArgvEngineKind:
         ]
 
     def test_no_flags_when_empty(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         schedule = {
             "action_kind": "engine",
@@ -1074,7 +1074,7 @@ class TestBuildArgvEngineKind:
         assert argv == ["uv", "run", "li", "engine", "run", "--", "planning", "plan a project"]
 
     def test_missing_engine_kind_rejected(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         schedule = {
             "action_kind": "engine",
@@ -1087,7 +1087,7 @@ class TestBuildArgvEngineKind:
             build_argv(schedule, {})
 
     def test_missing_prompt_rejected(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         schedule = {
             "action_kind": "engine",
@@ -1112,7 +1112,7 @@ class TestBuildArgvEngineKind:
         ],
     )
     def test_unsafe_engine_options_rejected(self, opts):
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         schedule = {
             "action_kind": "engine",
@@ -1126,7 +1126,7 @@ class TestBuildArgvEngineKind:
 
     def test_extra_args_suppressed_for_engine(self):
         """action_extra_args must not be appended to engine argv."""
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         schedule = {
             "action_kind": "engine",
@@ -1145,7 +1145,7 @@ class TestCodingKindRequiresTestCmd:
     build_argv and the launch path must reject it before any row is created."""
 
     def test_build_argv_coding_without_test_cmd_rejected(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         schedule = {
             "action_kind": "engine",
@@ -1188,7 +1188,7 @@ class TestCodingKindRequiresTestCmd:
         mock_db.create_invocation.assert_not_called()
 
     def test_build_argv_coding_whitespace_test_cmd_rejected(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         schedule = {
             "action_kind": "engine",
@@ -1315,7 +1315,7 @@ class TestLaunchCancelRetrySmoke:
                 ),
                 patch("lionagi.studio.services.launches.StateDB") as MockDB,
                 patch(
-                    "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                    "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
                     side_effect=_blocking_spawn,
                 ),
             ):
@@ -1642,7 +1642,7 @@ class TestLaunchCommandKind:
                 MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
                 MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
                 with patch(
-                    "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                    "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
                     side_effect=_fake_spawn,
                 ):
                     await svc._spawn_detached(
@@ -1677,7 +1677,7 @@ class TestLaunchCommandKind:
             with (
                 patch("lionagi.studio.services.launches.StateDB") as MockDB,
                 patch(
-                    "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                    "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
                     side_effect=_fake_spawn,
                 ),
             ):

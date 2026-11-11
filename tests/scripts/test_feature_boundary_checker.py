@@ -266,7 +266,7 @@ def test_target_notes_use_recorded_destinations_only():
     assert builder.match(builder.TARGET_RULES, "lionagi.cli.agent") == (
         "pending the CLI location decision (ADR-0139 D1)"
     )
-    assert builder.match(builder.TARGET_RULES, "lionagi.studio.scheduler.engine") == (
+    assert builder.match(builder.TARGET_RULES, "lionhub.orchestration.scheduler") == (
         "lionhub.orchestration.scheduler"
     )
     assert builder.match(builder.TARGET_RULES, "lionagi.tools.khive_injection") == fallback

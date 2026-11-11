@@ -12,8 +12,8 @@ import pytest
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.studio.scheduler.subprocess import render_action_prompt
 from lionagi.studio.services.schedules import create_schedule, update_schedule
+from lionhub.orchestration.scheduler.subprocess import render_action_prompt
 
 
 def _schedule_data(prompt: str) -> dict:

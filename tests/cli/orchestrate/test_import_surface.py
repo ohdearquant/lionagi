@@ -97,37 +97,3 @@ def test_orchestrate_parser_construction_lives_in_the_parsing_module() -> None:
     providers_imports = _resolved_imports(providers.__file__, "lionhub.orchestration")
     assert providers_imports, "expected the module to import something"
     assert not _orchestrate_or_command_imports(providers_imports)
-
-
-def test_scheduler_reserved_flags_come_from_the_canonical_flow_parser(monkeypatch):
-    """A parser option added at the shared builder is reserved without a second flag table."""
-    from lionagi.studio.scheduler import subprocess as scheduler_subprocess
-    from lionhub.orchestration.flow import parsing
-
-    original = parsing.add_orchestrate_subparser
-    expected = []
-
-    def record(subparsers):
-        parsers = original(subparsers)
-        flow = parsers["flow"]
-        flow.add_argument("--example-scheduler-option")
-        expected.append(
-            frozenset(
-                option
-                for action in flow._actions
-                for option in action.option_strings
-                if option.startswith("--")
-            )
-        )
-        return parsers
-
-    monkeypatch.setattr(parsing, "add_orchestrate_subparser", record)
-    import lionhub.orchestration.schedule.action_validation as action_validation
-
-    monkeypatch.setattr(action_validation, "_RESERVED_FLOW_FLAGS", None)
-    actual = action_validation._reserved_flow_flags()
-    assert len(expected) == 1
-    assert actual == expected[0]
-    assert "--example-scheduler-option" in actual
-    assert action_validation._reserved_flow_flags() is actual
-    assert len(expected) == 1

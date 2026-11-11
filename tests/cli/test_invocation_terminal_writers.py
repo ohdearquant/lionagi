@@ -59,7 +59,7 @@ async def test_terminal_writers_preserve_concurrent_terminal_outcome(
             raise asyncio.CancelledError
         return (0, "")
 
-    monkeypatch.setattr("lionagi.studio.scheduler.subprocess.spawn_and_wait", spawn)
+    monkeypatch.setattr("lionhub.orchestration.scheduler.subprocess.spawn_and_wait", spawn)
     if writer == "invoke":
         # The close names a status other than the one the winner recorded, so it
         # is refused: a same-status close records its metadata instead (see
@@ -101,7 +101,7 @@ async def test_terminal_writers_finish_running_invocation(tmp_path, monkeypatch,
             raise asyncio.CancelledError
         return (0, "")
 
-    monkeypatch.setattr("lionagi.studio.scheduler.subprocess.spawn_and_wait", spawn)
+    monkeypatch.setattr("lionhub.orchestration.scheduler.subprocess.spawn_and_wait", spawn)
     if writer == "invoke":
         await _end_invocation("run", status="completed", metadata={"finished": True})
     elif writer == "launch_cancel":
@@ -141,7 +141,7 @@ async def test_refused_exit_write_is_logged(tmp_path, monkeypatch, caplog):
     async def spawn(*args, **kwargs):
         return (0, "")
 
-    monkeypatch.setattr("lionagi.studio.scheduler.subprocess.spawn_and_wait", spawn)
+    monkeypatch.setattr("lionhub.orchestration.scheduler.subprocess.spawn_and_wait", spawn)
     with caplog.at_level(logging.INFO, logger="lionagi.studio.services.launches"):
         await launches._spawn_detached(["unused"], "run", tmp_path=None)
 
@@ -177,7 +177,7 @@ async def test_refused_cancellation_write_is_logged(tmp_path, monkeypatch, caplo
     async def spawn(*args, **kwargs):
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("lionagi.studio.scheduler.subprocess.spawn_and_wait", spawn)
+    monkeypatch.setattr("lionhub.orchestration.scheduler.subprocess.spawn_and_wait", spawn)
     with (
         caplog.at_level(logging.INFO, logger="lionagi.studio.services.launches"),
         pytest.raises(asyncio.CancelledError),

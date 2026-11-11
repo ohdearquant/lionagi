@@ -1037,7 +1037,7 @@ def test_schedules_trigger_success_response_shape(tmp_path, monkeypatch):
     schedule_id = _create_gate_schedule(db_path)
     client = _make_client()
 
-    from lionagi.studio.scheduler.engine import scheduler
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     async def _fake_fire_now(_schedule_id: str) -> str:
         return "gate-fake-run-id"
