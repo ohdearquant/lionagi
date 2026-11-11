@@ -664,7 +664,7 @@ external-hook capability now exists and is tested.
 
 **Implemented and tested:**
 
-- **D1/D4/D5, wire execution.** `lionagi/hooks/external.py` constructs the
+- **D1/D4/D5, wire execution.** `lionhub/src/lionhub/hooks/external.py` constructs the
   external envelope, executes a non-empty argv command without a shell, applies
   the per-hook timeout, parses stdout decisions, distinguishes exit-code
   behavior, validates rewrites, and preserves blocking versus advisory seams.

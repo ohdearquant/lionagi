@@ -10,7 +10,6 @@ from pydantic import BaseModel
 
 
 def test_string_digest_families_keep_serialization_and_chain_format():
-    from lionagi.hooks.external import compute_command_hash
     from lionagi.state._mirror_common import canonical_json, content_sha256
     from lionagi.studio.operator.store import OperatorStore
     from lionagi.studio.services.approvals import (
@@ -18,6 +17,7 @@ def test_string_digest_families_keep_serialization_and_chain_format():
         _compute_content_hash,
         compute_params_hash,
     )
+    from lionhub.hooks.external import compute_command_hash
 
     value = {"z": "café 🦁", "a": [1, True, None]}
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -48,9 +48,9 @@ def test_digest_refs_keep_prefix_and_truncation():
 
 
 def test_uncapped_callers_keep_large_string_and_byte_inputs():
-    from lionagi.hooks.external import compute_command_hash
     from lionagi.ln import MAX_HASH_INPUT_BYTES
     from lionagi.plugins.trust import _sha256_bytes
+    from lionhub.hooks.external import compute_command_hash
 
     payload = b"x" * (MAX_HASH_INPUT_BYTES + 1)
     assert _sha256_bytes(payload) == hashlib.sha256(payload).hexdigest()
@@ -60,10 +60,10 @@ def test_uncapped_callers_keep_large_string_and_byte_inputs():
 
 @pytest.mark.parametrize("payload", [b"", b"binary\x00\xff\n"])
 def test_file_and_byte_digest_families_match_old_hashlib(payload, tmp_path):
-    from lionagi.hooks.external import _hash_fd, compute_executable_digest
     from lionagi.plugins.discovery import DiscoveredPlugin
     from lionagi.plugins.manifest import PluginManifest
     from lionagi.plugins.trust import _sha256_bytes, _sha256_file, compute_manifest_hash
+    from lionhub.hooks.external import _hash_fd, compute_executable_digest
 
     path = tmp_path / "content.bin"
     path.write_bytes(payload)

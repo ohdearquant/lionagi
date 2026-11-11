@@ -335,11 +335,6 @@
       "layer": "adapter",
       "owner": "hooks"
     },
-    "lionagi.hooks.external": {
-      "layer": "adapter",
-      "owner": "hooks",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
     "lionagi.hooks.loader": {
       "layer": "adapter",
       "owner": "hooks"

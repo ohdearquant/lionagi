@@ -68,7 +68,7 @@ race each other. Anything that needs read-modify-write safety must use
 
 An external hook (a plugin's declared `hooks_external:` entry, or a
 project/user-authored one) is a wire contract, not an in-process callback.
-`build_envelope()` (`lionagi/hooks/external.py`) serializes the event as JSON
+`build_envelope()` (`lionhub/src/lionhub/hooks/external.py`) serializes the event as JSON
 to the hook's stdin; `_execute_hook()` spawns the command, exchanges the
 envelope, and normalizes exit code + stdout into a `HookVerdict`: exit 0 with
 non-empty, non-truncated stdout is parsed as a decision; exit 2 denies with

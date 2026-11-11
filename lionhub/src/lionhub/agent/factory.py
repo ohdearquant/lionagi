@@ -545,7 +545,7 @@ def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
         return
 
     from lionagi.hooks.bus import HookPoint
-    from lionagi.hooks.external import external_hook_adapter
+    from lionhub.hooks.external import external_hook_adapter
 
     session_id = str(branch._owning_session_id or branch.id)
     event_to_point = {
