@@ -106,7 +106,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/state/lifecycle/notify_settings.py:383@1e7be920",
         "lionagi/state/lifecycle/notify_settings.py:41@1e7be920",
         "lionagi/state/provenance.py:19@1e7be920",
-        "lionagi/studio/scheduler/engine.py:44@19cc2240",
+        "lionagi/studio/scheduler/engine.py:44@ee589cb2",
         "lionagi/studio/scheduler/subprocess.py:279@c4abb363",
     ),
     "ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md": (
@@ -122,7 +122,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/app.py:349-364@8c119ecc",
         "lionagi/studio/app.py:349-364@b4a3bebf",
         "lionagi/studio/cli.py:1203-1226@b4a3bebf",
-        "lionagi/studio/scheduler/engine.py:44@19cc2240",
+        "lionagi/studio/scheduler/engine.py:44@ee589cb2",
         "lionagi/studio/services/lifecycle.py:15@b4a3bebf",
         "lionagi/studio/services/lifecycle.py:810@b4a3bebf",
         "lionagi/studio/services/schedule_declaration.py:482@8c119ecc",
