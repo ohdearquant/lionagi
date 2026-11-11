@@ -33,8 +33,8 @@ _EXPECTED_CLI_SEEDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("casts", (), "lionagi.casts.surfaces"),
     ("engine", (), "lionagi.cli.engine"),
     ("team", (), "lionagi.cli.team"),
-    ("studio", (), "lionagi.studio.cli"),
-    ("schedule", (), "lionagi.studio.cli"),
+    ("studio", (), "lionhub.cli.studio"),
+    ("schedule", (), "lionhub.cli.schedule"),
     ("state", (), "lionagi.cli.state"),
     ("invoke", (), "lionagi.cli.invoke"),
     ("kill", (), "lionagi.cli.kill"),
@@ -169,6 +169,16 @@ def test_cli_marker_module_mismatch_raises_contract_error(monkeypatch):
     with _isolated_registries():
         with pytest.raises(_auto.RegistrationContractError):
             _catalog.load_cli_command(seed_a)
+
+
+def test_old_studio_cli_seed_is_refused_for_new_handler():
+    from lionhub.cli import schedule
+
+    seed = _auto.CliSeed(name="schedule", help="Manage schedules", module="lionagi.studio.cli")
+    with _isolated_registries():
+        with pytest.raises(_auto.RegistrationContractError, match="not its seed module"):
+            _catalog.load_cli_command(seed)
+    assert schedule.run_schedule.__module__ == "lionhub.cli.schedule"
 
 
 def test_build_cli_parser_with_no_selection_registers_every_seed_as_stub():

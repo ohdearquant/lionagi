@@ -63,7 +63,7 @@ class _FakeResponse:
 def _run_and_capture(monkeypatch, args: argparse.Namespace) -> tuple[str, str, str | None]:
     """Run a real `li schedule` dispatch, capturing the request the
     CLI's _api() helper would have sent — without any real network I/O."""
-    from lionagi.studio.cli import run_schedule
+    from lionhub.cli.schedule import run_schedule
 
     captured: dict[str, str | None] = {}
 
@@ -84,7 +84,7 @@ def _run_and_capture(monkeypatch, args: argparse.Namespace) -> tuple[str, str, s
 
 
 def _parse(argv: list[str]) -> argparse.Namespace:
-    from lionagi.studio.cli import add_schedule_subparser
+    from lionhub.orchestration.schedule.parsing import add_schedule_subparser
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")

@@ -164,6 +164,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/cli/_schedule_parsing.py:1@327665f3",
         "lionagi/cli/_team_service.py:16@327665f3",
         "lionagi/cli/_util.py:14@327665f3",
+        "lionagi/cli/main.py:32-33@2a49c9fe",
         "lionagi/cli/main.py:370@2a49c9fe",
         "lionagi/cli/orchestrate/__init__.py:26@4af5b0a9",
         "lionagi/cli/orchestrate/__init__.py:27-28@2ced5e58",
@@ -183,10 +184,6 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
 # Symbols a Proposed record asks for that do not exist yet, by record file. A name is allowed
 # here only while the head holds no such code; once it exists the entry fails and must go.
 PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {
-    "ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md": (
-        "tests/packaging/test_studio_backend_boundary.py::"
-        "test_fresh_wheel_schedule_validate_and_export_without_backend",
-    ),
     "ADR-0141-recorded-chain-decisions-for-schedule-runs.md": (
         "tests/studio/test_scheduler_engine.py::"
         "test_normal_path_terminal_write_records_chain_decision",

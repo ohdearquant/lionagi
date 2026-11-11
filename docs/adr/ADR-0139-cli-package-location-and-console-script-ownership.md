@@ -168,7 +168,8 @@ and schedule declaration/export
 `lionagi/cli/machine_schedule.py::_export`).
 
 There is additionally a literal dynamic import of the mixed Studio CLI module;
-it is not one of the eleven static statements (`lionagi/cli/main.py::_load_studio`).
+it is not one of the eleven static statements (the `_load_studio` helper at
+`lionagi/cli/main.py:32-33@2a49c9fe`).
 This paragraph's line numbers are at `2a49c9fe`.
 The full 46-file partition is specified in D2.
 
@@ -384,7 +385,7 @@ as already allocated by the adjacent records
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:173`).
 The implementation defines the detailed schedule-service API there.
 Ordinary schedule handling must no longer use the dynamic mixed-module import
-at `lionagi/cli/main.py::_load_studio`.
+in the `_load_studio` helper (`lionagi/cli/main.py:32-33@2a49c9fe`).
 
 **The step-6 residual set includes these 37 files from the source-HEAD inventory, plus the later notification recorder**, relative to
 `lionagi/cli/`. Mixed files contain their retained adapters after extraction.

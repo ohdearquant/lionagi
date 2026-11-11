@@ -118,7 +118,7 @@ _UNLAUNCHABLE_PROMPTS = {"end-of-options": "--", "over-cap": "x" * (MAX_SPEC_PRO
 async def test_a_reapply_that_changes_the_stored_model_says_so(
     temp_db_path, agent_profile, pinned_scheduler_tz
 ):
-    from lionagi.studio.cli import _fmt_plan_line
+    from lionhub.cli.schedule import _fmt_plan_line
 
     doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
     async with StateDB() as db:

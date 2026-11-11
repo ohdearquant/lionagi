@@ -550,7 +550,7 @@
       "orchestrate": {
         "seed": "orchestrate",
         "module": "lionagi.cli.orchestrate",
-        "new_lionagi_module_count": 156,
+        "new_lionagi_module_count": 159,
         "other_seed_modules_imported": [
           "lionagi.cli.team"
         ],
@@ -564,7 +564,7 @@
       "agent": {
         "seed": "agent",
         "module": "lionagi.cli.agent",
-        "new_lionagi_module_count": 126,
+        "new_lionagi_module_count": 145,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -576,7 +576,7 @@
       "casts": {
         "seed": "casts",
         "module": "lionagi.casts.surfaces",
-        "new_lionagi_module_count": 2,
+        "new_lionagi_module_count": 3,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -588,7 +588,7 @@
       "engine": {
         "seed": "engine",
         "module": "lionagi.cli.engine",
-        "new_lionagi_module_count": 3,
+        "new_lionagi_module_count": 9,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -600,7 +600,7 @@
       "team": {
         "seed": "team",
         "module": "lionagi.cli.team",
-        "new_lionagi_module_count": 17,
+        "new_lionagi_module_count": 18,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -611,8 +611,8 @@
       },
       "studio": {
         "seed": "studio",
-        "module": "lionagi.studio.cli",
-        "new_lionagi_module_count": 31,
+        "module": "lionhub.cli.studio",
+        "new_lionagi_module_count": 7,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -623,8 +623,8 @@
       },
       "schedule": {
         "seed": "schedule",
-        "module": "lionagi.studio.cli",
-        "new_lionagi_module_count": 31,
+        "module": "lionhub.cli.schedule",
+        "new_lionagi_module_count": 32,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -636,7 +636,7 @@
       "state": {
         "seed": "state",
         "module": "lionagi.cli.state",
-        "new_lionagi_module_count": 25,
+        "new_lionagi_module_count": 22,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -648,7 +648,7 @@
       "invoke": {
         "seed": "invoke",
         "module": "lionagi.cli.invoke",
-        "new_lionagi_module_count": 3,
+        "new_lionagi_module_count": 7,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -660,7 +660,7 @@
       "kill": {
         "seed": "kill",
         "module": "lionagi.cli.kill",
-        "new_lionagi_module_count": 30,
+        "new_lionagi_module_count": 36,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -684,7 +684,7 @@
       "monitor": {
         "seed": "monitor",
         "module": "lionagi.cli.monitor",
-        "new_lionagi_module_count": 25,
+        "new_lionagi_module_count": 22,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -696,7 +696,7 @@
       "dispatch": {
         "seed": "dispatch",
         "module": "lionagi.cli.dispatch",
-        "new_lionagi_module_count": 2,
+        "new_lionagi_module_count": 3,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -708,7 +708,7 @@
       "doctor": {
         "seed": "doctor",
         "module": "lionagi.cli.doctor",
-        "new_lionagi_module_count": 2,
+        "new_lionagi_module_count": 3,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -720,7 +720,7 @@
       "stats": {
         "seed": "stats",
         "module": "lionagi.cli.stats",
-        "new_lionagi_module_count": 26,
+        "new_lionagi_module_count": 23,
         "other_seed_modules_imported": [
           "lionagi.cli.monitor"
         ],
@@ -734,7 +734,7 @@
       "plugin": {
         "seed": "plugin",
         "module": "lionagi.cli.plugin",
-        "new_lionagi_module_count": 3,
+        "new_lionagi_module_count": 7,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -746,7 +746,7 @@
       "hooks": {
         "seed": "hooks",
         "module": "lionagi.cli.hooks",
-        "new_lionagi_module_count": 3,
+        "new_lionagi_module_count": 7,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -758,7 +758,7 @@
       "handshake": {
         "seed": "handshake",
         "module": "lionagi.cli.machine",
-        "new_lionagi_module_count": 2,
+        "new_lionagi_module_count": 3,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -770,7 +770,7 @@
       "runs": {
         "seed": "runs",
         "module": "lionagi.cli.machine",
-        "new_lionagi_module_count": 2,
+        "new_lionagi_module_count": 3,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -782,7 +782,7 @@
       "lifecycle": {
         "seed": "lifecycle",
         "module": "lionagi.cli.machine",
-        "new_lionagi_module_count": 2,
+        "new_lionagi_module_count": 3,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,
@@ -794,7 +794,7 @@
       "mcp": {
         "seed": "mcp",
         "module": "lionagi.cli.mcp",
-        "new_lionagi_module_count": 4,
+        "new_lionagi_module_count": 7,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,

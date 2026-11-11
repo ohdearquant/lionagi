@@ -36,10 +36,9 @@ keeps it that way. Import the module you need by its full path.
 ## schedule
 
 The schedule services hold everything about a schedule that does not need the HTTP server or the
-scheduler daemon: parsing `li schedule` arguments, validating declarations and actions, resolving
-the scheduler's timezone and an action's working directory, and declaring, diffing, applying and
-exporting versioned schedule sets. The Studio routes, the `li schedule` commands and the scheduler
-engine all call these functions.
+scheduler daemon: shared parsing helpers for `li schedule`, validation of declarations and actions,
+timezone and working-directory resolution, and declaration, diff, apply and export operations.
+The Studio routes, the `lionhub.cli.schedule` adapter and the scheduler engine call these functions.
 
 | Module | Holds |
 | --- | --- |

@@ -460,10 +460,8 @@ def test_play_flag_before_name_includes_usage(caplog):
 
 def test_cli_package_init_is_lazy():
     """Importing lionagi.cli (or any submodule of it, e.g. via
-    lionagi.studio.cli) must not pull in lionagi.cli.main — main.py imports
-    lionagi.studio.cli at module level, so an eager package init would make
-    every studio import of a CLI submodule re-enter a partially-initialized
-    module. `from lionagi.cli import main` still resolves to the callable
+    lionhub.cli.studio) must not pull in lionagi.cli.main through the lazy
+    package export. `from lionagi.cli import main` still resolves to the callable
     via the package's lazy __getattr__ re-export."""
     import subprocess
     import sys
@@ -471,7 +469,7 @@ def test_cli_package_init_is_lazy():
     code = (
         "import sys; import lionagi.cli; "
         "assert 'lionagi.cli.main' not in sys.modules, 'eager main import'; "
-        "import lionagi.studio.cli; "
+        "import lionhub.cli.studio; "
         "assert 'lionagi.cli.main' not in sys.modules, 'studio pulled main'; "
         "from lionagi.cli import main; assert callable(main), type(main); "
         "import types; "
@@ -587,10 +585,9 @@ def test_a_command_loader_failing_for_another_reason_is_an_ordinary_failure(caps
     params=[
         ("_load_orchestrate", "orchestrate", "lionagi.cli", ".orchestrate"),
         ("_load_machine", "machine", "lionagi.cli", ".machine"),
-        ("_load_studio", "cli", "lionagi.studio", "lionagi.studio.cli"),
         ("run_skill", "skill", "lionagi.cli", ".skill"),
     ],
-    ids=["orchestrate", "machine", "studio", "skill"],
+    ids=["orchestrate", "machine", "skill"],
 )
 def lazy_main_import(request, tmp_path, monkeypatch):
     """Load actual module files without importing a command's heavy dependencies."""
