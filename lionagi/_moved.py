@@ -151,6 +151,13 @@ MOVED: tuple[Moved, ...] = (
         "0.38.0",
         "2.0.0",
     ),
+    Moved("lionagi.studio.scheduler", "lionhub.orchestration.scheduler", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.studio.services.scheduler_state",
+        "lionhub.orchestration.scheduler.scheduler_state",
+        "0.38.0",
+        "2.0.0",
+    ),
     Moved(
         "lionagi.studio.services.db_maintenance",
         "lionhub.orchestration.scheduler.db_maintenance",

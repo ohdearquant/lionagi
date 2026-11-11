@@ -20,7 +20,7 @@ missing name is visible:
 - `lionagi/cli/agent.py`
 - `lionagi/cli/orchestrate/__init__.py`
 - `lionhub/src/lionhub/serve/mcp/dispatch.py`
-- `lionagi/studio/scheduler/subprocess.py`
+- `lionhub/src/lionhub/orchestration/scheduler/subprocess.py`
 - `lionagi/studio/services/run_resume.py`
 
 Schedule create/update and ad-hoc launch validation delegate to the scheduler

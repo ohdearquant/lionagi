@@ -1772,7 +1772,7 @@ It is separate from `failed` (an exception escaped the provider) and a successfu
 
 **`_format_coordination_line`** — coordination telemetry shape contract. Renders an
 invocation's coordination telemetry (`node_metadata["coordination"]`, written by the scheduler
-engine's finalize path — see `lionagi.studio.services.scheduler_state.flush_run_telemetry`).
+engine's finalize path — see `lionhub.orchestration.scheduler.scheduler_state.flush_run_telemetry`).
 Returns `None` when everything is zero: both the monitor drill-in and the `li monitor run`
 wait-line only print this when non-zero. Every nested field is type-checked before use:
 `telemetry` is read back from persisted state and may not match the shape this module writes
@@ -1793,7 +1793,7 @@ with `temporary_signal_handlers` and given back when the wait returns.
 
 **Chain-following** (default on; `--no-chain` to opt out): the scheduler can fire a child run
 from a terminal run's schedule `on_success`/`on_fail` (engine records `chain_parent_id`/
-`chain_depth` on the child — see `lionagi/studio/scheduler/engine.py`'s `_fire`). A watched run
+`chain_depth` on the child — see `lionhub/src/lionhub/orchestration/scheduler/engine.py`'s `_fire`). A watched run
 going terminal is not necessarily the end of its chain, so once it lands the watch frontier is
 extended with any already-fired children and watching continues. A schedule that declares a
 chain action for the outcome but whose child hasn't fired yet gets a bounded grace window
@@ -1803,7 +1803,7 @@ a schedule with no matching chain action needs no grace wait at all. The aggrega
 `on_fail` recovery child that succeeds means the chain as a whole succeeded).
 
 **`_MAX_CHAIN_DEPTH`** — mirrors the scheduler engine's own chain-depth cap
-(`lionagi/studio/scheduler/engine.py` `_MAX_CHAIN_DEPTH`) — the engine never fires a chain
+(`lionhub/src/lionhub/orchestration/scheduler/engine.py` `_MAX_CHAIN_DEPTH`) — the engine never fires a chain
 child at or past this depth, so a grace window here would just burn ticks waiting on a child
 that is never coming.
 

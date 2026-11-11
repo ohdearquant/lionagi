@@ -164,7 +164,7 @@ def _svc_validate_github_cursor(cursor: str | None) -> None:
     """
     if cursor is None:
         return
-    from lionagi.studio.scheduler.github import CURSOR_FORM, CURSOR_RE
+    from lionhub.orchestration.scheduler.github import CURSOR_FORM, CURSOR_RE
 
     matched = CURSOR_RE.match(cursor) if isinstance(cursor, str) else None
     if matched is None:
@@ -186,7 +186,7 @@ def _svc_validate_action_cwd(cwd: str | None) -> None:
     surface later as a refused run.
 
     The two conditions below are exactly
-    ``lionagi.studio.scheduler.engine._is_usable_execution_root``, spelled out
+    ``lionhub.orchestration.scheduler.engine._is_usable_execution_root``, spelled out
     rather than called. That is deliberate and is the one intended exception to
     routing every usability decision through that predicate: this is an input
     validator whose product is the error message, and it tells a caller which
@@ -322,7 +322,7 @@ def _svc_validate_interval_sec(interval: Any, *, required: bool = False) -> None
 async def _svc_recompute_next_fire_guarded(effective: dict[str, Any], context: str) -> None:
     """Recompute next_fire_at after a committed write, without raising — the
     write already committed, so a recompute failure must not surface as a 500."""
-    from ..scheduler.engine import scheduler
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     for attempt in range(2):
         try:
@@ -346,7 +346,7 @@ def _svc_validate_threshold_config(config: dict | None) -> None:
     None (no threshold configured) is always accepted."""
     if config is None:
         return
-    from lionagi.studio.scheduler.threshold import validate_threshold_config
+    from lionhub.orchestration.scheduler.threshold import validate_threshold_config
 
     validate_threshold_config(config)
 
@@ -369,8 +369,8 @@ def _svc_validate_action_kind_type(kind: Any) -> None:
 def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
     """Service-boundary check: a play launch has no '--' separator, so a prompt it sends that
     starts with '-' would re-parse as a flag of `li play`."""
-    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS
     from lionhub.orchestration.schedule.action_validation import _sends_prompt
+    from lionhub.orchestration.scheduler.subprocess import _ALIAS_ACTION_KINDS
 
     kind = schedule.get("action_kind")
     kind = _ALIAS_ACTION_KINDS.get(kind, kind)
@@ -388,8 +388,8 @@ def _svc_validate_play_playbook(schedule: dict[str, Any]) -> None:
     """Service-boundary check: `li play` reads list, check and status as its own subcommands,
     so a play schedule naming one of them as its playbook, or starting its extra arguments
     with one when it has no playbook, would never run a playbook."""
-    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS
     from lionhub.orchestration.schedule.action_validation import _PLAY_SUBCOMMANDS
+    from lionhub.orchestration.scheduler.subprocess import _ALIAS_ACTION_KINDS
 
     kind = schedule.get("action_kind")
     kind = _ALIAS_ACTION_KINDS.get(kind, kind)
@@ -1651,8 +1651,7 @@ async def list_schedules_route(
 async def schedule_limits_route() -> dict[str, Any]:
     # Registered before /{schedule_id} so "limits" resolves here, not as an id.
     from lionhub.orchestration.scheduler import settings as scheduler_settings
-
-    from ..scheduler.engine import scheduler
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     # The scheduled and ad-hoc lanes draw from independent capacity pools
     # (see MAX_ADHOC_CONCURRENT's own docstring in config.py) -- an operator
@@ -1773,7 +1772,7 @@ async def disable_schedule_route(
     name="trigger_schedule",
 )
 async def trigger_schedule_route(schedule_id: str) -> dict[str, Any]:
-    from ..scheduler.engine import scheduler
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     try:
         run_id = await scheduler.fire_now(schedule_id)

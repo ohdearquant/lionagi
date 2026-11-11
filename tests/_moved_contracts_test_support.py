@@ -930,6 +930,18 @@ CONTRACTS: tuple[MoveContract, ...] = (
         public_names=frozenset({"get_project"}),
     ),
     MoveContract(
+        old="lionagi.studio.scheduler",
+        new="lionhub.orchestration.scheduler",
+        kind="package",
+    ),
+    MoveContract(
+        old="lionagi.studio.services.scheduler_state",
+        new="lionhub.orchestration.scheduler.scheduler_state",
+        kind="module",
+        public_names=frozenset({"SchedulerStateService"}),
+        shared_values=frozenset({"default_scheduler_state"}),
+    ),
+    MoveContract(
         old="lionagi.studio.services.db_maintenance",
         new="lionhub.orchestration.scheduler.db_maintenance",
         kind="module",

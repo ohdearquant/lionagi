@@ -539,7 +539,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
     (
-        "lionagi.studio.scheduler.signals",
+        "lionhub.orchestration.scheduler.signals",
         "SchedulerSignalBus.emit.<locals>._invoke",
         "attribute-owner-shape",
         "Attribute(value=Subscript(value=Attribute(value=Name(id='self', ctx=Load()), attr='_counters', ctx=Load()), slice=Name(id='run_id', ctx=Load()), ctx=Load()), attr='received', ctx=Store())",
@@ -551,7 +551,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
         "Attribute(value=Call(func=Attribute(value=Attribute(value=Name(id='join', ctx=Load()), attr='pending', ctx=Load()), attr='pop', ctx=Load()), args=[Constant(value=0)], keywords=[]), attr='open', ctx=Store())",
     ): ("a counter on a held character popped from a list, not a class attribute"),
     (
-        "lionagi.studio.scheduler.signals",
+        "lionhub.orchestration.scheduler.signals",
         "SchedulerSignalBus.emit.<locals>._invoke",
         "attribute-owner-shape",
         "Attribute(value=Subscript(value=Attribute(value=Name(id='self', ctx=Load()), attr='_counters', ctx=Load()), slice=Name(id='run_id', ctx=Load()), ctx=Load()), attr='acted_on', ctx=Store())",

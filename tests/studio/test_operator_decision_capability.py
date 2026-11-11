@@ -596,7 +596,7 @@ def test_the_serving_daemon_signs_with_the_key_its_reconnect_socket_hands_out(
     import lionagi.studio.services.operator as operator_mod
     import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
     import lionhub.serve.diagnostics as code_identity
-    from lionagi.studio.scheduler.engine import scheduler
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     async def _noop(*args, **kwargs) -> None:
         return None

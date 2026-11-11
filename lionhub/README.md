@@ -10,7 +10,7 @@ includes both `lionagi` and `lionhub`.
 | --- | --- |
 | `lionhub/src/lionhub/cli/` | Built-in CLI command catalog, lazy command discovery, and the `li studio` and `li schedule` command adapters. |
 | `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, work forms, and scheduler services and helpers. |
-| `lionhub/src/lionhub/orchestration/scheduler/` | Database maintenance, retention archive, lifecycle, terminal reconciliation, and dependency helpers. |
+| `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |

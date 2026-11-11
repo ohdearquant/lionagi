@@ -86,6 +86,18 @@ def test_the_table_has_moves_and_every_package_has_modules():
     assert len(PAIRS) > len(CONTRACTS)
 
 
+def test_scheduler_package_row_resolves_existing_and_new_only_descendants():
+    package = next(row for row in CONTRACTS if row.old == "lionagi.studio.scheduler")
+    engine_old = "lionagi.studio.scheduler.engine"
+    liveness_old = "lionagi.studio.scheduler.liveness"
+    assert contract_for(engine_old, CONTRACTS) is package
+    assert _moved.resolve(engine_old) == "lionhub.orchestration.scheduler.engine"
+    assert _moved.resolve(liveness_old) == "lionhub.orchestration.scheduler.liveness"
+    assert importlib.import_module(liveness_old) is importlib.import_module(
+        "lionhub.orchestration.scheduler.liveness"
+    )
+
+
 def test_the_contracts_declare_exactly_the_moved_rows():
     assert_contracts_match_moved(CONTRACTS, _moved.MOVED)
 
@@ -243,6 +255,9 @@ def _work_form(cls: type) -> object:
 SAMPLES = {
     "lionhub.orchestration.work.form.FieldSpec": lambda cls: cls(name="amount", type="int"),
     "lionhub.orchestration.work.form.WorkForm": _work_form,
+    "lionhub.orchestration.scheduler.signals.ScheduleRunSucceeded": lambda cls: cls(),
+    "lionhub.orchestration.scheduler.signals.ScheduleRunFailed": lambda cls: cls(),
+    "lionhub.orchestration.scheduler.signals.ScheduleRunCancelled": lambda cls: cls(),
 }
 
 # Runs in a fresh interpreter, where nothing from lionhub is imported until the data
@@ -994,9 +1009,14 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
                     name
                     for name in names
                     if not (
-                        own
-                        and (new := _moved.resolve(name))
-                        and (own == new or own.startswith(new + "."))
+                        name.startswith("lionagi.studio.scheduler.")
+                        or name == "lionagi.studio.scheduler"
+                        or name.startswith("lionagi.studio.services.scheduler_state")
+                        or (
+                            own
+                            and (new := _moved.resolve(name))
+                            and (own == new or own.startswith(new + "."))
+                        )
                     )
                 ]
             # The original deprecation text names its old callable without importing it.

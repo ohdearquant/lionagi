@@ -307,7 +307,7 @@ a modeled idempotency field without deduplication.
 Worker contracts and defaults are:
 
 ```python
-# lionagi/studio/scheduler/worker.py
+# lionhub/src/lionhub/orchestration/scheduler/worker.py
 TASK_WORKER_ENABLED = True
 DEFAULT_LEASE_TTL_SECONDS = 300.0
 DEFAULT_HEARTBEAT_TTL_SECONDS = 90.0
@@ -413,7 +413,7 @@ renewal.
 Capability classification is centralized:
 
 ```python
-# lionagi/studio/scheduler/capabilities.py
+# lionhub/src/lionhub/orchestration/scheduler/capabilities.py
 DEFAULT_CAPABILITY_CLASS = "eligibility"
 
 CAPABILITY_CLASSES: dict[str, str] = {

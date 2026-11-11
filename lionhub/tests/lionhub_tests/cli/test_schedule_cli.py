@@ -39,11 +39,11 @@ def _status_response(**overrides) -> dict:
 
 
 def test_schedule_action_kind_choices_match_store_vocabulary():
-    from lionagi.studio.scheduler.subprocess import (
+    from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.orchestration.scheduler.subprocess import (
         _ALIAS_ACTION_KINDS,
         _VALID_ACTION_KINDS,
     )
-    from lionhub.orchestration.schedule.parsing import add_schedule_subparser
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")

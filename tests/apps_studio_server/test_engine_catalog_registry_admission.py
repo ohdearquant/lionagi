@@ -17,13 +17,13 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
 from lionagi.cli import engine as engine_cli  # noqa: E402
-from lionagi.studio.scheduler.subprocess import build_argv  # noqa: E402
 from lionagi.studio.services import engine_defs, launches, workflow_defs, workflow_run  # noqa: E402
 from lionagi.studio.services.workflow_compile import (  # noqa: E402
     compile_workflow_def,
     make_engine_operation,
 )
 from lionhub.orchestration import engine_definitions as registry  # noqa: E402
+from lionhub.orchestration.scheduler.subprocess import build_argv  # noqa: E402
 
 
 @pytest.fixture

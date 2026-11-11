@@ -614,7 +614,7 @@ def _record_sleeps(monkeypatch, sleep):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["return", "cancel", "stop"])
 async def test_scheduler_restart_preserves_delay_before_stop_or_spawn(monkeypatch, outcome):
-    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     engine = object.__new__(SchedulerEngine)
     engine._stopping = False
@@ -646,7 +646,7 @@ async def test_scheduler_restart_preserves_delay_before_stop_or_spawn(monkeypatc
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stopping", [False, True])
 async def test_scheduler_tick_delay_keeps_deadline_and_stop_cancellation(monkeypatch, stopping):
-    from lionagi.studio.scheduler import engine as engine_module
+    from lionhub.orchestration.scheduler import engine as engine_module
 
     engine = object.__new__(engine_module.SchedulerEngine)
     engine._stopping = False
@@ -937,7 +937,7 @@ async def test_delay_callers_delegate_to_the_shared_sleep_helper(monkeypatch, tm
             )
         assert routes == ([0.02] if site == "lock" else [0.003] if site == "quick" else [1.0])
     else:
-        from lionagi.studio.scheduler import engine as engine_module
+        from lionhub.orchestration.scheduler import engine as engine_module
 
         monkeypatch.setattr(engine_module, "_sleep", delegated, raising=False)
         if site == "restart":

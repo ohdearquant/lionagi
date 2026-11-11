@@ -243,7 +243,7 @@ in the container image), the scheduler's INFO records print one line each, with
 a UTC timestamp:
 
 ```text
-2026-10-18T21:26:40.512Z INFO:lionagi.studio.scheduler.engine:Firing schedule nightly-review (run 065ae8d3, chain_depth=0)
+2026-10-18T21:26:40.512Z INFO:lionhub.orchestration.scheduler.engine:Firing schedule nightly-review (run 065ae8d3, chain_depth=0)
 ```
 
 A due evaluation can end without that line. The concurrent-fire cap and a
@@ -259,7 +259,7 @@ the daemon's readiness route; `/health` answers only whether the process is up.
 
 While the app serves, the scheduler's records go to this stderr line and not to
 handlers on the root logger. A handler meant to receive them is added to the
-`lionagi.studio.scheduler` logger itself.
+`lionhub.orchestration.scheduler` logger itself.
 
 ## Inspect skipped runs and capacity
 

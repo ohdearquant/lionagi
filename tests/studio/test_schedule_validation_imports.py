@@ -36,12 +36,12 @@ def test_router_reexports_the_same_validation_objects(name):
     ("old_module", "new_module", "names"),
     [
         (
-            "lionagi.studio.scheduler.admit",
+            "lionhub.orchestration.scheduler.admit",
             "lionhub.orchestration.schedule.validation",
             ("validate_rate_limit",),
         ),
         (
-            "lionagi.studio.scheduler.github",
+            "lionhub.orchestration.scheduler.github",
             "lionhub.orchestration.schedule.validation",
             (
                 "_validate_github_repo",
@@ -54,7 +54,7 @@ def test_router_reexports_the_same_validation_objects(name):
             ),
         ),
         (
-            "lionagi.studio.scheduler.subprocess",
+            "lionhub.orchestration.scheduler.subprocess",
             "lionhub.orchestration.schedule.action_validation",
             (
                 "_PLAY_SUBCOMMANDS",
@@ -93,10 +93,10 @@ def test_service_validators_import_without_scheduler_runtime_modules():
         import sys
 
         forbidden = {
-            "lionagi.studio.scheduler.subprocess",
-            "lionagi.studio.scheduler.github",
-            "lionagi.studio.scheduler.admit",
-            "lionagi.studio.scheduler.engine",
+            "lionhub.orchestration.scheduler.subprocess",
+            "lionhub.orchestration.scheduler.github",
+            "lionhub.orchestration.scheduler.admit",
+            "lionhub.orchestration.scheduler.engine",
             "fastapi",
             "lionagi.studio.app",
         }
@@ -107,8 +107,8 @@ def test_service_validators_import_without_scheduler_runtime_modules():
             importlib.import_module(name)
         assert not forbidden.intersection(sys.modules), forbidden.intersection(sys.modules)
 
-        importlib.import_module("lionagi.studio.scheduler.subprocess")
-        assert "lionagi.studio.scheduler.subprocess" in sys.modules
+        importlib.import_module("lionhub.orchestration.scheduler.subprocess")
+        assert "lionhub.orchestration.scheduler.subprocess" in sys.modules
         """
     )
     proc = subprocess.run(

@@ -330,7 +330,7 @@ submodules. The CLI imports Studio code at 11 statements in 4 files (`cli/machin
 2. **Records.** The CLI record and the Studio backend record (D7, DEFERRED) are accepted before any change that
    depends on their destinations or on the backend boundary. The backend record allocates every scheduler and
    CLI dependency on Studio code: scheduler state and its cycle with scheduler coordination
-   (`lionagi/studio/scheduler/engine.py` `from lionagi.studio.services.scheduler_state import (`, `lionagi/studio/services/scheduler_state.py::_coordination`), configuration, project
+   (`lionagi/studio/scheduler/engine.py:44@19cc2240` `from lionagi.studio.services.scheduler_state import (`, `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::_coordination`), configuration, project
    resolution, maintenance, lifecycle reapers, schedule declaration and export, and shared command parsing.
    Logic the wheel's daemon or CLI needs stays in the wheel through shared modules or core interfaces;
    application routes and operator presentation move to the backend.

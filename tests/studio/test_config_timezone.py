@@ -56,8 +56,8 @@ def test_moved_bindings_reexport_their_owner() -> None:
     import lionhub.orchestration.schedule.execution_root as execution_root
     import lionhub.orchestration.schedule.timing as timing
     from lionagi.studio import config as legacy_config
-    from lionagi.studio.scheduler import engine
     from lionagi.studio.services import projects
+    from lionhub.orchestration.scheduler import engine
 
     config_names = (
         "SYSTEM_LOCALTIME_LINK",
@@ -123,10 +123,10 @@ def test_service_import_boundaries_in_fresh_processes() -> None:
         "lionhub.orchestration.schedule.execution_root",
     )
     forbidden = {
-        "lionagi.studio.scheduler.engine",
-        "lionagi.studio.scheduler.subprocess",
-        "lionagi.studio.scheduler.github",
-        "lionagi.studio.scheduler.admit",
+        "lionhub.orchestration.scheduler.engine",
+        "lionhub.orchestration.scheduler.subprocess",
+        "lionhub.orchestration.scheduler.github",
+        "lionhub.orchestration.scheduler.admit",
         "lionagi.studio.app",
         "lionagi.studio.services.projects",
     }
@@ -156,7 +156,7 @@ assert not loaded, loaded
         [
             sys.executable,
             "-c",
-            "import lionagi.studio.scheduler.engine, sys; assert 'lionagi.studio.scheduler.engine' in sys.modules; print('engine loaded')",
+            "import lionhub.orchestration.scheduler.engine, sys; assert 'lionhub.orchestration.scheduler.engine' in sys.modules; print('engine loaded')",
         ],
         cwd=repo,
         capture_output=True,

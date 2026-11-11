@@ -829,7 +829,7 @@ async def readiness_route(
     body, so a caller can tell "store unreachable" from "store slow" from
     "healthy" instead of getting one boolean for all three.
     """
-    from lionagi.studio.scheduler.engine import scheduler
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     result = await store_probe(timeout_ms=timeout_ms)
     scheduler_report = scheduler.health()

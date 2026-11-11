@@ -83,8 +83,8 @@ async def test_patch_cron_expr_recomputes_next_fire_immediately(temp_db_path, ca
 async def test_patch_unrelated_field_does_not_log_shift(temp_db_path, caplog):
     """A PATCH that doesn't touch cron_expr/trigger fields recomputes to the
     *same* next_fire_at, so no shift is logged (requirement d)."""
-    from lionagi.studio.scheduler.engine import scheduler
     from lionagi.studio.services.schedules import create_schedule, update_schedule
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     created = await create_schedule(
         {
@@ -148,7 +148,7 @@ async def test_disable_enable_recomputes_stale_next_fire(temp_db_path, caplog, m
         await db.update_schedule(sid, next_fire_at=stale_past)
 
     fixed_now = 1_700_000_000.0
-    import lionagi.studio.scheduler.engine as engine_mod
+    import lionhub.orchestration.scheduler.engine as engine_mod
 
     monkeypatch.setattr(engine_mod, "time", SimpleNamespace(time=lambda: fixed_now))
     with caplog.at_level(logging.INFO):
@@ -214,8 +214,8 @@ async def test_patch_recompute_retry_recovers_transient_failure(temp_db_path, ca
     """A recompute that fails once then succeeds still lands a fresh
     next_fire_at — the guarded retry absorbs transient DB contention."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.scheduler.engine import scheduler
     from lionagi.studio.services.schedules import create_schedule, update_schedule
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     created = await create_schedule(
         {
@@ -231,7 +231,7 @@ async def test_patch_recompute_retry_recovers_transient_failure(temp_db_path, ca
         await db.update_schedule(sid, next_fire_at=100.0)
 
     fixed_now = 1_700_000_000.0
-    import lionagi.studio.scheduler.engine as engine_mod
+    import lionhub.orchestration.scheduler.engine as engine_mod
 
     monkeypatch.setattr(engine_mod, "time", SimpleNamespace(time=lambda: fixed_now))
     real_recompute = scheduler.recompute_next_fire
@@ -261,8 +261,8 @@ async def test_patch_recompute_failure_does_not_raise(temp_db_path, caplog, monk
     """A recompute failure after a valid, already-committed PATCH degrades to
     a warning log instead of propagating out of update_schedule()."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.scheduler.engine import scheduler
     from lionagi.studio.services.schedules import create_schedule, update_schedule
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     created = await create_schedule(
         {
@@ -300,12 +300,12 @@ async def test_enable_recompute_failure_does_not_raise(temp_db_path, caplog, mon
     """A recompute failure after a valid, already-committed enable degrades
     to a warning log instead of propagating out of enable_schedule()."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.scheduler.engine import scheduler
     from lionagi.studio.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
     )
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     created = await create_schedule(
         {
@@ -726,8 +726,8 @@ async def test_startup_recompute_warns_on_dead_cron_row(temp_db_path, caplog):
     schedule id for an enabled cron row with an empty cron_expr, instead of
     silently skipping it via recompute_next_fire's falsy early-return."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.scheduler.engine import scheduler
     from lionagi.studio.services.schedules import create_schedule
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     created = await create_schedule(
         {

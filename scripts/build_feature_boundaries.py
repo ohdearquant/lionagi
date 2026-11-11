@@ -54,8 +54,6 @@ MODULE_RULES = {
     "lionagi.testing": ("adapter", "testing"),
     "lionagi.cli": ("root", "cli"),
     "lionagi.studio": ("root", "studio"),
-    "lionagi.studio.scheduler": ("adapter", "scheduler"),
-    "lionagi.studio.services.scheduler_state": ("adapter", "scheduler"),
 }
 
 
@@ -98,8 +96,7 @@ TARGET_RULES = {
     "lionagi.cli.team": "lionhub.orchestration.team",
     "lionagi.cli.engine": "lionhub.orchestration.engine_definitions",
     "lionagi.cli.mirror": "lionhub.serve.mirror",
-    "lionagi.studio.scheduler": "lionhub.orchestration.scheduler",
-    "lionagi.studio.services.scheduler_state": "lionhub.orchestration.scheduler",
+    "lionhub.orchestration.scheduler": "lionhub.orchestration.scheduler",
     "lionagi.studio.services.schedules": "lionhub.orchestration.schedule",
     "lionagi.studio.cli": "pending the CLI location decision (ADR-0139 D1)",
     "lionagi.studio.services.runs": "lionhub.serve",

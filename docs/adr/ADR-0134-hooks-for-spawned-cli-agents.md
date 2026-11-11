@@ -94,7 +94,7 @@ until D5's refusal lands; either way a guard the operator relies on disappears w
 resumed), `li o flow` and `li o fanout` workers and the fan-out synthesis agent, `li play` (rewritten
 to `li o flow`), the MCP server's `agent.submit` / `flow.submit` / `fanout.submit` / `play.submit`
 (each starts a `li` process, `lionagi/mcp/jobs.py`), schedules whose action is an agent or flow
-(each starts a `li` process, `lionagi/studio/scheduler/engine.py`), engines that build agents
+(each starts a `li` process, `lionhub/src/lionhub/orchestration/scheduler/engine.py`), engines that build agents
 through `create_agent` (`lionagi/agent/factory.py`), and the Studio Operator. One more spawn hides
 inside the Claude provider: the `auto_finish` continuation, which deep-copies the request, sets
 `--resume` to the first turn's session and calls the stream function again. It is the only resume
@@ -186,7 +186,7 @@ that spawns the engine; the engine child never reads it. A worker, a fan-out or 
 that process uses the requirement the process read, and each run records it. A lionagi process
 that starts another `li` process hands it on in that child's environment: the MCP job runner
 (`lionagi/mcp/jobs.py`) passes all of its environment but `CLAUDECODE` today, the scheduler
-(`lionagi/studio/scheduler/subprocess.py`) all of it to a `li` child and all but the state-store
+(`lionhub/src/lionhub/orchestration/scheduler/subprocess.py`) all of it to a `li` child and all but the state-store
 URL to a command action, and `li o flow --background` (`lionagi/cli/orchestrate/__init__.py`) a
 copy of it to the `python -m lionagi.cli` child it starts, and the run-resume worker
 (`lionagi/studio/services/run_resume_worker.py`) and the MCP verb dispatcher

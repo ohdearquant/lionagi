@@ -31,7 +31,7 @@ keeps it that way. Import the module you need by its full path.
 | `dispatch/` | the durable dispatch outbox and its revival heartbeat |
 | `work/` | `WorkForm` and its declarative validation rules |
 | `arguments`, `console` | argparse type callables and the named console output channels |
-| `scheduler/` | scheduler services and dependency helpers: `db_maintenance`, `retention_archive`, `lifecycle`, `terminal_reconciliation`, `settings`, `liveness` and `show_artifacts` |
+| `scheduler/` | scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle and dependency helpers |
 | `schedule/` | the schedule services, below |
 
 ## schedule
@@ -55,7 +55,7 @@ The Studio routes, the `lionhub.cli.schedule` adapter and the scheduler engine c
 Three moved modules keep the logger names they had before the move, so existing log filters keep
 matching: `state_store` logs as `lionagi.studio.services._db`, `schedule.timing` as
 `lionagi.studio.config`, and `schedule.timing` and `schedule.execution_root` log scheduler decisions
-as `lionagi.studio.scheduler.engine`.
+as `lionhub.orchestration.scheduler.engine`.
 
 ## Moved here
 
@@ -66,6 +66,8 @@ returns the module at its new path. Each old path is removed in 2.0.0. The rows 
 | Old import | Current import | Deprecated in |
 | --- | --- | --- |
 | `lionagi.orchestration` | `lionhub.orchestration` | 0.37.0 |
+| `lionagi.studio.scheduler` | `lionhub.orchestration.scheduler` | 0.38.0 |
+| `lionagi.studio.services.scheduler_state` | `lionhub.orchestration.scheduler.scheduler_state` | 0.38.0 |
 | `lionagi.engines` | `lionhub.orchestration.engines` | 0.37.0 |
 | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 0.37.0 |
 | `lionagi.work` | `lionhub.orchestration.work` | 0.37.0 |

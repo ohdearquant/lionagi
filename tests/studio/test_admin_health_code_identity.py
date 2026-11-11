@@ -131,7 +131,7 @@ def test_the_daemon_snapshots_its_position_before_it_starts_serving(monkeypatch)
     """
     import lionagi.studio.app as app_mod
     import lionhub.serve.diagnostics as ci
-    from lionagi.studio.scheduler.engine import scheduler
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     monkeypatch.setattr(ci, "_SNAPSHOT", None)
     seen: dict[str, object] = {}
@@ -169,7 +169,7 @@ def test_startup_snapshot_does_not_block_the_event_loop(monkeypatch):
 
     import lionagi.studio.app as app_mod
     import lionhub.serve.diagnostics as ci
-    from lionagi.studio.scheduler.engine import scheduler
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     seen: dict[str, int] = {}
 

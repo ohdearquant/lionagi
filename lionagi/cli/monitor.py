@@ -515,7 +515,7 @@ def _invocation_kind(inv: dict[str, Any]) -> str:
     kind = node_metadata.get("action_kind")
     if not isinstance(kind, str) or not kind:
         return "invocation"
-    from lionagi.studio.scheduler.subprocess import (
+    from lionhub.orchestration.scheduler.subprocess import (
         _ALIAS_ACTION_KINDS,
         _VALID_ACTION_KINDS,
     )

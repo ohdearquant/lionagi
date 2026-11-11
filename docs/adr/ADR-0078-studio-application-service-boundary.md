@@ -481,7 +481,7 @@ Exact boundary:
 
 - Application validation owns public schedule shapes and optimistic conflict checks.
 - `SchedulerStateService` owns persistence calls required by scheduler behavior.
-- `lionagi.studio.scheduler` owns cadence calculation, polling, budget evaluation,
+- `lionhub.orchestration.scheduler` owns cadence calculation, polling, budget evaluation,
   overlap, chain depth, leases, worker execution, and recovery.
 - Application code does not import private scheduler constants. Limits required for public
   validation are published from a small scheduler contract module and used by both daemon

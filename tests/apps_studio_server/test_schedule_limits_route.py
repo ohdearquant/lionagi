@@ -38,7 +38,7 @@ def _make_client() -> TestClient:
 
 def test_limits_route_returns_cap_and_inflight(tmp_path, monkeypatch):
     import lionagi.studio.config as studio_config
-    from lionagi.studio.scheduler.engine import scheduler
+    from lionhub.orchestration.scheduler.engine import scheduler
 
     _patch_db(monkeypatch, tmp_path / "state.db")
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 7)
@@ -81,7 +81,7 @@ def test_limits_route_resolves_before_schedule_id_param_route(tmp_path, monkeypa
 
 def test_limits_lists_poll_and_scheduled_holders_and_drops_released_claims(tmp_path, monkeypatch):
     import lionagi.studio.config as config
-    import lionagi.studio.scheduler.engine as engine_mod
+    import lionhub.orchestration.scheduler.engine as engine_mod
 
     _patch_db(monkeypatch, tmp_path / "state.db")
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 2)

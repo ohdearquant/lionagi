@@ -1953,8 +1953,8 @@ def test_schedule_parsing_module_stays_below_the_command_layer():
     assert studio_imports == set()
 
     parsing = importlib.import_module("lionhub.orchestration.schedule.parsing")
-    engine_module = importlib.import_module("lionagi.studio.scheduler.engine")
-    subprocess_module = importlib.import_module("lionagi.studio.scheduler.subprocess")
+    engine_module = importlib.import_module("lionhub.orchestration.scheduler.engine")
+    subprocess_module = importlib.import_module("lionhub.orchestration.scheduler.subprocess")
     assert engine_module._MAX_CHAIN_DEPTH is parsing._MAX_CHAIN_DEPTH
     for name in (
         "_VALID_ACTION_KINDS",

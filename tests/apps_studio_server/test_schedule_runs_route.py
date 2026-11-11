@@ -1076,7 +1076,7 @@ def test_every_run_route_serves_both_trigger_facts_with_their_values(
 ):
     """The allow-list above only bounds the keys; this requires both, with their values, on
     every HTTP surface: a timer fire, and a missed-fire skip as the scheduler records it."""
-    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     _patch_db(monkeypatch, tmp_path / "state.db")
 

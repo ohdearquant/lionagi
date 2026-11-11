@@ -1802,56 +1802,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.scheduler": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
-    "lionagi.studio.scheduler.admit": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
-    "lionagi.studio.scheduler.capabilities": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
-    "lionagi.studio.scheduler.coordination": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
-    "lionagi.studio.scheduler.engine": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
-    "lionagi.studio.scheduler.github": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
-    "lionagi.studio.scheduler.signals": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
-    "lionagi.studio.scheduler.subprocess": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
-    "lionagi.studio.scheduler.threshold": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
-    "lionagi.studio.scheduler.worker": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
-    },
     "lionagi.studio.services": {
       "layer": "root",
       "owner": "studio"
@@ -1987,11 +1937,6 @@
       "layer": "root",
       "owner": "studio",
       "target_owner": "lionhub.serve"
-    },
-    "lionagi.studio.services.scheduler_state": {
-      "layer": "adapter",
-      "owner": "scheduler",
-      "target_owner": "lionhub.orchestration.scheduler"
     },
     "lionagi.studio.services.schedules": {
       "layer": "root",

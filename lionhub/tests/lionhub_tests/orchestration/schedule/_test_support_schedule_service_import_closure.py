@@ -25,7 +25,7 @@ BLOCKED = (
     "starlette",
     "lionagi.studio.app",
     "lionagi.studio.operator",
-    "lionagi.studio.scheduler",
+    "lionhub.orchestration.scheduler",
     "lionagi.studio.services.projects",
 )
 refused = []
