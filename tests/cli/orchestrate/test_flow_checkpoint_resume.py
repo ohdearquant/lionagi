@@ -15,7 +15,6 @@ from uuid import UUID, uuid4
 import pytest
 
 from lionagi import Branch, Session
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
     start_live_persist,
@@ -35,6 +34,7 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.types import EventStatus
 from lionagi.session.signal import NodeCompleted, NodeFailed
 from lionagi.state.db import StateDB
+from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration.flow.checkpoint import (
     CheckpointWriter,
     FlowResumeError,
@@ -1976,7 +1976,7 @@ async def test_resumed_run_with_only_restored_spawns_triggers_synthesis(tmp_path
 
 def test_role_node_builder_start_seeds_first_spawn_id_past_restored_ordinal():
     """role_node_builder(..., start=2) must issue spawn-2 for the first live spawn, not spawn-1 -- the exact id/artifact-directory collision a resumed run's fresh closure would otherwise reissue against an already-restored spawn-1."""
-    from lionagi.casts.emission import SpawnRequest
+    from lionhub.agent.casts.emission import SpawnRequest
     from lionhub.orchestration.patterns import role_node_builder
 
     build = role_node_builder({}, start=2)

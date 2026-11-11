@@ -379,7 +379,7 @@ Then the moves:
    this change or follow it: `agent` imports `casts` and `casts` does not import `agent`. `agent` goes to
    `lionhub.agent`; `casts` goes to `lionhub.agent.casts` with its own row, so neither package initializer
    overwrites the other (`agent/__init__.py` exports eagerly, `casts/__init__.py` lazily). The change keeps casts'
-   root exports, its packaged `packs/default.yaml` (checked from an installed wheel, since `lionagi/casts/catalog.py::_load_packaged_pack`
+   root exports, its packaged `packs/default.yaml` (checked from an installed wheel, since `lionhub/src/lionhub/agent/casts/catalog.py::_load_packaged_pack`
    returns `None` on a load failure), and old pickle paths. `lionagi/providers/_secret_resolution.py:101@c4abb363` reads settings
    through the core reader from the settings seam, so D2's set does not grow. Its line numbers are at `c4abb363`.
 2. `lionagi.hooks.external` to `lionhub.hooks.external` (A1). It goes after `agent` because `agent/factory.py`

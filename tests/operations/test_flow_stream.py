@@ -8,13 +8,13 @@ from __future__ import annotations
 import anyio
 import pytest
 
-from lionagi.casts.emission import SpawnRequest
 from lionagi.operations import FlowEvent, flow_stream
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.operations.node import create_operation
 from lionagi.protocols.graph.edge import Edge
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.session import Session
+from lionhub.agent.casts.emission import SpawnRequest
 
 
 def _session(**ops):

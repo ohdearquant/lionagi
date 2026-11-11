@@ -15,10 +15,10 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from lionagi.casts.emission import Finding, Gap, Verdict
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.types import TypeFilter
 from lionagi.session.signal import Signal
+from lionhub.agent.casts.emission import Finding, Gap, Verdict
 
 from .engine import ChainEvent, ChainRun, Engine, EngineEvent, EngineRun, role_profile_route
 

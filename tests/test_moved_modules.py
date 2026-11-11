@@ -91,6 +91,7 @@ def test_the_table_has_moves_and_every_package_has_modules():
     [
         ("lionagi.agent", "lionhub.agent", "factory"),
         ("lionagi.tools", "lionhub.tools", "coding"),
+        ("lionagi.casts", "lionhub.agent.casts", "pattern"),
     ],
 )
 def test_moved_package_row_resolves_existing_and_new_only_descendants(old, new, descendant):
@@ -106,6 +107,11 @@ def test_moved_package_row_resolves_existing_and_new_only_descendants(old, new, 
 
 def test_the_contracts_declare_exactly_the_moved_rows():
     assert_contracts_match_moved(CONTRACTS, _moved.MOVED)
+
+
+def test_casts_move_uses_the_declared_compatibility_releases():
+    row = next(row for row in _moved.MOVED if row.old == "lionagi.casts")
+    assert row == _moved.Moved("lionagi.casts", "lionhub.agent.casts", "0.38.0", "2.0.0")
 
 
 def test_the_row_comparison_fails_for_a_missing_or_an_extra_contract():

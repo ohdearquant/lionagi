@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.casts.emission import SpawnRequest, TaskAssignment
+from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
 from lionhub.orchestration.engines.planning import PlanError, PlanningEngine
 
 

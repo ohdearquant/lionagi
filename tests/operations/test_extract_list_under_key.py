@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import json
 
-from lionagi.casts.emission import build_emission_operable
 from lionagi.operations._observe import attempt_extract
+from lionhub.agent.casts.emission import build_emission_operable
 from lionhub.orchestration.engines.engine import emission_keys
 from lionhub.orchestration.engines.review import DimensionClean, IssueFound
 

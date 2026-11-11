@@ -30,7 +30,7 @@ def _isolated_registries():
 _EXPECTED_CLI_SEEDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("orchestrate", ("o",), "lionagi.cli.orchestrate"),
     ("agent", (), "lionagi.cli.agent"),
-    ("casts", (), "lionagi.casts.surfaces"),
+    ("casts", (), "lionhub.agent.casts.surfaces"),
     ("engine", (), "lionagi.cli.engine"),
     ("team", (), "lionagi.cli.team"),
     ("studio", (), "lionhub.cli.studio"),

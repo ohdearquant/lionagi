@@ -21,8 +21,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from uuid import UUID
 
-    from lionagi.casts.pack import Pack
     from lionagi.session.exchange import Exchange
+    from lionhub.agent.casts.pack import Pack
     from lionhub.tools.communication.messenger import LionMessenger
 
 from lionagi import Branch, Session
@@ -137,7 +137,7 @@ def available_roles() -> list[str]:
     over the other one, so both files are separately loadable and both stay on
     the menu. Collapsing them would take a selectable profile off it.
     """
-    from lionagi.casts.pattern import list_roles
+    from lionhub.agent.casts.pattern import list_roles
 
     builtins = {_role_key(r): r for r in list_roles()}
     profiles = [name for name in list_agents() if _role_key(name) not in builtins]
@@ -192,7 +192,7 @@ def _role_blurb(role: str, default_model: str) -> str:
     except FileNotFoundError:
         profile = None
 
-    from lionagi.casts.pattern import Role
+    from lionhub.agent.casts.pattern import Role
 
     summary = _first_sentence(_profile_summary(profile)) if profile is not None else ""
     if not summary:
@@ -216,7 +216,7 @@ def mode_roster(pack: Pack | None = None) -> str:
     """Valid cognitive-mode names for the planner prompt, including each
     role's ``modes_allow`` restriction so the planner only assigns modes the
     executor will accept (``resolve_modes`` drops disallowed ones)."""
-    from lionagi.casts.pattern import list_modes
+    from lionhub.agent.casts.pattern import list_modes
 
     text = (
         "Optional per-task cognitive modes (TaskAssignment.modes). Use ONLY these "
@@ -254,9 +254,9 @@ def _default_pack():
         try:
             from importlib.resources import as_file, files
 
-            from lionagi.casts.pack import Pack
+            from lionhub.agent.casts.pack import Pack
 
-            packaged = files("lionagi.casts").joinpath("packs", "default.yaml")
+            packaged = files("lionhub.agent.casts").joinpath("packs", "default.yaml")
             with as_file(packaged) as p:
                 _DEFAULT_PACK = Pack.from_file(p)
         except Exception:
@@ -286,7 +286,7 @@ def resolve_modes(
     """
     import logging
 
-    from lionagi.casts.pattern import Mode
+    from lionhub.agent.casts.pattern import Mode
 
     cfg = role_config(role, pack)
     allow = set(cfg.modes_allow) if (cfg and cfg.modes_allow) else None
@@ -316,7 +316,7 @@ def resolve_modes(
 
 def _is_casts_role(role: str) -> bool:
     """True if *role* is a loadable built-in casts Role (vs a user profile)."""
-    from lionagi.casts.pattern import Role
+    from lionhub.agent.casts.pattern import Role
 
     try:
         Role.load(role)
@@ -327,7 +327,7 @@ def _is_casts_role(role: str) -> bool:
 
 def casts_role_system(role: str, modes: list[str] | None = None) -> str | None:
     """Composed system message for a casts role, or None if not built-in."""
-    from lionagi.casts.pattern import Role
+    from lionhub.agent.casts.pattern import Role
 
     try:
         r = Role.load(role)
@@ -1110,8 +1110,8 @@ async def setup_orchestration(
             "Add a model: line to the profile, or pass a model spec."
         )
 
-    from lionagi.casts.catalog import _load_packaged_pack
-    from lionagi.casts.pack import Pack as _Pack
+    from lionhub.agent.casts.catalog import _load_packaged_pack
+    from lionhub.agent.casts.pack import Pack as _Pack
 
     loaded_pack = _Pack.from_file(pack) if pack else _load_packaged_pack(raise_on_error=True)
     if loaded_pack is None:

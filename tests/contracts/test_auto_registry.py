@@ -223,7 +223,7 @@ def test_http_scan_ignores_imported_callables_and_cli_only_markers(monkeypatch):
 def test_retired_casts_cli_module_is_not_shipped():
     assert "lionagi.cli.casts" not in sys.modules
     assert importlib.util.find_spec("lionagi.cli.casts") is None
-    assert importlib.util.find_spec("lionagi.casts.surfaces") is not None
+    assert importlib.util.find_spec("lionhub.agent.casts.surfaces") is not None
 
 
 def test_auto_module_is_not_exported_from_root():

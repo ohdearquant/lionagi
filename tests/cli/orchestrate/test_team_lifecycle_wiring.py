@@ -17,7 +17,6 @@ from uuid import uuid4
 
 import pytest
 
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli import team
 from lionagi.cli.orchestrate import flow as _flow
 from lionagi.cli.orchestrate._orchestration import make_team_lifecycle_coordinator
@@ -26,6 +25,7 @@ from lionagi.operations.node import Operation
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.exchange import Exchange
 from lionagi.session.session import Session
+from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration.engines import PlanningEngine
 
 from .test_flow_phases import _FakeBranch, _make_env

@@ -93,8 +93,8 @@ def test_create_agent_rejects_unknown_mode(tmp_path, monkeypatch):
 
 def test_create_two_versions_of_the_same_role(tmp_path, monkeypatch):
     """Two independently named, independently configured agents can both wrap 'critic'."""
-    from lionagi.casts.pattern import list_modes
     from lionagi.studio.services.agents import create_agent, list_agents
+    from lionhub.agent.casts.pattern import list_modes
 
     _make_agents_root(tmp_path, monkeypatch)
     modes = list_modes()
@@ -119,8 +119,8 @@ def test_create_two_versions_of_the_same_role(tmp_path, monkeypatch):
 
 def test_every_cast_role_can_become_an_agent_template(tmp_path, monkeypatch):
     """Every built-in role name is accepted by create_agent's role validation."""
-    from lionagi.casts.pattern import list_roles
     from lionagi.studio.services.agents import _canonical_role
+    from lionhub.agent.casts.pattern import list_roles
 
     _make_agents_root(tmp_path, monkeypatch)
     roles = list_roles()
@@ -133,8 +133,8 @@ def test_create_agent_stores_the_role_it_validated(tmp_path, monkeypatch):
     """Padded input must be stored stripped: the runtime's role lookup is exact, so
     persisting ' critic ' after validating 'critic' writes a profile that passes the
     API and then fails to launch."""
-    from lionagi.casts.pattern import list_roles
     from lionagi.studio.services.agents import create_agent
+    from lionhub.agent.casts.pattern import list_roles
 
     root = _make_agents_root(tmp_path, monkeypatch)
     roles = list_roles()
@@ -148,8 +148,8 @@ def test_create_agent_stores_the_role_it_validated(tmp_path, monkeypatch):
 
 
 def test_create_agent_stores_the_mode_it_validated(tmp_path, monkeypatch):
-    from lionagi.casts.pattern import list_modes
     from lionagi.studio.services.agents import create_agent
+    from lionhub.agent.casts.pattern import list_modes
 
     root = _make_agents_root(tmp_path, monkeypatch)
     modes = list_modes()
@@ -165,8 +165,8 @@ def test_create_agent_stores_the_mode_it_validated(tmp_path, monkeypatch):
 
 def test_update_agent_stores_the_role_and_mode_it_validated(tmp_path, monkeypatch):
     """The PUT path canonicalises for the same reason the create path does."""
-    from lionagi.casts.pattern import list_modes, list_roles
     from lionagi.studio.services.agents import create_agent, get_agent, update_agent
+    from lionhub.agent.casts.pattern import list_modes, list_roles
 
     root = _make_agents_root(tmp_path, monkeypatch)
     roles = list_roles()
@@ -621,7 +621,7 @@ def test_definitions_save_route_rejects_same_payload_agents_api_rejects(tmp_path
 def test_definitions_save_route_allows_valid_role_and_mode(tmp_path, monkeypatch):
     """A payload that would be accepted by the agents API still saves through
     the definitions route -- the new guard must not reject valid casts."""
-    from lionagi.casts.pattern import list_modes, list_roles
+    from lionhub.agent.casts.pattern import list_modes, list_roles
 
     client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
     role = list_roles()[0]

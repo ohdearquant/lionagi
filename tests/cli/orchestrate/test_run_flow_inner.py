@@ -10,12 +10,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate import flow as flow_module
 from lionagi.cli.orchestrate.flow import FlowPlanError, _ExecResult, _run_flow_inner
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.branch import Branch
+from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration.engines import EngineRun, PlanningEngine
 from tests.cli.orchestrate.test_flow_phases import _make_env
 

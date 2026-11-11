@@ -11,9 +11,9 @@ import pytest
 
 from lionagi import Branch
 from lionagi._errors import ContainmentRefusedError
-from lionagi.casts.emission import build_emission_operable
 from lionagi.ln.concurrency._compat import ExceptionGroup
 from lionagi.session.signal import StructuredOutput
+from lionhub.agent.casts.emission import build_emission_operable
 from lionhub.agent.factory import _AgentSettingError
 from lionhub.orchestration.engines.engine import Engine, EngineBudgetError, JudgeVerdict
 from lionhub.orchestration.engines.hypothesis import (

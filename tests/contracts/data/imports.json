@@ -507,6 +507,13 @@
       ],
       "warning_categories": []
     },
+    "lionhub.agent.casts": {
+      "ok": true,
+      "dir": [
+        "lazy_import"
+      ],
+      "warning_categories": []
+    },
     "lionagi.dispatch.revival": {
       "ok": true,
       "dir": [
@@ -550,7 +557,7 @@
       "orchestrate": {
         "seed": "orchestrate",
         "module": "lionagi.cli.orchestrate",
-        "new_lionagi_module_count": 146,
+        "new_lionagi_module_count": 141,
         "other_seed_modules_imported": [
           "lionagi.cli.team"
         ],
@@ -575,8 +582,8 @@
       },
       "casts": {
         "seed": "casts",
-        "module": "lionagi.casts.surfaces",
-        "new_lionagi_module_count": 3,
+        "module": "lionhub.agent.casts.surfaces",
+        "new_lionagi_module_count": 1,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "http_registry_realized": false,

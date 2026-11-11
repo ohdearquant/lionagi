@@ -9,11 +9,11 @@ import json
 
 import pytest
 
-from lionagi.casts.emission import SpawnRequest
 from lionagi.operations.node import create_operation
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.session import Session
 from lionagi.testing import TestBranch
+from lionhub.agent.casts.emission import SpawnRequest
 from lionhub.orchestration import grant_spawn
 
 

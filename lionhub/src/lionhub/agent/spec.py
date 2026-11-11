@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from lionagi.casts.pack import Pack
-from lionagi.casts.profile import Profile
+from lionhub.agent.casts.pack import Pack
+from lionhub.agent.casts.profile import Profile
 
 if TYPE_CHECKING:
     from lionagi.ln.types import Operable
@@ -262,7 +262,7 @@ class AgentSpec(HooksMixin):
         if not self.grant_emissions:
             return None
         if self.emits is not None:
-            from lionagi.casts import build_emission_operable
+            from lionhub.agent.casts import build_emission_operable
 
             return build_emission_operable(
                 tuple(self.emits), name=f"{self.profile.role.name}_emissions"
@@ -371,7 +371,7 @@ def _load_pack(pack: str | Pack) -> Pack | None:
     if isinstance(pack, Pack):
         return pack
     if pack == "default":
-        from lionagi.casts.catalog import _load_packaged_pack
+        from lionhub.agent.casts.catalog import _load_packaged_pack
 
         return _load_packaged_pack(raise_on_error=True)
     return None

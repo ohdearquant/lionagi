@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _ROOT = Path(__file__).parents[2]
-_PACKAGE = _ROOT / "lionagi"
+_PACKAGES = (_ROOT / "lionagi", _ROOT / "lionhub" / "src" / "lionhub")
 _AUTHORITIES = frozenset(
     {
         "lionagi.ln.types.base.Params",
@@ -18,9 +18,9 @@ _AUTHORITIES = frozenset(
 _EXPECTED = frozenset(
     {
         *_AUTHORITIES,
-        "lionagi.casts.pattern.Pattern",
-        "lionagi.casts.pattern.Mode",
-        "lionagi.casts.pattern.Role",
+        "lionhub.agent.casts.pattern.Pattern",
+        "lionhub.agent.casts.pattern.Mode",
+        "lionhub.agent.casts.pattern.Role",
         "lionagi.ln._async_call.AlcallParams",
         "lionagi.ln._async_call.BcallParams",
         "lionagi.ln._to_list.ToListParams",
@@ -60,7 +60,8 @@ class _Class:
 
 
 def _module_name(path: Path) -> tuple[str, str]:
-    relative = path.relative_to(_ROOT).with_suffix("")
+    package_root = next(root for root in _PACKAGES if path.is_relative_to(root))
+    relative = path.relative_to(package_root.parent).with_suffix("")
     parts = list(relative.parts)
     is_package = parts[-1] == "__init__"
     if is_package:
@@ -144,7 +145,7 @@ def _symbol(node: ast.AST, module: _Module) -> str | None:
 def _load_modules(overrides: dict[str, str] | None = None) -> dict[str, _Module]:
     overrides = overrides or {}
     modules: dict[str, _Module] = {}
-    for path in sorted(_PACKAGE.rglob("*.py")):
+    for path in sorted(path for root in _PACKAGES for path in root.rglob("*.py")):
         name, package = _module_name(path)
         source = overrides.get(name, path.read_text())
         tree = ast.parse(source, filename=str(path))

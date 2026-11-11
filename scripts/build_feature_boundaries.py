@@ -43,7 +43,7 @@ MODULE_RULES = {
     "lionagi.service.types": ("contracts", "provider_contracts"),
     "lionagi.adapters": ("adapter", "data_adapters"),
     "lionagi.agent": ("adapter", "agent"),
-    "lionagi.casts": ("adapter", "casts"),
+    "lionhub.agent.casts": ("adapter", "casts"),
     "lionagi.hooks": ("adapter", "hooks"),
     "lionagi.integrations": ("adapter", "integrations"),
     "lionagi.integrations.ruvector": ("adapter", "ruvector"),
@@ -85,7 +85,7 @@ ROOT_MODULES = {
 # keep their current owner; the destination names the extracted portion.
 TARGET_RULES = {
     "lionagi.agent": "lionhub (destination not yet recorded)",
-    "lionagi.casts": "lionhub (destination not yet recorded)",
+    "lionhub.agent.casts": "lionhub.agent.casts",
     "lionagi.hooks.external": "lionhub (destination not yet recorded)",
     "lionagi.integrations": "lionhub (destination not yet recorded)",
     "lionagi.tools": "lionhub (destination not yet recorded)",

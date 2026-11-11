@@ -8,10 +8,10 @@ import yaml
 from fastapi import Body, HTTPException
 
 from lionagi._paths import LIONAGI_HOME
-from lionagi.casts.pattern import list_modes as _list_modes
-from lionagi.casts.pattern import list_roles as _list_roles
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.ln.concurrency import run_sync
+from lionhub.agent.casts.pattern import list_modes as _list_modes
+from lionhub.agent.casts.pattern import list_roles as _list_roles
 
 from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join, validate_name_component

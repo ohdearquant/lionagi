@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate import _orchestration as orch
 from lionagi.cli.orchestrate import flow
+from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration import spawn as _providers
 from lionhub.orchestration.flow import checkpoint as _checkpoint
 from lionhub.orchestration.flow.checkpoint import CheckpointWriter, load_checkpoint

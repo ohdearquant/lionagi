@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import Field
 
-from lionagi.casts.emission import Conflict, Finding
+from lionhub.agent.casts.emission import Conflict, Finding
 
 from .engine import Engine, EngineEvent, EngineRun
 

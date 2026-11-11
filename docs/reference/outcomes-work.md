@@ -18,7 +18,7 @@ kind-aware frontend renderer.
 
 ### ReviewFinding
 
-Ops-plane artifact contract (ADR-0021). Distinct from `lionagi.casts.emission.Finding`
+Ops-plane artifact contract (ADR-0021). Distinct from `lionhub.agent.casts.emission.Finding`
 (reactive-bus base used in the engines layer). Fields: `severity`, `category`, `file`,
 `line`, `description`, `suggestion`. The `file` field is validated via `check_path_safe`
 and must be a relative path.

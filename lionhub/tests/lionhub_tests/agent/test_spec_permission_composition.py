@@ -276,7 +276,7 @@ def test_a_policy_assigned_as_a_plain_dict_is_silently_ignored():
     """compose() resolves a dict/str into a PermissionPolicy, but a policy
     assigned directly to the field as a dict is not resolved: _apply_permissions
     only accepts a PermissionPolicy and returns early, so no hook is installed."""
-    from lionagi.casts.profile import Profile
+    from lionhub.agent.casts.profile import Profile
 
     spec = AgentSpec(profile=Profile.compose("analyst"), permissions={"mode": "deny_all"})
     _apply_permissions(spec)

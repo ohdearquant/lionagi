@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from lionagi.casts.emission import (
+from lionhub.agent.casts.emission import (
     SPAWN_ALLOWED_OPERATIONS,
     Finding,
     SpawnRequest,

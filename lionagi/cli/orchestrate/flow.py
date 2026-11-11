@@ -20,7 +20,6 @@ import psutil
 
 from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln import coerce_created_at
 from lionagi.ln.concurrency import (
     CancelScope,
@@ -31,6 +30,7 @@ from lionagi.ln.concurrency import (
 )
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.session.exchange import Exchange
+from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
 from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionhub.orchestration.console import progress
 from lionhub.orchestration.console import warn as _warn
@@ -1103,7 +1103,7 @@ async def _build_dag(
         else:
             role_defaults = w_profile.artifact_defaults if w_profile else None
             if not role_defaults:
-                from lionagi.casts.pattern import Role as _Role
+                from lionhub.agent.casts.pattern import Role as _Role
 
                 with contextlib.suppress(ValueError):
                     role_defaults = _Role.load(ta.assignee).artifact_defaults

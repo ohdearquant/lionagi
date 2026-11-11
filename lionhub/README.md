@@ -9,6 +9,7 @@ includes both `lionagi` and `lionhub`.
 | Path (from repository root) | Contents |
 | --- | --- |
 | `lionhub/src/lionhub/agent/` | Agent profiles, permissions, hooks, and construction. |
+| `lionhub/src/lionhub/agent/casts/` | Cast patterns, roles, modes, profiles, packs, and emission contracts. |
 | `lionhub/src/lionhub/tools/` | Built-in tool interfaces and implementations. |
 | `lionhub/src/lionhub/cli/` | Built-in CLI command catalog, lazy command discovery, and the `li studio` and `li schedule` command adapters. |
 | `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, work forms, and scheduler services and helpers. |
@@ -35,6 +36,7 @@ Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0. The a
 | `lionagi.lndl` | `lionhub.lndl` |
 | `lionagi.tools` | `lionhub.tools` |
 | `lionagi.agent` | `lionhub.agent` |
+| `lionagi.casts` | `lionhub.agent.casts` |
 | `lionagi.operations.lndl_middle` | `lionhub.lndl.middle` |
 | `lionagi.providers._provider_errors` | `lionagi._provider_errors` |
 | `lionagi.providers._secret_resolution` | `lionagi.service.accounts._secret_resolution` |
