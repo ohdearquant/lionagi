@@ -10,7 +10,7 @@
 
 ## Roles and Modes are a closed built-in set
 
-Built-in roles and modes live under `lionagi.casts.roles` and `lionagi.casts.roles.modes`. They are not user-definable. To override runtime behavior (model, effort, permitted modes, authority, escalation targets), supply a custom `Pack` — not a new role module.
+Built-in roles and modes live under `lionhub.agent.casts.roles` and `lionhub.agent.casts.roles.modes`. They are not user-definable. To override runtime behavior (model, effort, permitted modes, authority, escalation targets), supply a custom `Pack` — not a new role module.
 
 ## Mode conflict declarations
 

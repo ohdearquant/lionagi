@@ -11,11 +11,11 @@ from typing import Any
 
 import pytest
 
-from lionagi.casts.emission import SpawnRequest
 from lionagi.operations import Operation, flow
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.operations.node import create_operation
 from lionagi.session.session import Session
+from lionhub.agent.casts.emission import SpawnRequest
 
 
 def _session_with_ops(**ops):

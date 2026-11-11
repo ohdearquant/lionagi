@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 
-from lionagi.casts.emission import EscalationRequest, SpawnRequest
 from lionagi.operations import Operation
 from lionagi.operations import flow as _flow
 from lionagi.operations.builder import OperationGraphBuilder
@@ -29,6 +28,7 @@ from lionagi.protocols.graph.graph import Graph
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 from lionagi.session.signal import NodeEscalated, NodeSpawned
+from lionhub.agent.casts.emission import EscalationRequest, SpawnRequest
 
 
 def _session(**ops):

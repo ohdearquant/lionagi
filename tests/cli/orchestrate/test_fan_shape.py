@@ -17,11 +17,11 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate import fanout as fanout_mod
 from lionagi.cli.orchestrate._common import _build_worker_operate_node
 from lionagi.cli.orchestrate.flow import _build_dag, _PlanResult
 from lionagi.operations.builder import OperationGraphBuilder
+from lionhub.agent.casts.emission import TaskAssignment
 
 from .test_flow_phases import _FakeBranch, _make_env
 

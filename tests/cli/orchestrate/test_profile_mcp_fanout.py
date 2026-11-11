@@ -9,8 +9,8 @@ import json
 import pytest
 
 import lionagi.cli.orchestrate._orchestration as orch_mod
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate import fanout as fanout_mod
+from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration.spawn import AgentProfile
 
 from .test_no_mcp_config_handoff import _codex_cli_args, _setup

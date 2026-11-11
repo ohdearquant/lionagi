@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
 from lionhub.orchestration import (
     build_dag_graph,
     build_fanout_graph,

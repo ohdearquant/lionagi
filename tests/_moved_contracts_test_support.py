@@ -215,6 +215,7 @@ assert legacy_writer.to_dict.__func__ is canonical.CheckpointWriter.to_dict
 CONTRACTS: tuple[MoveContract, ...] = (
     MoveContract(old="lionagi.tools", new="lionhub.tools", kind="package"),
     MoveContract(old="lionagi.agent", new="lionhub.agent", kind="package"),
+    MoveContract(old="lionagi.casts", new="lionhub.agent.casts", kind="package"),
     MoveContract(
         old="lionagi.orchestration",
         new="lionhub.orchestration",

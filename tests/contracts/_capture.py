@@ -803,6 +803,7 @@ COMPAT_MODULES: tuple[str, ...] = (
     "lionhub.tools.types",
     "lionagi.operations.parse",
     "lionagi.service.connections.cli_endpoint",
+    "lionhub.agent.casts",
     "lionagi.dispatch.revival",
 )
 

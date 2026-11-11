@@ -391,7 +391,7 @@ def _emission_example(emits: tuple[type, ...]) -> str:
     """Complete fenced-JSON example for the given emission types."""
     import json as _json
 
-    from lionagi.casts.emission import field_name_for
+    from lionhub.agent.casts.emission import field_name_for
 
     obj: dict = {}
     for m in emits:
@@ -428,7 +428,7 @@ def _cli_repair_instruction(schema_hint: str, emits: tuple[type, ...]) -> str:
 
 def emission_keys(emits: tuple[type, ...]) -> str:
     """Render the top-level emission key(s) for a repair hint."""
-    from lionagi.casts.emission import field_name_for
+    from lionhub.agent.casts.emission import field_name_for
 
     names = ", ".join(f"'{field_name_for(m)}'" for m in emits)
     if not names:

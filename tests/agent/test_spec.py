@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.casts.profile import Profile
 from lionagi.session.branch import Branch
+from lionhub.agent.casts.profile import Profile
 from lionhub.agent.factory import create_agent
 from lionhub.agent.permissions import PermissionPolicy
 from lionhub.agent.spec import AgentSpec, _resolve_permissions
@@ -100,7 +100,7 @@ class TestAgentSpecCoding:
 
 class TestRolePolicyBindingContract:
     def test_missing_policy_entry_raises(self):
-        from lionagi.casts.pack import Pack
+        from lionhub.agent.casts.pack import Pack
 
         pack = Pack(name="custom", policies={}, configs={})
         spec = AgentSpec.compose("analyst", pack=pack)
@@ -108,7 +108,7 @@ class TestRolePolicyBindingContract:
             spec.build_system_message()
 
     def test_empty_but_present_policy_entry_does_not_raise(self):
-        from lionagi.casts.pack import Pack, RolePolicy
+        from lionhub.agent.casts.pack import Pack, RolePolicy
 
         pack = Pack(name="custom", policies={"analyst": RolePolicy()}, configs={})
         spec = AgentSpec.compose("analyst", pack=pack)
@@ -118,13 +118,23 @@ class TestRolePolicyBindingContract:
 
     def test_default_pack_covers_every_shipped_role(self):
         """Regression guard for the fail-closed raise: every role module under
-        lionagi/casts/roles/ must have a matching entry in the packaged
+        lionhub/src/lionhub/agent/casts/roles/ must have a matching entry in the packaged
         default.yaml, or this raise would break every profile using that role."""
         import os
 
-        from lionagi.casts.catalog import _load_packaged_pack
+        from lionhub.agent.casts.catalog import _load_packaged_pack
 
-        roles_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lionagi", "casts", "roles")
+        roles_dir = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "..",
+            "lionhub",
+            "src",
+            "lionhub",
+            "agent",
+            "casts",
+            "roles",
+        )
         role_names = {
             f[:-3].replace("_", "-")
             for f in os.listdir(roles_dir)
@@ -154,7 +164,7 @@ class TestAgentSpecSystemMessage:
     def test_contains_mode_behaviors(self):
         spec = AgentSpec.compose("critic", modes=["adversarial"])
         msg = spec.build_system_message()
-        from lionagi.casts.pattern import Mode
+        from lionhub.agent.casts.pattern import Mode
 
         adv = Mode.load("adversarial")
         assert adv.behaviors in msg
@@ -199,7 +209,7 @@ class TestAgentSpecEmission:
         assert spec.emission_operable() == spec.profile.role.emission_operable()
 
     def test_emits_explicit_tuple_overrides_role(self):
-        from lionagi.casts import Finding, Gap
+        from lionhub.agent.casts import Finding, Gap
 
         spec = AgentSpec.compose("analyst", emits=(Finding, Gap))
         op = spec.emission_operable()
@@ -217,13 +227,13 @@ class TestAgentSpecEmission:
         assert spec.emission_operable() is None
 
     def test_emits_false_grant_short_circuits_override(self):
-        from lionagi.casts import Finding
+        from lionhub.agent.casts import Finding
 
         spec = AgentSpec.compose("analyst", emits=(Finding,), grant_emissions=False)
         assert spec.emission_operable() is None
 
     def test_compose_threads_emits_onto_spec(self):
-        from lionagi.casts import Finding
+        from lionhub.agent.casts import Finding
 
         spec = AgentSpec.compose("analyst", emits=(Finding,))
         assert spec.emits == (Finding,)

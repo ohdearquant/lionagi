@@ -586,7 +586,7 @@ def test_import_laziness_traces_all_21_seeds_cleanly():
 
 def test_import_laziness_casts_seed_stays_cli_only():
     """The one seed whose module declares both a CLI and an HTTP marker
-    (lionagi/casts/surfaces.py) — loading it as a CLI seed must not eagerly
+    (lionhub/src/lionhub/agent/casts/surfaces.py) — loading it as a CLI seed must not eagerly
     realize the HTTP registry as a side effect, the risk a single module
     serving both surfaces creates."""
     live = _capture.capture_imports()

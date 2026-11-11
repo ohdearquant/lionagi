@@ -15,9 +15,9 @@ import logging
 
 import pytest
 
-from lionagi.casts.emission import SPAWN_ALLOWED_OPERATIONS, SpawnRequest
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.agent.casts.emission import SPAWN_ALLOWED_OPERATIONS, SpawnRequest
 from lionhub.orchestration.patterns import role_node_builder
 
 

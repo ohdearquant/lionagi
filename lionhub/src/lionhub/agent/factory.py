@@ -888,8 +888,8 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
     if configured is None or configured is False:
         return
 
-    from lionagi.casts.pattern import Role
-    from lionagi.casts.profile import Profile
+    from lionhub.agent.casts.pattern import Role
+    from lionhub.agent.casts.profile import Profile
 
     identity = Profile(name=role_name, role=Role(name=role_name, description="", body=""))
     provider_spec = AgentSpec(profile=identity, pack=None, khive_injection=configured)

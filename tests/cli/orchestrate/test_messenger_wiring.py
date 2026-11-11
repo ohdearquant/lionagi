@@ -11,7 +11,6 @@ from uuid import uuid4
 import pytest
 
 from lionagi import iModel
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate._common import (
     TEAM_COORD_SECTION,
     TEAM_COORD_SECTION_MESSENGER,
@@ -26,6 +25,7 @@ from lionagi.cli.orchestrate._orchestration import (
 )
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.session.exchange import Exchange
+from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.tools.communication.messenger import LionMessenger
 
 

@@ -318,7 +318,7 @@ async def test_orchestrator_gets_the_same_empty_server_set(tmp_run):
 async def test_setup_persists_execution_provenance(tmp_run, monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    import lionagi.casts.catalog as catalog
+    import lionhub.agent.casts.catalog as catalog
     import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
 

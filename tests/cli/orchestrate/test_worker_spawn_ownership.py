@@ -254,7 +254,7 @@ async def test_generation_is_stable_across_sqlite_admission_retry(
 async def test_flow_binds_owner_before_planning_worker_and_reactive_tasks(
     orchestration_workers, monkeypatch
 ):
-    from lionagi.casts.emission import TaskAssignment
+    from lionhub.agent.casts.emission import TaskAssignment
 
     h = orchestration_workers
     env = h.make_env("flow-phases")
@@ -324,9 +324,9 @@ async def test_fanout_binds_owner_through_worker_and_synthesis_passes(
     orchestration_workers, monkeypatch
 ):
     from lionagi import Branch
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.protocols.types import EventStatus
     from lionagi.session.signal import NodeCompleted
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     h = orchestration_workers
@@ -398,7 +398,7 @@ async def test_flow_reactive_executor_keeps_owner_for_the_spawned_provider(
     orchestration_workers, monkeypatch
 ):
     from lionagi import Branch
-    from lionagi.casts.emission import SpawnRequest, TaskAssignment
+    from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
 
     h = orchestration_workers
     env = h.make_env("flow-reactive")

@@ -29,12 +29,12 @@ import asyncio
 import logging
 
 from lionagi.agent import AgentSpec
-from lionagi.casts.emission import SpawnRequest
 from lionagi.operations.node import create_operation
 from lionagi.protocols.graph.graph import Graph
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.agent.casts.emission import SpawnRequest
 from lionhub.orchestration import role_node_builder, spawn_roles
 
 logging.basicConfig(level=logging.WARNING)

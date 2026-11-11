@@ -58,7 +58,7 @@ def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
             prefixes = (
                 "lionagi.cli",
                 "lionagi.studio.cli",
-                "lionagi.casts.surfaces",
+                "lionhub.agent.casts.surfaces",
                 "lionhub.cli.studio",
                 "lionhub.cli.schedule",
             )
@@ -89,7 +89,7 @@ def test_core_catalog_guard_sees_construction_and_target_literals():
     source = (
         "from lionagi._auto import CliSeed as Seed\n"
         "item = Seed(name='x', help='h', module='lionagi.cli.agent')\n"
-        "module = 'lionagi.casts.surfaces'\n"
+        "module = 'lionhub.agent.casts.surfaces'\n"
         "other = auto.CliSeed(name='x', help='h', module='lionagi.studio.cli')\n"
     )
     hits = _core_catalog_references(probe, source)

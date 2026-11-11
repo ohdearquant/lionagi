@@ -20,7 +20,7 @@ from lionagi.cli.orchestrate._orchestration import (
 
 class TestModeRoster:
     def test_lists_all_mode_names(self):
-        from lionagi.casts.pattern import list_modes
+        from lionhub.agent.casts.pattern import list_modes
 
         text = mode_roster()
         for m in list_modes():
@@ -45,7 +45,7 @@ class TestModeRoster:
     def test_custom_pack_unknown_mode_not_advertised(self):
         # A custom pack may allowlist a name the mode catalog doesn't know;
         # resolve_modes drops it, so the roster must never advertise it.
-        from lionagi.casts.pack import Pack, RoleConfig
+        from lionhub.agent.casts.pack import Pack, RoleConfig
 
         pack = Pack(
             name="custom",
@@ -207,7 +207,7 @@ def test_collision_notice_names_resolved_sources(
 ):
     from types import SimpleNamespace
 
-    from lionagi.casts.pack import Pack, RoleConfig
+    from lionhub.agent.casts.pack import Pack, RoleConfig
 
     pack = Pack(name="selected", configs={role: RoleConfig()})
     resolved_modes = resolve_modes(role, modes, pack) if modes else None
@@ -244,7 +244,7 @@ def test_collision_notice_names_resolved_sources(
 def test_collision_notice_is_emitted_once_per_environment(monkeypatch):
     from types import SimpleNamespace
 
-    from lionagi.casts.pack import Pack, RoleConfig
+    from lionhub.agent.casts.pack import Pack, RoleConfig
 
     role = "researcher"
     pack = Pack(name="selected", configs={role: RoleConfig()})
@@ -278,7 +278,7 @@ async def test_selected_pack_reaches_worker_prompt(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from lionagi import iModel
-    from lionagi.casts.pack import Pack, RoleConfig, RolePolicy
+    from lionhub.agent.casts.pack import Pack, RoleConfig, RolePolicy
 
     class _Session:
         def __init__(self):
@@ -339,7 +339,7 @@ async def test_pack_profile_collision_discloses_each_setting_source(tmp_path, mo
     from types import SimpleNamespace
 
     from lionagi import iModel
-    from lionagi.casts.pack import Pack, RoleConfig
+    from lionhub.agent.casts.pack import Pack, RoleConfig
     from lionhub.orchestration.spawn import AgentProfile
 
     class _Session:
@@ -432,7 +432,7 @@ async def test_pack_profile_collision_model_source_is_profile_when_profile_has_n
     from types import SimpleNamespace
 
     from lionagi import iModel
-    from lionagi.casts.pack import Pack, RoleConfig
+    from lionhub.agent.casts.pack import Pack, RoleConfig
     from lionhub.orchestration.spawn import AgentProfile
 
     class _Session:

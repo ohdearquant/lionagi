@@ -586,9 +586,9 @@ async def test_reactive_spawn_persists_spawned_branch(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """A spawned branch is wired before its first message reaches persistence."""
-    from lionagi.casts.emission import SpawnRequest, TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.builder import OperationGraphBuilder
+    from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
 
     env = _minimal_env()
     worker = Branch(name="worker")
@@ -2732,8 +2732,8 @@ async def test_build_dag_wires_role_artifact_defaults_into_live_contract_and_fai
     """
     from unittest.mock import patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _build_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -2803,8 +2803,8 @@ async def test_execute_dag_escalation_without_artifact_declaration_fails_loud(
     """
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -2880,8 +2880,8 @@ async def test_execute_dag_gate_rejected_evidence_survives_uuid_node_ids(
     from unittest.mock import MagicMock, patch
     from uuid import uuid4
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -2950,8 +2950,8 @@ async def test_execute_dag_escalation_evidence_survives_uuid_node_ids(
     from unittest.mock import MagicMock, patch
     from uuid import uuid4
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -3022,9 +3022,9 @@ async def test_execute_dag_drains_inflight_branch_status_before_teardown(
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.session.signal import NodeCompleted
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     env = _minimal_env()
@@ -3105,10 +3105,10 @@ async def test_execute_dag_drains_escalation_link_retries_before_teardown(
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import flow as flow_module
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.node import create_operation
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.setattr(flow_module, "_ESCALATION_LINK_RETRIES", 3)
@@ -3192,9 +3192,9 @@ async def test_execute_dag_bounds_escalation_link_drain_on_cancellation(
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.node import create_operation
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     env = _minimal_env()
@@ -3294,9 +3294,9 @@ async def test_execute_dag_bounds_escalation_link_drain_on_late_cancellation(
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.node import create_operation
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     env = _minimal_env()
@@ -3409,9 +3409,9 @@ async def test_execute_dag_bounds_escalation_link_drain_survivor_await(
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.node import create_operation
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     env = _minimal_env()
@@ -3507,9 +3507,9 @@ async def test_execute_dag_late_cancellation_does_not_clobber_dag_exception(
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.node import create_operation
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     class _DagBoomError(RuntimeError):
@@ -3588,10 +3588,10 @@ async def test_flow_timeout_shields_completed_branch_status_until_commit(
     monkeypatch: pytest.MonkeyPatch,
 ):
     from lionagi._errors import TimeoutError as LionTimeoutError
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import flow as flow_module
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeCompleted
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
     from lionhub.orchestration.runs import register_branch_hook
 
@@ -3700,8 +3700,8 @@ async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(
     from types import SimpleNamespace
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -3787,8 +3787,8 @@ async def test_execute_dag_records_failed_operation_evidence(
     loud instead of it reading as an ordinary clean completion."""
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -3875,10 +3875,10 @@ async def test_dead_terminal_node_flips_completed_to_failed_end_to_end(
     from a run that actually passed its gate."""
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.operations.flow import flow as _real_flow
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -3968,8 +3968,8 @@ async def test_execute_dag_records_lost_operation_evidence_for_missing_result(
     loud instead of reading as run.completed.ok."""
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -4038,8 +4038,8 @@ async def test_execute_dag_skipped_node_does_not_trip_lost_operation_evidence(
     skip is a legitimate, non-failing outcome and must not fail the run."""
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -4098,8 +4098,8 @@ async def test_execute_dag_dropped_spawn_does_not_trip_lost_operation_evidence(
     scoped to dag_state.node_ids only."""
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -4158,10 +4158,10 @@ async def test_unknown_spawn_assignee_reaches_terminal_failure(
 ):
     import json as _json
 
-    from lionagi.casts.emission import SpawnRequest, TaskAssignment
     from lionagi.cli.orchestrate import flow as flow_mod
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.builder import OperationGraphBuilder
+    from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
 
     branch = Branch(name="architect")
     env = _minimal_env(branch)
@@ -4241,11 +4241,11 @@ async def test_execute_dag_cancelled_spawn_records_lost_operation_evidence(
     missing planned node."""
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.operations.node import create_operation
     from lionagi.protocols.generic.event import EventStatus
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -4334,11 +4334,11 @@ async def test_execute_dag_reinjected_initial_node_yields_one_lost_operation_ent
     node as a spawn), so only the planned-node check fires."""
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.operations.flow import flow as _real_flow
     from lionagi.protocols.generic.event import EventStatus
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -4426,8 +4426,8 @@ async def test_execute_dag_run_level_cancellation_skips_reconciliation_entirely(
     reached when that call raises instead of returning."""
     from unittest.mock import MagicMock, patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
 
     env = _minimal_env()
     artifacts_dir = tmp_path / "artifacts"
@@ -4481,9 +4481,9 @@ async def test_execute_dag_records_control_log_write_failure_when_update_session
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import flow as flow_module
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.setattr(flow_module, "_CONTROL_POLL_INTERVAL", 0.01)
@@ -4578,9 +4578,9 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import flow as flow_module
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.setattr(flow_module, "_CONTROL_POLL_INTERVAL", 0.01)

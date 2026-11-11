@@ -295,8 +295,8 @@ def test_nested_model_owns_its_sentinel_policy():
 
 
 def test_nested_domain_overrides_run_before_json_adaptation():
-    from lionagi.casts.pattern import Role
     from lionagi.protocols.messages.instruction import InstructionContent
+    from lionhub.agent.casts.pattern import Role
 
     value = ProjectionDataClass(
         params=NestedParams(),

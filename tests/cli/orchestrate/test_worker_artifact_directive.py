@@ -745,8 +745,8 @@ async def _spawned_branch_kwargs(
     tool set, say)."""
     import lionhub.orchestration.engines as engines_mod
     from lionagi import Branch, iModel
-    from lionagi.casts.emission import SpawnRequest
     from lionagi.cli.orchestrate import flow as flow_mod
+    from lionhub.agent.casts.emission import SpawnRequest
 
     class _Captured(Exception):
         pass

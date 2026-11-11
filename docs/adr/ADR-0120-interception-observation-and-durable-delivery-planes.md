@@ -828,7 +828,7 @@ everything since; facts past the range belong to the next wake.
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py::SessionObserver.persist_dropped`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
-  (`lionagi/casts/emission.py::Verdict`); the review operation emits a `ReviewVerdict` into the session
+  (`lionhub/src/lionhub/agent/casts/emission.py::Verdict`); the review operation emits a `ReviewVerdict` into the session
   observer (the `ReviewVerdict` class and the `await run.emit(final)` in `ReviewEngine._verdict`, both in
   `lionhub/src/lionhub/orchestration/engines/review.py`), which is one emit site, but a `Verdict` cast
   raised outside that path is carried by no lifecycle Signal. `budget` names a token-budget
