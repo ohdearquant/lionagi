@@ -39,7 +39,7 @@ async def _invocation_health(
     if not sessions:
         return "unknown", None
 
-    from .admin import _artifacts_path, resolve_process_liveness
+    from lionhub.orchestration.scheduler.liveness import _artifacts_path, resolve_process_liveness
 
     healths: list[SessionHealth] = []
     last_activity: float | None = None

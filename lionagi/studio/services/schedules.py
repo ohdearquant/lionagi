@@ -134,7 +134,7 @@ def _svc_validate_identifier(value: str | None, field_name: str) -> None:
     starting with '-' — a leading '-' would make argparse treat it as a flag."""
     if not value:
         return
-    from lionagi.studio.scheduler.subprocess import _validate_identifier
+    from lionhub.orchestration.schedule.parsing import _validate_identifier
 
     _validate_identifier(value, field_name)
 
@@ -1650,7 +1650,7 @@ async def list_schedules_route(
 @studio_route("/schedules/limits", method="GET", area="schedules", name="schedule_limits")
 async def schedule_limits_route() -> dict[str, Any]:
     # Registered before /{schedule_id} so "limits" resolves here, not as an id.
-    from lionagi.studio import config
+    from lionhub.orchestration.scheduler import settings as scheduler_settings
 
     from ..scheduler.engine import scheduler
 
@@ -1660,10 +1660,10 @@ async def schedule_limits_route() -> dict[str, Any]:
     # lane's own additive capacity, since the daemon can run both caps'
     # worth of executions at once.
     return {
-        "max_scheduled_concurrent": config.MAX_SCHEDULED_CONCURRENT,
+        "max_scheduled_concurrent": scheduler_settings.MAX_SCHEDULED_CONCURRENT,
         "current_inflight": scheduler._global_inflight,
         "current_holders": scheduler.global_slot_holders,
-        "max_adhoc_concurrent": config.MAX_ADHOC_CONCURRENT,
+        "max_adhoc_concurrent": scheduler_settings.MAX_ADHOC_CONCURRENT,
         "current_adhoc_inflight": scheduler._adhoc_inflight,
     }
 

@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import lionhub.orchestration.scheduler.settings as scheduler_settings
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -39,9 +41,9 @@ def test_limits_route_returns_cap_and_inflight(tmp_path, monkeypatch):
     from lionagi.studio.scheduler.engine import scheduler
 
     _patch_db(monkeypatch, tmp_path / "state.db")
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 7)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 7)
     monkeypatch.setattr(scheduler, "_global_inflight", 3)
-    monkeypatch.setattr(studio_config, "MAX_ADHOC_CONCURRENT", 5)
+    monkeypatch.setattr(scheduler_settings, "MAX_ADHOC_CONCURRENT", 5)
     monkeypatch.setattr(scheduler, "_adhoc_inflight", 2)
 
     client = _make_client()
@@ -82,7 +84,7 @@ def test_limits_lists_poll_and_scheduled_holders_and_drops_released_claims(tmp_p
     import lionagi.studio.scheduler.engine as engine_mod
 
     _patch_db(monkeypatch, tmp_path / "state.db")
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 2)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 2)
     engine = engine_mod.SchedulerEngine(svc=AsyncMock())
     monkeypatch.setattr(engine_mod, "scheduler", engine)
 

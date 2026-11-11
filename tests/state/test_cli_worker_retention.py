@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 import lionagi.state.db as state_db_mod
+import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import StateDB
 
 
@@ -131,8 +132,8 @@ def _archive_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     archive = tmp_path / "archive"
     archive.mkdir()
-    monkeypatch.setattr(config, "PRUNE_ARCHIVE_DIR", archive)
-    monkeypatch.setattr(config, "PRUNE_CHUNK_ROWS", 2)
+    monkeypatch.setattr(scheduler_settings, "PRUNE_ARCHIVE_DIR", archive)
+    monkeypatch.setattr(scheduler_settings, "PRUNE_CHUNK_ROWS", 2)
     return archive
 
 

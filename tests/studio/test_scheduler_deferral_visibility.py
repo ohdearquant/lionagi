@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import lionagi.studio.config as config
+import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import NO_CURSOR_CLAIM
 from lionagi.studio.scheduler.engine import _MAX_PREDISPATCH_REFUSALS, SchedulerEngine
 from lionagi.studio.scheduler.github import GithubPollResult
@@ -28,7 +29,7 @@ def _quiet_tick(engine):
 
 @pytest.mark.asyncio
 async def test_oldest_due_row_gets_next_slot_ahead_of_fast_interval(monkeypatch):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     rows = [
         _minimal_schedule(id="fast", trigger_type="interval", next_fire_at=100.0),
         _minimal_schedule(id="early", next_fire_at=90.0),
@@ -124,7 +125,7 @@ async def _hold_a_batch(engine, poll_row, items=None):
 
 @pytest.mark.asyncio
 async def test_a_poll_on_a_cap_a_timed_row_keeps_full_still_gets_a_slot(monkeypatch):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     _quiet_tick(engine)
@@ -163,7 +164,7 @@ async def test_a_poll_on_a_cap_a_timed_row_keeps_full_still_gets_a_slot(monkeypa
 async def test_a_held_github_event_takes_the_next_slot_in_oldest_due_order(
     monkeypatch, timed_due, first
 ):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     _quiet_tick(engine)
@@ -205,7 +206,7 @@ async def test_a_held_github_event_takes_the_next_slot_in_oldest_due_order(
 async def test_a_held_batch_the_schedule_moved_past_is_dropped_and_polled_afresh_on_a_full_cap(
     monkeypatch, field, moved_to
 ):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     _quiet_tick(engine)
@@ -240,7 +241,7 @@ async def test_a_held_batch_the_schedule_moved_past_is_dropped_and_polled_afresh
 async def test_a_held_batch_claims_its_poll_cycle_only_if_no_event_of_it_has(
     monkeypatch, fired_first
 ):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_make_svc())
     poll_row = _poll_row(next_fire_at=10_300.0)
     first, second = _item(1, "2026-01-01T00:00:00Z"), _item(2, "2026-01-01T00:01:00Z")
@@ -279,7 +280,7 @@ async def test_a_held_batch_claims_its_poll_cycle_only_if_no_event_of_it_has(
 
 @pytest.mark.asyncio
 async def test_each_event_of_a_pass_claims_the_cursor_the_event_before_it_wrote(monkeypatch):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 2)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 2)
     engine = SchedulerEngine(svc=_make_svc())
     poll_row = _poll_row(next_fire_at=10_300.0, github_cursor="before-the-poll")
     first, second = _item(1, "2026-01-01T00:00:00Z"), _item(2, "2026-01-01T00:01:00Z")
@@ -307,7 +308,7 @@ async def test_each_event_of_a_pass_claims_the_cursor_the_event_before_it_wrote(
 
 @pytest.mark.asyncio
 async def test_a_held_batch_dispatches_inside_its_schedules_poll_interval(monkeypatch):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_make_svc())
     poll_row = _poll_row()
     took, held = _holding_fires(engine, monkeypatch)
@@ -334,7 +335,7 @@ async def test_a_held_batch_dispatches_inside_its_schedules_poll_interval(monkey
 @pytest.mark.asyncio
 @pytest.mark.parametrize("how", ["stop", "schedule_gone"])
 async def test_a_slot_reserved_for_a_held_batch_is_released_when_the_batch_is(monkeypatch, how):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     _quiet_tick(engine)
@@ -380,7 +381,7 @@ async def test_a_schedule_no_longer_polled_forgets_when_it_last_polled(monkeypat
 
 @pytest.mark.asyncio
 async def test_capacity_episode_logs_once_and_records_first_and_eleventh(monkeypatch, caplog):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(id="waiting", name="waiting schedule", next_fire_at=100.0)
@@ -421,7 +422,7 @@ async def test_capacity_episode_logs_once_and_records_first_and_eleventh(monkeyp
 @pytest.mark.parametrize("cap", [0, 2])
 @pytest.mark.parametrize("path", ["scheduled", "missed_fire", "manual", "github_event"])
 async def test_reserving_a_slot_leaves_every_deferral_count_alone(monkeypatch, cap, path):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", cap)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", cap)
     engine = SchedulerEngine(svc=_make_svc())
     engine._deferred_log_counts = {"target": 4, "other": 3}
     allowed, claim = await engine._reserve_global_slot("target", path=path)
@@ -438,7 +439,7 @@ def _deferral_logs(caplog):
 
 @pytest.mark.asyncio
 async def test_a_manual_trigger_does_not_end_a_deferral_episode(monkeypatch, caplog):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(id="waiting", next_fire_at=100.0)
@@ -476,7 +477,7 @@ _DUE_OUTCOMES = [
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", _DUE_OUTCOMES)
 async def test_a_due_evaluation_ends_the_episode_unless_the_cap_defers_it(monkeypatch, outcome):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(id="target", next_fire_at=100.0)
     engine._deferred_log_counts = {"target": 2, "other": 3}
@@ -539,7 +540,7 @@ async def test_a_due_evaluation_ends_the_episode_unless_the_cap_defers_it(monkey
     ],
 )
 async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monkeypatch, outcome):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(
         id="poller",
@@ -603,7 +604,7 @@ async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monke
 
 @pytest.mark.asyncio
 async def test_a_next_fire_at_that_is_not_a_number_fails_only_its_own_row(monkeypatch, caplog):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 2)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 2)
     svc = _make_svc()
     svc.list_schedules.return_value = [
         _minimal_schedule(id="bad", name="bad row", next_fire_at="not-a-time"),
@@ -631,7 +632,7 @@ async def test_a_next_fire_at_that_is_not_a_number_fails_only_its_own_row(monkey
 
 @pytest.mark.asyncio
 async def test_slot_holder_snapshot_tracks_exact_claim_and_is_not_mutable(monkeypatch):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 2)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 2)
     engine = SchedulerEngine(svc=_make_svc())
     with patch("lionagi.studio.scheduler.engine.time.time", return_value=123.0):
         _, first = await engine._reserve_global_slot("same", path="manual")
@@ -655,7 +656,7 @@ async def test_slot_holder_snapshot_tracks_exact_claim_and_is_not_mutable(monkey
 
 @pytest.mark.asyncio
 async def test_a_github_poll_holds_no_slot_and_each_event_holds_its_own(monkeypatch):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 2)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 2)
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(
         id="poller", trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
@@ -791,7 +792,7 @@ async def test_a_restarted_engine_logs_an_open_rate_limit_episode_again(monkeypa
 async def test_a_github_rate_limit_episode_logs_once_until_a_pass_is_not_refused(
     monkeypatch, caplog
 ):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(
         id="poller", name="poller schedule", trigger_type="github_poll", last_fired_at=0
@@ -817,7 +818,7 @@ async def test_a_github_rate_limit_episode_logs_once_until_a_pass_is_not_refused
 
 @pytest.mark.asyncio
 async def test_a_rate_limit_that_stops_a_github_batch_opens_the_episode(monkeypatch, caplog):
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 4)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(
         id="poller", name="poller schedule", trigger_type="github_poll", last_fired_at=0

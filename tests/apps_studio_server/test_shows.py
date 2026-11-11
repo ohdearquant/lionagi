@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+import lionhub.orchestration.scheduler.settings as scheduler_settings
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402 — must follow importorskip
 
@@ -38,7 +40,7 @@ def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     shows_root.mkdir(parents=True, exist_ok=True)
     fake_db = tmp_path / "state.db"  # does not exist → _db_available() returns False
-    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(scheduler_settings, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
@@ -512,7 +514,7 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     shows_root.mkdir(parents=True)
     fake_db = tmp_path / "state.db"
 
-    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(scheduler_settings, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
@@ -586,7 +588,7 @@ def docker_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     shows_root.mkdir(parents=True)
     fake_db = tmp_path / "state.db"
 
-    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(scheduler_settings, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
@@ -680,7 +682,7 @@ def test_import_shows_refuses_undeclared_play_status(tmp_path, monkeypatch):
     (play_dir / "_meta.json").write_text(json.dumps({"status": "success"}))
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(scheduler_settings, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
@@ -736,7 +738,7 @@ def spa_mounted_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.Monkey
     import lionagi.studio.services.shows as shows_mod
 
     shows_root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(scheduler_settings, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
 

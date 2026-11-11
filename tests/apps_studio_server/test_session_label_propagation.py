@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+import lionhub.orchestration.scheduler.liveness as scheduler_liveness
 from lionagi.state.db import StateDB
 
 PROJECT = "label-project"
@@ -276,14 +277,16 @@ async def test_phantom_run_diagnostic_uses_label_and_legacy_authored_fallback(db
     async def no_process(*args, **kwargs):
         return False, ""
 
-    monkeypatch.setattr(admin, "_resolve_process_liveness_with_snapshot", no_process)
-    monkeypatch.setattr(admin, "_classify_phantom", lambda *args, **kwargs: "process_dead")
+    monkeypatch.setattr(scheduler_liveness, "_resolve_process_liveness_with_snapshot", no_process)
+    monkeypatch.setattr(
+        scheduler_liveness, "_classify_phantom", lambda *args, **kwargs: "process_dead"
+    )
     await _seed(db_path, status="running")
-    rows = await admin.list_phantom_sessions()
+    rows = await scheduler_liveness.list_phantom_sessions()
     assert rows[0]["playbook"] == "Pinned label"
 
     _drop_label_column(db_path)
-    rows = await admin.list_phantom_sessions()
+    rows = await scheduler_liveness.list_phantom_sessions()
     assert rows[0]["playbook"] == "Authored play"
     assert "user_label" not in _columns(db_path)
 

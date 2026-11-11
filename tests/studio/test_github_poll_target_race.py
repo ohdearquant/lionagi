@@ -1,3 +1,5 @@
+import lionhub.orchestration.scheduler.settings as scheduler_settings
+
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """A GitHub poll cannot act on a target that changed while it was in flight."""
@@ -91,7 +93,7 @@ async def test_held_old_batch_is_discarded_after_target_changes_away_and_back(
     initial = github_module._cursor_for("2026-10-24T10:00:00Z", 0)
     await _schedule(db, streak=0, github_cursor=initial)
     client.response = _Response([_pr(1)])
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     started = []
     spawn = subprocess_module.asyncio.create_subprocess_exec
 

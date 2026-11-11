@@ -50,7 +50,7 @@ from lionhub.orchestration.schedule.parsing import (
     _validate_identifier,  # noqa: F401
 )
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.scheduler.subprocess")
 
 _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 
@@ -502,7 +502,7 @@ async def spawn_and_wait(
     raising :class:`SubprocessDeadlineExceededError`.
     """
     if deadline_seconds is None:
-        from lionagi.studio.config import invocation_deadline_seconds
+        from lionhub.orchestration.scheduler.settings import invocation_deadline_seconds
 
         deadline_seconds = invocation_deadline_seconds(action_kind)
     deadline_seconds = _validated_deadline_seconds(deadline_seconds)

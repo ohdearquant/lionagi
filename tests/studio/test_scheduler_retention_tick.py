@@ -46,7 +46,7 @@ def _patches(*, last_prune, interval=DAY, prune=None):
     )
     prune = prune if prune is not None else AsyncMock(return_value={"sessions_pruned": 0})
     return (
-        patch("lionagi.studio.config.RETENTION_INTERVAL_SECONDS", int(interval)),
+        patch("lionhub.orchestration.scheduler.settings.RETENTION_INTERVAL_SECONDS", int(interval)),
         patch("lionagi.studio.services.db_maintenance.get_last_prune_at", new=last),
         patch("lionagi.studio.services.db_maintenance.prune_old_data", new=prune),
         prune,

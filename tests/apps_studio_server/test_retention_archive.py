@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import lionagi.state.db as state_db_mod
+import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import StateDB
 from lionagi.studio.services.retention_archive import (
     ArchiveVerificationError,
@@ -51,14 +52,8 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
 
 
 def _patch_prune_config(monkeypatch, *, archive_dir: Path | None, chunk_rows: int) -> None:
-    from lionagi.studio.services import db_maintenance as maint
-
-    monkeypatch.setattr(maint, "PRUNE_ARCHIVE_DIR", archive_dir, raising=False)
-    monkeypatch.setattr(maint, "PRUNE_CHUNK_ROWS", chunk_rows, raising=False)
-    import lionagi.studio.config as cfg
-
-    monkeypatch.setattr(cfg, "PRUNE_ARCHIVE_DIR", archive_dir)
-    monkeypatch.setattr(cfg, "PRUNE_CHUNK_ROWS", chunk_rows)
+    monkeypatch.setattr(scheduler_settings, "PRUNE_ARCHIVE_DIR", archive_dir)
+    monkeypatch.setattr(scheduler_settings, "PRUNE_CHUNK_ROWS", chunk_rows)
 
 
 # ── retention_archive module unit tests ─────────────────────────────────────

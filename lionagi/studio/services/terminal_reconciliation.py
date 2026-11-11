@@ -20,7 +20,7 @@ from lionagi.state.lifecycle.settings_delivery import (
     prepare_resolved_delivery,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("lionagi.studio.services.terminal_reconciliation")
 CONSUMER_NAME = "notify.settings.on_terminal"
 _reconciler: TerminalReconciler | None = None
 _reconciler_url: str | None = None
@@ -199,13 +199,13 @@ async def _global_context_diagnostics(row: dict[str, Any], db: StateDB) -> tuple
 async def run_terminal_reconciliation() -> int:
     """Run one budgeted pass against the daemon's store and log its summary."""
     global _reconciler, _reconciler_url
-    from lionagi.studio import config as studio_config
+    from lionhub.orchestration.scheduler import settings as studio_config
 
     if not studio_config.TERMINAL_RECONCILE_ENABLED or state_db_known_absent():
         return 0
     async with StateDB() as db:
         if _reconciler is None or _reconciler_url != db.url:
-            from lionagi.studio.config import TERMINAL_RECONCILE_BUDGET_SECONDS
+            from lionhub.orchestration.scheduler.settings import TERMINAL_RECONCILE_BUDGET_SECONDS
 
             # History that predates the consumer is acknowledged at registration,
             # never replayed into the notifier.

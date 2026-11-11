@@ -13,6 +13,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import StateDB
 from lionagi.studio.scheduler import github as github_module
 from lionagi.studio.scheduler import subprocess as subprocess_module
@@ -618,7 +619,7 @@ async def test_held_and_reheld_batch_are_neutral_then_no_poll_launch_resets(
     db, _, reader = stores
     await _schedule(db)
     client.response = _Response([_pr(1), _pr(2, safe=False)] if capped else [_pr(1)], more=capped)
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_Service(db))
     allowed, holder = await engine._reserve_global_slot("other", path="scheduled")
     assert allowed
@@ -662,7 +663,7 @@ async def test_stale_batch_uses_actual_fresh_complete_poll(stores, client, proce
 
     db, _, reader = stores
     await _schedule(db)
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     client.response = _Response([_pr(1)])
     engine = SchedulerEngine(svc=_Service(db))
     _, holder = await engine._reserve_global_slot("other", path="scheduled")
@@ -683,7 +684,7 @@ async def test_limit_change_keeps_held_batch_without_skipping(stores, client, pr
 
     db, _, reader = stores
     await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     client.response = _Response([_pr(1)])
     engine = SchedulerEngine(svc=_Service(db))
     _, holder = await engine._reserve_global_slot("other", path="scheduled")
@@ -734,7 +735,7 @@ async def test_fresh_pagination_error_releases_no_events_or_held_batch(
     engine = SchedulerEngine(svc=_Service(db))
     holder = None
     if capacity_occupied:
-        monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+        monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
         _, holder = await engine._reserve_global_slot("other", path="scheduled")
     try:
         await engine._tick_github(await _row(db), _NOW)
@@ -803,7 +804,7 @@ async def test_committed_but_unlaunched_true_is_not_progress(stores, client, pro
     db, _, reader = stores
     await _schedule(db)
     client.response = _Response([_pr(1)])
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _Service(db)
     update_status = svc.update_status
 
@@ -1030,7 +1031,7 @@ async def test_confirmed_exit_resets_even_without_launch_callback(stores, client
     db, _, reader = stores
     await _schedule(db)
     client.response = _Response([_pr(1)])
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     monkeypatch.setattr(subprocess_module, "build_argv", lambda *a, **k: (["test-child"], None))
     monkeypatch.setattr(subprocess_module, "resolve_li_executable", lambda: (["li"], None))
     launch_callbacks = []

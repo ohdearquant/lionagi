@@ -10,6 +10,8 @@ from typing import Any
 import psutil
 import pytest
 
+import lionhub.orchestration.scheduler.liveness as scheduler_liveness
+
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
 
@@ -30,10 +32,10 @@ def _isolate_snapshot_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep module-global cache state from coupling otherwise independent tests."""
     import lionagi.studio.services.admin as admin_svc
 
-    monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_CACHE", None, raising=False)
-    monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_INFLIGHT", {}, raising=False)
-    monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_METRICS", None, raising=False)
-    monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_CACHE", None, raising=False)
+    monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_INFLIGHT", {}, raising=False)
+    monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_METRICS", None, raising=False)
+    monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_SEQUENCE", 0, raising=False)
 
 
 async def _stub_run_dependencies(
@@ -70,7 +72,7 @@ def test_identity_complete_run_page_does_not_capture_process_table(monkeypatch):
     def forbidden_capture() -> str:
         raise AssertionError("identity-complete pages must not enumerate every OS process")
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", forbidden_capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", forbidden_capture)
 
     async def exercise() -> list[dict[str, Any]]:
         await _stub_run_dependencies(monkeypatch, rows)
@@ -96,7 +98,7 @@ def test_concurrent_legacy_run_pages_share_one_process_capture(monkeypatch):
         time.sleep(0.08)
         return f"1234 li agent --resume {session_id}"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", slow_capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", slow_capture)
 
     async def exercise() -> list[list[dict[str, Any]]]:
         await _stub_run_dependencies(monkeypatch, rows)
@@ -167,7 +169,7 @@ def test_invocation_health_avoids_host_scan_for_terminal_and_identity_rows(monke
     def forbidden_capture() -> str:
         raise AssertionError("resolved and terminal invocation children need no process table")
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", forbidden_capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", forbidden_capture)
     health, last_activity = asyncio.run(invocations_svc._invocation_health(sessions, now=now))
     assert health == "healthy"
     assert last_activity == now
@@ -208,13 +210,13 @@ def test_a_second_event_loop_gets_its_own_capture_instead_of_a_cross_loop_error(
             pass
         return "PID COMMAND\n1 init\n"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", slow_capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", slow_capture)
 
     results: dict[str, object] = {}
 
     def run_on_its_own_loop(name: str) -> None:
         try:
-            results[name] = asyncio.run(admin_svc.cached_ps_snapshot())
+            results[name] = asyncio.run(scheduler_liveness.cached_ps_snapshot())
         except BaseException as exc:  # noqa: BLE001 - the defect raised RuntimeError
             results[name] = exc
 
@@ -261,11 +263,11 @@ async def test_concurrent_callers_on_one_loop_still_share_a_single_capture(
         captures += 1
         return "PID COMMAND\n1 init\n"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", counted_capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", counted_capture)
 
     async def gated() -> str:
         await release.wait()
-        return await admin_svc.cached_ps_snapshot()
+        return await scheduler_liveness.cached_ps_snapshot()
 
     waiters = [asyncio.create_task(gated()) for _ in range(4)]
     await asyncio.sleep(0)
@@ -274,7 +276,7 @@ async def test_concurrent_callers_on_one_loop_still_share_a_single_capture(
 
     assert values == ["PID COMMAND\n1 init\n"] * 4
     assert captures == 1
-    metrics = admin_svc._ps_snapshot_metrics_state()
+    metrics = scheduler_liveness._ps_snapshot_metrics_state()
     assert int(metrics["singleflight_hits"] or 0) >= 1
 
 
@@ -307,15 +309,15 @@ async def test_an_older_capture_does_not_overwrite_newer_liveness_evidence(
             return "OLD"
         return "NEW"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", capture)
 
-    old_task = asyncio.create_task(admin_svc._capture_ps_snapshot())
+    old_task = asyncio.create_task(scheduler_liveness._capture_ps_snapshot())
     assert await asyncio.to_thread(entered_old.wait, 5), "the first capture never started"
 
     # Starts strictly later, so its data is the newer evidence.
-    assert await admin_svc._capture_ps_snapshot() == "NEW"
-    assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
-    newer_sequence = admin_svc._PS_SNAPSHOT_CACHE.sequence
+    assert await scheduler_liveness._capture_ps_snapshot() == "NEW"
+    assert scheduler_liveness._PS_SNAPSHOT_CACHE.value == "NEW"
+    newer_sequence = scheduler_liveness._PS_SNAPSHOT_CACHE.sequence
 
     release_old.set()
     # The older scan returns last. It must neither publish nor hand its own
@@ -323,8 +325,8 @@ async def test_an_older_capture_does_not_overwrite_newer_liveness_evidence(
     # the timestamp: the sequence is what publication compares, so an untouched
     # sequence is the direct evidence that the older scan did not publish.
     assert await old_task == "NEW"
-    assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
-    assert admin_svc._PS_SNAPSHOT_CACHE.sequence == newer_sequence
+    assert scheduler_liveness._PS_SNAPSHOT_CACHE.value == "NEW"
+    assert scheduler_liveness._PS_SNAPSHOT_CACHE.sequence == newer_sequence
 
 
 async def test_captures_that_start_inside_one_clock_tick_still_publish_in_start_order(
@@ -358,10 +360,10 @@ async def test_captures_that_start_inside_one_clock_tick_still_publish_in_start_
         def __getattr__(self, name: str) -> Any:
             return getattr(time, name)
 
-    monkeypatch.setattr(admin_svc, "time", _FrozenMonotonic())
+    monkeypatch.setattr(scheduler_liveness, "time", _FrozenMonotonic())
     # Both captures below read this clock for their start time, so asserting it
     # here is what makes the tie a fact of the test rather than an assumption.
-    assert admin_svc.time.monotonic() == frozen_reading
+    assert scheduler_liveness.time.monotonic() == frozen_reading
 
     entered_old = threading.Event()
     release_old = threading.Event()
@@ -379,21 +381,21 @@ async def test_captures_that_start_inside_one_clock_tick_still_publish_in_start_
             return "OLD"
         return "NEW"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", capture)
 
-    old_task = asyncio.create_task(admin_svc._capture_ps_snapshot())
+    old_task = asyncio.create_task(scheduler_liveness._capture_ps_snapshot())
     assert await asyncio.to_thread(entered_old.wait, 5), "the first capture never started"
 
-    assert await admin_svc._capture_ps_snapshot() == "NEW"
-    published = admin_svc._PS_SNAPSHOT_CACHE
+    assert await scheduler_liveness._capture_ps_snapshot() == "NEW"
+    published = scheduler_liveness._PS_SNAPSHOT_CACHE
     assert published.value == "NEW"
     # Both captures stamped the same instant, which is the condition under test.
     assert published.stored_at == frozen_reading
 
     release_old.set()
     assert await old_task == "NEW"
-    assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
-    assert admin_svc._PS_SNAPSHOT_CACHE.sequence == published.sequence
+    assert scheduler_liveness._PS_SNAPSHOT_CACHE.value == "NEW"
+    assert scheduler_liveness._PS_SNAPSHOT_CACHE.sequence == published.sequence
 
 
 def test_cross_loop_captures_leave_the_newest_snapshot_cached(
@@ -403,8 +405,6 @@ def test_cross_loop_captures_leave_the_newest_snapshot_cached(
     daemon: a legacy caller running its own loop beside the serving one.
     """
     import threading
-
-    import lionagi.studio.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 
@@ -424,16 +424,16 @@ def test_cross_loop_captures_leave_the_newest_snapshot_cached(
             return "OLD"
         return "NEW"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", capture)
 
     results: dict[str, object] = {}
 
     def slow_loop() -> None:
-        results["slow"] = asyncio.run(admin_svc.cached_ps_snapshot())
+        results["slow"] = asyncio.run(scheduler_liveness.cached_ps_snapshot())
 
     def fast_loop() -> None:
         assert entered_slow.wait(timeout=5), "the slow capture never started"
-        results["fast"] = asyncio.run(admin_svc.cached_ps_snapshot())
+        results["fast"] = asyncio.run(scheduler_liveness.cached_ps_snapshot())
         release_slow.set()
 
     threads = [
@@ -447,7 +447,7 @@ def test_cross_loop_captures_leave_the_newest_snapshot_cached(
         assert not t.is_alive(), "a caller never returned"
 
     assert results["fast"] == "NEW"
-    assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
+    assert scheduler_liveness._PS_SNAPSHOT_CACHE.value == "NEW"
 
 
 def test_a_second_loop_does_not_evict_the_first_loops_singleflight_slot(
@@ -485,25 +485,25 @@ def test_a_second_loop_does_not_evict_the_first_loops_singleflight_slot(
         release.wait(timeout=10)
         return "PID COMMAND\n1 init\n"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", capture)
 
     observed: dict[str, Any] = {}
     errors: list[BaseException] = []
 
     async def first_loop() -> None:
         loop = asyncio.get_running_loop()
-        one = asyncio.create_task(admin_svc.cached_ps_snapshot())
+        one = asyncio.create_task(scheduler_liveness.cached_ps_snapshot())
         assert await asyncio.to_thread(second_registered.wait, 10)
         # The other loop registered after this one. This loop's slot has to
         # still be here; that is what its next caller joins.
-        observed["slot_survived"] = admin_svc._PS_SNAPSHOT_INFLIGHT.get(loop) is not None
-        two = asyncio.create_task(admin_svc.cached_ps_snapshot())
+        observed["slot_survived"] = scheduler_liveness._PS_SNAPSHOT_INFLIGHT.get(loop) is not None
+        two = asyncio.create_task(scheduler_liveness.cached_ps_snapshot())
         observed_by_first.set()
         await asyncio.gather(one, two)
 
     async def second_loop() -> None:
         assert await asyncio.to_thread(first_registered.wait, 10)
-        await admin_svc.cached_ps_snapshot()
+        await scheduler_liveness.cached_ps_snapshot()
 
     def run(coro_factory: Any) -> None:
         try:
@@ -528,7 +528,7 @@ def test_a_second_loop_does_not_evict_the_first_loops_singleflight_slot(
     # Two loops, two scans. A third would mean the first loop's second caller
     # started its own instead of joining.
     assert captures == 2
-    assert admin_svc._PS_SNAPSHOT_INFLIGHT == {}
+    assert scheduler_liveness._PS_SNAPSHOT_INFLIGHT == {}
 
 
 def test_cache_publish_is_mutually_exclusive_across_loops(monkeypatch):
@@ -575,7 +575,7 @@ def test_cache_publish_is_mutually_exclusive_across_loops(monkeypatch):
             self._inner.release()
             return False
 
-    real_cache_cls = admin_svc._PsSnapshotCache
+    real_cache_cls = scheduler_liveness._PsSnapshotCache
     inside = 0
     entries = 0
     observed = {"max_inside": 0}
@@ -598,15 +598,17 @@ def test_cache_publish_is_mutually_exclusive_across_loops(monkeypatch):
             inside -= 1
         return real_cache_cls(*args, **kwargs)
 
-    monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_PUBLISH_LOCK", _GatedLock(threading.Lock()))
-    monkeypatch.setattr(admin_svc, "_PsSnapshotCache", _instrumented)
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", lambda: "PID COMMAND\n1 init\n")
+    monkeypatch.setattr(
+        scheduler_liveness, "_PS_SNAPSHOT_PUBLISH_LOCK", _GatedLock(threading.Lock())
+    )
+    monkeypatch.setattr(scheduler_liveness, "_PsSnapshotCache", _instrumented)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", lambda: "PID COMMAND\n1 init\n")
 
     errors: list[BaseException] = []
 
     def _run() -> None:
         try:
-            asyncio.run(admin_svc._capture_ps_snapshot())
+            asyncio.run(scheduler_liveness._capture_ps_snapshot())
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -640,8 +642,8 @@ async def test_a_scan_slower_than_the_ttl_still_produces_a_cache_that_hits(
 
     _isolate_snapshot_cache(monkeypatch)
 
-    scan_seconds = admin_svc.PS_SNAPSHOT_TTL_SECONDS * 2
-    assert scan_seconds > admin_svc.PS_SNAPSHOT_TTL_SECONDS, (
+    scan_seconds = scheduler_liveness.PS_SNAPSHOT_TTL_SECONDS * 2
+    assert scan_seconds > scheduler_liveness.PS_SNAPSHOT_TTL_SECONDS, (
         "the scan has to outlast the TTL or this test asserts nothing"
     )
     reading = 1000.0
@@ -656,7 +658,7 @@ async def test_a_scan_slower_than_the_ttl_still_produces_a_cache_that_hits(
         def __getattr__(self, name: str) -> Any:
             return getattr(time, name)
 
-    monkeypatch.setattr(admin_svc, "time", _ScanAdvancesTheClock())
+    monkeypatch.setattr(scheduler_liveness, "time", _ScanAdvancesTheClock())
 
     captures = 0
 
@@ -668,13 +670,13 @@ async def test_a_scan_slower_than_the_ttl_still_produces_a_cache_that_hits(
         reading += scan_seconds
         return f"SNAPSHOT-{captures}"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", capture)
 
-    first = await admin_svc.cached_ps_snapshot()
+    first = await scheduler_liveness.cached_ps_snapshot()
     assert first == "SNAPSHOT-1"
     assert captures == 1
 
-    second = await admin_svc.cached_ps_snapshot()
+    second = await scheduler_liveness.cached_ps_snapshot()
     assert second == "SNAPSHOT-1", (
         "the second caller got a fresh scan, so the entry published by the "
         "first was already past its TTL when it landed"
@@ -704,7 +706,7 @@ async def test_the_cache_still_expires_once_the_ttl_actually_elapses(
         def __getattr__(self, name: str) -> Any:
             return getattr(time, name)
 
-    monkeypatch.setattr(admin_svc, "time", _ManualMonotonic())
+    monkeypatch.setattr(scheduler_liveness, "time", _ManualMonotonic())
 
     captures = 0
 
@@ -713,15 +715,15 @@ async def test_the_cache_still_expires_once_the_ttl_actually_elapses(
         captures += 1
         return f"SNAPSHOT-{captures}"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", capture)
 
-    assert await admin_svc.cached_ps_snapshot() == "SNAPSHOT-1"
-    assert await admin_svc.cached_ps_snapshot() == "SNAPSHOT-1"
+    assert await scheduler_liveness.cached_ps_snapshot() == "SNAPSHOT-1"
+    assert await scheduler_liveness.cached_ps_snapshot() == "SNAPSHOT-1"
     assert captures == 1
 
-    reading += admin_svc.PS_SNAPSHOT_TTL_SECONDS + 0.001
+    reading += scheduler_liveness.PS_SNAPSHOT_TTL_SECONDS + 0.001
 
-    assert await admin_svc.cached_ps_snapshot() == "SNAPSHOT-2"
+    assert await scheduler_liveness.cached_ps_snapshot() == "SNAPSHOT-2"
     assert captures == 2
 
 
@@ -741,7 +743,7 @@ async def test_a_page_of_legacy_rows_launches_one_scan_even_when_the_scan_is_slo
     _isolate_snapshot_cache(monkeypatch)
 
     reading = 1000.0
-    scan_seconds = admin_svc.PS_SNAPSHOT_TTL_SECONDS * 3
+    scan_seconds = scheduler_liveness.PS_SNAPSHOT_TTL_SECONDS * 3
 
     class _ScanAdvancesTheClock:
         @staticmethod
@@ -751,7 +753,7 @@ async def test_a_page_of_legacy_rows_launches_one_scan_even_when_the_scan_is_slo
         def __getattr__(self, name: str) -> Any:
             return getattr(time, name)
 
-    monkeypatch.setattr(admin_svc, "time", _ScanAdvancesTheClock())
+    monkeypatch.setattr(scheduler_liveness, "time", _ScanAdvancesTheClock())
 
     scans = 0
 
@@ -761,19 +763,19 @@ async def test_a_page_of_legacy_rows_launches_one_scan_even_when_the_scan_is_slo
         reading += scan_seconds
         return "host-process-table"
 
-    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", capture)
 
     rows = 8
     # No recorded pid, so every row misses the targeted path and falls through
     # to the shared scan — the legacy shape this cache serves.
     for _ in range(rows):
-        await admin_svc.resolve_process_liveness({"id": "legacy-row"}, None)
+        await scheduler_liveness.resolve_process_liveness({"id": "legacy-row"}, None)
 
     assert scans == 1, (
         f"{rows} legacy rows launched {scans} host scans; the cached entry was "
         "expiring on arrival because its age was charged from before the scan"
     )
-    metrics = admin_svc.process_snapshot_diagnostics()
+    metrics = scheduler_liveness.process_snapshot_diagnostics()
     assert metrics["fallback_checks"] == rows, (
         "the rows have to have taken the fallback path, or this counts scans "
         "that were never going to happen"

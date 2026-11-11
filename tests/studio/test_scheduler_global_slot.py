@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import lionhub.orchestration.scheduler.settings as scheduler_settings
 from tests._scheduler_claims import fire_with_claim
 
 
@@ -65,7 +66,7 @@ async def test_reserve_global_slot_allows_under_cap(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 2)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 2)
     engine = SchedulerEngine(svc=_make_svc())
 
     allowed, claim = await engine._reserve_global_slot("test-holder", path="scheduled")
@@ -80,7 +81,7 @@ async def test_reserve_global_slot_refuses_at_cap(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_make_svc())
 
     allowed_a, claim_a = await engine._reserve_global_slot("test-holder", path="scheduled")
@@ -98,7 +99,7 @@ async def test_reserve_global_slot_unlimited_when_cap_zero(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 0)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 0)
     engine = SchedulerEngine(svc=_make_svc())
 
     for _ in range(5):
@@ -114,7 +115,7 @@ async def test_release_global_slot_decrements_and_floors_at_zero(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 3)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 3)
     engine = SchedulerEngine(svc=_make_svc())
 
     _, claim = await engine._reserve_global_slot("test-holder", path="scheduled")
@@ -139,7 +140,7 @@ async def test_maybe_fire_defers_when_no_slot_available(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(next_fire_at=1000.0)
@@ -174,7 +175,7 @@ async def test_maybe_fire_defer_releases_max_runs_claim(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     svc.count_schedule_runs = AsyncMock(return_value=0)
     engine = SchedulerEngine(svc=svc)
@@ -195,7 +196,7 @@ async def test_maybe_fire_fires_when_slot_available(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 4)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule()
 
@@ -216,7 +217,7 @@ async def test_tick_github_polls_on_a_full_cap_and_holds_the_events_it_finds(mon
     from lionagi.studio.scheduler.engine import SchedulerEngine
     from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(
@@ -257,7 +258,7 @@ async def test_tick_github_releases_slot_on_no_events(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(
@@ -284,7 +285,7 @@ async def test_tick_github_releases_slot_when_max_runs_reservation_raises(monkey
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(
@@ -333,7 +334,7 @@ async def test_tick_github_max_runs_refusal_does_not_crash_when_cap_unlimited(mo
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 0)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 0)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(
@@ -386,7 +387,7 @@ async def test_tick_github_fires_and_releases_slot_on_completion(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 4)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(
@@ -435,7 +436,7 @@ async def test_tick_github_polls_without_holding_a_slot(monkeypatch):
     from lionagi.studio.scheduler.engine import SchedulerEngine
     from lionagi.studio.scheduler.github import GithubPollResult
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(
         trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
@@ -458,7 +459,7 @@ async def test_a_slow_github_poll_leaves_the_slot_to_a_due_cron_fire(monkeypatch
     from lionagi.studio.scheduler.engine import SchedulerEngine
     from lionagi.studio.scheduler.github import GithubPollResult
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     poll_schedule = _minimal_schedule(
@@ -501,7 +502,7 @@ async def test_a_github_event_that_finds_the_cap_taken_during_the_poll_stays_ahe
         _cursor_for,
     )
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(
@@ -554,7 +555,7 @@ async def test_fire_now_raises_at_capacity_and_releases_max_runs_claim(monkeypat
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
     svc.get_schedule = AsyncMock(return_value=_minimal_schedule(max_runs=5))
     svc.count_schedule_runs = AsyncMock(return_value=0)
@@ -575,7 +576,7 @@ async def test_fire_now_succeeds_when_slot_available(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 4)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
     svc = _make_svc()
     svc.get_schedule = AsyncMock(return_value=_minimal_schedule())
     engine = SchedulerEngine(svc=svc)
@@ -596,7 +597,7 @@ async def test_fire_releases_global_slot_on_completion(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 4)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule()
@@ -630,7 +631,7 @@ async def test_fire_releases_global_slot_on_exception(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 4)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule()
@@ -699,7 +700,7 @@ async def test_worker_pass_reserves_adhoc_slot_and_counts_against_adhoc_cap(monk
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(studio_config, "MAX_ADHOC_CONCURRENT", 4)
+    monkeypatch.setattr(scheduler_settings, "MAX_ADHOC_CONCURRENT", 4)
 
     async with StateDB(fake_db) as db:
         run_id = await submit_task(
@@ -769,8 +770,8 @@ async def test_adhoc_lane_admits_under_continuously_saturated_scheduled_cap(monk
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
-    monkeypatch.setattr(studio_config, "MAX_ADHOC_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_ADHOC_CONCURRENT", 1)
 
     async with StateDB(fake_db) as db:
         run_id = await submit_task(

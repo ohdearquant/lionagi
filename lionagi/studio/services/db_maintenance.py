@@ -22,7 +22,7 @@ from lionagi.state.db import (
 )
 from lionagi.studio.services.retention_archive import archive_chunk_id, write_archive_chunk
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.services.db_maintenance")
 
 _SQL_IN_CHUNK = 500  # placeholder bound for a single IN-list statement; not a transaction boundary
 
@@ -253,7 +253,7 @@ async def get_last_prune_at() -> float | None:
 
 def get_db_size_alert(size_bytes: int) -> tuple[bool, int]:
     """Return ``(size_alert, threshold_bytes)`` given the current DB size."""
-    from lionagi.studio.config import DB_SIZE_ALERT_BYTES
+    from lionhub.orchestration.scheduler.settings import DB_SIZE_ALERT_BYTES
 
     threshold = DB_SIZE_ALERT_BYTES
     return size_bytes >= threshold, threshold
@@ -698,7 +698,7 @@ async def prune_terminal_sessions_by_id(session_ids: Sequence[str]) -> int:
     administrator names them explicitly, and unrelated orphan rows elsewhere
     in the database are never swept as a side effect.
     """
-    from lionagi.studio.config import PRUNE_ARCHIVE_DIR, PRUNE_CHUNK_ROWS
+    from lionhub.orchestration.scheduler.settings import PRUNE_ARCHIVE_DIR, PRUNE_CHUNK_ROWS
 
     ids = sorted(set(session_ids))
     if not ids or state_db_known_absent():
@@ -752,7 +752,7 @@ async def prune_old_data(
     ``PRUNE_CHUNK_ROWS`` ids at a time rather than every id an aged backlog
     made eligible. Total work still scales with that backlog; what is bounded
     is the memory a pass occupies and the length of any one lock it takes."""
-    from lionagi.studio.config import (
+    from lionhub.orchestration.scheduler.settings import (
         DISPATCH_RETENTION_DEAD_LETTER_DAYS,
         DISPATCH_RETENTION_SUCCESS_DAYS,
         PRUNE_ARCHIVE_DIR,

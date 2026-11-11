@@ -422,6 +422,34 @@ def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_
         assert namespace[name] is getattr(module, name), name
 
 
+@pytest.mark.parametrize(
+    ("old_module", "name", "owner"),
+    [
+        (
+            "lionagi.studio.services.admin",
+            "_PS_SNAPSHOT_CACHE",
+            "lionhub.orchestration.scheduler.liveness",
+        ),
+        (
+            "lionagi.studio.services.admin",
+            "_PS_SNAPSHOT_METRICS",
+            "lionhub.orchestration.scheduler.liveness",
+        ),
+        (
+            "lionagi.studio.services.admin",
+            "_PS_SNAPSHOT_SEQUENCE",
+            "lionhub.orchestration.scheduler.liveness",
+        ),
+    ],
+)
+def test_runtime_reassigned_state_is_only_bound_on_its_owner(old_module, name, owner):
+    old = importlib.import_module(old_module)
+    canonical = importlib.import_module(owner)
+    with pytest.raises(AttributeError):
+        getattr(old, name)
+    assert hasattr(canonical, name)
+
+
 def test_a_moved_module_keeps_the_logger_name_it_had():
     module = importlib.import_module("lionagi.service.accounts._secret_resolution")
     assert module.logger.name == "lionagi.providers._secret_resolution"

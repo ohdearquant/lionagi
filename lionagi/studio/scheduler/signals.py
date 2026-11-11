@@ -33,7 +33,7 @@ __all__ = (
     "record_handler_failure",
 )
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.scheduler.signals")
 
 Handler = Callable[[Signal], Any]
 Predicate = Callable[[Signal], bool]

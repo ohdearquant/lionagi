@@ -24,7 +24,7 @@ from lionhub.orchestration.schedule.validation import (
     merged_page_limit,
 )
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.scheduler.github")
 
 _CURSOR_SEP = "#"
 _CURSOR_NUMBER_WIDTH = 10

@@ -537,7 +537,7 @@ def test_reap_null_status_sessions_dead_process(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
@@ -571,7 +571,7 @@ def test_reap_null_status_sessions_populates_duration_ms(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
@@ -592,7 +592,7 @@ def test_reap_null_status_sessions_skips_live_process(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: True)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
@@ -613,7 +613,7 @@ def test_reap_null_status_sessions_skips_terminal(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
@@ -767,7 +767,7 @@ def test_reap_null_status_sessions_lost_cas_does_not_stamp_ended_at(tmp_path, mo
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
     async def _lost_race(*_a, **_k):
         return False
@@ -806,7 +806,7 @@ def test_reap_null_status_sessions_write_is_atomic_with_ended_at(tmp_path, monke
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
     async def _seed_phase() -> None:
         async with StateDB(db_path) as db:
@@ -1389,7 +1389,7 @@ def test_phantom_reaper_writes_the_health_reason_code(
     async def _phantoms(**_kw):
         return [{"session_id": sid, "reason": phantom_reason}]
 
-    monkeypatch.setattr(lifecycle.admin_svc, "list_phantom_sessions", _phantoms)
+    monkeypatch.setattr(lifecycle._liveness, "list_phantom_sessions", _phantoms)
 
     assert run_async(lifecycle.reap_phantom_sessions(stale_hours=1.0)) == 1
 

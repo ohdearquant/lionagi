@@ -14,6 +14,12 @@ from lionagi.libs.path_safety import safe_join
 from lionagi.ln import coerce_created_at
 from lionagi.ln.concurrency import sleep
 from lionagi.state.session_naming import resolve_display_name
+from lionhub.orchestration.scheduler.settings import SHOWS_ROOT
+from lionhub.orchestration.scheduler.show_artifacts import (
+    _SHOW_TERMINAL_STATUSES,  # noqa: F401 -- preserve the compatibility import
+    _play_dirs,  # noqa: F401 -- preserve the compatibility import
+)
+from lionhub.orchestration.scheduler.show_artifacts import read_json_file as _read_json
 from lionhub.orchestration.state_store import (
     StoreNotAddressableError,
     require_file_store,
@@ -23,9 +29,7 @@ from lionhub.orchestration.state_store import (
 )
 from lionhub.orchestration.state_store import open_db as _open_db
 
-from ..config import SHOWS_ROOT
 from ..registry import studio_route
-from ._io import read_json_file as _read_json
 from ._io import read_json_file_checked as _read_json_checked
 from ._path_safety import public_path, safe_path_join
 from ._sse import sse_response
@@ -38,13 +42,6 @@ def _read_text(path: Path) -> str | None:
         return path.read_text()
     except OSError:
         return None
-
-
-def _play_dirs(show_dir: Path) -> list[Path]:
-    try:
-        return [p for p in sorted(show_dir.iterdir()) if p.is_dir()]
-    except OSError:
-        return []
 
 
 def _live_play_meta(
@@ -729,7 +726,6 @@ async def import_shows() -> dict[str, int]:
     return {"shows_imported": shows_count, "plays_imported": plays_count}
 
 
-_SHOW_TERMINAL_STATUSES = frozenset({"completed", "aborted"})
 _SHOW_DONE_STABLE_SECS = 60.0
 
 

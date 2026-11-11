@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import pytest_asyncio
 
+import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import NO_CURSOR_CLAIM
 from lionagi.studio.services.schedules import _run_trigger_facts
 from tests._scheduler_claims import claim_holds, fire_with_claim, persisting_update_schedule
@@ -3863,7 +3864,7 @@ async def test_fire_deadline_records_one_timed_out_terminal_and_releases_slot(
     from lionagi.studio.scheduler import subprocess as subprocess_mod
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _DbSvc(state_db)
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule()
@@ -4920,7 +4921,7 @@ async def test_a_github_pass_is_timed_through_its_fire_except_while_the_process_
             return getattr(time, name)
 
     monkeypatch.setattr(engine_mod, "time", FakeClock())
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 10)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 10)
     engine = engine_mod.SchedulerEngine(svc=_make_svc())
     engine._task = asyncio.current_task()
     engine._started_at = clock[0] - 10
@@ -5055,7 +5056,7 @@ async def test_a_github_pass_is_timed_through_the_dispatched_stamp_of_the_real_l
             return getattr(time, name)
 
     monkeypatch.setattr(engine_mod, "time", FakeClock())
-    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 10)
+    monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 10)
     monkeypatch.setattr(sched_subprocess, "asyncio", AsyncioInLaunch())
     monkeypatch.setattr(sched_subprocess, "observe_process_group_leader", lambda *a, **k: None)
     monkeypatch.setattr(sched_subprocess, "resolve_li_executable", lambda: (["/usr/bin/li"], None))

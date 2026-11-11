@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+import lionhub.orchestration.scheduler.settings as scheduler_settings
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -215,7 +217,7 @@ def test_doctor_and_stats_agree_on_the_size_alert(tmp_path, monkeypatch):
 
     db_path = tmp_path / "state.db"
     _run(_seed_two_sessions(db_path))
-    monkeypatch.setattr(studio_config, "DB_SIZE_ALERT_BYTES", 1)
+    monkeypatch.setattr(scheduler_settings, "DB_SIZE_ALERT_BYTES", 1)
     client = _make_client(tmp_path, monkeypatch, db_path)
 
     stats_db = client.get("/api/stats").json()["db"]
@@ -240,7 +242,7 @@ def test_doctor_size_alert_is_false_below_the_threshold(tmp_path, monkeypatch):
 
     db_path = tmp_path / "state.db"
     _run(_seed_two_sessions(db_path))
-    monkeypatch.setattr(studio_config, "DB_SIZE_ALERT_BYTES", 10**12)
+    monkeypatch.setattr(scheduler_settings, "DB_SIZE_ALERT_BYTES", 10**12)
     client = _make_client(tmp_path, monkeypatch, db_path)
 
     stats_db = client.get("/api/stats").json()["db"]

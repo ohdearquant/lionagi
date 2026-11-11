@@ -120,6 +120,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/app.py:349-364@8c119ecc",
         "lionagi/studio/app.py:349-364@b4a3bebf",
         "lionagi/studio/cli.py:1203-1226@b4a3bebf",
+        "lionagi/studio/services/lifecycle.py:15@b4a3bebf",
         "lionagi/studio/services/schedule_declaration.py:482@8c119ecc",
         "lionagi/studio/services/schedule_declaration.py:482@b4a3bebf",
         "lionagi/studio/services/schedule_declaration.py:534@b4a3bebf",

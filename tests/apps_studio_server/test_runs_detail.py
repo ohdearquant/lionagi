@@ -475,7 +475,7 @@ async def test_get_run_zombie_recorded_pid_reports_stale(patched_runs_svc, monke
     healthy just because it's inside the (nonexistent) zombie grace window —
     the shared liveness oracle is the single source of truth here."""
     svc, db_path = patched_runs_svc
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.orchestration.scheduler.liveness as admin_mod
 
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()

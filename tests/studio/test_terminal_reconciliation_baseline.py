@@ -11,6 +11,7 @@ import pytest
 
 import lionagi.state.db as state_db_mod
 import lionagi.studio.config as studio_config
+import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import StateDB
 from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
 from lionagi.state.lifecycle.deliveries import is_acknowledged
@@ -49,8 +50,8 @@ async def test_first_pass_baselines_history_and_later_rows_drain_by_budget(
         "settings",
         state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": f"sqlite:///{store}"}),
     )
-    monkeypatch.setattr(studio_config, "TERMINAL_RECONCILE_ENABLED", True)
-    monkeypatch.setattr(studio_config, "TERMINAL_RECONCILE_BUDGET_SECONDS", budget)
+    monkeypatch.setattr(scheduler_settings, "TERMINAL_RECONCILE_ENABLED", True)
+    monkeypatch.setattr(scheduler_settings, "TERMINAL_RECONCILE_BUDGET_SECONDS", budget)
     monkeypatch.setattr(terminal, "_reconciler", None)
     monkeypatch.setattr(terminal, "_reconciler_url", None)
 
@@ -76,7 +77,7 @@ async def test_first_pass_baselines_history_and_later_rows_drain_by_budget(
 @pytest.mark.asyncio
 async def test_replay_is_off_by_default_and_the_push_still_runs(tmp_path, monkeypatch):
     assert os.environ.get("LIONAGI_STUDIO_TERMINAL_RECONCILE") is None
-    assert studio_config.TERMINAL_RECONCILE_ENABLED is False
+    assert scheduler_settings.TERMINAL_RECONCILE_ENABLED is False
     store = tmp_path / "state.db"
     monkeypatch.setattr(
         state_db_mod,

@@ -12,8 +12,7 @@ from unittest.mock import AsyncMock
 import psutil
 import pytest
 
-pytest.importorskip("fastapi", reason="studio extra not installed")
-from lionagi.studio.services.admin import process_liveness  # noqa: E402
+from lionhub.orchestration.scheduler.liveness import process_liveness
 
 
 def _dead_pid() -> int:
@@ -94,7 +93,7 @@ def test_unparseable_metadata_falls_through_to_unknown(meta):
 def test_node_metadata_pid_with_matching_create_time_but_zombie_status_is_dead(monkeypatch):
     """A zombie pid still resolves to _pid_is_live()==True (it exists in the
     process table, unreaped) but is not a live worker; it must read dead."""
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.orchestration.scheduler.liveness as admin_mod
 
     ct = 42.0
     pid = os.getpid()
@@ -117,9 +116,9 @@ def test_node_metadata_pid_with_matching_create_time_but_zombie_status_is_dead(m
 
 
 async def test_identity_complete_runs_page_does_not_capture_process_table(monkeypatch):
-    import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.run_tags as run_tags_mod
     import lionagi.studio.services.runs as runs_mod
+    import lionhub.orchestration.scheduler.liveness as admin_mod
 
     created = psutil.Process(os.getpid()).create_time()
     sessions = [
@@ -144,9 +143,9 @@ async def test_identity_complete_runs_page_does_not_capture_process_table(monkey
 
 
 async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(monkeypatch):
-    import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.run_tags as run_tags_mod
     import lionagi.studio.services.runs as runs_mod
+    import lionhub.orchestration.scheduler.liveness as admin_mod
 
     sessions = [
         {
@@ -169,7 +168,7 @@ async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(mon
 
 
 def test_process_identity_from_another_host_is_unknown(monkeypatch):
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.orchestration.scheduler.liveness as admin_mod
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "current-host")
     session = {
@@ -207,7 +206,7 @@ def test_an_unreadable_identity_mode_is_unknown_not_local():
 
 def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
     """Clock jitter must not read as a reboot on the liveness path either — boot time is re-derived from the clock each read, so it needs its own, looser tolerance than process create time."""
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.orchestration.scheduler.liveness as admin_mod
     from lionhub.orchestration.job import BOOT_TIME_TOLERANCE
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
@@ -229,7 +228,7 @@ def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
 
 def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
     """The control for the tolerance: a real reboot still reads as dead — without it, an absurdly wide tolerance would pass the test above unnoticed."""
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.orchestration.scheduler.liveness as admin_mod
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
     session = {
@@ -247,7 +246,7 @@ def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
 
 def test_a_boot_time_that_cannot_be_read_does_not_make_a_live_process_unknown(monkeypatch):
     """A failed boot-time read leaves one check unevaluated, not an answer — reporting unknown here would let reapers eventually kill every live session on a machine where this read fails."""
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.orchestration.scheduler.liveness as admin_mod
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
 
@@ -273,7 +272,7 @@ def test_a_boot_time_that_cannot_be_read_does_not_make_a_live_process_unknown(mo
 
 def test_a_failed_boot_time_read_still_reports_a_dead_pid_as_dead(monkeypatch):
     """The control: falling through to the pid checks means they still decide — without this, returning True unconditionally on a read failure would report every dead session as alive."""
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.orchestration.scheduler.liveness as admin_mod
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
 
