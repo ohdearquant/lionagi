@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -157,7 +158,7 @@ async def test_turn_timeout_enters_fix_loop(tmp_path, monkeypatch):
     result = await eng._run(
         run,
         "do something",
-        test_cmd=["python", "-c", "exit(0)"],
+        test_cmd=[sys.executable, "-c", "exit(0)"],
         workspace=str(tmp_path),
     )
     assert result.passed is True
