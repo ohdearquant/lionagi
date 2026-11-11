@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+import lionhub.orchestration.scheduler.liveness as scheduler_liveness
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -245,7 +247,7 @@ def test_fresh_running_session_missing_artifacts_not_reaped(tmp_path):
     missing = str(tmp_path / "not_yet_written")
     row = {"id": str(uuid.uuid4()), "updated_at": now, "artifacts_path": missing}
 
-    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
+    reason = scheduler_liveness._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
     assert reason is None
 
 
@@ -257,7 +259,7 @@ def test_stale_dead_session_missing_artifacts_still_reaped(tmp_path):
     missing = str(tmp_path / "ghost")
     row = {"id": str(uuid.uuid4()), "updated_at": now - 7200, "artifacts_path": missing}
 
-    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
+    reason = scheduler_liveness._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
     assert reason == "missing_artifacts"
 
 
@@ -271,7 +273,7 @@ def test_alive_session_never_reaped(tmp_path):
     row = {"id": sid, "updated_at": now - 7200, "artifacts_path": missing}
 
     # session_id present in the ps snapshot signals a live process match.
-    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot=sid)
+    reason = scheduler_liveness._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot=sid)
     assert reason is None
 
 
@@ -288,7 +290,7 @@ def test_stale_session_live_recorded_pid_not_reaped(tmp_path):
         "node_metadata": {"pid": os.getpid()},
     }
 
-    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
+    reason = scheduler_liveness._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
     assert reason is None
 
 
@@ -316,7 +318,8 @@ def test_stale_lock_gated_on_staleness(tmp_path):
         "artifacts_path": str(artifacts_dir),
     }
     assert (
-        admin_svc._classify_phantom(fresh_row, now=now, stale_seconds=3600, ps_snapshot="") is None
+        scheduler_liveness._classify_phantom(fresh_row, now=now, stale_seconds=3600, ps_snapshot="")
+        is None
     )
 
     stale_row = {
@@ -325,7 +328,7 @@ def test_stale_lock_gated_on_staleness(tmp_path):
         "artifacts_path": str(artifacts_dir),
     }
     assert (
-        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        scheduler_liveness._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
         == "stale_lock"
     )
 
@@ -362,7 +365,7 @@ def test_dependency_lockfile_is_not_evidence_of_a_dead_process(tmp_path):
         "artifacts_path": str(artifacts_dir),
     }
     assert (
-        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        scheduler_liveness._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
         != "stale_lock"
     )
 
@@ -388,7 +391,7 @@ def test_dependency_lockfile_does_not_mask_a_real_runtime_lock(tmp_path):
         "artifacts_path": str(artifacts_dir),
     }
     assert (
-        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        scheduler_liveness._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
         == "stale_lock"
     )
 
@@ -414,7 +417,7 @@ def test_finalize_lock_is_also_runtime_evidence(tmp_path):
         "artifacts_path": str(artifacts_dir),
     }
     assert (
-        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        scheduler_liveness._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
         == "stale_lock"
     )
 
@@ -437,7 +440,7 @@ def test_stale_session_empty_but_existing_artifact_root_not_missing_artifacts(tm
         "artifacts_path": str(artifacts_dir),
     }
 
-    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
+    reason = scheduler_liveness._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
     assert reason != "missing_artifacts"
     assert reason == "process_dead"
 
@@ -482,7 +485,7 @@ def test_admin_health_running_bucket_excludes_confirmed_dead_running_session(tmp
 
     import lionagi.studio.services.admin as admin_mod
 
-    monkeypatch.setattr(admin_mod, "process_liveness", lambda *a, **k: False)
+    monkeypatch.setattr(scheduler_liveness, "process_liveness", lambda *a, **k: False)
 
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.get("/api/admin/health")
@@ -596,7 +599,7 @@ def test_admin_transition_rejects_healthy_session(tmp_path, monkeypatch):
 
     # Simulate a live process so the classifier returns HEALTHY
     # (idle_seconds ≈ 0, process alive → HEALTHY).
-    monkeypatch.setattr(admin_mod, "process_liveness", lambda *a, **k: True)
+    monkeypatch.setattr(scheduler_liveness, "process_liveness", lambda *a, **k: True)
 
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.post(
@@ -623,7 +626,7 @@ def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypat
     _run(_seed_running_session(db_path, sid))
 
     # Simulate a live process so health is driven by activity threshold.
-    monkeypatch.setattr(admin_mod, "process_liveness", lambda *a, **k: True)
+    monkeypatch.setattr(scheduler_liveness, "process_liveness", lambda *a, **k: True)
 
     # Set last_message_at to ~2h ago and kind=agent (threshold=6h).
     # idle_seconds=2h > IDLE_THRESHOLD(1h) but < 6h → IDLE → refused.
@@ -680,7 +683,7 @@ def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
     import lionagi.studio.services.admin as admin_svc
     from lionagi.state.health import SessionHealth
 
-    monkeypatch.setattr(admin_svc, "_classify_phantom", lambda *a, **kw: None)
+    monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *a, **kw: None)
     # Patch the source module — admin.transition_sessions() lazy-imports
     # classify_session_health, so patching admin_svc directly does not work.
     monkeypatch.setattr(health_mod, "classify_session_health", lambda *a, **kw: SessionHealth.IDLE)
@@ -773,7 +776,7 @@ def test_admin_transition_phantom_classifier_override(
     import lionagi.studio.services.admin as admin_svc
     from lionagi.state.health import SessionHealth
 
-    monkeypatch.setattr(admin_svc, "_classify_phantom", lambda *a, **kw: phantom_reason)
+    monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *a, **kw: phantom_reason)
     # Force a non-HEALTHY/IDLE so the admin transition gate passes.
     monkeypatch.setattr(health_mod, "classify_session_health", lambda *a, **kw: SessionHealth.STALE)
     client = _make_client(tmp_path, monkeypatch, db_path)
@@ -838,7 +841,7 @@ def test_admin_transition_legacy_reason_backwards_compat(tmp_path, monkeypatch):
     import lionagi.studio.services.admin as admin_svc
     from lionagi.state.health import SessionHealth
 
-    monkeypatch.setattr(admin_svc, "_classify_phantom", lambda *a, **kw: None)
+    monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *a, **kw: None)
     monkeypatch.setattr(health_mod, "classify_session_health", lambda *a, **kw: SessionHealth.STALE)
     client = _make_client(tmp_path, monkeypatch, db_path)
 
@@ -908,7 +911,7 @@ def test_admin_health_names_a_session_the_way_every_other_surface_does(tmp_path,
 
     # No artifacts and no messages classify this ORPHANED, which is what puts
     # it in the `unhealthy` list this test reads.
-    monkeypatch.setattr(admin_mod, "process_liveness", lambda *a, **k: False)
+    monkeypatch.setattr(scheduler_liveness, "process_liveness", lambda *a, **k: False)
 
     client = _make_client(tmp_path, monkeypatch, db_path)
     body = client.get("/api/admin/health").json()
@@ -960,7 +963,7 @@ def test_admin_health_prefers_the_play_name_like_the_session_list_does(tmp_path,
 
     import lionagi.studio.services.admin as admin_mod
 
-    monkeypatch.setattr(admin_mod, "process_liveness", lambda *a, **k: False)
+    monkeypatch.setattr(scheduler_liveness, "process_liveness", lambda *a, **k: False)
 
     client = _make_client(tmp_path, monkeypatch, db_path)
     rows = client.get("/api/admin/health").json()["sessions"]["unhealthy"]
@@ -1001,14 +1004,14 @@ def test_a_lock_inside_a_dependency_tree_is_not_searched(tmp_path):
     _aged(buried / "job.lock", 7200)
 
     now = time.time()
-    assert admin_svc._find_stale_lock(tmp_path / "repo", cutoff=now - 3600).lock is None, (
+    assert scheduler_liveness._find_stale_lock(tmp_path / "repo", cutoff=now - 3600).lock is None, (
         "a lock inside node_modules was searched; the subtree should be skipped"
     )
 
     reachable = tmp_path / "repo" / "run-1"
     reachable.mkdir()
     _aged(reachable / "job.lock", 7200)
-    found = admin_svc._find_stale_lock(tmp_path / "repo", cutoff=now - 3600)
+    found = scheduler_liveness._find_stale_lock(tmp_path / "repo", cutoff=now - 3600)
     assert found.lock is not None and found.lock.name == "job.lock", (
         "the skip list swallowed a lock outside any skipped directory"
     )
@@ -1034,19 +1037,19 @@ def test_one_scan_answers_once_per_artifact_root(tmp_path):
     now = time.time()
     cutoff = now - 3600
 
-    cache: dict[tuple[str, float], admin_svc._ScanResult] = {}
-    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache=cache).lock is None
+    cache: dict[tuple[str, float], scheduler_liveness._ScanResult] = {}
+    assert scheduler_liveness._find_stale_lock(root, cutoff=cutoff, cache=cache).lock is None
     assert len(cache) == 1, "the answer was not recorded, so the next call re-walks"
 
     _aged(root / "run-1" / "job.lock", 7200)
 
-    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache=cache).lock is None, (
+    assert scheduler_liveness._find_stale_lock(root, cutoff=cutoff, cache=cache).lock is None, (
         "the cache was not consulted: the tree was walked a second time"
     )
-    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache={}).lock is not None, (
+    assert scheduler_liveness._find_stale_lock(root, cutoff=cutoff, cache={}).lock is not None, (
         "a fresh cache must see the lock, or the first assertion proves nothing"
     )
-    assert admin_svc._find_stale_lock(root, cutoff=cutoff).lock is not None, (
+    assert scheduler_liveness._find_stale_lock(root, cutoff=cutoff).lock is not None, (
         "omitting the cache must always walk"
     )
 
@@ -1167,9 +1170,9 @@ def test_a_lock_scan_walks_off_the_loop_that_serves_every_other_request(
         start = time.perf_counter()
         time.sleep(_BLOCK_SECONDS)
         walks.append((start, time.perf_counter()))
-        return admin_svc._ScanResult(None, False)
+        return scheduler_liveness._ScanResult(None, False)
 
-    monkeypatch.setattr(admin_svc, "_walk_for_stale_lock", slow_walk)
+    monkeypatch.setattr(scheduler_liveness, "_walk_for_stale_lock", slow_walk)
 
     if endpoint == "transition_sessions":
         subject = admin_svc.transition_sessions(
@@ -1271,15 +1274,17 @@ def test_a_scan_that_runs_out_of_time_says_so_instead_of_reporting_clean(tmp_pat
 
     # Check the budget on every directory, so the outcome does not depend on the
     # order the filesystem happens to hand back.
-    monkeypatch.setattr(admin_svc, "_BUDGET_CHECK_INTERVAL", 1)
+    monkeypatch.setattr(scheduler_liveness, "_BUDGET_CHECK_INTERVAL", 1)
 
-    spent = admin_svc._ScanBudget(seconds=-1.0)
-    cut = admin_svc._walk_for_stale_lock(root, cutoff=cutoff, budget=spent)
-    assert cut == admin_svc._ScanResult(None, True)
+    spent = scheduler_liveness._ScanBudget(seconds=-1.0)
+    cut = scheduler_liveness._walk_for_stale_lock(root, cutoff=cutoff, budget=spent)
+    assert cut == scheduler_liveness._ScanResult(None, True)
 
     # Control: the lock is there to be found, so the result above is about the
     # budget rather than about an empty tree.
-    whole = admin_svc._walk_for_stale_lock(root, cutoff=cutoff, budget=admin_svc._ScanBudget())
+    whole = scheduler_liveness._walk_for_stale_lock(
+        root, cutoff=cutoff, budget=scheduler_liveness._ScanBudget()
+    )
     assert whole.lock is not None and whole.truncated is False
 
 
@@ -1313,8 +1318,8 @@ def test_health_counts_the_rows_whose_lock_scan_did_not_finish(tmp_path, monkeyp
             )
         )
 
-    monkeypatch.setattr(admin_svc, "_SCAN_BUDGET_SECONDS", -1.0)
-    monkeypatch.setattr(admin_svc, "_BUDGET_CHECK_INTERVAL", 1)
+    monkeypatch.setattr(scheduler_liveness, "_SCAN_BUDGET_SECONDS", -1.0)
+    monkeypatch.setattr(scheduler_liveness, "_BUDGET_CHECK_INTERVAL", 1)
 
     client = _make_client(tmp_path, monkeypatch, db_path)
     body = client.get("/api/admin/health").json()
@@ -1351,7 +1356,7 @@ def test_a_finalize_lock_beside_the_artifact_root_reaches_the_classifier(tmp_pat
         "artifacts_path": str(artifacts_dir),
     }
     assert (
-        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        scheduler_liveness._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
         == "stale_lock"
     )
 
@@ -1413,7 +1418,7 @@ def test_a_job_lock_under_the_job_directory_reaches_the_classifier(tmp_path, mon
         "artifacts_path": str(artifacts_dir),
     }
     assert (
-        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        scheduler_liveness._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
         == "stale_lock"
     )
 
@@ -1430,13 +1435,13 @@ def test_a_spent_budget_reads_as_unfinished_before_the_locks_beside_the_root(tmp
     _aged(run_dir / "finalize.lock", 7200)
     cutoff = time.time() - 3600
 
-    spent = admin_svc._find_stale_lock(
-        artifacts_dir, cutoff=cutoff, budget=admin_svc._ScanBudget(seconds=-1.0)
+    spent = scheduler_liveness._find_stale_lock(
+        artifacts_dir, cutoff=cutoff, budget=scheduler_liveness._ScanBudget(seconds=-1.0)
     )
-    assert spent == admin_svc._ScanResult(None, True)
+    assert spent == scheduler_liveness._ScanResult(None, True)
     # The same layout with budget left finds the lock, so the refusal above is
     # the budget's doing.
-    found = admin_svc._find_stale_lock(
-        artifacts_dir, cutoff=cutoff, budget=admin_svc._ScanBudget(seconds=60.0)
+    found = scheduler_liveness._find_stale_lock(
+        artifacts_dir, cutoff=cutoff, budget=scheduler_liveness._ScanBudget(seconds=60.0)
     )
-    assert found == admin_svc._ScanResult(run_dir / "finalize.lock", False)
+    assert found == scheduler_liveness._ScanResult(run_dir / "finalize.lock", False)

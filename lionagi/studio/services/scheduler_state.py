@@ -25,7 +25,7 @@ from lionagi.state.lifecycle import ReasonRecord, ScheduleAuditContext
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler import coordination as _coordination
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.services.scheduler_state")
 
 
 class SchedulerStateService(Protocol):

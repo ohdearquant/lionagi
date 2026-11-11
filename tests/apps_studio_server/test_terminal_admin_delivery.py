@@ -8,6 +8,8 @@ import uuid
 
 import pytest
 
+import lionhub.orchestration.scheduler.liveness as scheduler_liveness
+
 pytest.importorskip("fastapi")
 
 from lionagi.state.db import StateDB
@@ -30,7 +32,7 @@ def test_admin_committed_transition_is_pushed_and_replayable(tmp_path, monkeypat
     monkeypatch.setattr(
         health_mod, "classify_session_health", lambda *_a, **_k: SessionHealth.STALE
     )
-    monkeypatch.setattr(admin, "_classify_phantom", lambda *_a, **_k: None)
+    monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *_a, **_k: None)
 
     async def register():
         async with StateDB(db_path) as db:

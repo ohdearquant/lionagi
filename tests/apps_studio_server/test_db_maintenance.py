@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import lionagi.state.db as state_db_mod
+import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import StateDB
 from lionagi.studio.services.retention_archive import ArchiveWriteError
 
@@ -218,20 +219,20 @@ def test_wal_size_is_read_from_the_sidecar_that_is_there(tmp_path, monkeypatch):
 
 
 def test_size_alert_below_threshold(monkeypatch):
-    import lionagi.studio.config as cfg
+    import lionhub.orchestration.scheduler.settings as cfg
     from lionagi.studio.services import db_maintenance as maint
 
-    monkeypatch.setattr(cfg, "DB_SIZE_ALERT_BYTES", 100 * 1024 * 1024)
+    monkeypatch.setattr(scheduler_settings, "DB_SIZE_ALERT_BYTES", 100 * 1024 * 1024)
     alert, threshold = maint.get_db_size_alert(50 * 1024 * 1024)
     assert alert is False
     assert threshold == 100 * 1024 * 1024
 
 
 def test_size_alert_at_threshold(monkeypatch):
-    import lionagi.studio.config as cfg
+    import lionhub.orchestration.scheduler.settings as cfg
     from lionagi.studio.services import db_maintenance as maint
 
-    monkeypatch.setattr(cfg, "DB_SIZE_ALERT_BYTES", 100 * 1024 * 1024)
+    monkeypatch.setattr(scheduler_settings, "DB_SIZE_ALERT_BYTES", 100 * 1024 * 1024)
     alert, threshold = maint.get_db_size_alert(100 * 1024 * 1024)
     assert alert is True
     assert threshold == 100 * 1024 * 1024
@@ -239,13 +240,13 @@ def test_size_alert_at_threshold(monkeypatch):
 
 def test_the_size_threshold_tracks_the_retention_window():
     """Doubling the retention window doubles the size the store may reach, so the two cannot disagree."""
-    import lionagi.studio.config as cfg
+    import lionhub.orchestration.scheduler.settings as cfg
 
-    thirty = cfg._derive_db_size_alert_bytes(30)
-    sixty = cfg._derive_db_size_alert_bytes(60)
+    thirty = scheduler_settings._derive_db_size_alert_bytes(30)
+    sixty = scheduler_settings._derive_db_size_alert_bytes(60)
 
     assert sixty == 2 * thirty
-    assert thirty > cfg._DB_SIZE_ALERT_FLOOR_BYTES
+    assert thirty > scheduler_settings._DB_SIZE_ALERT_FLOOR_BYTES
 
 
 def test_the_configured_threshold_is_the_one_derived_from_the_configured_window(
@@ -254,22 +255,28 @@ def test_the_configured_threshold_is_the_one_derived_from_the_configured_window(
     """The module constant is the derivation, not a value that merely resembles it."""
     import os
 
-    import lionagi.studio.config as cfg
+    import lionhub.orchestration.scheduler.settings as cfg
 
     if os.environ.get("LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES"):
         pytest.skip("explicit threshold override in env; derivation deliberately bypassed")
 
-    assert cfg.DB_SIZE_ALERT_BYTES == cfg._derive_db_size_alert_bytes(cfg.PRUNE_KEEP_DAYS)
+    assert scheduler_settings.DB_SIZE_ALERT_BYTES == scheduler_settings._derive_db_size_alert_bytes(
+        scheduler_settings.PRUNE_KEEP_DAYS
+    )
 
 
 def test_a_store_within_its_retention_steady_state_does_not_alert(monkeypatch):
     """A store sitting at the steady state its own policy produces must stay quiet."""
-    import lionagi.studio.config as cfg
+    import lionhub.orchestration.scheduler.settings as cfg
     from lionagi.studio.services import db_maintenance as maint
 
     keep_days = 30
-    steady_state = keep_days * cfg._DB_BYTES_PER_RETAINED_DAY
-    monkeypatch.setattr(cfg, "DB_SIZE_ALERT_BYTES", cfg._derive_db_size_alert_bytes(keep_days))
+    steady_state = keep_days * scheduler_settings._DB_BYTES_PER_RETAINED_DAY
+    monkeypatch.setattr(
+        scheduler_settings,
+        "DB_SIZE_ALERT_BYTES",
+        scheduler_settings._derive_db_size_alert_bytes(keep_days),
+    )
 
     at_steady_state, _ = maint.get_db_size_alert(steady_state)
     assert at_steady_state is False
@@ -285,29 +292,32 @@ def test_a_store_within_its_retention_steady_state_does_not_alert(monkeypatch):
 
 def test_a_zero_retention_window_cannot_derive_a_threshold_that_alerts_always():
     """Without the floor a keep window of 0 derives a threshold of 0 and alerts unconditionally."""
-    import lionagi.studio.config as cfg
+    import lionhub.orchestration.scheduler.settings as cfg
 
-    assert cfg._derive_db_size_alert_bytes(0) == cfg._DB_SIZE_ALERT_FLOOR_BYTES
-    assert cfg._derive_db_size_alert_bytes(0) > 0
+    assert (
+        scheduler_settings._derive_db_size_alert_bytes(0)
+        == scheduler_settings._DB_SIZE_ALERT_FLOOR_BYTES
+    )
+    assert scheduler_settings._derive_db_size_alert_bytes(0) > 0
 
 
 def test_the_per_day_measurement_can_be_recalibrated_without_a_release(monkeypatch):
     """The one empirical input must be settable, or a differing deployment can only override the threshold outright."""
     import importlib
 
-    import lionagi.studio.config as cfg
+    import lionhub.orchestration.scheduler.settings as cfg
 
-    baseline = cfg._DB_BYTES_PER_RETAINED_DAY
+    baseline = scheduler_settings._DB_BYTES_PER_RETAINED_DAY
     assert baseline > 0, "no baseline measurement to recalibrate from"
 
     monkeypatch.setenv("LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY", str(baseline * 2))
     try:
         importlib.reload(cfg)
 
-        assert cfg._DB_BYTES_PER_RETAINED_DAY == baseline * 2
+        assert scheduler_settings._DB_BYTES_PER_RETAINED_DAY == baseline * 2
         # The recalibration has to reach the threshold, not just the constant.
-        assert cfg._derive_db_size_alert_bytes(30) == int(
-            30 * baseline * 2 * cfg._DB_SIZE_ALERT_HEADROOM
+        assert scheduler_settings._derive_db_size_alert_bytes(30) == int(
+            30 * baseline * 2 * scheduler_settings._DB_SIZE_ALERT_HEADROOM
         )
     finally:
         monkeypatch.delenv("LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY", raising=False)
@@ -315,7 +325,7 @@ def test_the_per_day_measurement_can_be_recalibrated_without_a_release(monkeypat
 
     # Restoring matters as much as the override: a module left reloaded with a
     # doubled constant would quietly change what every later test measures.
-    assert cfg._DB_BYTES_PER_RETAINED_DAY == baseline
+    assert scheduler_settings._DB_BYTES_PER_RETAINED_DAY == baseline
 
 
 def test_stats_endpoint_exposes_checkpoint_and_size_fields(tmp_path, monkeypatch):
@@ -909,10 +919,10 @@ def _patch_prune_config(monkeypatch, *, archive_dir: Path | None, chunk_rows: in
     monkeypatch.setattr(maint, "PRUNE_CHUNK_ROWS", chunk_rows, raising=False)
     # prune_old_data() imports these lazily from config each call; patch the
     # source module too (see the identical pattern in test_retention_archive.py).
-    import lionagi.studio.config as cfg
+    import lionhub.orchestration.scheduler.settings as cfg
 
-    monkeypatch.setattr(cfg, "PRUNE_ARCHIVE_DIR", archive_dir)
-    monkeypatch.setattr(cfg, "PRUNE_CHUNK_ROWS", chunk_rows)
+    monkeypatch.setattr(scheduler_settings, "PRUNE_ARCHIVE_DIR", archive_dir)
+    monkeypatch.setattr(scheduler_settings, "PRUNE_CHUNK_ROWS", chunk_rows)
 
 
 # ── schedule_run / dispatch_outbox chunking + whole-plan safety ────────────

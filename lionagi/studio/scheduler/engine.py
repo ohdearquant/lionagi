@@ -65,7 +65,7 @@ from lionhub.orchestration.schedule.timing import (
 )
 from lionhub.orchestration.schedule.validation import merged_page_limit, validate_rate_limit
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.scheduler.engine")
 
 
 def _scheduler_audit_context(actor: str) -> ScheduleAuditContext:
@@ -838,7 +838,7 @@ class SchedulerEngine:
             # outright rather than deferred like the automatic fire paths below.
             slot_allowed, slot_claim = await self._reserve_global_slot(schedule_id, path="manual")
             if not slot_allowed:
-                from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+                from lionhub.orchestration.scheduler.settings import MAX_SCHEDULED_CONCURRENT
 
                 raise ValueError(
                     f"Scheduler at capacity ({MAX_SCHEDULED_CONCURRENT} concurrent "
@@ -980,7 +980,7 @@ class SchedulerEngine:
 
     def _maybe_start_prune(self, now: float) -> None:
         """Start the retention prune as a tracked, single-flight background task."""
-        from lionagi.studio.config import RETENTION_INTERVAL_SECONDS
+        from lionhub.orchestration.scheduler.settings import RETENTION_INTERVAL_SECONDS
 
         if RETENTION_INTERVAL_SECONDS <= 0:
             return
@@ -1001,8 +1001,8 @@ class SchedulerEngine:
 
     async def _run_prune(self, now: float) -> None:
         """Prune once, if a full interval has passed since a prune last committed."""
-        from lionagi.studio.config import RETENTION_INTERVAL_SECONDS
         from lionagi.studio.services.db_maintenance import get_last_prune_at, prune_old_data
+        from lionhub.orchestration.scheduler.settings import RETENTION_INTERVAL_SECONDS
 
         try:
             recorded = await get_last_prune_at()
@@ -1404,8 +1404,8 @@ class SchedulerEngine:
     async def _tick(self) -> None:
         now = time.time()
 
-        from lionagi.studio.config import REAPER_INTERVAL_SECONDS
         from lionagi.studio.services.lifecycle import run_periodic_reapers
+        from lionhub.orchestration.scheduler.settings import REAPER_INTERVAL_SECONDS
 
         if now - self._last_reaper_run >= REAPER_INTERVAL_SECONDS:
             try:
@@ -1414,8 +1414,8 @@ class SchedulerEngine:
                 _log.exception("Periodic reaper error")
             self._last_reaper_run = now
 
-        from lionagi.studio.config import CHECKPOINT_INTERVAL_SECONDS
         from lionagi.studio.services.db_maintenance import checkpoint_state_db
+        from lionhub.orchestration.scheduler.settings import CHECKPOINT_INTERVAL_SECONDS
 
         if now - self._last_checkpoint_run >= CHECKPOINT_INTERVAL_SECONDS:
             try:
@@ -2176,7 +2176,7 @@ class SchedulerEngine:
         self, schedule_id: str, *, path: str
     ) -> tuple[bool, _GlobalSlotClaim | None]:
         """Atomically claim one global concurrent-fire slot; returns (allowed, claim)."""
-        from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+        from lionhub.orchestration.scheduler.settings import MAX_SCHEDULED_CONCURRENT
 
         if MAX_SCHEDULED_CONCURRENT <= 0:
             return True, None
@@ -2196,7 +2196,7 @@ class SchedulerEngine:
 
     async def _reserve_adhoc_slot(self) -> tuple[bool, _AdhocSlotClaim | None]:
         """Atomically claim one ad-hoc worker slot from its own independent counter."""
-        from lionagi.studio.config import MAX_ADHOC_CONCURRENT
+        from lionhub.orchestration.scheduler.settings import MAX_ADHOC_CONCURRENT
 
         if MAX_ADHOC_CONCURRENT <= 0:
             return True, None
@@ -2237,7 +2237,7 @@ class SchedulerEngine:
         count = self._deferred_log_counts.get(sid, 0) + 1
         self._deferred_log_counts[sid] = count
         if count == 1:
-            from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+            from lionhub.orchestration.scheduler.settings import MAX_SCHEDULED_CONCURRENT
 
             _log.info(
                 "Schedule %s (%s) deferred: global concurrent-fire cap reached "

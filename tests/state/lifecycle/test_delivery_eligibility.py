@@ -163,11 +163,12 @@ async def test_real_execution_edge_matrix_push_equals_stored_and_replay(db, kind
 async def test_actual_null_status_reaper_push_equals_stored_and_replay(tmp_path, monkeypatch):
     import lionagi.state.db as db_module
     import lionagi.studio.services.lifecycle as reaper
+    import lionhub.orchestration.scheduler.liveness as scheduler_liveness
 
     path = tmp_path / "state.db"
     monkeypatch.setattr(db_module, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(reaper, "state_db_known_absent", lambda: False)
-    monkeypatch.setattr(reaper, "process_identity_is_foreign", lambda _session: False)
+    monkeypatch.setattr(scheduler_liveness, "process_identity_is_foreign", lambda _session: False)
 
     async def not_alive(_session, _artifacts):
         return False

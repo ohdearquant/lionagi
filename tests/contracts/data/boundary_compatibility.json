@@ -3212,7 +3212,6 @@
     ],
     "lionagi/studio/config.py": [
       "OperatorExecutionRootResolution",
-      "invocation_deadline_seconds",
       "resolve_operator_execution_root_config"
     ],
     "lionagi/studio/daemon_log.py": [
@@ -3460,7 +3459,6 @@
     "lionagi/studio/services/_io.py": [
       "JsonRead",
       "parse_json_col",
-      "read_json_file",
       "read_json_file_checked"
     ],
     "lionagi/studio/services/_path_safety.py": [
@@ -3482,24 +3480,17 @@
       "PruneOldDataBody",
       "TransitionBody",
       "admin_events_route",
-      "cached_ps_snapshot",
       "db_health",
       "doctor",
       "doctor_route",
       "health_report",
       "health_route",
       "list_admin_events",
-      "list_phantom_sessions",
-      "process_identity_is_foreign",
-      "process_liveness",
-      "process_snapshot_diagnostics",
       "prune_old_data_route",
       "prune_phantom_sessions",
       "prune_route",
       "prune_sessions",
       "readiness_route",
-      "resolve_process_liveness",
-      "resolve_process_liveness_probe",
       "run_maintenance_route",
       "store_probe",
       "transition_route",
@@ -4482,6 +4473,21 @@
       "merged_page_limit",
       "validate_rate_limit"
     ],
+    "lionhub/src/lionhub/orchestration/scheduler/liveness.py": [
+      "cached_ps_snapshot",
+      "list_phantom_sessions",
+      "process_identity_is_foreign",
+      "process_liveness",
+      "process_snapshot_diagnostics",
+      "resolve_process_liveness",
+      "resolve_process_liveness_probe"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/settings.py": [
+      "invocation_deadline_seconds"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/show_artifacts.py": [
+      "read_json_file"
+    ],
     "lionhub/src/lionhub/orchestration/spawn.py": [
       "AgentProfile",
       "AgentProfileNotFoundError",
@@ -4990,35 +4996,12 @@
     "lionagi/studio/config.py": [
       "os.environ.get:\"CORS_ORIGINS\"",
       "os.environ.get:\"LIONAGI_HOME\"",
-      "os.environ.get:\"LIONAGI_SHOWS_ROOT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_CHECKPOINT_INTERVAL_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY\"",
-      "os.environ.get:\"LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES\"",
-      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_DEAD_LETTER_DAYS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_SUCCESS_DAYS\"",
       "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
-      "os.environ.get:\"LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MAX_ADHOC_CONCURRENT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MAX_LAUNCHES\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT\"",
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PHANTOM_STALE_HOURS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PLAY_STALE_HOURS\"",
       "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_ARCHIVE_DIR\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_CHUNK_ROWS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_KEEP_DAYS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_RETENTION_INTERVAL_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_SCHEDULE_RUN_STALE_HOURS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_SHOW_STALE_HOURS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS\"",
-      "os.environ.get:\"LIONAGI_STUDIO_ZERO_SESSION_GRACE_SECONDS\"",
       "os.environ.get:OPERATOR_CWD_ENV_VAR",
-      "os.environ.get:env_key",
-      "os.environ.get:env_var",
       "os.environ.get:env_var"
     ],
     "lionagi/studio/operator/_common.py": [
@@ -5109,6 +5092,31 @@
     "lionhub/src/lionhub/orchestration/schedule/timing.py": [
       "os.environ.get:\"TZ\"",
       "os.environ.get:SCHEDULER_TZ_ENV_VAR"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/settings.py": [
+      "os.environ.get:\"LIONAGI_SHOWS_ROOT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_CHECKPOINT_INTERVAL_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_DEAD_LETTER_DAYS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_SUCCESS_DAYS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MAX_ADHOC_CONCURRENT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MAX_LAUNCHES\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PHANTOM_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PLAY_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_ARCHIVE_DIR\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_CHUNK_ROWS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_KEEP_DAYS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_RETENTION_INTERVAL_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_SCHEDULE_RUN_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_SHOW_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_ZERO_SESSION_GRACE_SECONDS\"",
+      "os.environ.get:env_key",
+      "os.environ.get:env_var"
     ],
     "lionhub/src/lionhub/orchestration/spawn.py": [
       "os.getenv:\"LIONAGI_INVOCATION_ID\""

@@ -124,7 +124,7 @@ def _detect_status(output: str, function: str) -> tuple[str, int | None]:
 
 def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool | None:
     """Tri-state liveness for a running session row, via the shared admin oracle."""
-    from .admin import process_liveness
+    from lionhub.orchestration.scheduler.liveness import process_liveness
 
     ap = s.get("artifacts_path")
     return process_liveness(s, Path(ap) if ap else None, ps_snapshot)
@@ -227,7 +227,10 @@ async def list_runs(
     for s in sessions:
         alive: bool | None = None
         if s.get("status") == "running":
-            from .admin import process_identity_is_foreign, resolve_process_liveness_probe
+            from lionhub.orchestration.scheduler.liveness import (
+                process_identity_is_foreign,
+                resolve_process_liveness_probe,
+            )
 
             # A foreign-host row is left unknown without paying for the scan — the scan reads
             # this machine's process table, so skipping it changes only the cost, not the verdict.
@@ -338,7 +341,7 @@ async def get_run(
         "last_message_at": last_message_at,
     }
     if detail_session.get("status") == "running":
-        from .admin import resolve_process_liveness_probe
+        from lionhub.orchestration.scheduler.liveness import resolve_process_liveness_probe
 
         alive = await resolve_process_liveness_probe(
             lambda snapshot: _session_liveness(detail_session, snapshot)

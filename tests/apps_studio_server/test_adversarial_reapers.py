@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+import lionhub.orchestration.scheduler.liveness as scheduler_liveness
+
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
 import lionagi.state.db as state_db_mod
@@ -196,7 +198,7 @@ def test_1171_terminal_session_never_overwritten(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
@@ -218,7 +220,7 @@ def test_1171_idempotent_double_call_no_double_write(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
@@ -246,7 +248,7 @@ def test_1171_neutralize_condition_null_session_stays_null(tmp_path, monkeypatch
     import lionagi.studio.services.lifecycle as lc_mod
 
     # Process appears alive → reaper must not touch it
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: True)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
@@ -280,7 +282,7 @@ def test_1172_phantom_reaper_driven_by_list_phantom_sessions(tmp_path, monkeypat
     async def _no_phantoms(**_kw):
         return []
 
-    monkeypatch.setattr(lc_mod.admin_svc, "list_phantom_sessions", _no_phantoms)
+    monkeypatch.setattr(lc_mod._liveness, "list_phantom_sessions", _no_phantoms)
 
     from lionagi.studio.services.lifecycle import reap_phantom_sessions
 
@@ -330,7 +332,7 @@ def test_1172_phantom_reaper_skips_already_terminal_even_if_detected(tmp_path, m
     async def _fake_list(**_kw):
         return [{"session_id": sid, "reason": "missing_artifacts"}]
 
-    monkeypatch.setattr(lc_mod.admin_svc, "list_phantom_sessions", _fake_list)
+    monkeypatch.setattr(lc_mod._liveness, "list_phantom_sessions", _fake_list)
 
     from lionagi.studio.services.lifecycle import reap_phantom_sessions
 
@@ -471,10 +473,9 @@ def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monke
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr(scheduler_liveness.socket, "gethostname", lambda: "this-host")
 
     stale_time = time.time() - 7200
     remote = run_async(
@@ -498,7 +499,7 @@ def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monke
 
     # Not patched to a constant: the real function has to answer, or this test would pass
     # against a liveness check that had stopped consulting the row at all.
-    assert lc_mod.process_liveness is admin_mod.process_liveness
+    assert lc_mod._liveness.process_liveness is scheduler_liveness.process_liveness
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
@@ -512,70 +513,3 @@ def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monke
         "the local row must still be reaped — otherwise this passes on a dead reaper"
     )
     assert count == 1
-
-
-def test_phantom_classifier_returns_no_reason_for_another_machines_row(tmp_path, monkeypatch):
-    """The classifier that feeds the phantom reaper, checked directly — the local row beside it fixes what the answer would otherwise have been."""
-    import lionagi.studio.services.admin as admin_mod
-
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
-
-    now = time.time()
-    stale = now - 7200
-
-    def _row(meta: dict) -> dict:
-        return {
-            "id": str(uuid.uuid4()),
-            "updated_at": stale,
-            "artifacts_path": None,
-            "node_metadata": meta,
-        }
-
-    class _Row(dict):
-        def keys(self):  # noqa: D102 — sqlite3.Row-shaped access used by the classifier
-            return super().keys()
-
-    remote = _Row(_row({"pid": 4242, "pid_host": "some-other-host"}))
-    local = _Row(_row({"pid": 4242, "pid_host": "this-host"}))
-
-    monkeypatch.setattr(admin_mod, "_pid_is_live", lambda pid: False)
-
-    assert (
-        admin_mod._classify_phantom(remote, now=now, stale_seconds=3600, ps_snapshot="") is None
-    ), "another host's stale row must produce no phantom reason"
-    assert (
-        admin_mod._classify_phantom(local, now=now, stale_seconds=3600, ps_snapshot="")
-        == "process_dead"
-    ), "a local stale row with a dead pid must still classify — otherwise nothing is being tested"
-
-
-def test_process_identity_is_foreign_reads_host_and_unknown_modes(monkeypatch):
-    """Foreign means "not measurable here", which covers two distinct records."""
-    import lionagi.studio.services.admin as admin_mod
-
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
-    foreign = admin_mod.process_identity_is_foreign
-
-    assert foreign({"node_metadata": {"pid_host": "other-host"}}) is True
-    assert foreign({"node_metadata": {"process_identity_mode": "external"}}) is True
-    # A mode this code does know how to check is not foreign on its own.
-    assert foreign({"node_metadata": {"process_identity_mode": "local"}}) is False
-    assert foreign({"node_metadata": {"process_identity_mode": "in_process"}}) is False
-    assert foreign({"node_metadata": {"pid_host": "this-host"}}) is False
-    assert foreign({"node_metadata": {"pid": 1}}) is False
-    assert foreign({"node_metadata": None}) is False
-    assert foreign({}) is False
-    # Stored as JSON text by some read paths; the same answer either way.
-    assert foreign({"node_metadata": '{"pid_host": "other-host"}'}) is True
-    assert foreign({"node_metadata": "not json at all"}) is False
-
-    # A wrong-typed marker still names a mode this code cannot check; reading it as absent
-    # would put the row back in reach of reapers that treat non-True liveness as death.
-    assert foreign({"node_metadata": {"process_identity_mode": 123}}) is True
-    assert foreign({"node_metadata": {"process_identity_mode": {"kind": "remote"}}}) is True
-    # Absence is the key not being there — an old row predates the marker entirely and is
-    # still judged by the host check.
-    assert foreign({"node_metadata": {}}) is False
-    # A key present and set to null is not that row: no writer here emits null, so it can
-    # only have come from outside this code's control, the same unreadable-marker case above.
-    assert foreign({"node_metadata": {"process_identity_mode": None}}) is True

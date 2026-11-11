@@ -48,7 +48,7 @@ from lionagi.studio.scheduler.admit import (
 )
 from lionhub.orchestration.dispatch.outbox import enqueue_dispatch
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.scheduler.worker")
 
 __all__ = (
     "DEFAULT_HEARTBEAT_TTL_SECONDS",

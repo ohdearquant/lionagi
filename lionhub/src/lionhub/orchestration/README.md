@@ -31,6 +31,7 @@ keeps it that way. Import the module you need by its full path.
 | `dispatch/` | the durable dispatch outbox and its revival heartbeat |
 | `work/` | `WorkForm` and its declarative validation rules |
 | `arguments`, `console` | argparse type callables and the named console output channels |
+| `scheduler/` | scheduler dependency helpers: `settings`, `liveness` and `show_artifacts` |
 | `schedule/` | the schedule services, below |
 
 ## schedule

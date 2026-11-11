@@ -16,6 +16,9 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
+import lionhub.orchestration.scheduler.liveness as scheduler_liveness
+import lionhub.orchestration.state_store as hub_state_store
+
 _WAIT_SECONDS = 5
 _ADMIN_SITES = (
     "snapshot",
@@ -227,7 +230,7 @@ def _admin_subject(monkeypatch, tmp_path, site, probe):
 
     def scan(*args, **kwargs):
         boundaries.append(("scan", args, kwargs))
-        return admin._ScanResult(None, site == "health_scan")
+        return scheduler_liveness._ScanResult(None, site == "health_scan")
 
     def phantom(*args, **kwargs):
         boundaries.append(("phantom", args, kwargs))
@@ -239,45 +242,50 @@ def _admin_subject(monkeypatch, tmp_path, site, probe):
     monkeypatch.setattr(admin, "require_file_store", lambda: None)
     monkeypatch.setattr(admin, "store_exists", lambda: True)
     monkeypatch.setattr(admin, "store_path", lambda: str(tmp_path / "unused.db"))
-    monkeypatch.setattr(sessions, "_user_label_selection", user_label)
-    monkeypatch.setattr(admin, "_resolve_process_liveness_with_snapshot", liveness)
-    monkeypatch.setattr(admin, "resolve_process_liveness", dead)
+    monkeypatch.setattr(scheduler_liveness, "_open_db", lambda *args: Store())
+    monkeypatch.setattr(scheduler_liveness, "require_file_store", lambda: None)
+    monkeypatch.setattr(scheduler_liveness, "store_exists", lambda: True)
+    monkeypatch.setattr(scheduler_liveness, "store_path", lambda: str(tmp_path / "unused.db"))
+    monkeypatch.setattr(hub_state_store, "_user_label_selection", user_label)
+    monkeypatch.setattr(scheduler_liveness, "_resolve_process_liveness_with_snapshot", liveness)
+    monkeypatch.setattr(scheduler_liveness, "resolve_process_liveness", dead)
     monkeypatch.setattr(admin, "db_health", lambda: {})
-    monkeypatch.setattr(admin, "process_snapshot_diagnostics", lambda: {})
+    monkeypatch.setattr(scheduler_liveness, "process_snapshot_diagnostics", lambda: {})
     monkeypatch.setattr(
         "lionhub.orchestration.schedule.timing.scheduler_timezone_report", lambda: {}
     )
     if site != "identity":
         monkeypatch.setattr(admin, "_code_identity_report", no_identity)
-    monkeypatch.setattr(admin, "_find_stale_lock", scan)
-    monkeypatch.setattr(admin, "_classify_phantom", phantom)
+    monkeypatch.setattr(scheduler_liveness, "_find_stale_lock", scan)
+    monkeypatch.setattr(scheduler_liveness, "_classify_phantom", phantom)
     monkeypatch.setattr(
-        admin,
+        scheduler_liveness,
         "time",
         SimpleNamespace(
             time=lambda: 10000.0, monotonic=time.monotonic, perf_counter=time.perf_counter
         ),
     )
+    monkeypatch.setattr(admin, "time", scheduler_liveness.time)
     if site == "snapshot":
         # Cache publication belongs to this caller, after the shielded worker finishes.
-        monkeypatch.setattr(admin, "time", time)
-        monkeypatch.setattr(admin, "_PS_SNAPSHOT_CACHE", None)
-        monkeypatch.setattr(admin, "_PS_SNAPSHOT_METRICS", None)
-        monkeypatch.setattr(admin, "_PS_SNAPSHOT_SEQUENCE", 0)
-        monkeypatch.setattr(admin, "_ps_snapshot", probe.worker)
-        subject = admin._capture_ps_snapshot
+        monkeypatch.setattr(scheduler_liveness, "time", time)
+        monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_CACHE", None)
+        monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_METRICS", None)
+        monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_SEQUENCE", 0)
+        monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", probe.worker)
+        subject = scheduler_liveness._capture_ps_snapshot
     elif site == "identity":
         monkeypatch.setattr(diagnostics, "code_identity", probe.worker)
         subject = admin._code_identity_report
     elif site == "phantom":
-        monkeypatch.setattr(admin, "_classify_phantom", probe.worker)
-        subject = lambda: admin.list_phantom_sessions(stale_hours=2.0)
+        monkeypatch.setattr(scheduler_liveness, "_classify_phantom", probe.worker)
+        subject = lambda: scheduler_liveness.list_phantom_sessions(stale_hours=2.0)
     elif site == "health_scan":
-        monkeypatch.setattr(admin, "_find_stale_lock", probe.worker)
+        monkeypatch.setattr(scheduler_liveness, "_find_stale_lock", probe.worker)
         subject = admin.health_report
     else:
         target = "_find_stale_lock" if site == "transition_scan" else "_classify_phantom"
-        monkeypatch.setattr(admin, target, probe.worker)
+        monkeypatch.setattr(scheduler_liveness, target, probe.worker)
 
         async def transition():
             return await admin.transition_sessions(
@@ -296,7 +304,7 @@ def _admin_result(admin, site):
     if site == "identity":
         return {"head": "worker-head"}
     if site.endswith("scan"):
-        return admin._ScanResult(None, site == "health_scan")
+        return scheduler_liveness._ScanResult(None, site == "health_scan")
     return "process_dead"
 
 
@@ -353,8 +361,8 @@ async def test_admin_workers_preserve_arguments_context_results_and_errors(
             elif site in {"snapshot", "identity"}:
                 assert result is probe.result
                 if site == "snapshot":
-                    assert admin._PS_SNAPSHOT_CACHE.value is probe.result
-                    assert admin._PS_SNAPSHOT_METRICS["captures"] == 1
+                    assert scheduler_liveness._PS_SNAPSHOT_CACHE.value is probe.result
+                    assert scheduler_liveness._PS_SNAPSHOT_METRICS["captures"] == 1
             elif site == "phantom":
                 assert len(result) == 1
                 assert result[0]["session_id"] == row["id"]
@@ -860,6 +868,7 @@ async def test_thread_callers_delegate_to_the_shared_worker_helper(monkeypatch, 
 
         probe = _WorkerProbe(_admin_result(admin, site))
         subject, owner, _, _, _ = _admin_subject(monkeypatch, tmp_path, site, probe)
+        owner = scheduler_liveness if site in {"snapshot", "phantom"} else owner
         monkeypatch.setattr(owner, "_run_sync", delegated, raising=False)
     elif site == "monitor":
         from lionagi.cli import monitor

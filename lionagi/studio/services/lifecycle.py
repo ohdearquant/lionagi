@@ -9,26 +9,19 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import lionhub.orchestration.scheduler.liveness as _liveness
 from lionagi.state.db import StateDB, state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, ShowReasons
+from lionhub.orchestration.scheduler.show_artifacts import _SHOW_TERMINAL_STATUSES, _play_dirs
+from lionhub.orchestration.scheduler.show_artifacts import read_json_file as _read_show_json
 
-from . import admin as admin_svc
-from .admin import (
-    _artifacts_path,
-    process_identity_is_foreign,
-    process_liveness,
-    resolve_process_liveness_probe,
-)
-from .shows import _SHOW_TERMINAL_STATUSES, _play_dirs
-from .shows import _read_json as _read_show_json
-
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.services.lifecycle")
 
 
 async def _resolve_liveness(session: dict, artifacts: Path | None) -> bool | None:
     """Preserve the module's liveness seam while sharing the host-wide fallback."""
-    return await resolve_process_liveness_probe(
-        lambda snapshot: process_liveness(session, artifacts, snapshot)
+    return await _liveness.resolve_process_liveness_probe(
+        lambda snapshot: _liveness.process_liveness(session, artifacts, snapshot)
     )
 
 
@@ -53,7 +46,7 @@ _INVOCATION_REAPER_PAGE_SIZE = 500
 
 def _deadline_for_kind(action_kind: str | None, global_default: float | int) -> float:
     """Compatibility wrapper around the shared validated deadline resolver."""
-    from lionagi.studio.config import invocation_deadline_seconds
+    from lionhub.orchestration.scheduler.settings import invocation_deadline_seconds
 
     return invocation_deadline_seconds(
         action_kind,
@@ -94,7 +87,7 @@ async def reap_stale_invocations(
     (2) zero sessions spawned past the grace period.
     Returns count transitioned.
     """
-    from lionagi.studio.config import (
+    from lionhub.orchestration.scheduler.settings import (
         INVOCATION_DEADLINE_SECONDS,
         ZERO_SESSION_GRACE_SECONDS,
     )
@@ -219,7 +212,7 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
     ``node_metadata.pid`` via ``process_liveness()``, and a not-observably-
     alive row still gets a staleness grace (mirroring ``_classify_phantom``)
     so a fresh/quiet session isn't reaped for a momentary window."""
-    from lionagi.studio.config import PHANTOM_STALE_HOURS
+    from lionhub.orchestration.scheduler.settings import PHANTOM_STALE_HOURS
 
     if stale_hours is None:
         stale_hours = PHANTOM_STALE_HOURS
@@ -240,12 +233,12 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
 
         for row in rows:
             sid = row["id"]
-            artifacts = _artifacts_path(row)
+            artifacts = _liveness._artifacts_path(row)
             session = {"id": sid, "node_metadata": row.get("node_metadata")}
             if await _resolve_liveness(session, artifacts) is True:
                 # Process still alive — skip, it may write its own status.
                 continue
-            if process_identity_is_foreign(session):
+            if _liveness.process_identity_is_foreign(session):
                 # Hosted on another machine: nothing observable here says if it's alive, and
                 # the staleness grace below cannot supply that, so reaping it would guess.
                 continue
@@ -305,7 +298,7 @@ async def reap_phantom_sessions(
 ) -> int:
     """Transition phantom sessions to ``failed`` via StateDB.update_status() — no DELETE.
 
-    Uses ``admin_svc.list_phantom_sessions()`` for detection.
+    Uses ``list_phantom_sessions()`` for detection.
     Returns count transitioned.
     """
     _reaped, ids = await reap_phantom_sessions_detailed(stale_hours=stale_hours, actor=actor)
@@ -320,7 +313,7 @@ async def reap_phantom_sessions_detailed(
     """Same as ``reap_phantom_sessions``, but also returns the reaped session
     ids — callers that need to record what was actually touched (e.g. an
     admin-event audit row) can't reconstruct that from a bare count."""
-    from lionagi.studio.config import PHANTOM_STALE_HOURS
+    from lionhub.orchestration.scheduler.settings import PHANTOM_STALE_HOURS
 
     if stale_hours is None:
         stale_hours = PHANTOM_STALE_HOURS
@@ -328,7 +321,7 @@ async def reap_phantom_sessions_detailed(
     if state_db_known_absent():
         return 0, []
 
-    phantoms = await admin_svc.list_phantom_sessions(stale_hours=stale_hours)
+    phantoms = await _liveness.list_phantom_sessions(stale_hours=stale_hours)
     if not phantoms:
         return 0, []
 
@@ -340,7 +333,7 @@ async def reap_phantom_sessions_detailed(
         phantom_reason = phantom.get("reason", "process_dead")
         # The phantom reason → SessionReasons code map is admin's, which the
         # health report reads too; a reason it does not name is an orphan.
-        reason_code = admin_svc._PHANTOM_REASON_CODES.get(
+        reason_code = _liveness._PHANTOM_REASON_CODES.get(
             phantom_reason, SessionReasons.HEALTH_ORPHANED_NO_PROCESS
         )
         try:
@@ -420,7 +413,7 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
     still linked) before falling back to a staleness backstop, mirroring
     ``reap_null_status_sessions``.
     """
-    from lionagi.studio.config import PLAY_STALE_HOURS
+    from lionhub.orchestration.scheduler.settings import PLAY_STALE_HOURS
 
     if stale_hours is None:
         stale_hours = PLAY_STALE_HOURS
@@ -468,11 +461,14 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                         )
                         if srow is not None:
                             session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
-                            if await _resolve_liveness(session, _artifacts_path(srow)) is True:
+                            if (
+                                await _resolve_liveness(session, _liveness._artifacts_path(srow))
+                                is True
+                            ):
                                 continue
                             # Child session hosted elsewhere: this machine can't tell a dead
                             # runner from a working one, so the play stays in flight.
-                            if process_identity_is_foreign(session):
+                            if _liveness.process_identity_is_foreign(session):
                                 continue
 
                     updated_at_raw = row.get("updated_at")
@@ -542,7 +538,7 @@ async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
     the ad-hoc task queue has its own lease-based recovery
     (``worker.reap_expired_leases``) and is excluded so a live-leased task
     isn't marked ``timed_out`` before its lease even expires."""
-    from lionagi.studio.config import SCHEDULE_RUN_STALE_HOURS
+    from lionhub.orchestration.scheduler.settings import SCHEDULE_RUN_STALE_HOURS
 
     if stale_hours is None:
         stale_hours = SCHEDULE_RUN_STALE_HOURS
@@ -664,7 +660,7 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
     ``reap_stale_plays``: a show with any child play whose session process
     is still observably alive is never reaped, regardless of the on-disk
     snapshot or how stale the row looks."""
-    from lionagi.studio.config import SHOW_STALE_HOURS
+    from lionhub.orchestration.scheduler.settings import SHOW_STALE_HOURS
 
     if stale_hours is None:
         stale_hours = SHOW_STALE_HOURS
@@ -719,12 +715,15 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
                         if srow is None:
                             continue
                         session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
-                        if await _resolve_liveness(session, _artifacts_path(srow)) is True:
+                        if (
+                            await _resolve_liveness(session, _liveness._artifacts_path(srow))
+                            is True
+                        ):
                             live = True
                             break
                         # A child hosted on another machine is unmeasurable here, not dead —
                         # treated like a live child, the only honest move when it's unseen.
-                        if process_identity_is_foreign(session):
+                        if _liveness.process_identity_is_foreign(session):
                             live = True
                             break
                     if live:
@@ -857,12 +856,12 @@ async def run_periodic_reapers(now: float | None = None) -> dict[str, int]:
 
 async def get_phantom_count(*, stale_hours: float | None = None) -> int:
     """Return current phantom session count for dashboard health data."""
-    from lionagi.studio.config import PHANTOM_STALE_HOURS
+    from lionhub.orchestration.scheduler.settings import PHANTOM_STALE_HOURS
 
     if stale_hours is None:
         stale_hours = PHANTOM_STALE_HOURS
     try:
-        phantoms = await admin_svc.list_phantom_sessions(stale_hours=stale_hours)
+        phantoms = await _liveness.list_phantom_sessions(stale_hours=stale_hours)
         return len(phantoms)
     except Exception:
         _log.exception("get_phantom_count error")

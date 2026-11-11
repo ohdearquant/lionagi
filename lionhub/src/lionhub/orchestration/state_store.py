@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import aiosqlite
 
@@ -127,3 +128,11 @@ async def table_columns(db: aiosqlite.Connection, table: str) -> set[str]:
     """
     cur = await db.execute(f"PRAGMA table_info({table})")
     return {row[1] for row in await cur.fetchall()}
+
+
+async def _user_label_selection(db: Any, *, alias: str = "") -> str:
+    """Read older stores without migrating them or inventing an explicit label."""
+    prefix = f"{alias}." if alias else ""
+    if "user_label" in await table_columns(db, "sessions"):
+        return f"{prefix}user_label"
+    return "NULL AS user_label"

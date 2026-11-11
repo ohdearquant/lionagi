@@ -796,6 +796,7 @@ def run_schedule_quick_create(kind: str, argv: list[str]) -> int:
     project: str | None = None
     with contextlib.suppress(Exception):
         from lionhub.orchestration.project import detect_project
+        from lionhub.orchestration.schedule.parsing import _validate_identifier
 
         detected, _source = detect_project(cwd)
         if detected:

@@ -211,7 +211,7 @@ def test_reap_stale_shows_skips_live_child_session(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: True)
 
     from lionagi.studio.services.lifecycle import reap_stale_shows
 
@@ -236,7 +236,7 @@ def test_reap_stale_shows_reaps_dead_child_session(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+    monkeypatch.setattr(lc_mod._liveness, "process_liveness", lambda *_a, **_k: False)
 
     from lionagi.studio.services.lifecycle import reap_stale_shows
 
