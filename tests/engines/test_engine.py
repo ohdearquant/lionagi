@@ -193,7 +193,7 @@ async def test_make_agent_no_emits_uses_role_contract():
     b = await run.make_agent("researcher", name="r1")
     role_op = b.capabilities
     assert role_op is not None
-    from lionagi.casts import Role
+    from lionhub.agent.casts import Role
 
     expected = Role.load("researcher").emission_operable().allowed()
     assert role_op.allowed() == expected
@@ -414,7 +414,7 @@ async def _planning_workers(
     defer_spawn=None,
 ):
     """Construct real worker templates and DAG clones without executing a provider."""
-    from lionagi.casts.emission import TaskAssignment
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration import patterns
     from lionhub.orchestration.engines import engine as engine_mod
 
@@ -461,8 +461,8 @@ async def _planning_workers(
                 graph=graph,
             )
         if spawn_base is not None:
-            from lionagi.casts.emission import SpawnRequest
             from lionagi.operations.flow import ReactiveExecutor
+            from lionhub.agent.casts.emission import SpawnRequest
 
             emitter = next(iter(graph.internal_nodes))
             request = SpawnRequest(
@@ -649,7 +649,7 @@ async def test_planning_role_templates_stay_within_a_tight_agent_budget(
     fixed, not discretionary agents. The orchestrator the real pipeline builds
     first is what consumes this budget.
     """
-    from lionagi.casts.emission import TaskAssignment
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
 
     engine = PlanningEngine(
@@ -695,11 +695,11 @@ async def test_planning_dag_clones_keep_injection(monkeypatch, tmp_path, spawn_b
     first turn and the cadence adds no block of its own. The child is cloned
     only after the emitter has answered, as it is in a live run.
     """
-    from lionagi.casts.emission import SpawnRequest
     from lionagi.operations.flow import ReactiveExecutor
     from lionagi.testing import scripted_imodel
-    from lionagi.tools.khive_injection import KhiveInjectionProvider
+    from lionhub.agent.casts.emission import SpawnRequest
     from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.tools.khive_injection import KhiveInjectionProvider
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     namespaces = []
@@ -808,8 +808,8 @@ async def _reactive_planning_run(monkeypatch, tmp_path, replies_by_clone):
     ``spawn_request``. Real construction, cloning, capability inheritance and
     emission extraction all run; only the transport is scripted.
     """
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.testing import scripted_imodel
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
     from lionhub.orchestration.engines import planning as planning_mod
 
@@ -893,8 +893,8 @@ async def test_planning_clones_keep_the_worker_role_for_injection(
 
     from lionagi.operations.fields import ActionResponseModel
     from lionagi.testing import scripted_imodel
-    from lionagi.tools.khive_injection import KhiveInjectionProvider
     from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.tools.khive_injection import KhiveInjectionProvider
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     queries: list[str] = []
@@ -918,7 +918,7 @@ async def test_planning_clones_keep_the_worker_role_for_injection(
             "status": "success",
         }
     )
-    monkeypatch.setattr("lionagi.tools.khive_injection._call_khive", call_khive)
+    monkeypatch.setattr("lionhub.tools.khive_injection._call_khive", call_khive)
 
     for worker in workers:
         role = worker.metadata["clone_from"].name
@@ -962,8 +962,8 @@ async def test_planning_independent_unassigned_spawn_keeps_the_engine_settings(
     too: the role router treats it the same way, so it must not skip the
     template.
     """
-    from lionagi.casts.emission import SpawnRequest, TaskAssignment
     from lionagi.operations.flow import ReactiveExecutor
+    from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
     from lionhub.orchestration.engines.planning import (
         _inherit_worker_providers,

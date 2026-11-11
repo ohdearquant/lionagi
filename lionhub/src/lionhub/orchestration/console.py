@@ -140,3 +140,17 @@ def configure_cli_logging(verbose: bool) -> None:
     elif not root_has_handlers and pi_logger.propagate and pi_logger.level == logging.NOTSET:
         pi_logger.setLevel(logging.INFO)
         pi_logger._lionagi_cli_fallback_level = True
+
+
+def _refused_inside_an_agent() -> bool:
+    """Print the refusal and return True when this process runs inside an agent lionagi
+    started (see refuse_nested_agent)."""
+    from lionagi._provider_errors import NestedAgentRefusedError
+    from lionagi.service._subagent_admission import refuse_nested_agent
+
+    try:
+        refuse_nested_agent()
+    except NestedAgentRefusedError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return True
+    return False

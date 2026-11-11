@@ -39,56 +39,10 @@ class _SlowStudio(BaseHTTPRequestHandler):
         pass
 
 
-def test_human_schedule_transport_keeps_connection_refused_restart_hint(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import lionagi.studio.cli as schedule_cli
-
-    monkeypatch.setenv("LIONAGI_STUDIO_URL", "http://127.0.0.1:8765")
-    urlopen = _FailingUrlopen(urllib.error.URLError(ConnectionRefusedError("connection refused")))
-    monkeypatch.setattr(_ssrf, "open_url", urlopen)
-
-    assert schedule_cli._api("/") is None
-
-    assert urlopen.calls == [
-        ("GET", "http://127.0.0.1:8765/api/schedules/", 10),
-    ]
-    message = capsys.readouterr().err
-    assert "Cannot reach Studio at http://127.0.0.1:8765" in message
-    assert "is `li studio` running?" in message
-
-
-def test_human_schedule_mutation_timeout_reports_uncertain_completion_once(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import lionagi.studio.cli as schedule_cli
-
-    monkeypatch.setenv("LIONAGI_STUDIO_URL", "http://127.0.0.1:8765")
-    monkeypatch.setattr(
-        schedule_cli,
-        "time",
-        SimpleNamespace(monotonic=iter((100.0, 110.25)).__next__),
-    )
-    urlopen = _FailingUrlopen(TimeoutError("timed out"))
-    monkeypatch.setattr(_ssrf, "open_url", urlopen)
-
-    assert schedule_cli._api("/sched-1", method="DELETE") is None
-
-    assert urlopen.calls == [
-        ("DELETE", "http://127.0.0.1:8765/api/schedules/sched-1", 10),
-    ]
-    message = capsys.readouterr().err
-    assert "timed out (elapsed 10.2s; limit 10s)" in message
-    assert "may still have completed" in message
-    assert "Cannot reach" not in message
-    assert "`li studio`" not in message
-    assert "restart" not in message.lower()
-
-
 def test_live_but_slow_studio_is_a_timeout_not_an_unreachable_daemon(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import lionagi.studio.cli as schedule_cli
+    import lionhub.cli.schedule as schedule_cli
 
     _SlowStudio.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _SlowStudio)

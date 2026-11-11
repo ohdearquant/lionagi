@@ -35,7 +35,7 @@ class TestRoleBlurb:
     def test_profile_body_describes_the_role_it_replaces(self, stub_profiles):
         """A profile that defines a body replaces the built-in role body, so the
         roster must describe the profile rather than the role it shadowed."""
-        from lionagi.casts.pattern import Role
+        from lionhub.agent.casts.pattern import Role
 
         stub_profiles["critic"] = AgentProfile(
             name="critic",
@@ -56,7 +56,7 @@ class TestRoleBlurb:
         the accurate line. Built from the parser rather than by hand: the parser
         gives every profile a system prompt, so a hand-built one with an empty
         system prompt would test a shape that never occurs."""
-        from lionagi.casts.pattern import Role
+        from lionhub.agent.casts.pattern import Role
         from lionhub.orchestration.spawn import _parse_profile
 
         profile = _parse_profile("critic", "---\nmodel: codex/gpt-5\n---\n")
@@ -140,7 +140,7 @@ def stub_roster(stub_profiles, monkeypatch):
         model="codex/gpt-5",
     )
     monkeypatch.setattr(orch, "list_agents", lambda: list(stub_profiles))
-    monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["critic", "contrarian"])
+    monkeypatch.setattr("lionhub.agent.casts.pattern.list_roles", lambda: ["critic", "contrarian"])
     return stub_profiles
 
 
@@ -246,7 +246,7 @@ class TestAvailableRoles:
     """
 
     def test_profile_spelling_of_a_builtin_role_is_not_a_second_entry(self, monkeypatch):
-        from lionagi.casts.pattern import list_roles
+        from lionhub.agent.casts.pattern import list_roles
 
         monkeypatch.setattr(orch, "list_agents", lambda: ["postmortem_lead"])
         roles = orch.available_roles()
@@ -257,13 +257,13 @@ class TestAvailableRoles:
 
     def test_builtin_spelling_wins_whichever_side_is_listed_first(self, monkeypatch):
         monkeypatch.setattr(orch, "list_agents", lambda: ["postmortem_lead"])
-        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["postmortem-lead"])
+        monkeypatch.setattr("lionhub.agent.casts.pattern.list_roles", lambda: ["postmortem-lead"])
 
         assert orch.available_roles() == ["postmortem-lead"]
 
     def test_profile_only_name_keeps_its_own_spelling(self, monkeypatch):
         monkeypatch.setattr(orch, "list_agents", lambda: ["deck_hand", "rigging-mate"])
-        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["critic"])
+        monkeypatch.setattr("lionhub.agent.casts.pattern.list_roles", lambda: ["critic"])
 
         assert orch.available_roles() == ["critic", "deck_hand", "rigging-mate"]
 
@@ -271,7 +271,7 @@ class TestAvailableRoles:
         """Profile resolution gives an exact spelling priority over the other one,
         so two files differing only in separator are two selectable profiles."""
         monkeypatch.setattr(orch, "list_agents", lambda: ["deck-hand", "deck_hand"])
-        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["critic"])
+        monkeypatch.setattr("lionhub.agent.casts.pattern.list_roles", lambda: ["critic"])
 
         assert orch.available_roles() == ["critic", "deck-hand", "deck_hand"]
 
@@ -279,7 +279,7 @@ class TestAvailableRoles:
         """The built-in case is the opposite: Role.load accepts only the canonical
         spelling, so neither profile spelling is a second role."""
         monkeypatch.setattr(orch, "list_agents", lambda: ["deck-hand", "deck_hand"])
-        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["deck-hand"])
+        monkeypatch.setattr("lionhub.agent.casts.pattern.list_roles", lambda: ["deck-hand"])
 
         assert orch.available_roles() == ["deck-hand"]
 
@@ -290,7 +290,7 @@ class TestAvailableRoles:
             "postmortem_lead", "---\nmodel: codex/gpt-5\n---\n"
         )
         monkeypatch.setattr(orch, "list_agents", lambda: ["postmortem_lead"])
-        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["postmortem-lead"])
+        monkeypatch.setattr("lionhub.agent.casts.pattern.list_roles", lambda: ["postmortem-lead"])
 
         lines = orch.role_roster("openai/gpt-4.1-mini").split("\n")[1:]
         assert len(lines) == 1
@@ -300,7 +300,7 @@ class TestAvailableRoles:
         from types import SimpleNamespace
 
         monkeypatch.setattr(orch, "list_agents", lambda: ["postmortem_lead"])
-        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["postmortem-lead"])
+        monkeypatch.setattr("lionhub.agent.casts.pattern.list_roles", lambda: ["postmortem-lead"])
         pack = SimpleNamespace(
             config=lambda role: SimpleNamespace(modes_allow=["adversarial"], default_modes=[])
         )

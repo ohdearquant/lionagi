@@ -1,7 +1,7 @@
 # `SandboxSession`
 
 ```python
-from lionagi.tools.sandbox import (
+from lionhub.tools.sandbox import (
     create_sandbox,
     sandbox_diff,
     sandbox_commit,
@@ -10,7 +10,7 @@ from lionagi.tools.sandbox import (
 )
 ```
 
-Source: `lionagi/tools/sandbox.py`
+Source: `lionhub/src/lionhub/tools/sandbox.py`
 
 `SandboxSession` wraps a git worktree for isolated, reversible code changes. An agent edits
 files inside the worktree branch; those changes never touch the base branch until an explicit
@@ -244,8 +244,8 @@ job that's always meant to merge into `main`.
 ## Full lifecycle example
 
 ```python
-from lionagi.agent import AgentSpec, create_agent
-from lionagi.tools.sandbox import (
+from lionhub.agent import AgentSpec, create_agent
+from lionhub.tools.sandbox import (
     create_sandbox,
     sandbox_diff,
     sandbox_commit,

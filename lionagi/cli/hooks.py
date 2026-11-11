@@ -5,7 +5,7 @@
 ``li hooks import claude|codex [path]`` translates a foreign hooks config
 into the project's ``.lionagi/settings.yaml`` ``hooks_external:`` block,
 tagging every entry it writes with ``source: imported:<harness>`` so the
-loader's trust gate (see ``lionagi.hooks.external``) applies to it. This is a
+loader's trust gate (see ``lionhub.hooks.external``) applies to it. This is a
 one-shot import, not a live read: editing the foreign config afterward has no
 effect until ``li hooks import`` runs again.
 
@@ -14,7 +14,7 @@ trust record yet and, on confirmation, records a content-pinned approval for
 each into ``~/.lionagi/settings.yaml``'s ``trusted_hook_commands`` list --
 the same file/key the loader reads at execution time. Each record pins the
 argv hash, the resolved absolute executable path, AND a sha256 digest of
-that executable's bytes (``lionagi.hooks.external.compute_trust_record``):
+that executable's bytes (``lionhub.hooks.external.compute_trust_record``):
 a prior approval does not carry over if the command later resolves to a
 different executable, or that executable's contents change, even when the
 argv is unchanged.
@@ -123,7 +123,7 @@ def _tokenize_command(command: Any) -> tuple[list[str] | None, str | None]:
     ``shlex.split`` only when it contains no shell metacharacters; anything
     else is rejected rather than heuristically reinterpreted.
     """
-    from lionagi.hooks.external import ExternalHookConfigError, validate_argv
+    from lionhub.hooks.external import ExternalHookConfigError, validate_argv
 
     if isinstance(command, list):
         try:
@@ -151,7 +151,7 @@ def _translate_config(
     matcher-group entries, plus a per-entry report line (imported or
     rejected-with-reason).
     """
-    from lionagi.hooks.external import SUPPORTED_EVENTS
+    from lionhub.hooks.external import SUPPORTED_EVENTS
 
     hooks_block = data.get("hooks", {}) if isinstance(data, dict) else None
     if not isinstance(hooks_block, dict):
@@ -362,7 +362,7 @@ def _iter_untrusted_commands(
     """Return ``(pending, rejected)``: pending trust candidates -- each
     carrying the full content-pinned trust record (argv hash, resolved
     executable path, content digest; see
-    ``lionagi.hooks.external.compute_trust_record``) -- plus a report line
+    ``lionhub.hooks.external.compute_trust_record``) -- plus a report line
     per candidate that could not be validated or resolved.
 
     A malformed command (empty argv, a blank/non-string entry, ...) is
@@ -374,7 +374,7 @@ def _iter_untrusted_commands(
     """
     import yaml
 
-    from lionagi.hooks.external import (
+    from lionhub.hooks.external import (
         ExternalHookConfigError,
         compute_trust_record,
         is_command_trusted,

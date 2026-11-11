@@ -161,7 +161,7 @@ state (full citation map in the wiring inventory; summary here):
 2. **Studio cannot start anything** — no POST endpoints for engine runs or
    flows; Studio is read-only on orchestration. Required for launching from
    the canvas (phase 3).
-3. **Casts are invisible everywhere** — zero `lionagi.casts` imports in
+3. **Casts are invisible everywhere** — zero `lionhub.agent.casts` imports in
    studio/; no CLI inspection (`li casts` absent). The canvas needs a
    roles/modes/emission-contract catalog API (node palette + port rendering).
 4. **No declarative grants** — `emits:` per step absent from playbook schema

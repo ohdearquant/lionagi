@@ -3,4 +3,4 @@
 
 """Fixtures shared by orchestration service tests."""
 
-from tests._engine_loader_support import engine_import_package  # noqa: F401
+from ._test_support_engine_loader import engine_import_package  # noqa: F401

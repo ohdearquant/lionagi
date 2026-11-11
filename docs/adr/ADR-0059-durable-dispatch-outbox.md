@@ -499,7 +499,7 @@ sequenceDiagram
     end
 ```
 
-Code anchors: `lionagi/studio/scheduler/engine.py`; `lionagi/cli/dispatch.py`;
+Code anchors: `lionhub/src/lionhub/orchestration/scheduler/engine.py`; `lionagi/cli/dispatch.py`;
 `lionagi/dispatch/revival.py`; `lionagi/dispatch/outbox.py`.
 
 **Exact semantics.**

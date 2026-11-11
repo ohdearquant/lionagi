@@ -6,7 +6,7 @@
 import pytest
 
 from lionagi import Branch
-from lionagi.agent.factory import register_profile_injection
+from lionhub.agent.factory import register_profile_injection
 from lionhub.orchestration.spawn import _parse_profile
 
 

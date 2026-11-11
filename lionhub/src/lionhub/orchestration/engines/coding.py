@@ -20,10 +20,10 @@ from pydantic import Field
 
 from lionagi._command_env import normalize_command_env_allowlist
 from lionagi._command_env_metadata import command_environment
-from lionagi.casts.emission import Verdict
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.concurrency import run_sync, sleep
-from lionagi.tools._subprocess import _SHELL_CONTROL, _subprocess_sync
+from lionhub.agent.casts.emission import Verdict
+from lionhub.tools._subprocess import _SHELL_CONTROL, _subprocess_sync
 
 from .engine import ChainEvent, ChainRun, Engine, EngineEvent, EngineRun
 

@@ -20,7 +20,6 @@ import psutil
 
 from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln import coerce_created_at
 from lionagi.ln.concurrency import (
     CancelScope,
@@ -31,7 +30,7 @@ from lionagi.ln.concurrency import (
 )
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.session.exchange import Exchange
-from lionagi.tools.communication.messenger import LionMessenger
+from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
 from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionhub.orchestration.console import progress
 from lionhub.orchestration.console import warn as _warn
@@ -47,6 +46,7 @@ from lionhub.orchestration.spawn import (
     parse_model_spec,
     strip_connector_grant,
 )
+from lionhub.tools.communication.messenger import LionMessenger
 
 from .._agent_depth import stamp_worker_depth
 from ._common import (
@@ -1103,7 +1103,7 @@ async def _build_dag(
         else:
             role_defaults = w_profile.artifact_defaults if w_profile else None
             if not role_defaults:
-                from lionagi.casts.pattern import Role as _Role
+                from lionhub.agent.casts.pattern import Role as _Role
 
                 with contextlib.suppress(ValueError):
                     role_defaults = _Role.load(ta.assignee).artifact_defaults
@@ -1330,7 +1330,7 @@ def _reconstruct_spawned_nodes(
             return True
         if not getattr(model, "is_cli", False) or _claude_worker_contained(model):
             return False
-        from lionagi.agent.factory import _canonical_provider
+        from lionhub.agent.factory import _canonical_provider
 
         kwargs = model.endpoint.config.kwargs
         return not (
@@ -2518,8 +2518,8 @@ async def _execute_dag(
             # at what a planned worker with no role effort gets. An effort a codex
             # profile the orchestrator's spec names sets as an override stays, as it
             # does on a planned worker built from that spec.
-            from lionagi.agent.factory import _canonical_provider
             from lionagi.service.providers import PROVIDER_EFFORT_KWARG
+            from lionhub.agent.factory import _canonical_provider
 
             effort_kwarg = PROVIDER_EFFORT_KWARG.get(
                 _canonical_provider(chat_model.endpoint.config.provider)

@@ -14,8 +14,12 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A minimal .lionagi/agents/reviewer.md discoverable via cwd; see
-    test_schedule_declaration.py for the identical fixture rationale."""
+    """A minimal .lionagi/agents/reviewer.md discoverable via cwd.
+
+    The declaration tests use a fuller fixture of the same name
+    (_test_support_schedule_declaration.py) that also resolves a nested
+    .lionagi directory; the export tests need only this one directory.
+    """
     import lionhub.orchestration.spawn as providers_mod
 
     agents_dir = tmp_path / ".lionagi" / "agents"

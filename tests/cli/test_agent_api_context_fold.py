@@ -270,7 +270,7 @@ async def test_a_run_past_the_threshold_folds_its_tool_records_and_completes(
 async def test_the_fold_estimate_is_the_cap_s_count_of_the_request_it_precedes(
     leg, monkeypatch, tmp_path
 ):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     _files, profile, built, _summaries = _reading_run(leg, monkeypatch)
     estimates: list[int] = []
@@ -300,7 +300,7 @@ async def test_the_fold_estimate_is_the_cap_s_count_of_the_request_it_precedes(
 async def test_a_request_the_cap_refuses_is_folded_and_the_leg_continues(
     leg, monkeypatch, tmp_path
 ):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     _files, profile, built, _summaries = _reading_run(leg, monkeypatch)
 
@@ -329,7 +329,7 @@ async def test_a_request_the_cap_refuses_is_folded_and_the_leg_continues(
 async def test_a_refusal_the_fold_cannot_get_under_the_cap_fails_the_run(
     leg, monkeypatch, tmp_path
 ):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     # The first refusal can clip the first read and resume. After the second read, both
     # bodies reach their 1024-character floors and the remaining fixed prompt still refuses.
@@ -484,9 +484,9 @@ def _compiled_view_payload(branch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("completed", [True, False])
 async def test_delivery_marks_only_the_view_carried_by_a_completed_main_request(completed):
-    from lionagi.agent.context_fold import install_context_fold
     from lionagi.protocols.generic.event import EventStatus
     from lionagi.testing import LionAGIMockFactory
+    from lionhub.agent.context_fold import install_context_fold
 
     branch = LionAGIMockFactory.create_mocked_branch(
         response="answer", status=EventStatus.COMPLETED if completed else EventStatus.FAILED
@@ -518,9 +518,9 @@ async def test_delivery_marks_only_the_view_carried_by_a_completed_main_request(
 
 @pytest.mark.asyncio
 async def test_context_automatic_summary_never_marks_a_main_request_delivered():
-    from lionagi.agent.context_fold import install_context_fold
     from lionagi.testing import LionAGIMockFactory
-    from lionagi.tools.context.context import ContextTool
+    from lionhub.agent.context_fold import install_context_fold
+    from lionhub.tools.context.context import ContextTool
 
     branch = LionAGIMockFactory.create_mocked_branch(response="summary")
     await branch.msgs.a_add_message(instruction="task")
@@ -537,8 +537,8 @@ async def test_context_automatic_summary_never_marks_a_main_request_delivered():
 
 
 def test_candidate_count_uses_the_real_compiler_without_admitting_candidate_messages():
-    from lionagi.agent.context_fold import ContextFold
     from lionagi.protocols.messages import AssistantResponse
+    from lionhub.agent.context_fold import ContextFold
 
     branch, task = _branch_with_reasoning(cap=1_000_000, turns=1)
     fold = ContextFold(branch, cap=1_000_000)
@@ -572,9 +572,9 @@ def test_work_count_excludes_host_copies_but_keeps_tool_owned_provenance_keys():
 
 @pytest.mark.asyncio
 async def test_undelivered_middle_result_and_its_call_survive_tool_io_compaction():
-    from lionagi.agent.context_fold import ContextFold
     from lionagi.session.branch import Branch
-    from lionagi.tools.context.context import ContextRequest
+    from lionhub.agent.context_fold import ContextFold
+    from lionhub.tools.context.context import ContextRequest
 
     branch = Branch(system="system", chat_model=_haiku(1_000_000))
     await branch.msgs.a_add_message(instruction="task")
@@ -619,7 +619,7 @@ async def test_undelivered_middle_result_and_its_call_survive_tool_io_compaction
 
 @pytest.mark.asyncio
 async def test_the_summary_stage_sends_the_span_alone_and_keeps_the_summary(monkeypatch):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, task = _branch_with_reasoning(cap=8_000)
     durable_before = len(branch.msgs.messages)
@@ -651,8 +651,8 @@ async def test_the_summary_stage_sends_the_span_alone_and_keeps_the_summary(monk
 
 @pytest.mark.asyncio
 async def test_a_refused_summary_request_leaves_no_refusal_on_the_model(monkeypatch):
-    from lionagi.agent.context_fold import ContextFold
     from lionagi.service.connections.api_calling import APICalling
+    from lionhub.agent.context_fold import ContextFold
 
     async def never_sent(self, request, *a, **kw):
         raise AssertionError("a refused request must not be sent")
@@ -677,7 +677,7 @@ async def test_a_refused_summary_request_leaves_no_refusal_on_the_model(monkeypa
 
 @pytest.mark.asyncio
 async def test_a_refusal_calibrates_the_estimate_and_always_folds(monkeypatch):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     async def fake_call(self, request, *a, **kw):
         return _text("SUMMARY: nothing new")
@@ -697,7 +697,7 @@ async def test_a_refusal_calibrates_the_estimate_and_always_folds(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_refusal_calibrates_on_top_of_the_model_s_scale(monkeypatch):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     async def fake_call(self, request, *a, **kw):
         return _text("SUMMARY: nothing new")
@@ -751,7 +751,7 @@ async def test_the_provider_s_count_moves_the_fold_line(leg, monkeypatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_a_span_holding_only_the_task_sends_no_summary_request(monkeypatch):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     sent: list[dict] = []
 
@@ -783,11 +783,11 @@ async def test_a_fold_that_cuts_between_a_call_and_its_result_keeps_the_call_in_
     # Tool calls reach the model only as their results, which carry the call's function and
     # arguments, so a cut that folds a call and keeps its result loses nothing it reads.
     from lionagi import Branch
-    from lionagi.agent.context_fold import ContextFold
     from lionagi.operations.chat._prepare import _prepare_run_kwargs
     from lionagi.operations.types import ChatParam
     from lionagi.protocols.generic.progression import Progression
     from lionagi.protocols.messages import ActionRequest, ActionResponse
+    from lionhub.agent.context_fold import ContextFold
 
     branch = Branch(chat_model=_haiku(_CAP))
     msgs = branch.msgs
@@ -810,7 +810,7 @@ async def test_a_fold_that_cuts_between_a_call_and_its_result_keeps_the_call_in_
         return _text("all three results inspected")
 
     monkeypatch.setattr(AnthropicMessagesEndpoint, "call", completed)
-    from lionagi.agent.context_fold import install_context_fold
+    from lionhub.agent.context_fold import install_context_fold
 
     fold = install_context_fold(branch, cap=_CAP)
     await branch.chat("inspect the three results")
@@ -835,7 +835,7 @@ async def test_a_fold_that_cuts_between_a_call_and_its_result_keeps_the_call_in_
 
 
 def test_the_note_clips_long_values_and_keeps_paths_whole():
-    from lionagi.agent.context_fold import _short
+    from lionhub.agent.context_fold import _short
 
     deep = "/w/" + "/".join(["segment" * 4] * 12) + "/target_file.py"
     assert len(deep) > 160
@@ -859,9 +859,9 @@ def test_the_note_clips_long_values_and_keeps_paths_whole():
 
 
 def test_a_second_install_returns_the_branch_s_fold():
-    from lionagi.agent.context_fold import install_context_fold
     from lionagi.hooks.bus import HookPoint
     from lionagi.session.branch import Branch
+    from lionhub.agent.context_fold import install_context_fold
 
     branch = Branch()
     first = install_context_fold(branch, cap=1_000)
@@ -918,7 +918,7 @@ def _active_results(branch):
 
 @pytest.mark.asyncio
 async def test_amendment2_newest_100045_result_reaches_target_in_the_actual_request(monkeypatch):
-    from lionagi.agent.context_fold import install_context_fold
+    from lionhub.agent.context_fold import install_context_fold
 
     output = ("evidence é🦁 0123456789\n" * 6000)[:100045]
     branch, requests, originals = await _clip_fixture([output])
@@ -957,7 +957,7 @@ async def test_amendment2_newest_100045_result_reaches_target_in_the_actual_requ
 
 @pytest.mark.asyncio
 async def test_amendment2_sixteen_unread_results_all_reach_the_next_compiled_request(monkeypatch):
-    from lionagi.agent.context_fold import install_context_fold
+    from lionhub.agent.context_fold import install_context_fold
 
     branch, requests, originals = await _clip_fixture(
         [(f"result-{number:02} unique data 0123456789\n" * 1200) for number in range(16)], cap=20000
@@ -988,9 +988,9 @@ async def test_amendment2_sixteen_unread_results_all_reach_the_next_compiled_req
 async def test_amendment2_refusal_and_fold_summary_do_not_deliver_and_legacy_fallback_is_exact(
     monkeypatch,
 ):
-    from lionagi.agent.context_fold import ContextFold, install_context_fold
     from lionagi.service.connections.api_calling import APICalling
     from lionagi.testing import LionAGIMockFactory
+    from lionhub.agent.context_fold import ContextFold, install_context_fold
 
     branch = LionAGIMockFactory.create_mocked_branch(response="answer")
     earlier = await branch.msgs.a_add_message(instruction="earlier")
@@ -1027,9 +1027,9 @@ async def test_amendment2_refusal_and_fold_summary_do_not_deliver_and_legacy_fal
 async def test_amendment2_restoring_a_note_and_middle_message_uses_replaced_chronology():
     import math
 
-    from lionagi.agent.context_fold import ContextFold, estimate_next_request_tokens
     from lionagi.session.branch import Branch
-    from lionagi.tools.context.context import ContextTool
+    from lionhub.agent.context_fold import ContextFold, estimate_next_request_tokens
+    from lionhub.tools.context.context import ContextTool
 
     branch = Branch(system="system", chat_model=_haiku(1000000))
     await branch.msgs.a_add_message(instruction="task")
@@ -1070,7 +1070,7 @@ async def test_amendment2_small_deficit_preserves_mapping_keys_and_yaml_only_val
     import datetime
     import math
 
-    from lionagi.agent.context_fold import ContextFold, estimate_next_request_tokens
+    from lionhub.agent.context_fold import ContextFold, estimate_next_request_tokens
 
     output = {
         "body": 'evidence é🦁 and quotes "yes"\n' * 2000,
@@ -1104,7 +1104,7 @@ async def test_amendment2_unrenderable_object_refuses_at_estimate_before_clip(mo
 
     from yaml.representer import RepresenterError
 
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, _requests, _originals = await _clip_fixture([object()])
     fold = ContextFold(branch, cap=6000)
@@ -1121,7 +1121,7 @@ async def test_amendment2_unrenderable_object_refuses_at_estimate_before_clip(mo
 async def test_amendment2_floor_view_controls_summary_admission(monkeypatch, over_ceiling):
     import math
 
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, task = _branch_with_reasoning(1000000, turns=6)
     branch.metadata["context_delivered"] = [str(uid) for uid in branch.progression]
@@ -1156,7 +1156,7 @@ async def test_amendment2_floor_view_controls_summary_admission(monkeypatch, ove
 async def test_the_summary_request_places_no_turn_mark_and_keeps_its_cache_usage(monkeypatch):
     import math
 
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, task = _branch_with_reasoning(1000000, turns=6)
     branch.chat_model = iModel(
@@ -1207,9 +1207,9 @@ async def test_the_summary_request_places_no_turn_mark_and_keeps_its_cache_usage
 @pytest.mark.parametrize("curated", [False, True])
 @pytest.mark.parametrize("raises_scale", [False, True])
 async def test_amendment2_nonshrinking_summary_rolls_back_at_settled_scale(curated, raises_scale):
-    from lionagi.agent.context_fold import ContextFold
     from lionagi.protocols.generic.progression import Progression
     from lionagi.protocols.messages import AssistantResponse
+    from lionhub.agent.context_fold import ContextFold
 
     # The bounded 8000-character host note must be larger than the replaced reasoning,
     # even after _note truncates the deliberately oversized model response.
@@ -1262,9 +1262,9 @@ async def test_amendment2_nonshrinking_summary_rolls_back_at_settled_scale(curat
 async def test_amendment2_restore_original_twice_and_range_keeps_one_chronological_form():
     import math
 
-    from lionagi.agent.context_fold import ContextFold, estimate_next_request_tokens
     from lionagi.protocols.generic.progression import Progression
-    from lionagi.tools.context.context import ContextTool
+    from lionhub.agent.context_fold import ContextFold, estimate_next_request_tokens
+    from lionhub.tools.context.context import ContextTool
 
     branch, _requests, originals = await _clip_fixture(["raw evidence " * 4000], cap=1000000)
     original = originals[0]
@@ -1301,10 +1301,10 @@ async def test_amendment2_restore_original_twice_and_range_keeps_one_chronologic
 async def _file_clip_fixture(tmp_path):
     import math
 
-    from lionagi.agent.context_fold import ContextFold, estimate_next_request_tokens
     from lionagi.protocols.messages import ActionResponse
     from lionagi.session.branch import Branch
-    from lionagi.tools.coding import ALL_CODING_TOOLS, CodingToolkit
+    from lionhub.agent.context_fold import ContextFold, estimate_next_request_tokens
+    from lionhub.tools.coding import ALL_CODING_TOOLS, CodingToolkit
 
     path = tmp_path / "evidence.txt"
     path.write_text("stored " + "é🦁 evidence 0123456789 " * 4000)
@@ -1334,7 +1334,7 @@ async def test_amendment2_ceiling_refusal_and_coding_recovery_read_the_stored_fi
     import re
 
     from lionagi.cli.agent import _tool_results
-    from lionagi.tools.context.context import _result_text
+    from lionhub.tools.context.context import _result_text
 
     branch, fold, original, context, path = await _file_clip_fixture(tmp_path)
     copy = _active_results(branch)[0]
@@ -1444,9 +1444,9 @@ async def test_amendment2_restored_read_preserves_the_external_mtime_guard(tmp_p
 
 @pytest.mark.asyncio
 async def test_amendment2_repeated_clip_clone_and_store_keep_one_original_based_copy():
-    from lionagi.agent.context_fold import ContextFold
     from lionagi.session.branch import Branch
-    from lionagi.tools.context.context import ContextTool
+    from lionhub.agent.context_fold import ContextFold
+    from lionhub.tools.context.context import ContextTool
 
     output = "original é🦁 evidence 0123456789\n" * 4000
     branch, requests, originals = await _clip_fixture([output], cap=10000)
@@ -1482,7 +1482,7 @@ async def test_amendment2_repeated_clip_clone_and_store_keep_one_original_based_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delivered", [False, True])
 async def test_amendment2_later_tool_fold_lists_a_clipped_call_once_at_original_index(delivered):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, requests, originals = await _clip_fixture(["original data " * 7000], cap=8000)
     fold = ContextFold(branch, cap=8000)
@@ -1512,7 +1512,7 @@ async def test_amendment2_later_tool_fold_lists_a_clipped_call_once_at_original_
 
 @pytest.mark.asyncio
 async def test_amendment2_delivered_tail_copy_leaves_its_folded_call_unlisted():
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, requests, originals = await _clip_fixture(
         ["old result " * 6000, "new result " * 6000], cap=15000
@@ -1530,7 +1530,7 @@ async def test_amendment2_delivered_tail_copy_leaves_its_folded_call_unlisted():
 
 @pytest.mark.asyncio
 async def test_amendment2_tool_owned_clipped_from_data_never_redirects_provenance():
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     output = {"clipped_from": "a tool-owned value", "content": "long actual data " * 6000}
     branch, _requests, originals = await _clip_fixture([output])
@@ -1564,7 +1564,7 @@ async def test_amendment2_actual_run_work_count_is_unchanged_by_clipping(leg):
 async def test_amendment2_recovery_protection_lasts_until_a_completed_main_request(
     tmp_path, monkeypatch, protect
 ):
-    from lionagi.agent.context_fold import install_context_fold
+    from lionhub.agent.context_fold import install_context_fold
 
     branch, fold, original, context, _path = await _file_clip_fixture(tmp_path)
     index = branch.msgs.progression.index(original.id)
@@ -1613,8 +1613,8 @@ async def test_amendment2_recovery_protection_lasts_until_a_completed_main_reque
 async def test_amendment2_parallel_main_requests_match_their_own_captured_views():
     import asyncio
 
-    from lionagi.agent.context_fold import install_context_fold
     from lionagi.testing import LionAGIMockFactory
+    from lionhub.agent.context_fold import install_context_fold
 
     branch = LionAGIMockFactory.create_mocked_branch(response="answer")
     earlier = await branch.msgs.a_add_message(instruction="earlier")
@@ -1652,8 +1652,8 @@ async def test_amendment2_parallel_main_requests_match_their_own_captured_views(
 
 @pytest.mark.asyncio
 async def test_amendment2_copy_persistence_refusal_stops_before_the_main_request(monkeypatch):
-    from lionagi.agent.context_fold import install_context_fold
     from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.agent.context_fold import install_context_fold
 
     branch, _requests, _originals = await _clip_fixture(["actual original result " * 6000])
     refusal = StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
@@ -1683,8 +1683,8 @@ async def test_amendment2_copy_persistence_refusal_stops_before_the_main_request
 async def test_amendment2_busy_main_request_still_marks_its_actual_view_delivered():
     import asyncio
 
-    from lionagi.agent.context_fold import install_context_fold
     from lionagi.testing import LionAGIMockFactory
+    from lionhub.agent.context_fold import install_context_fold
 
     branch = LionAGIMockFactory.create_mocked_branch(response="main completed")
     await branch.msgs.a_add_message(instruction="the view carried by the main request")
@@ -1715,8 +1715,8 @@ async def test_amendment2_busy_main_request_still_marks_its_actual_view_delivere
 
 @pytest.mark.parametrize("value", [Path("notes-é.txt"), object()], ids=["path", "object"])
 def test_fold_note_text_keeps_default_str_as_its_last_fallback(value):
-    from lionagi.agent.context_fold import _short, _size
-    from lionagi.agent.context_fold import _text as fold_text
+    from lionhub.agent.context_fold import _short, _size
+    from lionhub.agent.context_fold import _text as fold_text
 
     expected = json.dumps(value, ensure_ascii=False, default=str)
     assert fold_text(value) == expected
@@ -1729,7 +1729,7 @@ def test_fold_note_text_keeps_yaml_values_before_the_string_fallback():
 
     import yaml
 
-    from lionagi.agent.context_fold import _text as fold_text
+    from lionhub.agent.context_fold import _text as fold_text
 
     value = {"date": datetime.date(2026, 10, 24)}
     assert yaml.safe_load(fold_text(value)) == value
@@ -1737,9 +1737,9 @@ def test_fold_note_text_keeps_yaml_values_before_the_string_fallback():
 
 @pytest.mark.asyncio
 async def test_fold_pre_call_refusal_retains_the_group_and_its_sibling(monkeypatch):
-    from lionagi.agent.context_fold import ContextFold
     from lionagi.ln.concurrency import ExceptionGroup
     from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.agent.context_fold import ContextFold
 
     branch, _task = _branch_with_reasoning(cap=1000000, turns=1)
     fold = ContextFold(branch, cap=6000, estimate=lambda _branch: 6000)
@@ -2127,8 +2127,8 @@ async def test_setup_failure_does_not_claim_installed_manifest_policy(
 
 def test_installing_a_fold_requires_cap_line_and_target_agreement():
     from lionagi import Branch
-    from lionagi.agent.context_fold import install_context_fold
     from lionagi.hooks.bus import HookPoint
+    from lionhub.agent.context_fold import install_context_fold
 
     branch = Branch(chat_model=_haiku(None))
     fold = install_context_fold(branch, cap=20000, fold_at=0.9, target=0.5)
@@ -2151,7 +2151,7 @@ async def test_configured_fold_trigger_boundary(monkeypatch, estimate, triggered
     from unittest.mock import AsyncMock
 
     from lionagi import Branch
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     fold = ContextFold(Branch(chat_model=_haiku(None)), cap=1000, fold_at=0.9, target=0.5)
     monkeypatch.setattr(fold, "estimate", lambda: estimate)
@@ -2165,7 +2165,7 @@ async def test_configured_fold_trigger_boundary(monkeypatch, estimate, triggered
 @pytest.mark.asyncio
 async def test_configured_target_stops_at_each_stage(monkeypatch, stop):
     from lionagi import Branch
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     fold = ContextFold(Branch(chat_model=_haiku(None)), cap=1000, fold_at=0.9, target=0.5)
     state = {"count": 500 if stop == 0 else 900}
@@ -2197,7 +2197,7 @@ async def test_configured_target_controls_floor_passes_without_moving_ceiling(
     monkeypatch, floor, tails
 ):
     from lionagi import Branch
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     fold = ContextFold(Branch(chat_model=_haiku(None)), cap=1000, fold_at=0.9, target=0.5)
     calls = []
@@ -2220,7 +2220,7 @@ async def test_configured_target_controls_floor_passes_without_moving_ceiling(
 @pytest.mark.parametrize("count,reached", [(499, True), (500, True), (501, False)])
 @pytest.mark.asyncio
 async def test_clip_outcome_uses_configured_target_at_its_boundary(monkeypatch, count, reached):
-    from lionagi.agent.context_fold import ContextFold
+    from lionhub.agent.context_fold import ContextFold
 
     branch, _requests, _originals = await _clip_fixture(["short result"], cap=1000)
     fold = ContextFold(branch, cap=1000, fold_at=0.9, target=0.5)

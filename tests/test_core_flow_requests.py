@@ -75,7 +75,7 @@ def test_all_emissions_share_one_core_base():
         assert issubclass(model, emission._EmissionModel)
         assert getattr(casts, model.__name__) is model
         if model not in (flow_requests.EscalationRequest, flow_requests.SpawnRequest):
-            assert model.__module__ == "lionagi.casts.emission"
+            assert model.__module__ == "lionhub.agent.casts.emission"
 
 
 def test_allowed_operations_are_one_frozen_vocabulary():
@@ -202,7 +202,7 @@ core = importlib.import_module("lionagi.protocols.flow_requests")
 legacy = sys.modules["lionagi.casts.emission"]
 assert core.__spec__.name == "lionagi.protocols.flow_requests"
 assert Path(core.__file__).resolve() == root / "lionagi/protocols/flow_requests.py"
-assert Path(legacy.__file__).resolve() == root / "lionagi/casts/emission.py"
+assert Path(legacy.__file__).resolve() == root / "lionhub/src/lionhub/agent/casts/emission.py"
 assert type(request) is getattr(core, name)
 assert getattr(legacy, name) is getattr(core, name)
 assert request.model_dump() == sample["model_dump"]
@@ -240,7 +240,7 @@ if first == "core":
 else:
     legacy = importlib.import_module("lionagi.casts.emission")
     core = sys.modules[core_name]
-    assert Path(legacy.__file__).resolve() == root / "lionagi/casts/emission.py"
+    assert Path(legacy.__file__).resolve() == root / "lionhub/src/lionhub/agent/casts/emission.py"
     assert legacy.EscalationRequest is core.EscalationRequest
     assert legacy.SpawnRequest is core.SpawnRequest
     print(json.dumps({"first": first, "core_loaded": core_name in sys.modules}))

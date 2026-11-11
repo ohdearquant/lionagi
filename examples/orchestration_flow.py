@@ -20,11 +20,11 @@ import asyncio
 import logging
 
 from lionagi.agent import AgentSpec
-from lionagi.casts.emission import SpawnRequest
 from lionagi.hooks import HookBus, HookPoint, HookSignal
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.agent.casts.emission import SpawnRequest
 from lionhub.orchestration import (
     build_dag_graph,
     plan,

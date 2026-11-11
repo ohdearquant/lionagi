@@ -8,8 +8,12 @@ includes both `lionagi` and `lionhub`.
 
 | Path (from repository root) | Contents |
 | --- | --- |
-| `lionhub/src/lionhub/cli/` | Built-in CLI command catalog and lazy command discovery. |
-| `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, and work forms. |
+| `lionhub/src/lionhub/agent/` | Agent profiles, permissions, hooks, and construction. |
+| `lionhub/src/lionhub/agent/casts/` | Cast patterns, roles, modes, profiles, packs, and emission contracts. |
+| `lionhub/src/lionhub/tools/` | Built-in tool interfaces and implementations. |
+| `lionhub/src/lionhub/cli/` | Built-in CLI command catalog, lazy command discovery, and the `li studio` and `li schedule` command adapters. |
+| `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, work forms, and scheduler services and helpers. |
+| `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
@@ -19,7 +23,7 @@ includes both `lionagi` and `lionhub`.
 
 The compatibility table in `lionagi._moved.MOVED` maps these old import prefixes
 to their current owners. More specific rows take precedence over a parent row.
-Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0.
+Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0. The agent and tools paths below are deprecated in 0.38.0.
 
 | Old import | Current import |
 | --- | --- |
@@ -30,6 +34,10 @@ Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0.
 | `lionagi.mcp` | `lionhub.serve.mcp` |
 | `lionagi.providers` | `lionhub.providers` |
 | `lionagi.lndl` | `lionhub.lndl` |
+| `lionagi.tools` | `lionhub.tools` |
+| `lionagi.agent` | `lionhub.agent` |
+| `lionagi.casts` | `lionhub.agent.casts` |
+| `lionagi.hooks.external` | `lionhub.hooks.external` |
 | `lionagi.operations.lndl_middle` | `lionhub.lndl.middle` |
 | `lionagi.providers._provider_errors` | `lionagi._provider_errors` |
 | `lionagi.providers._secret_resolution` | `lionagi.service.accounts._secret_resolution` |

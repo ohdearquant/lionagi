@@ -143,7 +143,7 @@ class _ProseTeamMember:
     chat_model = None  # no is_cli → falls back to API repair template
 
     def __init__(self, run, emit_on_call: int, event):
-        from lionagi.casts.emission import build_emission_operable
+        from lionhub.agent.casts.emission import build_emission_operable
 
         self._run = run
         self._event = event

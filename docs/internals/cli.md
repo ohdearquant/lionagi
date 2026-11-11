@@ -1191,7 +1191,7 @@ profile for this decision — the profile reloaded this leg (`has_role_key`) des
 was passed to *this* `-a`, not how the persisted branch was originally built; resuming a
 role-composed branch under a different, plain profile (or the same profile with `role:` since
 removed) would then make the guard treat it as plain and clobber its composed message. Instead,
-`create_agent` (`lionagi/agent/factory.py`) stamps every branch it builds with an immutable
+`create_agent` (`lionhub/src/lionhub/agent/factory.py`) stamps every branch it builds with an immutable
 `CREATE_AGENT_BRANCH_ORIGIN_KEY` marker in `branch.metadata`, which round-trips through
 `Branch.to_dict()`/`from_dict()` with the rest of `metadata`. On a resumed/continued leg,
 `_run_agent` consults that marker on the reloaded branch instead of re-deriving the guard from
@@ -1238,7 +1238,7 @@ before plus a pointer to the opt-in:
   permissions.
 - `api_tools: write` — the read set plus `editor` and `bash`, on macOS only (ADR-0041
   Amendment 2). `_make_api_agent_spec` sets `AgentSpec.seatbelt` to
-  `SeatbeltPolicy.for_workspace(cwd)` (`lionagi/tools/_seatbelt.py`), and every bash command and
+  `SeatbeltPolicy.for_workspace(cwd)` (`lionhub/src/lionhub/tools/_seatbelt.py`), and every bash command and
   the final write of every editor `write` or `edit` run as `sandbox-exec -D ... -p <policy> --
   <argv>`: deny by default, reads unrestricted, writes under the resolved `cwd`, the uv cache
   and the temporary directory, `cwd/.git` read-only. The editor's write child is
@@ -1278,7 +1278,7 @@ before plus a pointer to the opt-in:
   instruction standing in for the one about to be sent) reaches 80% of the ceiling, the host folds
   older tool calls and results into a note
   that lists them, then, if that is not enough, older reasoning into a summary from one model call,
-  down toward 60% (`lionagi/agent/context_fold.py`). A request the ceiling still refuses is folded
+  down toward 60% (`lionhub/src/lionhub/agent/context_fold.py`). A request the ceiling still refuses is folded
   and the loop continues, at most twice per turn (the task, or one queued message); a refusal the
   fold cannot clear fails the turn.
   The run's `run.json` records every fold under `context_folds`. Any other value, or
@@ -1772,7 +1772,7 @@ It is separate from `failed` (an exception escaped the provider) and a successfu
 
 **`_format_coordination_line`** — coordination telemetry shape contract. Renders an
 invocation's coordination telemetry (`node_metadata["coordination"]`, written by the scheduler
-engine's finalize path — see `lionagi.studio.services.scheduler_state.flush_run_telemetry`).
+engine's finalize path — see `lionhub.orchestration.scheduler.scheduler_state.flush_run_telemetry`).
 Returns `None` when everything is zero: both the monitor drill-in and the `li monitor run`
 wait-line only print this when non-zero. Every nested field is type-checked before use:
 `telemetry` is read back from persisted state and may not match the shape this module writes
@@ -1793,7 +1793,7 @@ with `temporary_signal_handlers` and given back when the wait returns.
 
 **Chain-following** (default on; `--no-chain` to opt out): the scheduler can fire a child run
 from a terminal run's schedule `on_success`/`on_fail` (engine records `chain_parent_id`/
-`chain_depth` on the child — see `lionagi/studio/scheduler/engine.py`'s `_fire`). A watched run
+`chain_depth` on the child — see `lionhub/src/lionhub/orchestration/scheduler/engine.py`'s `_fire`). A watched run
 going terminal is not necessarily the end of its chain, so once it lands the watch frontier is
 extended with any already-fired children and watching continues. A schedule that declares a
 chain action for the outcome but whose child hasn't fired yet gets a bounded grace window
@@ -1803,7 +1803,7 @@ a schedule with no matching chain action needs no grace wait at all. The aggrega
 `on_fail` recovery child that succeeds means the chain as a whole succeeded).
 
 **`_MAX_CHAIN_DEPTH`** — mirrors the scheduler engine's own chain-depth cap
-(`lionagi/studio/scheduler/engine.py` `_MAX_CHAIN_DEPTH`) — the engine never fires a chain
+(`lionhub/src/lionhub/orchestration/scheduler/engine.py` `_MAX_CHAIN_DEPTH`) — the engine never fires a chain
 child at or past this depth, so a grace window here would just burn ticks waiting on a child
 that is never coming.
 

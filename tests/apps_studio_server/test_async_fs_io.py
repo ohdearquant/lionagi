@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
+import lionhub.orchestration.scheduler.settings as scheduler_settings
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -44,7 +46,7 @@ def _make_client(
     import lionagi.studio.services.skills as skills_mod
     import lionhub.orchestration.runs as cli_runs_mod
 
-    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(scheduler_settings, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(agents_mod, "_AGENTS_ROOT", agents_root)
     monkeypatch.setattr(playbooks_mod, "_PLAYBOOKS_ROOT", playbooks_root)

@@ -8,9 +8,9 @@ import json
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.agent.factory import create_agent
-from lionagi.agent.spec import AgentSpec
 from lionagi.session.branch import Branch
+from lionhub.agent.factory import create_agent
+from lionhub.agent.spec import AgentSpec
 
 
 async def _make(config: AgentSpec) -> Branch:
@@ -70,7 +70,7 @@ async def test_create_agent_coding_all_tools_async():
 
 
 async def test_create_agent_with_permissions_sets_preprocessor():
-    from lionagi.agent.permissions import PermissionPolicy
+    from lionhub.agent.permissions import PermissionPolicy
 
     config = AgentSpec.coding()
     config.permissions = PermissionPolicy.read_only()
@@ -88,7 +88,7 @@ async def test_create_agent_with_permissions_sets_preprocessor():
 
 async def test_create_agent_permission_deny_all_preprocessor_raises():
     """If deny_all policy is set, preprocessor on any tool should raise PermissionError."""
-    from lionagi.agent.permissions import PermissionPolicy
+    from lionhub.agent.permissions import PermissionPolicy
 
     config = AgentSpec.coding()
     config.permissions = PermissionPolicy.deny_all()
@@ -109,9 +109,9 @@ async def test_mcp_discovered_tool_gets_permission_preprocessor(tmp_path, monkey
     the resolved permission/interceptor chain -- _load_mcp applies the same
     _attach_hooks() used for static tools to every tool name MCP discovery
     reports, not a copied/parallel chain."""
-    from lionagi.agent.permissions import PermissionPolicy
     from lionagi.protocols.action.manager import ActionManager
     from lionagi.protocols.action.tool import Tool
+    from lionhub.agent.permissions import PermissionPolicy
 
     mcp_file = tmp_path / "custom.mcp.json"
     mcp_file.write_text('{"mcpServers": {"demo": {"command": "true"}}}')
@@ -147,9 +147,9 @@ async def test_mcp_discovered_tool_composes_existing_preprocessor(tmp_path, monk
     instead of replacing it outright: an MCP-discovered Tool that already
     carries one (e.g. an arg normalizer wired at construction) must still
     run it, and the spec's permission gate must still block."""
-    from lionagi.agent.permissions import PermissionPolicy
     from lionagi.protocols.action.manager import ActionManager
     from lionagi.protocols.action.tool import Tool
+    from lionhub.agent.permissions import PermissionPolicy
 
     mcp_file = tmp_path / "custom.mcp.json"
     mcp_file.write_text('{"mcpServers": {"demo": {"command": "true"}}}')
@@ -247,8 +247,8 @@ def test_unforwardable_mcp_without_native_registration_still_warns(tmp_path, cap
     """Keep the strong warning when neither MCP delivery path succeeded."""
     import logging
 
-    from lionagi.agent.factory import _forward_mcp_to_cli_request
     from lionagi.service.imodel import iModel
+    from lionhub.agent.factory import _forward_mcp_to_cli_request
 
     mcp_file = tmp_path / "custom.mcp.json"
     mcp_file.write_text('{"mcpServers": {"khive": {"command": "true"}}}')
@@ -268,8 +268,8 @@ def test_a_caller_resolved_empty_set_is_not_reported_unreachable(caplog):
     on the same branch still warns."""
     import logging
 
-    from lionagi.agent.factory import _forward_mcp_to_cli_request
     from lionagi.service.imodel import iModel
+    from lionhub.agent.factory import _forward_mcp_to_cli_request
 
     config = AgentSpec.compose("implementer", model="openai/gpt-4.1-mini")
     branch = Branch(chat_model=iModel(provider="openai", model="gpt-4.1-mini"))
@@ -285,7 +285,7 @@ def test_a_caller_resolved_empty_set_is_not_reported_unreachable(caplog):
 
 async def test_create_agent_coding_permissions_recheck_user_mutated_args(tmp_path):
     """User pre-hooks must not be able to rewrite safe args after permission checks."""
-    from lionagi.agent.permissions import PermissionPolicy
+    from lionhub.agent.permissions import PermissionPolicy
 
     config = AgentSpec.coding(cwd=str(tmp_path))
     config.permissions = PermissionPolicy(
@@ -307,7 +307,7 @@ async def test_create_agent_coding_permissions_recheck_user_mutated_args(tmp_pat
 
 async def test_create_agent_standalone_permissions_recheck_user_mutated_args():
     """Standalone tools get the same post-mutation permission validation."""
-    from lionagi.agent.permissions import PermissionPolicy
+    from lionhub.agent.permissions import PermissionPolicy
 
     config = AgentSpec.compose("implementer", tools=["bash"])
     config.permissions = PermissionPolicy(
@@ -335,7 +335,7 @@ async def test_create_agent_load_settings_false_no_side_effects(monkeypatch):
         called.append(True)
         return {}
 
-    monkeypatch.setattr("lionagi.agent.settings.load_settings", fake_load, raising=False)
+    monkeypatch.setattr("lionhub.agent.settings.load_settings", fake_load, raising=False)
 
     config = AgentSpec.compose("implementer")
     await create_agent(config, load_settings=False)
@@ -467,7 +467,7 @@ async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeyp
 
 
 async def test_create_agent_does_not_load_project_settings_without_trust(tmp_path, monkeypatch):
-    import lionagi.agent.settings as settings_mod
+    import lionhub.agent.settings as settings_mod
 
     (tmp_path / ".lionagi").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -489,7 +489,7 @@ async def test_create_agent_does_not_load_project_settings_without_trust(tmp_pat
 
 async def test_agent_post_hooks_ignore_non_dict_results_and_keep_previous_result():
     """Non-dict hook return is ignored; a subsequent dict return is applied."""
-    from lionagi.agent.factory import _chain_post_hooks
+    from lionhub.agent.factory import _chain_post_hooks
 
     async def hook_returns_string(tool_name, op, kwargs, result):
         return "not a dict — should be ignored"
@@ -630,7 +630,7 @@ async def test_create_agent_system_prompt_without_lion_system():
 
 
 async def test_apply_permissions_invalid_type_returns_early():
-    from lionagi.agent.factory import _apply_permissions
+    from lionhub.agent.factory import _apply_permissions
 
     config = AgentSpec.compose("implementer")
     config.permissions = "invalid_permissions_type"
@@ -639,14 +639,14 @@ async def test_apply_permissions_invalid_type_returns_early():
 
 
 def test_chain_pre_hooks_no_hooks_returns_none():
-    from lionagi.agent.factory import _chain_pre_hooks
+    from lionhub.agent.factory import _chain_pre_hooks
 
     result = _chain_pre_hooks("tool", [], [])
     assert result is None
 
 
 async def test_chain_pre_hooks_dict_return_updates_args():
-    from lionagi.agent.factory import _chain_pre_hooks
+    from lionhub.agent.factory import _chain_pre_hooks
 
     async def rewrite(tool_name, action, args):
         return {**args, "extra": "added"}
@@ -658,7 +658,7 @@ async def test_chain_pre_hooks_dict_return_updates_args():
 
 
 async def test_chain_post_hooks_non_dict_result_returned_unchanged():
-    from lionagi.agent.factory import _chain_post_hooks
+    from lionhub.agent.factory import _chain_post_hooks
 
     async def hook(tool_name, op, args, result):
         return {"should": "not be used"}
@@ -1297,7 +1297,7 @@ async def test_forward_mcp_codex_allowlist_does_not_list_servers_during_factory_
 async def test_forward_mcp_codex_empty_allowlist_needs_no_ambient_discovery(tmp_path, monkeypatch):
     """An empty allowlist ignores the user config, so nothing codex would load
     on its own needs naming and discovery is never asked."""
-    import lionagi.agent.factory as factory_mod
+    import lionhub.agent.factory as factory_mod
 
     def _fail_if_called():
         raise AssertionError("an ignored user config needs no ambient discovery")
@@ -1354,7 +1354,7 @@ async def test_forward_mcp_codex_none_allowlist_is_still_a_noop(tmp_path, monkey
     unpredictably against this test's unpatched environment) must never even
     be attempted. Isolated HOME/cwd so no ambient .mcp.json resolves
     (mirrors test_forward_mcp_noop_when_spec_has_no_mcp_fields)."""
-    import lionagi.agent.factory as factory_mod
+    import lionhub.agent.factory as factory_mod
 
     def _fail_if_called():
         raise AssertionError("ambient discovery must not run for a None allowlist")
@@ -1554,9 +1554,9 @@ async def test_forward_mcp_explicit_path_undecodable_raises_configuration_error(
     UnicodeDecodeError. Called directly: through create_agent, `_load_mcp`
     reads the same file first and raises there."""
     from lionagi._errors import ConfigurationError
-    from lionagi.agent.factory import _forward_mcp_to_cli_request
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch
+    from lionhub.agent.factory import _forward_mcp_to_cli_request
 
     bad_path = tmp_path / "undecodable.mcp.json"
     bad_path.write_bytes(b'{"mcpServers": {"caf\xe9": {"command": "x"}}}')
@@ -1637,9 +1637,9 @@ async def test_forwarded_mcp_reaches_parse_requests_after_clone(tmp_path, monkey
 async def test_forward_mcp_explicit_path_read_failure_raises(tmp_path):
     """An explicit mcp_config_path that fails to read/parse is a configuration error, not a silent skip -- exercises `_forward_mcp_to_cli_request` directly rather than through create_agent, since island 1's `_load_mcp` would otherwise raise its own JSONDecodeError first and mask the intended regression."""
     from lionagi._errors import ConfigurationError
-    from lionagi.agent.factory import _forward_mcp_to_cli_request
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch
+    from lionhub.agent.factory import _forward_mcp_to_cli_request
 
     bad_path = tmp_path / "not-json.mcp.json"
     bad_path.write_text("{not valid json")
@@ -1657,9 +1657,9 @@ async def test_forward_mcp_auto_discovered_path_read_failure_soft_skips(tmp_path
     """An auto-discovered (not explicitly configured) MCP candidate that fails
     to read/parse must soft-skip (no forwarding), not raise — only an
     explicit spec.mcp_config_path carries enough caller intent to escalate."""
-    from lionagi.agent.factory import _forward_mcp_to_cli_request
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch
+    from lionhub.agent.factory import _forward_mcp_to_cli_request
 
     home = tmp_path / "home"
     lionagi_dir = home / ".lionagi"
@@ -1692,7 +1692,7 @@ async def test_explicit_empty_string_mcp_config_path_raises_not_autodiscovers(
 ):
     """An explicit empty-string mcp_config_path is a declared malformed path, not absence -- it must raise, never fall through to auto-discovery; presence is checked with `is not None`, not truthiness, so `mcp_config_path=""` can't silently auto-discover an unrelated config."""
     from lionagi._errors import ConfigurationError
-    from lionagi.agent.factory import _resolve_mcp_path
+    from lionhub.agent.factory import _resolve_mcp_path
 
     # A discoverable home candidate that MUST NOT be returned.
     home = tmp_path / "home"
@@ -1838,7 +1838,7 @@ def test_forward_mcp_codex_allowlist_reads_child_env_at_launch_without_cli_fallb
     import subprocess
 
     import lionhub.providers.openai.codex as codex_mod
-    from lionagi.agent.factory import apply_forwarded_mcp_servers
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
 
     codex_home = tmp_path / "codex_home"
     codex_home.mkdir()
@@ -1880,7 +1880,7 @@ def test_forward_mcp_codex_allowlist_refuses_a_process_codex_home_that_is_not_ab
 ):
     """The process's own CODEX_HOME is refused before the config is read or a process starts,
     through the same predicate and message as a request's."""
-    from lionagi.agent.factory import _discover_ambient_codex_mcp_server_names
+    from lionhub.agent.factory import _discover_ambient_codex_mcp_server_names
 
     monkeypatch.setenv("CODEX_HOME", "~/x")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -1897,7 +1897,7 @@ def test_forward_mcp_codex_allowlist_refuses_a_process_codex_home_that_is_not_ab
 def test_forward_mcp_codex_allowlist_refuses_a_request_codex_home_that_is_not_absolute():
     """The request environment's CODEX_HOME is refused by the same predicate, with the same
     message a process home gets."""
-    from lionagi.agent.factory import apply_forwarded_mcp_servers
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
 
     with pytest.raises(ConfigurationError, match="CODEX_HOME") as refusal:
         apply_forwarded_mcp_servers(
@@ -1916,7 +1916,7 @@ def test_forward_mcp_codex_allowlist_refuses_a_request_codex_home_that_is_not_ab
 def test_forward_mcp_codex_allowlist_refuses_a_bad_home_before_reading_the_profile(monkeypatch):
     """The refusal is raised before the root-profile read, not caught by its ValueError
     fallback and retried as an absent profile."""
-    import lionagi.agent.factory as factory_mod
+    import lionhub.agent.factory as factory_mod
 
     monkeypatch.setattr(
         factory_mod, "_discover_ambient_codex_mcp_server_names", lambda *_a, **_k: {"docs"}
@@ -1937,7 +1937,7 @@ def test_forward_mcp_codex_allowlist_refuses_a_bad_process_home_at_discovery(mon
     no codex executable is started."""
     import subprocess
 
-    import lionagi.agent.factory as factory_mod
+    import lionhub.agent.factory as factory_mod
 
     monkeypatch.setenv("CODEX_HOME", "~/x")
     monkeypatch.setenv("HOME", "/home/example")
@@ -1958,7 +1958,7 @@ def test_forward_mcp_codex_exclusive_set_refuses_a_bad_process_home_before_the_p
     ValueError fallback would swallow a ConfigurationError, and before discovery."""
     import subprocess
 
-    import lionagi.agent.factory as factory_mod
+    import lionhub.agent.factory as factory_mod
 
     monkeypatch.setenv("CODEX_HOME", "~/x")
     monkeypatch.setenv("HOME", "/home/example")

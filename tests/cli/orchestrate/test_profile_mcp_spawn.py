@@ -14,8 +14,8 @@ async def _spawn(
 ):
     import lionhub.orchestration.engines as engines
     from lionagi import Branch, iModel
-    from lionagi.casts.emission import SpawnRequest
     from lionagi.cli.orchestrate import flow
+    from lionhub.agent.casts.emission import SpawnRequest
 
     class Captured(Exception):
         pass

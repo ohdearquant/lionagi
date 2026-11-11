@@ -1,0 +1,868 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Studio self-healing lifecycle reapers — write through StateDB.update_status()."""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+import lionhub.orchestration.scheduler.liveness as _liveness
+from lionagi.state.db import StateDB, state_db_known_absent
+from lionagi.state.reasons import RunReasons, SessionReasons, ShowReasons
+from lionhub.orchestration.scheduler.show_artifacts import _SHOW_TERMINAL_STATUSES, _play_dirs
+from lionhub.orchestration.scheduler.show_artifacts import read_json_file as _read_show_json
+
+_log = logging.getLogger("lionagi.studio.services.lifecycle")
+
+
+async def _resolve_liveness(session: dict, artifacts: Path | None) -> bool | None:
+    """Preserve the module's liveness seam while sharing the host-wide fallback."""
+    return await _liveness.resolve_process_liveness_probe(
+        lambda snapshot: _liveness.process_liveness(session, artifacts, snapshot)
+    )
+
+
+# Dead-runner-in-flight play statuses. Deliberately EXCLUDES:
+#   gated   — a paused gate is legitimately long-lived, never reap
+#   pending — queued, may be waiting on depends_on; not an in-flight crash
+_REAPABLE_PLAY_STATUSES = frozenset({"running", "running_complete", "prepared", "redoing"})
+
+
+# ── invocation deadline + zero-session reaper ────────────────────────────────
+
+# Action kinds whose child process never creates a lionagi session. The
+# zero-session condition below infers "this launch is stuck" from a session
+# count that never left zero; for these kinds zero is the correct steady
+# state for the whole run, so that inference would reap a perfectly healthy
+# process. A 'command' action spawns an allow-listed executable directly —
+# a shell script, a test runner — which has no reason to ever open a Branch.
+# The wall-clock deadline still applies to them; only this heuristic is off.
+_SESSIONLESS_ACTION_KINDS = frozenset({"command"})
+_INVOCATION_REAPER_PAGE_SIZE = 500
+
+
+def _deadline_for_kind(action_kind: str | None, global_default: float | int) -> float:
+    """Compatibility wrapper around the shared validated deadline resolver."""
+    from lionhub.orchestration.scheduler.settings import invocation_deadline_seconds
+
+    return invocation_deadline_seconds(
+        action_kind,
+        global_default=global_default,
+    )
+
+
+async def _running_invocations_for_reaping(db: StateDB) -> AsyncIterator[dict]:
+    """Yield every running invocation through stable oldest-first keyset pages."""
+    after_started_at: float | None = None
+    after_id: str | None = None
+    while True:
+        invocations = await db.list_running_invocations_for_reaping(
+            limit=_INVOCATION_REAPER_PAGE_SIZE,
+            after_started_at=after_started_at,
+            after_id=after_id,
+        )
+        if not invocations:
+            return
+        for invocation in invocations:
+            yield invocation
+        last = invocations[-1]
+        after_started_at = last["started_at"]
+        after_id = last["id"]
+        if len(invocations) < _INVOCATION_REAPER_PAGE_SIZE:
+            return
+
+
+async def reap_stale_invocations(
+    *,
+    deadline_seconds: float | int | None = None,
+    zero_session_grace_seconds: int | None = None,
+) -> int:
+    """Transition stale running invocations to ``timed_out``.
+
+    Two conditions: (1) wall-clock deadline exceeded (per-kind env override
+    ``LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS`` → global fallback);
+    (2) zero sessions spawned past the grace period.
+    Returns count transitioned.
+    """
+    from lionhub.orchestration.scheduler.settings import (
+        INVOCATION_DEADLINE_SECONDS,
+        ZERO_SESSION_GRACE_SECONDS,
+    )
+
+    if deadline_seconds is None:
+        deadline_seconds = INVOCATION_DEADLINE_SECONDS
+    if zero_session_grace_seconds is None:
+        zero_session_grace_seconds = ZERO_SESSION_GRACE_SECONDS
+
+    if state_db_known_absent():
+        return 0
+
+    now = time.time()
+    grace_cutoff = now - zero_session_grace_seconds
+    reaped = 0
+
+    try:
+        async with StateDB() as db:
+            async for inv in _running_invocations_for_reaping(db):
+                inv_id = inv["id"]
+                started_at = inv.get("started_at") or now
+                updated_at = inv.get("updated_at") or started_at
+                session_count = inv.get("session_count") or 0
+                action_kind = inv.get("action_kind")  # joined from the firing occurrence
+
+                # Per-kind override: check env var before falling back to global.
+                effective_deadline = _deadline_for_kind(action_kind, deadline_seconds)
+                deadline_cutoff = now - effective_deadline
+
+                # Condition 1: wall-clock deadline exceeded.
+                if started_at < deadline_cutoff:
+                    _log.info(
+                        "Reaping invocation %s (kind=%s): deadline exceeded "
+                        "(started_at=%s, deadline=%ss)",
+                        inv_id,
+                        action_kind,
+                        started_at,
+                        effective_deadline,
+                    )
+                    # ended_at rides in extra_fields so it lands in the same
+                    # atomic UPDATE as the status transition — a winning CAS
+                    # followed by a separate update_invocation() call could
+                    # leave status="timed_out" with ended_at never patched if
+                    # that second write failed. Preserving a
+                    # pre-existing ended_at (rather than overwriting it) is
+                    # still decided off this same pre-write snapshot.
+                    transitioned = await db.update_status(
+                        "invocation",
+                        inv_id,
+                        new_status="timed_out",
+                        reason_code=RunReasons.TIMED_OUT_DEADLINE,
+                        reason_summary="invocation_deadline_exceeded",
+                        evidence_refs=[{"kind": "invocation", "id": inv_id}],
+                        source="system",
+                        actor="studio_lifecycle_reaper",
+                        metadata={
+                            "deadline_seconds": effective_deadline,
+                            "action_kind": action_kind,
+                            "started_at": started_at,
+                        },
+                        expected_statuses={"running"},
+                        extra_fields={"ended_at": now} if inv.get("ended_at") is None else None,
+                    )
+                    if transitioned:
+                        reaped += 1
+                    else:
+                        _log.debug("Invocation %s skipped (status changed before CAS lock)", inv_id)
+                    continue
+
+                # Condition 2: zero sessions and past grace period. Skipped
+                # for kinds that never open a session — see
+                # _SESSIONLESS_ACTION_KINDS. Reaping one of those writes a
+                # terminal status onto a row whose process is still running,
+                # and because the executor's own terminal write is guarded on
+                # the row still being 'running', the real outcome is then
+                # refused for good: the run reports the reaper's verdict
+                # forever, whatever the child went on to do.
+                if action_kind in _SESSIONLESS_ACTION_KINDS:
+                    continue
+                if session_count == 0 and updated_at < grace_cutoff:
+                    _log.info(
+                        "Reaping invocation %s: zero sessions past grace period (%ss)",
+                        inv_id,
+                        zero_session_grace_seconds,
+                    )
+                    # See the deadline-exceeded branch above for why ended_at
+                    # rides in extra_fields instead of a follow-up write.
+                    transitioned = await db.update_status(
+                        "invocation",
+                        inv_id,
+                        new_status="timed_out",
+                        reason_code=RunReasons.TIMED_OUT_DEADLINE,
+                        reason_summary="zero_session_invocation_timeout",
+                        evidence_refs=[{"kind": "invocation", "id": inv_id}],
+                        source="system",
+                        actor="studio_lifecycle_reaper",
+                        metadata={
+                            "zero_session_grace_seconds": zero_session_grace_seconds,
+                            "updated_at": updated_at,
+                        },
+                        expected_statuses={"running"},
+                        extra_fields={"ended_at": now} if inv.get("ended_at") is None else None,
+                    )
+                    if transitioned:
+                        reaped += 1
+                    else:
+                        _log.debug("Invocation %s skipped (status changed before CAS lock)", inv_id)
+    except Exception:
+        _log.exception("reap_stale_invocations error")
+
+    return reaped
+
+
+# ── null-status session detector ─────────────────────────────────────────────
+
+
+async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
+    """Transition null-status sessions whose process is dead to ``failed``.
+    Sessions get ``status=NULL`` when the process crashes before writing a
+    terminal status; the ``status IS NULL`` guard never touches
+    already-terminal rows. Liveness honors the recorded
+    ``node_metadata.pid`` via ``process_liveness()``, and a not-observably-
+    alive row still gets a staleness grace (mirroring ``_classify_phantom``)
+    so a fresh/quiet session isn't reaped for a momentary window."""
+    from lionhub.orchestration.scheduler.settings import PHANTOM_STALE_HOURS
+
+    if stale_hours is None:
+        stale_hours = PHANTOM_STALE_HOURS
+    stale_seconds = stale_hours * 3600
+
+    if state_db_known_absent():
+        return 0
+
+    now = time.time()
+    reaped = 0
+
+    try:
+        async with StateDB() as db:
+            rows = await db.fetch_all(
+                "SELECT id, artifacts_path, started_at, ended_at, updated_at, node_metadata "
+                "FROM sessions WHERE status IS NULL"
+            )
+
+        for row in rows:
+            sid = row["id"]
+            artifacts = _liveness._artifacts_path(row)
+            session = {"id": sid, "node_metadata": row.get("node_metadata")}
+            if await _resolve_liveness(session, artifacts) is True:
+                # Process still alive — skip, it may write its own status.
+                continue
+            if _liveness.process_identity_is_foreign(session):
+                # Hosted on another machine: nothing observable here says if it's alive, and
+                # the staleness grace below cannot supply that, so reaping it would guess.
+                continue
+
+            updated_at = row.get("updated_at") or row.get("started_at") or 0.0
+            if now - updated_at < stale_seconds:
+                # Not confirmed alive, but too fresh to reap — give it the
+                # benefit of the doubt, same as _classify_phantom does.
+                continue
+
+            _log.info("Reaping null-status session %s: process is dead", sid)
+            try:
+                async with StateDB() as db:
+                    # ended_at rides in extra_fields so it lands in the same
+                    # atomic UPDATE as the status transition; see
+                    # reap_stale_invocations for why a follow-up write is unsafe.
+                    transitioned = await db.update_status(
+                        "session",
+                        sid,
+                        new_status="failed",
+                        reason_code=RunReasons.FAILED_EXCEPTION,
+                        reason_summary="process_exited_without_status",
+                        evidence_refs=[{"kind": "session", "id": sid}],
+                        source="system",
+                        actor="studio_lifecycle_reaper",
+                        metadata={"detector": "null_status_dead_process"},
+                        expected_statuses={None},
+                        # A dead process's row is terminal, so it must not keep
+                        # a live phase; the clear rides the status write.
+                        extra_fields=(
+                            {"current_phase": None}
+                            if row["ended_at"] is not None
+                            else {"ended_at": now, "current_phase": None}
+                        ),
+                    )
+                if transitioned:
+                    reaped += 1
+                else:
+                    _log.debug("Session %s skipped (status changed before CAS lock)", sid)
+            except LookupError:
+                pass
+            except Exception:
+                _log.exception("Failed to transition null-status session %s", sid)
+    except Exception:
+        _log.exception("reap_null_status_sessions error")
+
+    return reaped
+
+
+# ── automatic phantom reaper ─────────────────────────────────────────────────
+
+
+async def reap_phantom_sessions(
+    *,
+    stale_hours: float | None = None,
+    actor: str = "studio_lifecycle_reaper",
+) -> int:
+    """Transition phantom sessions to ``failed`` via StateDB.update_status() — no DELETE.
+
+    Uses ``list_phantom_sessions()`` for detection.
+    Returns count transitioned.
+    """
+    _reaped, ids = await reap_phantom_sessions_detailed(stale_hours=stale_hours, actor=actor)
+    return len(ids)
+
+
+async def reap_phantom_sessions_detailed(
+    *,
+    stale_hours: float | None = None,
+    actor: str = "studio_lifecycle_reaper",
+) -> tuple[int, list[str]]:
+    """Same as ``reap_phantom_sessions``, but also returns the reaped session
+    ids — callers that need to record what was actually touched (e.g. an
+    admin-event audit row) can't reconstruct that from a bare count."""
+    from lionhub.orchestration.scheduler.settings import PHANTOM_STALE_HOURS
+
+    if stale_hours is None:
+        stale_hours = PHANTOM_STALE_HOURS
+
+    if state_db_known_absent():
+        return 0, []
+
+    phantoms = await _liveness.list_phantom_sessions(stale_hours=stale_hours)
+    if not phantoms:
+        return 0, []
+
+    now = time.time()
+    reaped_ids: list[str] = []
+
+    for phantom in phantoms:
+        sid = phantom["session_id"]
+        phantom_reason = phantom.get("reason", "process_dead")
+        # The phantom reason → SessionReasons code map is admin's, which the
+        # health report reads too; a reason it does not name is an orphan.
+        reason_code = _liveness._PHANTOM_REASON_CODES.get(
+            phantom_reason, SessionReasons.HEALTH_ORPHANED_NO_PROCESS
+        )
+        try:
+            async with StateDB() as db:
+                current = await db.get_session(sid)
+                if current is None:
+                    continue
+                if current.get("status") != "running":
+                    # Already transitioned by another path.
+                    continue
+                # ended_at rides in extra_fields on both branches below so it
+                # lands in the same atomic UPDATE as the status transition;
+                # see reap_stale_invocations for why a follow-up write is unsafe.
+                _extra: dict = {"current_phase": None}
+                if current.get("ended_at") is None:
+                    _extra["ended_at"] = now
+                if current.get("agent_name") == "claude-code":
+                    # A mirrored external session has no lionagi process, so the
+                    # phantom model misfires: an idle transcript is a normal
+                    # completion, not a crash. Reap it to completed (the same
+                    # reason its own idle-reconcile uses), never to failed.
+                    transitioned = await db.update_status(
+                        "session",
+                        sid,
+                        new_status="completed",
+                        reason_code=RunReasons.COMPLETED_OK,
+                        reason_summary="mirror_idle_reaped",
+                        source="system",
+                        actor=actor,
+                        metadata={"mirror_idle_reaped": True},
+                        expected_statuses={"running"},
+                        extra_fields=_extra,
+                    )
+                else:
+                    transitioned = await db.update_status(
+                        "session",
+                        sid,
+                        new_status="failed",
+                        reason_code=reason_code,
+                        reason_summary="phantom_reaped",
+                        evidence_refs=[
+                            {
+                                "kind": "phantom_classification",
+                                "reason": phantom_reason,
+                                "session_id": sid,
+                            }
+                        ],
+                        source="system",
+                        actor=actor,
+                        metadata={"phantom_reaped": True, "phantom_reason": phantom_reason},
+                        expected_statuses={"running"},
+                        extra_fields=_extra,
+                    )
+            if transitioned:
+                _log.info("Phantom session %s reaped (reason=%s)", sid, phantom_reason)
+                reaped_ids.append(sid)
+            else:
+                _log.debug("Session %s skipped (status changed before CAS lock)", sid)
+        except LookupError:
+            pass
+        except Exception:
+            _log.exception("Failed to reap phantom session %s", sid)
+
+    return len(reaped_ids), reaped_ids
+
+
+# ── play-level staleness reaper ──────────────────────────────────────────────
+
+
+async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
+    """Transition dead-runner in-flight plays to ``blocked``.
+
+    Keys on the plays table's own ``status`` + ``updated_at`` rather than a
+    session join — ``db_maintenance`` severs ``session_id`` to NULL on
+    session prune, so an orphaned play row must still be reachable by its own
+    status. Liveness honors the child session's recorded process (when one is
+    still linked) before falling back to a staleness backstop, mirroring
+    ``reap_null_status_sessions``.
+    """
+    from lionhub.orchestration.scheduler.settings import PLAY_STALE_HOURS
+
+    if stale_hours is None:
+        stale_hours = PLAY_STALE_HOURS
+    stale_seconds = stale_hours * 3600
+
+    if state_db_known_absent():
+        return 0
+
+    now = time.time()
+    reaped = 0
+
+    try:
+        async with StateDB() as db:
+            placeholders = ",".join("?" * len(_REAPABLE_PLAY_STATUSES))
+            candidates = await db.fetch_all(
+                f"SELECT id FROM plays WHERE status IN ({placeholders})",  # noqa: S608
+                tuple(sorted(_REAPABLE_PLAY_STATUSES)),
+            )
+
+        for cand in candidates:
+            play_id = cand["id"]
+            try:
+                async with StateDB() as db:
+                    # Re-read fresh immediately before deciding. A play can be
+                    # legitimately claimed between the scan and here — set to
+                    # running, given a live child session, and refreshed to
+                    # updated_at=now. The status-membership CAS below would
+                    # still overwrite it (running is a reapable status), so the
+                    # full stale predicate is revalidated against current state.
+                    row = await db.fetch_one(
+                        "SELECT status, session_id, started_at, updated_at, ended_at "
+                        "FROM plays WHERE id = ?",
+                        (play_id,),
+                    )
+                    if row is None or row["status"] not in _REAPABLE_PLAY_STATUSES:
+                        continue
+
+                    session_id = row.get("session_id")
+                    # Liveness FIRST: a play whose child session process is
+                    # still alive is never reaped on staleness alone.
+                    if session_id:
+                        srow = await db.fetch_one(
+                            "SELECT id, artifacts_path, node_metadata FROM sessions WHERE id = ?",
+                            (session_id,),
+                        )
+                        if srow is not None:
+                            session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
+                            if (
+                                await _resolve_liveness(session, _liveness._artifacts_path(srow))
+                                is True
+                            ):
+                                continue
+                            # Child session hosted elsewhere: this machine can't tell a dead
+                            # runner from a working one, so the play stays in flight.
+                            if _liveness.process_identity_is_foreign(session):
+                                continue
+
+                    updated_at_raw = row.get("updated_at")
+                    updated_at = updated_at_raw or row.get("started_at") or 0.0
+                    if now - updated_at < stale_seconds:
+                        # Not confirmed alive, but too fresh to reap — benefit of the doubt.
+                        continue
+
+                    _log.info(
+                        "Reaping stale play %s: status=%s, session_id=%s",
+                        play_id,
+                        row["status"],
+                        session_id,
+                    )
+                    # expected_updated_at pins the transition to the exact row
+                    # version we validated: a claim landing between this read
+                    # and the write bumps updated_at, so the guarded write loses
+                    # the race and we skip rather than block a live play.
+                    # ended_at rides in extra_fields so it lands in the same
+                    # atomic UPDATE as the status transition; see
+                    # reap_stale_invocations for why a follow-up write is unsafe.
+                    transitioned = await db.update_status(
+                        "play",
+                        play_id,
+                        new_status="blocked",
+                        reason_code=RunReasons.CANCELLED_STALE_AUTO,
+                        reason_summary="play_runner_dead_or_orphaned",
+                        evidence_refs=[{"kind": "play", "id": play_id}],
+                        source="system",
+                        actor="studio_lifecycle_reaper",
+                        metadata={
+                            "detector": "stale_play_reaper",
+                            "prior_status": row["status"],
+                            "session_id": session_id,
+                            "updated_at": updated_at,
+                        },
+                        expected_statuses=_REAPABLE_PLAY_STATUSES,
+                        expected_updated_at=updated_at_raw,
+                        extra_fields={"ended_at": now} if row.get("ended_at") is None else None,
+                    )
+                    if transitioned:
+                        reaped += 1
+                    else:
+                        _log.debug("Play %s skipped (status changed before CAS lock)", play_id)
+            except LookupError:
+                pass
+            except Exception:
+                _log.exception("Failed to reap stale play %s", play_id)
+    except Exception:
+        _log.exception("reap_stale_plays error")
+
+    return reaped
+
+
+# ── schedule_run staleness reaper ─────────────────────────────────────────────
+
+
+async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
+    """Transition ``schedule_runs`` rows stuck at ``status="running"`` to
+    ``timed_out``. The scheduler process can die between committing a
+    schedule_run row and its own terminal write, orphaning the row at
+    ``running`` forever with no process-liveness signal to check (the
+    "process" here is the scheduler daemon; its restart triggers reaping).
+    Pure wall-clock deadline against ``updated_at`` (falling back to
+    ``fired_at``), with the same optimistic-lock ``expected_updated_at``
+    guard as ``reap_stale_plays``. Scoped to ``schedule_id IS NOT NULL`` --
+    the ad-hoc task queue has its own lease-based recovery
+    (``worker.reap_expired_leases``) and is excluded so a live-leased task
+    isn't marked ``timed_out`` before its lease even expires."""
+    from lionhub.orchestration.scheduler.settings import SCHEDULE_RUN_STALE_HOURS
+
+    if stale_hours is None:
+        stale_hours = SCHEDULE_RUN_STALE_HOURS
+    stale_seconds = stale_hours * 3600
+
+    if state_db_known_absent():
+        return 0
+
+    now = time.time()
+    deadline_cutoff = now - stale_seconds
+    reaped = 0
+
+    try:
+        async with StateDB() as db:
+            rows = await db.fetch_all(
+                "SELECT id, fired_at, updated_at FROM schedule_runs "
+                "WHERE status = 'running' AND schedule_id IS NOT NULL"
+            )
+            for row in rows:
+                run_id = row["id"]
+                fired_at = row.get("fired_at") or now
+                updated_at_raw = row.get("updated_at")
+                reference = updated_at_raw if updated_at_raw is not None else fired_at
+                if reference >= deadline_cutoff:
+                    continue
+
+                _log.info(
+                    "Reaping stale schedule_run %s: running past deadline (%.1fh)",
+                    run_id,
+                    stale_hours,
+                )
+                try:
+                    transitioned = await db.update_status(
+                        "schedule_run",
+                        run_id,
+                        new_status="timed_out",
+                        reason_code=RunReasons.TIMED_OUT_DEADLINE,
+                        reason_summary="schedule_run_stale_running_reaped",
+                        evidence_refs=[{"kind": "schedule_run", "id": run_id}],
+                        source="system",
+                        actor="studio_lifecycle_reaper",
+                        metadata={
+                            "stale_hours": stale_hours,
+                            "fired_at": fired_at,
+                            "reference": reference,
+                        },
+                        expected_statuses={"running"},
+                        expected_updated_at=updated_at_raw,
+                    )
+                    if transitioned:
+                        reaped += 1
+                    else:
+                        _log.debug(
+                            "schedule_run %s skipped (status changed before CAS lock)", run_id
+                        )
+                except LookupError:
+                    pass
+    except Exception:
+        _log.exception("reap_stale_schedule_runs error")
+
+    return reaped
+
+
+# ── show-level staleness reaper ──────────────────────────────────────────────
+
+# Non-terminal show statuses (the complement of `_SHOW_TERMINAL_STATUSES`).
+# Kept as its own curated set — like `_REAPABLE_PLAY_STATUSES` — so the CAS
+# `expected_statuses` guard below only matches the exact statuses this
+# reaper is willing to move out of, rather than importing the full status
+# vocabulary just to subtract the terminal set at call time.
+_REAPABLE_SHOW_STATUSES = frozenset({"active", "imported"})
+
+
+def _recompute_show_status_from_disk(show_dir: Path) -> tuple[str, str, str] | None:
+    """Re-derive a show's terminal status from on-disk play/verdict
+    evidence, mirroring the rules ``shows.import_shows()`` applies once at
+    mirror-row creation time: an ``_ABORT`` marker means aborted; a passing
+    ``_final_verdict.json`` means completed; every child play reaching
+    ``merged`` (with at least one play) also means completed. Any other
+    on-disk state is still in flight, so this returns ``None`` and the
+    caller skips the show. Returns ``(new_status, reason_code,
+    reason_summary)`` or ``None``."""
+    if (show_dir / "_ABORT").exists():
+        return (
+            "aborted",
+            ShowReasons.ABORTED_OPERATOR,
+            "Show directory carries an operator abort marker.",
+        )
+
+    final_verdict = _read_show_json(show_dir / "_final_verdict.json")
+    if final_verdict and final_verdict.get("show_passed"):
+        return (
+            "completed",
+            ShowReasons.COMPLETED_FINAL_GATE,
+            "Show has a passing final gate verdict.",
+        )
+
+    metas = [_read_show_json(p / "_meta.json") or {} for p in _play_dirs(show_dir)]
+    statuses = [m.get("status", "pending") for m in metas]
+    if statuses and all(s == "merged" for s in statuses):
+        return (
+            "completed",
+            ShowReasons.COMPLETED_ALL_PLAYS_MERGED,
+            "All child plays reached merged status.",
+        )
+
+    return None
+
+
+async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
+    """Recompute a stale non-terminal show's status from its plays' state.
+    ``shows.py`` computes ``show_status`` only once, at mirror-row creation
+    time -- a show mirrored while its plays are still in flight gets
+    ``status="active"`` and is never re-evaluated once those plays later
+    merge or abort on disk, unlike sessions/plays/invocations/schedule_runs
+    which all have their own reapers. This fills that gap using the exact
+    on-disk rules ``import_shows()`` already applies (see
+    ``_recompute_show_status_from_disk``). Liveness-first, like
+    ``reap_stale_plays``: a show with any child play whose session process
+    is still observably alive is never reaped, regardless of the on-disk
+    snapshot or how stale the row looks."""
+    from lionhub.orchestration.scheduler.settings import SHOW_STALE_HOURS
+
+    if stale_hours is None:
+        stale_hours = SHOW_STALE_HOURS
+    stale_seconds = stale_hours * 3600
+
+    if state_db_known_absent():
+        return 0
+
+    now = time.time()
+    reaped = 0
+
+    try:
+        async with StateDB() as db:
+            placeholders = ",".join("?" * len(_SHOW_TERMINAL_STATUSES))
+            candidates = await db.fetch_all(
+                f"SELECT id FROM shows WHERE status NOT IN ({placeholders})",  # noqa: S608
+                tuple(sorted(_SHOW_TERMINAL_STATUSES)),
+            )
+
+        for cand in candidates:
+            show_id = cand["id"]
+            try:
+                async with StateDB() as db:
+                    # Re-read fresh immediately before deciding — a show can
+                    # be legitimately re-touched between the scan and here.
+                    row = await db.fetch_one(
+                        "SELECT id, status, show_dir, updated_at FROM shows WHERE id = ?",
+                        (show_id,),
+                    )
+                    if row is None or row["status"] not in _REAPABLE_SHOW_STATUSES:
+                        continue
+
+                    updated_at_raw = row.get("updated_at")
+                    updated_at = updated_at_raw or 0.0
+                    if now - updated_at < stale_seconds:
+                        # Not confirmed alive, but too fresh to reap.
+                        continue
+
+                    play_rows = await db.fetch_all(
+                        "SELECT id, session_id FROM plays WHERE show_id = ?",
+                        (show_id,),
+                    )
+                    live = False
+                    for prow in play_rows:
+                        session_id = prow.get("session_id")
+                        if not session_id:
+                            continue
+                        srow = await db.fetch_one(
+                            "SELECT id, artifacts_path, node_metadata FROM sessions WHERE id = ?",
+                            (session_id,),
+                        )
+                        if srow is None:
+                            continue
+                        session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
+                        if (
+                            await _resolve_liveness(session, _liveness._artifacts_path(srow))
+                            is True
+                        ):
+                            live = True
+                            break
+                        # A child hosted on another machine is unmeasurable here, not dead —
+                        # treated like a live child, the only honest move when it's unseen.
+                        if _liveness.process_identity_is_foreign(session):
+                            live = True
+                            break
+                    if live:
+                        # A live child play process is never reaped on
+                        # staleness alone.
+                        continue
+
+                    show_dir_raw = row.get("show_dir")
+                    if not show_dir_raw:
+                        continue
+                    show_dir = Path(show_dir_raw)
+                    for play_dir in _play_dirs(show_dir):
+                        try:
+                            play_pid = int((play_dir / ".pid").read_text().strip())
+                        except (OSError, ValueError):
+                            continue
+                        if play_pid <= 1:
+                            continue
+                        session = {"id": "", "node_metadata": {"pid": play_pid}}
+                        if await _resolve_liveness(session, None) is True:
+                            live = True
+                            break
+                    if live:
+                        # The play PID is written before its session is linked.
+                        continue
+
+                    recomputed = _recompute_show_status_from_disk(show_dir)
+                    if recomputed is None:
+                        # Still genuinely in flight on disk — nothing to reap.
+                        continue
+                    new_status, reason_code, reason_summary = recomputed
+
+                    _log.info(
+                        "Reaping stale show %s: status=%s -> %s",
+                        show_id,
+                        row["status"],
+                        new_status,
+                    )
+                    # expected_updated_at pins the transition to the exact row
+                    # version validated above: a claim/re-touch landing
+                    # between this read and the write bumps updated_at, so
+                    # the guarded write loses the race and we skip rather
+                    # than clobber a show that moved.
+                    transitioned = await db.update_status(
+                        "show",
+                        show_id,
+                        new_status=new_status,
+                        reason_code=reason_code,
+                        reason_summary=reason_summary,
+                        evidence_refs=[{"kind": "show", "id": show_id}],
+                        source="system",
+                        actor="studio_lifecycle_reaper",
+                        metadata={
+                            "detector": "stale_show_reaper",
+                            "prior_status": row["status"],
+                            "updated_at": updated_at,
+                        },
+                        expected_statuses=_REAPABLE_SHOW_STATUSES,
+                        expected_updated_at=updated_at_raw,
+                    )
+                    if transitioned:
+                        reaped += 1
+                    else:
+                        _log.debug("Show %s skipped (status changed before CAS lock)", show_id)
+            except LookupError:
+                pass
+            except Exception:
+                _log.exception("Failed to reap stale show %s", show_id)
+    except Exception:
+        _log.exception("reap_stale_shows error")
+
+    return reaped
+
+
+# ── Startup + periodic entry points ──────────────────────────────────────────
+
+
+async def _reconcile_terminal_notifications() -> int:
+    # Import inside the per-operation boundary so a broken notifier cannot
+    # prevent the independent lifecycle reapers from running.
+    from .terminal_reconciliation import run_terminal_reconciliation
+
+    return await run_terminal_reconciliation()
+
+
+async def _run_reapers(phase: str) -> dict[str, int]:
+    """Run every reaper in order, each isolated: one that raises is logged
+    with *phase* and counted as 0, and the rest still run."""
+    # Built per call so a patched module attribute is the one that runs.
+    reapers = (
+        ("phantom_sessions", "phantom", reap_phantom_sessions),
+        ("null_status_sessions", "null-status", reap_null_status_sessions),
+        ("stale_invocations", "invocation", reap_stale_invocations),
+        ("stale_plays", "play", reap_stale_plays),
+        ("stale_shows", "show", reap_stale_shows),
+        ("stale_schedule_runs", "schedule_run", reap_stale_schedule_runs),
+        ("terminal_notifications", "terminal notification", _reconcile_terminal_notifications),
+    )
+    results: dict[str, int] = {}
+    for key, label, reap in reapers:
+        try:
+            results[key] = await reap()
+        except Exception:
+            _log.exception("%s %s reaper failed", phase, label)
+            results[key] = 0
+    return results
+
+
+async def run_startup_reconciliation() -> dict[str, int]:
+    """One-shot reconciliation called on Studio startup.
+
+    Runs all reapers so stale rows left from an unclean shutdown are
+    cleaned up before the scheduler begins firing new invocations.
+    """
+    results = await _run_reapers("Startup")
+    if any(v for v in results.values()):
+        _log.info("Startup reconciliation: %s", results)
+    return results
+
+
+async def run_periodic_reapers(now: float | None = None) -> dict[str, int]:
+    """Periodic lifecycle maintenance; called from the scheduler tick.
+
+    Identical to ``run_startup_reconciliation()`` — the throttling is
+    handled by the caller (``SchedulerEngine._tick``).
+    """
+    _ = now  # reserved for future rate-limiting based on wall clock
+    return await _run_reapers("Periodic")
+
+
+async def get_phantom_count(*, stale_hours: float | None = None) -> int:
+    """Return current phantom session count for dashboard health data."""
+    from lionhub.orchestration.scheduler.settings import PHANTOM_STALE_HOURS
+
+    if stale_hours is None:
+        stale_hours = PHANTOM_STALE_HOURS
+    try:
+        phantoms = await _liveness.list_phantom_sessions(stale_hours=stale_hours)
+        return len(phantoms)
+    except Exception:
+        _log.exception("get_phantom_count error")
+        return 0

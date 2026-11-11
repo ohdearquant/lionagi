@@ -21,20 +21,20 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from uuid import UUID
 
-    from lionagi.casts.pack import Pack
     from lionagi.session.exchange import Exchange
-    from lionagi.tools.communication.messenger import LionMessenger
+    from lionhub.agent.casts.pack import Pack
+    from lionhub.tools.communication.messenger import LionMessenger
 
 from lionagi import Branch, Session
 from lionagi._errors import ConfigurationError
-from lionagi.agent import AgentSpec, create_agent
-from lionagi.agent.factory import register_profile_injection
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes, sleep
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
+from lionhub.agent import AgentSpec, create_agent
+from lionhub.agent.factory import register_profile_injection
 from lionhub.orchestration.console import hint, warn
 from lionhub.orchestration.job import validate_cwd_exists
 from lionhub.orchestration.runs import (
@@ -137,7 +137,7 @@ def available_roles() -> list[str]:
     over the other one, so both files are separately loadable and both stay on
     the menu. Collapsing them would take a selectable profile off it.
     """
-    from lionagi.casts.pattern import list_roles
+    from lionhub.agent.casts.pattern import list_roles
 
     builtins = {_role_key(r): r for r in list_roles()}
     profiles = [name for name in list_agents() if _role_key(name) not in builtins]
@@ -192,7 +192,7 @@ def _role_blurb(role: str, default_model: str) -> str:
     except FileNotFoundError:
         profile = None
 
-    from lionagi.casts.pattern import Role
+    from lionhub.agent.casts.pattern import Role
 
     summary = _first_sentence(_profile_summary(profile)) if profile is not None else ""
     if not summary:
@@ -216,7 +216,7 @@ def mode_roster(pack: Pack | None = None) -> str:
     """Valid cognitive-mode names for the planner prompt, including each
     role's ``modes_allow`` restriction so the planner only assigns modes the
     executor will accept (``resolve_modes`` drops disallowed ones)."""
-    from lionagi.casts.pattern import list_modes
+    from lionhub.agent.casts.pattern import list_modes
 
     text = (
         "Optional per-task cognitive modes (TaskAssignment.modes). Use ONLY these "
@@ -254,9 +254,9 @@ def _default_pack():
         try:
             from importlib.resources import as_file, files
 
-            from lionagi.casts.pack import Pack
+            from lionhub.agent.casts.pack import Pack
 
-            packaged = files("lionagi.casts").joinpath("packs", "default.yaml")
+            packaged = files("lionhub.agent.casts").joinpath("packs", "default.yaml")
             with as_file(packaged) as p:
                 _DEFAULT_PACK = Pack.from_file(p)
         except Exception:
@@ -286,7 +286,7 @@ def resolve_modes(
     """
     import logging
 
-    from lionagi.casts.pattern import Mode
+    from lionhub.agent.casts.pattern import Mode
 
     cfg = role_config(role, pack)
     allow = set(cfg.modes_allow) if (cfg and cfg.modes_allow) else None
@@ -316,7 +316,7 @@ def resolve_modes(
 
 def _is_casts_role(role: str) -> bool:
     """True if *role* is a loadable built-in casts Role (vs a user profile)."""
-    from lionagi.casts.pattern import Role
+    from lionhub.agent.casts.pattern import Role
 
     try:
         Role.load(role)
@@ -327,13 +327,13 @@ def _is_casts_role(role: str) -> bool:
 
 def casts_role_system(role: str, modes: list[str] | None = None) -> str | None:
     """Composed system message for a casts role, or None if not built-in."""
-    from lionagi.casts.pattern import Role
+    from lionhub.agent.casts.pattern import Role
 
     try:
         r = Role.load(role)
     except ValueError:
         return None
-    from lionagi.agent import AgentSpec
+    from lionhub.agent import AgentSpec
 
     msg = AgentSpec.compose(r, modes=list(modes) if modes else None).build_system_message()
     if not msg:
@@ -759,8 +759,8 @@ def _isolate_worker_cli_config(
     """
     if not getattr(imodel, "is_cli", False):
         return
-    from lionagi.agent.factory import _canonical_provider
     from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+    from lionhub.agent.factory import _canonical_provider
 
     kwargs = imodel.endpoint.config.kwargs
     provider = _canonical_provider(imodel.endpoint.config.provider)
@@ -887,8 +887,8 @@ def _uncontainable_cli_provider(imodel) -> str | None:
     """
     if not getattr(imodel, "is_cli", False):
         return None
-    from lionagi.agent.factory import _canonical_provider
     from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+    from lionhub.agent.factory import _canonical_provider
 
     provider = _canonical_provider(imodel.endpoint.config.provider)
     if provider == "codex" or provider in _CLAUDE_PROVIDER_NAMES:
@@ -910,7 +910,7 @@ def _check_orchestrator_clone_mcp_set(env: OrchestrationEnv) -> None:
     imodel = getattr(env.orc_branch, "chat_model", None)
     if not servers or not getattr(imodel, "is_cli", False):
         return
-    from lionagi.agent.factory import _canonical_provider, apply_forwarded_mcp_servers
+    from lionhub.agent.factory import _canonical_provider, apply_forwarded_mcp_servers
 
     provider = imodel.endpoint.config.provider
     if _canonical_provider(provider) != "codex":
@@ -936,7 +936,7 @@ def _check_orchestrator_clone_profile(env: OrchestrationEnv) -> None:
     imodel = getattr(env.orc_branch, "chat_model", None)
     if not getattr(imodel, "is_cli", False):
         return
-    from lionagi.agent.factory import _canonical_provider
+    from lionhub.agent.factory import _canonical_provider
     from lionhub.providers.openai._codex_profile import (
         refuse_codex_profile_run_settings,
         resolve_codex_config_profile,
@@ -973,7 +973,7 @@ def _hand_mcp_servers(
     """
     if servers is None:
         return
-    from lionagi.agent.factory import apply_forwarded_mcp_servers
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
 
     provider = imodel.endpoint.config.provider
     applied = apply_forwarded_mcp_servers(
@@ -1110,8 +1110,8 @@ async def setup_orchestration(
             "Add a model: line to the profile, or pass a model spec."
         )
 
-    from lionagi.casts.catalog import _load_packaged_pack
-    from lionagi.casts.pack import Pack as _Pack
+    from lionhub.agent.casts.catalog import _load_packaged_pack
+    from lionhub.agent.casts.pack import Pack as _Pack
 
     loaded_pack = _Pack.from_file(pack) if pack else _load_packaged_pack(raise_on_error=True)
     if loaded_pack is None:
@@ -1145,8 +1145,8 @@ async def setup_orchestration(
         # An empty set left the orchestrator loading no user config, so the effort
         # build_imodel_from_spec derived from that config goes too (create_agent
         # drops it the same way).
-        from lionagi.agent.factory import _canonical_provider
         from lionagi.service.providers import PROVIDER_EFFORT_KWARG
+        from lionhub.agent.factory import _canonical_provider
 
         effort_kwarg = PROVIDER_EFFORT_KWARG.get(_canonical_provider(_orc_provider))
         if effort_kwarg:

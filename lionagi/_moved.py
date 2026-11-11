@@ -30,7 +30,7 @@ from collections.abc import Iterable, Mapping
 from types import CodeType, MappingProxyType, ModuleType
 from typing import NamedTuple
 
-__all__ = ("MOVED", "Moved", "install", "resolve", "still_on_disk")
+__all__ = ("MOVED", "Moved", "install", "resolve", "resolve_legacy", "still_on_disk")
 
 _LIONAGI_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -52,6 +52,10 @@ MOVED: tuple[Moved, ...] = (
     Moved("lionagi.mcp", "lionhub.serve.mcp", "0.37.0", "2.0.0"),
     Moved("lionagi.providers", "lionhub.providers", "0.37.0", "2.0.0"),
     Moved("lionagi.lndl", "lionhub.lndl", "0.37.0", "2.0.0"),
+    Moved("lionagi.tools", "lionhub.tools", "0.38.0", "2.0.0"),
+    Moved("lionagi.agent", "lionhub.agent", "0.38.0", "2.0.0"),
+    Moved("lionagi.casts", "lionhub.agent.casts", "0.38.0", "2.0.0"),
+    Moved("lionagi.hooks.external", "lionhub.hooks.external", "0.38.0", "2.0.0"),
     Moved("lionagi.operations.lndl_middle", "lionhub.lndl.middle", "0.37.0", "2.0.0"),
     Moved("lionagi.providers._provider_errors", "lionagi._provider_errors", "0.37.0", "2.0.0"),
     Moved(
@@ -151,6 +155,37 @@ MOVED: tuple[Moved, ...] = (
         "0.38.0",
         "2.0.0",
     ),
+    Moved("lionagi.studio.scheduler", "lionhub.orchestration.scheduler", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.studio.services.scheduler_state",
+        "lionhub.orchestration.scheduler.scheduler_state",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.db_maintenance",
+        "lionhub.orchestration.scheduler.db_maintenance",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.retention_archive",
+        "lionhub.orchestration.scheduler.retention_archive",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.lifecycle",
+        "lionhub.orchestration.scheduler.lifecycle",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.terminal_reconciliation",
+        "lionhub.orchestration.scheduler.terminal_reconciliation",
+        "0.38.0",
+        "2.0.0",
+    ),
     Moved("lionagi.studio.services._db", "lionhub.orchestration.state_store", "0.38.0", "2.0.0"),
 )
 
@@ -195,6 +230,40 @@ def resolve(fullname: str) -> str | None:
     if row is None:
         return None
     return row.new + fullname[len(row.old) :]
+
+
+def _index_by_new_first_component(
+    table: tuple[Moved, ...],
+) -> Mapping[str, tuple[Moved, ...]]:
+    return MappingProxyType(
+        {
+            first: tuple(row for row in table if row.new.split(".", 1)[0] == first)
+            for first in {row.new.split(".", 1)[0] for row in table}
+        }
+    )
+
+
+_REVERSE_INDEX: tuple[tuple[Moved, ...], Mapping[str, tuple[Moved, ...]]] = (
+    MOVED,
+    _index_by_new_first_component(MOVED),
+)
+
+
+def resolve_legacy(fullname: str) -> str | None:
+    """Return the legacy dotted name for a current name covered by a move, or None."""
+    global _REVERSE_INDEX
+    table = MOVED
+    pair = _REVERSE_INDEX
+    if pair[0] is not table:
+        pair = _REVERSE_INDEX = (table, _index_by_new_first_component(table))
+    best: Moved | None = None
+    for row in pair[1].get(fullname.split(".", 1)[0], ()):
+        if fullname == row.new or fullname.startswith(row.new + "."):
+            if best is None or len(row.new) > len(best.new):
+                best = row
+    if best is None:
+        return None
+    return best.old + fullname[len(best.new) :]
 
 
 def still_on_disk(fullname: str) -> bool:

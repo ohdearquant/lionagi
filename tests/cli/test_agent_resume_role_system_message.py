@@ -109,8 +109,8 @@ async def _make_persisted_role_branch(tmp_path: Path) -> tuple[str, str]:
     """Build a real role-profile branch via create_agent (composed system
     message with role header + policy block), snapshot it to disk, and
     return (branch_id, rendered_system_message)."""
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.spec import AgentSpec
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
 
     spec = AgentSpec.coding(cwd=str(tmp_path), effort="high", role="reviewer")
     branch = await create_agent(

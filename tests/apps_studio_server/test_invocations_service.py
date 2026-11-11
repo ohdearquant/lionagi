@@ -11,6 +11,8 @@ import uuid
 
 import pytest
 
+import lionhub.orchestration.scheduler.liveness as scheduler_liveness
+
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
 import lionagi.state.db as state_db_mod  # noqa: E402
@@ -363,7 +365,7 @@ async def test_list_invocations_offloads_process_snapshot(tmp_path, monkeypatch)
 
     import lionagi.studio.services.admin as admin_mod
 
-    monkeypatch.setattr(admin_mod, "_ps_snapshot", fake_snapshot)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", fake_snapshot)
 
     await invocations_mod.list_invocations()
 
@@ -489,7 +491,7 @@ async def test_get_invocation_health_reflects_dead_child_process(tmp_path, monke
 
     import lionagi.studio.services.admin as admin_mod
 
-    monkeypatch.setattr(admin_mod, "process_liveness", lambda *_a, **_k: False)
+    monkeypatch.setattr(scheduler_liveness, "process_liveness", lambda *_a, **_k: False)
 
     result = await invocations_mod.get_invocation(inv_id)
 

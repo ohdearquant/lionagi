@@ -124,7 +124,7 @@ class TestSchedulerFireTaskLifecycle:
 
     async def test_fire_tasks_tracked_and_removed_on_completion(self):
         """_tracked_fire stores tasks in _fire_tasks and removes them on completion."""
-        from lionagi.studio.scheduler.engine import SchedulerEngine
+        from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
         engine = SchedulerEngine()
 
@@ -156,7 +156,7 @@ class TestSchedulerFireTaskLifecycle:
 
     async def test_stop_cancels_outstanding_fire_tasks(self):
         """stop() must cancel and await all outstanding _fire tasks."""
-        from lionagi.studio.scheduler.engine import SchedulerEngine
+        from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
         engine = SchedulerEngine()
 
@@ -196,14 +196,14 @@ class TestBuildArgvValidation:
 
     def test_unknown_kind_raises(self):
         """build_argv with an unknown action_kind must raise ValueError."""
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="Unknown action_kind"):
             build_argv({"action_kind": "nonexistent"}, {})
 
     def test_playbook_alias_normalized_to_play(self):
         """action_kind='playbook' (legacy CLI alias) normalizes to 'play'."""
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         argv, tmp_path = build_argv(
             {
@@ -223,7 +223,7 @@ class TestBuildArgvValidation:
 
     def test_valid_kinds_do_not_raise(self):
         """All four ADR-0070 action kinds must be accepted."""
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         for kind in ("agent", "flow", "fanout", "play"):
             argv, tmp_path = build_argv(
@@ -243,7 +243,7 @@ class TestBuildArgvValidation:
 
     def test_empty_string_kind_raises(self):
         """Empty string action_kind must be rejected."""
-        from lionagi.studio.scheduler.subprocess import build_argv
+        from lionhub.orchestration.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="Unknown action_kind"):
             build_argv({"action_kind": ""}, {})
@@ -274,7 +274,7 @@ class TestFireBuildFailureRecorded:
     async def test_invalid_kind_records_failed_run_and_invocation(self, monkeypatch, tmp_path):
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionagi.state.db import StateDB
-        from lionagi.studio.scheduler.engine import SchedulerEngine
+        from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
         engine = SchedulerEngine()
         run_id = "run-bad"
@@ -332,7 +332,7 @@ class TestSpawnAndWaitCancellation:
         construction. The direct child must still be terminated, which is the part
         that never depended on witnesses.
         """
-        from lionagi.studio.scheduler import subprocess as sp
+        from lionhub.orchestration.scheduler import subprocess as sp
 
         class _FakeProc:
             def __init__(self):
@@ -388,7 +388,7 @@ class TestSpawnAndWaitCancellation:
         """os.killpg is POSIX-only: on Windows cancellation must still terminate
         the direct child, not raise AttributeError from the cancel handler
         (which only suppresses ProcessLookupError/PermissionError)."""
-        from lionagi.studio.scheduler import subprocess as sp
+        from lionhub.orchestration.scheduler import subprocess as sp
 
         class _FakeProc:
             def __init__(self):
@@ -432,8 +432,8 @@ class TestFireCancellationRecorded:
     async def test_cancel_during_spawn_records_cancelled(self, monkeypatch, tmp_path):
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionagi.state.db import StateDB
-        from lionagi.studio.scheduler import subprocess as sp
-        from lionagi.studio.scheduler.engine import SchedulerEngine
+        from lionhub.orchestration.scheduler import subprocess as sp
+        from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
         started = asyncio.Event()
 
@@ -507,7 +507,7 @@ class TestInvocationReasonAggregation:
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionagi.state.db import StateDB
         from lionagi.state.reasons import RunReasons
-        from lionagi.studio.services.scheduler_state import (
+        from lionhub.orchestration.scheduler.scheduler_state import (
             resolve_invocation_terminal as _resolve_invocation_terminal,
         )
 
@@ -527,7 +527,7 @@ class TestInvocationReasonAggregation:
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionagi.state.db import StateDB
         from lionagi.state.reasons import RunReasons
-        from lionagi.studio.services.scheduler_state import (
+        from lionhub.orchestration.scheduler.scheduler_state import (
             resolve_invocation_terminal as _resolve_invocation_terminal,
         )
 
@@ -548,7 +548,7 @@ class TestInvocationReasonAggregation:
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionagi.state.db import StateDB
         from lionagi.state.reasons import RunReasons
-        from lionagi.studio.services.scheduler_state import (
+        from lionhub.orchestration.scheduler.scheduler_state import (
             resolve_invocation_terminal as _resolve_invocation_terminal,
         )
 

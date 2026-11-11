@@ -9,7 +9,6 @@ from typing import Any
 
 import pytest
 
-from lionagi.casts.pattern import Mode
 from lionagi.ln import json_dumps
 from lionagi.ln._async_call import BcallParams
 from lionagi.ln.types import (
@@ -29,6 +28,7 @@ from lionagi.ln.types._sentinel import (
 from lionagi.models import Note
 from lionagi.operations.types import RunParam
 from lionagi.protocols.messages.action_response import ActionResponseContent
+from lionhub.agent.casts.pattern import Mode, Pattern, Role
 
 _EXPECTED_ALLOWLIST = frozenset(
     {
@@ -73,7 +73,7 @@ _PRIVATE_IMPORT_OWNERS = {
     "lionagi.ln.types._sentinel._compat_policy": {_BASE_MODULE},
     "lionagi.ln.types._sentinel._SentinelPolicy": {_BASE_MODULE},
     "lionagi.ln.types._sentinel._compat_is_sentinel": {
-        "lionagi.casts.pattern",
+        "lionhub.agent.casts.pattern",
         "lionagi.models.note",
     },
     "lionagi.ln.types._sentinel._compat_not_sentinel": {
@@ -868,19 +868,25 @@ def _inspect_module(
 
 
 def _production_inventory() -> tuple[frozenset[tuple[str, str]], tuple[str, ...]]:
-    root = Path(__file__).resolve().parents[2] / "lionagi"
+    repository = Path(__file__).resolve().parents[2]
+    roots = (repository / "lionagi", repository / "lionhub" / "src" / "lionhub")
     observed: set[tuple[str, str]] = set()
     violations: list[str] = []
-    for path in sorted(root.rglob("*.py")):
-        module, package = _module_context(path, root)
-        module_observed, module_violations = _inspect_module(
-            path.read_text(encoding="utf-8"),
-            module=module,
-            package=package,
-            label=str(path),
-        )
-        observed.update(module_observed)
-        violations.extend(module_violations)
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            module, package = _module_context(path, root)
+            module_observed, module_violations = _inspect_module(
+                path.read_text(encoding="utf-8"),
+                module=module,
+                package=package,
+                label=str(path),
+            )
+            from lionagi import _moved
+
+            observed.update(
+                (_moved.resolve_legacy(site) or site, axis) for site, axis in module_observed
+            )
+            violations.extend(module_violations)
     return frozenset(observed), tuple(violations)
 
 
@@ -921,6 +927,15 @@ def test_every_allowlisted_axis_is_enforced_by_the_runtime_gateway():
             none_as_sentinel=False,
             empty_as_sentinel="empty" in axes,
         ) is ("empty" in axes)
+
+
+def test_moved_pattern_and_role_sites_keep_their_collapse_policy():
+    pattern = Pattern(name="sample", description="")
+    assert Pattern._is_sentinel(None)
+    assert Pattern._is_sentinel("")
+
+    role = Role(name="sample", description="", body="", emits=())
+    assert role.emission_operable() is None
 
 
 def test_legacy_collapse_authority_matches_the_closed_production_inventory():

@@ -281,10 +281,23 @@ class AccountRouter:
             )
 
     async def settle_rejection(
-        self, attempt: RouterAttempt, evidence: RejectionZero, *, http_status: int | None = None
-    ) -> None:
+        self,
+        attempt: RouterAttempt,
+        evidence: RejectionZero,
+        *,
+        http_status: int | None = None,
+        billing_rejection: bool = False,
+    ) -> str | None:
+        """Settle a rejection at zero; for a billing rejection, block its account in the same
+        transaction and return the account's block reason read there."""
         with CancelScope(shield=True):
-            await self.ledger.settle(attempt.attempt_id, evidence, http_status=http_status)
+            if not billing_rejection:
+                await self.ledger.settle(attempt.attempt_id, evidence, http_status=http_status)
+                return None
+            _, reason = await self.ledger.settle_billing_rejection(
+                attempt.attempt_id, evidence, http_status=http_status
+            )
+            return reason
 
 
 def _has_hour_mark(value: Any) -> bool:

@@ -21,7 +21,6 @@ from uuid import UUID
 import pytest
 import yaml
 
-from lionagi.agent.context_fold import ContextFold, estimate_next_request_tokens
 from lionagi.cli.agent import _api_loop_pass, _install_api_input_cap, _profile_api_launch
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
@@ -29,12 +28,13 @@ from lionagi.protocols.messages import ActionResponse, Instruction, Message
 from lionagi.service._prompt_cache import cache_anchors, protection
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
-from lionagi.tools.coding import CodingToolkit
-from lionagi.tools.context.context import _result_text
+from lionhub.agent.context_fold import ContextFold, estimate_next_request_tokens
 from lionhub.providers.anthropic.messages import (
     AnthropicMessagesEndpoint,
     CreateMessageRequest,
 )
+from lionhub.tools.coding import CodingToolkit
+from lionhub.tools.context.context import _result_text
 from tests.cli.test_agent_api_provider import (
     _LNDL_READ,
     _answer,
@@ -69,7 +69,7 @@ _PHASES = (
 )
 _SOURCE_PATHS = (
     "lionagi/cli/agent.py",
-    "lionagi/agent/context_fold.py",
+    "lionhub/src/lionhub/agent/context_fold.py",
     "lionagi/operations/chat/_prepare.py",
     "lionagi/operations/chat/chat.py",
     "lionhub/src/lionhub/lndl/middle/__init__.py",
@@ -77,11 +77,11 @@ _SOURCE_PATHS = (
     "lionagi/service/connections/endpoint.py",
     "lionagi/service/connections/endpoint_config.py",
     "lionagi/protocols/action/function_calling.py",
-    "lionagi/tools/file/reader.py",
+    "lionhub/src/lionhub/tools/file/reader.py",
     "lionagi/service/imodel.py",
     "lionhub/src/lionhub/providers/anthropic/messages.py",
-    "lionagi/tools/coding.py",
-    "lionagi/tools/context/context.py",
+    "lionhub/src/lionhub/tools/coding.py",
+    "lionhub/src/lionhub/tools/context/context.py",
     "tests/cli/test_agent_api_provider.py",
     "tests/cli/test_api_leg_unset_payload_identity.py",
 )

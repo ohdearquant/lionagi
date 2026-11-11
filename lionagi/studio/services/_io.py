@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from lionhub.orchestration.scheduler.show_artifacts import (
+    read_json_file,  # noqa: F401 -- preserve the compatibility import
+)
+
 _log = logging.getLogger(__name__)
 
 
@@ -64,13 +68,6 @@ def read_json_file_checked(path: Path, *, unique_keys: bool = False) -> JsonRead
         _log.warning("invalid JSON in %s: %s", path, exc)
         return JsonRead(value=None, available=False, error=str(exc))
     return JsonRead(value=value, available=True)
-
-
-def read_json_file(path: Path) -> dict[str, Any] | None:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def parse_json_col(value: Any) -> Any:

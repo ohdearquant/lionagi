@@ -81,8 +81,8 @@ export default function AgentProfileForm({
   const [modes, setModes] = useState<CastMode[]>([]);
   const [castsError, setCastsError] = useState<string | null>(null);
 
-  // The role/mode dropdowns must reflect what lionagi/casts/roles and
-  // lionagi/casts/roles/modes actually ship, not a hardcoded guess -- fetch
+  // The role/mode dropdowns must reflect what lionhub/src/lionhub/agent/casts/roles and
+  // lionhub/src/lionhub/agent/casts/roles/modes actually ship, not a hardcoded guess -- fetch
   // the live catalog once per mount.
   useEffect(() => {
     let alive = true;

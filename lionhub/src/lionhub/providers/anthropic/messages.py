@@ -549,6 +549,16 @@ _REJECTION_CLASS_MESSAGES = (
     ),
 )
 
+# ADR-0126 Amendment 12: the fixed start of a message that makes a rejection of that class a
+# billing rejection, which blocks its account.
+_BILLING_REJECTION_PREFIXES: dict[str, tuple[str, ...]] = {
+    "credit_balance_low": ("Your credit balance is too low to access the Anthropic API.",),
+    "spend_limit_reached": (
+        "You have reached your specified API usage limits",
+        "You have reached your specified workspace API usage limits",
+    ),
+}
+
 # A rejection body longer than this many bytes is not decoded. The caller hands over at most one
 # byte more than this, which is enough to tell that a body is too long.
 _REJECTION_BODY_LIMIT = 65536
@@ -596,7 +606,28 @@ def _classify_rejection(body: bytes) -> tuple[str, str]:
         return "other", "other"
 
 
-async def _classify_streamed_rejection(response: Any) -> tuple[str, str]:
+def _classify_rejection_details(body: bytes, status: int) -> tuple[str, str, bool]:
+    """Return the existing rejection names and whether their bounded text is a billing prefix."""
+    error_type, rejection_class = _classify_rejection(body)
+    try:
+        if len(body) > _REJECTION_BODY_LIMIT or status != 400:
+            return error_type, rejection_class, False
+        decoded = json.loads(body)
+        error = decoded.get("error") if isinstance(decoded, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        prefixes = _BILLING_REJECTION_PREFIXES.get(rejection_class, ())
+        billing = (
+            error_type == "invalid_request_error"
+            and isinstance(message, str)
+            and bool(prefixes)
+            and message.startswith(prefixes)
+        )
+        return error_type, rejection_class, billing
+    except Exception:
+        return error_type, rejection_class, False
+
+
+async def _classify_streamed_rejection_details(response: Any, status: int) -> tuple[str, str, bool]:
     """Name the provider error type and the rejection class of a streamed rejection.
 
     Reads the response's decoded byte stream (``aiter_bytes``) until it holds more than
@@ -617,10 +648,18 @@ async def _classify_streamed_rejection(response: Any) -> tuple[str, str]:
                 if len(body) > _REJECTION_BODY_LIMIT:
                     break
         if scope.cancelled_caught:
-            return "other", "other"
-        return _classify_rejection(body[: _REJECTION_BODY_LIMIT + 1])
+            return "other", "other", False
+        return _classify_rejection_details(body[: _REJECTION_BODY_LIMIT + 1], status)
     except Exception:
-        return "other", "other"
+        return "other", "other", False
+
+
+async def _classify_streamed_rejection(response: Any) -> tuple[str, str]:
+    """Keep the established two-name result for callers that need diagnosis only."""
+    error_type, rejection_class, _ = await _classify_streamed_rejection_details(
+        response, getattr(response, "status_code", 0)
+    )
+    return error_type, rejection_class
 
 
 @AnthropicConfigs.MESSAGES.register
@@ -672,6 +711,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             validate_routed_request,
         )
         from lionagi.service.accounts._types import (
+            _BILLING_BLOCKS,
             AccountRoutingError,
             RejectionZero,
             RouterErrorCode,
@@ -792,19 +832,25 @@ class AnthropicMessagesEndpoint(Endpoint):
                 if status != 200:
                     # Only the two names leave the classifier: the bounded slice of the body is
                     # passed straight on and no local holds it.
-                    provider_error_type, rejection_class = _classify_rejection(
-                        response.content[: _REJECTION_BODY_LIMIT + 1]
+                    provider_error_type, rejection_class, billing_rejection = (
+                        _classify_rejection_details(
+                            response.content[: _REJECTION_BODY_LIMIT + 1], status
+                        )
                     )
                     # Only a 400 naming ``invalid_request_error`` settles at zero, whatever its
                     # class; every other rejection keeps the ceiling.
+                    billing_block = None
                     if status == 400 and provider_error_type == "invalid_request_error":
-                        await router.settle_rejection(
+                        block_reason = await router.settle_rejection(
                             attempt,
                             RejectionZero(
                                 400, "invalid_request_error", rejection_class, "request_rejected"
                             ),
                             http_status=status,
+                            billing_rejection=billing_rejection,
                         )
+                        if block_reason in _BILLING_BLOCKS:
+                            billing_block = block_reason
                     else:
                         await router.settle_unknown(
                             attempt,
@@ -820,6 +866,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         http_status=status,
                         provider_error_type=provider_error_type,
                         rejection_class=rejection_class,
+                        billing_block=billing_block,
                     )
 
                 # The decode error is dropped, not chained: it can quote the body.
@@ -1000,6 +1047,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             validate_routed_request,
         )
         from lionagi.service.accounts._types import (
+            _BILLING_BLOCKS,
             AccountRoutingError,
             CompleteUsage,
             RejectionZero,
@@ -1288,11 +1336,13 @@ class AnthropicMessagesEndpoint(Endpoint):
                         (
                             provider_error_type,
                             rejection_class,
-                        ) = await _classify_streamed_rejection(response)
+                            billing_rejection,
+                        ) = await _classify_streamed_rejection_details(response, status)
                         # Only a 400 naming ``invalid_request_error`` settles at zero, whatever
                         # its class; every other rejection keeps the ceiling.
+                        billing_block = None
                         if status == 400 and provider_error_type == "invalid_request_error":
-                            await router.settle_rejection(
+                            block_reason = await router.settle_rejection(
                                 attempt,
                                 RejectionZero(
                                     400,
@@ -1301,7 +1351,10 @@ class AnthropicMessagesEndpoint(Endpoint):
                                     "request_rejected",
                                 ),
                                 http_status=status,
+                                billing_rejection=billing_rejection,
                             )
+                            if block_reason in _BILLING_BLOCKS:
+                                billing_block = block_reason
                         else:
                             await router.settle_unknown(
                                 attempt,
@@ -1317,6 +1370,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                             http_status=status,
                             provider_error_type=provider_error_type,
                             rejection_class=rejection_class,
+                            billing_block=billing_block,
                         ) from None
 
                     # Only a failure of the byte source itself is held back, so the events it

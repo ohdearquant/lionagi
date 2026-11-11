@@ -10,9 +10,9 @@ import time
 
 import pytest
 
-from lionagi.agent import _email_in_headers as predicate
-from lionagi.agent.hooks import guard_email_in_headers
-from lionagi.agent.spec import AgentSpec
+from lionhub.agent import _email_in_headers as predicate
+from lionhub.agent.hooks import guard_email_in_headers
+from lionhub.agent.spec import AgentSpec
 
 
 @pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="requires a real-time signal timer")
@@ -244,8 +244,8 @@ def test_secure_coding_preset_wires_bash_and_editor_guards():
 
 @pytest.mark.parametrize("action,field", [("write", "content"), ("edit", "new_string")])
 async def test_secure_agent_editor_preprocessor_refuses_written_headers(tmp_path, action, field):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.gate import GateDeniedError
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.gate import GateDeniedError
 
     branch = await create_agent(AgentSpec.coding(cwd=str(tmp_path)), load_settings=False)
     args = {"action": action, "file_path": str(tmp_path / "output.txt"), field: LEAKS[0]}
@@ -258,8 +258,8 @@ async def test_secure_agent_editor_preprocessor_refuses_written_headers(tmp_path
 
 
 async def test_security_recheck_catches_a_user_hook_rewrite(tmp_path):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.gate import GateDeniedError
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.gate import GateDeniedError
 
     spec = AgentSpec.coding(cwd=str(tmp_path))
 
@@ -274,8 +274,8 @@ async def test_security_recheck_catches_a_user_hook_rewrite(tmp_path):
 
 
 async def test_global_settings_allow_one_address_and_append_note(tmp_path, monkeypatch):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.gate import GateDeniedError
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.gate import GateDeniedError
 
     home = tmp_path / "home"
     (home / ".lionagi").mkdir(parents=True)
@@ -297,8 +297,8 @@ async def test_global_settings_allow_one_address_and_append_note(tmp_path, monke
 
 
 async def test_project_settings_cannot_add_allowed_addresses(tmp_path, monkeypatch):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.gate import GateDeniedError
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.gate import GateDeniedError
 
     home = tmp_path / "home"
     home.mkdir()
@@ -316,8 +316,8 @@ async def test_project_settings_cannot_add_allowed_addresses(tmp_path, monkeypat
 
 
 async def test_global_allowlist_does_not_hide_later_disallowed_carrier(tmp_path, monkeypatch):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.gate import GateDeniedError
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.gate import GateDeniedError
 
     home = tmp_path / "home"
     (home / ".lionagi").mkdir(parents=True)
@@ -333,8 +333,8 @@ async def test_global_allowlist_does_not_hide_later_disallowed_carrier(tmp_path,
 
 
 async def test_configured_agents_keep_independent_allowlists(tmp_path, monkeypatch):
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.gate import GateDeniedError
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.gate import GateDeniedError
 
     home = tmp_path / "home"
     (home / ".lionagi").mkdir(parents=True)
@@ -356,7 +356,7 @@ async def test_configured_agents_keep_independent_allowlists(tmp_path, monkeypat
 
 
 async def test_engine_agent_uses_global_guard_settings(tmp_path, monkeypatch):
-    from lionagi.agent.gate import GateDeniedError
+    from lionhub.agent.gate import GateDeniedError
     from lionhub.orchestration.engines import Engine
 
     home = tmp_path / "home"

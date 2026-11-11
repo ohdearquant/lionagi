@@ -118,8 +118,8 @@ async def _make_persisted_role_branch(tmp_path: Path) -> tuple[str, str]:
     message with role header + policy block, and the immutable branch-origin
     marker in metadata), snapshot it to disk, and return
     (branch_id, rendered_system_message)."""
-    from lionagi.agent.factory import create_agent
-    from lionagi.agent.spec import AgentSpec
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
 
     spec = AgentSpec.coding(cwd=str(tmp_path), effort="high", role="reviewer")
     branch = await create_agent(
@@ -276,7 +276,7 @@ async def test_resume_markerless_plain_branch_applies_newly_requested_role(
     message at all. Resuming it under a NEW role profile (`-a reviewer`)
     must apply that role's system prompt, not silently keep operating under
     the stale plain one."""
-    from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
+    from lionhub.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
 
     branch_id, original_rendered = _make_plain_markerless_branch(tmp_path, plain_rendered)
     branches_created = _wire_agent_stubs(monkeypatch, tmp_path)

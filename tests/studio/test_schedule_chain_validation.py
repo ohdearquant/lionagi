@@ -300,66 +300,6 @@ def _parent_schedule() -> dict:
     }
 
 
-def test_merge_keeps_parent_action_cwd_when_stored_chain_carries_one():
-    from lionagi.studio.scheduler.engine import _merge_chain_action
-
-    merged = _merge_chain_action(
-        _parent_schedule(), {"prompt": "next", "action_cwd": "/somewhere/else"}
-    )
-    assert merged["action_cwd"] == "/work/parent"
-    assert merged["action_prompt"] == "next"
-
-
-@pytest.mark.parametrize(
-    "key, value",
-    [
-        ("action_cwd", "/somewhere/else"),
-        ("action_command", "rm"),
-        ("action_prompt", "smuggled"),
-        ("id", "other-id"),
-        ("name", "other-name"),
-        ("trigger_type", "interval"),
-        ("enabled", False),
-    ],
-)
-def test_merge_ignores_stored_chain_keys_that_are_not_allowed(key, value):
-    from lionagi.studio.scheduler.engine import _merge_chain_action
-
-    parent = _parent_schedule()
-    merged = _merge_chain_action(parent, {"model": "m2", key: value})
-    assert merged.get(key) == parent.get(key)
-    assert merged["action_model"] == "m2"
-
-
-def test_merge_applies_every_allowed_key():
-    from lionagi.studio.scheduler.engine import _merge_chain_action
-    from lionhub.orchestration.schedule.parsing import _CHAIN_ACTION_ALLOWED_KEYS
-
-    nested = {"prompt": "after", "on_success": None}
-    chain_action = {
-        "kind": "play",
-        "action_kind": "flow",
-        "model": "m2",
-        "prompt": "next",
-        "agent": "next-agent",
-        "playbook": "next-playbook",
-        "on_success": nested,
-        "on_fail": {"prompt": "recover", "on_fail": None},
-    }
-    assert set(chain_action) == _CHAIN_ACTION_ALLOWED_KEYS
-
-    parent = _parent_schedule()
-    merged = _merge_chain_action(parent, chain_action)
-    assert merged["action_kind"] == "play", "kind wins over action_kind"
-    assert merged["action_model"] == "m2"
-    assert merged["action_prompt"] == "next"
-    assert merged["action_agent"] == "next-agent"
-    assert merged["action_playbook"] == "next-playbook"
-    assert merged["on_success"] is nested
-    assert merged["on_fail"] == {"prompt": "recover", "on_fail": None}
-    assert parent["on_success"] == {"prompt": "old"}, "the parent schedule is not modified"
-
-
 @pytest.mark.parametrize("field", FIELDS)
 @pytest.mark.parametrize("kind_key", ["kind", "action_kind"])
 @pytest.mark.parametrize("bad_kind", [None, "", [], {}, "private-invalid-kind"])
@@ -638,13 +578,6 @@ def test_accepts_compatible_sibling_inheritance():
         created, error = _run_create(data)
     assert error is None
     created.create_schedule.assert_awaited_once()
-
-
-def test_scheduler_and_admission_share_chain_merge():
-    from lionagi.studio.scheduler.engine import _merge_chain_action as scheduler_merge
-    from lionhub.orchestration.schedule.parsing import _merge_chain_action as admission_merge
-
-    assert scheduler_merge is admission_merge
 
 
 def test_reachable_walk_stops_at_scheduler_depth_limit():

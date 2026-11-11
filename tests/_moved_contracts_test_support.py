@@ -213,6 +213,9 @@ assert legacy_writer.to_dict.__func__ is canonical.CheckpointWriter.to_dict
 # One contract for each row of the move table, in the table's order. They are written out
 # here and never derived from it: assert_contracts_match_moved compares the two.
 CONTRACTS: tuple[MoveContract, ...] = (
+    MoveContract(old="lionagi.tools", new="lionhub.tools", kind="package"),
+    MoveContract(old="lionagi.agent", new="lionhub.agent", kind="package"),
+    MoveContract(old="lionagi.casts", new="lionhub.agent.casts", kind="package"),
     MoveContract(
         old="lionagi.orchestration",
         new="lionhub.orchestration",
@@ -928,6 +931,62 @@ CONTRACTS: tuple[MoveContract, ...] = (
         new="lionhub.orchestration.project_store",
         kind="module",
         public_names=frozenset({"get_project"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.scheduler",
+        new="lionhub.orchestration.scheduler",
+        kind="package",
+    ),
+    MoveContract(
+        old="lionagi.studio.services.scheduler_state",
+        new="lionhub.orchestration.scheduler.scheduler_state",
+        kind="module",
+        public_names=frozenset({"SchedulerStateService"}),
+        shared_values=frozenset({"default_scheduler_state"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.db_maintenance",
+        new="lionhub.orchestration.scheduler.db_maintenance",
+        kind="module",
+        public_names=frozenset({"checkpoint_state_db", "prune_old_data"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.retention_archive",
+        new="lionhub.orchestration.scheduler.retention_archive",
+        kind="module",
+        public_names=frozenset({"ArchiveWriteError", "write_archive_chunk"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.lifecycle",
+        new="lionhub.orchestration.scheduler.lifecycle",
+        kind="module",
+        public_names=frozenset({"run_periodic_reapers", "reap_stale_plays"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.terminal_reconciliation",
+        new="lionhub.orchestration.scheduler.terminal_reconciliation",
+        kind="module",
+        public_names=frozenset({"run_terminal_reconciliation"}),
+    ),
+    MoveContract(
+        old="lionagi.hooks.external",
+        new="lionhub.hooks.external",
+        kind="module",
+        public_names=frozenset(
+            {
+                "ExternalHookConfigError",
+                "HookVerdict",
+                "build_envelope",
+                "compute_command_hash",
+                "compute_executable_digest",
+                "compute_trust_record",
+                "external_hook_adapter",
+                "is_command_trusted",
+                "match_hook",
+                "resolve_hook_executable",
+                "validate_argv",
+            }
+        ),
     ),
     MoveContract(
         old="lionagi.studio.services._db",

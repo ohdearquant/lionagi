@@ -6,12 +6,12 @@ import logging
 
 import pytest
 
-from lionagi.agent.factory import _attach_hooks
-from lionagi.agent.spec import AgentSpec
 from lionagi.protocols.action.function_calling import FunctionCalling
 from lionagi.protocols.action.gate import GateDeniedError, GateResult
 from lionagi.protocols.action.tool import Tool
 from lionagi.protocols.generic.event import EventStatus
+from lionhub.agent.factory import _attach_hooks
+from lionhub.agent.spec import AgentSpec
 
 
 class _SensitiveUnknown:

@@ -1,0 +1,1 @@
+"""External hook execution adapters."""

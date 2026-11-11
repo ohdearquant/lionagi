@@ -31,15 +31,15 @@ keeps it that way. Import the module you need by its full path.
 | `dispatch/` | the durable dispatch outbox and its revival heartbeat |
 | `work/` | `WorkForm` and its declarative validation rules |
 | `arguments`, `console` | argparse type callables and the named console output channels |
+| `scheduler/` | scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle and dependency helpers |
 | `schedule/` | the schedule services, below |
 
 ## schedule
 
 The schedule services hold everything about a schedule that does not need the HTTP server or the
-scheduler daemon: parsing `li schedule` arguments, validating declarations and actions, resolving
-the scheduler's timezone and an action's working directory, and declaring, diffing, applying and
-exporting versioned schedule sets. The Studio routes, the `li schedule` commands and the scheduler
-engine all call these functions.
+scheduler daemon: shared parsing helpers for `li schedule`, validation of declarations and actions,
+timezone and working-directory resolution, and declaration, diff, apply and export operations.
+The Studio routes, the `lionhub.cli.schedule` adapter and the scheduler engine call these functions.
 
 | Module | Holds |
 | --- | --- |
@@ -55,7 +55,10 @@ engine all call these functions.
 Three moved modules keep the logger names they had before the move, so existing log filters keep
 matching: `state_store` logs as `lionagi.studio.services._db`, `schedule.timing` as
 `lionagi.studio.config`, and `schedule.timing` and `schedule.execution_root` log scheduler decisions
-as `lionagi.studio.scheduler.engine`.
+as `lionagi.studio.scheduler.engine`. Every module in `scheduler/` likewise logs under its pre-move
+name: `lionagi.studio.scheduler.*` for the package modules and `lionagi.studio.services.*` for the
+services that moved in. A handler or filter attaches to those names, not to
+`lionhub.orchestration.scheduler`.
 
 ## Moved here
 
@@ -66,6 +69,8 @@ returns the module at its new path. Each old path is removed in 2.0.0. The rows 
 | Old import | Current import | Deprecated in |
 | --- | --- | --- |
 | `lionagi.orchestration` | `lionhub.orchestration` | 0.37.0 |
+| `lionagi.studio.scheduler` | `lionhub.orchestration.scheduler` | 0.38.0 |
+| `lionagi.studio.services.scheduler_state` | `lionhub.orchestration.scheduler.scheduler_state` | 0.38.0 |
 | `lionagi.engines` | `lionhub.orchestration.engines` | 0.37.0 |
 | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 0.37.0 |
 | `lionagi.work` | `lionhub.orchestration.work` | 0.37.0 |
@@ -99,3 +104,5 @@ Tests of this package live in `lionhub/tests/lionhub_tests/orchestration/`, with
 services under its `schedule/` directory and the run store in `test_state_store.py`. Tests that
 also exercise the Studio application, its HTTP routes, the `li` commands, the scheduler engine or
 its subprocess runner stay under `tests/`.
+
+Agent and tool packages now live at `lionhub.agent` and `lionhub.tools`.

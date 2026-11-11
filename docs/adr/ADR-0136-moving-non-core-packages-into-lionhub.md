@@ -1,7 +1,7 @@
 # ADR-0136: Moving the packages built on the core into lionhub, and removing their old import paths in 2.0
 
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
-  (2026-10-31) is Proposed
+  (2026-10-31) and Amendment 4 (2026-11-10) are Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) has landed for its four packages: #3752 adds the
   `lionhub` root and the `lionagi._moved.MOVED` table and its finder, and moves
@@ -19,7 +19,53 @@
   (Amendment 2: the new prefixes of moved packages join the class-path allow-list); updates
   ADR-0120's citations of the dispatch outbox to its new file; ADR-0138 records the Studio backend's
   form (D7, Amendment 2); Amendment 3 (Proposed) amends D6 row 3 and replaces Amendment 1 A5's
-  providers-last order, with ADR-0140 as the providers discovery contract
+  providers-last order, with ADR-0140 as the providers discovery contract; Amendment 4 (Proposed) fixes
+  D7's `integrations/` slot as that package's destination and states when D6's hold on it ends
+
+## Amendment 4 (2026-11-10): where `lionagi.integrations` goes, and when its hold ends
+
+**Status**: Proposed.
+
+D6 holds `integrations` (548 lines) out of wave 1, so that open outside contributions that edit it
+land or close before it moves, and their authors do not rebase across a move. D7 already gives it a
+slot, `integrations/` holding `ruvector/`. This amendment fixes that slot as its destination and
+states what ends the hold. It does not change D1 to D7 for any other package.
+
+### E1. Destination
+
+`lionagi.integrations` moves whole to `lionhub.integrations` (`lionhub/src/lionhub/integrations/`),
+with `ruvector/` under it unchanged, as one change with one table row:
+`Moved("lionagi.integrations", "lionhub.integrations", <release>, "2.0.0")`. The package form and
+module names stay as they are, as D7 keeps them for the wave-1 packages. The core does not import
+the package today, and nothing under `lionagi/` imports it after the move, so D2's set does not grow.
+
+The install command does not change. Under D1 the `ruvector` extra still belongs to the one `lionagi`
+distribution, so `uv add 'lionagi[ruvector]'` stays correct, and so does the `ImportError` text that
+names it. The extra's name, the optional-import guard, every value and error, and the files' copyright
+and licence headers stay byte for byte.
+
+### E2. What the move carries
+
+The move carries D6's seven items. For this package they are:
+
+- `tests/integrations/` moves to `lionhub/tests/lionhub_tests/integrations/`, under D6 item 7.
+- `examples/ruvector_memory.py` and the scripts in `benchmarks/ruvector/` import the new path.
+- Recorded benchmark results under `benchmarks/ruvector/` keep the paths they were written with, as
+  D6 item 6 requires for recorded runs.
+- `lionhub/README.md` lists the package.
+- The feature-boundary rules change only the package's own keys.
+
+### E3. When the hold ends
+
+The hold ends when no open pull request edits a file under `lionagi/integrations/`. On 2026-11-10 two
+do: #3454 and #3455. Both are drafts from the package's author, last updated 2026-10-11, and neither
+has a review. The move waits until each one has merged or closed. Once a pull request touching this
+package has merged, the move rebases on top of it and carries everything that pull request added.
+This record does not decide how the two are handled: they are outside contributions, and only the
+maintainer merges or closes them.
+
+If an outside pull request opens after the move has merged, its author rebases onto the new path.
+`lionhub/README.md` and the table row are where that author finds it.
 
 ## Amendment 3 (2026-10-31): providers move first, with finite interim imports
 
@@ -284,7 +330,7 @@ submodules. The CLI imports Studio code at 11 statements in 4 files (`cli/machin
 2. **Records.** The CLI record and the Studio backend record (D7, DEFERRED) are accepted before any change that
    depends on their destinations or on the backend boundary. The backend record allocates every scheduler and
    CLI dependency on Studio code: scheduler state and its cycle with scheduler coordination
-   (`lionagi/studio/scheduler/engine.py` `from lionagi.studio.services.scheduler_state import (`, `lionagi/studio/services/scheduler_state.py::_coordination`), configuration, project
+   (`lionagi/studio/scheduler/engine.py:44@ee589cb2` `from lionagi.studio.services.scheduler_state import (`, `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::_coordination`), configuration, project
    resolution, maintenance, lifecycle reapers, schedule declaration and export, and shared command parsing.
    Logic the wheel's daemon or CLI needs stays in the wheel through shared modules or core interfaces;
    application routes and operator presentation move to the backend.
@@ -328,12 +374,12 @@ Then the moves:
 
 1. `tools`, `agent` and `casts` in one change, after the seams and after the CLI catalog has left the core (A4,
    step 3). `tools/coding.py` imports `agent` at 6 sites and `agent` imports `tools` at 12 sites in five files
-   (`lionagi/agent/permissions.py::_SHELL_CONTROL` at module scope, and `agent/factory.py`, `context_fold.py`, `hooks.py`,
+   (`lionagi/agent/permissions.py:14@b9bb1deb` at module scope, and `agent/factory.py`, `context_fold.py`, `hooks.py`,
    `nudge.py`), so neither can move first without a package under `lionagi/` naming `lionhub`. `casts` may join
    this change or follow it: `agent` imports `casts` and `casts` does not import `agent`. `agent` goes to
    `lionhub.agent`; `casts` goes to `lionhub.agent.casts` with its own row, so neither package initializer
    overwrites the other (`agent/__init__.py` exports eagerly, `casts/__init__.py` lazily). The change keeps casts'
-   root exports, its packaged `packs/default.yaml` (checked from an installed wheel, since `lionagi/casts/catalog.py::_load_packaged_pack`
+   root exports, its packaged `packs/default.yaml` (checked from an installed wheel, since `lionhub/src/lionhub/agent/casts/catalog.py::_load_packaged_pack`
    returns `None` on a load failure), and old pickle paths. `lionagi/providers/_secret_resolution.py:101@c4abb363` reads settings
    through the core reader from the settings seam, so D2's set does not grow. Its line numbers are at `c4abb363`.
 2. `lionagi.hooks.external` to `lionhub.hooks.external` (A1). It goes after `agent` because `agent/factory.py`

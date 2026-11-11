@@ -20,10 +20,10 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from lionagi.agent.settings import parse_external_hooks
 from lionagi.cli.hooks import _translate_config
-from lionagi.hooks.external import build_envelope, external_hook_adapter
 from lionagi.protocols.action.tool_hooks import ToolPreDecision
+from lionhub.agent.settings import parse_external_hooks
+from lionhub.hooks.external import build_envelope, external_hook_adapter
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

@@ -10,12 +10,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate import flow as flow_module
 from lionagi.cli.orchestrate.flow import FlowPlanError, _ExecResult, _run_flow_inner
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.branch import Branch
+from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration.engines import EngineRun, PlanningEngine
 from tests.cli.orchestrate.test_flow_phases import _make_env
 
@@ -534,7 +534,7 @@ async def test_a_reactively_spawned_cli_leaf_gets_the_worker_set_not_the_orchest
     leaf like any planned worker and is handed the worker set as its whole set."""
     from types import SimpleNamespace
 
-    from lionagi.agent.factory import apply_forwarded_mcp_servers
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
     from lionhub.orchestration.spawn import build_imodel_from_spec
 
     control = {"command": "li", "args": ["mcp"]}

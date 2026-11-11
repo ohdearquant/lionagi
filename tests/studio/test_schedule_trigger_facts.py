@@ -198,7 +198,7 @@ def test_trigger_payload_does_not_leak_from_any_projection_or_chain_child():
 def test_a_refused_command_arg_render_does_not_carry_the_rendered_value(value):
     """The refusal is stored on the run as its error and served with it, so it names the
     template and never the trigger value it rendered to."""
-    from lionagi.studio.scheduler.subprocess import _render_command_arg
+    from lionhub.orchestration.scheduler.subprocess import _render_command_arg
 
     with pytest.raises(ValueError) as raised:
         _render_command_arg("{{title}}", {"title": value})
@@ -229,7 +229,7 @@ async def _seed_run(db, rid, context, **fields):
 
 
 async def test_database_rows_match_across_run_routes_and_recent_summaries(isolated_db):
-    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     async with StateDB() as db:
         await db.create_schedule(
@@ -382,8 +382,12 @@ def _served_scheduled(context):
 async def test_a_timer_fire_is_written_and_served_as_scheduled(trigger):
     from unittest.mock import patch
 
-    from lionagi.studio.scheduler.engine import SchedulerEngine
-    from tests.studio.test_scheduler_engine import _make_svc, _minimal_schedule
+    from lionhub_tests.orchestration.scheduler.test_scheduler_engine import (
+        _make_svc,
+        _minimal_schedule,
+    )
+
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     engine = SchedulerEngine(svc=_make_svc())
     with patch.object(engine, "_tracked_fire") as tracked:
@@ -394,8 +398,12 @@ async def test_a_timer_fire_is_written_and_served_as_scheduled(trigger):
 async def test_a_manual_fire_is_written_and_served_as_not_scheduled():
     from unittest.mock import patch
 
-    from lionagi.studio.scheduler.engine import SchedulerEngine
-    from tests.studio.test_scheduler_engine import _make_svc, _minimal_schedule
+    from lionhub_tests.orchestration.scheduler.test_scheduler_engine import (
+        _make_svc,
+        _minimal_schedule,
+    )
+
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     svc = _make_svc()
     svc.get_schedule.return_value = _minimal_schedule(next_fire_at=1000.0)
@@ -410,8 +418,12 @@ async def test_a_manual_fire_is_written_and_served_as_not_scheduled():
 async def test_a_timer_fire_dispatched_again_after_a_restart_is_still_served_as_scheduled():
     from unittest.mock import patch
 
-    from lionagi.studio.scheduler.engine import SchedulerEngine
-    from tests.studio.test_scheduler_engine import _make_svc, _minimal_schedule
+    from lionhub_tests.orchestration.scheduler.test_scheduler_engine import (
+        _make_svc,
+        _minimal_schedule,
+    )
+
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     svc = _make_svc()
     svc.get_schedule.return_value = _minimal_schedule(enabled=True)
@@ -431,7 +443,7 @@ async def test_a_timer_fire_dispatched_again_after_a_restart_is_still_served_as_
 
 
 async def test_the_batch_read_ships_a_context_only_when_it_names_a_fact_key(isolated_db):
-    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     event = {"repo": "acme/widgets", "github_events": [{"pr_body": "x" * 200_000}]}
     async with StateDB() as db:
@@ -489,7 +501,7 @@ async def test_a_timer_fire_recorded_in_the_database_is_served_as_scheduled(isol
     import asyncio
     from unittest.mock import AsyncMock, patch
 
-    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     async with StateDB() as db:
         await db.create_schedule(
@@ -507,11 +519,11 @@ async def test_a_timer_fire_recorded_in_the_database_is_served_as_scheduled(isol
     engine = SchedulerEngine()
     with (
         patch(
-            "lionagi.studio.scheduler.subprocess.build_argv",
+            "lionhub.orchestration.scheduler.subprocess.build_argv",
             return_value=(["li", "agent", "ping"], None),
         ),
         patch(
-            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
             new=AsyncMock(return_value=(0, "")),
         ),
     ):

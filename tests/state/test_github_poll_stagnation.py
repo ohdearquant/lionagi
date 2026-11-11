@@ -11,8 +11,8 @@ from sqlalchemy.exc import IntegrityError
 
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
-from lionagi.studio.services.scheduler_state import _DBSchedulerStateService
 from lionagi.studio.services.schedules import compute_schedule_health
+from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
 
 _COUNTER = "poller_consecutive_cap_no_dispatch"
 _LIMIT = "poller_last_capped_page_limit"

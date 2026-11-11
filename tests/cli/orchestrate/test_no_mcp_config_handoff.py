@@ -318,7 +318,7 @@ async def test_orchestrator_gets_the_same_empty_server_set(tmp_run):
 async def test_setup_persists_execution_provenance(tmp_run, monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    import lionagi.casts.catalog as catalog
+    import lionhub.agent.casts.catalog as catalog
     import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
 
@@ -601,7 +601,7 @@ _RUN_SERVER = {"run-set": {"command": "run-set-server"}}
 def home_mcp_config(monkeypatch, tmp_path):
     """A home directory whose ``.lionagi/.mcp.json`` names one server, and a
     record of every time the factory goes looking for it."""
-    import lionagi.agent.factory as factory_mod
+    import lionhub.agent.factory as factory_mod
 
     home = tmp_path / "home"
     (home / ".lionagi").mkdir(parents=True)

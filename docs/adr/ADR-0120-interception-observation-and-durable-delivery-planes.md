@@ -818,7 +818,7 @@ everything since; facts past the range belong to the next wake.
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:493`, `:564-572`; `lionagi/state/db.py::StateDB._build_update_schedule_stmt`, `lionagi/state/db.py::StateDB.create_schedule_run_and_advance`;
-  `lionagi/studio/scheduler/engine.py::SchedulerEngine._github_due_pass_observed`; ADR-0070, Accepted); a direct `update_schedule` or
+  `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._github_due_pass_observed`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
@@ -828,7 +828,7 @@ everything since; facts past the range belong to the next wake.
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py::SessionObserver.persist_dropped`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
-  (`lionagi/casts/emission.py::Verdict`); the review operation emits a `ReviewVerdict` into the session
+  (`lionhub/src/lionhub/agent/casts/emission.py::Verdict`); the review operation emits a `ReviewVerdict` into the session
   observer (the `ReviewVerdict` class and the `await run.emit(final)` in `ReviewEngine._verdict`, both in
   `lionhub/src/lionhub/orchestration/engines/review.py`), which is one emit site, but a `Verdict` cast
   raised outside that path is carried by no lifecycle Signal. `budget` names a token-budget

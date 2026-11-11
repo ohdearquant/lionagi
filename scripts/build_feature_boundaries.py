@@ -43,7 +43,7 @@ MODULE_RULES = {
     "lionagi.service.types": ("contracts", "provider_contracts"),
     "lionagi.adapters": ("adapter", "data_adapters"),
     "lionagi.agent": ("adapter", "agent"),
-    "lionagi.casts": ("adapter", "casts"),
+    "lionhub.agent.casts": ("adapter", "casts"),
     "lionagi.hooks": ("adapter", "hooks"),
     "lionagi.integrations": ("adapter", "integrations"),
     "lionagi.integrations.ruvector": ("adapter", "ruvector"),
@@ -54,8 +54,6 @@ MODULE_RULES = {
     "lionagi.testing": ("adapter", "testing"),
     "lionagi.cli": ("root", "cli"),
     "lionagi.studio": ("root", "studio"),
-    "lionagi.studio.scheduler": ("adapter", "scheduler"),
-    "lionagi.studio.services.scheduler_state": ("adapter", "scheduler"),
 }
 
 
@@ -87,8 +85,7 @@ ROOT_MODULES = {
 # keep their current owner; the destination names the extracted portion.
 TARGET_RULES = {
     "lionagi.agent": "lionhub (destination not yet recorded)",
-    "lionagi.casts": "lionhub (destination not yet recorded)",
-    "lionagi.hooks.external": "lionhub (destination not yet recorded)",
+    "lionhub.agent.casts": "lionhub.agent.casts",
     "lionagi.integrations": "lionhub (destination not yet recorded)",
     "lionagi.tools": "lionhub (destination not yet recorded)",
     "lionagi.cli": "pending the CLI location decision (ADR-0139 D1)",
@@ -98,8 +95,7 @@ TARGET_RULES = {
     "lionagi.cli.team": "lionhub.orchestration.team",
     "lionagi.cli.engine": "lionhub.orchestration.engine_definitions",
     "lionagi.cli.mirror": "lionhub.serve.mirror",
-    "lionagi.studio.scheduler": "lionhub.orchestration.scheduler",
-    "lionagi.studio.services.scheduler_state": "lionhub.orchestration.scheduler",
+    "lionhub.orchestration.scheduler": "lionhub.orchestration.scheduler",
     "lionagi.studio.services.schedules": "lionhub.orchestration.schedule",
     "lionagi.studio.cli": "pending the CLI location decision (ADR-0139 D1)",
     "lionagi.studio.services.runs": "lionhub.serve",

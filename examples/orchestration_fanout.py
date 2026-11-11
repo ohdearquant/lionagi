@@ -18,10 +18,10 @@ import asyncio
 import logging
 
 from lionagi.agent import AgentSpec
-from lionagi.casts.emission import TaskAssignment
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration import fanout, spawn_roles
 
 logging.basicConfig(level=logging.WARNING)
@@ -67,7 +67,7 @@ async def main():
             assignee="researcher",
         ),
         TaskAssignment(
-            task="Review the lionagi.casts module (pattern.py, profile.py, pack.py, emission.py). "
+            task="Review the lionhub.agent.casts module (pattern.py, profile.py, pack.py, emission.py). "
             "How do Role, Mode, Profile, and Pack compose? Is the algebra sound?",
             assignee="reviewer",
         ),

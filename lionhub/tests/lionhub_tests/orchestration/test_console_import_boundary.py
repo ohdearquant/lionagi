@@ -58,7 +58,7 @@ from pathlib import Path
 
 root = Path({str(_ROOT)!r}).resolve()
 sys.path[:0] = [str(root), str(root / 'lionhub/src')]
-blocked = ('lionhub.orchestration.patterns', 'lionagi.agent') + {extra_blocked!r}
+blocked = ('lionhub.orchestration.patterns', 'lionhub.agent', 'lionagi.studio', 'lionagi.cli', 'fastapi', 'pydantic') + {extra_blocked!r}
 
 def matches(name):
     return any(name == prefix or name.startswith(prefix + '.') for prefix in blocked)

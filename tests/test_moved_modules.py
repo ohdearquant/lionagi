@@ -86,8 +86,66 @@ def test_the_table_has_moves_and_every_package_has_modules():
     assert len(PAIRS) > len(CONTRACTS)
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "descendant"),
+    [
+        ("lionagi.agent", "lionhub.agent", "factory"),
+        ("lionagi.tools", "lionhub.tools", "coding"),
+        ("lionagi.casts", "lionhub.agent.casts", "pattern"),
+    ],
+)
+def test_moved_package_row_resolves_existing_and_new_only_descendants(old, new, descendant):
+    package = next(row for row in CONTRACTS if row.old == old)
+    old_child = f"{old}.{descendant}"
+    new_child = f"{new}.{descendant}"
+    assert contract_for(old_child, CONTRACTS) is package
+    assert _moved.resolve(old_child) == new_child
+    assert importlib.import_module(old_child) is importlib.import_module(new_child)
+    new_only = f"{old}.__new_only_probe__"
+    assert _moved.resolve(new_only) == f"{new}.__new_only_probe__"
+
+
 def test_the_contracts_declare_exactly_the_moved_rows():
     assert_contracts_match_moved(CONTRACTS, _moved.MOVED)
+
+
+def test_external_hooks_move_uses_the_declared_compatibility_releases():
+    row = next(row for row in _moved.MOVED if row.old == "lionagi.hooks.external")
+    assert row == _moved.Moved(
+        "lionagi.hooks.external", "lionhub.hooks.external", "0.38.0", "2.0.0"
+    )
+
+
+def test_importing_core_hooks_does_not_load_external_adapter():
+    script = "\n".join(
+        (
+            "import sys, warnings",
+            "import lionagi.hooks",
+            "assert 'lionhub.hooks.external' not in sys.modules",
+            "with warnings.catch_warnings(record=True) as caught:",
+            "    warnings.simplefilter('always')",
+            "    import lionagi.hooks.external as old",
+            "import lionhub.hooks.external as new",
+            "assert old is new",
+            "assert 'lionhub.hooks.external' in sys.modules",
+            "items = [w for w in caught if issubclass(w.category, DeprecationWarning)]",
+            "assert len(items) == 1",
+            "assert items[0].filename == '<string>'",
+        )
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_casts_move_uses_the_declared_compatibility_releases():
+    row = next(row for row in _moved.MOVED if row.old == "lionagi.casts")
+    assert row == _moved.Moved("lionagi.casts", "lionhub.agent.casts", "0.38.0", "2.0.0")
 
 
 def test_the_row_comparison_fails_for_a_missing_or_an_extra_contract():
@@ -243,6 +301,16 @@ def _work_form(cls: type) -> object:
 SAMPLES = {
     "lionhub.orchestration.work.form.FieldSpec": lambda cls: cls(name="amount", type="int"),
     "lionhub.orchestration.work.form.WorkForm": _work_form,
+    "lionhub.orchestration.scheduler.signals.ScheduleRunSucceeded": lambda cls: cls(),
+    "lionhub.orchestration.scheduler.signals.ScheduleRunFailed": lambda cls: cls(),
+    "lionhub.orchestration.scheduler.signals.ScheduleRunCancelled": lambda cls: cls(),
+    "lionhub.tools.base.Resource": lambda cls: cls(
+        content={"prompt": {"metadata": {"label": "nested prompt metadata"}}},
+        metadata={"nested": {"label": "nested resource metadata"}},
+    ),
+    "lionhub.tools.base.Prompt": lambda cls: cls(
+        content="prompt", metadata={"nested": {"label": "nested resource metadata"}}
+    ),
 }
 
 # Runs in a fresh interpreter, where nothing from lionhub is imported until the data
@@ -422,9 +490,56 @@ def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_
         assert namespace[name] is getattr(module, name), name
 
 
+@pytest.mark.parametrize(
+    ("old_module", "name", "owner"),
+    [
+        (
+            "lionagi.studio.services.admin",
+            "_PS_SNAPSHOT_CACHE",
+            "lionhub.orchestration.scheduler.liveness",
+        ),
+        (
+            "lionagi.studio.services.admin",
+            "_PS_SNAPSHOT_METRICS",
+            "lionhub.orchestration.scheduler.liveness",
+        ),
+        (
+            "lionagi.studio.services.admin",
+            "_PS_SNAPSHOT_SEQUENCE",
+            "lionhub.orchestration.scheduler.liveness",
+        ),
+    ],
+)
+def test_runtime_reassigned_state_is_only_bound_on_its_owner(old_module, name, owner):
+    old = importlib.import_module(old_module)
+    canonical = importlib.import_module(owner)
+    with pytest.raises(AttributeError):
+        getattr(old, name)
+    assert hasattr(canonical, name)
+
+
 def test_a_moved_module_keeps_the_logger_name_it_had():
     module = importlib.import_module("lionagi.service.accounts._secret_resolution")
     assert module.logger.name == "lionagi.providers._secret_resolution"
+
+
+@pytest.mark.parametrize(
+    ("module_name", "logger_name"),
+    [
+        ("lionhub.agent.context_fold", "lionagi.agent.context_fold"),
+        ("lionhub.agent.factory", "lionagi.agent.factory"),
+        ("lionhub.agent.hooks", "lionagi.agent.hooks"),
+        ("lionhub.agent.nudge", "lionagi.agent.nudge"),
+        ("lionhub.agent.permissions", "lionagi.agent.permissions"),
+        ("lionhub.agent.settings", "lionagi.agent.settings"),
+        ("lionhub.tools.coding", "lionagi.tools.coding"),
+        ("lionhub.tools.communication.messenger", "lionagi.tools.communication.messenger"),
+        ("lionhub.tools.khive_injection", "lionagi.tools.khive_injection"),
+    ],
+)
+def test_agent_and_tool_loggers_keep_their_original_names(module_name, logger_name):
+    module = importlib.import_module(module_name)
+    assert module.logger.name == logger_name
 
 
 @pytest.mark.parametrize("contract", CORE_MODULE_CONTRACTS, ids=_old_name)
@@ -679,7 +794,7 @@ _TWO_OLD_NAMES_AT_ONCE = """
 import importlib, sys, threading
 from lionagi import _moved
 
-row = _moved.MOVED[0]
+row = next(row for row in _moved.MOVED if row.old == "lionagi.studio.scheduler")
 twin = row.old + "_twin"
 _moved.MOVED = _moved.MOVED + (_moved.Moved(twin, row.new, row.deprecated_in, row.removed_in),)
 old, new = {old!r}, {new!r}
@@ -733,7 +848,8 @@ print(moved.__spec__.name, moved.__name__)
 
 
 def test_two_old_names_imported_at_once_leave_the_module_spec_alone():
-    old, new = next((o, n) for o, n in PAIRS if n.count(".") > _moved.MOVED[0].new.count("."))
+    package = next(row for row in CONTRACTS if row.old == "lionagi.studio.scheduler")
+    old, new = next((o, n) for o, n in PAIRS if o == package.old + ".engine")
     out = _run_fresh(_TWO_OLD_NAMES_AT_ONCE.format(old=old, new=new))
     assert out.split() == [new, new]
 
@@ -966,9 +1082,18 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
                     name
                     for name in names
                     if not (
-                        own
-                        and (new := _moved.resolve(name))
-                        and (own == new or own.startswith(new + "."))
+                        (
+                            path == ROOT / "lionagi/protocols/action/gate.py"
+                            and name == "lionagi.agent.gate"
+                        )
+                        or name.startswith("lionagi.studio.scheduler.")
+                        or name == "lionagi.studio.scheduler"
+                        or name.startswith("lionagi.studio.services.scheduler_state")
+                        or (
+                            own
+                            and (new := _moved.resolve(name))
+                            and (own == new or own.startswith(new + "."))
+                        )
                     )
                 ]
             # The original deprecation text names its old callable without importing it.
@@ -1055,6 +1180,9 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
     )
     hits = _old_references(inside, source)
     assert [int(hit.split(":")[1]) for hit in hits] == [3], hits
+    other_core = ROOT / "lionagi" / "protocols" / "action" / "tool.py"
+    claimed = _old_references(other_core, 'logging.getLogger("lionagi.agent.hooks")')
+    assert len(claimed) == 1, claimed
 
 
 # The core packages under lionagi/ that name a lionhub module: they hold a listed
@@ -1062,7 +1190,7 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
 # studio, import a hub orchestration or serve module. Every other package never names
 # lionhub. The set must match what the tree does, and it shrinks as each interim edge is
 # removed, so a package that stops naming lionhub is removed from it too.
-LIONHUB_USERS_UNDER_LIONAGI = frozenset({"agent", "cli", "operations", "service", "studio"})
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"cli", "operations", "service", "studio"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
@@ -1236,13 +1364,6 @@ def _provider_inventory() -> dict[str, list[str]]:
 # table changes when an edge is removed or a new one is added, never as a side effect.
 PROVIDER_INTERIM_EDGES = {
     # Every import here is inside a function (see the test of that below).
-    "agent/factory.py": [
-        *["lionhub.providers._cli_subprocess"] * 2,
-        *["lionhub.providers.openai._codex_profile"] * 8,
-        # The forwarded-server check reads the project config layers a codex run would load.
-        "lionhub.providers.openai._codex_project_layers",
-        *["lionhub.providers.openai.codex"] * 6,
-    ],
     "operations/run/run.py": ["lionhub.providers.google.gemini_code"],
     "service/accounts/_router.py": ["lionhub.providers.anthropic._prompt_cache"] * 2,
     "service/providers.py": ["lionhub.providers.openai._codex_profile"],
@@ -1264,8 +1385,8 @@ def test_provider_interim_edge_inventory():
 
 
 def test_the_agent_factory_imports_the_hub_providers_only_inside_functions():
-    hits = _provider_references(SOURCE_ROOTS[0] / "agent" / "factory.py")
-    assert hits, "agent/factory.py names no hub provider module, so this checks nothing"
+    hits = _provider_references(SOURCE_ROOTS[1] / "agent" / "factory.py")
+    assert hits, "lionhub/agent/factory.py names no hub provider module, so this checks nothing"
     assert [hit for hit in hits if hit[2] == "module"] == []
 
 

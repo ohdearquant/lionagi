@@ -61,7 +61,7 @@ def _capture(monkeypatch) -> list[dict]:
 
 
 def _register_recall(monkeypatch) -> None:
-    import lionagi.agent.factory as factory_mod
+    import lionhub.agent.factory as factory_mod
 
     built = factory_mod.create_agent
 

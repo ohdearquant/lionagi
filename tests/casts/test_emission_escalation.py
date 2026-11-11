@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from lionagi.casts.emission import EscalationRequest
+from lionhub.agent.casts.emission import EscalationRequest
 
 
 class TestUrgencyIsAuthoritative:
@@ -85,7 +85,7 @@ class TestUniversalEmissionContractUnchanged:
         """Every role's emission contract carries exactly one universal escape
         hatch (EscalationRequest) — the help signal was unified into it
         rather than added as a second sibling type."""
-        from lionagi.casts.emission import Finding, build_emission_operable
+        from lionhub.agent.casts.emission import Finding, build_emission_operable
 
         operable = build_emission_operable((Finding,))
         assert operable is not None

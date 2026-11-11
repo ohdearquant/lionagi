@@ -277,7 +277,7 @@ async def test_worker_extra_prompt_forwarded(tmp_path, monkeypatch):
 
 def test_make_agent_mcp_servers_set_on_spec_directly():
     """AgentSpec.compose result must have mcp_servers set after make_agent wires it."""
-    from lionagi.agent.spec import AgentSpec
+    from lionhub.agent.spec import AgentSpec
 
     spec = AgentSpec.compose("implementer", tools=(), cwd=None)
     assert spec.mcp_servers is None
@@ -288,7 +288,7 @@ def test_make_agent_mcp_servers_set_on_spec_directly():
 
 def test_make_agent_extra_prompt_set_via_compose():
     """AgentSpec.compose must thread system_prompt into extra_prompt."""
-    from lionagi.agent.spec import AgentSpec
+    from lionhub.agent.spec import AgentSpec
 
     spec = AgentSpec.compose("implementer", system_prompt="prefer idiomatic Rust")
     assert spec.extra_prompt == "prefer idiomatic Rust"

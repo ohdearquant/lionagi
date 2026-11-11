@@ -82,7 +82,7 @@ def test_secret_settings_resolution_keeps_agent_unloaded_in_a_fresh_process(
         def agent_modules():
             return sorted(
                 name for name in sys.modules
-                if name == "lionagi.agent" or name.startswith("lionagi.agent.")
+                if name == "lionhub.agent" or name.startswith("lionhub.agent.")
             )
 
         before = agent_modules()
@@ -104,7 +104,7 @@ def test_secret_settings_resolution_keeps_agent_unloaded_in_a_fresh_process(
         assert Path(_settings.__file__).resolve() == root / "lionagi/_settings.py"
         if sys.argv[2] == "legacy":
             legacy = importlib.import_module("lionagi.agent.settings")
-            assert Path(legacy.__file__).resolve() == root / "lionagi/agent/settings.py"
+            assert Path(legacy.__file__).resolve() == root / "lionhub/src/lionhub/agent/settings.py"
             assert legacy.load_settings is _settings.load_settings
             assert agent_modules()
         print(json.dumps({

@@ -33,8 +33,9 @@ CI tests Python 3.10-3.14 on PRs and `main`/`develop` pushes; only the manual `e
 - `lionagi/protocols/` — core types: messages, graph, generic, action
 - `lionagi/service/` — iModel, provider connections, rate limiting
 - `lionagi/ln/` — concurrency utils (alcall, bcall), fuzzy JSON, sentinels
-- `lionagi/tools/` — tool interfaces and built-ins
-- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `lionhub/src/lionhub/orchestration/runs.py` (RunDir); `cli/team.py`; `lionhub.orchestration.project` (project detection). `li studio` / `li schedule` live in `lionagi/studio/cli.py`. CLI console output helpers live in `lionhub.orchestration.console`.
+- `lionhub/src/lionhub/agent/casts/` — cast patterns, roles, modes, profiles, packs, and emission contracts
+- `lionhub/src/lionhub/tools/` — tool interfaces and built-ins
+- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `lionhub/src/lionhub/orchestration/runs.py` (RunDir); `cli/team.py`; `lionhub.orchestration.project` (project detection). `li studio` / `li schedule` live in `lionhub/src/lionhub/cli/studio.py` and `lionhub/src/lionhub/cli/schedule.py`; `lionagi/studio/cli.py` only re-exports their names for compatibility. CLI console output helpers live in `lionhub.orchestration.console`.
 - `tests/` — mirrors package structure
 - `benchmarks/` — micro-benchmark runners and baselines
 
@@ -90,14 +91,14 @@ A part that is individually redundant is not necessarily wrong — redundancy ac
 
 ## Agent Development
 
-Use the `lionagi/agent/` module to build sandboxed, permission-aware coding agents.
+Use the `lionhub.agent` module to build sandboxed, permission-aware coding agents.
 
 **Create a coding agent**
 
 ```python
 import asyncio
-from lionagi.agent.spec import AgentSpec
-from lionagi.agent.factory import create_agent
+from lionhub.agent.spec import AgentSpec
+from lionhub.agent.factory import create_agent
 
 async def main():
     spec = AgentSpec.coding()              # CodingToolkit + guard hooks + workspace path policy
@@ -111,8 +112,8 @@ asyncio.run(main())
 **Register custom hooks**
 
 ```python
-from lionagi.agent.hooks import guard_paths, log_tool_use
-from lionagi.agent.spec import AgentSpec
+from lionhub.agent.hooks import guard_paths, log_tool_use
+from lionhub.agent.spec import AgentSpec
 
 spec = AgentSpec.coding()
 spec.pre("reader", guard_paths(allowed_paths=["/tmp/sandbox", "./src"]))
@@ -123,7 +124,7 @@ agent = await create_agent(spec)
 **Use Sandbox for isolated edits**
 
 ```python
-from lionagi.tools.sandbox import create_sandbox, sandbox_diff, sandbox_commit, sandbox_merge
+from lionhub.tools.sandbox import create_sandbox, sandbox_diff, sandbox_commit, sandbox_merge
 
 session = await create_sandbox(repo_root="/path/to/repo", base_branch="main")
 # agent edits happen inside the worktree at session.worktree_path
@@ -141,7 +142,7 @@ await sandbox_merge(session, allow_protected=True)   # or sandbox_discard(sessio
 **Permission policies**
 
 ```python
-from lionagi.agent.permissions import PermissionPolicy
+from lionhub.agent.permissions import PermissionPolicy
 
 # Allow-all mode: everything permitted (default for orchestrators)
 policy = PermissionPolicy(mode="allow_all")
@@ -180,9 +181,9 @@ This is separate from `settings.yaml` (which is gitignored/local). The detection
 
 ## Scheduled Runs
 
-Lion Studio can fire agent work on a schedule. The scheduler engine runs in-process inside the Studio server (`apps/studio/server/scheduler/engine.py`) and ticks every 30 seconds.
+Lion Studio can fire agent work on a schedule. The scheduler engine (`lionhub/src/lionhub/orchestration/scheduler/engine.py`) runs in-process inside the Studio server and ticks every 30 seconds.
 
-**CLI** (`lionagi/studio/cli.py`):
+**CLI** (`lionhub/src/lionhub/cli/schedule.py`):
 
 ```bash
 li schedule list                                      # List all schedules
@@ -208,6 +209,6 @@ The CLI writes directly to `state.db` — Studio server does not need to be runn
 
 **Conditional chains**: Each schedule action can define `on_fail` / `on_success` as nested action definitions. Exit code 0 follows `on_success`; non-zero follows `on_fail`. Chain depth capped at 10.
 
-**Agent tools** (`lionagi/tools/schedule.py`): `schedule_create`, `schedule_cancel`, `schedule_list` — register on any Branch so agents can schedule/cancel their own follow-up work.
+**Agent tools** (`lionhub/src/lionhub/tools/schedule.py`): `schedule_create`, `schedule_cancel`, `schedule_list` — register on any Branch so agents can schedule/cancel their own follow-up work.
 
 **New tables in `state.db`**: `schedules` (one row per definition) and `schedule_runs` (one row per firing). Each fire creates an `invocations` row; child sessions link via `LIONAGI_INVOCATION_ID` env var.

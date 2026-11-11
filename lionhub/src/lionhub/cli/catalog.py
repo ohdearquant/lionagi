@@ -43,7 +43,7 @@ _CLI_SEEDS: tuple[CliSeed, ...] = (
     CliSeed(
         name="casts",
         help="inspect built-in roles and modes",
-        module="lionagi.casts.surfaces",
+        module="lionhub.agent.casts.surfaces",
     ),
     CliSeed(
         name="engine",
@@ -58,12 +58,12 @@ _CLI_SEEDS: tuple[CliSeed, ...] = (
     CliSeed(
         name="studio",
         help="Lion Studio server",
-        module="lionagi.studio.cli",
+        module="lionhub.cli.studio",
     ),
     CliSeed(
         name="schedule",
         help="Manage lionagi Studio schedules.",
-        module="lionagi.studio.cli",
+        module="lionhub.cli.schedule",
     ),
     CliSeed(
         name="state",

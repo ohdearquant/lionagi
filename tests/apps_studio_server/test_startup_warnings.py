@@ -83,10 +83,10 @@ def _neutralize_heavy_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
     consistent OOM kills in xdist workers and leaked writes into DEFAULT_DB_PATH.
     The scheduler, reconciliation, and checkpoint paths are covered elsewhere.
     """
-    import lionagi.studio.scheduler.engine as engine_mod
-    import lionagi.studio.services.db_maintenance as db_maintenance_mod
     import lionagi.studio.services.launches as launches_mod
-    import lionagi.studio.services.lifecycle as lifecycle_mod
+    import lionhub.orchestration.scheduler.db_maintenance as db_maintenance_mod
+    import lionhub.orchestration.scheduler.engine as engine_mod
+    import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
 
     monkeypatch.setattr(engine_mod.scheduler, "start", _anoop)
     monkeypatch.setattr(engine_mod.scheduler, "stop", _anoop)
@@ -572,7 +572,7 @@ class TestCLIHostWiring:
     """
 
     def test_backend_only_exports_resolved_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import lionagi.studio.cli as studio_cli
+        import lionhub.cli.studio as studio_cli
 
         monkeypatch.delenv("LIONAGI_STUDIO_HOST", raising=False)
         monkeypatch.setattr(studio_cli, "_ensure_apps_importable", lambda: True)
@@ -604,7 +604,7 @@ class TestCLIHostWiring:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """_start_local must overwrite a stale LIONAGI_STUDIO_HOST before uvicorn.run."""
-        import lionagi.studio.cli as studio_cli
+        import lionhub.cli.studio as studio_cli
 
         # Stale env claims 0.0.0.0; the CLI is about to bind 127.0.0.1.
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
@@ -645,7 +645,7 @@ def test_the_lifespan_prints_a_schedule_firing_however_the_app_is_served(
     is as it was once the app stops. ``scheduler.start()`` only spawns the tick loop, so the line
     that matters is the one emitted while serving."""
     import lionagi.studio.app as app_mod
-    import lionagi.studio.scheduler.engine as engine_mod
+    import lionhub.orchestration.scheduler.engine as engine_mod
 
     engine_log = logging.getLogger("lionagi.studio.scheduler.engine")
     started = "Scheduler engine starting"

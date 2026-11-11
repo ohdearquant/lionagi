@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+import lionhub.orchestration.scheduler.liveness as scheduler_liveness
 from lionagi.state.db import StateDB
 
 
@@ -286,7 +287,7 @@ async def test_persisted_label_reaches_cli_and_admin_display_names(label_client,
     async def no_code_identity():
         return {}
 
-    monkeypatch.setattr(admin, "resolve_process_liveness", no_live_process)
+    monkeypatch.setattr(scheduler_liveness, "resolve_process_liveness", no_live_process)
     monkeypatch.setattr(admin, "_code_identity_report", no_code_identity)
     path, client = label_client
     await _seed_session(path)

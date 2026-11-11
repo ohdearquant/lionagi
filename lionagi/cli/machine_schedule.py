@@ -205,8 +205,8 @@ def _resolved_next_fire(row: dict[str, Any]) -> dict[str, Any]:
     can see whether it got 09:00 local.
     """
     try:
-        from lionagi.studio.scheduler.engine import scheduler
         from lionhub.orchestration.schedule.timing import resolve_schedule_timezone
+        from lionhub.orchestration.scheduler.engine import scheduler
     except Exception as exc:  # noqa: BLE001 — an unimportable resolver is not a create failure
         return unavailable("unresolved", f"the scheduler's resolver is unavailable here: {exc}")
 

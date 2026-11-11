@@ -254,7 +254,7 @@ class _RoutedAttemptError(Exception):
     """Private failure passed between the request and retry layers.
 
     Its message holds only the code; ``account``, ``attempt_id``, ``http_status``,
-    ``provider_error_type`` and ``rejection_class`` are attributes.
+    ``provider_error_type``, ``rejection_class`` and ``billing_block`` are attributes.
     Raised ``from None``, it still keeps the exception it replaced as ``__context__``.
     """
 
@@ -267,6 +267,7 @@ class _RoutedAttemptError(Exception):
         http_status: int | None = None,
         provider_error_type: str | None = None,
         rejection_class: str | None = None,
+        billing_block: str | None = None,
     ) -> None:
         self.code = code
         self.account = account
@@ -274,6 +275,7 @@ class _RoutedAttemptError(Exception):
         self.http_status = http_status
         self.provider_error_type = provider_error_type
         self.rejection_class = rejection_class
+        self.billing_block = billing_block
         super().__init__(code)
 
 
@@ -641,6 +643,7 @@ class Endpoint:
             http_status=exc.http_status,
             provider_error_type=exc.provider_error_type,
             rejection_class=exc.rejection_class,
+            billing_block=exc.billing_block,
         )
 
     def _assert_ssrf_safe_url(self) -> None:

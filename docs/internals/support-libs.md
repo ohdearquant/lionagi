@@ -1,6 +1,6 @@
 # Support libraries — design notes
 
-Extracted rationale for `lionagi/casts/`, `lionhub/src/lionhub/lndl/`, `lionagi/testing/`,
+Extracted rationale for `lionhub/src/lionhub/agent/casts/`, `lionhub/src/lionhub/lndl/`, `lionagi/testing/`,
 `lionagi/libs/`, `lionagi/adapters/`, `lionagi/models/`, `lionhub/src/lionhub/orchestration/`
 (including `lionhub/src/lionhub/orchestration/dispatch/` and
 `lionhub/src/lionhub/orchestration/work/`), and the top-level `lionagi/*.py`
@@ -20,7 +20,7 @@ missing name is visible:
 - `lionagi/cli/agent.py`
 - `lionagi/cli/orchestrate/__init__.py`
 - `lionhub/src/lionhub/serve/mcp/dispatch.py`
-- `lionagi/studio/scheduler/subprocess.py`
+- `lionhub/src/lionhub/orchestration/scheduler/subprocess.py`
 - `lionagi/studio/services/run_resume.py`
 
 Schedule create/update and ad-hoc launch validation delegate to the scheduler

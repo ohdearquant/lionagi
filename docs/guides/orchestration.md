@@ -13,7 +13,7 @@ The code does not define a `FlowPlan` container class. The runtime representatio
 is a list of `TaskAssignment` values with `task`, `assignee`, `inputs`,
 `exit_criteria`, `depends_on`, and `modes`. “FlowPlan” names that run-specific
 planning tier. Source: `lionhub/src/lionhub/orchestration/patterns.py` and
-`lionagi/casts/emission.py`.
+`lionhub/src/lionhub/agent/casts/emission.py`.
 
 ```mermaid
 flowchart LR
@@ -126,7 +126,7 @@ playbook merely because the task sounds important. Source:
 `reactive` defaults to `all`. It can be `off` or a comma-separated role
 allowlist. An allowed worker may emit a `SpawnRequest`; the executor converts an
 accepted request into another FlowOp. Source: `lionagi/cli/orchestrate/flow.py`
-(`_parse_reactive`) and `lionagi/casts/emission.py` (`SpawnRequest`).
+(`_parse_reactive`) and `lionhub/src/lionhub/agent/casts/emission.py` (`SpawnRequest`).
 
 For a positive `max_ops` ceiling, the fresh-run arithmetic is:
 

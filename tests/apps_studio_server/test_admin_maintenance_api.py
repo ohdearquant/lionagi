@@ -58,7 +58,7 @@ def test_maintenance_passes_with_correct_token(tmp_path, monkeypatch):
     """Request succeeds (not 401) when the correct bearer token is supplied."""
     monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "s3cret-maint")
 
-    import lionagi.studio.services.db_maintenance as maint
+    import lionhub.orchestration.scheduler.db_maintenance as maint
 
     async def _fake_checkpoint(**_):
         return {"mode": "TRUNCATE", "busy": 0, "log_pages": 0, "checkpointed": 0}
@@ -88,7 +88,7 @@ def test_maintenance_passes_with_correct_token(tmp_path, monkeypatch):
 )
 def test_maintenance_rejects_extra_fields_without_calling_service(tmp_path, monkeypatch, payload):
     """Extra fields must return 422 and must NOT invoke any maintenance function."""
-    import lionagi.studio.services.db_maintenance as maint
+    import lionhub.orchestration.scheduler.db_maintenance as maint
 
     calls = []
 
@@ -160,7 +160,7 @@ def test_maintenance_missing_action_field_returns_422(tmp_path, monkeypatch):
 
 def test_maintenance_vacuum_success(tmp_path, monkeypatch):
     """action='vacuum' calls vacuum_state_db and returns action + status."""
-    import lionagi.studio.services.db_maintenance as maint
+    import lionhub.orchestration.scheduler.db_maintenance as maint
 
     called = []
 
@@ -181,7 +181,7 @@ def test_maintenance_vacuum_success(tmp_path, monkeypatch):
 
 def test_maintenance_checkpoint_success(tmp_path, monkeypatch):
     """action='checkpoint' calls checkpoint_state_db and returns action + PRAGMA counts."""
-    import lionagi.studio.services.db_maintenance as maint
+    import lionhub.orchestration.scheduler.db_maintenance as maint
 
     async def _fake_checkpoint(**_):
         return {"mode": "TRUNCATE", "busy": 0, "log_pages": 5, "checkpointed": 5}
@@ -200,7 +200,7 @@ def test_maintenance_checkpoint_success(tmp_path, monkeypatch):
 
 def test_maintenance_prune_success(tmp_path, monkeypatch):
     """action='prune' calls prune_old_data and returns action + pruned counts."""
-    import lionagi.studio.services.db_maintenance as maint
+    import lionhub.orchestration.scheduler.db_maintenance as maint
 
     async def _fake_prune(**_):
         return {"sessions_pruned": 3, "runs_pruned": 1}

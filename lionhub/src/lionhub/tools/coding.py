@@ -1,0 +1,1055 @@
+# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import base64
+import logging
+import re
+import warnings
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import BaseModel, Field
+
+from lionagi._command_env import normalize_command_env_allowlist
+from lionagi._command_env_metadata import command_environment, configured_command_env_names
+from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
+from lionagi.ln._paths import _resolve_workspace_root
+from lionagi.ln.concurrency import run_sync
+from lionagi.ln.types import Enum
+from lionagi.protocols.action.tool import Tool
+
+from ._subprocess import _subprocess_sync
+from .base import LionTool
+from .code.ast_search import AstSearchRequest, _ast_search_sync
+from .code.bash import BashRequest, _run_bash
+from .code.check import CodeCheckRequest, _resolve_check_paths, _ruff_check_sync
+from .code.nav import NavRequest, _find_definition_sync, _find_references_sync, _outline_sync
+from .code.search import SearchAction as SearchAction  # re-export: preserves the public API
+from .code.search import SearchRequest, _visible_grep_lines
+from .context.context import ContextRequest, ContextTool
+from .file.editor import EditorRequest, _write_text_no_follow
+from .file.reader import ReaderRequest, ReaderResponse
+from .file.reader import _list_dir_sync as _file_list_dir_sync
+from .file.reader import _read_sync as _file_read_sync
+
+if TYPE_CHECKING:
+    from lionagi.session.branch import Branch
+    from lionhub.agent.nudge import NudgeEngine, NudgeRule
+
+    from ._seatbelt import SeatbeltPolicy
+
+logger = logging.getLogger("lionagi.tools.coding")
+
+
+# Request models (LLM-facing schemas). Reader/Editor/Bash/Search request types
+# are imported from file/reader.py, file/editor.py, code/bash.py, code/search.py.
+
+
+class SandboxAction(str, Enum):
+    create = "create"
+    diff = "diff"
+    commit = "commit"
+    merge = "merge"
+    discard = "discard"
+
+
+class SandboxRequest(BaseModel):
+    action: SandboxAction = Field(
+        ...,
+        description=(
+            "Action to perform. One of:\n"
+            "- 'create': Create an isolated git worktree for safe experimentation.\n"
+            "- 'diff': See what changed in the sandbox vs the base branch.\n"
+            "- 'commit': Commit current changes in the sandbox.\n"
+            "- 'merge': Apply sandbox changes back to the main branch and clean up.\n"
+            "- 'discard': Throw away the sandbox and all changes."
+        ),
+    )
+    message: str | None = Field(
+        None,
+        description="Commit message. Required for 'commit'.",
+    )
+
+
+_SubagentPermissionPreset = Literal["read_only", "safe", "allow_all", "deny_all"]
+
+
+class SubagentRequest(BaseModel):
+    instruction: str = Field(
+        ...,
+        description=(
+            "Task description for the sub-agent. Be specific about what to do, "
+            "what files to look at, and what output you expect."
+        ),
+    )
+    permissions: _SubagentPermissionPreset = Field(
+        default="read_only",
+        description=(
+            "Permission level for the sub-agent. One of:\n"
+            "- 'read_only': Can only read files and search (safest).\n"
+            "- 'safe': Can read/write/search, bash restricted (no rm/sudo).\n"
+            "- 'allow_all': No restrictions (use with caution).\n"
+            "- 'deny_all': Block all tool calls."
+        ),
+    )
+    max_turns: int = Field(
+        default=20,
+        description="Maximum ReAct iterations. Default 20, max 50.",
+    )
+    cwd: str | None = Field(
+        None,
+        description="Working directory for the sub-agent. Defaults to parent's cwd.",
+    )
+
+
+# Blocking helpers (run via run_sync in async tools)
+
+
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+}
+
+
+def _read_image_sync(path: str, workspace_root: Path) -> dict:
+    try:
+        p = _resolve_workspace_path(path, workspace_root)
+    except PermissionError as e:
+        return {"success": False, "error": str(e)}
+    ext = p.suffix.lower()
+    media_type = _IMAGE_MEDIA_TYPES.get(ext, "image/png")
+    try:
+        raw = p.read_bytes()
+    except OSError as e:
+        return {"success": False, "error": str(e)}
+    encoded = base64.b64encode(raw).decode("ascii")
+    return {
+        "success": True,
+        "type": "image",
+        "media_type": media_type,
+        "content": f"data:{media_type};base64,{encoded}",
+        "size_bytes": len(raw),
+    }
+
+
+def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path) -> dict:
+    try:
+        p = _resolve_workspace_path(path, workspace_root)
+    except PermissionError as e:
+        return {"success": False, "error": str(e)}
+
+    if p.suffix.lower() in _IMAGE_EXTENSIONS:
+        return _read_image_sync(path, workspace_root)
+
+    resp = _file_read_sync(path, offset, max_lines, workspace_root)
+    if not resp.success:
+        return {"success": False, "error": resp.error}
+
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+
+    return {
+        "success": True,
+        "content": resp.content,
+        "total_lines": resp.total_lines,
+        "reached_eof": resp.reached_eof,
+        "_resolved": str(p.resolve()),
+        "_mtime": mtime,
+    }
+
+
+def _list_dir_sync(
+    path: str, recursive: bool, file_types: list[str] | None, workspace_root: Path
+) -> dict:
+    resp = _file_list_dir_sync(path, recursive, file_types, workspace_root)
+    return (
+        {"success": resp.success, "content": resp.content}
+        if resp.success
+        else {"success": False, "error": resp.error}
+    )
+
+
+def _write_file_sync(
+    file_path: str,
+    content: str,
+    workspace_root: Path,
+    seatbelt: SeatbeltPolicy | None = None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
+) -> dict:
+    try:
+        p = _resolve_workspace_path(file_path, workspace_root)
+    except PermissionError as e:
+        return {"success": False, "error": str(e)}
+
+    if seatbelt is not None:
+        refused = seatbelt.write_text(p, content, _command_env=_command_env)
+        if refused:
+            return {"success": False, "error": refused}
+    else:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+        except OSError as e:
+            return {"success": False, "error": str(e)}
+
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+
+    return {
+        "success": True,
+        "content": f"Written: {p} ({len(content)} chars)",
+        "_resolved": str(p.resolve()),
+        "_mtime": mtime,
+    }
+
+
+def _prepare_edit_file(
+    file_path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool,
+    workspace_root: Path,
+) -> tuple[Path, str, int] | dict:
+    try:
+        p = _resolve_workspace_path(file_path, workspace_root)
+    except PermissionError as e:
+        return {"success": False, "error": str(e)}
+
+    try:
+        original = p.read_text(encoding="utf-8")
+    except OSError as e:
+        return {"success": False, "error": str(e)}
+
+    count = original.count(old_string)
+    if count == 0:
+        hint = ""
+        stripped = re.sub(r"(?m)^\s*\d+\t", "", old_string)
+        if stripped != old_string and stripped in original:
+            hint = (
+                " — it matches once you remove the line-number prefixes. Drop the "
+                "leading `<number>\\t` from each line (keep only the code)."
+            )
+        elif old_string.strip() and old_string.strip() in original:
+            hint = " — a match exists ignoring surrounding whitespace; check indentation."
+        return {
+            "success": False,
+            "error": (
+                f"old_string not found in {file_path}{hint}. "
+                "Re-read the file and copy the exact text including all whitespace."
+            ),
+        }
+    if count > 1 and not replace_all:
+        return {
+            "success": False,
+            "error": (
+                f"old_string appears {count} times. "
+                "Either set replace_all=True or expand old_string with more surrounding context."
+            ),
+        }
+
+    updated = original.replace(old_string, new_string, -1 if replace_all else 1)
+    return p, updated, count
+
+
+def _edit_file_sync(
+    file_path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool,
+    workspace_root: Path,
+    seatbelt: SeatbeltPolicy | None = None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
+) -> dict:
+    prepared = _prepare_edit_file(file_path, old_string, new_string, replace_all, workspace_root)
+    if isinstance(prepared, dict):
+        return prepared
+    p, updated, count = prepared
+
+    if seatbelt is not None:
+        refused = seatbelt.write_text(p, updated, _command_env=_command_env)
+        if refused:
+            return {"success": False, "error": refused}
+    else:
+        try:
+            _write_text_no_follow(p, updated)
+        except OSError as e:
+            return {"success": False, "error": str(e)}
+
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+
+    idx = updated.find(new_string)
+    s = max(0, idx - 40)
+    e = min(len(updated), idx + len(new_string) + 40)
+    snippet = updated[s:e]
+
+    return {
+        "success": True,
+        "content": f"Replaced {count if replace_all else 1}x. ...{snippet}...",
+        "_resolved": str(p.resolve()),
+        "_mtime": mtime,
+    }
+
+
+# CodingToolkit
+
+
+ALL_CODING_TOOLS: tuple[str, ...] = (
+    "reader",
+    "editor",
+    "bash",
+    "search",
+    "code_check",
+    "code_nav",
+    "ast_search",
+    "context",
+    "sandbox",
+    "subagent",
+)
+
+DEFAULT_CODING_TOOLS: tuple[str, ...] = (
+    "reader",
+    "editor",
+    "bash",
+    "search",
+    "code_check",
+    "code_nav",
+    "ast_search",
+    "context",
+)
+
+
+class CodingToolkit(LionTool):
+    """Coding tools (reader, editor, bash, search, etc.) bound to a Branch."""
+
+    is_lion_system_tool = True
+    system_tool_name = "coding_toolkit"
+
+    def security_pre(self, tool_name: str, handler: Callable) -> CodingToolkit:
+        self._security_pre_hooks.setdefault(tool_name, []).append(handler)
+        return self
+
+    def pre(self, tool_name: str, handler: Callable) -> CodingToolkit:
+        self._pre_hooks.setdefault(tool_name, []).append(handler)
+        return self
+
+    def post(self, tool_name: str, handler: Callable) -> CodingToolkit:
+        self._post_hooks.setdefault(tool_name, []).append(handler)
+        return self
+
+    def on_error(self, tool_name: str, handler: Callable) -> CodingToolkit:
+        self._error_hooks.setdefault(tool_name, []).append(handler)
+        return self
+
+    def _build_preprocessor(self, tool_name: str) -> Callable | None:
+        from lionhub.agent.factory import _chain_pre_hooks
+
+        security_hooks = [
+            *self._security_pre_hooks.get("*", []),
+            *self._security_pre_hooks.get(tool_name, []),
+        ]
+        user_hooks = [
+            *self._pre_hooks.get(tool_name, []),
+            *self._pre_hooks.get("*", []),
+        ]
+        return _chain_pre_hooks(tool_name, security_hooks, user_hooks)
+
+    def _build_postprocessor(
+        self,
+        tool_name: str,
+        *,
+        _command_env_supplier: Callable[[], Mapping[str, str]] | None = None,
+    ) -> Callable | None:
+        from lionhub.agent.factory import _chain_post_hooks
+
+        hooks = [
+            *self._post_hooks.get(tool_name, []),
+            *self._post_hooks.get("*", []),
+        ]
+        return _chain_post_hooks(tool_name, hooks, _command_env_supplier=_command_env_supplier)
+
+    def __init__(
+        self,
+        notify: bool = True,
+        notify_threshold: float | None = None,
+        notify_max_tokens: int | None = None,
+        workspace_root: str | Path | None = None,
+        tools: Sequence[str] | None = None,
+        nudge_engine: NudgeEngine | None = None,
+        nudge_rules: Sequence[NudgeRule] | None = None,
+        sandbox_allow_protected: bool = False,
+        seatbelt: SeatbeltPolicy | None = None,
+        command_env_allowlist: Sequence[str] = (),
+    ):
+        """sandbox_allow_protected: operator-only trust decision (deliberately absent
+        from SandboxRequest) gating whether sandbox merge may target a protected branch.
+        seatbelt: when set, the editor's writes and every bash command run in a child
+        process under that macOS Seatbelt policy (ADR-0041 Amendment 2).
+        """
+        self._security_pre_hooks: dict[str, list[Callable]] = {}
+        self._pre_hooks: dict[str, list[Callable]] = {}
+        self._post_hooks: dict[str, list[Callable]] = {}
+        self._error_hooks: dict[str, list[Callable]] = {}
+        self.notify = notify
+        for name, value in (
+            ("notify_threshold", notify_threshold),
+            ("notify_max_tokens", notify_max_tokens),
+        ):
+            if value is not None:
+                warnings.warn(
+                    f"CodingToolkit({name}=...) has no effect and is deprecated; "
+                    "it will be removed in a future minor release.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        self.notify_threshold = 0.7 if notify_threshold is None else notify_threshold
+        self.notify_max_tokens = 200_000 if notify_max_tokens is None else notify_max_tokens
+        self.workspace_root = _resolve_workspace_root(workspace_root)
+        self.sandbox_allow_protected = sandbox_allow_protected
+        self.seatbelt = seatbelt
+        self.command_env_allowlist = normalize_command_env_allowlist(command_env_allowlist)
+        selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
+        unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
+        if unknown:
+            raise ValueError(f"unknown coding tool(s): {unknown}. Valid: {list(ALL_CODING_TOOLS)}")
+        self.enabled_tools = selected
+        self.nudge_engine = nudge_engine
+        self.nudge_rules = tuple(nudge_rules) if nudge_rules is not None else ()
+        self._bound_nudge_engine: NudgeEngine | None = None
+
+    def bind(
+        self,
+        branch: Branch,
+        *,
+        _command_env_names: frozenset[str] | None = None,
+    ) -> list[Tool]:
+        from lionagi.protocols.messages import ActionResponse
+
+        file_state: dict[str, float] = {}
+        read_tracked: set[str] = set()
+        msgs = branch.msgs
+        notify = self.notify
+        workspace_root = self.workspace_root
+        seatbelt = self.seatbelt
+        active_reference = branch.chat_model.endpoint.config.api_key_env
+        declared_names = (
+            configured_command_env_names(
+                active_reference_names=(active_reference,) if active_reference is not None else (),
+            )
+            if _command_env_names is None
+            else _command_env_names
+        )
+        command_allowlist = normalize_command_env_allowlist(self.command_env_allowlist)
+
+        def prepared_command_environment() -> dict[str, str]:
+            return command_environment(
+                declared_names=declared_names, command_env_allowlist=command_allowlist
+            )
+
+        def prepared_fixed_helper_environment() -> dict[str, str]:
+            return command_environment(declared_names=declared_names, command_env_allowlist=())
+
+        engine: NudgeEngine | None = None
+        if notify:
+            from lionhub.agent.nudge import NudgeEngine, default_nudge_rules
+
+            engine = self.nudge_engine
+            if engine is None:
+                rules = default_nudge_rules() + list(self.nudge_rules)
+                engine = NudgeEngine(branch, rules=rules)
+        self._bound_nudge_engine = engine
+
+        dormant_reads: dict[str, float] = {}
+
+        def _invalidate_stale_reads(*, only_recorded: bool = False) -> None:
+            """Drop file_state entries whose backing read was evicted/compacted —
+            otherwise the read-before-edit guard stays satisfied for a read the model can no longer see."""
+            active = set(branch.progression)
+            pile = msgs.messages
+            active_paths: set[str] = set()
+            recorded_paths: set[str] = set()
+            for m in pile:
+                if not isinstance(m, ActionResponse) or m.metadata.get("clipped_from"):
+                    continue
+                c = m.content
+                if getattr(c, "function", None) != "reader":
+                    continue
+                args = getattr(c, "arguments", None) or {}
+                if args.get("action") != "read":
+                    continue
+                p = args.get("path")
+                if not p:
+                    continue
+                try:
+                    resolved = str(_resolve_workspace_path(p, workspace_root).resolve())
+                    recorded_paths.add(resolved)
+                    if m.id in active:
+                        active_paths.add(resolved)
+                except PermissionError:
+                    continue
+            for p in [p for p in dormant_reads if p in active_paths]:
+                file_state[p] = dormant_reads.pop(p)
+                read_tracked.add(p)
+            for p in [
+                p
+                for p in read_tracked
+                if p not in active_paths and (not only_recorded or p in recorded_paths)
+            ]:
+                read_tracked.discard(p)
+                if p in file_state:
+                    dormant_reads[p] = file_state.pop(p)
+
+        def _check_read_guard(path: str) -> str | None:
+            _invalidate_stale_reads(only_recorded=True)
+            try:
+                resolved_path = _resolve_workspace_path(path, workspace_root)
+            except PermissionError as e:
+                return str(e)
+            resolved = str(resolved_path.resolve())
+            if resolved not in file_state:
+                return f"Must read file before editing: {path}"
+            try:
+                current_mtime = resolved_path.stat().st_mtime
+            except OSError:
+                return None
+            if current_mtime != file_state[resolved]:
+                return f"File changed since last read: {path}. Read it again."
+            return None
+
+        def _track(result: dict, *, is_read: bool = False):
+            resolved = result.pop("_resolved", None)
+            mtime = result.pop("_mtime", None)
+            if resolved and mtime is not None:
+                dormant_reads.pop(resolved, None)
+                file_state[resolved] = mtime
+                if is_read:
+                    read_tracked.add(resolved)
+                else:
+                    read_tracked.discard(resolved)
+
+        async def reader(
+            action: str,
+            path: str,
+            offset: int | None = None,
+            limit: int | None = None,
+            recursive: bool | None = None,
+            file_types: list[str] | None = None,
+        ) -> dict:
+            """Read files or list directory contents.
+
+            Text reads include total_lines and reached_eof. Offsets at or past the
+            end of a nonempty file return an end-of-file notice.
+            """
+            # Canonical empty-path contract: every reader action requires path,
+            # matching ReaderTool.handle_request's pre-dispatch guard.
+            if not path:
+                return ReaderResponse(
+                    success=False,
+                    error="'path' is required. Provide a file path for 'read' or a directory path for 'list_dir'.",
+                ).model_dump()
+            if action == "read":
+                start = max(0, offset or 0)
+                max_lines = limit if (limit and limit > 0) else 2000
+                result = await run_sync(_read_file_sync, path, start, max_lines, workspace_root)
+                _track(result, is_read=True)
+                return result
+            elif action == "list_dir":
+                return await run_sync(
+                    _list_dir_sync, path, bool(recursive), file_types, workspace_root
+                )
+            return {"success": False, "error": f"Unknown action: {action}"}
+
+        async def editor(
+            action: str,
+            file_path: str,
+            content: str | None = None,
+            old_string: str | None = None,
+            new_string: str | None = None,
+            replace_all: bool = False,
+        ) -> dict:
+            """Write or edit files on disk; you must read a file (via reader) before editing it.
+            action='edit' does exact string replacement — strip the `<number>\\t` prefix from reader output before using it as old_string.
+            """
+            if action == "write":
+                if content is None:
+                    return {"success": False, "error": "'content' required for write"}
+                try:
+                    target_path = _resolve_workspace_path(file_path, workspace_root)
+                except PermissionError as e:
+                    return {"success": False, "error": str(e)}
+                if target_path.exists():
+                    guard = _check_read_guard(file_path)
+                    if guard:
+                        return {"success": False, "error": guard}
+                result = await run_sync(
+                    _write_file_sync,
+                    file_path,
+                    content,
+                    workspace_root,
+                    seatbelt,
+                    _command_env=prepared_fixed_helper_environment()
+                    if seatbelt is not None
+                    else None,
+                )
+                _track(result)
+                return result
+            elif action == "edit":
+                if old_string is None:
+                    return {"success": False, "error": "'old_string' required for edit"}
+                if new_string is None:
+                    return {"success": False, "error": "'new_string' required for edit"}
+                guard = _check_read_guard(file_path)
+                if guard:
+                    return {"success": False, "error": guard}
+                result = await run_sync(
+                    _edit_file_sync,
+                    file_path,
+                    old_string,
+                    new_string,
+                    replace_all,
+                    workspace_root,
+                    seatbelt,
+                    _command_env=prepared_fixed_helper_environment()
+                    if seatbelt is not None
+                    else None,
+                )
+                _track(result)
+                return result
+            return {"success": False, "error": f"Unknown action: {action}"}
+
+        async def bash(
+            command: str,
+            timeout: int | None = None,
+            cwd: str | None = None,
+        ) -> dict:
+            """Execute a single shell command and return stdout, stderr, and return code.
+            One command per call — shell operators (&&, ||, |, ;, redirects, backticks, $(...)) are rejected. Commands run in the workspace root; pass cwd= (relative to it, or absolute) to run in another directory. Output is truncated if it exceeds 100 KB per stream.
+            """
+            # Without this the command would run in whatever directory the host
+            # process was started from, which is not the workspace the other tools
+            # read and write; a relative cwd= is likewise taken from the workspace.
+            run_cwd = str(workspace_root / cwd) if cwd else str(workspace_root)
+            wrap = seatbelt.wrap if seatbelt is not None else None
+            response = await _run_bash(
+                command,
+                timeout,
+                run_cwd,
+                wrap=wrap,
+                _command_env_supplier=prepared_command_environment,
+            )
+            return response.model_dump()
+
+        async def search(
+            action: str,
+            pattern: str,
+            path: str | None = None,
+            include: str | None = None,
+            max_results: int | None = None,
+        ) -> dict:
+            """Search file contents by regex (action='grep') or find files by name (action='find').
+            Results are capped at max_results to prevent context overflow.
+            """
+            if action == "grep":
+                try:
+                    search_path = str(_resolve_workspace_path(path or ".", workspace_root))
+                except PermissionError as e:
+                    return {"success": False, "error": str(e)}
+                limit = max_results or 50
+                # -e: a pattern that starts with "-" is a pattern, never an option.
+                # --null ends each file name with a NUL, so a row's file is read exactly.
+                # -I skips binary files, whose one-line notice carries no NUL to read by.
+                cmd = ["grep", "-rnI", "--null", "-E", "-e", pattern, search_path]
+                if include:
+                    cmd.insert(3, f"--include={include}")
+                raw = await run_sync(
+                    _subprocess_sync,
+                    cmd,
+                    False,
+                    30.0,
+                    None,
+                    env=prepared_command_environment(),
+                )
+                # Checked before parsing: the rows read before a timeout are a partial
+                # answer, and with none the result would read as "no matches".
+                if raw.get("timed_out"):
+                    return {"success": False, "error": "grep timed out"}
+                if raw.get("returncode") == 2:
+                    return {"success": False, "error": raw["stderr"].strip()}
+                lines = _visible_grep_lines(raw["stdout"])
+                total = len(lines)
+                return {
+                    "success": True,
+                    "content": "\n".join(lines[:limit]),
+                    "total_matches": total,
+                    "shown": min(total, limit),
+                }
+            elif action == "find":
+                try:
+                    search_path = str(_resolve_workspace_path(path or ".", workspace_root))
+                except PermissionError as e:
+                    return {"success": False, "error": str(e)}
+                limit = max_results or 100
+                cmd = ["find", search_path, "-name", pattern]
+                raw = await run_sync(
+                    _subprocess_sync,
+                    cmd,
+                    False,
+                    30.0,
+                    None,
+                    env=prepared_command_environment(),
+                )
+                if raw.get("returncode", 0) != 0 and raw.get("stderr", "").strip():
+                    return {"success": False, "error": raw["stderr"].strip()}
+                lines = raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
+                total = len(lines)
+                return {
+                    "success": True,
+                    "content": "\n".join(lines[:limit]),
+                    "total_found": total,
+                    "shown": min(total, limit),
+                }
+            return {"success": False, "error": f"Unknown action: {action}"}
+
+        _ctx_tool = ContextTool()
+        _ctx_func = _ctx_tool.bind(branch).func_callable
+
+        async def context(
+            action: str,
+            start: int | None = None,
+            end: int | None = None,
+            keep_last: int | None = None,
+            summary: str | None = None,
+            mode: str | None = None,
+            scope: str | None = None,
+            auto: bool = False,
+            index: int | None = None,
+            offset: int = 0,
+            limit: int = 16000,
+        ) -> dict:
+            """Manage your conversation context — check usage, list messages, evict/restore/compact them.
+            Evicted or compacted messages are hidden from your view but preserved in the full conversation record.
+            """
+            if action == "status":
+                _invalidate_stale_reads(only_recorded=True)
+            result = await _ctx_func(
+                action=action,
+                start=start,
+                end=end,
+                keep_last=keep_last,
+                summary=summary,
+                mode=mode,
+                scope=scope,
+                auto=auto,
+                index=index,
+                offset=offset,
+                limit=limit,
+            )
+            if (
+                action in ("evict", "evict_action_results", "compact")
+                and isinstance(result, dict)
+                and result.get("success")
+            ):
+                _invalidate_stale_reads()
+            if action == "status" and isinstance(result, dict) and result.get("success"):
+                result["files_tracked"] = len(file_state)
+            return result
+
+        async def _notify_post(
+            tool_name: str, action: str, args: dict, result: dict
+        ) -> dict | None:
+            if engine is None:
+                return result
+            try:
+                ok = (
+                    result.get("success", result.get("return_code") == 0)
+                    if isinstance(result, dict)
+                    else True
+                )
+                engine.record_call(tool_name, action, ok)
+                status = engine.evaluate(files_tracked=len(file_state))
+            except Exception:
+                logger.warning(
+                    "NudgeEngine evaluation failed; returning tool result unmodified",
+                    exc_info=True,
+                )
+                return result
+            if status and isinstance(result, dict):
+                result["system"] = status
+            return result
+
+        if notify:
+            self.post("*", _notify_post)
+
+        _sandbox_session = [None]
+
+        async def sandbox(
+            action: str,
+            message: str | None = None,
+        ) -> dict:
+            """Work in an isolated git worktree — safe experimentation with easy merge or discard.
+            Workflow: create -> edit/bash in the sandbox dir -> diff -> commit -> merge (applies changes) or discard (throws them away).
+            """
+            from .sandbox import (
+                create_sandbox,
+                sandbox_commit,
+                sandbox_diff,
+                sandbox_discard,
+                sandbox_merge,
+            )
+
+            if action == "create":
+                if _sandbox_session[0] is not None:
+                    return {
+                        "success": False,
+                        "error": "Sandbox already active. Discard or merge first.",
+                    }
+                repo = str(workspace_root) if workspace_root else None
+                if not repo:
+                    return {
+                        "success": False,
+                        "error": "No workspace root — cannot create sandbox.",
+                    }
+                try:
+                    session = await create_sandbox(
+                        repo, _command_env=prepared_command_environment()
+                    )
+                    _sandbox_session[0] = session
+                    return {
+                        "success": True,
+                        "worktree": session.worktree_path,
+                        "branch": session.branch_name,
+                        "base": session.base_branch,
+                        "message": f"Sandbox ready at {session.worktree_path}. Edit files there, then use diff/commit/merge.",
+                    }
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            session = _sandbox_session[0]
+            if session is None:
+                return {
+                    "success": False,
+                    "error": "No active sandbox. Create one first.",
+                }
+
+            if action == "diff":
+                try:
+                    return {
+                        "success": True,
+                        **(
+                            await sandbox_diff(session, _command_env=prepared_command_environment())
+                        ),
+                    }
+                except RuntimeError as e:
+                    return {"success": False, "error": str(e)}
+            elif action == "commit":
+                if not message:
+                    return {"success": False, "error": "'message' required for commit."}
+                return await sandbox_commit(
+                    session, message, _command_env=prepared_command_environment()
+                )
+            elif action == "merge":
+                result = await sandbox_merge(
+                    session,
+                    allow_protected=self.sandbox_allow_protected,
+                    _command_env=prepared_command_environment(),
+                )
+                if not result.get("success"):
+                    return result
+                if result.get("worktree_removed") and result.get("branch_deleted"):
+                    _sandbox_session[0] = None
+                    return result
+                # Merge landed but cleanup is incomplete — keep the session (retry via
+                # discard) and report non-success so callers can't mistake it for closed.
+                return {**result, "success": False}
+            elif action == "discard":
+                result = await sandbox_discard(session, _command_env=prepared_command_environment())
+                if result.get("worktree_removed") and result.get("branch_deleted"):
+                    _sandbox_session[0] = None
+                    return {"success": True, **result}
+                return {"success": False, **result}
+
+            return {"success": False, "error": f"Unknown action: {action}"}
+
+        async def subagent(
+            instruction: str,
+            permissions: _SubagentPermissionPreset = "read_only",
+            max_turns: int = 20,
+            cwd: str | None = None,
+        ) -> dict:
+            """Spawn a sub-agent with its own Branch and coding tools to handle a task independently via a ReAct loop.
+            permissions controls what it can do: read_only (search/read only), safe (read/write/search, bash restricted), allow_all (full access), or deny_all (no tool calls).
+            """
+            from lionhub.agent.spec import AgentSpec
+
+            max_turns = min(max(1, max_turns), 50)
+            sub_cwd = cwd or (str(workspace_root) if workspace_root else None)
+
+            try:
+                model_spec = None
+                try:
+                    ep = branch.chat_model.endpoint
+                    provider = getattr(ep.config, "provider", "")
+                    model_name = ""
+                    if hasattr(ep.config, "kwargs"):
+                        model_name = ep.config.kwargs.get("model", "")
+                    if provider and model_name:
+                        model_spec = f"{provider}/{model_name}"
+                except AttributeError:
+                    pass
+
+                sub_spec = AgentSpec.compose(
+                    "implementer",
+                    model=model_spec,
+                    tools=["coding"],
+                    permissions=permissions,
+                    system_prompt=(
+                        "You are a sub-agent. Complete the assigned task concisely. "
+                        "Report your findings and any changes made. Be thorough but brief."
+                    ),
+                    cwd=sub_cwd,
+                    yolo=False,
+                )
+                sub_spec.lion_system = False
+
+                from lionhub.agent.factory import create_agent as _create
+
+                sub_branch = await _create(sub_spec, load_settings=False)
+
+                result = await sub_branch.ReAct(
+                    instruction=instruction,
+                    tools=True,
+                    max_extensions=max_turns,
+                )
+
+                response = result if isinstance(result, str) else str(result)
+                return {
+                    "success": True,
+                    "response": response[:5000],
+                    "tools_used": len(sub_branch.msgs.messages) - 2,
+                }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        async def code_check(
+            paths: list,
+            tool: str = "ruff",
+            max_diagnostics: int = 50,
+        ) -> dict:
+            """Run static analysis (ruff) on Python files and return structured file:line:col diagnostics.
+            Call after editing a file for immediate feedback; returns status='unavailable' if ruff is not installed.
+            """
+            resolved_paths, err = _resolve_check_paths(paths, workspace_root)
+            if err is not None:
+                return err.model_dump()
+            resp = await run_sync(
+                _ruff_check_sync,
+                resolved_paths,
+                max_diagnostics,
+                _command_env=prepared_command_environment(),
+            )
+            return resp.model_dump()
+
+        async def code_nav(action: str, path: str, symbol: str | None = None) -> dict:
+            """Navigate Python source without reading the full file — outline signatures, find a definition, or find references."""
+            try:
+                resolved = str(_resolve_workspace_path(path, workspace_root))
+            except PermissionError as exc:
+                return {"success": False, "items": [], "error": str(exc)}
+            if action == "outline":
+                resp = await run_sync(_outline_sync, resolved)
+            elif action == "find_definition":
+                if not symbol:
+                    return {
+                        "success": False,
+                        "items": [],
+                        "error": "'symbol' required for find_definition.",
+                    }
+                resp = await run_sync(_find_definition_sync, resolved, symbol)
+            elif action == "find_references":
+                if not symbol:
+                    return {
+                        "success": False,
+                        "items": [],
+                        "error": "'symbol' required for find_references.",
+                    }
+                resp = await run_sync(_find_references_sync, resolved, symbol)
+            else:
+                return {"success": False, "items": [], "error": f"Unknown action: {action!r}."}
+            return resp.model_dump()
+
+        async def ast_search(
+            pattern: str,
+            path: str = ".",
+            lang: str = "python",
+            max_results: int = 50,
+        ) -> dict:
+            """Search source code by AST shape using ast-grep (sg) — structural patterns, not text (whitespace-independent).
+            Returns status='unavailable' if the sg binary is absent, not an error.
+            """
+            try:
+                resolved = str(_resolve_workspace_path(path, workspace_root))
+            except PermissionError as exc:
+                from .code.ast_search import AstSearchResponse
+
+                return AstSearchResponse(status="error", summary=str(exc)).model_dump()
+            resp = await run_sync(
+                _ast_search_sync,
+                pattern,
+                resolved,
+                lang,
+                max_results,
+                str(workspace_root),
+                _command_env=prepared_command_environment(),
+            )
+            return resp.model_dump()
+
+        tool_defs = [
+            ("reader", reader, ReaderRequest),
+            ("editor", editor, EditorRequest),
+            ("bash", bash, BashRequest),
+            ("search", search, SearchRequest),
+            ("code_check", code_check, CodeCheckRequest),
+            ("code_nav", code_nav, NavRequest),
+            ("ast_search", ast_search, AstSearchRequest),
+            ("context", context, ContextRequest),
+            ("sandbox", sandbox, SandboxRequest),
+            ("subagent", subagent, SubagentRequest),
+        ]
+
+        tools = []
+        for name, func, request_cls in tool_defs:
+            if name not in self.enabled_tools:
+                continue
+            tools.append(
+                Tool(
+                    func_callable=func,
+                    request_options=request_cls,
+                    preprocessor=self._build_preprocessor(name),
+                    postprocessor=self._build_postprocessor(
+                        name, _command_env_supplier=prepared_command_environment
+                    ),
+                )
+            )
+        return tools
+
+    def to_tool(self) -> Tool:
+        raise NotImplementedError(
+            "CodingToolkit requires branch context. Use toolkit.bind(branch) instead."
+        )

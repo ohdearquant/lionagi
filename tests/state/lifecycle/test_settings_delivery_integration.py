@@ -17,7 +17,7 @@ from lionagi.state.lifecycle import notify_settings
 from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
 from lionagi.state.lifecycle.deliveries import is_acknowledged, reconcile_unacknowledged
 from lionagi.state.lifecycle.reconciler import TerminalReconciler
-from lionagi.studio.services import terminal_reconciliation
+from lionhub.orchestration.scheduler import terminal_reconciliation
 
 pytestmark = pytest.mark.unit
 CONSUMER = "settings-integration"

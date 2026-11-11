@@ -20,9 +20,9 @@ import time
 from pathlib import Path
 
 from lionagi.agent import AgentSpec
-from lionagi.casts.emission import SpawnRequest
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.agent.casts.emission import SpawnRequest
 from lionhub.orchestration import (
     build_dag_graph,
     fanout,
@@ -228,7 +228,7 @@ async def _run_single(task: Task, config: OrchestrationConfig):
 
 
 async def _run_fanout(task: Task, config: OrchestrationConfig):
-    from lionagi.casts.emission import TaskAssignment
+    from lionhub.agent.casts.emission import TaskAssignment
 
     session = Session()
     orc = Branch(chat_model=_model(config))

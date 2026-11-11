@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from lionagi.casts.catalog import build_catalog
+from lionhub.agent.casts.catalog import build_catalog
 
 from ..registry import studio_route
 

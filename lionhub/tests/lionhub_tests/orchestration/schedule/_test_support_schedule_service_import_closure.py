@@ -7,7 +7,13 @@ import sys
 import textwrap
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
+# The repository root is the nearest ancestor holding both pyproject.toml and the
+# lionagi package, so moving this file does not silently change the child cwd.
+REPO_ROOT = next(
+    parent
+    for parent in Path(__file__).resolve().parents
+    if (parent / "pyproject.toml").is_file() and (parent / "lionagi").is_dir()
+)
 
 _BLOCKER = """
 import importlib.abc
@@ -19,7 +25,7 @@ BLOCKED = (
     "starlette",
     "lionagi.studio.app",
     "lionagi.studio.operator",
-    "lionagi.studio.scheduler",
+    "lionhub.orchestration.scheduler",
     "lionagi.studio.services.projects",
 )
 refused = []

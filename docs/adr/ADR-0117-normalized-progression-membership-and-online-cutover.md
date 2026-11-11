@@ -90,7 +90,7 @@ writes and potentially cheaper reads of retained large histories; it does not es
 immediate performance return on migrating every stored progression.
 
 The column is also a published read surface. Direct readers include retention code that protects
-messages referenced by surviving progressions (`lionagi/studio/services/db_maintenance.py::_prune_session_chunk`;
+messages referenced by surviving progressions (`lionagi/studio/services/db_maintenance.py:328@e1800c3b`;
 `lionagi/cli/state.py::_prune`). Freezing JSON without migrating these readers can hide references
 and affect deletion correctness, not merely display stale counts. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 
@@ -419,7 +419,7 @@ Keeping that column current would retain the performance defect.
    at `lionagi/state/_mirror_common.py::reconcile_status` with an indexed one-item tail. Do not describe
    intentionally complete reconstruction or role aggregation as constant-time work.
 5. **Deletion and shared references.** Adapt `lionagi/state/db.py::StateDB.delete_imported_session`,
-   `lionagi/studio/services/db_maintenance.py::_prune_session_chunk` and `lionagi/cli/state.py::_prune`
+   `lionagi/studio/services/db_maintenance.py:328@e1800c3b` and `lionagi/cli/state.py::_prune`
    before any JSON freeze. Candidate and survivor reference checks must include target-only
    tail items, including shared progressions and retained references to absent message rows. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 6. **Other direct readers.** Publish a versioned complete-reader contract for SQL clients,

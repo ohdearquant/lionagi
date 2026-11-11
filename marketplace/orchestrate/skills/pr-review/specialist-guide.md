@@ -227,7 +227,7 @@ Every finding MUST cite `file:line`. No vague "there are issues."
 | `lionagi/cli/orchestrate/flow.py` | `li o flow` — `TaskAssignment` planning, dependency-graph execution, optional synthesis |
 | `lionagi/cli/orchestrate/_common.py` | Worker prompt and team helpers, plus the shared worker `operate` node builder |
 | `lionagi/cli/orchestrate/_orchestration.py` | Shared setup/finalize, project detection |
-| `lionagi/agent/spec.py` | AgentSpec presets for specialist agents |
-| `lionagi/agent/factory.py` | create_agent() — wires Branch + tools + hooks |
+| `lionhub/src/lionhub/agent/spec.py` | AgentSpec presets for specialist agents |
+| `lionhub/src/lionhub/agent/factory.py` | create_agent() — wires Branch + tools + hooks |
 | `lionagi/session/branch.py` | Branch facade — each specialist runs in its own Branch |
 | `lionhub/src/lionhub/orchestration/runs.py` | Run manifest layout under `$LIONAGI_HOME/runs/{run_id}/` (default `~/.lionagi/runs/{run_id}/`) |

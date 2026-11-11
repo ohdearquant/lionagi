@@ -18,10 +18,10 @@ import asyncio
 import importlib.resources
 
 from lionagi.agent import AgentSpec, create_agent
-from lionagi.casts.emission import Finding, SpawnRequest, Verdict, build_emission_operable
-from lionagi.casts.pack import Pack
-from lionagi.casts.pattern import Mode, Role, list_modes, list_roles
-from lionagi.casts.profile import Profile
+from lionhub.agent.casts.emission import Finding, SpawnRequest, Verdict, build_emission_operable
+from lionhub.agent.casts.pack import Pack
+from lionhub.agent.casts.pattern import Mode, Role, list_modes, list_roles
+from lionhub.agent.casts.profile import Profile
 
 
 async def main():
@@ -65,7 +65,7 @@ async def main():
     print(f"  custom emission: {custom.name}")
 
     # ── Pack (per-role config overlays) ──────────────────────────────────
-    pack_path = importlib.resources.files("lionagi.casts.packs") / "default.yaml"
+    pack_path = importlib.resources.files("lionhub.agent.casts.packs") / "default.yaml"
     pack = Pack.from_file(str(pack_path))
     print(f"\nPack '{pack.name}': {len(pack.configs)} role configs, {len(pack.policies)} policies")
     if cfg := pack.config("critic"):

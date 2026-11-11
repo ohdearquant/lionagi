@@ -20,13 +20,14 @@ from lionagi.ln.concurrency import sleep
 from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
 from lionagi.state.session_naming import normalize_session_user_label, resolve_display_name
-from lionhub.orchestration.state_store import open_db as _open_db
-from lionhub.orchestration.state_store import (
+from lionhub.orchestration.state_store import (  # noqa: F401 -- preserve the compatibility import
+    _user_label_selection,
     require_file_store,
     store_exists,
     store_path,
     table_columns,
 )
+from lionhub.orchestration.state_store import open_db as _open_db
 
 from ..operator.run_control import session_has_control_consumer
 from ..registry import studio_route
@@ -535,14 +536,6 @@ async def _approximate_end_selection(db: Any, *, alias: str = "") -> str:
     if "ended_at_is_approximate" in await table_columns(db, "sessions"):
         return f"{prefix}ended_at_is_approximate"
     return "0 AS ended_at_is_approximate"
-
-
-async def _user_label_selection(db: Any, *, alias: str = "") -> str:
-    """Read older stores without migrating them or inventing an explicit label."""
-    prefix = f"{alias}." if alias else ""
-    if "user_label" in await table_columns(db, "sessions"):
-        return f"{prefix}user_label"
-    return "NULL AS user_label"
 
 
 async def list_sessions(

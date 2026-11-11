@@ -23,10 +23,10 @@ governed by ADR-0120/ADR-0121; no reader should implement the old “only extern
 LionAGI has three in-process hook mechanisms with distinct scopes, ratified by
 ADR-0047: the session-scoped `HookBus` (`lionagi/hooks/`, observe/audit plane with one
 hard-wired blocking point at `TOOL_PRE`), the tool-scoped preprocessor/postprocessor
-chain (`lionagi/agent/spec.py::HooksMixin`, full-payload mutation), and the
+chain (`lionhub/src/lionhub/agent/spec.py::HooksMixin`, full-payload mutation), and the
 service-scoped `HookRegistry` on `iModel` events. All three register in-process Python
 callables. The only way to run an *external program* as a hook today is
-`lionagi/agent/settings.py`'s `_make_shell_hook`: argv-only subprocess, stdin JSON,
+`lionhub/src/lionhub/agent/settings.py`'s `_make_shell_hook`: argv-only subprocess, stdin JSON,
 fixed 10-second timeout, and — critically — no stdout read-back. An external hook can
 veto (nonzero exit becomes `PermissionError` on the pre phase) but cannot rewrite
 arguments, attach context, or return a structured decision.
@@ -664,7 +664,7 @@ external-hook capability now exists and is tested.
 
 **Implemented and tested:**
 
-- **D1/D4/D5, wire execution.** `lionagi/hooks/external.py` constructs the
+- **D1/D4/D5, wire execution.** `lionhub/src/lionhub/hooks/external.py` constructs the
   external envelope, executes a non-empty argv command without a shell, applies
   the per-hook timeout, parses stdout decisions, distinguishes exit-code
   behavior, validates rewrites, and preserves blocking versus advisory seams.

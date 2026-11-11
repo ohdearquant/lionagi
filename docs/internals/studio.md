@@ -252,7 +252,7 @@ localtime file with no accepted, unambiguous name raises
 `SystemTimezoneUnreadableError`; `LIONAGI_SCHEDULER_TZ` can select the desired
 zone explicitly.
 
-## lionagi/studio/scheduler/engine.py
+## lionhub/src/lionhub/orchestration/scheduler/engine.py
 
 **`_reserve_max_runs_budget` / `_release_max_runs_claim`** — The single-process
 analogue of a DB-backed compare-and-set for `schedule['max_runs']`; only one
@@ -341,7 +341,7 @@ Only top-level fires (`chain_depth == 0`) of a threshold-configured schedule
 stamp the cooldown; `on_success`/`on_fail` chain children are follow-on
 actions of the same alert cycle, not a new one.
 
-## lionagi/studio/scheduler/subprocess.py
+## lionhub/src/lionhub/orchestration/scheduler/subprocess.py
 
 **`spawn_and_wait`** — Both stdout/stderr streams are captured and drained
 concurrently, bounded rather than buffered whole: a single `communicate()`
@@ -621,7 +621,7 @@ become execution latency, and so are the rows the lifecycle reaper ends: its
 `status_evidence_refs`, which a run's own deadline write does not, so the metric
 excludes a reaper-observed end time by that entry while a run that recorded its
 own timeout still counts. A scheduled fire writes its trigger type into `plugin`
-(`lionagi/studio/scheduler/engine.py`), so the stored-identity filters match a
+(`lionhub/src/lionhub/orchestration/scheduler/engine.py`), so the stored-identity filters match a
 same-named plugin to those rows; correcting producer identity and historical rows
 is separate work. Last tracked use counts every matching recorded start, including
 a scheduled fire that lost its claim and never launched: its row keeps its start
@@ -945,7 +945,7 @@ in that zone), and the next plan reports `UNCHANGED`.
   worker actually uses, which is why claim-time rejections must also
   surface observably (`worker._reject_claim`).
 
-## lionagi/studio/services/db_maintenance.py — retention lineage cleanup
+## lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py — retention lineage cleanup
 
 - **`prune_old_data` FK safety** — `branches` CASCADE on `sessions`;
   `artifacts`/`plays`/`team_messages`/`dispatch_outbox` have soft FKs (no
@@ -1078,7 +1078,7 @@ from the runtime.
   gated can't be established from this queue, so it's a "look here" entry,
   not a gate verdict.
 
-## lionagi/studio/services/scheduler_state.py
+## lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py
 
 **`flush_run_telemetry`** — Computes and persists one run's coordination
 telemetry exactly once, riding the invocation's own terminal write
@@ -1171,7 +1171,7 @@ edited or replaced under the same name mid-probe, and matching by name alone
 would stamp a stale result onto it. Only the reload-compare-save step holds
 the registry lock; the probe itself does not.
 
-## lionagi/studio/services/retention_archive.py
+## lionhub/src/lionhub/orchestration/scheduler/retention_archive.py
 
 Self-verifying ZIP64 archival of rows a prune chunk is about to delete. Each
 call publishes one self-contained `.zip` file containing a `manifest.json`
@@ -1290,7 +1290,7 @@ through in the returned filename. Callers reading these keys from
 owner-authored data must treat the error as "drop this field", not fall
 back to serializing it.
 
-## lionagi/studio/services/lifecycle.py
+## lionhub/src/lionhub/orchestration/scheduler/lifecycle.py
 
 Four independent reapers, each scoped to the kind of orphaning its own
 process model can produce:
@@ -1327,7 +1327,7 @@ process model can produce:
   play whose session process is still observably alive is never reaped,
   regardless of the on-disk snapshot or how stale the row looks.
 
-## lionagi/studio/scheduler/admit.py
+## lionhub/src/lionhub/orchestration/scheduler/admit.py
 
 ADR-0071 D3: `admit(row, worker, db) -> AdmissionDecision` is the worker
 claim loop's admission predicate, extracted to one named, StateDB-backed,
@@ -1382,7 +1382,7 @@ carrying the reason and — whenever `notify_request()` finds a notify
 payload — emits a `dispatch_outbox` row via
 `lionhub.orchestration.dispatch.outbox.enqueue_dispatch`.
 
-## lionagi/studio/scheduler/engine.py — admission and dispatch details
+## lionhub/src/lionhub/orchestration/scheduler/engine.py — admission and dispatch details
 
 **`_reserve_max_runs_budget`** — reserves one top-level fire against a
 schedule's `max_runs` cap. A fire consumes budget the instant it fires, not
@@ -1467,7 +1467,7 @@ the terminal and correct answer, so it returns an explicit `{"next_fire_at":
 None}`: the one-shot has to be persisted as no longer due, or it reads back as
 still pending forever.
 
-## lionagi/studio/scheduler/worker.py
+## lionhub/src/lionhub/orchestration/scheduler/worker.py
 
 `claim_and_execute`'s D4 match rule: row R is claimable iff its capability
 tokens are a subset of `advertised_capabilities` AND its `execution_target`
@@ -1488,7 +1488,7 @@ claim is one guarded CAS (`queued -> running`); a lost race or a row another
 caller already moved is skipped, not retried within this pass. A terminal
 admission rejection never counts toward the returned total.
 
-## lionagi/studio/scheduler/signals.py
+## lionhub/src/lionhub/orchestration/scheduler/signals.py
 
 Mint site: `SchedulerEngine._fire_inner()`, immediately after each of the
 three `_guarded_terminal_status("schedule_run", ...)` calls returns `True` —

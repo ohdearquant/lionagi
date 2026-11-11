@@ -147,7 +147,7 @@ def leg(monkeypatch, tmp_path):
     monkeypatch.setattr(AnthropicMessagesEndpoint, "call", call)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
 
-    import lionagi.agent.factory as factory_mod
+    import lionhub.agent.factory as factory_mod
 
     original = factory_mod.create_agent
 
@@ -657,7 +657,7 @@ def _failed_read_then_good_read() -> dict:
 async def test_an_api_leg_recalls_from_khive_but_writes_no_read_output_back(
     leg, monkeypatch, khive_injection
 ):
-    import lionagi.tools.khive_injection as injection_mod
+    import lionhub.tools.khive_injection as injection_mod
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     ops_seen: list[str] = []

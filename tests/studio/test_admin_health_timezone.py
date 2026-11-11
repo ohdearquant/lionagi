@@ -154,7 +154,7 @@ def test_reported_zone_is_the_one_fire_times_are_computed_in(monkeypatch, tmp_pa
     disagree exactly when it matters, so health must read the scheduler's
     value rather than derive its own."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     # A value no environment would produce: if health re-derived the zone from
     # $TZ or /etc/localtime it could not possibly report this one back.

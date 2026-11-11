@@ -747,7 +747,7 @@ interpreters about one unchanged command.
 
 ## lionagi/hooks/
 
-### `hooks/external.py`
+### `lionhub/src/lionhub/hooks/external.py`
 
 #### hooks-private-copy-trust-pinning
 

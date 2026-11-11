@@ -36,7 +36,7 @@ from lionagi.state.reasons import PlayReasons, RunReasons, SessionReasons
 
 _SCHEMA_PATH = Path(__file__).resolve().parents[2] / "lionagi" / "state" / "schema.sql"
 
-# Mirrors lionagi.studio.services.lifecycle._REAPABLE_PLAY_STATUSES exactly
+# Mirrors lionhub.orchestration.scheduler.lifecycle._REAPABLE_PLAY_STATUSES exactly
 # (dead-runner-in-flight play statuses; excludes "gated" — a paused gate is
 # legitimately long-lived — and "pending" — queued, not an in-flight crash).
 # Not imported directly: lionagi.studio.services.* pulls in fastapi, an
@@ -478,7 +478,7 @@ async def test_terminal_row_with_stale_guard_returns_false_not_raise(db: StateDB
 
 
 # 4. Reaper pattern: version-guarded stale-row transition
-# Mirrors lionagi.studio.services.lifecycle.reap_stale_plays()'s exact
+# Mirrors lionhub.orchestration.scheduler.lifecycle.reap_stale_plays()'s exact
 # guarded-write shape (expected_statuses=<reapable set> +
 # expected_updated_at=<snapshot>) directly against StateDB, so the guarantee
 # is pinned at the storage layer the reaper depends on, independent of the

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+import lionhub.orchestration.scheduler.liveness as scheduler_liveness
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -203,10 +205,10 @@ async def test_list_runs_offloads_process_snapshot(tmp_path, monkeypatch):
     # before it and how recently, so it passes alone and fails in a suite.
     # Clearing the cache makes the capture happen here, which is the only way
     # to say anything about the thread it happens on.
-    monkeypatch.setattr(admin_mod, "_PS_SNAPSHOT_CACHE", None, raising=False)
-    monkeypatch.setattr(admin_mod, "_PS_SNAPSHOT_INFLIGHT", {}, raising=False)
-    monkeypatch.setattr(admin_mod, "_PS_SNAPSHOT_METRICS", None, raising=False)
-    monkeypatch.setattr(admin_mod, "_PS_SNAPSHOT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_CACHE", None, raising=False)
+    monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_INFLIGHT", {}, raising=False)
+    monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_METRICS", None, raising=False)
+    monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_SEQUENCE", 0, raising=False)
     event_loop_thread = threading.get_ident()
     snapshot_threads: list[int] = []
 
@@ -214,7 +216,7 @@ async def test_list_runs_offloads_process_snapshot(tmp_path, monkeypatch):
         snapshot_threads.append(threading.get_ident())
         return ""
 
-    monkeypatch.setattr(admin_mod, "_ps_snapshot", fake_snapshot)
+    monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", fake_snapshot)
 
     await runs_mod.list_runs(limit=20)
 

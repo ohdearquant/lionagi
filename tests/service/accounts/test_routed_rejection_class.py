@@ -37,6 +37,7 @@ from tests.service.accounts.test_routed_endpoint import (
     _install_accounts,
     _model,
     _prime,
+    _response,
     _send,
     _warm_rows,
 )
@@ -408,6 +409,162 @@ CAPTURED_CREDIT_BALANCE_BODY = (
 async def test_the_captured_credit_balance_body_records_its_class(monkeypatch, tmp_path, streamed):
     path, _, error = await _reject(monkeypatch, tmp_path, CAPTURED_CREDIT_BALANCE_BODY, streamed)
     _assert_recorded(path, error, INVALID, "credit_balance_low")
+
+
+@pytest.mark.asyncio
+@STREAMED
+@pytest.mark.parametrize(
+    ("message", "error_type", "status", "expected_block"),
+    [
+        (
+            "Your credit balance is too low to access the Anthropic API. More text",
+            INVALID,
+            400,
+            "credit_balance_low",
+        ),
+        (
+            "You have reached your specified API usage limits today",
+            INVALID,
+            400,
+            "spend_limit_reached",
+        ),
+        (
+            "You have reached your specified workspace API usage limits today",
+            INVALID,
+            400,
+            "spend_limit_reached",
+        ),
+        ("prefix Your credit balance is too low to access the Anthropic API.", INVALID, 400, None),
+        ("Your credit balance is too low today", INVALID, 400, None),
+        (
+            "Your credit balance is too low to access the Anthropic API. prompt is too long",
+            INVALID,
+            400,
+            None,
+        ),
+        (
+            "You have reached your specified API usage limits. Your credit balance is too low to access the Anthropic API.",
+            INVALID,
+            400,
+            None,
+        ),
+        ("Your credit balance is too low to access the Anthropic API.", "billing_error", 400, None),
+        ("Your credit balance is too low to access the Anthropic API.", INVALID, 429, None),
+        ("Your credit balance is too low to access the Anthropic API.", INVALID, 529, None),
+    ],
+    ids=[
+        "credit-prefix",
+        "spend-prefix",
+        "workspace-prefix",
+        "embedded",
+        "short-credit",
+        "earlier-class",
+        "other-billing-class",
+        "wrong-type",
+        "rate-limit",
+        "server-error",
+    ],
+)
+async def test_only_a_fixed_billing_message_prefix_blocks(
+    monkeypatch, tmp_path, streamed, message, error_type, status, expected_block
+):
+    body = _envelope({"type": error_type, "message": message})
+    path, _, error = await _reject_status(monkeypatch, tmp_path, status, body, streamed)
+    assert _block_reason(path, "primary") == expected_block
+    assert error.billing_block == expected_block
+    assert (
+        ("billing_block=" + expected_block) in str(error)
+        if expected_block
+        else "billing_block=" not in str(error)
+    )
+
+
+@pytest.mark.asyncio
+@STREAMED
+async def test_billing_rejection_blocks_and_names_the_remedy(monkeypatch, tmp_path, streamed):
+    body = _typed("Your credit balance is too low to access the Anthropic API. Please top up.")
+    path, transport, error = await _reject(monkeypatch, tmp_path, body, streamed)
+    assert error.billing_block == "credit_balance_low"
+    assert "billing_block=credit_balance_low" in str(error)
+    assert "after the credit is topped up" in str(error)
+    assert len(transport.calls) == 1
+    assert _attempts(path)[0][2:5] == ("settled", 0, "rejection_zero")
+
+
+@pytest.mark.asyncio
+@STREAMED
+async def test_a_billing_prefix_over_64_kib_does_not_block(monkeypatch, tmp_path, streamed):
+    body = _typed(
+        "Your credit balance is too low to access the Anthropic API."
+        + "x" * messages_module._REJECTION_BODY_LIMIT
+    )
+    path, _, error = await _reject(monkeypatch, tmp_path, body, streamed)
+    assert error.billing_block is None
+    assert _block_reason(path, "primary") is None
+    assert _attempts(path)[0][4] == "request_rejected"
+
+
+@pytest.mark.asyncio
+@STREAMED
+@pytest.mark.parametrize(
+    ("reason", "message", "expected_block"),
+    [
+        ("auth_required", "Your credit balance is too low to access the Anthropic API.", None),
+        ("credit_balance_low", PROMPT, None),
+    ],
+    ids=["existing-non-billing-reason", "nonbilling-rejection-on-billing-block"],
+)
+async def test_billing_block_field_requires_both_response_and_ledger_evidence(
+    monkeypatch, tmp_path, streamed, reason, message, expected_block
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_Rejection(400, _typed(message))])
+    model.endpoint.config.max_retries = 0
+    original = router_module.AccountRouter.settle_rejection
+
+    async def set_prior_reason(self, attempt, evidence, **kwargs):
+        await self.ledger.block("anthropic", attempt.account, reason)
+        return await original(self, attempt, evidence, **kwargs)
+
+    monkeypatch.setattr(router_module.AccountRouter, "settle_rejection", set_prior_reason)
+    with pytest.raises(AccountRoutingError) as caught:
+        await _send(model, streamed)
+    assert caught.value.billing_block is expected_block
+    assert _block_reason(path, "primary") == reason
+    assert len(transport.calls) == 1
+
+
+def test_billing_block_field_rejects_values_outside_its_closed_set():
+    with pytest.raises(ValueError, match="billing_block") as caught:
+        AccountRoutingError(RouterErrorCode.REQUEST_REJECTED, billing_block="secret-value")
+    assert "secret-value" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@STREAMED
+async def test_blocked_binding_reports_billing_reason_and_new_scope_uses_other_account(
+    monkeypatch, tmp_path, streamed
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    body = _typed("You have reached your specified workspace API usage limits. Reset later.")
+    model, transport = _model(monkeypatch, [_Rejection(400, body), _response()])
+    model.endpoint.config.max_retries = 0
+    with pytest.raises(AccountRoutingError) as rejected:
+        await _send(model, streamed)
+    assert rejected.value.billing_block == "spend_limit_reached"
+    with pytest.raises(AccountRoutingError) as blocked:
+        await _send(model, streamed)
+    assert blocked.value.code is RouterErrorCode.ACCOUNT_BLOCKED
+    assert blocked.value.billing_block == "spend_limit_reached"
+    assert "after the spend limit resets" in str(blocked.value)
+    assert len(transport.calls) == 1
+
+    other_scope, _ = _model(monkeypatch, [])
+    other_scope.endpoint._create_http_session = transport.session
+    other_scope.endpoint.config.max_retries = 0
+    await _send(other_scope, streamed)
+    assert [row[1] for row in _attempts(path)] == ["primary", "secondary"]
+    assert len(transport.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -812,4 +969,5 @@ async def test_a_rejection_of_each_class_clears_the_warm_prefix_rows(
     assert caught.value.code is RouterErrorCode.REQUEST_REJECTED
     assert len(transport.calls) == 2
     assert _warm_rows(path) == []
-    assert _block_reason(path, rows[0][0]) is None
+    expected_block = "spend_limit_reached" if rejection_class == "spend_limit_reached" else None
+    assert _block_reason(path, rows[0][0]) == expected_block

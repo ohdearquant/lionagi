@@ -180,8 +180,8 @@ runs the same playbook in the foreground.
 
 - MCP server: `lionhub/src/lionhub/serve/mcp/server.py` (the `request` tool), `lionhub/src/lionhub/serve/mcp/verbs.py` (verb registry)
 - CLI orchestration: `lionagi/cli/orchestrate/flow.py`, `lionagi/cli/orchestrate/fanout.py`
-- Agent system: `lionagi/cli/agent.py`, `lionagi/agent/`
+- Agent system: `lionagi/cli/agent.py`, `lionhub/src/lionhub/agent/`
 - Playbooks: `~/.lionagi/playbooks/*.playbook.yaml`
 - State DB schema: `lionagi/state/schema.sql`
 - Studio: `lionagi/studio/` (backend), `apps/studio/frontend/` (UI)
-- Scheduler: `lionagi/studio/scheduler/`
+- Scheduler: `lionhub/src/lionhub/orchestration/scheduler/`

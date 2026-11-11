@@ -14,10 +14,10 @@ from pydantic import BaseModel
 
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB
+from lionhub.orchestration.scheduler.subprocess import build_argv, resolve_li_executable
 
 from .. import config
 from ..registry import studio_route
-from ..scheduler.subprocess import build_argv, resolve_li_executable
 from ..services.schedules import (
     _svc_validate_action_model,
     _svc_validate_extra_args,
@@ -287,8 +287,10 @@ async def _spawn_detached(
 ) -> None:
     """Spawn the process and update the invocation row when it exits."""
     from lionagi.state.reasons import RunReasons
-
-    from ..scheduler.subprocess import SubprocessDeadlineExceededError, spawn_and_wait
+    from lionhub.orchestration.scheduler.subprocess import (
+        SubprocessDeadlineExceededError,
+        spawn_and_wait,
+    )
 
     output_tail = ""
     try:

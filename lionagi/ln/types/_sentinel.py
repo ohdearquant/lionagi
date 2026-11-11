@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Final, Literal, TypeVar, Union
 
+from lionagi import _moved
+
 from .._structural import _IdentityKey
 
 __all__ = (
@@ -148,9 +150,16 @@ def _compat_policy(
     empty_as_sentinel: bool = False,
 ) -> _SentinelPolicy:
     """Validate and compile one named legacy collapse policy."""
-    if none_as_sentinel and (site, "none") not in LEGACY_SENTINEL_COLLAPSE_ALLOWLIST:
+
+    def is_allowlisted(axis: _CollapseAxis) -> bool:
+        if (site, axis) in LEGACY_SENTINEL_COLLAPSE_ALLOWLIST:
+            return True
+        legacy_site = _moved.resolve_legacy(site)
+        return legacy_site is not None and (legacy_site, axis) in LEGACY_SENTINEL_COLLAPSE_ALLOWLIST
+
+    if none_as_sentinel and not is_allowlisted("none"):
         raise ValueError(f"Legacy sentinel collapse axis 'none' is not allowlisted for {site!r}")
-    if empty_as_sentinel and (site, "empty") not in LEGACY_SENTINEL_COLLAPSE_ALLOWLIST:
+    if empty_as_sentinel and not is_allowlisted("empty"):
         raise ValueError(f"Legacy sentinel collapse axis 'empty' is not allowlisted for {site!r}")
     return _SentinelPolicy(
         none_as_sentinel=none_as_sentinel,

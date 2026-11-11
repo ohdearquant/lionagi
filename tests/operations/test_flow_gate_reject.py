@@ -379,9 +379,9 @@ async def test_reject_is_recorded_before_dependents_can_pass_the_barrier():
 async def test_reactive_spawn_attached_to_rejected_gate_is_skipped():
     """A SpawnRequest that a rejected gate emits as a dependent child inherits
     the gate veto instead of running against the rejected baseline."""
-    from lionagi.casts.emission import SpawnRequest
     from lionagi.operations import Operation
     from lionagi.operations.node import create_operation
+    from lionhub.agent.casts.emission import SpawnRequest
 
     executed: list[str] = []
 

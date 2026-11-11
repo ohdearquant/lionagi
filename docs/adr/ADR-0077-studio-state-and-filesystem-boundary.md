@@ -366,7 +366,7 @@ provide an authenticated, containment-checked content download contract.
 
 ### D6 — `SchedulerStateService` is the narrow scheduler seam
 
-The protocol in `lionagi/studio/services/scheduler_state.py` contains:
+The protocol in `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py` contains:
 
 ```python
 class SchedulerStateService(Protocol):

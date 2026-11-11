@@ -11,10 +11,10 @@ from uuid import uuid4
 import pytest
 
 from lionagi._errors import EmptyOutgoingContentError
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate import _orchestration as orch
 from lionagi.cli.orchestrate import flow as flow_module
 from lionagi.cli.orchestrate.flow import FlowPlanError, _parse_reactive, _run_flow_inner
+from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration.spawn import AgentProfile
 
 
@@ -374,7 +374,7 @@ async def test_workers_override_keeps_role_modes(tmp_path):
 
 def _pack_env(tmp_path, orc, pack_yaml: str) -> SimpleNamespace:
     """env with bare=False and a pack loaded from a YAML string."""
-    from lionagi.casts.pack import Pack
+    from lionhub.agent.casts.pack import Pack
 
     pack_file = tmp_path / "routing.yaml"
     pack_file.write_text(pack_yaml, encoding="utf-8")

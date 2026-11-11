@@ -34,7 +34,7 @@ class _EmittingFake:
     capability block (the surface ``_branch_emitted`` inspects)."""
 
     def _init_emitter(self):
-        from lionagi.casts.emission import build_emission_operable
+        from lionhub.agent.casts.emission import build_emission_operable
 
         self.messages: list = []
         self._capabilities = build_emission_operable((FindingEmitted, DepthRequested))

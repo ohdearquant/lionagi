@@ -994,3 +994,139 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         )
 
     return sched
+
+
+# Typed quick-create — `li schedule create <kind> <name> ...`. Dispatched from
+# cli/main.py before the legacy `sched_sub` argparse tree (a reserved kind
+# token right after "create"), leaving the flat `li schedule create NAME
+# --cron ... --prompt ...` form untouched. Compiles into a ScheduleMember and
+# runs it through the same resolve_member()/create_quick_schedule() path a
+# ScheduleSet member uses.
+
+QUICK_CREATE_KINDS = ("agent", "flow", "playbook", "command")
+
+
+def _quick_create_add_trigger_flags(parser: argparse.ArgumentParser) -> None:
+    trigger = parser.add_mutually_exclusive_group(required=True)
+    trigger.add_argument(
+        "--at",
+        metavar="RFC3339",
+        help=(
+            "Fire once at this absolute instant. RFC 3339 with a mandatory "
+            "UTC offset and 'T' date/time separator, e.g. "
+            "2026-07-15T09:00:00-04:00. Implies max-runs=1."
+        ),
+    )
+    trigger.add_argument(
+        "--cron",
+        metavar="EXPR",
+        help='Cron expression, e.g. "0 2 * * *". Requires --timezone.',
+    )
+    trigger.add_argument(
+        "--every",
+        metavar="DURATION",
+        help="Strict positive duration, e.g. 30s / 15m / 6h / 2d.",
+    )
+    trigger.add_argument(
+        "--github",
+        metavar="OWNER/NAME",
+        help="Poll this GitHub repository. Optional --github-filter narrows which PRs fire.",
+    )
+    parser.add_argument(
+        "--timezone",
+        metavar="IANA_TZ",
+        help="IANA timezone for --cron, e.g. America/New_York. Required with --cron.",
+    )
+    parser.add_argument(
+        "--github-filter",
+        dest="github_filter",
+        metavar="JSON",
+        help='JSON object filtering which PRs fire --github, e.g. \'{"state": "open"}\'.',
+    )
+
+
+def _quick_create_add_policy_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cwd",
+        metavar="PATH",
+        help="Execution root for the spawned process (default: this CLI's invocation directory).",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Sugar for --max-runs 1 — fire once, then auto-disable.",
+    )
+    parser.add_argument(
+        "--max-runs",
+        dest="max_runs",
+        type=int,
+        metavar="N",
+        help="Auto-disable once N total runs have fired (default: unlimited). "
+        "Mutually exclusive with --once.",
+    )
+    parser.add_argument(
+        "--overlap",
+        choices=("skip", "allow"),
+        default="skip",
+        help="Overlap policy when a prior run is still in-flight (default: skip).",
+    )
+    parser.add_argument(
+        "--missed-fire",
+        dest="missed_fire",
+        choices=("skip", "run_once"),
+        default="skip",
+        help="Missed-fire policy (default: skip).",
+    )
+    parser.add_argument("--budget-usd", dest="budget_usd", type=float, metavar="USD")
+    parser.add_argument("--budget-tokens", dest="budget_tokens", type=int, metavar="N")
+    parser.add_argument(
+        "--rate-limit",
+        dest="rate_limit",
+        metavar="JSON",
+        help='Rolling-window fire cap, e.g. \'{"max_fires": 3, "window_sec": 3600}\'.',
+    )
+    parser.add_argument("--description", help="Human-readable description.")
+    parser.add_argument("--disabled", action="store_true", help="Create the schedule disabled.")
+
+
+def build_quick_create_parser(kind: str) -> argparse.ArgumentParser:
+    """Build the standalone parser for `li schedule create <kind>`."""
+    parser = argparse.ArgumentParser(
+        prog=f"li schedule create {kind}",
+        description=f"Create a typed {kind!r} schedule.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("name", help="Schedule name.")
+    if kind == "agent":
+        parser.add_argument("--profile", required=True, help="Agent profile name.")
+        parser.add_argument("--prompt", help="Prompt text (alternative to --prompt-file).")
+        parser.add_argument(
+            "--prompt-file",
+            dest="prompt_file",
+            metavar="PATH",
+            help="Read the prompt from a file; '-' reads stdin.",
+        )
+        parser.add_argument("--model", help="Explicit model override (default: profile's model).")
+    elif kind == "flow":
+        parser.add_argument("--file", required=True, help="Path to an `li o flow` YAML spec file.")
+    elif kind == "playbook":
+        parser.add_argument("--playbook", required=True, help="Playbook name.")
+        parser.add_argument(
+            "--arg",
+            dest="args",
+            action="append",
+            metavar="KEY=VALUE",
+            help="Typed playbook argument, repeatable.",
+        )
+    elif kind == "command":
+        # The executable + its argv are captured separately, by splitting the
+        # raw argv on a literal '--' *before* this parser ever runs (see
+        # run_schedule_quick_create) — nargs=REMAINDER can't be used here
+        # since it would greedily swallow the trigger/policy flags that
+        # follow `name` too, not just the tokens after '--'.
+        pass
+    else:  # pragma: no cover — gated by QUICK_CREATE_KINDS at the dispatch site
+        raise ValueError(f"unknown quick-create kind: {kind!r}")
+    _quick_create_add_trigger_flags(parser)
+    _quick_create_add_policy_flags(parser)
+    return parser

@@ -10,8 +10,10 @@ from io import StringIO
 
 import pytest
 
+from lionagi.service import _subagent_admission as admission
 from lionhub.orchestration.console import (
     _LazyStderrHandler,
+    _refused_inside_an_agent,
     configure_cli_logging,
     log_error,
 )
@@ -235,3 +237,14 @@ def test_error_log_masks_a_password_given_as_a_keyword(caplog, capsys):
     assert planted not in caplog.text
     assert planted not in captured.out + captured.err
     assert "host=db.example.test password=*** dbname=lionagi" in captured.err
+
+
+def test_refused_inside_an_agent_reports_nested_refusal(monkeypatch, capsys):
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 0)
+    monkeypatch.setattr(admission, "_ancestor_agent_depth", lambda: (0, None))
+    assert _refused_inside_an_agent() is False
+    assert capsys.readouterr().err == ""
+
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+    assert _refused_inside_an_agent() is True
+    assert "nested agent refused" in capsys.readouterr().err

@@ -68,10 +68,6 @@ def _load_machine():
     return import_module(".machine", package=__package__)
 
 
-def _load_studio():
-    return import_module("lionagi.studio.cli")
-
-
 def run_skill(argv: list[str]) -> int:
     return import_module(".skill", package=__package__).run_skill(argv)
 
@@ -467,17 +463,17 @@ def _run(argv: list[str] | None = None) -> int:
     # "did you mean --X?" suggestion instead of argparse's generic usage dump.
     if selected is not None and selected.name == "schedule":
         schedule_parser = selected_parser
+        from lionhub.orchestration.schedule.parsing import QUICK_CREATE_KINDS
+
         # `li schedule create <kind> <name> ...` — a typed quick-create form
         # additive to the legacy flat `li schedule create NAME ...`. The kind
         # token is reserved (agent/flow/playbook/command) and dispatched here,
         # before argparse ever sees it, so the legacy positional NAME keeps
         # working unchanged for any other value.
-        if (
-            len(_argv) > 2
-            and _argv[1] == "create"
-            and _argv[2] in _load_studio().QUICK_CREATE_KINDS
-        ):
-            return _load_studio().run_schedule_quick_create(_argv[2], _argv[3:])
+        if len(_argv) > 2 and _argv[1] == "create" and _argv[2] in QUICK_CREATE_KINDS:
+            from lionhub.cli.schedule import run_schedule_quick_create
+
+            return run_schedule_quick_create(_argv[2], _argv[3:])
         ns, extras = schedule_parser.parse_known_args(_argv[1:])
         if extras:
             from lionhub.orchestration.schedule.parsing import suggest_schedule_flag

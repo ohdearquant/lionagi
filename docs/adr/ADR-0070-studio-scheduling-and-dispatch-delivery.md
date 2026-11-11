@@ -64,7 +64,7 @@ Out of scope:
 Studio lifespan starts and stops the module singleton:
 
 ```python
-# lionagi/studio/scheduler/engine.py
+# lionhub/src/lionhub/orchestration/scheduler/engine.py
 class SchedulerEngine:
     def __init__(self, svc: SchedulerStateService | None = None) -> None: ...
     async def start(self) -> None: ...
@@ -146,7 +146,7 @@ Why this way: one local loop makes Studio deployment simple and gives all hosted
 bounded lifecycle. The tradeoff is availability and coupling inside `SchedulerEngine`: a Studio
 outage suspends triggers and the large engine class coordinates several policies.
 
-Code anchors: `lionagi/studio/app.py` (`lifespan`); `lionagi/studio/scheduler/engine.py`
+Code anchors: `lionagi/studio/app.py` (`lifespan`); `lionhub/src/lionhub/orchestration/scheduler/engine.py`
 (`SchedulerEngine.start`, `_tick_loop`, `_tick`, `stop`); `lionagi/studio/config.py`.
 
 ### D2 — Four trigger types pass explicit fire gates
@@ -319,7 +319,7 @@ Why this way: outside the accepted `at` recovery crash window above, the ordinar
 defer paths make their reasons explicit instead of silently dropping a due fire. The cost is policy
 concentration in one engine and single-process correctness for reservations.
 
-Code anchors: `lionagi/studio/services/schedules.py`; `lionagi/studio/scheduler/engine.py`
+Code anchors: `lionagi/studio/services/schedules.py`; `lionhub/src/lionhub/orchestration/scheduler/engine.py`
 (`_check_missed_fires`, `_maybe_fire`, `_reserve_max_runs_budget`, `_reserve_global_slot`,
 `_check_budget`); `lionagi/state/schema.sql`.
 
@@ -372,7 +372,7 @@ They are owned by `_fire_inner()`, not ADR-0071's worker.
 The subprocess boundary is:
 
 ```python
-# lionagi/studio/scheduler/subprocess.py
+# lionhub/src/lionhub/orchestration/scheduler/subprocess.py
 def resolve_li_executable() -> tuple[list[str] | None, str | None]: ...
 
 def build_argv(
@@ -593,7 +593,7 @@ consumer would appear to own work already committed by the producer.
 
 | # | Delta | Size | Issue |
 |---|---|---|---|
-| 1 | Require a stable execution root for every new schedule and migrate existing schedules off inherited daemon cwd; acceptance: schedule behavior is unchanged when Studio starts from a different directory. | S | Resolved on main (`lionagi/studio/scheduler/engine.py::_resolve_action_cwd`) |
+| 1 | Require a stable execution root for every new schedule and migrate existing schedules off inherited daemon cwd; acceptance: schedule behavior is unchanged when Studio starts from a different directory. | S | Resolved on main (`lionhub/src/lionhub/orchestration/scheduler/engine.py::_resolve_action_cwd`) |
 | 2 | Align `li schedule create` with the persisted action vocabulary; acceptance: every supported stored action is creatable by its canonical public name or explicitly rejected as internal. | S | (filled at issue-open time) |
 | 3 | Split trigger/admission, subprocess execution, and follow-up policy behind characterization tests; acceptance: each concern can be tested without starting the complete scheduler loop. | M | (filled at issue-open time) |
 | 4 | Route scheduled fires through the queued admission contract in ADR-0072; acceptance: a due trigger writes `queued` and execution starts only after a worker wins a lease. | M | (filled at issue-open time) |

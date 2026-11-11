@@ -680,11 +680,8 @@ def capture_machine() -> list[dict[str, Any]]:
 # imports only the named seed via `load_cli_command`, then reports which
 # *other* seeds' modules leaked in, whether the HTTP registry got realized as
 # a side effect, and which seed(s) ended up in `_cli_realized`. Comparing
-# against modules belonging to seeds other than this one's own handles
-# shared modules for free (e.g. studio/schedule both map to
-# lionagi.studio.cli): a shared module is excluded from "other" together
-# with the selected seed's own module, so loading `studio` never flags
-# `lionagi.studio.cli` even though `schedule` also uses it.
+# against modules belonging to other seeds catches an adapter loaded as a
+# side effect of selecting a different command.
 _IMPORT_TRACE_SCRIPT = (
     "import sys, json\n"
     "from lionagi._auto import _http\n"
@@ -803,9 +800,10 @@ def capture_import_laziness() -> dict[str, Any]:
 
 COMPAT_MODULES: tuple[str, ...] = (
     "lionagi.protocols.types",
-    "lionagi.tools.types",
+    "lionhub.tools.types",
     "lionagi.operations.parse",
     "lionagi.service.connections.cli_endpoint",
+    "lionhub.agent.casts",
     "lionagi.dispatch.revival",
 )
 

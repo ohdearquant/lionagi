@@ -91,7 +91,7 @@ def test_lane_for_escalated_via_node_escalated():
 
 def test_lane_for_escalated_via_structured_output():
     """StructuredOutput carrying an EscalationRequest projects to 'escalated'."""
-    from lionagi.casts.emission import EscalationRequest
+    from lionhub.agent.casts.emission import EscalationRequest
 
     req = EscalationRequest(reason="too hard")
     so = StructuredOutput(data=req)
@@ -102,7 +102,7 @@ def test_lane_for_fyi_help_signal_via_node_escalated_is_not_terminal():
     """A soft ('fyi') help signal is informational only — it must not pin
     the node into the terminal 'escalated' lane (urgency reconciliation:
     urgency='blocked' is the only urgency that projects to 'escalated')."""
-    from lionagi.casts.emission import EscalationRequest
+    from lionhub.agent.casts.emission import EscalationRequest
 
     req = EscalationRequest(reason="fyi", urgency="fyi")
     sig = NodeEscalated(op_id="x", name="x", reason="fyi", route="notify", escalation_request=req)
@@ -111,7 +111,7 @@ def test_lane_for_fyi_help_signal_via_node_escalated_is_not_terminal():
 
 
 def test_lane_for_fyi_help_signal_via_structured_output_is_not_terminal():
-    from lionagi.casts.emission import EscalationRequest
+    from lionhub.agent.casts.emission import EscalationRequest
 
     req = EscalationRequest(reason="fyi", urgency="fyi")
     so = StructuredOutput(data=req)
@@ -122,7 +122,7 @@ def test_lane_for_fyi_help_signal_via_structured_output_is_not_terminal():
 def test_lane_for_blocked_help_signal_via_node_escalated_is_terminal():
     """urgency='blocked' (explicit or default) still projects to 'escalated' —
     this preserves the original give_up/higher_tier behavior exactly."""
-    from lionagi.casts.emission import EscalationRequest
+    from lionhub.agent.casts.emission import EscalationRequest
 
     req = EscalationRequest(reason="blocked", urgency="blocked")
     sig = NodeEscalated(
@@ -208,7 +208,7 @@ def test_node_escalated_fields():
 
 
 def test_node_escalated_with_request():
-    from lionagi.casts.emission import EscalationRequest
+    from lionhub.agent.casts.emission import EscalationRequest
 
     req = EscalationRequest(reason="no capacity")
     sig = NodeEscalated(
@@ -223,7 +223,7 @@ def test_node_escalated_request_not_payload_matched():
     The observer matches on Signal.data (the generic payload field). Storing
     the EscalationRequest in a separate named field prevents re-fire.
     """
-    from lionagi.casts.emission import EscalationRequest
+    from lionhub.agent.casts.emission import EscalationRequest
 
     req = EscalationRequest(reason="test")
     sig = NodeEscalated(op_id="z", name="z", reason="test", route="give_up", escalation_request=req)
@@ -386,11 +386,11 @@ async def test_projection_contract_end_to_end():
 
 @pytest.mark.asyncio
 async def test_reactive_injected_child_receives_node_queued():
-    from lionagi.casts.emission import SpawnRequest
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.operations.node import create_operation
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
+    from lionhub.agent.casts.emission import SpawnRequest
     from lionhub.orchestration.engines import Engine
 
     async def spawner(**kw):
@@ -516,12 +516,12 @@ async def test_execute_stream_subscribes_spawn_via_public_observer(monkeypatch):
     the session was built without prior observer access, silently dropping reactive
     spawns. This test verifies the spawn is received via a behavioral check.
     """
-    from lionagi.casts.emission import SpawnRequest
     from lionagi.operations import flow_stream
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.operations.node import Operation, create_operation
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
+    from lionhub.agent.casts.emission import SpawnRequest
 
     executed: list[str] = []
 
@@ -659,11 +659,11 @@ async def test_second_pass_does_not_replay_terminal_signals_for_finished_nodes()
 async def test_skip_signal_ops_does_not_suppress_nodes_spawned_during_the_pass():
     """A restricted pass names the work that already ran, which cannot name a node
     that does not exist yet. A spawn is new work, not a replay, so it still signals."""
-    from lionagi.casts.emission import SpawnRequest
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.operations.node import create_operation
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
+    from lionhub.agent.casts.emission import SpawnRequest
     from lionhub.orchestration.engines import Engine
 
     async def spawner(**kw):

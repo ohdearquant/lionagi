@@ -15,7 +15,6 @@ from uuid import uuid4
 
 import pytest
 
-from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate._common import _build_worker_operate_node, bare_worker_system
 from lionagi.cli.orchestrate.flow import (
     _build_dag,
@@ -27,6 +26,7 @@ from lionagi.cli.orchestrate.flow import (
     _PlanResult,
     _synthesize,
 )
+from lionhub.agent.casts.emission import TaskAssignment
 
 # Shared stubs
 
@@ -2361,13 +2361,13 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
     non-empty file is written — the actual enforcement the role declaration
     exists for, now that the spawned node is told its artifact dir up front."""
     from lionagi import Branch, Session
-    from lionagi.casts.pattern import Role
     from lionagi.cli.orchestrate._orchestration import (
         OrchestrationEnv,
         start_live_persist,
         stop_live_persist,
     )
     from lionagi.state.db import StateDB
+    from lionhub.agent.casts.pattern import Role
     from lionhub.orchestration.engines import PlanningEngine
     from lionhub.orchestration.runs import allocate_run
 

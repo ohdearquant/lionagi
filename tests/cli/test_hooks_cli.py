@@ -318,7 +318,7 @@ def test_trust_rejects_malformed_argv_instead_of_recording_it(capsys, tmp_path):
     (an empty argv list here) -- it must reject it with a clear message,
     matching the argv validation the config loader enforces at execution
     time (ADR-0048 D4)."""
-    from lionagi.hooks.external import compute_command_hash
+    from lionhub.hooks.external import compute_command_hash
 
     settings_path = tmp_path / ".lionagi" / "settings.yaml"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -358,7 +358,7 @@ def test_trust_rejects_malformed_argv_instead_of_recording_it(capsys, tmp_path):
     ids=["empty", "blank", "non-string"],
 )
 def test_trust_rejects_various_malformed_argv_shapes(capsys, tmp_path, bad_command):
-    from lionagi.hooks.external import compute_command_hash
+    from lionhub.hooks.external import compute_command_hash
 
     settings_path = tmp_path / ".lionagi" / "settings.yaml"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -469,7 +469,7 @@ def test_trust_re_enters_pending_after_approved_executable_content_changes(tmp_p
     script.chmod(0o755)
 
     from lionagi.cli.hooks import _iter_untrusted_commands
-    from lionagi.hooks.external import is_command_trusted
+    from lionhub.hooks.external import is_command_trusted
 
     assert is_command_trusted(["./guard"], source="imported:claude", cwd=str(tmp_path)) is False
     pending, _ = _iter_untrusted_commands(tmp_path)

@@ -130,6 +130,7 @@ jobs:
             "lionagi.session.session",
             "lionagi.service.imodel",
             "lionhub.orchestration",
+            "lionhub.agent.casts",
         ):
             importlib.import_module(module)
         # Both packages come from the installed wheel, not from the checkout.
@@ -139,6 +140,16 @@ jobs:
         # A moved module's old import path is the same module object as its new one.
         old = importlib.import_module("lionagi.orchestration.patterns")
         assert old is importlib.import_module("lionhub.orchestration.patterns")
+        from importlib.resources import files
+        from lionhub.agent.casts.catalog import _load_packaged_pack
+
+        pack_resource = files("lionhub.agent.casts").joinpath("packs", "default.yaml")
+        assert pack_resource.is_file()
+        pack = _load_packaged_pack(raise_on_error=True)
+        assert pack is not None
+        critic = pack.config("critic")
+        assert critic is not None and "adversarial" in critic.default_modes
+        assert sys.modules["lionhub.agent.casts"].__file__.startswith(venv + os.sep)
         print("core surface imported with base dependencies only")
         PY
 

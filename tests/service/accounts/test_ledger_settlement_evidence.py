@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from dataclasses import replace
@@ -13,6 +14,7 @@ from uuid import uuid4
 
 import pytest
 
+import lionagi.service.accounts._ledger as ledger_module
 from lionagi.service.accounts._ledger import CredentialLedger
 from lionagi.service.accounts._pricing import (
     ModelPrice,
@@ -270,6 +272,113 @@ async def test_rejection_repeat_uses_full_evidence_and_keeps_the_stored_class(tm
         == "already_settled"
     )
     assert stored_row(path, attempt) == first
+
+
+@pytest.mark.anyio
+async def test_billing_rejection_blocks_with_its_first_zero_closure(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger, attempt = await reserved(path)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO warm_prefix(provider, account, cert, stable_tokens, expires_at) VALUES (?, ?, ?, ?, ?)",
+            ("anthropic", "alpha", "cert", 1, (NOW + timedelta(hours=1)).isoformat()),
+        )
+    evidence = RejectionZero(400, "invalid_request_error", "credit_balance_low", "request_rejected")
+    assert (await ledger.settle_billing_rejection(attempt, evidence))[1] == "credit_balance_low"
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT block_reason FROM account WHERE name='alpha'").fetchone() == (
+            "credit_balance_low",
+        )
+        assert db.execute("SELECT count(*) FROM warm_prefix WHERE account='alpha'").fetchone() == (
+            0,
+        )
+        assert db.execute("PRAGMA user_version").fetchone() == (1,)
+        evidence_json = db.execute(
+            "SELECT settlement_evidence_json FROM attempt WHERE id=?", (str(attempt),)
+        ).fetchone()[0]
+        assert "billing_rejection" not in evidence_json
+
+
+@pytest.mark.anyio
+async def test_billing_rejection_replay_does_not_restore_an_operator_cleared_block(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger, attempt = await reserved(path)
+    evidence = RejectionZero(
+        400, "invalid_request_error", "spend_limit_reached", "request_rejected"
+    )
+    assert (await ledger.settle_billing_rejection(attempt, evidence))[1] == "spend_limit_reached"
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE account SET block_reason=NULL WHERE name='alpha'")
+    before = stored_row(path, attempt)
+    assert (await ledger.settle_billing_rejection(attempt, evidence))[1] is None
+    assert stored_row(path, attempt) == before
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT block_reason FROM account WHERE name='alpha'").fetchone() == (
+            None,
+        )
+
+
+@pytest.mark.anyio
+async def test_contradictory_billing_rejection_duplicate_blocks_for_conflict_only(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger, attempt = await reserved(path)
+    first = RejectionZero(400, "invalid_request_error", "credit_balance_low", "request_rejected")
+    assert (await ledger.settle_billing_rejection(attempt, first))[1] == "credit_balance_low"
+    conflict = RejectionZero(529, "overloaded_error", None, "provider_error")
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.settle_billing_rejection(attempt, conflict)
+    assert caught.value.code is RouterErrorCode.SETTLEMENT_CONFLICT
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT block_reason FROM account WHERE name='alpha'").fetchone() == (
+            "settlement_conflict",
+        )
+
+
+@pytest.mark.anyio
+async def test_billing_rejection_ledger_error_rolls_back_closure_and_block(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger, attempt = await reserved(path)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TRIGGER reject_billing_block BEFORE UPDATE OF block_reason ON account "
+            "BEGIN SELECT RAISE(ABORT, 'blocked write'); END"
+        )
+    evidence = RejectionZero(400, "invalid_request_error", "credit_balance_low", "request_rejected")
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.settle_billing_rejection(attempt, evidence)
+    assert caught.value.code is RouterErrorCode.LEDGER_UNAVAILABLE
+    with sqlite3.connect(path) as db:
+        assert db.execute(
+            "SELECT state, cost_nusd FROM attempt WHERE id=?", (str(attempt),)
+        ).fetchone() == ("open", None)
+        assert db.execute("SELECT block_reason FROM account WHERE name='alpha'").fetchone() == (
+            None,
+        )
+
+
+@pytest.mark.anyio
+async def test_billing_rejection_cancellation_inside_transaction_rolls_back_both_writes(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "ledger.sqlite3"
+    ledger, attempt = await reserved(path)
+    write_block = ledger_module._block_billing_rejection
+
+    def cancel_after_block(connection, provider, account, reason):
+        write_block(connection, provider, account, reason)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(ledger_module, "_block_billing_rejection", cancel_after_block)
+    evidence = RejectionZero(400, "invalid_request_error", "credit_balance_low", "request_rejected")
+    with pytest.raises(asyncio.CancelledError):
+        await ledger.settle_billing_rejection(attempt, evidence)
+    with sqlite3.connect(path) as db:
+        assert db.execute(
+            "SELECT state, cost_nusd FROM attempt WHERE id=?", (str(attempt),)
+        ).fetchone() == ("open", None)
+        assert db.execute("SELECT block_reason FROM account WHERE name='alpha'").fetchone() == (
+            None,
+        )
 
 
 @pytest.mark.anyio

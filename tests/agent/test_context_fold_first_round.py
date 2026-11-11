@@ -8,13 +8,13 @@ leaves the process."""
 
 import pytest
 
-from lionagi.agent.context_fold import ContextFold, install_context_fold
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
 from lionagi.protocols.messages import ActionResponse, AssistantResponse
 from lionagi.service import _prompt_cache as cache
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
+from lionhub.agent.context_fold import ContextFold, install_context_fold
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 from tests.cli.test_agent_api_provider import _text
 

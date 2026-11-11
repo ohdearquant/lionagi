@@ -365,7 +365,7 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="scheduler-launch-actions",
-        symbol="lionagi.studio.scheduler.subprocess.build_argv",
+        symbol="lionhub.orchestration.scheduler.subprocess.build_argv",
         location=None,
         role="alias",
         expected_target='["o", "flow"] or ["o", "fanout"]',
@@ -3462,8 +3462,8 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.state.db import StateDB
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines.engine import EngineRun
     from lionhub.orchestration.engines.planning import PlanningEngine
 
@@ -3666,8 +3666,8 @@ async def test_flow_kernel_executes_via_dependency_aware_executor_when_not_react
 async def test_orchestration_fanout_submits_built_graph_through_injected_session_flow():
     from uuid import uuid4
 
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.session.branch import Branch
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.patterns import fanout
 
     class _FakeFanoutSession:
@@ -3701,7 +3701,7 @@ async def test_orchestration_fanout_submits_built_graph_through_injected_session
 async def test_planning_engine_run_delegates_to_engine_run_run_dag():
     from types import SimpleNamespace
 
-    from lionagi.casts.emission import TaskAssignment
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines.engine import EngineRun
     from lionhub.orchestration.engines.planning import PlanningEngine
 
@@ -3746,8 +3746,8 @@ async def test_planning_engine_run_delegates_to_engine_run_run_dag():
 
 @pytest.mark.asyncio
 async def test_run_fanout_inner_calls_env_session_flow_with_builder_graph(tmp_path):
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import fanout as fanout_mod
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
     from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
 
@@ -3919,8 +3919,8 @@ async def test_execute_dag_delegates_to_planning_engine_run_dag(tmp_path):
     engine-run-dag; this only pins that _execute_dag reaches run_dag once
     with the built graph — reusing the same fake-env/PlanningEngine.new_run
     seam tests/cli/orchestrate/test_flow_phases.py already established."""
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
     from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
 
@@ -3962,8 +3962,8 @@ async def test_execute_dag_delegates_to_planning_engine_run_dag(tmp_path):
 @pytest.mark.asyncio
 async def test_synthesize_calls_execution_engine_with_builder_graph(tmp_path):
     """cli-o-flow-synth: synthesis reuses the execution engine's run_dag bridge."""
-    from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _ExecResult, _PlanResult, _synthesize
+    from lionhub.agent.casts.emission import TaskAssignment
     from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
 
     env = _make_env(tmp_path)
@@ -4073,7 +4073,7 @@ def test_play_shortcut_rewrites_to_registered_o_flow_subcommand():
 
 
 def test_scheduler_build_argv_only_dispatches_registered_o_subcommands():
-    from lionagi.studio.scheduler.subprocess import build_argv
+    from lionhub.orchestration.scheduler.subprocess import build_argv
 
     flow_argv, _tmp = build_argv(
         {"action_kind": "flow", "action_model": "codex/gpt-5.5", "action_prompt": "do it"}, {}

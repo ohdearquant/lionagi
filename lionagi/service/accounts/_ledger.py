@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from functools import cmp_to_key
 from pathlib import Path
 from typing import Generic, TypeVar, cast
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from lionagi.ln import now_utc
 from lionagi.ln.concurrency import move_on_after, run_sync
@@ -62,6 +62,22 @@ _ADMISSION_BOUND_S = 5.0
 # Expired rows are deleted by text order with a margin wider than an offset moves the text (a day),
 # so an isoformat() row goes only after it expired; a row lost early only loses a routing hint.
 _WARM_PURGE_MARGIN = timedelta(hours=25)
+# An open reservation older than this with no settlement is closed at zero cost by the next admission
+# of its provider (ADR-0126 Amendment 11). One reservation covers one provider call, and the longest
+# call a ledger has settled took under ten minutes, so two hours is far past any live call.
+_OPEN_LEASE = timedelta(hours=2)
+_LEASE_NAMESPACE = UUID("5f0d3c0e-8a54-5c52-9d63-3b0b6c3f2a11")
+
+
+def _lease_adjustment_id(kind: str, attempt_id: object) -> UUID:
+    """The adjustment id for a lease record of this attempt; the one place the key is built."""
+    return uuid5(_LEASE_NAMESPACE, f"{kind}:{attempt_id}")
+
+
+def _late_correction_id(attempt_id: UUID, ordinal: int) -> UUID:
+    """Id of the ordinal-th late correction on a lease-closed attempt, counting from 1."""
+    kind = "lease-late" if ordinal == 1 else f"lease-late-{ordinal}"
+    return _lease_adjustment_id(kind, attempt_id)
 
 
 class _TimedCall(Generic[_T]):
@@ -130,8 +146,11 @@ def _routing_error(
     *,
     account: str | None = None,
     attempt_id: UUID | None = None,
+    billing_block: str | None = None,
 ) -> AccountRoutingError:
-    return AccountRoutingError(code, account=account, attempt_id=attempt_id)
+    return AccountRoutingError(
+        code, account=account, attempt_id=attempt_id, billing_block=billing_block
+    )
 
 
 def _checked_int(value: object, *, minimum: int, maximum: int, label: str) -> int:
@@ -187,6 +206,17 @@ def _clear_warm_prefix(connection: sqlite3.Connection, provider: str, account: s
     connection.execute(
         "DELETE FROM warm_prefix WHERE provider = ? AND account = ?",
         (provider, account),
+    )
+
+
+def _block_billing_rejection(
+    connection: sqlite3.Connection, provider: str, account: str, reason: str
+) -> None:
+    """Block an account for a billing rejection without replacing an existing reason."""
+    connection.execute(
+        "UPDATE account SET block_reason = COALESCE(block_reason, ?) "
+        "WHERE provider = ? AND name = ?",
+        (reason, provider, account),
     )
 
 
@@ -679,8 +709,12 @@ class CredentialLedger:
         busy_timeout_s: float = 5.0,
         clock: Callable[[], datetime] | None = None,
         price_revisions: Mapping[str, object] | None = None,
+        open_lease: timedelta = _OPEN_LEASE,
     ) -> None:
+        if not isinstance(open_lease, timedelta) or open_lease <= timedelta(0):
+            raise ValueError("open lease must be a positive duration")
         self.path = Path(path)
+        self.open_lease = open_lease
         self.busy_timeout_s = busy_timeout_s
         self._clock = clock or (lambda: now_utc())
         from types import MappingProxyType
@@ -1010,6 +1044,75 @@ class CredentialLedger:
             return -1 if left_spec.name < right_spec.name else 1
         return 0
 
+    def _void_expired_leases(
+        self,
+        connection: sqlite3.Connection,
+        provider: str,
+        names: Sequence[str],
+        month_utc: str,
+        now_iso: str,
+    ) -> None:
+        """Close, at zero cost, each open reservation of this month that outlived the lease.
+
+        Runs inside the admission transaction, so a closed hold stops counting against the
+        account in the same read that decides whether a new reservation fits. Each closure is
+        a reconciliation adjustment whose source reference names the attempt, its age, its
+        scope and whether the ledger holds a later settled attempt on that scope. Only the
+        current month is read: an earlier month's open rows are left as they are.
+        """
+        now = _aware_instant(now_iso)
+        if now is None:
+            return
+        cutoff = now - self.open_lease
+        for name in names:
+            rows = connection.execute(
+                """
+                SELECT id, scope_kind, scope_id, created_at FROM attempt
+                WHERE provider = ? AND account = ? AND month_utc = ? AND state = 'open'
+                """,
+                (provider, name, month_utc),
+            ).fetchall()
+            for attempt_id, scope_kind, scope_id, opened_at in rows:
+                opened = _aware_instant(opened_at)
+                if opened is None or opened >= cutoff:
+                    continue
+                later = connection.execute(
+                    """
+                    SELECT 1 FROM attempt
+                    WHERE provider = ? AND scope_kind = ? AND scope_id = ?
+                      AND state = 'settled' AND created_at > ? LIMIT 1
+                    """,
+                    (provider, scope_kind, scope_id, opened_at),
+                ).fetchone()
+                source_ref = (
+                    f"lease expiry: open {int((now - opened).total_seconds())}s, lease "
+                    f"{int(self.open_lease.total_seconds())}s; attempt {attempt_id}; "
+                    f"scope {scope_kind}:{scope_id}; "
+                    f"later settled attempt on this scope: {'yes' if later else 'no'}; "
+                    "no provider usage seen by the ledger"
+                )
+                changed = connection.execute(
+                    """
+                    UPDATE attempt SET state = 'settled', cost_nusd = 0, usage_json = NULL,
+                        request_id = NULL, outcome = 'reconciled', settled_at = ?
+                    WHERE id = ? AND state = 'open'
+                    """,
+                    (now_iso, attempt_id),
+                ).rowcount
+                if changed:
+                    self._insert_adjustment(
+                        connection,
+                        _lease_adjustment_id("lease-expiry", attempt_id),
+                        "reconciliation",
+                        UUID(attempt_id),
+                        provider,
+                        name,
+                        month_utc,
+                        0,
+                        _validate_source(source_ref),
+                        now_iso,
+                    )
+
     def _reserve_sync(
         self,
         scope: Scope,
@@ -1123,6 +1226,7 @@ class CredentialLedger:
                         (provider, spec.name, spec.key_env),
                     )
 
+                self._void_expired_leases(connection, provider, list(specs), month_utc, created_at)
                 binding = connection.execute(
                     """
                     SELECT account FROM binding
@@ -1143,6 +1247,13 @@ class CredentialLedger:
                             RouterErrorCode.ACCOUNT_BLOCKED,
                             account=bound_name,
                             attempt_id=attempt_id,
+                            billing_block=(
+                                account_state[0]
+                                if account_state is not None
+                                and account_state[0]
+                                in ("credit_balance_low", "spend_limit_reached")
+                                else None
+                            ),
                         )
                     settled, adjustments, opened, _ = self._spend_parts(
                         connection, provider, bound_name, month_utc
@@ -1262,6 +1373,144 @@ class CredentialLedger:
         """
         return await self._run(lambda: self._reserve_sync(scope, attempt_id, quote, accounts, cert))
 
+    def _validate_stream_estimate(
+        self,
+        evidence: StreamUsageEstimate,
+        stored_envelope: dict[str, object] | None,
+        stored_revision: str,
+        stored_model: str,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        """Check a stream estimate against the quote stored at reservation.
+
+        Returns the stored quote and the supplied pricing inputs. Raises ValueError when the
+        estimate does not correspond to the reservation, is not the recomputed amount or
+        lacks runtime provenance.
+        """
+        envelope = stored_envelope
+        quote_obj = envelope.get("quote") if isinstance(envelope, dict) else None
+        if not isinstance(quote_obj, dict):
+            raise ValueError("stream estimate lacks a matching quote")
+        if (
+            quote_obj.get("price_revision") != stored_revision
+            or quote_obj.get("requested_model") != stored_model
+        ):
+            raise ValueError("stored quote identity is inconsistent")
+        revision = self.price_revisions.get(quote_obj.get("price_revision"))
+        if revision is None:
+            raise _routing_error(RouterErrorCode.UNSUPPORTED_PRICING)
+        retained_inputs = quote_obj.get("pricing_inputs")
+        supplied_inputs = _pricing_inputs_dict(evidence.pricing_inputs)
+        if retained_inputs != supplied_inputs or stored_model != evidence.served_model:
+            raise ValueError("stream estimate pricing inputs differ from reservation")
+        from lionagi.service.accounts._pricing import stream_usage_estimate
+
+        recomputed = stream_usage_estimate(
+            revision,
+            evidence.pricing_inputs,
+            evidence.served_model,
+            evidence.counts,
+            evidence.request_id,
+            evidence.original_reason,
+        )
+        if recomputed is None:
+            raise ValueError("observed stream usage is not priceable")
+        if recomputed != evidence:
+            raise ValueError("stream estimate differs from recomputed amount")
+        if evidence.quote_origin != "reservation" or evidence.cost_nusd > INT64_MAX:
+            raise ValueError("invalid runtime stream estimate provenance")
+        return quote_obj, supplied_inputs
+
+    def _settle_after_lease_closure(
+        self,
+        connection: sqlite3.Connection,
+        attempt_id: UUID,
+        row: tuple[str, str, str],
+        evidence: Evidence,
+        cost_nusd: int,
+        request_id: str | None,
+        outcome: str,
+        stored_envelope: dict[str, object] | None,
+        stored_revision: str,
+        stored_model: str,
+    ) -> SettleResult | None:
+        """Account for evidence that arrives after the lease closed its attempt at zero.
+
+        None means the attempt was not closed by a lease, and the caller applies the ordinary
+        rule for a settled row. Otherwise nothing here blocks the account:
+
+        - typed zero evidence (not sent, rejection zero) agrees with the closure and changes
+          nothing;
+        - complete usage or a stream estimate is real spend and is recorded as one correction
+          adjustment at its cost; a stream estimate first passes the checks the open-row path
+          applies, so a mismatched one raises ValueError and writes nothing;
+        - the recorded cost is the largest cost seen across late arrivals: an arrival above it
+          writes a further correction for the difference, one at or below it writes nothing and
+          one below it is logged.
+        """
+        provider, account, month_utc = row
+        closure = connection.execute(
+            "SELECT id FROM adjustment WHERE id = ? AND kind = 'reconciliation' AND attempt_id = ?",
+            (str(_lease_adjustment_id("lease-expiry", attempt_id)), str(attempt_id)),
+        ).fetchone()
+        if closure is None:
+            return None
+        if isinstance(evidence, StreamUsageEstimate):
+            self._validate_stream_estimate(evidence, stored_envelope, stored_revision, stored_model)
+        elif not isinstance(evidence, CompleteUsage):
+            return "already_settled"
+        # The recorded cost is the sum of this attempt's late corrections. The first one keeps the
+        # id the single-correction form used, so a row written under it is counted and a replay
+        # of that evidence writes nothing; later ones are numbered from 2.
+        recorded, count = 0, 0
+        while True:
+            earlier = self._adjustment_row(connection, _late_correction_id(attempt_id, count + 1))
+            if earlier is None:
+                break
+            recorded += earlier[5]
+            count += 1
+        if cost_nusd <= recorded:
+            if cost_nusd < recorded:
+                _LOGGER.info(
+                    "late evidence below the cost already recorded for a lease-closed attempt "
+                    "is dropped: attempt %s, arrived %s nusd, recorded %s nusd",
+                    attempt_id,
+                    cost_nusd,
+                    recorded,
+                )
+            return "already_settled"
+        source_ref = _validate_source(
+            f"late runtime evidence ({outcome}), origin runtime, for attempt {attempt_id} closed by "
+            f"lease expiry (adjustment {closure[0]}); cost {cost_nusd} nusd, recorded before "
+            f"{recorded} nusd; request {request_id or 'none'}"
+        )
+        # The same range the open-row settle and the operator adjustment hold the account to: a correction that would push settled
+        # spend, adjustments and open reservations past a signed 64-bit total would leave status() unreadable.
+        settled, adjustments, opened, _ = self._spend_parts(
+            connection, provider, account, month_utc
+        )
+        updated_adjustments = adjustments + (cost_nusd - recorded)
+        if (
+            not _INT64_MIN <= updated_adjustments <= INT64_MAX
+            or settled + updated_adjustments + opened > INT64_MAX
+        ):
+            raise _routing_error(
+                RouterErrorCode.BUDGET_EXHAUSTED, account=account, attempt_id=attempt_id
+            )
+        _, recorded_at = _month_and_iso(self._clock)
+        self._insert_adjustment(
+            connection,
+            _late_correction_id(attempt_id, count + 1),
+            "correction",
+            attempt_id,
+            provider,
+            account,
+            month_utc,
+            cost_nusd - recorded,
+            source_ref,
+            recorded_at,
+        )
+        return "settled"
+
     def _settle_sync(
         self,
         attempt_id: UUID,
@@ -1270,7 +1519,10 @@ class CredentialLedger:
         hour_after_key: bool = False,
         server_tools: bool = False,
         http_status: int | None = None,
-    ) -> SettleResult:
+        billing_rejection: bool = False,
+    ) -> tuple[SettleResult, str | None]:
+        """Apply evidence in one transaction; return its result and, for a billing
+        rejection, the account's block reason read inside that transaction."""
         usage_json: str | None = None
         request_id: str | None = None
         provider_error_type: str | None = None
@@ -1305,6 +1557,7 @@ class CredentialLedger:
         with closing(self._connect()) as connection:
             conflict: tuple[str, str] | None = None
             result: SettleResult
+            billing_reason: str | None = None
             with _transaction(connection):
                 row = connection.execute(
                     """
@@ -1350,9 +1603,28 @@ class CredentialLedger:
                         "UPDATE attempt SET http_status = COALESCE(http_status, ?) WHERE id = ?",
                         (http_status, str(attempt_id)),
                     )
+                if (
+                    state == "settled"
+                    and old_outcome == "reconciled"
+                    and not isinstance(evidence, UnknownOutcome)
+                ):
+                    late = self._settle_after_lease_closure(
+                        connection,
+                        attempt_id,
+                        (provider, account, month_utc),
+                        evidence,
+                        cost_nusd,
+                        request_id,
+                        outcome,
+                        stored_envelope,
+                        stored_revision,
+                        stored_model,
+                    )
+                    if late is not None:
+                        return late, None
                 if isinstance(evidence, UnknownOutcome):
                     if state == "settled":
-                        return "already_settled"
+                        return "already_settled", None
                     # The first reason recorded on an open attempt stands: a later write (a
                     # cancellation arriving after a rate limit was recorded) keeps it, and the
                     # rejection fields are written with the reason or not at all.
@@ -1380,7 +1652,7 @@ class CredentialLedger:
                             and candidate is not None
                             and _canonical_json(candidate) == _canonical_json(stored_envelope)
                         ):
-                            return "already_settled"
+                            return "already_settled", None
                         connection.execute(
                             "UPDATE account SET block_reason='settlement_conflict' WHERE provider=? AND name=?",
                             (provider, account),
@@ -1408,48 +1680,9 @@ class CredentialLedger:
                             conflict = (account, str(attempt_id))
                             result = "still_open"
                         else:
-                            envelope = stored_envelope
-                            quote_obj = (
-                                envelope.get("quote") if isinstance(envelope, dict) else None
+                            quote_obj, supplied_inputs = self._validate_stream_estimate(
+                                evidence, stored_envelope, stored_revision, stored_model
                             )
-                            if not isinstance(quote_obj, dict):
-                                raise ValueError("stream estimate lacks a matching quote")
-                            if (
-                                quote_obj.get("price_revision") != stored_revision
-                                or quote_obj.get("requested_model") != stored_model
-                            ):
-                                raise ValueError("stored quote identity is inconsistent")
-                            revision = self.price_revisions.get(quote_obj.get("price_revision"))
-                            if revision is None:
-                                raise _routing_error(RouterErrorCode.UNSUPPORTED_PRICING)
-                            retained_inputs = quote_obj.get("pricing_inputs")
-                            supplied_inputs = _pricing_inputs_dict(evidence.pricing_inputs)
-                            if (
-                                retained_inputs != supplied_inputs
-                                or stored_model != evidence.served_model
-                            ):
-                                raise ValueError(
-                                    "stream estimate pricing inputs differ from reservation"
-                                )
-                            from lionagi.service.accounts._pricing import stream_usage_estimate
-
-                            recomputed = stream_usage_estimate(
-                                revision,
-                                evidence.pricing_inputs,
-                                evidence.served_model,
-                                evidence.counts,
-                                evidence.request_id,
-                                evidence.original_reason,
-                            )
-                            if recomputed is None:
-                                raise ValueError("observed stream usage is not priceable")
-                            if recomputed != evidence:
-                                raise ValueError("stream estimate differs from recomputed amount")
-                            if (
-                                evidence.quote_origin != "reservation"
-                                or evidence.cost_nusd > INT64_MAX
-                            ):
-                                raise ValueError("invalid runtime stream estimate provenance")
                             usage_data = {
                                 name: getattr(evidence.counts, name)
                                 for name in (
@@ -1647,6 +1880,21 @@ class CredentialLedger:
                             ),
                         )
                         _clear_warm_prefix(connection, provider, account)
+                        if (
+                            billing_rejection
+                            and evidence.http_status == 400
+                            and evidence.provider_error_type == "invalid_request_error"
+                            and evidence.rejection_class
+                            in ("credit_balance_low", "spend_limit_reached")
+                        ):
+                            _block_billing_rejection(
+                                connection, provider, account, evidence.rejection_class
+                            )
+                            block_row = connection.execute(
+                                "SELECT block_reason FROM account WHERE provider = ? AND name = ?",
+                                (provider, account),
+                            ).fetchone()
+                            billing_reason = None if block_row is None else block_row[0]
                         result = "settled"
                 elif state == "settled":
                     identical = (
@@ -1656,7 +1904,7 @@ class CredentialLedger:
                         and old_request == request_id
                     )
                     if identical:
-                        return "already_settled"
+                        return "already_settled", None
                     connection.execute(
                         "UPDATE account SET block_reason = 'settlement_conflict' "
                         "WHERE provider = ? AND name = ?",
@@ -1720,7 +1968,7 @@ class CredentialLedger:
                     account=conflict[0],
                     attempt_id=attempt_id,
                 ) from None
-        return result
+        return result, billing_reason
 
     async def settle(
         self,
@@ -1742,9 +1990,33 @@ class CredentialLedger:
             type(http_status) is not int or not 100 <= http_status <= 599
         ):
             raise ValueError("invalid HTTP status")
-        return await self._run(
+        result, _ = await self._run(
             lambda: self._settle_sync(
                 attempt_id, evidence, cert, hour_after_key, server_tools, http_status
+            )
+        )
+        return result
+
+    async def settle_billing_rejection(
+        self,
+        attempt_id: UUID,
+        evidence: RejectionZero,
+        *,
+        http_status: int | None = None,
+    ) -> tuple[SettleResult, str | None]:
+        """Settle a billing rejection at zero and block its account in the same transaction.
+
+        The block is written only when this settle is the attempt's first closure and only
+        if the account has no block reason yet. Returns the settle result and the account's
+        block reason read inside that transaction, or ``None`` when no closure happened.
+        """
+        if http_status is not None and (
+            type(http_status) is not int or not 100 <= http_status <= 599
+        ):
+            raise ValueError("invalid HTTP status")
+        return await self._run(
+            lambda: self._settle_sync(
+                attempt_id, evidence, None, False, False, http_status, billing_rejection=True
             )
         )
 

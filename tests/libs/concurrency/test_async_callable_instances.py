@@ -157,7 +157,7 @@ async def test_async_callable_service_hook_returns_the_awaited_value():
 
 
 async def test_async_callable_agent_processors_preserve_order():
-    from lionagi.agent.factory import _compose_postprocessor, _compose_preprocessor
+    from lionhub.agent.factory import _compose_postprocessor, _compose_preprocessor
 
     order = []
 

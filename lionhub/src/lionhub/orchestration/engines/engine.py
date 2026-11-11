@@ -21,8 +21,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi._errors import CLIInputRefusedError, ConfigurationError, InputTokenCapError
 from lionagi._provider_errors import NestedAgentRefusedError
-from lionagi.agent import AgentSpec, create_agent
-from lionagi.agent.factory import _AgentSettingError
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import Semaphore, gather, move_on_after, sleep
 from lionagi.ln.concurrency._compat import (
@@ -36,6 +34,8 @@ from lionagi.protocols._concepts import Observable
 from lionagi.session.observer import SessionObserver
 from lionagi.session.session import Session
 from lionagi.session.signal import Signal
+from lionhub.agent import AgentSpec, create_agent
+from lionhub.agent.factory import _AgentSettingError
 
 if TYPE_CHECKING:
     from lionagi.protocols.generic.pile import Pile
@@ -391,7 +391,7 @@ def _emission_example(emits: tuple[type, ...]) -> str:
     """Complete fenced-JSON example for the given emission types."""
     import json as _json
 
-    from lionagi.casts.emission import field_name_for
+    from lionhub.agent.casts.emission import field_name_for
 
     obj: dict = {}
     for m in emits:
@@ -428,7 +428,7 @@ def _cli_repair_instruction(schema_hint: str, emits: tuple[type, ...]) -> str:
 
 def emission_keys(emits: tuple[type, ...]) -> str:
     """Render the top-level emission key(s) for a repair hint."""
-    from lionagi.casts.emission import field_name_for
+    from lionhub.agent.casts.emission import field_name_for
 
     names = ", ".join(f"'{field_name_for(m)}'" for m in emits)
     if not names:
@@ -450,7 +450,7 @@ def _namespaced_injection(injection: Any, namespace: str) -> Any:
             return injection
         return {**injection, "namespace": namespace}
 
-    from lionagi.tools.khive_injection import KhiveInjectionPolicy  # noqa: PLC0415
+    from lionhub.tools.khive_injection import KhiveInjectionPolicy  # noqa: PLC0415
 
     if isinstance(injection, KhiveInjectionPolicy):
         if injection.namespace:
@@ -803,7 +803,7 @@ class EngineRun:
         effort_origin = _effort_origin if effort and _effort_origin else "explicit"
         resolved_max_tokens = max_tokens if max_tokens is not None else self.engine.max_tokens
         if not resolved_effort and resolved_model:
-            from lionagi.agent.factory import _parse_agent_model_spec  # noqa: PLC0415
+            from lionhub.agent.factory import _parse_agent_model_spec  # noqa: PLC0415
 
             if not _parse_agent_model_spec(resolved_model, origin=model_origin).effort:
                 resolved_effort = prof_effort
@@ -846,7 +846,7 @@ class EngineRun:
         if mcp_config_path is not None:
             spec.mcp_config_path = mcp_config_path
         if secure and tools:
-            from lionagi.agent.spec import _wire_secure_guards
+            from lionhub.agent.spec import _wire_secure_guards
 
             _wire_secure_guards(spec, cwd)
         # create_agent is the single grant site; capabilities are granted once here.

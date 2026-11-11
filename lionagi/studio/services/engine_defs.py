@@ -128,7 +128,7 @@ def _svc_validate_action_model(model: str | None) -> None:
 def _svc_validate_identifier(value: str | None, field_name: str) -> None:
     if not value:
         return
-    from lionagi.studio.scheduler.subprocess import _validate_identifier
+    from lionhub.orchestration.schedule.parsing import _validate_identifier
 
     _validate_identifier(value, field_name)
 
