@@ -322,7 +322,7 @@ async def _startup_warmup() -> None:
     """Deferred WAL checkpoint, off the critical path so /health serves as
     soon as reconciliation completes."""
     try:
-        from .services.db_maintenance import checkpoint_state_db
+        from lionhub.orchestration.scheduler.db_maintenance import checkpoint_state_db
 
         await checkpoint_state_db(actor="startup")
     except Exception:  # noqa: BLE001
@@ -346,11 +346,11 @@ async def _finalize_warmup(task: asyncio.Task | None) -> None:
 
 @asynccontextmanager
 async def lifespan(app_instance):
+    from lionhub.orchestration.scheduler.lifecycle import run_startup_reconciliation
     from lionhub.serve.diagnostics import snapshot_git_position
 
     from .daemon_log import daemon_log_handler
     from .scheduler.engine import scheduler
-    from .services.lifecycle import run_startup_reconciliation
     from .services.operator import operator_shutdown, operator_startup
 
     # First, before anything else can run and long before the first request:

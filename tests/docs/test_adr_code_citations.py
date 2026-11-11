@@ -73,6 +73,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
     "ADR-0117-normalized-progression-membership-and-online-cutover.md": (
         "lionagi/cli/_runs.py:1922@e1800c3b",
         "lionagi/cli/_runs.py:2236-2237@e1800c3b",
+        "lionagi/studio/services/db_maintenance.py:328@e1800c3b",
     ),
     "ADR-0126-provider-credential-routing-and-monthly-account-budgets.md": (
         "lionagi/providers/anthropic/messages.py:511-541@04e03ffe",
@@ -121,6 +122,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/app.py:349-364@b4a3bebf",
         "lionagi/studio/cli.py:1203-1226@b4a3bebf",
         "lionagi/studio/services/lifecycle.py:15@b4a3bebf",
+        "lionagi/studio/services/lifecycle.py:810@b4a3bebf",
         "lionagi/studio/services/schedule_declaration.py:482@8c119ecc",
         "lionagi/studio/services/schedule_declaration.py:482@b4a3bebf",
         "lionagi/studio/services/schedule_declaration.py:534@b4a3bebf",

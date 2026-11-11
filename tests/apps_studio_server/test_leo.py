@@ -286,8 +286,8 @@ async def test_tool_create_playbook_returns_proposal(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tool_run_maintenance_returns_proposal(monkeypatch):
-    from lionagi.studio.services import db_maintenance as db_maint_svc
     from lionagi.studio.services.leo import tool_run_maintenance
+    from lionhub.orchestration.scheduler import db_maintenance as db_maint_svc
 
     mock_vacuum = AsyncMock()
     mock_checkpoint = AsyncMock()

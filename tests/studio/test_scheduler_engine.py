@@ -2490,11 +2490,11 @@ async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(
             new=AsyncMock(return_value=(0, "")),
         ),
         patch(
-            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            "lionhub.orchestration.scheduler.lifecycle.run_periodic_reapers",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            "lionhub.orchestration.scheduler.db_maintenance.checkpoint_state_db",
             new=AsyncMock(return_value=None),
         ),
     ):
@@ -2590,11 +2590,11 @@ async def test_startup_missed_fire_run_once_reserve_failure_skips_recovery(monke
             new=AsyncMock(return_value=(0, "")),
         ),
         patch(
-            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            "lionhub.orchestration.scheduler.lifecycle.run_periodic_reapers",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            "lionhub.orchestration.scheduler.db_maintenance.checkpoint_state_db",
             new=AsyncMock(return_value=None),
         ),
     ):
@@ -2850,11 +2850,11 @@ async def test_tick_does_not_await_worker_pass_before_evaluating_schedules(monke
 
     with (
         patch(
-            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            "lionhub.orchestration.scheduler.lifecycle.run_periodic_reapers",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            "lionhub.orchestration.scheduler.db_maintenance.checkpoint_state_db",
             new=AsyncMock(return_value=None),
         ),
         patch.object(engine, "_maybe_fire", new=AsyncMock()) as mock_fire,
@@ -2909,11 +2909,11 @@ async def test_tick_worker_pass_is_single_flight(monkeypatch, tmp_path):
 
     with (
         patch(
-            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            "lionhub.orchestration.scheduler.lifecycle.run_periodic_reapers",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            "lionhub.orchestration.scheduler.db_maintenance.checkpoint_state_db",
             new=AsyncMock(return_value=None),
         ),
     ):

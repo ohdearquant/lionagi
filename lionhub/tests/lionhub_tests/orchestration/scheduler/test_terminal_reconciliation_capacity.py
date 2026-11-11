@@ -15,7 +15,7 @@ from lionagi.state.lifecycle import settings_delivery
 from lionagi.state.lifecycle.deliveries import is_acknowledged
 from lionagi.state.lifecycle.notify_settings import ResolvedNotifyHandler
 from lionagi.state.lifecycle.reconciler import TerminalReconciler
-from lionagi.studio.services import terminal_reconciliation as terminal
+from lionhub.orchestration.scheduler import terminal_reconciliation as terminal
 
 
 @pytest.mark.asyncio

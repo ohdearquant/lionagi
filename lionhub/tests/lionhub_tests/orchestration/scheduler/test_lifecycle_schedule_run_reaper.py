@@ -132,7 +132,7 @@ def test_reap_stale_schedule_runs_transitions_stuck_running_row(tmp_path, monkey
     sid = run_async(_seed_schedule(db_path))
     run_id = run_async(_seed_schedule_run(db_path, sid, status="running", updated_at=_STALE))
 
-    from lionagi.studio.services.lifecycle import reap_stale_schedule_runs
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_schedule_runs
 
     count = run_async(reap_stale_schedule_runs(stale_hours=6.0))
     assert count == 1
@@ -152,7 +152,7 @@ def test_reap_stale_schedule_runs_skips_fresh_running_row(tmp_path, monkeypatch)
     sid = run_async(_seed_schedule(db_path))
     run_id = run_async(_seed_schedule_run(db_path, sid, status="running", updated_at=time.time()))
 
-    from lionagi.studio.services.lifecycle import reap_stale_schedule_runs
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_schedule_runs
 
     count = run_async(reap_stale_schedule_runs(stale_hours=6.0))
     assert count == 0
@@ -170,7 +170,7 @@ def test_reap_stale_schedule_runs_skips_terminal_status(tmp_path, monkeypatch):
     sid = run_async(_seed_schedule(db_path))
     run_id = run_async(_seed_schedule_run(db_path, sid, status="completed", updated_at=_STALE))
 
-    from lionagi.studio.services.lifecycle import reap_stale_schedule_runs
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_schedule_runs
 
     count = run_async(reap_stale_schedule_runs(stale_hours=6.0))
     assert count == 0
@@ -202,7 +202,7 @@ def test_reap_stale_schedule_runs_excludes_leased_task_queue_rows(tmp_path, monk
     sid = run_async(_seed_schedule(db_path))
     sched_run_id = run_async(_seed_schedule_run(db_path, sid, status="running", updated_at=_STALE))
 
-    from lionagi.studio.services.lifecycle import reap_stale_schedule_runs
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_schedule_runs
 
     count = run_async(reap_stale_schedule_runs(stale_hours=6.0))
     assert count == 1
@@ -246,7 +246,7 @@ def test_pre_terminal_write_bumps_updated_at_so_reaper_does_not_race_completion(
             # before its terminal update_status() call.
             await db.update_schedule_run(run_id, exit_code=0, ended_at=time.time())
 
-        from lionagi.studio.services.lifecycle import reap_stale_schedule_runs
+        from lionhub.orchestration.scheduler.lifecycle import reap_stale_schedule_runs
 
         # A periodic reaper tick lands in the gap between the field write
         # and the terminal status transition.
@@ -287,7 +287,7 @@ def test_reap_stale_schedule_runs_falls_back_to_fired_at_when_never_touched(tmp_
     run_before = run_async(_get_schedule_run(db_path, run_id))
     assert run_before["updated_at"] is None
 
-    from lionagi.studio.services.lifecycle import reap_stale_schedule_runs
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_schedule_runs
 
     count = run_async(reap_stale_schedule_runs(stale_hours=6.0))
     assert count == 1
@@ -328,7 +328,7 @@ def test_reap_stale_schedule_runs_version_guard_skips_row_touched_between_scan_a
 
     monkeypatch.setattr(state_db_mod.StateDB, "update_status", _flip_then_call)
 
-    from lionagi.studio.services.lifecycle import reap_stale_schedule_runs
+    from lionhub.orchestration.scheduler.lifecycle import reap_stale_schedule_runs
 
     count = run_async(reap_stale_schedule_runs(stale_hours=6.0))
     assert count == 0
@@ -341,7 +341,7 @@ def test_run_startup_reconciliation_includes_stale_schedule_runs_key(tmp_path, m
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    from lionagi.studio.services.lifecycle import run_startup_reconciliation
+    from lionhub.orchestration.scheduler.lifecycle import run_startup_reconciliation
 
     results = run_async(run_startup_reconciliation())
     assert "stale_schedule_runs" in results
@@ -352,7 +352,7 @@ def test_run_periodic_reapers_includes_stale_schedule_runs_key(tmp_path, monkeyp
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    from lionagi.studio.services.lifecycle import run_periodic_reapers
+    from lionhub.orchestration.scheduler.lifecycle import run_periodic_reapers
 
     results = run_async(run_periodic_reapers())
     assert "stale_schedule_runs" in results

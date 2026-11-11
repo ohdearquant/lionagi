@@ -17,7 +17,7 @@ from lionagi.state.lifecycle import reconciler as reconciliation
 from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
 from lionagi.state.lifecycle.deliveries import is_acknowledged
 from lionagi.state.lifecycle.reconciler import TerminalReconciler
-from lionagi.studio.services import terminal_reconciliation as terminal
+from lionhub.orchestration.scheduler import terminal_reconciliation as terminal
 
 
 async def _until(predicate, timeout=5.0):

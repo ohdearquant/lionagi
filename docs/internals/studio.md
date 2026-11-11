@@ -945,7 +945,7 @@ in that zone), and the next plan reports `UNCHANGED`.
   worker actually uses, which is why claim-time rejections must also
   surface observably (`worker._reject_claim`).
 
-## lionagi/studio/services/db_maintenance.py — retention lineage cleanup
+## lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py — retention lineage cleanup
 
 - **`prune_old_data` FK safety** — `branches` CASCADE on `sessions`;
   `artifacts`/`plays`/`team_messages`/`dispatch_outbox` have soft FKs (no
@@ -1171,7 +1171,7 @@ edited or replaced under the same name mid-probe, and matching by name alone
 would stamp a stale result onto it. Only the reload-compare-save step holds
 the registry lock; the probe itself does not.
 
-## lionagi/studio/services/retention_archive.py
+## lionhub/src/lionhub/orchestration/scheduler/retention_archive.py
 
 Self-verifying ZIP64 archival of rows a prune chunk is about to delete. Each
 call publishes one self-contained `.zip` file containing a `manifest.json`
@@ -1290,7 +1290,7 @@ through in the returned filename. Callers reading these keys from
 owner-authored data must treat the error as "drop this field", not fall
 back to serializing it.
 
-## lionagi/studio/services/lifecycle.py
+## lionhub/src/lionhub/orchestration/scheduler/lifecycle.py
 
 Four independent reapers, each scoped to the kind of orphaning its own
 process model can produce:

@@ -15,7 +15,7 @@ import pytest_asyncio
 from lionagi.state.db import StateDB
 from lionagi.state.lifecycle.deliveries import is_acknowledged
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
-from lionagi.studio.services import terminal_reconciliation as terminal
+from lionhub.orchestration.scheduler import terminal_reconciliation as terminal
 
 
 @pytest_asyncio.fixture

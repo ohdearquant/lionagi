@@ -1001,7 +1001,7 @@ class SchedulerEngine:
 
     async def _run_prune(self, now: float) -> None:
         """Prune once, if a full interval has passed since a prune last committed."""
-        from lionagi.studio.services.db_maintenance import get_last_prune_at, prune_old_data
+        from lionhub.orchestration.scheduler.db_maintenance import get_last_prune_at, prune_old_data
         from lionhub.orchestration.scheduler.settings import RETENTION_INTERVAL_SECONDS
 
         try:
@@ -1404,7 +1404,7 @@ class SchedulerEngine:
     async def _tick(self) -> None:
         now = time.time()
 
-        from lionagi.studio.services.lifecycle import run_periodic_reapers
+        from lionhub.orchestration.scheduler.lifecycle import run_periodic_reapers
         from lionhub.orchestration.scheduler.settings import REAPER_INTERVAL_SECONDS
 
         if now - self._last_reaper_run >= REAPER_INTERVAL_SECONDS:
@@ -1414,7 +1414,7 @@ class SchedulerEngine:
                 _log.exception("Periodic reaper error")
             self._last_reaper_run = now
 
-        from lionagi.studio.services.db_maintenance import checkpoint_state_db
+        from lionhub.orchestration.scheduler.db_maintenance import checkpoint_state_db
         from lionhub.orchestration.scheduler.settings import CHECKPOINT_INTERVAL_SECONDS
 
         if now - self._last_checkpoint_run >= CHECKPOINT_INTERVAL_SECONDS:
