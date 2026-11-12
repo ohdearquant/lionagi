@@ -162,7 +162,7 @@ Application-owned pairing state is rejected because it would become the authorit
 
 The core never names `lionhub`. New shared helpers required only by CLI, daemon, and Studio belong to `lionhub`, not to a new core facade. A core-facing interface is warranted only by an actual lower-layer caller, and must not import a higher layer. Amendment 1 A4 item 3 already assigns shared command logic and parsing to `lionhub.orchestration`; item 6 names `lionhub.serve.cli`, subject to the CLI record. The CLI record still owns the public CLI contract and ownership of `li` at 2.0 (`ADR-0136 A4 items 3 to 6`, `ADR-0136 D7`).
 
-Historical source references in this table are at `b4a3bebf`, except `lionagi/studio/cli.py`, `lionagi/cli/machine_schedule.py`, and `lionagi/cli/_schedule_parsing.py`, which are at `fa46d0e8`. References under `lionhub/` name the destination implementation at this record's current revision. The project-resolution row cites `lionagi/studio/cli.py` at `8c2134d5a821a66c6cfb23cf6f754980a3f67ff8`.
+Historical source references in this table are at `b4a3bebf`, except `lionagi/studio/cli.py`, `lionagi/cli/machine_schedule.py`, and `lionagi/cli/_schedule_parsing.py`, which are at `fa46d0e8`, and the `scheduler_state` import in `lionagi/studio/scheduler/engine.py`, which is at `ee589cb2`. References under `lionhub/` name the destination implementation at this record's current revision. The project-resolution row cites `lionagi/studio/cli.py` at `8c2134d5a821a66c6cfb23cf6f754980a3f67ff8`.
 
 | Concern | Allocation and dependency fence | Evidence at the source revision |
 | --- | --- | --- |

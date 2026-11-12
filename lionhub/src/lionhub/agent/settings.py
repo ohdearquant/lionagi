@@ -175,10 +175,13 @@ def _import_hook(
         from lionagi import ln
 
         module = ln.import_module(module_path)
-        return getattr(module, func_name)
     except ImportError as exc:
         logger.warning("Could not import the module of configured hook %s: %s", import_path, exc)
         return None
+    # Only the lookup is guarded here: an AttributeError raised while the module itself
+    # executes is a fault in that module and propagates rather than reading as a missing name.
+    try:
+        return getattr(module, func_name)
     except AttributeError as exc:
         logger.warning("Configured hook %s names no attribute in its module: %s", import_path, exc)
         return None

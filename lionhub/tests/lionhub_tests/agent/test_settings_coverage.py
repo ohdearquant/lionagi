@@ -4,6 +4,7 @@
 """Coverage-targeted tests for agent/settings.py — uncovered paths."""
 
 import asyncio
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -60,7 +61,7 @@ def test_import_hook_warns_and_skips_nonexistent_trusted_module(caplog):
 def test_import_hook_warns_on_a_missing_attribute(caplog):
     result = _import_hook(
         "lionhub.agent.hooks:nonexistent_function_xyz_abc",
-        trusted_hook_modules={"lionagi.agent.hooks"},
+        trusted_hook_modules={"lionhub.agent.hooks"},
     )
     assert result is None
     assert (
@@ -242,3 +243,16 @@ def test_old_hook_spec_resolves_with_default_trust():
     )
     handlers = config.hook_handlers["pre:reader"]
     assert handlers == [guard_destructive]
+
+
+def test_import_hook_propagates_an_attribute_error_raised_by_the_module_itself(
+    tmp_path, monkeypatch, caplog
+):
+    name = "hook_module_that_fails_while_loading"
+    (tmp_path / f"{name}.py").write_text("raise AttributeError('fault inside the hook module')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, name, raising=False)
+
+    with pytest.raises(AttributeError, match="fault inside the hook module"):
+        _import_hook(f"{name}:hook", trusted_hook_modules={name})
+    assert "names no attribute" not in caplog.text
