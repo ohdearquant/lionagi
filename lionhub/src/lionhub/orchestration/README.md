@@ -59,7 +59,10 @@ as `lionagi.studio.scheduler.engine`. Moved modules in `scheduler/` likewise ret
 names, such as `lionagi.studio.scheduler.engine` and `lionagi.studio.services.scheduler_state`.
 A new module in `scheduler/` logs as `lionagi.studio.scheduler.<module>` too: the Studio daemon
 prints scheduler lines through a handler on the `lionagi.studio.scheduler` logger, so a module named
-`lionhub.orchestration.scheduler.<module>` would log nothing to the daemon's output. A handler or
+`lionhub.orchestration.scheduler.<module>` would miss that handler. Its lines would go only to a
+handler on the root logger; with none installed, its INFO and DEBUG lines are dropped and its
+WARNING and higher lines reach stderr through Python's last-resort handler, without the daemon's
+format. A handler or
 filter attaches to the `lionagi.studio.*` names, not to `lionhub.orchestration.scheduler`.
 
 ## Moved here

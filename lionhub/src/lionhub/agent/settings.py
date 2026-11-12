@@ -159,7 +159,14 @@ def _import_hook(
     *,
     trusted_hook_modules: set[str] | frozenset[str],
 ) -> Callable | None:
-    """Import a hook function from 'module.path:function_name'."""
+    """Import a hook function from 'module.path:function_name'.
+
+    Returns ``None`` for a path without ``:``, for a module that cannot be imported
+    (``ImportError``) and for a module that has no such attribute, logging a warning for the
+    last two. Raises ``PermissionError`` for a module outside ``trusted_hook_modules``. Any
+    other exception raised while the module executes, ``AttributeError`` included,
+    propagates unchanged.
+    """
     if ":" not in import_path:
         return None
     module_path, _, func_name = import_path.rpartition(":")
@@ -175,10 +182,13 @@ def _import_hook(
         from lionagi import ln
 
         module = ln.import_module(module_path)
-        return getattr(module, func_name)
     except ImportError as exc:
         logger.warning("Could not import the module of configured hook %s: %s", import_path, exc)
         return None
+    # Only the lookup is guarded here: an AttributeError raised while the module itself
+    # executes is a fault in that module and propagates rather than reading as a missing name.
+    try:
+        return getattr(module, func_name)
     except AttributeError as exc:
         logger.warning("Configured hook %s names no attribute in its module: %s", import_path, exc)
         return None
