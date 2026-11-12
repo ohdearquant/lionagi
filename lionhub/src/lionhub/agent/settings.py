@@ -159,7 +159,14 @@ def _import_hook(
     *,
     trusted_hook_modules: set[str] | frozenset[str],
 ) -> Callable | None:
-    """Import a hook function from 'module.path:function_name'."""
+    """Import a hook function from 'module.path:function_name'.
+
+    Returns ``None`` for a path without ``:``, for a module that cannot be imported
+    (``ImportError``) and for a module that has no such attribute, logging a warning for the
+    last two. Raises ``PermissionError`` for a module outside ``trusted_hook_modules``. Any
+    other exception raised while the module executes, ``AttributeError`` included,
+    propagates unchanged.
+    """
     if ":" not in import_path:
         return None
     module_path, _, func_name = import_path.rpartition(":")

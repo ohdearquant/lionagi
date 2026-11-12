@@ -150,8 +150,8 @@ class TestHookImportBehavior:
         assert child not in sys.modules
         assert not marker.exists()
 
-    @pytest.mark.parametrize("kind", ["plain", "subclass", "missing", "attribute"])
-    def test_import_and_attribute_failures_return_none(self, monkeypatch, kind):
+    @pytest.mark.parametrize("kind", ["plain", "subclass", "missing"])
+    def test_import_failures_return_none(self, monkeypatch, kind):
         failure = _failure(kind)
 
         def fail(name, package=None):
@@ -164,7 +164,7 @@ class TestHookImportBehavior:
             )
         assert result is None
 
-    @pytest.mark.parametrize("failure_type", [RuntimeError, ValueError])
+    @pytest.mark.parametrize("failure_type", [RuntimeError, ValueError, AttributeError])
     def test_other_initialization_failures_keep_the_original_exception(
         self, monkeypatch, failure_type
     ):
