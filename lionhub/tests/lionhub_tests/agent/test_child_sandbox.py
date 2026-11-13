@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import stat
 import sys
 
@@ -272,6 +273,22 @@ def test_an_empty_extends_file_adds_nothing(tmp_path):
 def test_a_missing_extends_file_refuses(tmp_path):
     with pytest.raises(ConfigurationError, match="cannot read extends file"):
         resolve_child_sandbox(None, _settings(extends=[str(tmp_path / "absent.yaml")]))
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions and a non-root user",
+)
+def test_an_unreadable_extends_file_refuses(tmp_path):
+    locked = tmp_path / "locked.yaml"
+    locked.write_text("deny_read: [~/x]\n", encoding="utf-8")
+    locked.chmod(0)
+    try:
+        with pytest.raises(ConfigurationError, match="cannot read extends file") as caught:
+            resolve_child_sandbox(None, _settings(extends=[str(locked)]))
+    finally:
+        locked.chmod(0o600)
+    assert "child_sandbox: {enabled: false}" in str(caught.value)
 
 
 def test_a_malformed_extends_file_refuses(tmp_path):
