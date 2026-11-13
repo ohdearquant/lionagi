@@ -24,6 +24,7 @@ import pytest
 import lionagi.cli.orchestrate._orchestration as orch_mod
 from lionagi._errors import ConfigurationError
 from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
+from lionhub.agent.khive_actor import attribute_khive_servers
 from lionhub.orchestration.runs import RunDir
 from lionhub.orchestration.spawn import AgentProfile
 from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
@@ -433,7 +434,9 @@ async def test_ambient_job_control_is_withheld_from_leaf_workers(tmp_run):
     args = await _cli_args(branch.chat_model)
     forwarded = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]
 
-    assert forwarded == {"knowledge": ambient["knowledge"]}
+    assert forwarded == attribute_khive_servers(
+        {"knowledge": ambient["knowledge"]}, "agent:implementer"
+    )
     assert "--strict-mcp-config" in args
     assert env.withheld_mcp_servers == ("control-under-an-alias",)
     assert "control-under-an-alias" in branch.system.rendered
@@ -459,7 +462,7 @@ async def test_explicit_mcp_config_is_the_job_control_opt_in(tmp_run, tmp_path):
     args = await _cli_args(branch.chat_model)
     forwarded = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]
 
-    assert forwarded == granted
+    assert forwarded == attribute_khive_servers(granted, "agent:implementer")
     assert "--strict-mcp-config" in args
     assert env.withheld_mcp_servers == ()
     assert "withheld" not in branch.system.rendered
@@ -491,8 +494,14 @@ async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home
     overrides = kwargs["config_overrides"]
     assert kwargs["ignore_user_config"] is True
     assert overrides["mcp_servers.knowledge.command"] == "kkernel"
+    # The khive actor and pack list are not secrets, so they ride the command line and
+    # reach a worker that ignores the user config, where a profile would not.
+    assert overrides["mcp_servers.knowledge.env.KHIVE_ACTOR"] == "agent:implementer"
+    assert "comm" not in overrides["mcp_servers.knowledge.env.KHIVE_PACKS"].split(",")
+    assert "mcp_servers.knowledge.env" not in overrides
     assert not [key for key in overrides if key.startswith("mcp_servers.lion-control.")]
     assert "--ignore-user-config" in args
+    assert any(arg.startswith("mcp_servers.knowledge.env.KHIVE_ACTOR=") for arg in args)
     assert not [arg for arg in args if "lion-control" in arg]
 
 
@@ -800,7 +809,9 @@ async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_ru
     args = await _cli_args(branch.chat_model)
 
     assert _mcp_config_arg(args) == {
-        "mcpServers": {"knowledge": _CONTROL_AND_KNOWLEDGE["knowledge"]}
+        "mcpServers": attribute_khive_servers(
+            {"knowledge": _CONTROL_AND_KNOWLEDGE["knowledge"]}, "agent:implementer"
+        )
     }
     assert env.withheld_mcp_servers == ("control",)
 
@@ -818,11 +829,16 @@ async def test_the_synthesis_branch_gets_the_worker_set_as_its_whole_set(tmp_run
     args = await _cli_args(branch.chat_model)
     orchestrator_args = await _cli_args(env.orc_branch.chat_model)
 
+    # No orchestrator profile is named here, so both act as the anonymous child.
     assert _mcp_config_arg(args) == {
-        "mcpServers": {"knowledge": _CONTROL_AND_KNOWLEDGE["knowledge"]}
+        "mcpServers": attribute_khive_servers(
+            {"knowledge": _CONTROL_AND_KNOWLEDGE["knowledge"]}, "agent:anonymous"
+        )
     }
     assert "--strict-mcp-config" in args
-    assert _mcp_config_arg(orchestrator_args) == {"mcpServers": _CONTROL_AND_KNOWLEDGE}
+    assert _mcp_config_arg(orchestrator_args) == {
+        "mcpServers": attribute_khive_servers(_CONTROL_AND_KNOWLEDGE, "agent:anonymous")
+    }
 
 
 @pytest.mark.asyncio

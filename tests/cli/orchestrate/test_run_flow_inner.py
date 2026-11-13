@@ -16,6 +16,7 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.branch import Branch
 from lionhub.agent.casts.emission import TaskAssignment
+from lionhub.agent.khive_actor import attribute_khive_servers
 from lionhub.orchestration.engines import EngineRun, PlanningEngine
 from tests.cli.orchestrate.test_flow_phases import _make_env
 
@@ -565,7 +566,7 @@ async def test_a_reactively_spawned_cli_leaf_gets_the_worker_set_not_the_orchest
     request = (await clone.chat_model.create_event(prompt="hi")).payload["request"]
     args = request.as_cmd_args()
     handed = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]
-    assert handed == {"knowledge": knowledge}
+    assert handed == attribute_khive_servers({"knowledge": knowledge}, "agent:anonymous")
     assert "--strict-mcp-config" in args
     orchestrator_args = (
         (await orchestrator_model.create_event(prompt="hi")).payload["request"].as_cmd_args()

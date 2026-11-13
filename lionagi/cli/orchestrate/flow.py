@@ -31,6 +31,7 @@ from lionagi.ln.concurrency import (
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.session.exchange import Exchange
 from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
+from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
 from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionhub.orchestration.console import progress
 from lionhub.orchestration.console import warn as _warn
@@ -2503,7 +2504,19 @@ async def _execute_dag(
         # for it was (recorded by _build_spawn_node).
         from ._orchestration import _isolate_worker_cli_config
 
-        worker_mcp_servers = {} if profile_mcp_disabled else getattr(env, "mcp_servers", None)
+        # A spawned node's khive servers act as the profile it runs as. Only a copy of
+        # the orchestrator's branch has a profile name on record; any other node's
+        # profile is not recorded on its branch, so it acts as the anonymous child.
+        spawn_khive_actor = child_khive_actor(
+            getattr(env, "orc_profile_name", None)
+            if getattr(branch, "metadata", {}).get("clone_from") is env.orc_branch
+            else None
+        )
+        worker_mcp_servers = (
+            {}
+            if profile_mcp_disabled
+            else attribute_khive_servers(getattr(env, "mcp_servers", None), spawn_khive_actor)
+        )
         _isolate_worker_cli_config(
             chat_model,
             contain_user_settings=bool(operation.metadata.get("emitter_contains_user_settings")),

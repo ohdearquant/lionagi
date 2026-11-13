@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import functools
 import json
 import math
@@ -48,6 +49,7 @@ from lionagi.service.imodel import _endpoint_routing_enabled
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
+from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
 from lionhub.orchestration.arguments import BoundedInt
 from lionhub.orchestration.console import hint, log_error
 from lionhub.orchestration.job import (
@@ -2013,6 +2015,14 @@ async def _run_agent(
                 disabled=no_mcp_config,
                 submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
             )
+            # Every khive server the child is handed acts as this profile, never as
+            # whoever launched it, and carries no comm pack.
+            mcp_resolution = dataclasses.replace(
+                mcp_resolution,
+                servers=attribute_khive_servers(
+                    mcp_resolution.servers, child_khive_actor(agent_name)
+                ),
+            )
 
         # A resume that names no MCP flag replays the choice its branch was launched
         # with, searched from where it was launched rather than from where it is
@@ -2058,6 +2068,12 @@ async def _run_agent(
                         disabled=disabled,
                         submit_snapshot=recorded_config if is_submit_snapshot else None,
                         **({"reject_legacy_snapshot": True} if legacy_recorded_file else {}),
+                    )
+                    mcp_resolution = dataclasses.replace(
+                        mcp_resolution,
+                        servers=attribute_khive_servers(
+                            mcp_resolution.servers, child_khive_actor(agent_name)
+                        ),
                     )
                 except LegacyMcpReplayError as exc:
                     # The resolver constructed this fixed, safely-labelled message.

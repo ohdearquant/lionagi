@@ -19,6 +19,7 @@ from lionagi.ln.concurrency import (
     move_on_after,
 )
 from lionagi.session.exchange import Exchange
+from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
 from lionhub.orchestration import plan
 from lionhub.orchestration.console import log_error, progress, warn
 from lionhub.orchestration.job import classify_exception
@@ -104,7 +105,12 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"
     # The model is a copy of the orchestrator's, whose request carries the run's
     # whole set, job control included, so the worker set is handed over the way
     # build_worker_branch hands it to a worker: as the whole set.
-    worker_servers = getattr(env, "mcp_servers", None)
+    # The synthesizer is a cast role with no profile of its own and runs on a copy
+    # of the orchestrator's model, so its khive servers act as the orchestrator's profile.
+    worker_servers = attribute_khive_servers(
+        getattr(env, "mcp_servers", None),
+        child_khive_actor(getattr(env, "orc_profile_name", None)),
+    )
     chat_model = env.orc_branch.chat_model.copy()
     strip_connector_grant(chat_model.endpoint.config.kwargs)
     _hand_mcp_servers(

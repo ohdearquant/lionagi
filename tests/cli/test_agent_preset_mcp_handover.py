@@ -455,6 +455,20 @@ async def test_preset_leg_gets_the_submitted_servers_not_the_target_directory(sp
 
 
 @pytest.mark.asyncio
+async def test_leg_without_a_profile_gets_khive_acting_as_the_anonymous_child(spawn):
+    """The knowledge server a leg is handed names an actor and carries no messaging pack."""
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(
+        "claude_code/sonnet", "go", preset="coding", cwd=str(spawn.target_dir), yolo=True
+    )
+
+    env = _forwarded_servers(spawn.branches[-1])["khive"]["env"]
+    assert env["KHIVE_ACTOR"] == "agent:anonymous"
+    assert "comm" not in env.get("KHIVE_PACKS", "").split(",")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["claude_code/sonnet", "codex/gpt-5.3-codex"])
 async def test_explicit_mcp_config_beats_a_config_at_the_target_directory(
     spawn, tmp_path, model, codex_home
