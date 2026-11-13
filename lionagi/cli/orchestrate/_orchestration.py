@@ -882,6 +882,24 @@ def _claude_worker_contained(imodel) -> bool:
     return isinstance(kwargs, dict) and kwargs.get("setting_sources") == ""
 
 
+def _confine_claude_worker(imodel, profile_name: str | None) -> None:
+    """Carry the resolved child sandbox policy in a Claude worker's endpoint kwargs.
+
+    ``profile_name`` is the worker's agent profile, or None for a bare worker. A configuration
+    error propagates, so a worker is never built unconfined because of a mistake in the settings.
+    A model that is not a Claude CLI is left alone: the policy is rendered as Claude Code settings.
+    """
+    if not getattr(imodel, "is_cli", False):
+        return
+    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+    from lionhub.agent.factory import _canonical_provider
+
+    if _canonical_provider(imodel.endpoint.config.provider) not in _CLAUDE_PROVIDER_NAMES:
+        return
+    imodel.endpoint.config.kwargs["child_sandbox"] = resolve_child_sandbox(profile_name).to_dict()
+
+
 def _uncontainable_cli_provider(imodel) -> str | None:
     """The provider of a CLI model that a contained worker's spawn cannot run on, else None.
 
@@ -1215,6 +1233,7 @@ async def setup_orchestration(
             chat_model=orc_imodel,
             log_config=orc_log_config,
             resolved_mcp_servers=run_mcp_servers,
+            sandbox_profile=agent_name or None,
         )
         orc_branch.name = "orchestrator"
     if profile_origin_mcp_disabled:
@@ -1522,6 +1541,7 @@ async def build_worker_branch(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     if is_cli:
         w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
+        _confine_claude_worker(w_imodel, None if env.bare else getattr(w_profile, "name", None))
     env.worker_artifact_dirs[agent_id] = artifact_dir
     if is_cli:
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
@@ -1613,6 +1633,7 @@ async def build_worker_branch(
             chat_model=w_imodel,
             log_config=log_config,
             resolved_mcp_servers=run_servers,
+            sandbox_profile=None if env.bare else getattr(w_profile, "name", None),
         )
         wb.name = wname
     else:

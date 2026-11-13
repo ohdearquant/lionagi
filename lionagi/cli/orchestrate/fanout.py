@@ -136,6 +136,7 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"
         load_settings=False,
         chat_model=chat_model,
         resolved_mcp_servers=worker_servers,
+        sandbox_profile=env.orc_profile_name,
     )
     branch.name = name
     env.session.include_branches(branch)

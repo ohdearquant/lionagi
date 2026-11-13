@@ -2296,6 +2296,9 @@ async def _run_agent(
                         else mcp_resolution.servers
                     ),
                     resolved_mcp_explicit=mcp_resolution.explicit,
+                    # The child sandbox exemption is keyed on the agent profile file
+                    # named by -a, not on the role the spec casts the leg as.
+                    sandbox_profile=agent_name or None,
                 )
                 if api_launch is not None:
                     branch.metadata[_API_LAUNCH_KEY] = dict(api_launch)

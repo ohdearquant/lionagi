@@ -130,6 +130,7 @@ async def create_agent(
     resolved_mcp_servers: dict[str, Any] | None | UnsetType = Unset,
     resolved_mcp_explicit: bool = False,
     agent_env: Mapping[str, str] | None = None,
+    sandbox_profile: str | None = None,
     _command_env_names_out: Callable[[frozenset[str]], None] | None = None,
 ) -> Branch:
     """Create a fully wired Branch from AgentSpec: settings → hooks → prompt → model → tools.
@@ -158,6 +159,12 @@ async def create_agent(
     is not serialized, so a model restored with ``iModel.from_dict`` spawns its
     child with this process's environment; an agent rebuilt with
     ``create_agent`` gets the overlay only when ``agent_env`` is passed again.
+
+    ``sandbox_profile`` is the agent profile name the user passed (the ``-a`` profile), and is
+    the only key matched against ``child_sandbox.profiles.<name>.allow_read`` when a Claude
+    Code child's sandbox policy is resolved. ``None`` (a launch without a profile) gets no
+    exemption. The role the spec was cast from is never used: a role name that happens to equal
+    a ``profiles`` key does not earn its exemption.
 
     ``spec.contain_account_integrations`` turns a codex agent's account
     ``apps`` and ``plugins`` features off by default. It is applied to the
@@ -430,6 +437,14 @@ async def create_agent(
                 # stays contained.
                 if spec.contain_account_integrations:
                     chat_model.endpoint.config.kwargs["contain_account_integrations"] = True
+        if provider_key in _CLAUDE_PROVIDER_NAMES:
+            from .child_sandbox import resolve_child_sandbox
+
+            # Kept in the endpoint's config, so a clone or a restored model stays confined. A
+            # configuration error raises here: the agent is not built unconfined.
+            chat_model.endpoint.config.kwargs["child_sandbox"] = resolve_child_sandbox(
+                sandbox_profile
+            ).to_dict()
         branch_kwargs["chat_model"] = chat_model
 
     if log_config is not None:
