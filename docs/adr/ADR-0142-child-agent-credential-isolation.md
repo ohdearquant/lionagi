@@ -50,7 +50,7 @@ Problems, observed on macOS with Claude Code 2.1.323:
 | Where the provider authenticates | D1: in the provider CLI's own process, with its normal login, outside the tool boundary |
 | Where tools run | D2: every command a child starts runs inside a deny-by-default OS profile lionagi owns, no weaker than file containment on any axis |
 | How a CLI's tools reach that boundary | D3: through an integration point that routes every command; every path that does not start a command is named and confined by other means, or the provider is unavailable |
-| Claude Code integration | D4: the shell-command prefix, Claude Code's own sandbox off, in-process tools confined by permission rules, unrouted command paths turned off |
+| Claude Code integration | D4: the shell-command prefix, Claude Code's own sandbox off, in-process file and fetch tools off until qualified, no settings source but lionagi's, an empty shell start-up directory |
 | Support and failure | D5: a separate, requested capability per provider and platform; it refuses when unqualified and never falls back silently |
 | Credentialed work | D6: runs in the launching process, never inside a tree, configuration or cache the child could write |
 
@@ -80,23 +80,30 @@ profile, with these differences and requirements:
   `com.apple.security.agent`) and the services that hand credentials or run work outside the
   sandbox: token and Kerberos services, the pasteboard, LaunchServices, AppleEvents and launchd job
   submission.
-- **Credential agents.** No connection to a local socket outside the working directory and the
-  configured caches, which covers `ssh-agent`, git credential caches and `gpg-agent`; their
-  environment variables (`SSH_AUTH_SOCK` and the like) are not passed.
-- **Other processes.** No process inspection of, or signal to, any process outside the sandbox.
+- **Credential agents.** No connection to any local socket by path, wherever it lives (the working
+  directory and caches included), except sockets lionagi names for the launch; this covers
+  `ssh-agent`, git credential caches and `gpg-agent` whether or not their environment variables are
+  set. Those variables (`SSH_AUTH_SOCK` and the like) are not passed either.
+- **Other processes.** No process inspection of, or signal to, any process outside the command's own
+  sandbox instance.
 - **Files.** Reads of the configured credential locations are denied (the list the `child_sandbox`
   key resolves today: built-in defaults plus global additions, minus a profile's named exemptions).
-  Writes are limited to the working directory and the configured caches; the profile and the
-  launcher that applies it are never writable from inside.
-- **Network.** No wider than under file containment.
+  Writes are limited to the working directory and the configured caches, minus the files git or a
+  shell later executes or obeys there (the repository's `.git/config` and `.git/hooks`); the profile
+  and the launcher that applies it are never writable from inside. The rules must hold on the
+  resolved path, so that a symlink in the working directory does not widen them.
+- **Network.** No wider than under file containment. `sandbox-exec` filters by local port, not by
+  domain, and turning the provider's sandbox off also turns off the local proxy it filters through;
+  outbound traffic is therefore allowed only to a filtering proxy lionagi runs with the file
+  containment domain policy. Until that proxy exists, outbound network from tools is denied.
 
 The rule for every axis: the profile is no weaker than file containment's, so requesting credential
 isolation never loosens anything that file containment holds.
 
 The boundary is applied before the command runs and is inherited by everything the command starts.
-A nested provider CLI started from a tool therefore cannot read the store; a nested CLI whose login is
-a file or an environment variable is covered only by the file rules and by D1's rule that no login
-enters the tool environment.
+A nested provider CLI started from a tool therefore cannot read the store, and with the provider's
+login files on the read-deny list and no login in the tool environment (D1) it has no login at all:
+it fails to start a turn, which is the intended outcome.
 
 The file rules move into this profile because P4 rules out keeping the provider's sandbox underneath
 it.
@@ -108,10 +115,12 @@ A provider integration qualifies for credential isolation only if each of the fo
 - every command its tools, hooks or extensions start is routed through the D2 boundary, or that
   path is turned off;
 - every built-in tool that runs inside the provider process (file read, write and edit, search,
-  web fetch) is confined by the provider's permission rules to the same read-deny list and write set
-  as D2, or is turned off;
+  web fetch) is turned off, unless a measured acceptance row shows the provider's own rules hold it
+  to D2's read-deny list, write set and network policy under the launch's permission mode, symlinks
+  included;
 - every command the provider starts on its own behalf outside the router (status lines, credential
-  helpers, shell set-up) is either turned off or reads nothing the child could have written.
+  helpers, environment set-up) is turned off or runs with nothing from the user's or the working
+  directory's configuration, and its output carries no credential into the tools.
 
 A provider that cannot meet this is unavailable in this mode. lionagi does not approximate it with a
 wrapper around the whole CLI (P3) or with a settings file the working directory can affect.
@@ -130,18 +139,20 @@ shell:
 and starts the child with Claude Code's own sandbox off (`{"sandbox": {"enabled": false}}` in the one
 `--settings` value), because the two cannot nest (P4). Alongside the prefix:
 
-- The Read tool keeps the `permissions.deny` `Read(...)` rules; Write, Edit and NotebookEdit get
-  rules limiting them to D2's write set, so an in-process tool cannot plant a file (a shell start-up
-  file, a launch agent, git configuration, the profile itself) that something unconfined later runs.
-  Search tools are covered by the same read rules or turned off.
-- Paths that do not go through the prefix are turned off: MCP servers except those lionagi starts
-  through the same launcher (`--strict-mcp-config`), and settings-defined helper commands (status
-  line, API-key and cloud-credential helpers), by loading no settings source the working directory
-  can affect.
-- Every routed Bash command sources a shell snapshot that Claude Code made itself, and the command
-  that made it never reached the prefix in the measured run. That snapshot reflects the user's own
-  shell start-up files, which is a further reason the write rules above deny those files to the
-  child.
+- In-process file tools. Claude Code's permission rules deny listed paths; nothing lionagi has
+  measured shows them confining a tool to an allow-list under a non-prompting permission mode, which
+  is what D2's write set needs. Write, Edit and NotebookEdit are therefore turned off in this mode and edits go through the confined
+  shell; Read, search and web fetch are turned off unless an acceptance row qualifies them (D3).
+- Settings. The child loads no settings source but lionagi's own `--settings` value (no user,
+  project or local settings), so no user- or project-defined status line, credential helper or hook
+  runs outside the prefix; hooks the launch needs are passed in that value and routed. MCP servers
+  are limited to those lionagi passes (`--strict-mcp-config`), each started through the launcher in
+  its own profile instance with no write access to the working directory.
+- Shell set-up. Every routed Bash command sources an environment snapshot that Claude Code made by
+  running the user's shell start-up files once, outside the prefix (that command never reached the
+  prefix in the measured run). lionagi starts the child with the shell's start-up directory pointed at
+  an empty directory of its own (`ZDOTDIR` for zsh), so the snapshot carries nothing from the user's
+  start-up files into the tools.
 
 Measured on macOS with Claude Code 2.1.323 in one single-turn run, with a test keychain item and a
 test file. The probe profile was `(allow default)` with only the four credential-store Mach services
@@ -151,11 +162,11 @@ that the store and file denials hold there; it does not show the D2 profile.
 
 | Probe | Result | Control |
 |---|---|---|
-| child Bash: `security find-generic-password -s <test item> -w` | the search fails (`One or more parameters passed to a function were not valid`, then `could not be found`, exit 44); no secret in the output | the same command outside the child returned the item after the run |
+| child Bash: `security find-generic-password -s <test item> -w` | the search fails (`One or more parameters passed to a function were not valid`, then `could not be found`, exit 44); no secret in the output | the same command outside the child, run after the child exited, returned the item |
 | child Bash: `cat <test file under a denied directory>` | `Operation not permitted` | the file was readable outside the profile |
 | child Bash: `echo hello && git --version` | runs | - |
-| provider login | the child completed its turn; no provider credential variable was in its environment | under an outer keychain denial the same CLI was not logged in (P3) |
-| command routing | 28 prefix invocations: 3 Bash commands and 25 hook commands, each as one argument | - |
+| provider login | the child completed its turn | the launching environment carried none of the provider's credential variables (checked by name, outside the child); under an outer keychain denial the same CLI was not logged in (P3) |
+| command routing | 28 invocations reached the prefix: 3 Bash commands and 25 hook commands, each as one argument | the count shows what reached the prefix, not that nothing bypassed it |
 
 A denied keychain query reports "item not found"; only the first line (`parameters ... not valid`)
 distinguishes it from a missing item, so every probe of this boundary needs the outside control.
@@ -177,43 +188,65 @@ limits.
 
 ## D6. Credentialed work never runs on what the child wrote
 
-Tools that need the store (a signed commit, an authenticated push or registry pull, the GitHub CLI)
-do not work inside the child. That work runs in the launching process, and it never runs inside the
-child's working tree, with git configuration or hooks from that tree, or with a cache the child could
-write: the launching process reads the child's result as data (a diff, an archive, a file list) and
-applies it in a tree and environment of its own. Otherwise the child plants a git hook, a
-`core.fsmonitor` or `credential.helper` setting, or a poisoned cache entry, and the unconfined process
-runs it with the credentials D2 withheld.
+Tools that need the store (a signed commit, an authenticated push or fetch, a registry pull, the
+GitHub CLI) do not work inside the child. That work runs in the launching process, which treats
+everything the child wrote as untrusted data:
+
+- **Inputs first.** Authenticated fetches and dependency installs happen before the child starts,
+  into locations the child can read and cannot write.
+- **Extracting the result.** The launching process produces the child's change without running
+  anything from the child's tree: no git command that reads that tree's configuration, attributes or
+  hooks (it reads the tree with its own configuration only), and no file copy that follows a symlink.
+  Symlinks, submodule changes and changes under the repository's git directory are refused, not
+  applied.
+- **Applying and publishing.** The change is applied in a tree of the launching process's own, and
+  the commit and push there run with hooks disabled, with no hook manager, filter driver or build
+  step from the change executed, and with the launching process's own configuration.
+- **What remains the user's call.** A change that edits a build script, hook manager configuration or
+  dependency manifest is published as data; any later build or install of it runs under the same
+  isolation as the child, never with the withheld credentials.
+
+Otherwise the child plants a git hook, a `core.fsmonitor`, filter or `credential.helper` setting, a
+symlink to a key, or a build script, and the unconfined process runs or publishes it with the
+credentials D2 withheld.
 
 ## Acceptance (before Status moves to Accepted)
 
 Each row runs with test items, test files and test agents only; no step lists or searches a user's
-credential store. Every refusal row carries a control showing the same request succeeds outside the
-boundary in the same run, so that a broken probe cannot read as a denial.
+credential store, and no row reads a real credential. Test items live where real ones do (the
+default keychain, a test host entry for the GitHub CLI), never in a separate file the file rules
+could block, so that a refusal measures the service denial and not a file denial. Every refusal row
+carries a control showing the same request succeeds outside the boundary in the same run, so that a
+broken probe cannot read as a denial.
 
 1. Provider login and renewal work across several turns, including a token refresh, while the tools
    are confined; the login source is recorded.
 2. Direct store access is refused: `security`, and a small client calling the Security framework for
-   the same item.
-3. The P2 helper path is refused: a tool-written `GH_CONFIG_DIR` with `gh auth token`, and
-   `git credential fill` through the GitHub CLI helper.
+   the same test item.
+3. The P2 helper path is refused: a tool-written `GH_CONFIG_DIR` naming a test host whose token is a
+   test item, with `gh auth token` and with `git credential fill` through the GitHub CLI helper.
 4. Delegation is refused: asking launchd, LaunchServices or AppleEvents to run a command outside the
    sandbox, each with a control showing the same delegation works outside.
-5. Credential agents are refused: a test `ssh-agent` key, a git credential cache entry, the
-   pasteboard.
-6. The parent is out of reach: no credential in the tools' environment or inherited descriptors, and
-   process inspection of and signals to the provider process are refused.
-7. Every path is accounted for: Bash, background commands and hooks reach the prefix; each in-process
-   tool is held to the read and write rules (including writes to shell start-up files, launch agents,
-   git configuration and the profile); each unrouted path is shown to be off.
-8. A project settings file in the working directory cannot turn the prefix off, re-enable a
-   forbidden tool or path, or widen the profile.
+5. Credential agents are refused by socket path, not by a missing variable: a test `ssh-agent` and
+   `gpg-agent` reached at their socket paths, a git credential cache socket under the configured
+   caches, the pasteboard, and the token and Kerberos services.
+6. Processes are out of reach: no credential in the tools' environment, the environment snapshot or
+   inherited descriptors; process inspection of and signals to the provider process and to MCP
+   servers lionagi started are refused.
+7. Every path is accounted for: Bash, background commands and hooks reach the prefix, shown by a
+   marker each path writes only when it runs inside the profile; every in-process tool the launch
+   leaves on passes its own qualification row, symlinks included; every other path is shown to be off.
+8. No settings source but lionagi's own loads: a user settings file and a project settings file that
+   each define a status line, a credential helper and a hook produce no command outside the prefix
+   and cannot turn the prefix off or widen the profile.
 9. The profile is no weaker than file containment: the file containment acceptance (file reads,
-   writes, network) passes unchanged under it, including from a nested shell, a background
-   descendant and a nested provider CLI.
-10. D6 holds: a git hook, repository configuration and cache entry planted by the child do not run
-    when the launching process applies the child's result.
-11. A missing or failing backend refuses the launch; nothing runs outside the profile on a retry.
+   writes, network) passes unchanged under it, from a nested shell and a background descendant, and
+   writes to the repository's git configuration and hooks are refused.
+10. A nested provider CLI started from a tool fails to start a turn.
+11. D6 holds against a child that plants each of: a git hook, repository configuration, an attributes
+    filter, a tracked hook manager configuration, a symlink to a test key, a submodule change and a
+    build script. None runs in the launching process, and the symlink and submodule are refused.
+12. A missing or failing backend refuses the launch; nothing runs outside the profile on a retry.
 
 ## Consequences
 
@@ -225,7 +258,11 @@ boundary in the same run, so that a broken probe cannot read as a denial.
   store, or writes state outside that set, stops working in this mode; widening the write set for a
   hook widens it for the model's commands too, so such hooks are turned off instead.
 - Credentialed operations move to the launching process under D6, which costs a hand-off step for
-  every commit, push or authenticated fetch.
+  every commit, push or authenticated fetch. A child cannot sign its own commits; its work arrives as
+  an unsigned change the launching process commits.
+- Claude Code in this mode edits through its shell only, and has no web fetch and no outbound
+  network until lionagi's filtering proxy exists. That is a real loss of capability, and the reason
+  this is a requested mode rather than the default.
 
 ## Alternatives considered
 
@@ -233,12 +270,14 @@ boundary in the same run, so that a broken probe cannot read as a denial.
   everything (P1). Rejected because P3 forces the login into the environment every tool descends
   from (see D1), and P4 forces the file rules out of the provider's sandbox anyway.
 - **A separate OS user for the whole CLI.** Kernel user separation keeps the human user's keychain,
-  helpers, agents, launchd domain and processes out of reach without a hand-written profile. Its
-  costs: an administrator creates and maintains the user, the workspace is shared across users, the
-  agent's own provider login lives in that user's store where its tools can reach it, and nothing
-  stops one child reading another's work. Kept as a candidate backend for D2 rather than rejected; the
-  acceptance list applies to it unchanged, and the first backend to pass it on a platform qualifies
-  there.
+  helpers, agents and launchd domain out of reach without a hand-written profile. Rejected as a
+  whole-CLI design because the provider and its tools would share that user: the tools reach the
+  provider's login and process, against D1, and nothing stops one child reading another's work.
+- **A separate OS user for the tool processes only.** The provider runs as the human user and the
+  prefix runs each command as a second user. This keeps D1 and gives D2's process and launchd
+  separation from the kernel. Its costs: an administrator creates the user and the delegation rule
+  that lets the launcher switch to it, and the working directory is shared across users. Kept as a
+  candidate D2 backend; the acceptance list applies to it unchanged.
 - **Moving valuable items out of the store's reach, or restricting items to named applications.**
   P2 is the counterexample: the application allowed to read an item (the GitHub CLI) can be run by
   the tools. A separately locked store depends on machine state for the whole run. Kept as optional
@@ -253,5 +292,8 @@ boundary in the same run, so that a broken probe cannot read as a denial.
 - Which integration points Codex and Gemini expose for routing every command (D3).
 - Whether the Security framework or a delegation service reaches the store through a name D2 does
   not list (acceptance rows 2 and 4 answer it).
+- Whether any of Claude Code's in-process tools can be qualified (D3), which would restore editing,
+  reading and fetching through them in this mode.
+- The filtering proxy D2's network rule needs, and whether it is shared with other providers.
 - The read allow-list half of the end state (issue #4306) is a separate decision; this record covers
   the credential store, helpers, agents and the provider login only.
