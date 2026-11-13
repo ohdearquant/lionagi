@@ -1625,6 +1625,15 @@ class CredentialLedger:
                     # An operator reconciliation is the attempt's final record. Runtime evidence
                     # arriving after it is not compared with it and changes nothing; a later
                     # correction takes a sourced adjustment (ADR-0126 Amendment 9 Decision 4).
+                    # A late bill is logged so the spend it leaves out is visible (Amendment 13).
+                    if cost_nusd > 0:
+                        _LOGGER.warning(
+                            "late runtime evidence after an operator reconciliation is not "
+                            "recorded: attempt %s, reconciled %s nusd, arrived %s nusd",
+                            attempt_id,
+                            old_cost,
+                            cost_nusd,
+                        )
                     return "already_settled", None
                 if isinstance(evidence, UnknownOutcome):
                     if state == "settled":
