@@ -2504,14 +2504,19 @@ async def _execute_dag(
         # for it was (recorded by _build_spawn_node).
         from ._orchestration import _isolate_worker_cli_config
 
-        # A spawned node's khive servers act as the profile it runs as. Only a copy of
-        # the orchestrator's branch has a profile name on record; any other node's
-        # profile is not recorded on its branch, so it acts as the anonymous child.
-        spawn_khive_actor = child_khive_actor(
-            getattr(env, "orc_profile_name", None)
-            if getattr(branch, "metadata", {}).get("clone_from") is env.orc_branch
-            else None
-        )
+        # A spawned node is a copy of the branch it was cloned from (the orchestrator's,
+        # a named role's worker or the asking worker), so its khive servers act as that
+        # branch's profile; a source the run did not build acts as the anonymous child.
+        khive_actors = getattr(env, "khive_actors", None)
+        if not isinstance(khive_actors, dict):
+            khive_actors = {}
+        source_id = getattr(source_branch, "id", None)
+        spawn_khive_actor = khive_actors.get(str(source_id)) if source_id is not None else None
+        if spawn_khive_actor is None:
+            spawn_khive_actor = child_khive_actor(None)
+        branch_id = getattr(branch, "id", None)
+        if branch_id is not None:
+            khive_actors[str(branch_id)] = spawn_khive_actor
         worker_mcp_servers = (
             {}
             if profile_mcp_disabled

@@ -65,6 +65,7 @@ async def test_orchestrator_without_a_profile_acts_as_the_anonymous_child(tmp_ru
     env = await _setup(no_mcp_config=False)
 
     _assert_acts_as(_handed(env.orc_branch.chat_model), "agent:anonymous")
+    assert env.khive_actors == {str(env.orc_branch.id): "agent:anonymous"}
 
 
 @pytest.mark.asyncio
@@ -87,6 +88,8 @@ async def test_worker_acts_as_its_own_profile_and_the_run_set_is_left_alone(
     branch, _, _, _ = await build_worker_branch(env, agent_id="w1", role=role)
 
     _assert_acts_as(_handed(branch.chat_model), f"agent:{role}")
+    # A node later cloned from this worker acts as the same profile.
+    assert env.khive_actors[str(branch.id)] == f"agent:{role}"
     # Workers differ, so the set the run keeps is not attributed to any one of them.
     assert env.mcp_servers["khive"]["env"]["KHIVE_ACTOR"] == "someone-else"
     assert env.mcp_servers["khive"]["env"]["KHIVE_PACKS"] == "kg, comm ,memory"
