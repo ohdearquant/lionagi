@@ -1622,6 +1622,10 @@ class CredentialLedger:
                     )
                     if late is not None:
                         return late, None
+                    # An operator reconciliation is the attempt's final record. Runtime evidence
+                    # arriving after it is not compared with it and changes nothing; a later
+                    # correction takes a sourced adjustment (ADR-0126 Amendment 9 Decision 4).
+                    return "already_settled", None
                 if isinstance(evidence, UnknownOutcome):
                     if state == "settled":
                         return "already_settled", None

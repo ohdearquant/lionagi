@@ -663,6 +663,7 @@ async def test_reconciling_a_settled_attempt_conflicts_and_keeps_its_cost(tmp_pa
     assert caught.value.code is RouterErrorCode.SETTLEMENT_CONFLICT
     assert read_attempt(path, reservation.attempt_id)[0:2] == ("settled", 2)
     assert read_adjustments(path, "anthropic", "alpha") == []
+    assert (await ledger.status("anthropic", "2026-01"))[0].block_reason is None
 
 
 @pytest.mark.anyio

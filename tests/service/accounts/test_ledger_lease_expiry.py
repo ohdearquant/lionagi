@@ -15,6 +15,7 @@ from lionagi.service.accounts._types import (
     AccountRoutingError,
     AccountSpec,
     CompleteUsage,
+    ProvenNotSent,
     Quote,
     RouterErrorCode,
     Scope,
@@ -368,16 +369,22 @@ async def test_late_reason_only_evidence_stays_already_settled(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_an_operator_reconciled_row_keeps_the_conflict_rule(tmp_path):
+@pytest.mark.parametrize("cost", [0, 3])
+async def test_runtime_evidence_after_an_operator_reconciliation_changes_nothing(tmp_path, cost):
     ledger = make_ledger(tmp_path, Clock(T0))
     held = await ledger.reserve(scope(), uuid4(), quote(4), (spec(),))
-    await ledger.reconcile(uuid4(), held.attempt_id, 0, "operator closure")
+    await ledger.reconcile(uuid4(), held.attempt_id, cost, "operator closure")
+    before = attempt_row(ledger.path, held.attempt_id)
 
-    with pytest.raises(AccountRoutingError) as caught:
-        await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late"))
+    for evidence in (
+        CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late"),
+        CompleteUsage("model-a", 1, 2, 3, 4, 5, cost, "late"),
+        ProvenNotSent(),
+    ):
+        assert await ledger.settle(held.attempt_id, evidence) == "already_settled"
 
-    assert caught.value.code == RouterErrorCode.SETTLEMENT_CONFLICT
-    assert block_reason(ledger.path) == "settlement_conflict"
+    assert attempt_row(ledger.path, held.attempt_id) == before
+    assert block_reason(ledger.path) is None
     assert corrections(ledger.path) == []
 
 
