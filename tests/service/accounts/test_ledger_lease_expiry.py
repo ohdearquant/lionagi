@@ -389,6 +389,68 @@ async def test_runtime_evidence_after_an_operator_reconciliation_changes_nothing
 
 
 @pytest.mark.anyio
+async def test_a_late_bill_after_an_operator_reconciliation_is_logged_and_not_recorded(
+    tmp_path, caplog
+):
+    ledger = make_ledger(tmp_path, Clock(T0))
+    held = await ledger.reserve(scope(), uuid4(), quote(4), (spec(),))
+    await ledger.reconcile(uuid4(), held.attempt_id, 0, "operator closure")
+    before = attempt_row(ledger.path, held.attempt_id)
+
+    with caplog.at_level("INFO", logger="lionagi.service.accounts._ledger"):
+        free = await ledger.settle(held.attempt_id, ProvenNotSent())
+        billed = await ledger.settle(
+            held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late")
+        )
+
+    assert (free, billed) == ("already_settled", "already_settled")
+    lines = [r for r in caplog.records if str(held.attempt_id) in r.getMessage()]
+    assert [r.levelname for r in lines] == ["WARNING"]
+    assert "reconciled 0 nusd, arrived 3 nusd" in lines[0].getMessage()
+    assert attempt_row(ledger.path, held.attempt_id) == before
+    assert block_reason(ledger.path) is None
+    assert corrections(ledger.path) == []
+
+
+@pytest.mark.anyio
+async def test_a_mismatched_stream_estimate_after_an_operator_reconciliation_is_not_compared(
+    tmp_path,
+):
+    import dataclasses
+    import json
+
+    from lionagi.service.accounts._pricing import quote_ceiling
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
+
+    revision = priced_revision()
+    priced = quote_ceiling(
+        revision,
+        json.dumps(
+            {
+                "model": "model-a",
+                "messages": [{"role": "user", "content": "x"}],
+                "max_tokens": 1024,
+                "service_tier": "standard_only",
+            }
+        ).encode(),
+    )
+    ledger = make_ledger(tmp_path, Clock(T0), price_revisions={revision.id: revision})
+    held = await ledger.reserve(
+        scope(), uuid4(), priced, (AccountSpec("alpha", "ALPHA_KEY", 100_000),)
+    )
+    await ledger.reconcile(uuid4(), held.attempt_id, 0, "operator closure")
+    before = attempt_row(ledger.path, held.attempt_id)
+    late = dataclasses.replace(
+        estimate(priced, revision, "stream_error", output_tokens=40), served_model="model-b"
+    )
+
+    assert await ledger.settle(held.attempt_id, late) == "already_settled"
+    assert attempt_row(ledger.path, held.attempt_id) == before
+    assert block_reason(ledger.path) is None
+    assert corrections(ledger.path) == []
+
+
+@pytest.mark.anyio
 async def test_a_refused_admission_closes_nothing(tmp_path):
     clock = Clock(T0)
     ledger = make_ledger(tmp_path, clock)
