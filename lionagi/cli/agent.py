@@ -2325,6 +2325,11 @@ async def _run_agent(
                         forwarded=request_carries_forwarded_mcp(branch),
                     )
             else:
+                # Built here rather than by create_agent, so the profile's sandbox policy is
+                # set here too.
+                from lionagi.cli.orchestrate._orchestration import _confine_claude_worker
+
+                _confine_claude_worker(chat_model, agent_name if profile is not None else None)
                 branch = Branch(
                     chat_model=chat_model,
                     log_config=DataLoggerConfig(auto_save_on_exit=False),

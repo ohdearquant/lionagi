@@ -1211,7 +1211,9 @@ async def setup_orchestration(
 
     orc_log_config = DataLoggerConfig(auto_save_on_exit=False)
     if orc_profile:
-        # User profile: verbatim system prompt, no casts composition.
+        # User profile: verbatim system prompt, no casts composition. The branch is built
+        # here rather than by create_agent, so the profile's sandbox policy is set here too.
+        _confine_claude_worker(orc_imodel, orc_profile.name)
         orc_branch = Branch(
             chat_model=orc_imodel,
             system=orc_profile.system_prompt,
@@ -1233,7 +1235,8 @@ async def setup_orchestration(
             chat_model=orc_imodel,
             log_config=orc_log_config,
             resolved_mcp_servers=run_mcp_servers,
-            sandbox_profile=agent_name or None,
+            # No profile was loaded on this path, so no profile exemption applies.
+            sandbox_profile=None,
         )
         orc_branch.name = "orchestrator"
     if profile_origin_mcp_disabled:

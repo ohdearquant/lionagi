@@ -163,3 +163,104 @@ def test_every_create_agent_caller_passes_the_agent_profile_name(module_name):
     assert len(calls) >= _CALL_SITES[module_name]
     for call in calls:
         assert "sandbox_profile" in {keyword.arg for keyword in call.keywords}
+
+
+# --------------------------------------------------------------------------- branches built directly
+
+
+@pytest.mark.asyncio
+async def test_a_flow_orchestrator_with_a_loaded_profile_gets_that_profiles_exemption(
+    monkeypatch, tmp_path
+):
+    """A profile orchestrator is built as a plain Branch, not by create_agent."""
+    from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.orchestration.runs import RunDir
+
+    work = tmp_path / "work"
+    agents = work / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "builder.md").write_text(f"---\nmodel: {CLAUDE}/haiku\n---\nOrchestrate.\n")
+    monkeypatch.chdir(work)
+    monkeypatch.setattr("lionhub.orchestration.spawn._plugin_agent_profiles", lambda: {})
+
+    def allocate(save_dir=None, run_id=None):
+        run = RunDir(
+            run_id="test-run",
+            state_root=tmp_path / "state",
+            artifact_root=tmp_path / "artifacts",
+        )
+        run.ensure_state_dirs()
+        run.ensure_artifact_root()
+        return run
+
+    monkeypatch.setattr(orch, "allocate_run", allocate)
+    env = await orch.setup_orchestration(
+        pattern_name="Flow",
+        model_spec=None,
+        agent_name="builder",
+        save_dir=None,
+        cwd=str(work),
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+        mcp_config=None,
+        no_mcp_config=True,
+    )
+    policy = env.orc_branch.chat_model.endpoint.config.kwargs["child_sandbox"]
+    assert set(child_sandbox.DEFAULT_DENY_READ) - set(policy["deny_read"]) == {EXEMPT}
+
+
+@pytest.mark.asyncio
+async def test_a_plain_li_agent_profile_leg_is_confined_under_its_profile_name(
+    monkeypatch, tmp_path
+):
+    """A ``-a <profile>`` leg with no role key is built as a plain Branch, not by create_agent."""
+    from unittest.mock import AsyncMock
+
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli.orchestrate import _orchestration as orch
+    from lionagi.service.manager import iModelManager
+    from lionhub.orchestration.spawn import _parse_profile
+
+    profile = _parse_profile("builder", "---\n---\nBuild.\n")
+    monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: profile)
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/model")
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="r",
+            artifact_root=tmp_path / "artifacts",
+            stream_dir=tmp_path / "stream",
+            branches_dir=tmp_path / "branches",
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", AsyncMock(return_value=None))
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", AsyncMock(return_value="completed"))
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc",
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    confined = []
+    monkeypatch.setattr(
+        orch, "_confine_claude_worker", lambda model, name: confined.append((model, name))
+    )
+
+    async def fake_operate(self, instruction=None, **kw):
+        return "ok"
+
+    monkeypatch.setattr(Branch, "operate", fake_operate)
+
+    await agent_mod._run_agent("codex/model", "do the thing", agent_name="builder")
+
+    assert [name for _, name in confined] == ["builder"]

@@ -132,21 +132,19 @@ def test_a_malformed_policy_dict_refuses_the_launch(tmp_path):
 
 
 def test_inline_settings_are_merged_into_the_one_flag(tmp_path):
-    own = json.dumps(
-        {
-            "model": "haiku",
-            "sandbox": {"filesystem": {"denyRead": ["/already"]}},
-            "permissions": {"deny": ["Bash(rm:*)"]},
-        }
-    )
+    own = json.dumps({"model": "haiku", "permissions": {"deny": ["Bash(rm:*)"]}})
     args = _request(repo=tmp_path, settings=own).as_cmd_args()
     merged = _settings_json(args)
     ours = claude_settings_for(POLICY)
     assert merged["model"] == "haiku"
-    assert merged["sandbox"]["enabled"] is True
-    assert merged["sandbox"]["filesystem"]["denyRead"] == ["/already", *POLICY.deny_read]
-    assert merged["sandbox"]["filesystem"]["allowWrite"] == list(POLICY.allow_write)
+    assert merged["sandbox"] == ours["sandbox"]
     assert merged["permissions"]["deny"] == ["Bash(rm:*)", *ours["permissions"]["deny"]]
+
+
+def test_settings_carrying_their_own_sandbox_block_refuse_the_launch(tmp_path):
+    own = json.dumps({"sandbox": {"excludedCommands": ["bash"]}})
+    with pytest.raises(ConfigurationError, match="carry a sandbox block"):
+        _request(repo=tmp_path, settings=own).as_cmd_args()
 
 
 def test_a_settings_file_is_read_and_merged_into_the_one_flag(tmp_path):

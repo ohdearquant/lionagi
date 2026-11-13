@@ -154,6 +154,20 @@ def test_a_path_already_listed_is_not_repeated():
     assert policy.allow_write == DEFAULT_ALLOW_WRITE
 
 
+def test_repeated_slashes_collapse_into_one_path_and_one_rule():
+    policy = resolve_child_sandbox(None, _settings(deny_read=["//opt//keys/", "/opt/keys"]))
+    assert policy.deny_read == (*DEFAULT_DENY_READ, "/opt/keys")
+    rules = claude_settings_for(policy)["permissions"]["deny"]
+    assert "Read(//opt/keys)" in rules
+    assert not any(rule.startswith("Read(///") for rule in rules)
+
+
+@pytest.mark.parametrize("path", ["~/.cache/uv/../../.ssh", "/opt/./keys", "~/.."])
+def test_a_path_with_a_dot_or_dot_dot_segment_is_refused(path):
+    with pytest.raises(ConfigurationError, match="must not contain"):
+        resolve_child_sandbox(None, _settings(allow_write=[path]))
+
+
 def test_the_sandbox_can_be_turned_off():
     assert resolve_child_sandbox(None, _settings(enabled=False)).enabled is False
 
@@ -425,11 +439,6 @@ def test_inline_settings_are_merged_and_nothing_is_dropped():
     existing = json.dumps(
         {
             "model": "haiku",
-            "sandbox": {
-                "enabled": False,
-                "allowUnsandboxedCommands": True,
-                "filesystem": {"denyRead": ["/already"], "allowWrite": ["/scratch"]},
-            },
             "permissions": {"deny": ["Bash(rm:*)"], "allow": ["Read(docs)"]},
         }
     )
@@ -439,16 +448,31 @@ def test_inline_settings_are_merged_and_nothing_is_dropped():
     assert merged["sandbox"]["enabled"] is True
     assert merged["sandbox"]["failIfUnavailable"] is True
     assert merged["sandbox"]["allowUnsandboxedCommands"] is False
-    assert merged["sandbox"]["filesystem"]["denyRead"] == ["/already", *POLICY.deny_read]
-    assert merged["sandbox"]["filesystem"]["allowWrite"] == ["/scratch", *POLICY.allow_write]
+    assert merged["sandbox"] == ours["sandbox"]
     assert merged["permissions"]["deny"] == ["Bash(rm:*)", *ours["permissions"]["deny"]]
     assert merged["permissions"]["allow"] == ["Read(docs)"]
 
 
 def test_an_entry_the_caller_already_lists_is_not_repeated():
-    existing = json.dumps({"sandbox": {"filesystem": {"denyRead": ["~/.ssh"]}}})
+    existing = json.dumps({"permissions": {"deny": ["Read(~/.ssh)"]}})
     merged = json.loads(claude_settings_argument(POLICY, existing))
-    assert merged["sandbox"]["filesystem"]["denyRead"] == list(POLICY.deny_read)
+    assert merged["permissions"]["deny"] == claude_settings_for(POLICY)["permissions"]["deny"]
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"excludedCommands": ["bash"]},
+        {"filesystem": {"allowWrite": ["/"]}},
+        {"filesystem": {"allowRead": ["~/.ssh"]}},
+        {"enabled": False},
+        {},
+    ],
+)
+def test_settings_that_carry_a_sandbox_block_of_their_own_are_refused(block):
+    """Their keys would sit beside the policy's at the same level, and some loosen it."""
+    with pytest.raises(ConfigurationError, match="carry a sandbox block"):
+        claude_settings_argument(POLICY, json.dumps({"model": "haiku", "sandbox": block}))
 
 
 def test_a_settings_file_is_read_against_the_base_directory(tmp_path):
@@ -514,11 +538,6 @@ def test_an_unreadable_version_refuses(monkeypatch):
         check_claude_cli_floor("claude")
 
 
-def test_a_binary_that_cannot_run_is_left_to_the_launch(monkeypatch):
-    monkeypatch.setattr(child_sandbox, "_cli_version", lambda binary: ())
-    check_claude_cli_floor("claude")
-
-
 def _script(tmp_path, body):
     path = tmp_path / "claude"
     path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
@@ -544,8 +563,40 @@ def test_the_probe_refuses_a_binary_that_prints_no_version(tmp_path):
         check_claude_cli_floor(binary)
 
 
-def test_the_probe_leaves_a_missing_binary_to_the_launch(tmp_path):
-    assert child_sandbox._cli_version(str(tmp_path / "absent")) == ()
+def test_the_probe_refuses_a_binary_that_cannot_run(tmp_path):
+    with pytest.raises(ConfigurationError, match="cannot read the version"):
+        check_claude_cli_floor(str(tmp_path / "absent"))
+
+
+def test_a_failed_probe_is_not_remembered(tmp_path):
+    binary = str(tmp_path / "claude")
+    assert child_sandbox._cli_version(binary) is None
+    _script(tmp_path, 'echo "2.1.323 (Claude Code)"')
+    assert child_sandbox._cli_version(binary) == (2, 1, 323)
+
+
+def test_the_probe_refuses_a_binary_that_exits_non_zero(tmp_path):
+    binary = _script(tmp_path, 'echo "2.1.323 (Claude Code)"; exit 3')
+    with pytest.raises(ConfigurationError, match="cannot read the version"):
+        check_claude_cli_floor(binary)
+
+
+def test_the_probe_reads_only_a_version_at_the_start_of_a_line(tmp_path):
+    binary = _script(
+        tmp_path, 'echo "wrapper for node v22.11.0"; echo "built at /opt/claude-3.0.0"'
+    )
+    with pytest.raises(ConfigurationError, match="cannot read the version"):
+        check_claude_cli_floor(binary)
+
+
+def test_the_probe_finds_the_version_line_after_other_output(tmp_path):
+    binary = _script(tmp_path, 'echo "update available"; echo "2.1.400 (Claude Code)"')
+    assert child_sandbox._cli_version(binary) == (2, 1, 400)
+
+
+def test_the_probe_survives_output_that_is_not_utf8(tmp_path):
+    binary = _script(tmp_path, "printf '\\377\\376\\n2.1.323 (Claude Code)\\n'")
+    assert child_sandbox._cli_version(binary) == (2, 1, 323)
 
 
 # --------------------------------------------------------------------------- the sandbox backend
@@ -577,6 +628,14 @@ def test_linux_with_both_programs_passes(monkeypatch):
     check_sandbox_backend()
 
 
+@pytest.mark.parametrize("platform", ["cygwin", "msys", "freebsd14", "openbsd7", "aix"])
+def test_any_other_platform_refuses(monkeypatch, platform):
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(child_sandbox.shutil, "which", _which_without())
+    with pytest.raises(ConfigurationError, match=f"no backend on {platform}"):
+        check_sandbox_backend()
+
+
 def test_macos_needs_no_program_and_looks_none_up(monkeypatch):
     def which(name):
         raise AssertionError(f"looked up {name} on macOS")
@@ -595,6 +654,17 @@ def _floor_check(version):
         check_claude_cli_floor("claude")
 
     return run
+
+
+def _unreadable_global(tmp_path, monkeypatch):
+    import lionagi._settings as settings_mod
+
+    def broken(include_project=True):
+        raise settings_mod.yaml.YAMLError("child_sandbox: [unclosed")
+
+    monkeypatch.setattr(settings_mod, "load_settings", broken)
+    monkeypatch.setattr(child_sandbox, "_global_settings", _REAL_GLOBAL_SETTINGS)
+    resolve_child_sandbox(None)
 
 
 def _backend_check(tmp_path, monkeypatch):
@@ -640,6 +710,13 @@ _REFUSALS = {
     "existing settings of an odd type": lambda tmp_path, monkeypatch: claude_settings_argument(
         POLICY, json.dumps({"permissions": {"deny": "Bash(rm:*)"}})
     ),
+    "existing settings with a sandbox block": lambda tmp_path, monkeypatch: (
+        claude_settings_argument(POLICY, json.dumps({"sandbox": {"excludedCommands": ["bash"]}}))
+    ),
+    "path with a dot-dot segment": lambda tmp_path, monkeypatch: resolve_child_sandbox(
+        None, _settings(allow_write=["~/.cache/uv/../../.ssh"])
+    ),
+    "unreadable global settings file": _unreadable_global,
     "CLI below the floor": _floor_check((2, 1, 322)),
     "unreadable CLI version": _floor_check(None),
     "no sandbox backend": _backend_check,

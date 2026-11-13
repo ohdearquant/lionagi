@@ -20,7 +20,6 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -150,11 +149,14 @@ def _path_list(label: str, value: Any) -> list[str]:
         raise _refusal(f"child_sandbox: {label} must be a list of non-empty strings")
     paths = []
     for raw in value:
-        path = raw.strip().rstrip("/")
+        # Repeated slashes collapse, so ``//x`` and ``/x`` name one path and render one rule.
+        path = re.sub(r"/{2,}", "/", raw.strip()).rstrip("/")
         if not path.startswith(("~/", "/")):
             raise _refusal(
                 f"child_sandbox: {label} entry {raw!r} must be an absolute path or start with '~/'"
             )
+        if any(part in {".", ".."} for part in path.split("/")):
+            raise _refusal(f"child_sandbox: {label} entry {raw!r} must not contain '.' or '..'")
         paths.append(path)
     return paths
 
@@ -207,10 +209,16 @@ def _read_extends(raw: Any) -> list[dict]:
 
 
 def _global_settings() -> dict:
-    """The global lionagi settings layer; the project layer is never read here."""
+    """The global lionagi settings layer; the project layer is never read here.
+
+    A global file that cannot be read or parsed refuses the launch, naming the opt-out.
+    """
     from lionagi._settings import load_settings
 
-    return load_settings(include_project=False)
+    try:
+        return load_settings(include_project=False)
+    except (OSError, ValueError, yaml.YAMLError, ConfigurationError) as exc:
+        raise _refusal(f"child_sandbox: cannot read the global settings file: {exc}") from exc
 
 
 def warn_project_child_sandbox(project_dir: str | Path | None = None) -> None:
@@ -378,35 +386,58 @@ def _merge(base: dict, ours: dict) -> dict:
 def claude_settings_argument(
     policy: ChildSandboxPolicy, existing: Any = None, base_dir: Any = None
 ) -> str:
-    """One inline-JSON ``--settings`` value: ``existing`` (if any) merged with the policy."""
+    """One inline-JSON ``--settings`` value: ``existing`` (if any) merged with the policy.
+
+    ``existing`` may not carry a ``sandbox`` block of its own: its keys would join the policy's
+    at the same settings level, and some of them (excluded commands, extra readable or writable
+    paths) loosen the sandbox. The sandbox is configured through ``child_sandbox`` only.
+    """
     base = _read_settings_value(existing, base_dir) if existing else {}
+    if "sandbox" in base:
+        raise _refusal(
+            "child_sandbox: the settings handed to the child carry a sandbox block; configure "
+            "the sandbox through child_sandbox in ~/.lionagi/settings.yaml instead"
+        )
     return json.dumps(_merge(base, claude_settings_for(policy)))
 
 
-@lru_cache(maxsize=8)
+#: Versions read so far, by binary. Only a successful read is kept, so a failed probe is
+#: retried on the next launch rather than remembered for the life of the process.
+_cli_versions: dict[str, tuple[int, ...]] = {}
+
+
 def _cli_version(binary: str) -> tuple[int, ...] | None:
-    """Version of ``binary``: ``()`` when it cannot be executed, ``None`` when none is readable."""
+    """Version ``binary --version`` prints at the start of a line, or ``None`` when unreadable.
+
+    A binary that cannot be executed, exits non-zero, or prints no version at the start of a
+    line reads as ``None``.
+    """
+    if binary in _cli_versions:
+        return _cli_versions[binary]
     try:
-        out = subprocess.run(  # noqa: S603 -- the resolved CLI binary and a literal flag, no shell
-            [binary, "--version"], capture_output=True, text=True, timeout=20, check=False
-        ).stdout
-    except OSError:
-        return ()
-    except subprocess.SubprocessError:
+        proc = subprocess.run(  # noqa: S603 -- the resolved CLI binary and a literal flag, no shell
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
         return None
-    found = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
-    return tuple(int(n) for n in found.groups()) if found else None
+    if proc.returncode != 0:
+        return None
+    found = re.search(r"^\s*(\d+)\.(\d+)\.(\d+)\b", proc.stdout, re.MULTILINE)
+    if not found:
+        return None
+    version = tuple(int(n) for n in found.groups())
+    _cli_versions[binary] = version
+    return version
 
 
 def check_claude_cli_floor(binary: str) -> None:
-    """Refuse a Claude CLI older than ``CLAUDE_CLI_FLOOR`` or whose version cannot be read.
-
-    A binary that cannot be executed at all is left alone: the launch itself fails on it, so
-    nothing starts unconfined.
-    """
+    """Refuse a Claude CLI older than ``CLAUDE_CLI_FLOOR`` or whose version cannot be read."""
     version = _cli_version(binary)
-    if version == ():
-        return
     floor = ".".join(str(n) for n in CLAUDE_CLI_FLOOR)
     if version is None:
         raise _refusal(
@@ -424,8 +455,8 @@ def check_sandbox_backend() -> None:
     """Refuse a host on which Claude Code's sandbox has no backend.
 
     Native Windows has none. Linux and WSL2 need ``bwrap`` (bubblewrap) and ``socat`` on PATH.
-    macOS needs nothing extra. Call it only when the policy is enabled: a disabled policy never
-    asks the CLI for a sandbox.
+    macOS needs nothing extra. Any other platform has no backend. Call it only when the policy
+    is enabled: a disabled policy never asks the CLI for a sandbox.
     """
     if sys.platform == "win32":
         raise _refusal(
@@ -439,3 +470,8 @@ def check_sandbox_backend() -> None:
                 "child_sandbox: Claude Code's sandbox on Linux and WSL2 needs bubblewrap (`bwrap`) "
                 f"and `socat` on PATH; missing: {', '.join(missing)}"
             )
+    elif sys.platform != "darwin":
+        raise _refusal(
+            f"child_sandbox: Claude Code's sandbox has no backend on {sys.platform}, so a child "
+            "cannot run confined here"
+        )
