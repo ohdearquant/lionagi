@@ -35,6 +35,7 @@ from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
 from lionhub.agent import AgentSpec, create_agent
 from lionhub.agent.factory import register_profile_injection
+from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
 from lionhub.orchestration.console import hint, warn
 from lionhub.orchestration.job import validate_cwd_exists
 from lionhub.orchestration.runs import (
@@ -600,6 +601,9 @@ class OrchestrationEnv:
     mcp_config_explicit: bool = False
     mcp_launch_dir: str | None = None
     mcp_disabled_by_profile: bool = False
+    # The khive actor each branch the run built acts as, by branch id, so a node
+    # cloned from one of them acts as that branch's profile.
+    khive_actors: dict[str, str] = field(default_factory=dict)
 
     def expect_worker(self, agent_id: str) -> None:
         """Declare that this run intends to run a worker under *agent_id*."""
@@ -1100,6 +1104,11 @@ async def setup_orchestration(
         run_mcp_servers,
         explicit=mcp_resolution.explicit and not mcp_resolution.snapshot_marker,
     )
+    # The orchestrator's own khive servers act as its profile. The worker set above
+    # stays as resolved: each worker is attributed to its own profile where it is
+    # handed the set.
+    orc_khive_actor = child_khive_actor(getattr(orc_profile, "name", None))
+    run_mcp_servers = attribute_khive_servers(run_mcp_servers, orc_khive_actor)
 
     if not model_spec:
         # Only reachable when the caller named an agent, since naming nothing
@@ -1223,7 +1232,7 @@ async def setup_orchestration(
     )
     builder = OperationGraphBuilder(pattern_name)
 
-    return OrchestrationEnv(
+    env = OrchestrationEnv(
         run=run,
         session=session,
         orc_branch=orc_branch,
@@ -1250,6 +1259,8 @@ async def setup_orchestration(
         mcp_disabled_by_profile=profile_origin_mcp_disabled,
         withheld_mcp_servers=withheld_mcp_servers,
     )
+    env.khive_actors[str(orc_branch.id)] = orc_khive_actor
+    return env
 
 
 def _resolve_worker_model_spec(
@@ -1486,7 +1497,14 @@ async def build_worker_branch(
         ignore_user_config=True,
         tool_settings=None if env.bare else _profile_tool_settings(w_profile),
     )
-    worker_mcp_servers = {} if profile_disables_mcp else getattr(env, "mcp_servers", None)
+    # Each worker's khive servers act as that worker's own profile; a bare worker
+    # applies no profile, so it has none to act as.
+    worker_khive_actor = child_khive_actor(None if env.bare else getattr(w_profile, "name", None))
+    worker_mcp_servers = (
+        {}
+        if profile_disables_mcp
+        else attribute_khive_servers(getattr(env, "mcp_servers", None), worker_khive_actor)
+    )
     _isolate_worker_cli_config(
         w_imodel,
         contain_user_settings=bool(
@@ -1618,6 +1636,9 @@ async def build_worker_branch(
             "launch_dir": str(Path(getattr(env, "mcp_launch_dir", None) or os.getcwd()).resolve()),
         }
     env.session.include_branches(wb)
+    khive_actors = getattr(env, "khive_actors", None)
+    if isinstance(khive_actors, dict):
+        khive_actors[str(wb.id)] = worker_khive_actor
 
     if grant_spawn:
         from lionhub.orchestration import grant_spawn as _grant_spawn

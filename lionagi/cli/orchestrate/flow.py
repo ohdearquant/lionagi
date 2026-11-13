@@ -31,6 +31,7 @@ from lionagi.ln.concurrency import (
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.session.exchange import Exchange
 from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
+from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
 from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionhub.orchestration.console import progress
 from lionhub.orchestration.console import warn as _warn
@@ -2503,7 +2504,24 @@ async def _execute_dag(
         # for it was (recorded by _build_spawn_node).
         from ._orchestration import _isolate_worker_cli_config
 
-        worker_mcp_servers = {} if profile_mcp_disabled else getattr(env, "mcp_servers", None)
+        # A spawned node is a copy of the branch it was cloned from (the orchestrator's,
+        # a named role's worker or the asking worker), so its khive servers act as that
+        # branch's profile; a source the run did not build acts as the anonymous child.
+        khive_actors = getattr(env, "khive_actors", None)
+        if not isinstance(khive_actors, dict):
+            khive_actors = {}
+        source_id = getattr(source_branch, "id", None)
+        spawn_khive_actor = khive_actors.get(str(source_id)) if source_id is not None else None
+        if spawn_khive_actor is None:
+            spawn_khive_actor = child_khive_actor(None)
+        branch_id = getattr(branch, "id", None)
+        if branch_id is not None:
+            khive_actors[str(branch_id)] = spawn_khive_actor
+        worker_mcp_servers = (
+            {}
+            if profile_mcp_disabled
+            else attribute_khive_servers(getattr(env, "mcp_servers", None), spawn_khive_actor)
+        )
         _isolate_worker_cli_config(
             chat_model,
             contain_user_settings=bool(operation.metadata.get("emitter_contains_user_settings")),

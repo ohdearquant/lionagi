@@ -16,6 +16,7 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.branch import Branch
 from lionhub.agent.casts.emission import TaskAssignment
+from lionhub.agent.khive_actor import attribute_khive_servers
 from lionhub.orchestration.engines import EngineRun, PlanningEngine
 from tests.cli.orchestrate.test_flow_phases import _make_env
 
@@ -565,7 +566,7 @@ async def test_a_reactively_spawned_cli_leaf_gets_the_worker_set_not_the_orchest
     request = (await clone.chat_model.create_event(prompt="hi")).payload["request"]
     args = request.as_cmd_args()
     handed = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]
-    assert handed == {"knowledge": knowledge}
+    assert handed == attribute_khive_servers({"knowledge": knowledge}, "agent:anonymous")
     assert "--strict-mcp-config" in args
     orchestrator_args = (
         (await orchestrator_model.create_event(prompt="hi")).payload["request"].as_cmd_args()
@@ -574,3 +575,58 @@ async def test_a_reactively_spawned_cli_leaf_gets_the_worker_set_not_the_orchest
         "control"
         in json.loads(orchestrator_args[orchestrator_args.index("--mcp-config") + 1])["mcpServers"]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "actor"),
+    [
+        ("role-worker", "agent:implementer"),
+        ("orchestrator", "agent:lead"),
+        ("unbuilt", "agent:anonymous"),
+    ],
+)
+async def test_a_reactively_spawned_node_acts_as_the_branch_it_was_cloned_from(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, fake_runtime, source, actor
+):
+    """An assigned spawn is cloned from the role's worker, a dependent one from the
+    asking worker and an independent one from the orchestrator. Each acts on khive as
+    the profile the branch it copies was built for; a branch the run did not build
+    gives the anonymous child. A node cloned from that spawn acts the same way."""
+    from types import SimpleNamespace
+
+    from lionhub.orchestration.spawn import build_imodel_from_spec
+
+    knowledge = {"command": "kkernel", "args": ["mcp"], "env": {"KEEP": "1"}}
+    monkeypatch.setattr(flow_module, "plan", _Planner([_assignments()]))
+    env = _env(tmp_path, ["research output", "implementation output"])
+    env.mcp_servers = {"knowledge": knowledge}
+    role_worker = Branch(
+        name="implementer", chat_model=build_imodel_from_spec("claude_code/sonnet")
+    )
+    env.orc_branch = Branch(
+        name="orchestrator", chat_model=build_imodel_from_spec("claude_code/sonnet")
+    )
+    env.khive_actors = {
+        str(role_worker.id): "agent:implementer",
+        str(env.orc_branch.id): "agent:lead",
+    }
+
+    await _run_flow_inner("codex/gpt-5.5", "characterize the flow", env=env, reactive_spec="all")
+    setup = env.session.run_dag_calls[0][1]["spawn_branch_setup"]
+
+    base = {
+        "role-worker": role_worker,
+        "orchestrator": env.orc_branch,
+        "unbuilt": Branch(name="other", chat_model=build_imodel_from_spec("claude_code/sonnet")),
+    }[source]
+    spawned = base.clone()
+    setup(SimpleNamespace(metadata={"spawn_id": "spawn-1"}), spawned)
+    again = spawned.clone()
+    setup(SimpleNamespace(metadata={"spawn_id": "spawn-2"}), again)
+
+    for branch in (spawned, again):
+        request = (await branch.chat_model.create_event(prompt="hi")).payload["request"]
+        args = request.as_cmd_args()
+        handed = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]
+        assert handed["knowledge"]["env"] == {"KEEP": "1", "KHIVE_ACTOR": actor}

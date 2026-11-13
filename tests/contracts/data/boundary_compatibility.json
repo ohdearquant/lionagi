@@ -909,6 +909,9 @@
     "lionhub/src/lionhub/agent/hooks.py": [
       "__all__ = (\n    \"auto_format_python\",\n    \"guard_destructive\",\n    \"guard_email_in_headers\",\n    \"guard_paths\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
     ],
+    "lionhub/src/lionhub/agent/khive_actor.py": [
+      "__all__ = (\n    \"KHIVE_ACTOR_ENV\",\n    \"attribute_khive_servers\",\n    \"child_khive_actor\",\n    \"is_khive_server\",\n)"
+    ],
     "lionhub/src/lionhub/agent/nudge.py": [
       "__all__ = (\n    \"NudgeContext\",\n    \"NudgeEngine\",\n    \"NudgeRule\",\n    \"ToolCallRecord\",\n    \"default_nudge_rules\",\n)"
     ],
@@ -3903,6 +3906,11 @@
       "guard_paths",
       "log_tool_call",
       "log_tool_use"
+    ],
+    "lionhub/src/lionhub/agent/khive_actor.py": [
+      "attribute_khive_servers",
+      "child_khive_actor",
+      "is_khive_server"
     ],
     "lionhub/src/lionhub/agent/nudge.py": [
       "NudgeContext",

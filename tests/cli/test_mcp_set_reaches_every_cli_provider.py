@@ -29,6 +29,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionhub.agent.factory import apply_forwarded_mcp_servers
+from lionhub.agent.khive_actor import attribute_khive_servers
 from tests.cli.test_agent_preset_mcp_handover import _wire_agent_stubs
 
 CODEX_SPEC = "codex/gpt-5.3-codex"
@@ -957,7 +958,8 @@ async def test_plain_leg_with_a_named_config_file_is_the_whole_set(monkeypatch, 
 
     await agent_mod._run_agent(spec, "do the thing", mcp_config=_mcp_config_file(tmp_path, SERVERS))
 
-    assert handed["mcp_servers"] == SERVERS
+    # A leg run with no profile acts as the anonymous child on khive.
+    assert handed["mcp_servers"] == attribute_khive_servers(SERVERS, "agent:anonymous")
     assert handed["mcp_exclusive"] is True
 
 
@@ -976,7 +978,8 @@ async def test_plain_leg_with_a_found_config_file_stays_additive(monkeypatch, tm
 
     await agent_mod._run_agent(spec, "do the thing")
 
-    assert handed["mcp_servers"] == SERVERS
+    # A leg run with no profile acts as the anonymous child on khive.
+    assert handed["mcp_servers"] == attribute_khive_servers(SERVERS, "agent:anonymous")
     assert handed["mcp_exclusive"] is False
 
 
@@ -1102,6 +1105,7 @@ async def test_resumed_leg_request_carries_the_codex_overrides(
     assert seen["kwargs"]["config_overrides"] == {
         "mcp_servers.khive.command": "kkernel",
         "mcp_servers.khive.args": ["serve"],
+        "mcp_servers.khive.env.KHIVE_ACTOR": "agent:anonymous",
     }
     assert seen["config"]
     assert SERVERS_COMMAND_ARG in seen["config"]
@@ -1285,7 +1289,7 @@ async def test_resumed_leg_with_a_named_config_file_is_the_whole_set(
     await agent_mod._run_agent(None, "follow up", resume=branch_id, **kwargs)
 
     if provider == "claude_code":
-        assert seen["kwargs"]["mcp_servers"] == SERVERS
+        assert seen["kwargs"]["mcp_servers"] == attribute_khive_servers(SERVERS, "agent:anonymous")
         assert seen["kwargs"]["strict_mcp_config"] is True
     else:
         _assert_factory_selection(seen["kwargs"], list(SERVERS))
@@ -1317,7 +1321,7 @@ async def test_resumed_leg_with_a_found_config_file_stays_additive(monkeypatch, 
     monkeypatch.setattr(Branch, "operate", capture)
     await agent_mod._run_agent(None, "follow up", resume=branch_id)
 
-    assert seen["kwargs"]["mcp_servers"] == SERVERS
+    assert seen["kwargs"]["mcp_servers"] == attribute_khive_servers(SERVERS, "agent:anonymous")
     assert "strict_mcp_config" not in seen["kwargs"]
 
 
@@ -1480,6 +1484,7 @@ async def test_a_set_resolved_on_resume_replaces_the_one_the_codex_leg_had(
         "model_provider": "vendor",
         "mcp_servers.khive.command": "kkernel",
         "mcp_servers.khive.args": ["serve"],
+        "mcp_servers.khive.env.KHIVE_ACTOR": "agent:anonymous",
     }
 
 
@@ -1610,7 +1615,7 @@ async def test_a_relative_recorded_config_is_read_from_the_launch_directory(monk
     monkeypatch.setattr(Branch, "operate", capture)
     await agent_mod._run_agent(None, "follow up", resume=branch_id)
 
-    assert seen["kwargs"]["mcp_servers"] == SERVERS
+    assert seen["kwargs"]["mcp_servers"] == attribute_khive_servers(SERVERS, "agent:anonymous")
 
 
 _GENERATED_PROFILE = "lionagi-mcp-" + "0" * 32
