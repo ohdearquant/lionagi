@@ -843,10 +843,11 @@ def build_operator_branch(
         db_path = turn.store_path or str(OperatorStore().path())
         extra_servers, extra_tools = _operator_extra_mcp()
         # A khive server the Operator is granted acts as the Operator, not as
-        # whoever started the daemon.
+        # whoever started the daemon. The id sits outside the ``agent:`` names a
+        # profile maps to, so no child agent shares it.
         from lionhub.agent.khive_actor import attribute_khive_servers
 
-        extra_servers = attribute_khive_servers(extra_servers, "agent:operator") or {}
+        extra_servers = attribute_khive_servers(extra_servers, "studio:operator") or {}
         model_kwargs = {
             "endpoint": "query_cli",
             # Claude's own auth is used by the CLI endpoint.

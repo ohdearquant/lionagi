@@ -1734,6 +1734,16 @@ def _read_api_account() -> str | None:
     return api_account
 
 
+def _attributed_resolution(resolution: McpResolution, agent_name: str | None) -> McpResolution:
+    """``resolution`` with every khive server it hands the child acting as the child's
+    profile (``agent:<profile>``, or ``agent:anonymous``) rather than as whoever
+    launched it; an actor config in the child's directory still wins."""
+    return dataclasses.replace(
+        resolution,
+        servers=attribute_khive_servers(resolution.servers, child_khive_actor(agent_name)),
+    )
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -2015,14 +2025,7 @@ async def _run_agent(
                 disabled=no_mcp_config,
                 submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
             )
-            # Every khive server the child is handed acts as this profile, never as
-            # whoever launched it, and carries no comm pack.
-            mcp_resolution = dataclasses.replace(
-                mcp_resolution,
-                servers=attribute_khive_servers(
-                    mcp_resolution.servers, child_khive_actor(agent_name)
-                ),
-            )
+            mcp_resolution = _attributed_resolution(mcp_resolution, agent_name)
 
         # A resume that names no MCP flag replays the choice its branch was launched
         # with, searched from where it was launched rather than from where it is
@@ -2069,12 +2072,7 @@ async def _run_agent(
                         submit_snapshot=recorded_config if is_submit_snapshot else None,
                         **({"reject_legacy_snapshot": True} if legacy_recorded_file else {}),
                     )
-                    mcp_resolution = dataclasses.replace(
-                        mcp_resolution,
-                        servers=attribute_khive_servers(
-                            mcp_resolution.servers, child_khive_actor(agent_name)
-                        ),
-                    )
+                    mcp_resolution = _attributed_resolution(mcp_resolution, agent_name)
                 except LegacyMcpReplayError as exc:
                     # The resolver constructed this fixed, safely-labelled message.
                     raise McpConfigError(str(exc)) from None

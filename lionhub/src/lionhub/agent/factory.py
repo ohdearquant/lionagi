@@ -18,7 +18,7 @@ from lionagi.ln.types import UnsetType
 from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionagi.session.branch import Branch
 
-from .khive_actor import KHIVE_ARGV_ENV_KEYS
+from .khive_actor import KHIVE_ACTOR_ENV, is_khive_server
 from .spec import AgentSpec
 
 if TYPE_CHECKING:
@@ -1296,12 +1296,18 @@ def apply_forwarded_mcp_servers(
             value = server_cfg.get(field_key)
             if value is None:
                 continue
-            if field_key == "env" and isinstance(value, Mapping):
-                # A khive server's actor and pack list are names, never secrets: they go on
-                # the command line, so they still reach a run that ignores the user config.
-                for env_key in KHIVE_ARGV_ENV_KEYS & value.keys():
-                    overrides[f"mcp_servers.{server_name}.env.{env_key}"] = value[env_key]
-                value = {k: v for k, v in value.items() if k not in KHIVE_ARGV_ENV_KEYS}
+            if (
+                field_key == "env"
+                and isinstance(value, Mapping)
+                and KHIVE_ACTOR_ENV in value
+                and is_khive_server(server_cfg)
+            ):
+                # A khive server's actor is a name, never a secret: it goes on the command
+                # line, so it still reaches a run that ignores the user config.
+                overrides[f"mcp_servers.{server_name}.env.{KHIVE_ACTOR_ENV}"] = value[
+                    KHIVE_ACTOR_ENV
+                ]
+                value = {k: v for k, v in value.items() if k != KHIVE_ACTOR_ENV}
                 if not value:
                     continue
             if field_key in _SECRET_CODEX_MCP_FIELDS:

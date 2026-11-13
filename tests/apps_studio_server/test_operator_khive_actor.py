@@ -25,8 +25,8 @@ def _turn(tmp_path):
 
 
 def test_operator_khive_servers_act_as_the_operator(tmp_path, monkeypatch):
-    """A knowledge server named in operator_mcp.json is attributed to the operator and
-    loses the messaging pack; any other server in that file is handed over untouched."""
+    """A knowledge server named in operator_mcp.json is attributed to the operator with
+    its packs as configured; any other server in that file is handed over untouched."""
     import lionagi._paths as paths_mod
     from lionagi.studio.operator.engine import build_operator_branch
 
@@ -64,12 +64,9 @@ def test_operator_khive_servers_act_as_the_operator(tmp_path, monkeypatch):
     servers = branch.chat_model.endpoint.config.kwargs["mcp_servers"]
     assert {"studio_permission", "studio_operator"} <= set(servers)
     assert servers["khive"]["env"] == {
-        "KHIVE_ACTOR": "agent:operator",
-        "KHIVE_PACKS": "kg,memory",
+        "KHIVE_ACTOR": "studio:operator",
+        "KHIVE_PACKS": "kg, comm ,memory",
         "OTHER": "kept",
     }
-    assert servers["kernel"]["env"] == {
-        "KHIVE_ACTOR": "agent:operator",
-        "KHIVE_PACKS": "kg,gtd,memory,brain,schedule,knowledge,session,tool,exec,git,code,workspace,blob",
-    }
+    assert servers["kernel"]["env"] == {"KHIVE_ACTOR": "studio:operator"}
     assert servers["notes"]["env"] == {"KHIVE_ACTOR": "someone-else", "KHIVE_PACKS": "kg,comm"}

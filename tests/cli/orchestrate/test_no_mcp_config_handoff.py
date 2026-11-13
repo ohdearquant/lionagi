@@ -494,10 +494,9 @@ async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home
     overrides = kwargs["config_overrides"]
     assert kwargs["ignore_user_config"] is True
     assert overrides["mcp_servers.knowledge.command"] == "kkernel"
-    # The khive actor and pack list are not secrets, so they ride the command line and
-    # reach a worker that ignores the user config, where a profile would not.
+    # The khive actor is a name, not a secret, so it rides the command line and
+    # reaches a worker that ignores the user config, where a profile would not.
     assert overrides["mcp_servers.knowledge.env.KHIVE_ACTOR"] == "agent:implementer"
-    assert "comm" not in overrides["mcp_servers.knowledge.env.KHIVE_PACKS"].split(",")
     assert "mcp_servers.knowledge.env" not in overrides
     assert not [key for key in overrides if key.startswith("mcp_servers.lion-control.")]
     assert "--ignore-user-config" in args

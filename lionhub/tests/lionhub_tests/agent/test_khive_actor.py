@@ -56,52 +56,18 @@ def test_empty_mapping_gives_an_empty_new_dict():
     assert result is not source
 
 
-def test_kkernel_server_gets_the_actor_and_loses_comm():
+def test_kkernel_server_gets_the_actor_and_keeps_its_packs():
     servers = {"khive": _khive({"KHIVE_PACKS": "kg, comm ,memory"})}
     result = attribute_khive_servers(servers, "agent:implementer")
     env = result["khive"]["env"]
-    assert env["KHIVE_ACTOR"] == "agent:implementer"
-    assert env["KHIVE_PACKS"] == "kg,memory"
+    assert env == {"KHIVE_ACTOR": "agent:implementer", "KHIVE_PACKS": "kg, comm ,memory"}
 
 
-def test_pack_order_is_kept_and_empty_entries_are_dropped():
-    servers = {"khive": _khive({"KHIVE_PACKS": "memory,,comm,  ,kg,gtd"})}
+def test_pack_flags_in_the_arguments_are_kept():
+    args = ["mcp", "--pack", "kg", "--pack", "comm", "--pack=comm"]
+    servers = {"khive": _khive({"KHIVE_PACKS": "kg"}, args=args)}
     result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["env"]["KHIVE_PACKS"] == "memory,kg,gtd"
-
-
-def test_comm_is_matched_as_a_whole_pack_name():
-    servers = {"khive": _khive({"KHIVE_PACKS": "kg,communications,comm2,comm"})}
-    result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["env"]["KHIVE_PACKS"] == "kg,communications,comm2"
-
-
-CHILD_PACKS = "kg,gtd,memory,brain,schedule,knowledge,session,tool,exec,git,code,workspace,blob"
-
-
-def test_a_comm_only_list_becomes_the_built_in_set_without_comm():
-    # khive ignores an empty KHIVE_PACKS and falls back to a set that includes comm.
-    servers = {"khive": _khive({"KHIVE_PACKS": " comm "})}
-    result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["env"]["KHIVE_PACKS"] == CHILD_PACKS
-
-
-def test_a_whitespace_separated_list_loses_comm():
-    servers = {"khive": _khive({"KHIVE_PACKS": "kg comm\tmemory"})}
-    result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["env"]["KHIVE_PACKS"] == "kg,memory"
-
-
-def test_a_pack_flag_for_comm_is_removed_from_the_arguments():
-    servers = {
-        "khive": _khive(
-            {"KHIVE_PACKS": "kg"},
-            args=["mcp", "--pack", "kg", "--pack", "comm", "--pack=comm", "--pack", "gtd"],
-        )
-    }
-    result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["args"] == ["mcp", "--pack", "kg", "--pack", "gtd"]
-    assert servers["khive"]["args"][4] == "comm"
+    assert result["khive"]["args"] == args
 
 
 def test_an_existing_actor_is_replaced():
@@ -112,23 +78,22 @@ def test_an_existing_actor_is_replaced():
     assert env["OTHER"] == "kept"
 
 
-def test_absent_packs_become_the_built_in_set_without_comm():
+def test_absent_packs_stay_absent():
     servers = {"khive": _khive({"KHIVE_ACTOR": "lion"})}
     result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["env"]["KHIVE_PACKS"] == CHILD_PACKS
-    assert "comm" not in result["khive"]["env"]["KHIVE_PACKS"].split(",")
+    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x"}
 
 
 def test_a_server_with_no_env_gets_one():
     servers = {"khive": _khive()}
     result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x", "KHIVE_PACKS": CHILD_PACKS}
+    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x"}
 
 
 def test_a_null_env_is_treated_as_empty():
     servers = {"khive": {"command": "kkernel", "args": ["mcp"], "env": None}}
     result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x", "KHIVE_PACKS": CHILD_PACKS}
+    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x"}
 
 
 def test_other_keys_of_the_server_pass_through():
@@ -199,3 +164,61 @@ def test_the_input_env_survives_when_the_server_had_none():
     attribute_khive_servers(servers, "agent:x")
     assert servers == before
     assert "env" not in servers["khive"]
+
+
+# --- the codex hand-off ---------------------------------------------------
+
+
+@pytest.fixture
+def codex_env(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    codex_home = tmp_path / "codex_home"
+    home.mkdir()
+    codex_home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    return {"HOME": str(home), "CODEX_HOME": str(codex_home)}
+
+
+def test_a_codex_run_that_ignores_the_user_config_gets_the_actor_on_the_command_line(codex_env):
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
+
+    servers = {"khive": {"command": "kkernel", "args": ["mcp"], "env": {"KHIVE_ACTOR": "agent:x"}}}
+    kwargs: dict = {"ignore_user_config": True}
+
+    assert apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)
+
+    assert kwargs["config_overrides"] == {
+        "mcp_servers.khive.command": "kkernel",
+        "mcp_servers.khive.args": ["mcp"],
+        "mcp_servers.khive.env.KHIVE_ACTOR": "agent:x",
+    }
+    assert "profile" not in kwargs
+
+
+def test_the_rest_of_a_khive_servers_env_stays_off_the_command_line(codex_env):
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
+
+    env = {"KHIVE_ACTOR": "agent:x", "TOKEN": "value"}
+    servers = {"khive": {"command": "kkernel", "args": ["mcp"], "env": env}}
+    kwargs: dict = {}
+
+    assert apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)
+
+    overrides = kwargs["config_overrides"]
+    assert overrides["mcp_servers.khive.env.KHIVE_ACTOR"] == "agent:x"
+    assert not [key for key in overrides if "TOKEN" in key or key == "mcp_servers.khive.env"]
+    assert "value" not in repr(overrides)
+    assert kwargs.get("profile")
+    assert env == {"KHIVE_ACTOR": "agent:x", "TOKEN": "value"}
+
+
+def test_another_servers_khive_actor_is_still_a_secret_field(codex_env):
+    from lionagi._errors import ConfigurationError
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
+
+    servers = {"other": {"command": "npx", "args": ["x"], "env": {"KHIVE_ACTOR": "agent:x"}}}
+    kwargs: dict = {"ignore_user_config": True}
+
+    with pytest.raises(ConfigurationError, match="ignores the user config"):
+        apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)

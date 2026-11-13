@@ -456,7 +456,7 @@ async def test_preset_leg_gets_the_submitted_servers_not_the_target_directory(sp
 
 @pytest.mark.asyncio
 async def test_leg_without_a_profile_gets_khive_acting_as_the_anonymous_child(spawn):
-    """The knowledge server a leg is handed names an actor and carries no messaging pack."""
+    """The knowledge server a leg is handed names the leg's own actor."""
     from lionagi.cli.agent import _run_agent
 
     await _run_agent(
@@ -465,7 +465,6 @@ async def test_leg_without_a_profile_gets_khive_acting_as_the_anonymous_child(sp
 
     env = _forwarded_servers(spawn.branches[-1])["khive"]["env"]
     assert env["KHIVE_ACTOR"] == "agent:anonymous"
-    assert "comm" not in env.get("KHIVE_PACKS", "").split(",")
 
 
 @pytest.mark.asyncio

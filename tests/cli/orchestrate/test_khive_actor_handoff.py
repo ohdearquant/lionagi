@@ -3,8 +3,7 @@
 """A khive server an orchestrated child is handed acts as the profile that child runs as.
 
 The run resolves one server set. Each child gets its own copy, so the set the run
-keeps stays as it was resolved while every child carries its own actor and no
-messaging pack.
+keeps stays as it was resolved while every child carries its own actor.
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ def _handed(chat_model) -> dict:
 def _assert_acts_as(servers: dict, actor: str) -> None:
     assert servers["khive"]["env"] == {
         "KHIVE_ACTOR": actor,
-        "KHIVE_PACKS": "kg,memory",
+        "KHIVE_PACKS": "kg, comm ,memory",
         "KEEP": "1",
     }
     # A server that is not the knowledge kernel is handed over as it was resolved.

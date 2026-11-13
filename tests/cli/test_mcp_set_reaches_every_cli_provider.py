@@ -1106,7 +1106,6 @@ async def test_resumed_leg_request_carries_the_codex_overrides(
         "mcp_servers.khive.command": "kkernel",
         "mcp_servers.khive.args": ["serve"],
         "mcp_servers.khive.env.KHIVE_ACTOR": "agent:anonymous",
-        "mcp_servers.khive.env.KHIVE_PACKS": "kg,gtd,memory,brain,schedule,knowledge,session,tool,exec,git,code,workspace,blob",
     }
     assert seen["config"]
     assert SERVERS_COMMAND_ARG in seen["config"]
@@ -1486,7 +1485,6 @@ async def test_a_set_resolved_on_resume_replaces_the_one_the_codex_leg_had(
         "mcp_servers.khive.command": "kkernel",
         "mcp_servers.khive.args": ["serve"],
         "mcp_servers.khive.env.KHIVE_ACTOR": "agent:anonymous",
-        "mcp_servers.khive.env.KHIVE_PACKS": "kg,gtd,memory,brain,schedule,knowledge,session,tool,exec,git,code,workspace,blob",
     }
 
 
