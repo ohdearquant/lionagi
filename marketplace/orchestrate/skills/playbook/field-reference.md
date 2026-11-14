@@ -248,9 +248,9 @@ actually configured.
 
 | Concern | File |
 |---|---|
-| Playbook loading and spec validation | `lionagi/cli/orchestrate/__init__.py` |
-| Playbook path resolution | `lionagi/cli/orchestrate/__init__.py` (`_resolve_playbook_path`) |
-| Template interpolation | `lionagi/cli/orchestrate/__init__.py` (`_interpolate_prompt`) |
-| `li play` sugar expansion | `lionagi/cli/main.py` (`_handle_play_shortcut`) |
-| Flow execution engine | `lionagi/cli/orchestrate/flow.py` |
+| Playbook loading and spec validation | `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py` |
+| Playbook path resolution | `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py` (`_resolve_playbook_path`) |
+| Template interpolation | `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py` (`_interpolate_prompt`) |
+| `li play` sugar expansion | `lionhub/src/lionhub/serve/cli/main.py` (`_handle_play_shortcut`) |
+| Flow execution engine | `lionhub/src/lionhub/serve/cli/orchestrate/flow.py` |
 | Playbook directory | `~/.lionagi/playbooks/` |

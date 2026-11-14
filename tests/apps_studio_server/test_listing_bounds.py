@@ -665,7 +665,7 @@ class TestStoreProbe:
 
         Order-dependent by nature -- it only catches the leak when something
         that changed the policy ran earlier in this same process (run this
-        file after ``tests/cli`` with ``-n 0`` to see it fail without the
+        file after ``lionhub/tests/lionhub_tests/serve/cli`` with ``-n 0`` to see it fail without the
         fixture). Distributed across workers it may pass without proving
         anything, so it is written to never fail falsely.
         """

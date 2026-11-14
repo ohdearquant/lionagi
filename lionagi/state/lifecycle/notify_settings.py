@@ -621,7 +621,7 @@ def _make_exec_handler(
 ) -> TerminalCallbackHandler:
     static_argv = tuple(argv)
 
-    async def _exec_handler_safe(envelope: RunTerminalEnvelope) -> None:
+    async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
         payload = json.dumps(payload_fn(envelope)).encode()
         launch_argv = tuple(argv_fn(static_argv, envelope)) if argv_fn is not None else static_argv
         base_env = env_without_state_db_url()
@@ -669,15 +669,24 @@ def _make_exec_handler(
                     )
                 except Exception:  # noqa: BLE001 -- still attempt to reap the child
                     logger.warning("notify.on_terminal global adapter: exec_cleanup_unconfirmed")
-                await _await_proc_dead(proc, safe_logging=True)
+                await _await_proc_dead(proc, safe_logging=safe_logging)
         if isinstance(primary, (asyncio.TimeoutError, get_cancelled_exc_class())):
             if isinstance(primary, get_cancelled_exc_class()):
                 raise primary
-            logger.warning("notify.on_terminal global adapter: exec_adapter_timeout")
+            if safe_logging:
+                logger.warning("notify.on_terminal global adapter: exec_adapter_timeout")
+            else:
+                logger.warning(
+                    "notify.on_terminal exec adapter %s timed out", _adapter_label(launch_argv)
+                )
             if on_timeout is not None:
                 on_timeout()
             else:
                 outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            if not safe_logging:
+                _warn_adapter_failure(
+                    f"notify.on_terminal adapter {_adapter_label(launch_argv)} timed out"
+                )
             return
         if primary is not None:
             if not isinstance(primary, Exception):
@@ -687,128 +696,51 @@ def _make_exec_handler(
                 if proc is not None
                 else "exec_adapter_launch_failed"
             )
-            logger.warning("notify.on_terminal global adapter: %s", reason)
+            if safe_logging:
+                logger.warning("notify.on_terminal global adapter: %s", reason)
+            else:
+                logger.warning(
+                    "notify.on_terminal exec adapter %s failed to run: %s",
+                    _adapter_label(launch_argv),
+                    _first_line(str(primary), launch_argv),
+                )
             if on_exec_failure is not None:
                 on_exec_failure(reason)
             else:
                 outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            if not safe_logging:
+                detail = _first_line(str(primary), launch_argv)
+                suffix = f": {detail}" if detail else ""
+                _warn_adapter_failure(
+                    f"notify.on_terminal adapter {_adapter_label(launch_argv)} failed to run{suffix}"
+                )
             return
         assert proc is not None
         if proc.returncode != 0:
             stderr_text = stderr_bytes.decode(errors="replace").strip()
-            outcome_fn(ok=False, exit_code=proc.returncode, stderr_text=stderr_text or None)
-            logger.warning("notify.on_terminal global adapter: exec_adapter_nonzero_exit")
-        else:
-            outcome_fn(ok=True, exit_code=0, stderr_text=None)
-
-    async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
-        if safe_logging:
-            return await _exec_handler_safe(envelope)
-        payload = json.dumps(payload_fn(envelope)).encode()
-        launch_argv = tuple(argv_fn(static_argv, envelope)) if argv_fn is not None else static_argv
-        # A notify command never inherits the state-store URL (see env_without_state_db_url);
-        # what env_fn names for it is passed as given.
-        base_env = env_without_state_db_url()
-        if env_fn is not None:
-            base_env.update(env_fn(envelope))
-        env, group_marker = prepare_process_group_env(base_env)
-        proc = None
-        leader_created = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *launch_argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-                start_new_session=True,
-            )
-            leader_created = observe_process_group_leader(
-                getattr(proc, "pid", None),
-                expected_marker=group_marker,
-            )
-            _, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(payload), timeout=HANDLER_BUDGET_SECONDS
-            )
-        except asyncio.TimeoutError:
-            if proc is not None:
-                group_witnesses = (
-                    capture_group_witnesses(
-                        proc,
-                        expected_leader_created=leader_created,
-                    )
-                    if leader_created is not None
-                    else ()
-                )
-                await aterminate_process_group(
-                    proc,
-                    grace=None,
-                    group_witnesses=group_witnesses,
-                )
-                await _await_proc_dead(proc)
-            logger.warning(
-                "notify.on_terminal exec adapter %s timed out", _adapter_label(launch_argv)
-            )
-            outcome_fn(ok=False, exit_code=None, stderr_text=None)
-            _warn_adapter_failure(
-                f"notify.on_terminal adapter {_adapter_label(launch_argv)} timed out"
-            )
-            return
-        except get_cancelled_exc_class():
-            # deadline race: child must still be reaped, shielded since scope is cancelled
-            if proc is not None:
-                with CancelScope(shield=True):
-                    group_witnesses = (
-                        capture_group_witnesses(
-                            proc,
-                            expected_leader_created=leader_created,
-                        )
-                        if leader_created is not None
-                        else ()
-                    )
-                    await aterminate_process_group(
-                        proc,
-                        grace=None,
-                        group_witnesses=group_witnesses,
-                    )
-                    await _await_proc_dead(proc)
-            raise
-        except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
-            detail = _first_line(str(exc), launch_argv)
-            logger.warning(
-                "notify.on_terminal exec adapter %s failed to run: %s",
-                _adapter_label(launch_argv),
-                detail,
-            )
-            outcome_fn(ok=False, exit_code=None, stderr_text=None)
-            warn_suffix = f": {detail}" if detail else ""
-            _warn_adapter_failure(
-                f"notify.on_terminal adapter {_adapter_label(launch_argv)} failed to run{warn_suffix}"
-            )
-            return
-        if proc.returncode != 0:
-            # raw stderr never reaches log/warn/outcome -- captured to an owner-only
-            # file and referenced by path instead, see docs/internals/runtime.md
-            stderr_text = stderr_bytes.decode(errors="replace").strip()
             stderr_path = outcome_fn(
                 ok=False, exit_code=proc.returncode, stderr_text=stderr_text or None
             )
-            if stderr_path:
-                where = f"; stderr captured at {stderr_path}"
-            elif stderr_text:
-                where = "; stderr not captured (no run directory bound to this handler)"
+            if safe_logging:
+                logger.warning("notify.on_terminal global adapter: exec_adapter_nonzero_exit")
             else:
-                where = ""
-            logger.warning(
-                "notify.on_terminal exec adapter %s exited %s%s",
-                _adapter_label(launch_argv),
-                proc.returncode,
-                where,
-            )
-            _warn_adapter_failure(
-                f"notify.on_terminal adapter {_adapter_label(launch_argv)} exited "
-                f"{proc.returncode}{where}"
-            )
+                if stderr_text:
+                    if stderr_path:
+                        where = f"; stderr captured at {stderr_path}"
+                    else:
+                        where = "; stderr not captured (no run directory bound to this handler)"
+                else:
+                    where = ""
+                logger.warning(
+                    "notify.on_terminal exec adapter %s exited %s%s",
+                    _adapter_label(launch_argv),
+                    proc.returncode,
+                    where,
+                )
+                _warn_adapter_failure(
+                    f"notify.on_terminal adapter {_adapter_label(launch_argv)} exited "
+                    f"{proc.returncode}{where}"
+                )
         else:
             outcome_fn(ok=True, exit_code=0, stderr_text=None)
 

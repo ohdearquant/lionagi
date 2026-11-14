@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
@@ -27,6 +27,7 @@ from lionhub.orchestration.kill import (
     _BOOT_TIME_TOLERANCE,
     _REFUSED_SIGNAL_REASONS,
     NOT_STOPPED_SIGNALS,
+    _cmdline_is_lionagi,
     _persist_cancel,
     _pid_alive,
     _terminate_pid,
@@ -46,6 +47,7 @@ from tests._kill_test_support import _script_create_time as _script_create_time
 from tests._kill_test_support import _seed_invocation as _seed_invocation
 from tests._kill_test_support import _seed_play as _seed_play
 from tests._kill_test_support import _seed_session as _seed_session
+from tests._kill_test_support import _seed_session_with_id as _seed_session_with_id
 from tests._kill_test_support import _seed_show as _seed_show
 from tests._kill_test_support import _spawn_marked_child as _spawn_marked_child
 from tests._kill_test_support import temp_db_path as temp_db_path
@@ -83,6 +85,31 @@ def test_runner_probe_guard_does_not_replace_shared_process_probe(monkeypatch):
     assert _proc.process_create_time(4242) == ("found", 100.0)
 
 
+# _pid_alive
+
+
+def test_pid_alive_returns_false_for_nonexistent_pid():
+    # PID 999999999 is virtually guaranteed not to exist.
+    assert _pid_alive(999999999) is False
+
+
+def test_pid_alive_returns_false_for_non_positive():
+    assert _pid_alive(0) is False
+    assert _pid_alive(-1) is False
+
+
+def test_pid_alive_returns_true_for_own_process():
+    import os
+
+    assert _pid_alive(os.getpid()) is True
+
+
+def test_pid_alive_treats_permission_error_as_alive():
+    """PermissionError means the process exists (not ours); must return True."""
+    with patch("os.kill", side_effect=PermissionError):
+        assert _pid_alive(1234) is True
+
+
 def test_terminate_pid_returns_already_dead_for_missing_pid():
     result = _terminate_pid(999999999, grace_seconds=0.1)
     assert result == "already_dead"
@@ -106,7 +133,6 @@ def test_terminate_pid_sigterm_sufficient(monkeypatch: pytest.MonkeyPatch):
         return not bool(calls)
 
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", fake_alive)
-    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", fake_alive)
     monkeypatch.setattr("os.kill", fake_kill)
 
     result = _terminate_pid(42, grace_seconds=1.0)
@@ -124,7 +150,6 @@ def test_terminate_pid_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch):
 
     # Always report alive during the grace window.
     patched_pid_alive = lambda pid: True
-    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", fake_kill)
 
@@ -149,7 +174,6 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
 
     kill_calls: list[tuple[int, int]] = []
     patched_pid_alive = lambda pid: True
-    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
@@ -181,12 +205,11 @@ def test_terminate_pid_identity_match_sends_signal(
     kill_calls: list[tuple[int, int]] = []
     patched_pid_alive = lambda pid: True
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
-    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
     fake_psutil = MagicMock()
     fake_proc = MagicMock()
-    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli.main"]
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionhub.serve.cli.main"]
     _script_create_time(fake_proc, 100.0)
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
@@ -262,8 +285,8 @@ def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_identity_accepts_dash_m_module(monkeypatch: pytest.MonkeyPatch):
-    """``python -m lionagi.cli.main`` is a genuine invocation and is accepted."""
-    _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli.main"])
+    """``python -m lionhub.serve.cli.main`` is a genuine invocation and is accepted."""
+    _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionhub.serve.cli.main"])
     assert check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
@@ -308,7 +331,7 @@ def test_identity_session_marker_match(monkeypatch: pytest.MonkeyPatch):
     """A matching LIONAGI_SESSION_ID env marker is a definitive match."""
     _mock_psutil(
         monkeypatch,
-        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        cmdline=["/usr/bin/python3", "-m", "lionhub.serve.cli"],
         environ={"LIONAGI_SESSION_ID": "run-123"},
     )
     assert check_pid_identity(42, "lionagi", expected_session_id="run-123") == "ours"
@@ -322,7 +345,7 @@ def test_identity_session_marker_mismatch_rejected(monkeypatch: pytest.MonkeyPat
     """
     _mock_psutil(
         monkeypatch,
-        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        cmdline=["/usr/bin/python3", "-m", "lionhub.serve.cli"],
         environ={"LIONAGI_SESSION_ID": "other-run"},
     )
     assert check_pid_identity(42, "lionagi", expected_session_id="run-123") == "not_ours"
@@ -338,7 +361,7 @@ def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.M
     """
     _mock_psutil(
         monkeypatch,
-        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        cmdline=["/usr/bin/python3", "-m", "lionhub.serve.cli"],
         environ={},
         create_time=500.0,
     )
@@ -383,7 +406,7 @@ def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch)
     """
     _mock_psutil(
         monkeypatch,
-        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        cmdline=["/usr/bin/python3", "-m", "lionhub.serve.cli"],
         create_time=100.0,
     )
     assert check_pid_identity(42, "lionagi", expected_create_time=999.0) == "not_ours"
@@ -403,7 +426,7 @@ def test_identity_no_durable_marker_refuses_cmdline_only_authorization(
     lionagi invocation. Falling back to `_cmdline_is_lionagi` here would let a
     same-looking, unrelated process be signalled.
     """
-    _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli"])
+    _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionhub.serve.cli"])
     assert check_pid_identity(42, "lionagi") == "unverifiable"
     assert (
         check_pid_identity(42, "lionagi", expected_session_id=None, expected_create_time=None)
@@ -476,7 +499,7 @@ async def test_kill_one_skips_recycled_pid_via_create_time(
         # Live pid, but psutil reports a *different* create_time (recycled).
         _mock_psutil(
             monkeypatch,
-            cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+            cmdline=["/usr/bin/python3", "-m", "lionhub.serve.cli"],
             create_time=999.0,
         )
 
@@ -713,6 +736,69 @@ async def test_kill_one_force_kill_uses_force_kill_reason(
         assert tr["reason_code"] == RunReasons.CANCELLED_FORCE_KILL
 
 
+# _resolve_entity
+
+
+async def test_resolve_entity_by_full_uuid(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _seed_session(db)
+        result = await _resolve_entity(db, sid)
+        assert result is not None
+        table, entity_type, row = result
+        assert table == "sessions"
+        assert entity_type == "session"
+        assert row["id"] == sid
+
+
+async def test_resolve_entity_by_short_prefix(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _seed_session(db)
+        short = sid[:8]
+        result = await _resolve_entity(db, short)
+        assert result is not None
+        _, _, row = result
+        assert row["id"] == sid
+
+
+async def test_resolve_entity_returns_none_for_unknown(temp_db_path: Path):
+    async with StateDB() as db:
+        result = await _resolve_entity(db, "deadbeef00000000")
+        assert result is None
+
+
+async def test_resolve_entity_finds_invocation(temp_db_path: Path):
+    async with StateDB() as db:
+        inv_id = await _seed_invocation(db)
+        result = await _resolve_entity(db, inv_id)
+        assert result is not None
+        table, entity_type, _ = result
+        assert table == "invocations"
+        assert entity_type == "invocation"
+
+
+async def test_resolve_entity_finds_show(temp_db_path: Path):
+    async with StateDB() as db:
+        show_id = await _seed_show(db)
+        result = await _resolve_entity(db, show_id)
+        assert result is not None
+        _, entity_type, _ = result
+        assert entity_type == "show"
+
+
+async def test_resolve_entity_rejects_ambiguous_prefix(temp_db_path: Path):
+    from lionhub.orchestration.job import AmbiguousIdError
+
+    async with StateDB() as db:
+        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001")
+        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002")
+
+        with pytest.raises(AmbiguousIdError) as excinfo:
+            await _resolve_entity(db, "abcde")
+
+    assert set(excinfo.value.candidates) == {first, second}
+    assert "abcde" in str(excinfo.value)
+
+
 async def test_list_running_children_show_behavior_is_unchanged(temp_db_path: Path):
     """The existing show branch continues to return only running direct plays."""
     async with StateDB() as db:
@@ -755,7 +841,7 @@ class TestTerminatePidIdentityRevalidation:
 
     def _patch(self, monkeypatch, *, alive, identity_calls):
         import lionhub.orchestration.kill as kill_service
-        from lionagi.cli import kill as kill_mod
+        from lionhub.serve.cli import kill as kill_mod
 
         patched_pid_alive = lambda pid: alive(pid)
         monkeypatch.setattr(kill_mod, "_pid_alive", patched_pid_alive)
@@ -773,7 +859,7 @@ class TestTerminatePidIdentityRevalidation:
 
     def test_recycled_pid_is_not_sigkilled(self, monkeypatch):
         import lionhub.orchestration.kill as kill_service
-        from lionagi.cli import kill as kill_mod
+        from lionhub.serve.cli import kill as kill_mod
 
         sent = []
         monkeypatch.setattr(kill_service.os, "kill", lambda pid, sig: sent.append(sig))
@@ -790,7 +876,7 @@ class TestTerminatePidIdentityRevalidation:
     def test_same_process_still_escalates(self, monkeypatch):
         """The re-check must not block escalation against the real target."""
         import lionhub.orchestration.kill as kill_service
-        from lionagi.cli import kill as kill_mod
+        from lionhub.serve.cli import kill as kill_mod
 
         sent = []
         monkeypatch.setattr(kill_service.os, "kill", lambda pid, sig: sent.append(sig))
@@ -1123,3 +1209,21 @@ def test_every_refusal_reason_is_a_not_stopped_signal():
         "no_recorded_identity",
         "imported_no_process",
     }
+
+
+@pytest.mark.parametrize(
+    ("cmdline", "expected"),
+    [
+        (["/usr/bin/python3", "-m", "lionhub.serve.cli"], True),
+        (["/usr/bin/python3", "-m", "lionhub.serve.cli.main", "o", "flow"], True),
+        # The CLI under the name it had before it moved to lionhub, kept through 1.x.
+        (["/usr/bin/python3", "-m", "lionagi.cli"], True),
+        (["/usr/bin/python3", "-m", "lionagi.cli.main", "o", "flow"], True),
+        (["/usr/bin/python3", "-m", "lionhub.serve.clix"], False),
+        (["/usr/bin/python3", "-m", "lionhub.serve.mcp"], False),
+        (["/usr/bin/python3", "-m", "lionhub"], False),
+        (["/usr/bin/python3", "lionhub.serve.cli"], False),
+    ],
+)
+def test_cmdline_recognises_the_cli_under_both_module_names(cmdline, expected):
+    assert _cmdline_is_lionagi(cmdline, "lionagi") is expected

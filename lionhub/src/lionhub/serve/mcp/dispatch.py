@@ -840,8 +840,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
         and not args.get("playbook")
         and not args.get("resume")
     ):
-        from lionagi.cli.orchestrate import _resolve_model_and_prompt
-        from lionagi.cli.orchestrate._orchestration import _select_orchestrator_agent
+        from lionhub.serve.cli.orchestrate import _resolve_model_and_prompt
+        from lionhub.serve.cli.orchestrate._orchestration import _select_orchestrator_agent
 
         query = [*(args.get("query") or []), *([prompt] if prompt is not None else [])]
         resolved = _resolve_model_and_prompt(query)
@@ -897,8 +897,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
 
 
 def _server_info() -> dict[str, Any]:
-    from lionagi.cli.machine import CONTRACT_VERSION
     from lionagi.version import __version__
+    from lionhub.serve.cli.machine import CONTRACT_VERSION
     from lionhub.serve.diagnostics import code_identity
 
     return {

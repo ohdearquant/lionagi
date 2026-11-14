@@ -35,7 +35,7 @@ def _is_protected_system(fm: dict[str, Any]) -> bool:
 
     ``lion_system`` already exists as a frontmatter flag (get_agent() has always
     surfaced it, defaulting True, for CLI parity -- see
-    ``AgentProfile``/``AgentSpec.compose`` in ``lionagi/cli``). Write-protection
+    ``AgentProfile``/``AgentSpec.compose`` in ``lionhub/src/lionhub/serve/cli``). Write-protection
     reuses that same flag rather than inventing a new one. Two things matter here:
 
     - Present and truthy counts, whatever its YAML type -- ``true``, ``"true"``,

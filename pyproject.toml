@@ -78,7 +78,7 @@ dev = [
 ]
 
 [project.scripts]
-li = "lionagi.cli.main:main"
+li = "lionhub.serve.cli.main:main"
 
 [project.optional-dependencies]
 

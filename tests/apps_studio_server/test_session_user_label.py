@@ -187,7 +187,7 @@ async def test_http_missing_session_does_not_migrate_an_existing_store(label_cli
 
 
 async def test_legacy_store_reads_without_migration_then_accepts_a_label_write(label_client):
-    from lionagi.cli.state import _collect_sessions
+    from lionhub.serve.cli.state import _collect_sessions
 
     path, client = label_client
     await _seed_session(path)
@@ -278,8 +278,8 @@ async def test_old_session_check_rebuild_keeps_the_new_label_column(tmp_path):
 
 
 async def test_persisted_label_reaches_cli_and_admin_display_names(label_client, monkeypatch):
-    from lionagi.cli.state import _collect_sessions
     from lionagi.studio.services import admin
+    from lionhub.serve.cli.state import _collect_sessions
 
     async def no_live_process(_session, _artifacts):
         return False

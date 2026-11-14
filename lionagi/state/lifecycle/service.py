@@ -20,7 +20,11 @@ from sqlalchemy import JSON, Boolean, bindparam, text
 
 from lionagi.ln import copy, short_id
 from lionagi.ln.concurrency import fail_after
-from lionagi.state._quarantine_identity import QuarantineProbeError, is_current_quarantine
+from lionagi.state._quarantine_identity import (
+    QuarantineProbeError,
+    is_current_quarantine,
+    run_probe,
+)
 
 from ..compat import _quote
 from ..reasons import VALID_REASON_CODES, RunReasons, validate_reason_code
@@ -128,21 +132,18 @@ def _quarantine_snapshot_matches(snapshot: Mapping[str, Any], stored: Any, *, di
     if not isinstance(stored, dict):
         return False
     stored_row = {**snapshot, "node_metadata": stored}
-    scope_probe_failed = False
-    try:
-        return (
-            is_current_quarantine(dict(snapshot), raise_on_scope_error=True)
-            and is_current_quarantine(stored_row, raise_on_scope_error=True)
+    probed, matches = run_probe(
+        lambda: (
+            is_current_quarantine(dict(snapshot), raise_on_probe_error=True)
+            and is_current_quarantine(stored_row, raise_on_probe_error=True)
             and expected.get("unverifiable_identity") == stored.get("unverifiable_identity")
             and expected.get("unverifiable_epoch") == stored.get("unverifiable_epoch")
-        )
-    except QuarantineProbeError:
-        scope_probe_failed = True
-    if scope_probe_failed:
-        # Raise after the handler so __context__ stays empty; see
-        # tests/state/test_quarantine_probe_exception_privacy.py.
+        ),
+        catch=QuarantineProbeError,
+    )
+    if not probed:
         raise QuarantineProbeError("quarantine identity probe failed")
-    return False
+    return bool(matches)
 
 
 class _TxProvider(Protocol):
@@ -779,24 +780,22 @@ class SQLAlchemyLifecycleService:
                 # Probe only the transaction-read row after all snapshot guards.
                 # The callback observes process identity and must never signal it.
                 probe_allowed = False
-                probe_failed = False
                 if callable(identity_unverifiable) and all(
                     row[key] == value for key, value in extra_guard.items()
                 ):
-                    try:
+
+                    def probe() -> bool:
                         probe_row = dict(row)
                         probe_row["id"] = command.entity_id
                         if isinstance(probe_row["node_metadata"], str):
                             probe_row["node_metadata"] = json.loads(probe_row["node_metadata"])
-                        probe_allowed = identity_unverifiable(probe_row) is True
-                    except Exception:
-                        # A failed probe cannot establish whether this quarantine
-                        # remains eligible. Do not expose the underlying error.
-                        probe_failed = True
-                if probe_failed:
-                    # Raise after the handler so __context__ stays empty; see
-                    # tests/state/test_quarantine_probe_exception_privacy.py.
-                    raise QuarantineProbeError("quarantine identity probe failed")
+                        return identity_unverifiable(probe_row) is True
+
+                    # A failed probe cannot establish whether this quarantine remains
+                    # eligible. Do not expose the underlying error.
+                    probed, probe_allowed = run_probe(probe)
+                    if not probed:
+                        raise QuarantineProbeError("quarantine identity probe failed")
                 if not probe_allowed:
                     return TransitionOutcome(
                         result="conflict",
