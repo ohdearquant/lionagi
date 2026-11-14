@@ -98,6 +98,11 @@ class _TrackedCLIProcess:
     # is what retires the entry. Without it a swept group whose members are
     # still visible to a scan would be re-reaped on every pass.
     reaped: bool = False
+    # The group cleanup currently running for this entry. Every caller that
+    # needs the group ended joins this one task instead of starting its own, so
+    # a caller that is cancelled while waiting neither stops the cleanup nor
+    # leaves a second one running over the same group.
+    cleanup: asyncio.Future[str] | None = None
 
 
 class ChainEvent(BaseModel):
@@ -1227,6 +1232,12 @@ class EngineRun:
             if tracked.reaped:
                 dead.append(key)
                 continue
+            if tracked.cleanup is not None and not tracked.cleanup.done():
+                # A cleanup is still running for this entry. Keep it visible so
+                # a later caller joins that cleanup rather than concluding there
+                # is nothing left to wait for.
+                live.append(tracked)
+                continue
             if getattr(tracked.process, "returncode", None) is None:
                 live.append(tracked)
                 continue
@@ -1260,7 +1271,7 @@ class EngineRun:
             end_child_group,
         )
 
-        async def _reap_one(tracked: _TrackedCLIProcess) -> str:
+        async def _end_group(tracked: _TrackedCLIProcess) -> str:
             # An exited leader is not a finished group, so this deliberately
             # does not short-circuit on ``returncode``. end_child_group already
             # distinguishes the two cases -- it signals the group while the
@@ -1290,6 +1301,19 @@ class EngineRun:
             # sweep still ran, but counting it as a cancellation would overstate
             # what this run actually had to stop.
             return "already_exited" if leader_exited else "reaped"
+
+        async def _reap_one(tracked: _TrackedCLIProcess) -> str:
+            # One cleanup per entry, shared by every caller. The entry holds the
+            # cleanup as a task and each caller waits on it through a shield, so
+            # a caller that is cancelled mid-wait leaves it running and a later
+            # caller joins it instead of signalling the same group again. A
+            # finished cleanup is replaced, so an unconfirmed outcome is retried
+            # by the next caller.
+            cleanup = tracked.cleanup
+            if cleanup is None or cleanup.done():
+                cleanup = asyncio.ensure_future(_end_group(tracked))
+                tracked.cleanup = cleanup
+            return await asyncio.shield(cleanup)
 
         if not processes:
             return 0, 0
