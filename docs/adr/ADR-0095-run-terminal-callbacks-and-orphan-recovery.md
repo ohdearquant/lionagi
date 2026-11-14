@@ -773,8 +773,9 @@ push/replay duplication and is not evidence that this amendment is already imple
 
 **Status:** Proposed.
 
-This amends the accepted **Registration and retention** and **Daemon delivery and bounded
-traversal** rules for standalone v1 named consumers. It also narrows the acknowledgment
+This amends D1's acknowledgment storage paragraph and the accepted **Registration and
+retention** and **Daemon delivery and bounded traversal** rules for standalone v1 named
+consumers. It also narrows the acknowledgment
 representation and enrollment references in the **Proposed amendment: immediate
 named-consumer delivery for standalone v1**. The rest of ADR-0095 keeps its own status.
 
@@ -847,7 +848,7 @@ ACK, regardless of age.
 | `lionagi/state/lifecycle/deliveries.py::_unacknowledged_count`, `lionagi/state/lifecycle/deliveries.py::get_owed_transition`, `lionagi/state/lifecycle/deliveries.py::reconcile_unacknowledged` | Use one logical predicate: eligible, outside the cutoff, and no physical row for this consumer. The two delivery readers require an active registration. Exact and paged reads apply the same cutoff. |
 | `lionagi/state/lifecycle/consumer_inspection.py::list_consumers`, `lionagi/state/lifecycle/consumer_inspection.py::preview_consumer_change` | Count retained candidates with the logical predicate in the existing read snapshot. Retired consumers owe zero but their candidates still use the cutoff. The CLI and machine listing both use `lionhub/src/lionhub/serve/cli/state.py::_terminal_consumer_list_data`. Keep their existing SQLite support boundary. |
 | `lionagi/state/lifecycle/deliveries.py::ack_delivery`, `lionagi/state/lifecycle/deliveries.py::is_acknowledged`, `lionagi/state/lifecycle/reconciler.py::_keeper_ack` | Preserve physical writes and exact settlement readback. Keeper and normal writes validate schema, require a registered identity and allow late success for a retired identity. The late paths `lionagi/state/lifecycle/reconciler.py::_acknowledge_late`, `lionagi/state/lifecycle/reconciler.py::_finish_late_result` and `lionagi/state/lifecycle/reconciler.py::_drain_deferred` preserve that distinction. |
-| `lionagi/state/lifecycle/reconciler.py::_consumer_is_active`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler._attempt_one`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`, `lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::run_terminal_reconciliation` | Keep the separate activation checks and the second exact debt read before the effect. Replay uses the bounded page query and the same in-process cursor rules. ACK settlement still uses the physical readback. |
+| `lionagi/state/lifecycle/reconciler.py::_consumer_is_active`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler._attempt_one`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`, `lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::run_terminal_reconciliation` | Immediately before the effect, both paths read active registration and the exact event's logical debt in one statement. This is the admission point. An effect admitted before retirement can finish and record its actual ACK. Replay still uses the bounded page query and its process-local cursor to find candidates. |
 | `lionagi/state/db.py::StateDB.delete_imported_session`, `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk` | Use the retention rules below. Delete physical ACK children before leaving history in the same transaction. The metadata declarations in `lionagi/state/schema.sql` and `lionagi/state/schema_meta.py` describe the same constraints. |
 
 Continue returning exact transaction-snapshot integers for the existing operator mutation.
@@ -889,15 +890,18 @@ an active consumer and reports the retained count separately from deletion. Reti
 consumers do not block. A pruned session may remove its physical ACK children only in the
 same transaction as the associated transitions and before those parents. The debt check
 and deletion must share a lock boundary with enrollment, retirement, eligibility and ACK
-writes, so a concurrent change cannot create debt between them. Keep terminal-state and
+writes, including `start="all"` activation, which can expose debt without advancing the epoch.
+Keep terminal-state and
 worker-ownership guards. Apply the logical predicate to both the age-based and explicit
 paths. The standalone v1 physical-ACK form of this correction is tracked in #4393.
 At the source pin the common prune deletes status transitions without protecting owed
 history, or is refused by the physical ACK foreign key
 (`lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk`).
 Import absorption is a separate explicit deletion path. It already deletes child rows
-before parents (`lionagi/state/db.py::StateDB.delete_imported_session`). Confirm its
-debt ownership and any preservation required before applying the new cutoff to that path.
+before parents (`lionagi/state/db.py::StateDB.delete_imported_session`). Mirror
+reconciliation can write eligible terminal transitions for imported sessions
+(`lionagi/state/_mirror_common.py::reconcile_status`). Decide whether absorption must
+retain that obligation or transfer it before extending the cutoff to that path.
 
 ### Verification required with implementation
 
@@ -909,14 +913,17 @@ debt ownership and any preservation required before applying the new cutoff to t
    baseline rows. Verify actual late ACK and ambiguous-write readback, both start modes,
    retired and active re-registration, competing transitions and enrollment, and logical
    ACK distinction. Add a concurrent same-consumer enrollment arm and preserve actual
-   PostgreSQL ACK conflict coverage.
+   PostgreSQL ACK conflict coverage. Pause exact and replay preparation, retire and
+   reactivate with `now`, and verify that final admission refuses the covered event.
+   An already admitted effect can still ACK.
 3. Migrate an existing database with active and retired identities, physical ACKs and
    eligibility classes. Verify rollback, old-handle refusal, whole-store restart,
    preexisting classification history and the runner's managed PostgreSQL fixture. Include
    SQLite private and shared-memory stores and the raw keeper.
 4. Exercise the prune cases from #4393 before and after applying a cutoff. Confirm owed-only,
    mixed and retired behavior, physical child deletion and no dangling ACKs. Include a
-   concurrent registration or activation during prune, plus the separate import removal.
+   concurrent `all` activation during prune. Test import absorption against its separately
+   decided debt policy.
 5. Run fresh now-registration, now-reactivation, operator retire, active attachment and
    uncontended terminal writes at 10,000, 100,000 and 1,000,000 rows. Repeat the SQLite
    witness with a live PostgreSQL comparison. Include old ACK-heavy history and nonempty
