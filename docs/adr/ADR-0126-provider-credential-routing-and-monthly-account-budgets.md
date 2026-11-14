@@ -1720,14 +1720,14 @@ This amendment changes the following clauses for streamed rejection reads:
 
 1. Keep the ordinary five-second deadline and the decoded body bound of 64 KiB
    plus one byte used to detect overflow. Allow caller cancellation to interrupt
-   the streamed classifier. Take one checkpoint inside the read deadline
-   before the first body read so a caller cancellation pending at the
+   the streamed classifier. Take one checkpoint before starting the read
+   deadline or reading the body so a caller cancellation pending at the
    rejection status is delivered before reading any bytes. A read that
    reaches its own deadline without caller cancellation still follows the
    existing unread-body path. Complete classification means the bounded
    classifier returned before cancellation interrupted it, including when
    a failed read or its own deadline returns
-   `("other", "other")` and uses the existing classified settlement.
+   `("other", "other", False)` and uses the existing classified settlement.
    Partial data supplies no typed proof.
 2. Handle cancellation during the read inside the response context. If
    classification completed, use the existing classified settlement. Otherwise,
@@ -1747,7 +1747,7 @@ This amendment changes the following clauses for streamed rejection reads:
    (`lionagi/service/accounts/_ledger.py::CredentialLedger._settle_sync`).
 3. Set the streamed adapter's `settled` flag immediately before the selected
    router accounting call. The flag records that the call was attempted. Close
-   the response without draining the remaining body and let the original
+   the response without draining the remaining body and let caller
    cancellation propagate, including through AnyIO scope timeouts. A ledger
    failure or a cleanup failure during this unwind cannot replace the caller's
    cancellation or trigger another settlement. Keep body bytes and provider text
@@ -1758,18 +1758,24 @@ This amendment changes the following clauses for streamed rejection reads:
    creates no capture file and emits no `rejection_capture_failed` event,
    including when capture is enabled. Caller cancellation is separate from
    the read's own deadline or failure.
-   When an ordinary read or response-close exception replaces a caller
-   cancellation during its delivery or unwind, recover that cancellation
-   from the exception's `__context__` chain. Keep the classifier's own
-   deadline on the ordinary unread-body path. In the classifier, check
-   before the ordinary read-failure fallback. At the adapter, catch exceptions
-   outside the streaming response context and before the transport-error handler,
-   so the rule also covers response exit. Apply Decision 2's open-attempt
-   settlement if classification was interrupted and no accounting call
-   was attempted. Preserve any accounting already attempted. Keep the
-   original caller cancellation through response cleanup and re-raise it
-   after leaving the replacement exception handler, keeping the replacement
-   out of its exception chain.
+   Caller cancellation delivered into the rejection read, response exit or
+   HTTP session exit reaches the caller even if cleanup raises an ordinary
+   exception. It produces neither a transport error nor a retry. Use
+   Decision 2's open outcome if no accounting call was attempted. Preserve
+   any accounting already attempted.
+
+   Distinguish cancellation originating in the classifier's deadline scope
+   from native caller cancellation or cancellation from an enclosing caller
+   scope. The classifier scope's `cancel_called` records its own deadline
+   firing and can be true when the caller also cancels. A caller cancellation
+   that reaches the read or cleanup takes precedence when both are present,
+   because the classifier deadline only bounds the read. Deadline-only
+   cancellation takes the ordinary unread-body path.
+
+   Recognize replaced native cancellation through either `__context__` or
+   `__cause__`. A chain with no surviving link to a native cancellation
+   supplies no evidence to recover it. The propagated cancellation's chain
+   must be free of the replacement exception, body bytes and provider text.
 4. Keep D6's typed evidence requirement and Amendment 5's accounting shield.
    The shield protects ledger work from AnyIO scope cancellation. A further
    native task cancellation retains the existing behavior at the worker
@@ -1793,15 +1799,18 @@ cancellation can leave a larger open balance or miss a billing block because
 the interrupted body supplied no proof. Retained open ceilings can exhaust
 the account's budget. A later qualifying billing rejection blocks the account
 only when its settlement commits as the attempt's first closure
-(Amendment 12, Decision 2). An open ceiling remains held until settlement or
-until a committed admission including that account closes the expired hold
-within the same credit period (Amendment 11, Decision 2). The lease is two
-hours by default. Admission in a later period leaves the prior hold open and
+(Amendment 12, Decision 2). An interrupted 400 records `other` as its
+provider error type, which cannot support a later typed 400 rejection
+settlement. Its ceiling stays held until operator reconciliation or a
+committed admission including that account closes the expired hold within
+the same credit period (Amendment 11, Decision 2). The lease is two hours
+by default. Admission in a later period leaves the prior hold open and
 excludes it from that period's budget.
 
 A native cancellation arriving after the accounting call starts and before
 worker admission can still leave an open attempt with no recorded reason or
-status, as in Amendment 5.
+status, as in Amendment 5. If cleanup removes all exception-chain links to
+a native cancellation before it can be observed, the ordinary failure path applies.
 
 ### Verification
 
@@ -1813,7 +1822,7 @@ status, as in Amendment 5.
   `other`, the held ceiling, cleared warmth, and no newly set block. Use a
   transport that records response release before its close checkpoint.
   Under AnyIO scope cancellation the checkpoint can raise. Verify the
-  transport release marker, propagation of the original cancellation, and
+  transport release marker, propagation of caller cancellation, and
   absence of a second read or settlement.
 - Repeat for a stalled 529. Verify one open `provider_error` with HTTP 529,
   null rejection diagnostics, retained ceiling, cleared warmth, and no retry.
@@ -1826,21 +1835,36 @@ status, as in Amendment 5.
   propagates, no message file is created, and no `rejection_capture_failed`
   event is emitted.
 - Enable diagnostic capture. On both 400 and 529, trigger cancellation with
-  native `task.cancel()` and with an AnyIO scope. For each, raise an ordinary
-  exception while unwinding the cancelled read. Test response close replacing
-  the cancellation in a separate case. Confirm the replacement carries the original
-  cancellation in its context chain. At the adapter's await, before leaving
-  the caller scope, assert that the same cancellation reaches the caller
-  with Decision 2's open outcome, one accounting call, and no retry,
-  capture file, or capture event.
+  native `task.cancel()` and with an AnyIO scope. Cover replacement by an
+  ordinary exception in read cleanup, response close and HTTP session close.
+  Verify Decision 2's open outcome when accounting is still pending, and
+  preserve the result if it was already attempted. Assert a single accounting
+  call, no transport error and no retry. Check that the propagated chain
+  contains neither the replacement exception nor its synthetic sentinel.
+  On 400, assert no capture file or capture event. Treat the same assertions
+  on 529 as a control because diagnostic capture applies only to 400.
+- For native cancellation assert that the original instance reaches the caller.
+  When delivery interrupts the read, its traceback must contain the classifier
+  frame. Cover replacement with only a `__cause__` link and, separately, with
+  both links cleared before the original is observed. The cleared-chain case
+  takes the ordinary failure path.
+- For AnyIO, inspect the propagated exception inside the caller scope and
+  verify that scope catches its cancellation. When delivery interrupts the
+  read, the classifier frame must appear somewhere in the propagated
+  exception's chain. A later unshielded checkpoint can deliver a fresh
+  cancellation instance.
+- Raise an ordinary exception during the classifier's own deadline unwind
+  with no caller cancellation. Assert the ordinary unread-body outcome and
+  that no cancellation reaches the caller. In a separate case with both
+  sources present, assert caller cancellation takes precedence.
 - In
   `tests/service/accounts/test_routed_rejection_class.py::test_a_cancelled_caller_still_has_its_streamed_rejection_classified`,
   change `_CancellingRejection` to yield a partial piece containing the
   sentinel and request cancellation at the next iteration, after the
   classifier has stored that piece in `body` or `piece`. Assert the same
   unread-400 outcome. Catch the propagated cancellation inside the caller
-  scope. Verify its traceback contains the classifier frame, and check its
-  locals and the exception chain for the sentinel before re-raising. Add an
+  scope. Find the classifier frame in the exception chain and check its
+  locals and the chain for the sentinel before re-raising. Add an
   independent case where classification returns before cancellation and the
   accounting shield preserves the typed result. Verify the qualified
   billing-prefix case keeps its atomic block.
@@ -1851,10 +1875,12 @@ status, as in Amendment 5.
   Assert the classifier checkpoint delivers the pending cancellation before
   the body is read. The 400 records open `request_rejected` with HTTP 400
   and both diagnostic fields set to `other`. The 529 records open
-  `provider_error` with HTTP 529, both diagnostic fields null, and no retry.
-  Both hold the ceiling, clear warmth, and deliver `TimeoutError` to the caller.
+  `provider_error` with HTTP 529 and both diagnostic fields null. Enable
+  retries for the 529 case and assert exactly one transport request. Confirm
+  cancellation leaves the classifier frame in both streamed cases. Both hold
+  the ceiling, clear warmth, and deliver `TimeoutError` to the caller.
 - Keep the timely typed 400 and 529 cases, the 529 retry control when there is
   no cancellation, and the ordinary read-timeout and body-size controls. Check
   that the partial-body sentinel also stays out of logs and the ledger.
-  Exercise ledger and response-close errors during cancellation and verify
-  propagation of the original cancellation.
+  Exercise ledger errors during cancellation and verify propagation of
+  caller cancellation.
