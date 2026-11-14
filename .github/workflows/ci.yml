@@ -228,7 +228,7 @@ jobs:
     # test job runs whether or not changes succeeded (see the matrix note).
     needs: changes
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Every job in this workflow has a timeout. After a worker crash the
     # pytest-xdist controller can block with no test running, where no per-test
     # timeout reaches it (the max-worker-restart note in pyproject.toml).

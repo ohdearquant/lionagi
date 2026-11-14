@@ -905,7 +905,7 @@ def test_a_base_ref_read_beside_the_sanctioned_matrix_is_still_refused() -> None
     text = _ci_gate_text()
     assert _other_switches(text) == []
     condition = (
-        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-latest\n    # Every job in this workflow"
+        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-24.04\n    # Every job in this workflow"
     )
     assert text.count(condition) == 1, "the test job header in ci.yml changed; update this fixture"
     edited = text.replace(
@@ -917,7 +917,7 @@ def test_a_base_ref_read_beside_the_sanctioned_matrix_is_still_refused() -> None
 def test_the_sanctioned_matrix_text_is_refused_anywhere_but_the_test_matrix() -> None:
     text = _ci_gate_text()
     condition = (
-        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-latest\n    # Every job in this workflow"
+        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-24.04\n    # Every job in this workflow"
     )
     assert text.count(condition) == 1, "the test job header in ci.yml changed; update this fixture"
     as_condition = text.replace(

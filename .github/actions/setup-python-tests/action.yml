@@ -1,5 +1,5 @@
 name: Set up Python tests
-description: Install the matrix interpreter and LionAGI test dependencies.
+description: Install the matrix interpreter, test dependencies, and a local PostgreSQL server.
 inputs:
   python-version:
     description: Python interpreter for uv and pytest.
@@ -34,3 +34,38 @@ runs:
       run: |
         uv venv
         uv sync --all-extras
+    - name: Start PostgreSQL 16 for tests
+      id: postgres
+      shell: bash
+      run: |
+        set -euo pipefail
+        pg_bin=/usr/lib/postgresql/16/bin
+        cluster=$(mktemp -d "$RUNNER_TEMP/lionagi-postgres.XXXXXXXX")
+        mkdir "$cluster/socket"
+        "$pg_bin/initdb" -D "$cluster/data" --username=postgres \
+          --auth-local=peer --auth-host=scram-sha-256 > "$cluster/init.log"
+        printf 'local all postgres peer map=runner\n' > "$cluster/data/pg_hba.conf"
+        printf 'host all all 127.0.0.1/32 scram-sha-256\n' >> "$cluster/data/pg_hba.conf"
+        printf 'runner %s postgres\n' "$(id -un)" >> "$cluster/data/pg_ident.conf"
+        "$pg_bin/pg_ctl" -D "$cluster/data" -l "$cluster/server.log" -w -t 30 \
+          -o "-h 127.0.0.1 -p 55432 -k '$cluster/socket'" start
+
+        pg_password=$(openssl rand -hex 24)
+        pg_run_token=$(openssl rand -hex 8)
+        echo "::add-mask::$pg_password"
+        LIONAGI_PG_SETUP_PASSWORD="$pg_password" "$pg_bin/psql" \
+          -X --set=ON_ERROR_STOP=1 -h "$cluster/socket" -p 55432 -U postgres -d postgres <<'SQL'
+        \getenv test_password LIONAGI_PG_SETUP_PASSWORD
+        CREATE ROLE lionagi_ci LOGIN CREATEDB PASSWORD :'test_password';
+        CREATE DATABASE lionagi_test OWNER lionagi_ci;
+        SQL
+        server_version=$(PGPASSWORD="$pg_password" "$pg_bin/psql" \
+          -XtA --set=ON_ERROR_STOP=1 -h 127.0.0.1 -p 55432 -U lionagi_ci -d lionagi_test \
+          -c 'SHOW server_version_num')
+        if [[ ! "$server_version" =~ ^16[0-9]{4}$ ]]; then
+          echo "::error::Expected PostgreSQL 16, got server_version_num=$server_version"
+          exit 1
+        fi
+        printf 'LIONAGI_TEST_PG_URL=postgresql+asyncpg://lionagi_ci:%s@127.0.0.1:55432/lionagi_test\n' \
+          "$pg_password" >> "$GITHUB_ENV"
+        printf 'LIONAGI_TEST_PG_RUNNER=%s\n' "$pg_run_token" >> "$GITHUB_ENV"

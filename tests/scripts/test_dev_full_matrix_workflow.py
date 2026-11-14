@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import runpy
 from pathlib import Path
 
+import pytest
 import yaml
 
 GITHUB = Path(__file__).resolve().parents[2] / ".github"
@@ -116,6 +120,7 @@ def test_nightly_and_required_tests_share_setup_and_keep_timed_suite_steps():
             step for step in job["steps"] if step.get("run") == "scripts/ci.sh test-python"
         )
         assert setup["with"] == {"python-version": MATRIX_VERSION, **options}
+        assert job["runs-on"] == "ubuntu-24.04"
         assert job["steps"].index(setup) < job["steps"].index(suite)
         assert suite["timeout-minutes"] == 45
         assert suite["timeout-minutes"] < job["timeout-minutes"]
@@ -135,3 +140,95 @@ def test_nightly_and_required_tests_share_setup_and_keep_timed_suite_steps():
     )
     assert coverage["timeout-minutes"] == 60
     assert coverage["timeout-minutes"] < required["timeout-minutes"]
+
+
+def _postgres_setup_problems(workflows, action):
+    callers = [
+        (workflow, name, job, step)
+        for workflow, jobs in workflows.items()
+        for name, job in jobs["jobs"].items()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).endswith(f"/{SETUP}")
+    ]
+    assert callers, "the shared Python setup has no workflow callers"
+    problems = []
+    provision = next((step for step in action["runs"]["steps"] if step.get("id") == "postgres"), {})
+    script = provision.get("run", "")
+    for workflow, name, job, setup in callers:
+        if job.get("runs-on") != "ubuntu-24.04":
+            problems.append(f"{workflow}:{name} does not use the PostgreSQL 16 runner image")
+        if any(
+            step.get("run", "").startswith("scripts/ci.sh test-python")
+            for step in job["steps"][: job["steps"].index(setup)]
+        ):
+            problems.append(f"{workflow}:{name} runs tests before doing PostgreSQL setup")
+        if any(
+            key in step for step in (setup, provision) for key in ("if", "continue-on-error")
+        ) or not all(
+            token in script
+            for token in (
+                "set -euo pipefail",
+                "/postgresql/16/",
+                "127.0.0.1",
+                "pg_ctl",
+                "SHOW server_version_num",
+                "LIONAGI_TEST_PG_URL=",
+                "LIONAGI_TEST_PG_RUNNER=",
+                '"$GITHUB_ENV"',
+            )
+        ):
+            problems.append(f"{workflow}:{name} lacks required local PostgreSQL provisioning")
+    return problems
+
+
+def test_all_shared_python_setup_callers_provision_local_postgres():
+    workflows = {path.name: _workflow(path.name) for path in (GITHUB / "workflows").glob("*.yml")}
+    action = yaml.safe_load((GITHUB / SETUP.removeprefix(".github/") / "action.yml").read_text())
+    assert _postgres_setup_problems(workflows, action) == []
+
+    broken = copy.deepcopy(action)
+    broken["runs"]["steps"] = [
+        step for step in broken["runs"]["steps"] if step.get("id") != "postgres"
+    ]
+    assert sorted(_postgres_setup_problems(workflows, broken)) == [
+        "ci.yml:test lacks required local PostgreSQL provisioning",
+        "dev-full-matrix.yml:test lacks required local PostgreSQL provisioning",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("token", "worker", "database"),
+    [
+        ("1f3a5c7e9b0d2f4a", "gw7", "test_db_1f3a5c7e9b0d2f4a_gw7"),
+        ("1f3a5c7e9b0d2f4a", None, "test_db_1f3a5c7e9b0d2f4a_main"),
+        (None, "gw7", "test_db"),
+    ],
+)
+def test_runner_postgres_uses_one_database_per_worker_and_preserves_explicit_urls(
+    token, worker, database
+):
+    helper = runpy.run_path(str(GITHUB.parent / "tests" / "state" / "conftest.py"))[
+        "_runner_database_url"
+    ]
+    prefix = "postgresql+asyncpg://test_user@127.0.0.1:55432/"
+    url = prefix + "test_db?ssl=disable"
+    assert helper(url, token, worker) == prefix + database + "?ssl=disable"
+
+
+def test_runner_database_setup_works_inside_a_running_event_loop():
+    """The session fixture can be set up from an async test, while a loop is running."""
+    namespace = runpy.run_path(str(GITHUB.parent / "tests" / "state" / "conftest.py"))
+    set_up = namespace["_set_up_runner_database"]
+    calls = []
+
+    async def fake_manage(admin_url, worker_url, *, create):
+        calls.append((admin_url, worker_url, create))
+
+    set_up.__globals__["_manage_runner_database"] = fake_manage
+
+    async def inside_loop():
+        set_up("admin", "worker", create=True)
+        set_up("admin", "worker", create=False)
+
+    asyncio.run(inside_loop())
+    assert calls == [("admin", "worker", True), ("admin", "worker", False)]
