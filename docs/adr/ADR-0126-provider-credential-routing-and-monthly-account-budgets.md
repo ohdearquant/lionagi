@@ -367,6 +367,10 @@ selection reads it: the D4 ledger.
    `caller_cancelled` differs from the first reads as identical, because the flag is not stored. It
    returns `already_settled` and clears nothing.
 
+   See [Amendment 14](#amendment-14-interrupt-a-stalled-streamed-rejection)
+   for a streamed rejection whose status is known when cancellation interrupts
+   the read. Recording that status clears warmth as a recorded rejection does.
+
    The clear has to cover more than blocks. HTTP 401/403 still blocks with `auth_required` (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._request_attempt`, `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`); accounting blocks `ceiling_exceeded` and `settlement_conflict`, and explicit operator blocks, also block an account and clear warmth. A rate-limited account, or one whose credit is exhausted (a 400), stays a
    candidate. Without the clear, its row would keep it first in W for every new scope with that
    prefix, and a bound scope never moves. The clear removes that preference and nothing else: D3's
@@ -636,6 +640,9 @@ Tests under `tests/service/accounts/` and `tests/providers/anthropic/`:
   account's rows; the next new scope falls back to the order. `clear_block()` on an account that is not
   blocked deletes nothing. A consumer that closes the stream after an error event retains original reason `stream_error` in the open outcome or estimate evidence and clears; one that closes it without an error event retains original reason `stream_closed` and preserves warmth unless blocked. A
   transport failure after `settle_stream_end` recorded complete usage clears nothing. With an AnyIO scope cancellation (`fail_after`) pending when the adapter records a 429, the attempt keeps `rate_limited`, the rows are cleared and the caller receives `TimeoutError`; pending at a 401, the account is blocked, the attempt keeps `auth_required`, the rows are cleared and the caller receives `TimeoutError`; pending at a qualifying 529, the attempt settles `rejection_zero` with `provider_error` in structured evidence, otherwise a 5xx keeps `provider_error`; pending at a qualifying 400, the attempt settles `rejection_zero` with `request_rejected` in structured evidence and its two rejection columns, otherwise keeps open `request_rejected`; in each case warmth is cleared and the caller receives `TimeoutError`; pending at a transport failure after the request entered, the attempt keeps `transport_error` in the open outcome or eligible stream-estimate evidence, the rows are cleared and the caller receives `TimeoutError`; pending at a non-streamed 200 whose usage is incomplete, the attempt keeps `usage_incomplete` and the rows are cleared; pending at a 200 that prices over the ceiling, the account is blocked with `ceiling_exceeded` and the rows are cleared.
+  [Amendment 14 (Proposed)](#amendment-14-interrupt-a-stalled-streamed-rejection)
+  updates the streamed arms when cancellation is already pending at the rejection
+  status. The non-streamed arms keep the accepted result.
   A clearing `UnknownOutcome` on an open attempt that already recorded `cancelled` clears. A
   non-cancellation exception at `begin`'s `except BaseException` settles a `not_sent` that clears.
   `cancelled`, `stream_closed`, a caller-cancelled `not_sent` from either adapter cancellation handler or from `begin` (cancellation class and `GeneratorExit`), and an Amendment 9 reconciliation preserve warmth unless that operation records a block; block precedence is mandatory. A reconciliation without a block, an `UnknownOutcome` on a settled attempt and an identical repeat delete nothing. `ProvenNotSent(caller_cancelled=True)` followed by `ProvenNotSent(caller_cancelled=False)` on one attempt returns `already_settled` and clears nothing. For an Amendment 9 estimate E > C, including cancellation and consumer close, verify the block clears warmth; 529 zero also clears. Neither new settlement basis creates or refreshes a prefix. Typed reconciliation preserves ordinary no-clear behavior unless it records a block. For transport-first cancellation, assert the latched transport reason and shielded write before outward TimeoutError; for cancellation-first, assert cancelled and block precedence, as Decision 2 specifies.
@@ -1566,6 +1573,10 @@ The owner revokes the one-use dispatch ticket and joins or accounts for that wor
 | Other 4xx, including 413; 400 failing Amendment 9's typed-evidence rule | Classify request rejection; keep ceiling without complete billing evidence. | None. |
 | Cancellation, process death or stream truncation | Settle any complete evidence already captured, or an eligible early-ended stream estimate E under Amendment 9; otherwise retain ceiling. E > C blocks with `ceiling_exceeded` and clears warmth, including on cancellation. Process death without a committed settlement retains the durable ceiling. | No cancellation replay. |
 
+See [Amendment 14](#amendment-14-interrupt-a-stalled-streamed-rejection) for
+cancellation after the streamed attempt observes a rejection status.
+Recording that status clears warmth as a recorded rejection does.
+
 Status alone is not proof of a zero bill. Amendment 9 permits zero settlement only for its closed HTTP status/type pairs as a policy interpretation of the quoted failed-request statement. Streams merge initial usage and later cumulative fields by replacement, not addition; complete terminal evidence uses exact pricing, while only eligible early-ended streams use Amendment 9's estimate. Intercept HTTP accounting before redaction buffering, generic stream projection and consumer yields. The accepted record describes generic projection as retaining raw events (`lionagi/service/connections/endpoint.py::Endpoint._line_to_stream_chunk`, `lionagi/service/connections/endpoint.py::Endpoint._event_to_stream_chunk`); the additional pre-redaction accounting parser is proposed. No automatic retry after
 stream output starts. Stream close/finalization shields an available settlement
 from caller cancellation; the shield waits at most five seconds for a worker thread
@@ -1698,6 +1709,7 @@ This amendment changes the following clauses for streamed rejection reads:
 | Accepted clause | Wording this amendment changes |
 | --- | --- |
 | Amendment 5, guarantees and limitations | “unless a shielded status/response settlement has already selected its evidence or transport failure was latched first.” The observed rejection status also takes precedence if cancellation interrupts the body read. |
+| Amendment 5, verification | “pending at a qualifying 529, the attempt settles `rejection_zero`” and “pending at a qualifying 400, the attempt settles `rejection_zero`”. On a streamed attempt, pending cancellation ends the read before classification and records the unread-body outcome. The non-streamed attempt reads the body before inspecting the status and keeps the accepted result. |
 | Amendment 7, Decision 3 | “under `CancelScope(shield=True)` bounded at five seconds”. The ordinary deadline stays five seconds and caller cancellation can end the read earlier. |
 | Amendment 7, Decision 4 | “under `CancelScope(deadline=..., shield=True)`”. The read becomes interruptible and the drop rule applies to its cancellation exit. |
 | Amendment 7, verification | “for a qualifying 400, otherwise open `request_rejected`, on both attempts.” Streamed verification distinguishes a completed classification from a read interrupted before it returns. |
@@ -1710,8 +1722,10 @@ This amendment changes the following clauses for streamed rejection reads:
    plus one byte used to detect overflow. Allow caller cancellation to interrupt
    the streamed classifier. A read that reaches its own deadline without caller
    cancellation still follows the existing unread-body path. Complete
-   classification means the bounded classifier returned its validated result
-   before cancellation interrupted it. Partial data supplies no typed proof.
+   classification means the bounded classifier returned before cancellation
+   interrupted it, including when a failed read or its own deadline returns
+   `("other", "other")` and uses the existing classified settlement.
+   Partial data supplies no typed proof.
 2. Handle cancellation during the read inside the response context. If
    classification completed, use the existing classified settlement. Otherwise,
    record the available evidence from the observed status in one settlement
@@ -1735,8 +1749,12 @@ This amendment changes the following clauses for streamed rejection reads:
    failure or a cleanup failure during this unwind cannot replace the caller's
    cancellation or trigger another settlement. Keep body bytes and provider text
    out of the propagated exception, its chain, and adapter-owned traceback
-   locals. The existing diagnostic capture rules apply only to qualifying
-   classified responses.
+   locals. The classifier releases its body and piece bindings before
+   cancellation leaves its frame. Amendment 9 Decision 5 governs diagnostic
+   capture when the read returns. A read interrupted by caller cancellation
+   creates no capture file and emits no `rejection_capture_failed` event,
+   including when capture is enabled. Caller cancellation is separate from
+   the read's own deadline or failure.
 4. Keep D6's typed evidence requirement and Amendment 5's accounting shield.
    The shield protects ledger work from AnyIO scope cancellation. A further
    native task cancellation retains the existing behavior at the worker
@@ -1757,7 +1775,17 @@ admission, settlement, and response cleanup. When there is no cancellation,
 the five-second read deadline and the two separate five-second ledger waits
 still apply. A provider that would have returned qualifying evidence after
 cancellation can leave a larger open balance or miss a billing block because
-the interrupted body supplied no proof.
+the interrupted body supplied no proof. An account can still receive requests
+until a later completed classification finds qualifying billing evidence.
+An open ceiling remains held until settlement or until the next committed
+admission including that account closes the expired hold under Amendment 11's
+open lease, two hours by default.
+
+A native cancellation arriving after the accounting call starts and before
+worker admission can still leave an open attempt with no recorded reason or
+status, as in Amendment 5. When transport cleanup replaces a native
+cancellation inside the read with an ordinary exception, the classifier's
+existing failure arm handles it as a read failure.
 
 ### Verification
 
@@ -1767,16 +1795,31 @@ the interrupted body supplied no proof.
   bound below five seconds. Verify one accounting call, one transport request,
   the open `request_rejected` with HTTP 400 and both diagnostics set to
   `other`, the held ceiling, cleared warmth, and no newly set block. Use a
-  response close that checkpoints and verify that it completes without a
-  second read or settlement.
+  transport that records response release before its close checkpoint.
+  Under AnyIO scope cancellation the checkpoint can raise. Verify the
+  transport release marker, propagation of the original cancellation, and
+  absence of a second read or settlement.
 - Repeat for a stalled 529. Verify one open `provider_error` with HTTP 529,
   null rejection diagnostics, retained ceiling, cleared warmth, and no retry.
+- Repeat for a stalled HTTP 413 on the request-rejected route
+  (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`,
+  the non-200 branch after authentication, rate-limit and server errors).
+  Verify the open attempt records `request_rejected` with observed HTTP 413.
+- Cancel a stalled 400 with diagnostic capture enabled. Verify cancellation
+  propagates, no message file is created, and no `rejection_capture_failed`
+  event is emitted.
 - In
   `tests/service/accounts/test_routed_rejection_class.py::test_a_cancelled_caller_still_has_its_streamed_rejection_classified`,
   cancellation interrupts a partial read. Assert the same unread-400 outcome
   and cancellation in that case. Add an independent case where classification
   returns before cancellation and the accounting shield preserves the typed
   result. Verify the qualified billing-prefix case keeps its atomic block.
+- In
+  `tests/service/accounts/test_routed_rejection_class.py::test_a_pending_cancellation_is_delivered_after_a_classified_rejection_is_recorded`,
+  the `call` case still settles `rejection_zero`. The `stream` case
+  records open `request_rejected`, HTTP 400, and both diagnostic fields
+  as `other`, with the ceiling held, warmth cleared, and `TimeoutError`
+  delivered to the caller.
 - Keep the timely typed 400 and 529 cases, the 529 retry control when there is
   no cancellation, and the ordinary read-timeout and body-size controls. Check
   that the partial-body sentinel stays out of the cancellation traceback and
