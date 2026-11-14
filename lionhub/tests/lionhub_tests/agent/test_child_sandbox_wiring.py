@@ -18,10 +18,10 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionhub.serve.cli.orchestrate._orchestration import _confine_claude_worker
 from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionhub.agent.factory import create_agent
 from lionhub.agent.spec import AgentSpec
+from lionhub.serve.cli.orchestrate._orchestration import _confine_claude_worker
 
 child_sandbox = importlib.import_module("lionhub.agent.child_sandbox")
 
@@ -210,8 +210,8 @@ async def test_a_flow_orchestrator_with_a_loaded_profile_gets_that_profiles_exem
     monkeypatch, tmp_path
 ):
     """A profile orchestrator is built as a plain Branch, not by create_agent."""
-    from lionhub.serve.cli.orchestrate import _orchestration as orch
     from lionhub.orchestration.runs import RunDir
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
 
     work = tmp_path / "work"
     work.mkdir()
@@ -258,9 +258,9 @@ async def test_a_plain_li_agent_profile_leg_is_confined_under_its_profile_name(
 
     import lionhub.serve.cli.agent as agent_mod
     from lionagi import Branch
-    from lionhub.serve.cli.orchestrate import _orchestration as orch
     from lionagi.service.manager import iModelManager
     from lionhub.orchestration.spawn import _parse_profile
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
 
     profile = _parse_profile("builder", "---\n---\nBuild.\n")
     monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: profile)
