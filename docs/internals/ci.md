@@ -1,8 +1,8 @@
 # CI reliability
 
-`scripts/ci.sh` is the single entry point for Python checks in CI, local
+`scripts/ci.sh` is the entry point for current Python checks in CI, local
 development, and pre-commit. Workflows select a command and set policy through
-environment variables; they do not inline pytest commands.
+environment variables.
 
 ## Release images
 
@@ -18,6 +18,11 @@ test jobs must still succeed. A missing or yanked wheel prevents image publicati
 A failed upload job still leaves the overall workflow failed even if its image
 is subsequently published.
 
+New releases run `scripts/ci.sh test-python` at the resolved tag on Python
+3.10 through 3.14, using the same selection as CI's non-coverage lane.
+That selection excludes tests from the dedicated performance and quarantine
+lanes. Each leg pins uv to its matrix interpreter.
+
 To repair a missing container image, dispatch `release.yml` **from the default
 branch**, with the published version as its `version` input, without `v`. The
 current workflow helpers run from the dispatch commit, while the build context
@@ -28,7 +33,8 @@ The rebuild still resolves its base images, apt packages and Python dependencies
 on the dispatch day, so a repaired image matches the released one in the source
 it builds from, not byte for byte. The image job waits on the test job, so a
 repair also reruns the released commit's test matrix and a red test there blocks
-the image repair.
+the image repair. Manual repairs use the historical Python 3.10–3.13 pytest
+path so they can run against tags that predate the current test setup.
 The manual repair requires all of:
 
 - A published, non-draft GitHub release with the exact version tag.

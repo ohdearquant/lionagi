@@ -218,11 +218,16 @@ def test_all_shared_python_setup_callers_provision_local_postgres():
 
 
 @pytest.mark.parametrize(
-    ("checkout_fixture", "expected"),
-    [("current", True), ("older", False), ("missing", False), ("unreadable", False)],
+    ("checkout_fixture", "expected", "diagnostic"),
+    [
+        ("current", True, ""),
+        ("older", False, "marker was absent"),
+        ("missing", False, "fixture file was absent"),
+        ("read-error", False, "marker could not be read"),
+    ],
 )
 def test_runner_postgres_capability_comes_from_the_test_checkout(
-    tmp_path, checkout_fixture, expected
+    tmp_path, checkout_fixture, expected, diagnostic
 ):
     action = yaml.safe_load((GITHUB / SETUP.removeprefix(".github/") / "action.yml").read_text())
     capability = next(
@@ -243,12 +248,12 @@ def test_runner_postgres_capability_comes_from_the_test_checkout(
         )
     elif checkout_fixture != "missing":
         test_fixture.write_text(current)
-    if checkout_fixture == "unreadable":
+    if checkout_fixture == "read-error":
         # Simulate a failed marker read even on test runners using a privileged UID.
         probe = "grep() { return 2; }\n" + probe
 
     output = tmp_path / "output"
-    subprocess.run(
+    completed = subprocess.run(
         ["bash", "-e", "-c", probe],
         cwd=workflow_source,
         env={
@@ -256,10 +261,16 @@ def test_runner_postgres_capability_comes_from_the_test_checkout(
             "GITHUB_WORKSPACE": str(test_source),
             "GITHUB_OUTPUT": str(output),
         },
+        capture_output=True,
+        text=True,
         check=True,
         timeout=10,
     )
     assert output.read_text() == f"supported={str(expected).lower()}\n"
+    if diagnostic:
+        assert diagnostic in completed.stdout
+    else:
+        assert completed.stdout == ""
 
 
 @pytest.mark.parametrize(
