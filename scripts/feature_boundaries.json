@@ -755,6 +755,10 @@
       "layer": "sdk",
       "owner": "operations"
     },
+    "lionagi.operations.run.stream_buffer": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
     "lionagi.operations.schema": {
       "layer": "sdk",
       "owner": "operations"

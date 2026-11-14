@@ -48,6 +48,7 @@ from lionagi.operations._observe import (
 from lionagi.operations._observe import (
     check_control as _check_control,
 )
+from lionagi.operations.run.stream_buffer import STREAM_CHUNK_MARKER, legacy_fallback_text
 
 logger = logging.getLogger(__name__)
 
@@ -77,15 +78,6 @@ def _buffer_text(value: Any) -> str | None:
     return str.__str__(value) if isinstance(value, str) else None
 
 
-def _buffer_mapping_get(value: Any, key: str) -> Any:
-    if not isinstance(value, Mapping):
-        return None
-    try:
-        return dict.get(value, key) if isinstance(value, dict) else value.get(key)
-    except Exception:
-        return None
-
-
 async def _append_chunk(buffer_path, chunk) -> None:
     """Append a strict JSON projection, retaining text if serialization fails."""
     payload = None
@@ -93,7 +85,7 @@ async def _append_chunk(buffer_path, chunk) -> None:
         payload = chunk if isinstance(chunk, StreamChunk) else chunk.to_dict()
         projected = _to_json_value(payload)
         if isinstance(chunk, StreamChunk):
-            projected["_lionagi_stream_chunk"] = True
+            projected[STREAM_CHUNK_MARKER] = True
         line = json_dumps(projected)
     except Exception as exc:
         nonfinite = (
@@ -107,7 +99,7 @@ async def _append_chunk(buffer_path, chunk) -> None:
             kind = _buffer_text(chunk.type) or "error"
             content = _buffer_text(chunk.content) or ""
             fallback = {
-                "_lionagi_stream_chunk": True,
+                STREAM_CHUNK_MARKER: True,
                 "type": kind,
                 "content": content,
                 "serialization_error": failure,
@@ -124,11 +116,7 @@ async def _append_chunk(buffer_path, chunk) -> None:
                         value = None
                     if (value := _buffer_text(value)) is not None:
                         data[name] = value
-            text = _buffer_text(_buffer_mapping_get(data, "content"))
-            if text is None:
-                text = _buffer_text(_buffer_mapping_get(data, "text"))
-            if text is None:
-                text = _buffer_text(_buffer_mapping_get(_buffer_mapping_get(data, "delta"), "text"))
+            text = legacy_fallback_text(data)
             text = text or ""
             fallback = {"text": text, "serialization_error": failure}
         line = json.dumps(fallback, ensure_ascii=True, separators=(",", ":"))
