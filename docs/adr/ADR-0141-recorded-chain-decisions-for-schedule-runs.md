@@ -21,7 +21,6 @@ The source and reader census in this record use commit `45fd503ecf2af299d48b762c
 
 **P4. The decision is not recorded.** The schedule_run row keeps `exit_code`, `status` and `status_evidence_refs` (`lionagi/state/schema.sql:622-647@45fd503ecf2af299d48b762cd895a2b8e650ced5`). The refs written by the terminal write name the invocation or the schedule (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`, `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::create_skipped_run`), not the decision. The monitor therefore has to derive it again.
 
-
 **P5. The monitor can miss a failure child of a cancelled run.** A child invocation that resolves to `cancelled` or `aborted` maps to a cancelled schedule run. If the schedule selects a usable `on_fail` action, normal completion and dispatched recovery launch it within the depth cap. The current monitor resolves a cancelled row immediately and misses that child (`lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::resolve_invocation_terminal`, `lionhub/src/lionhub/orchestration/scheduler/engine.py::_SCHEDULE_RUN_STATUS_FROM_INVOCATION`, `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`, `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._reconcile_dispatched_orphans`, `lionhub/src/lionhub/serve/cli/monitor.py::_advance_chains`).
 
 Decision table:
