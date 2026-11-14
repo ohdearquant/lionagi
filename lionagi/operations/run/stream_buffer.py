@@ -28,7 +28,9 @@ def _plain(value: Any) -> str | None:
 def legacy_stream_text(record: Any) -> str | None:
     """The display text of a legacy stream record: ``delta.text``, then ``text``.
 
-    ``content`` is never shown: a legacy record may carry metadata or non-text output there.
+    ``content`` is never read here: a legacy record may carry metadata or non-text output
+    there. The writer's fallback for a chunk it cannot serialize does keep ``content``, as
+    ``text`` (see ``legacy_fallback_text``), so that text is shown.
     A key whose value is not a string, or is empty, moves on to the next one.
     """
     for value in (_get(_get(record, "delta"), "text"), _get(record, "text")):
