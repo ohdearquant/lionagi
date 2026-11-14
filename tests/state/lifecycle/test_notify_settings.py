@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -809,10 +810,45 @@ async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatc
 # the handler's own identical wait_for) must still reap the child ──────────
 
 
+_CHILD_SCRIPT = "import time; time.sleep(30)"
+_CANCEL_BUDGET_SECONDS = 0.3
+
+
+def _record_child_starts(
+    monkeypatch: pytest.MonkeyPatch, *, start_delay: float
+) -> list[subprocess.Popen]:
+    """Record each child the test command starts, at the moment the OS starts it.
+
+    The record is made inside ``Popen`` itself, which never yields to the event loop,
+    so a child is counted even when the coroutine that spawned it is cancelled before
+    the spawn call returns. ``start_delay`` holds the loop for that long right after
+    the child starts, which makes a spawn still in progress when the registry's budget
+    expires reproducible.
+    """
+    real_popen = subprocess.Popen
+    started: list[subprocess.Popen] = []
+
+    class _RecordingPopen(real_popen):
+        def __init__(self, args, *popen_args, **popen_kwargs):
+            super().__init__(args, *popen_args, **popen_kwargs)
+            if _CHILD_SCRIPT in str(args):
+                started.append(self)
+                time.sleep(start_delay)
+
+    monkeypatch.setattr(subprocess, "Popen", _RecordingPopen)
+    return started
+
+
 @pytest.mark.asyncio
 @pytest.mark.slow_timing
+@pytest.mark.parametrize(
+    "spawn_delay",
+    [0.0, 5 * _CANCEL_BUDGET_SECONDS],
+    ids=["child-starts-promptly", "budget-expires-during-spawn"],
+)
 async def test_cancelled_exec_handler_still_kills_its_child_process_group(
     monkeypatch: pytest.MonkeyPatch,
+    spawn_delay: float,
 ):
     # Reproduces the race: TerminalCallbackRegistry's own move_on_after
     # budget is set far shorter than the exec handler's internal
@@ -822,25 +858,20 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(
     # exception. The child (its own process group via start_new_session)
     # must still be dead by the time emit() returns, not orphaned alive.
     #
-    # The child's pid is read off the spawn, not written by the child: a
-    # child slow to start can be killed by the 0.3 s budget before it runs
-    # any code, and that is exactly the case this test must still check.
-    spawned: list[asyncio.subprocess.Process] = []
-    real_spawn = asyncio.create_subprocess_exec
-
-    async def recording_spawn(*args, **kwargs):
-        proc = await real_spawn(*args, **kwargs)
-        spawned.append(proc)
-        return proc
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording_spawn)
-    cmd = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(30)"'
+    # The child is recorded where the OS starts it, not when the spawn call
+    # returns: a budget that expires while the spawn is still in progress
+    # cancels the handler before it holds the process handle, and that is a
+    # case this test must still check. The "budget-expires-during-spawn"
+    # parameter holds the loop past the budget right after the child starts
+    # to force it; a child slow to start is not a reason to count none.
+    spawned = _record_child_starts(monkeypatch, start_delay=spawn_delay)
+    cmd = f'{shlex.quote(sys.executable)} -c "{_CHILD_SCRIPT}"'
     resolved = resolve_notify_config(override=cmd).handler
     assert resolved is not None
     handler = build_handler(resolved)
     assert handler is not None
 
-    registry = TerminalCallbackRegistry(budget_seconds=0.3)
+    registry = TerminalCallbackRegistry(budget_seconds=_CANCEL_BUDGET_SECONDS)
     registry.register("slow-notify", handler)
 
     start = time.monotonic()
@@ -850,9 +881,9 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(
     pids = [proc.pid for proc in spawned]
     assert len(pids) == 1, f"expected the handler to start one child, saw {pids}"
     child_pid = pids[0]
-    # Not sooner than the 0.3 s budget, so the child did not simply exit on
-    # its own; well short of its 30 s sleep.
-    assert 0.3 <= elapsed < 5.0
+    # Not sooner than the budget, so the child did not simply exit on its own;
+    # well short of its 30 s sleep, with room for a loaded runner.
+    assert _CANCEL_BUDGET_SECONDS <= elapsed < 10.0
 
     # aterminate_process_group's own SIGKILL + proc.wait() already ran
     # inside the shielded cleanup before emit() returned; give the OS a
