@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = Path(__file__).resolve().parents[5]
 CORE = ROOT / "lionagi"
-CATALOG = ROOT / "lionhub" / "src" / "lionhub" / "cli" / "catalog.py"
+CATALOG = ROOT / "lionhub" / "src" / "lionhub" / "serve" / "cli" / "catalog.py"
 
 
 def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
@@ -59,8 +59,8 @@ def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
                 "lionagi.cli",
                 "lionagi.studio.cli",
                 "lionhub.agent.casts.surfaces",
-                "lionhub.cli.studio",
-                "lionhub.cli.schedule",
+                "lionhub.serve.cli.studio",
+                "lionhub.serve.cli.schedule",
             )
             if any(value == prefix or value.startswith(prefix + ".") for prefix in prefixes):
                 hits.append((node.lineno, value))
@@ -97,8 +97,8 @@ def test_core_catalog_guard_sees_construction_and_target_literals():
     assert _core_catalog_references(CORE / "_log_channels.py", "name = 'lionagi.cli.warn'") == []
     assert _core_catalog_references(probe, "logging.getLogger('lionagi.cli')") == []
     assert _core_catalog_references(probe, "target = 'lionagi.cli'") == [(1, "lionagi.cli")]
-    assert _core_catalog_references(probe, "target = 'lionhub.cli.schedule'") == [
-        (1, "lionhub.cli.schedule")
+    assert _core_catalog_references(probe, "target = 'lionhub.serve.cli.schedule'") == [
+        (1, "lionhub.serve.cli.schedule")
     ]
 
 
@@ -124,11 +124,11 @@ def test_fresh_cli_catalog_discovery():
     source = """
 import json, sys
 assert not any(m == 'lionhub' or m.startswith('lionhub.') for m in sys.modules)
-from lionhub.cli.catalog import iter_cli_seeds, seed_for, command_exists
+from lionhub.serve.cli.catalog import iter_cli_seeds, seed_for, command_exists
 seeds = iter_cli_seeds()
 modules = {s.name: s.module for s in seeds}
-assert modules['studio'] == 'lionhub.cli.studio'
-assert modules['schedule'] == 'lionhub.cli.schedule'
+assert modules['studio'] == 'lionhub.serve.cli.studio'
+assert modules['schedule'] == 'lionhub.serve.cli.schedule'
 assert seed_for('not-a-command') is None and not command_exists('not-a-command')
 print(json.dumps({
     'top_level': [{'name': s.name, 'help': s.help, 'aliases': sorted(s.aliases)} for s in seeds],
@@ -153,13 +153,13 @@ main([sys.argv[1], '--help'])
 
     handlers = _fresh("""
 import json
-from lionhub.cli.catalog import load_cli_command, seed_for
+from lionhub.serve.cli.catalog import load_cli_command, seed_for
 print(json.dumps({name: load_cli_command(seed_for(name)).handler.__module__
                   for name in ('studio', 'schedule')}))
 """)
     assert json.loads(handlers) == {
-        "studio": "lionhub.cli.studio",
-        "schedule": "lionhub.cli.schedule",
+        "studio": "lionhub.serve.cli.studio",
+        "schedule": "lionhub.serve.cli.schedule",
     }
 
 
@@ -167,7 +167,7 @@ def test_catalog_loading_stays_lazy():
     _fresh("""
 import sys
 assert not any(m == 'lionhub' or m.startswith('lionhub.') for m in sys.modules)
-from lionhub.cli import catalog
+from lionhub.serve.cli import catalog
 seeds = catalog.iter_cli_seeds()
 targets = {s.module for s in seeds}
 assert not (targets & sys.modules.keys())
@@ -191,10 +191,10 @@ assert set(catalog._cli_realized) == {'casts'}
     for selected, other in (("schedule", "studio"), ("studio", "schedule")):
         _fresh(f"""
 import sys
-from lionhub.cli import catalog
+from lionhub.serve.cli import catalog
 seed = catalog.seed_for({selected!r})
 catalog.load_cli_command(seed)
-assert {("lionhub.cli." + other)!r} not in sys.modules
+assert {("lionhub.serve.cli." + other)!r} not in sys.modules
 assert 'lionagi.studio.cli' not in sys.modules
 if {selected!r} == 'schedule':
     assert 'fastapi' not in sys.modules
@@ -205,7 +205,7 @@ if {selected!r} == 'schedule':
     _fresh("""
 import importlib
 main = importlib.import_module('lionagi.cli.main')
-from lionhub.cli import schedule
+from lionhub.serve.cli import schedule
 schedule.run_schedule_quick_create = lambda kind, argv: (kind, argv)
 assert main.main(['schedule', 'create', 'agent', 'sample']) == ('agent', ['sample'])
 import sys
@@ -216,10 +216,10 @@ assert 'lionagi.studio.cli' not in sys.modules
 def test_adapter_import_boundaries_in_fresh_processes():
     for module, forbidden in (
         (
-            "lionhub.cli.schedule",
+            "lionhub.serve.cli.schedule",
             (
                 "lionagi.studio.cli",
-                "lionhub.cli.studio",
+                "lionhub.serve.cli.studio",
                 "apps.studio",
                 "lionagi.studio.app",
                 "lionagi.studio.routes",
@@ -228,7 +228,7 @@ def test_adapter_import_boundaries_in_fresh_processes():
                 "uvicorn",
             ),
         ),
-        ("lionhub.cli.studio", ("lionagi.studio.cli", "lionhub.cli.schedule")),
+        ("lionhub.serve.cli.studio", ("lionagi.studio.cli", "lionhub.serve.cli.schedule")),
     ):
         source = f"""
 import importlib.abc, sys
@@ -249,7 +249,7 @@ assert all(name not in sys.modules for name in blocked)
 
 def test_cli_move_preserves_behavior():
     """Parser expectations were captured from the base commit's li commands."""
-    from lionhub.cli.catalog import build_cli_parser, seed_for
+    from lionhub.serve.cli.catalog import build_cli_parser, seed_for
 
     studio_build = build_cli_parser(seed_for("studio"))
     schedule_build = build_cli_parser(seed_for("schedule"))
@@ -384,7 +384,7 @@ def test_optional_command_feature_errors_are_unchanged(monkeypatch, capsys):
     import builtins
     from argparse import Namespace
 
-    from lionhub.cli import studio
+    from lionhub.serve.cli import studio
 
     original_import = builtins.__import__
 
@@ -404,7 +404,7 @@ def test_cli_projection_uses_one_catalog():
     _fresh("""
 import sys
 assert not any(m == 'lionhub' or m.startswith('lionhub.') for m in sys.modules)
-from lionhub.cli import catalog
+from lionhub.serve.cli import catalog
 from lionhub.serve.mcp import projection
 from lionagi.cli import machine
 import importlib
@@ -414,10 +414,10 @@ token = 'new-catalog-alias'
 catalog._cli_seed_by_token[token] = seed
 assert main.seed_for(token) is seed
 assert projection._spec_for(token) is seed
-assert catalog.seed_for('studio').module == 'lionhub.cli.studio'
-assert projection._spec_for('studio').module == 'lionhub.cli.studio'
-assert catalog.seed_for('schedule').module == 'lionhub.cli.schedule'
-assert projection._spec_for('schedule').module == 'lionhub.cli.schedule'
+assert catalog.seed_for('studio').module == 'lionhub.serve.cli.studio'
+assert projection._spec_for('studio').module == 'lionhub.serve.cli.studio'
+assert catalog.seed_for('schedule').module == 'lionhub.serve.cli.schedule'
+assert projection._spec_for('schedule').module == 'lionhub.serve.cli.schedule'
 try:
     machine._run_machine_command(['schedule', 'not-a-verb'])
 except machine.MachineError as exc:

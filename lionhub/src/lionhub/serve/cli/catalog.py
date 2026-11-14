@@ -58,12 +58,12 @@ _CLI_SEEDS: tuple[CliSeed, ...] = (
     CliSeed(
         name="studio",
         help="Lion Studio server",
-        module="lionhub.cli.studio",
+        module="lionhub.serve.cli.studio",
     ),
     CliSeed(
         name="schedule",
         help="Manage lionagi Studio schedules.",
-        module="lionhub.cli.schedule",
+        module="lionhub.serve.cli.schedule",
     ),
     CliSeed(
         name="state",

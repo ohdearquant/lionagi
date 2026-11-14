@@ -421,7 +421,7 @@ def test_a_missing_cli_catalog_reports_the_environment_in_a_fresh_process():
         """
         import sys
 
-        BLOCKED = "lionhub.cli.catalog"
+        BLOCKED = "lionhub.serve.cli.catalog"
 
         class _RefuseCatalog:
             def find_spec(self, fullname, path=None, target=None):
@@ -448,7 +448,7 @@ def test_a_missing_cli_catalog_reports_the_environment_in_a_fresh_process():
 
     assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
     last_line = [line for line in proc.stderr.splitlines() if line.strip()][-1]
-    assert "lionhub.cli.catalog" in last_line
+    assert "lionhub.serve.cli.catalog" in last_line
     assert "No run was started" in last_line
 
 

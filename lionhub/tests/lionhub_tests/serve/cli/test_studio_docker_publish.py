@@ -94,7 +94,7 @@ def _no_ambient_token(monkeypatch):
 @pytest.fixture
 def docker_run(tmp_path, monkeypatch):
     """Run the real `--docker` path with docker faked; yields (invoke, home)."""
-    import lionhub.cli.studio as studio_module
+    import lionhub.serve.cli.studio as studio_module
 
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(studio_module, "_has_docker", lambda: True)
@@ -184,7 +184,7 @@ def test_an_explicit_address_is_the_published_address(docker_run, host):
 )
 def test_the_publish_spec_brackets_ipv6_literals_only(host, expected):
     """A literal IPv6 address needs brackets, or its colons read as separators."""
-    from lionhub.cli.studio import _docker_publish_spec
+    from lionhub.serve.cli.studio import _docker_publish_spec
 
     assert _docker_publish_spec(host, 8765) == expected
 
@@ -198,7 +198,7 @@ def test_a_bracketed_blank_host_still_publishes_on_loopback(docker_run, host):
 
 
 def test_the_publish_spec_keeps_the_container_port():
-    from lionhub.cli.studio import _docker_publish_spec
+    from lionhub.serve.cli.studio import _docker_publish_spec
 
     assert _docker_publish_spec("127.0.0.1", 4321) == "127.0.0.1:4321:8765"
 
@@ -215,7 +215,7 @@ def test_the_publish_spec_keeps_the_container_port():
 )
 def test_a_host_that_is_not_an_address_is_refused(docker_run, host, capsys):
     """Docker would reject the mapping, so the CLI refuses it before docker runs."""
-    import lionhub.cli.studio as studio_module
+    import lionhub.serve.cli.studio as studio_module
 
     _, captured, home = docker_run
     studio_module._start_docker(host=host, api_port=8765, frontend_port=3000)
@@ -281,7 +281,7 @@ def test_no_token_in_the_environment_sends_no_token_flag(docker_run):
 
 def test_a_failed_run_is_the_launch_return_code(tmp_path, monkeypatch):
     """`docker run` refusing the mapping (a non-zero exit) must not read as success."""
-    import lionhub.cli.studio as studio_module
+    import lionhub.serve.cli.studio as studio_module
 
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(studio_module, "_has_docker", lambda: True)
@@ -378,7 +378,7 @@ def test_the_publish_spec_normalizes_an_ipv4_mapped_address():
     hexadecimal form, which the daemon's IPv6 Host grammar (no dots) refuses. The
     IPv4 form is what gets published, printed and passed on.
     """
-    from lionhub.cli.studio import _docker_publish_spec, _published_host
+    from lionhub.serve.cli.studio import _docker_publish_spec, _published_host
 
     assert _published_host("::ffff:192.168.1.5") == "192.168.1.5"
     assert _docker_publish_spec("::ffff:192.168.1.5", 8765) == "192.168.1.5:8765:8765"
@@ -450,7 +450,7 @@ def test_a_bind_spelling_that_is_a_special_address_keeps_its_rule(host, publishe
     """Brackets change the spelling, never what the value means: an unspecified
     address stays unspecified and is not published or admitted, and a blank stays
     blank and takes the loopback default."""
-    from lionhub.cli.studio import _published_host
+    from lionhub.serve.cli.studio import _published_host
 
     assert _published_host(host) == published
 
@@ -471,7 +471,7 @@ def test_an_address_carrying_a_port_names_the_port_flag(docker_run, host, capsys
 def test_an_interrupt_during_the_pull_is_not_a_failed_launch(tmp_path, monkeypatch, capsys):
     """Ctrl-C while docker pulls stops the launch the way one during the run does:
     `li studio --docker` returns 0 instead of letting the interrupt escape."""
-    import lionhub.cli.studio as studio_module
+    import lionhub.serve.cli.studio as studio_module
 
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(studio_module, "_has_docker", lambda: True)

@@ -42,7 +42,7 @@ class _SlowStudio(BaseHTTPRequestHandler):
 def test_live_but_slow_studio_is_a_timeout_not_an_unreachable_daemon(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import lionhub.cli.schedule as schedule_cli
+    import lionhub.serve.cli.schedule as schedule_cli
 
     _SlowStudio.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _SlowStudio)

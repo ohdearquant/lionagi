@@ -9,8 +9,8 @@ import types
 import pytest
 import yaml
 
-from ..orchestration.schedule import _test_support_schedule_export as _support
-from ..orchestration.schedule._test_support_schedule_export import _legacy_row
+from lionhub_tests.orchestration.schedule import _test_support_schedule_export as _support
+from lionhub_tests.orchestration.schedule._test_support_schedule_export import _legacy_row
 
 # Fixtures shared with the support module, bound here so they apply to this module only.
 agent_profile = _support.agent_profile
@@ -47,7 +47,7 @@ def test_cli_export_writes_output_file_and_report_file(temp_db_path, agent_profi
     # test must stay a plain sync function, not @pytest.mark.asyncio.
     import asyncio
 
-    from lionhub.cli.schedule import _cmd_export
+    from lionhub.serve.cli.schedule import _cmd_export
 
     asyncio.run(_create_legacy_row(_legacy_row("cli1", "demo/nightly", cwd=agent_profile)))
 
@@ -67,7 +67,7 @@ def test_cli_export_writes_output_file_and_report_file(temp_db_path, agent_profi
 def test_cli_export_prints_to_stdout_and_stderr_by_default(temp_db_path, agent_profile, capsys):
     import asyncio
 
-    from lionhub.cli.schedule import _cmd_export
+    from lionhub.serve.cli.schedule import _cmd_export
 
     asyncio.run(_create_legacy_row(_legacy_row("cli2", "demo/nightly", cwd=agent_profile)))
 
@@ -81,7 +81,7 @@ def test_cli_export_prints_to_stdout_and_stderr_by_default(temp_db_path, agent_p
 def test_export_never_writes_the_database(temp_db_path, agent_profile, tmp_path):
     import asyncio
 
-    from lionhub.cli.schedule import _cmd_export
+    from lionhub.serve.cli.schedule import _cmd_export
 
     async def _setup():
         async with StateDB() as db:
@@ -110,7 +110,7 @@ def test_cli_export_returns_partial_exit_code_when_a_row_is_blocked(
 ):
     import asyncio
 
-    from lionhub.cli.schedule import EXIT_EXPORT_PARTIAL, _cmd_export
+    from lionhub.serve.cli.schedule import EXIT_EXPORT_PARTIAL, _cmd_export
 
     asyncio.run(_create_legacy_row(_legacy_row("cli-ready", "demo/nightly", cwd=agent_profile)))
     asyncio.run(
@@ -144,7 +144,7 @@ def test_cli_export_rejects_sibling_filename_collisions(temp_db_path, agent_prof
     before any sibling file is written, never silently overwrite one."""
     import asyncio
 
-    from lionhub.cli.schedule import _cmd_export
+    from lionhub.serve.cli.schedule import _cmd_export
 
     asyncio.run(
         _create_legacy_row(
@@ -166,7 +166,7 @@ def test_cli_export_rejects_sibling_filename_collisions(temp_db_path, agent_prof
 def test_cli_export_distinct_sibling_tokens_write_all_files(temp_db_path, agent_profile, tmp_path):
     import asyncio
 
-    from lionhub.cli.schedule import _cmd_export
+    from lionhub.serve.cli.schedule import _cmd_export
 
     asyncio.run(
         _create_legacy_row(_legacy_row("sd1", "alpha/a", cwd=agent_profile, action_project="alpha"))
@@ -189,7 +189,7 @@ def test_legacy_export_reapplies_unchanged_as_its_own_set(temp_db_path, agent_pr
     applies again as that set's own row with no difference and no change."""
     import asyncio
 
-    from lionhub.cli.schedule import _cmd_apply_set, _cmd_export
+    from lionhub.serve.cli.schedule import _cmd_apply_set, _cmd_export
 
     # The zone the row was recorded firing in; adoption confirms it only when
     # the scheduler runs in that zone.

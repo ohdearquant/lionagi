@@ -177,7 +177,7 @@ def test_catalog_missing_dependency_keeps_its_original_name(tmp_path: Path) -> N
         class RefuseCatalogDependency:
             def find_spec(self, fullname, path=None, target=None):
                 if fullname == 'lionagi._auto':
-                    assert 'lionhub.cli.catalog' in sys.modules
+                    assert 'lionhub.serve.cli.catalog' in sys.modules
                     refused.append(fullname)
                     raise ModuleNotFoundError(
                         "No module named 'lionagi._auto'", name='lionagi._auto'
@@ -193,7 +193,7 @@ def test_catalog_missing_dependency_keeps_its_original_name(tmp_path: Path) -> N
         """,
     )
     _assert_environment_refusal(process, "lionagi._auto")
-    assert "lionhub/cli/catalog.py" in process.stderr.replace("\\", "/")
+    assert "lionhub/serve/cli/catalog.py" in process.stderr.replace("\\", "/")
 
 
 @pytest.mark.parametrize("error_type", ["ImportError", "RuntimeError"])
@@ -208,7 +208,7 @@ def test_catalog_broken_import_is_not_reported_as_a_missing_environment(
 
         class BrokenCatalog:
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == 'lionhub.cli.catalog':
+                if fullname == 'lionhub.serve.cli.catalog':
                     refused.append(fullname)
                     raise {error_type}({marker!r})
                 return None
@@ -217,7 +217,7 @@ def test_catalog_broken_import_is_not_reported_as_a_missing_environment(
         try:
             import_main()
         except {error_type}:
-            assert refused == ['lionhub.cli.catalog']
+            assert refused == ['lionhub.serve.cli.catalog']
             assert_no_startup_effects()
             raise
         else:
@@ -314,7 +314,7 @@ def test_saved_catalog_fault_precedes_configuration_import(tmp_path: Path) -> No
 
         class RefuseStartup:
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == 'lionhub.cli.catalog':
+                if fullname == 'lionhub.serve.cli.catalog':
                     refused.append('catalog')
                     raise ModuleNotFoundError(
                         "No module named 'startup_catalog_dependency'",
@@ -460,7 +460,7 @@ def test_saved_catalog_fault_precedes_job_import(tmp_path):
 
         class RefuseStartup:
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == 'lionhub.cli.catalog':
+                if fullname == 'lionhub.serve.cli.catalog':
                     refused.append('catalog')
                     raise ModuleNotFoundError(
                         "No module named 'startup_catalog_dependency'",

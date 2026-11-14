@@ -272,7 +272,7 @@ def validate_target_notes(root: Path, manifest: dict[str, Any], targets: set[str
                 or target in targets
             ):
                 continue
-            if target == "lionhub.cli" or target.startswith("lionhub.cli."):
+            if target == "lionhub.serve.cli" or target.startswith("lionhub.serve.cli."):
                 raise ManifestError(f"pending CLI destination for {name}: {target}")
             if not NAME.fullmatch(target) or not re.search(
                 rf"(?<![\w.]){re.escape(target)}(?![\w.])", allocations

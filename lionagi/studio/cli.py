@@ -2,7 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li studio` / `li schedule` — Studio launcher and schedule API client."""
 
-from lionhub.cli.schedule import (
+from lionhub.orchestration.console import (
+    _refused_inside_an_agent,  # noqa: F401 -- preserve the compatibility import
+)
+from lionhub.orchestration.schedule.parsing import (
+    QUICK_CREATE_KINDS,  # noqa: F401 -- preserve the compatibility import
+    _base_url,  # noqa: F401 -- preserve the compatibility import
+    _is_schedule_request_timeout,  # noqa: F401 -- preserve the compatibility import
+    _normalize_schedule_reason,  # noqa: F401 -- preserve the compatibility import
+    _quick_create_add_policy_flags,  # noqa: F401 -- preserve the compatibility import
+    _quick_create_add_trigger_flags,  # noqa: F401 -- preserve the compatibility import
+    _schedule_request_timeout_message,  # noqa: F401 -- preserve the compatibility import
+    _url_authority,  # noqa: F401 -- preserve the compatibility import
+    add_schedule_subparser,  # noqa: F401 -- preserve the compatibility import
+    build_create_body,  # noqa: F401 -- preserve the compatibility import
+    build_quick_create_parser,  # noqa: F401 -- preserve the compatibility import
+    suggest_schedule_flag,  # noqa: F401 -- preserve the compatibility import
+)
+from lionhub.serve.cli.schedule import (
     _ACTION_MAP,  # noqa: F401 -- preserve the compatibility import
     _SCHEDULE_API_TIMEOUT_SECONDS,  # noqa: F401 -- preserve the compatibility import
     _STARTS_RUNS,  # noqa: F401 -- preserve the compatibility import
@@ -41,7 +58,7 @@ from lionhub.cli.schedule import (
     run_schedule,  # noqa: F401 -- preserve the compatibility import
     run_schedule_quick_create,  # noqa: F401 -- preserve the compatibility import
 )
-from lionhub.cli.studio import (
+from lionhub.serve.cli.studio import (
     _ANSI_ESCAPE_RE,  # noqa: F401 -- preserve the compatibility import
     _HOSTED_URL,  # noqa: F401 -- preserve the compatibility import
     _STARTUP_TAIL_LINES,  # noqa: F401 -- preserve the compatibility import
@@ -90,21 +107,4 @@ from lionhub.cli.studio import (
     _vite_dev_argv,  # noqa: F401 -- preserve the compatibility import
     add_studio_subparser,  # noqa: F401 -- preserve the compatibility import
     run_studio,  # noqa: F401 -- preserve the compatibility import
-)
-from lionhub.orchestration.console import (
-    _refused_inside_an_agent,  # noqa: F401 -- preserve the compatibility import
-)
-from lionhub.orchestration.schedule.parsing import (
-    QUICK_CREATE_KINDS,  # noqa: F401 -- preserve the compatibility import
-    _base_url,  # noqa: F401 -- preserve the compatibility import
-    _is_schedule_request_timeout,  # noqa: F401 -- preserve the compatibility import
-    _normalize_schedule_reason,  # noqa: F401 -- preserve the compatibility import
-    _quick_create_add_policy_flags,  # noqa: F401 -- preserve the compatibility import
-    _quick_create_add_trigger_flags,  # noqa: F401 -- preserve the compatibility import
-    _schedule_request_timeout_message,  # noqa: F401 -- preserve the compatibility import
-    _url_authority,  # noqa: F401 -- preserve the compatibility import
-    add_schedule_subparser,  # noqa: F401 -- preserve the compatibility import
-    build_create_body,  # noqa: F401 -- preserve the compatibility import
-    build_quick_create_parser,  # noqa: F401 -- preserve the compatibility import
-    suggest_schedule_flag,  # noqa: F401 -- preserve the compatibility import
 )

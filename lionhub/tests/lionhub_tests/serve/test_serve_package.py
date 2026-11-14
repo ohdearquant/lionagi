@@ -1,0 +1,42 @@
+"""Tests for the lionhub.serve package layout and import boundaries."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import lionhub
+
+
+def test_no_lionhub_cli_package_directory():
+    package_dir = Path(lionhub.__file__).resolve().parent
+    assert not (package_dir / "cli").exists()
+    assert importlib.util.find_spec("lionhub.cli") is None
+
+
+def test_serve_cli_import_loads_no_server():
+    script = """
+import json
+import sys
+import lionhub.serve.cli.catalog
+print(json.dumps(sorted(name for name in sys.modules if name == 'lionhub.serve' or name.startswith('lionhub.serve.'))))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    loaded = json.loads(result.stdout)
+    assert not any(
+        name == "lionhub.serve.mcp" or name.startswith("lionhub.serve.mcp.") for name in loaded
+    )
+    assert not any(
+        name == "lionhub.serve.daemon" or name.startswith("lionhub.serve.daemon.")
+        for name in loaded
+    )

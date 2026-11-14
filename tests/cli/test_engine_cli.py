@@ -772,7 +772,7 @@ def test_main_routes_engine_command(monkeypatch):
     engine_mod = importlib.import_module("lionagi.cli.engine")
 
     from lionagi._auto import _MARKER_ATTR
-    from lionhub.cli import catalog
+    from lionhub.serve.cli import catalog
 
     run_engine_calls = []
 

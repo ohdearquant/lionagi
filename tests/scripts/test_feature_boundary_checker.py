@@ -30,7 +30,7 @@ def fixture_project(tmp_path: Path):
     adr = root / "docs/adr"
     adr.mkdir(parents=True)
     (adr / "ADR-0138-fixture.md").write_text("lionhub.serve\n", encoding="utf-8")
-    (adr / "ADR-0139-fixture.md").write_text("lionhub.cli\n", encoding="utf-8")
+    (adr / "ADR-0139-fixture.md").write_text("lionhub.serve.cli\n", encoding="utf-8")
     (root / "pyproject.toml").write_text(
         """\n[project]\ndependencies = ["Example_Package>=1"]\n[project.optional-dependencies]\nextra = ["Some.Extra>=2", "lionagi[extra]"]\n[dependency-groups]\ndev = ["pytest"]\n[build-system]\nrequires = ["hatchling"]\n[tool.uv]\nconstraint-dependencies = ["Safety-Pkg"]\n""",
         encoding="utf-8",
@@ -329,7 +329,7 @@ def test_target_notes_require_public_evidence(tmp_path):
     data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.serve.unrecorded"
     with pytest.raises(checker.ManifestError, match="unrecorded destination"):
         checker.validate_target_notes(root, data, checker.lionhub_targets(root))
-    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.cli"
+    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.serve.cli"
     with pytest.raises(checker.ManifestError, match="pending CLI destination"):
         checker.validate_target_notes(root, data, checker.lionhub_targets(root))
 
