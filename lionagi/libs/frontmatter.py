@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 import yaml
@@ -17,6 +18,15 @@ def _load_frontmatter_yaml(document: str) -> Any:
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    return _parse_frontmatter(text, _load_frontmatter_yaml)
+
+
+def _parse_frontmatter_for_save(text: str) -> tuple[dict[str, Any], str]:
+    """Read frontmatter with the existing save-time scalar validation."""
+    return _parse_frontmatter(text, yaml.safe_load)
+
+
+def _parse_frontmatter(text: str, load_yaml: Callable[[str], Any]) -> tuple[dict[str, Any], str]:
     text = text.strip()
     if not text.startswith("---"):
         return {}, text
@@ -24,7 +34,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if len(parts) < 3:
         return {}, text
     try:
-        fm = _load_frontmatter_yaml(parts[1]) or {}
+        fm = load_yaml(parts[1]) or {}
     except yaml.YAMLError:
         fm = {}
     return fm if isinstance(fm, dict) else {}, parts[2].strip()

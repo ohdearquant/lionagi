@@ -410,7 +410,7 @@ async def save_definition(
 ) -> dict[str, Any]:
     """Persist a definition version: DB write first, then disk (ADR-0077 D2); per-(kind, name) lock serialises concurrent saves.
 
-    ``validate`` gates the cast role/mode check below, not the system-agent
+    ``validate`` gates the YAML scalar and cast role/mode checks below, not the system-agent
     guard (which always runs). It defaults on for the direct save route --
     the door a client posts arbitrary content through, and the one the agents
     API's role/mode validation must also bind on (see ``_canonicalize_casts``
@@ -442,10 +442,10 @@ async def save_definition(
     if kind == "agent":
         reject_if_redacted_payload(content)
 
-    from lionagi.libs.frontmatter import parse_frontmatter as _parse_fm
-
     if kind == "agent" and validate:
-        new_fm, _ = _parse_fm(content)
+        from lionagi.libs.frontmatter import _parse_frontmatter_for_save
+
+        new_fm, _ = _parse_frontmatter_for_save(content)
         _canonicalize_casts(dict(new_fm))
 
     lock = await _lock_for(kind, name)

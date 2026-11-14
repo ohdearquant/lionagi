@@ -51,14 +51,16 @@ def _is_protected_system(fm: dict[str, Any]) -> bool:
       cannot be edited" means. Agents created through the Studio API stamp
       ``lion_system: false`` explicitly, so they are unambiguously
       editable/deletable by their owner.
-
-    Write paths also check for the flag when the frontmatter cannot be read.
     """
     return "lion_system" in fm and bool(fm["lion_system"])
 
 
 def _read_agent_for_write(text: str) -> tuple[dict[str, Any], str, str | None]:
-    """Return frontmatter, prompt body, and any reason the agent is protected."""
+    """Return frontmatter, prompt body and the shared protection decision for agent writes.
+
+    An unreadable frontmatter block that mentions ``lion_system`` keeps the agent
+    protected. Agent update/delete and definition saves use this decision.
+    """
     try:
         fm, body = parse_frontmatter_strict(text)
     except (yaml.YAMLError, RecursionError):
