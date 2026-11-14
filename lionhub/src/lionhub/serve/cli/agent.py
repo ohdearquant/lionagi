@@ -2296,6 +2296,9 @@ async def _run_agent(
                         else mcp_resolution.servers
                     ),
                     resolved_mcp_explicit=mcp_resolution.explicit,
+                    # The child sandbox exemption is keyed on the agent profile file
+                    # named by -a, not on the role the spec casts the leg as.
+                    sandbox_profile=agent_name or None,
                     # The pre-turn khive client is given the actor the khive
                     # servers handed to the child above are given.
                     khive_actor=child_khive_actor(agent_name),
@@ -2325,6 +2328,11 @@ async def _run_agent(
                         forwarded=request_carries_forwarded_mcp(branch),
                     )
             else:
+                # Built here rather than by create_agent, so the profile's sandbox policy is
+                # set here too.
+                from lionhub.serve.cli.orchestrate._orchestration import _confine_claude_worker
+
+                _confine_claude_worker(chat_model, agent_name if profile is not None else None)
                 branch = Branch(
                     chat_model=chat_model,
                     log_config=DataLoggerConfig(auto_save_on_exit=False),

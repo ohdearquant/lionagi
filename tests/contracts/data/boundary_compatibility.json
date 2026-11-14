@@ -110,6 +110,9 @@
       "os.environ:ENV_SCRIPT_PATH",
       "os.environ:key"
     ],
+    "lionhub/src/lionhub/agent/child_sandbox.py": [
+      "os.environ.get:\"UV_CACHE_DIR\""
+    ],
     "lionhub/src/lionhub/agent/factory.py": [
       "os.getenv:\"LIONAGI_KHIVE_INJECTION\""
     ],
@@ -322,7 +325,7 @@
       "__all__ = (\n    \"AmbiguousProfileNameError\",\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"ensure_lionagi_dir\",\n    \"find_lionagi_dirs\",\n    \"is_account_home\",\n    \"is_account_lionagi_dir\",\n)"
     ],
     "lionagi/_settings.py": [
-      "__all__ = (\"load_global_settings_layer\", \"load_project_settings_layer\", \"load_settings\")"
+      "__all__ = (\n    \"find_project_settings_file\",\n    \"load_global_settings_layer\",\n    \"load_project_settings_layer\",\n    \"load_settings\",\n)"
     ],
     "lionagi/_types.py": [
       "_lazy_type_cache: dict[str, object] = {}",
@@ -1087,6 +1090,9 @@
     "lionhub/src/lionhub/agent/casts/profile.py": [
       "__all__ = (\"Profile\",)"
     ],
+    "lionhub/src/lionhub/agent/child_sandbox.py": [
+      "__all__ = (\n    \"CHILD_SANDBOX_OPT_OUT\",\n    \"CLAUDE_CLI_FLOOR\",\n    \"DEFAULT_ALLOW_WRITE\",\n    \"DEFAULT_DENY_EDIT\",\n    \"DEFAULT_DENY_READ\",\n    \"PROJECT_CONFIG_NAMES\",\n    \"ChildSandboxPolicy\",\n    \"check_claude_cli_floor\",\n    \"check_sandbox_backend\",\n    \"claude_settings_argument\",\n    \"claude_settings_for\",\n    \"default_allow_write\",\n    \"effective_policy\",\n    \"policy_from_dict\",\n    \"resolve_child_sandbox\",\n    \"run_state_paths\",\n    \"warn_project_child_sandbox\",\n)"
+    ],
     "lionhub/src/lionhub/agent/context_fold.py": [
       "__all__ = (\"ContextFold\", \"estimate_next_request_tokens\", \"install_context_fold\")"
     ],
@@ -1814,6 +1820,7 @@
       "classify_provider_error"
     ],
     "lionagi/_settings.py": [
+      "find_project_settings_file",
       "load_global_settings_layer",
       "load_project_settings_layer",
       "load_settings"
@@ -3914,6 +3921,19 @@
       "add_casts_subparser",
       "get_casts",
       "run_casts"
+    ],
+    "lionhub/src/lionhub/agent/child_sandbox.py": [
+      "ChildSandboxPolicy",
+      "check_claude_cli_floor",
+      "check_sandbox_backend",
+      "claude_settings_argument",
+      "claude_settings_for",
+      "default_allow_write",
+      "effective_policy",
+      "policy_from_dict",
+      "resolve_child_sandbox",
+      "run_state_paths",
+      "warn_project_child_sandbox"
     ],
     "lionhub/src/lionhub/agent/context_fold.py": [
       "ContextFold",

@@ -451,10 +451,19 @@ class ClaudeCodeRequest(BaseModel):
         exclude=True,
         description=(
             "'light' removes the Edit, Write and NotebookEdit tools and counts against the "
-            "total and claude agent caps; Bash stays, and Claude Code has no filesystem "
-            "sandbox, so this is a tool-list boundary only: a command run through Bash can "
-            "still write anywhere or start other agents. 'heavy' (the default) keeps the "
-            "configured tools and also counts against the heavy cap."
+            "total and claude agent caps; Bash stays. Unless the child sandbox is disabled, "
+            "Bash runs inside Claude Code's sandbox, which refuses reads of credential "
+            "locations and writes outside the working directory and toolchain caches; it "
+            "does not stop a command from starting other agents. 'heavy' (the default) keeps "
+            "the configured tools and also counts against the heavy cap."
+        ),
+    )
+    child_sandbox: dict[str, Any] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Resolved sandbox policy as a plain dict (see ChildSandboxPolicy.to_dict). "
+            "None resolves the default policy when the command line is built."
         ),
     )
 
@@ -682,14 +691,23 @@ class ClaudeCodeRequest(BaseModel):
             args.append(self.prompt)
         args.extend(["--output-format", self.output_format])
 
-        source = self
+        updates: dict[str, Any] = {}
         if self.workload == "light":
             # Read once and rendered as one list: the declarative renderer emits the flag a
             # single time, and a second --disallowedTools would depend on how the CLI merges.
             denied = list(self.disallowed_tools or [])
             denied += [t for t in LIGHT_DISALLOWED_TOOLS if t not in denied]
-            source = self.model_copy(update={"disallowed_tools": denied})
+            updates["disallowed_tools"] = denied
+        # One --settings carries the caller's own settings and the sandbox block. The renderer
+        # must not emit a second one, and a policy that cannot be applied refuses here, before
+        # anything launches.
+        sandbox_settings = self._child_sandbox_settings()
+        if sandbox_settings is not None:
+            updates["settings"] = None
+        source = self.model_copy(update=updates) if updates else self
         args.extend(source._build_declarative_args())
+        if sandbox_settings is not None:
+            args.extend(["--settings", sandbox_settings])
 
         # permission_mode → --dangerously-skip-permissions OR --permission-mode
         if self.permission_mode:
@@ -733,6 +751,53 @@ class ClaudeCodeRequest(BaseModel):
         # always verbose for structured stream output
         args.append("--verbose")
         return args
+
+    def _child_sandbox_settings(self) -> str | None:
+        """The ``--settings`` value that confines the child, or None when the sandbox is off.
+
+        An unset ``child_sandbox`` resolves the default policy, so no launch path is left
+        uncovered. A configuration problem, an unreadable existing settings value, a host with
+        no sandbox backend or a CLI older than the supported floor raises ``ConfigurationError``:
+        nothing starts unconfined. The backend check and the version probe run only when the
+        policy is enabled.
+        """
+        from lionhub.agent.child_sandbox import (
+            check_claude_cli_floor,
+            check_sandbox_backend,
+            claude_settings_argument,
+            effective_policy,
+            policy_from_dict,
+            resolve_child_sandbox,
+        )
+
+        if self.child_sandbox is None:
+            policy = resolve_child_sandbox(None)
+        else:
+            # A stored policy is read back from run files on resume, so it is resolved again
+            # against the global settings now: it can add denials, never remove one, and the
+            # global switch decides whether the sandbox applies.
+            stored = policy_from_dict(self.child_sandbox)
+            policy = effective_policy(stored)
+            if not stored.enabled and policy.enabled:
+                log.warning(
+                    "child_sandbox: the stored policy turns the sandbox off but the global "
+                    "settings do not; the child runs under the global policy"
+                )
+        if not policy.enabled:
+            return None
+        check_sandbox_backend()
+        binary = resolve_claude_cli()
+        if binary:
+            check_claude_cli_floor(binary)
+        existing = self.settings
+        # A settings path is read against the workspace the child runs in; inline JSON has no base.
+        base_dir = None
+        if existing:
+            # ``str.__str__`` reads the text itself, as the field validator does.
+            text = str.__str__(existing) if isinstance(existing, str) else str(existing)
+            if not text.lstrip().startswith("{"):
+                base_dir = self.cwd()
+        return claude_settings_argument(policy, existing, base_dir)
 
     def _build_declarative_args(self) -> list[str]:
         return build_declarative_cli_args(self)

@@ -15,7 +15,12 @@ import yaml
 from lionagi._paths import is_account_lionagi_dir
 from lionagi.libs.nested import deep_merge as _deep_merge_impl
 
-__all__ = ("load_global_settings_layer", "load_project_settings_layer", "load_settings")
+__all__ = (
+    "find_project_settings_file",
+    "load_global_settings_layer",
+    "load_project_settings_layer",
+    "load_settings",
+)
 
 
 def _layer_entry_present(path: Path) -> bool:
@@ -73,16 +78,26 @@ def load_global_settings_layer() -> Any:
     return _read_layer(Path.home() / ".lionagi" / "settings.yaml")
 
 
-def load_project_settings_layer(project_dir: str | Path | None = None) -> Any:
-    """Read the nearest project layer without merging it with global settings."""
+def find_project_settings_file(project_dir: str | Path | None = None) -> Path | None:
+    """Path of the nearest project settings file, or ``None`` when there is none.
+
+    The account home's own ``.lionagi`` directory holds the global layer, so reaching it ends
+    the search with no project file.
+    """
     root = Path(project_dir) if project_dir else Path.cwd()
     for parent in (root, *root.parents):
         candidate = parent / ".lionagi" / "settings.yaml"
         if _layer_entry_present(candidate):
             if is_account_lionagi_dir(candidate.parent):
-                return {}
-            return _read_layer(candidate)
-    return {}
+                return None
+            return candidate
+    return None
+
+
+def load_project_settings_layer(project_dir: str | Path | None = None) -> Any:
+    """Read the nearest project layer without merging it with global settings."""
+    candidate = find_project_settings_file(project_dir)
+    return {} if candidate is None else _read_layer(candidate)
 
 
 def load_settings(
