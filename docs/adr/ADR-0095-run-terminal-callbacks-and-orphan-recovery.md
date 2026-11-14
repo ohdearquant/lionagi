@@ -1011,11 +1011,12 @@ storage, a nullable `status_transitions.resolver_pruned_at`, a store-wide durabl
 `terminal_resolver_pruned_total` counter in the enrollment state row, and an
 index for eligible epoch lookups.
 Set the timestamp and increment the counter in the same retention transaction,
-counting only rows whose timestamp was previously unset. These additions share
-the enrollment migration's schema version, version 7 with ADR-0141 preservation
-in one offline cutover, or version 8 if preservation is ready to merge before
-the enrollment migration has merged and so takes version 7 alone. Store history
-that predates the native migration at epoch zero if it is
+counting only rows whose timestamp was previously unset. The enrollment migration
+and these additions use schema version 7. Ship the proposed ADR-0141 change
+that keeps recorded chain decisions in schedule-run status evidence in that
+same version and offline cutover. If the ADR-0141 migration merges first, it
+takes version 7 and enrollment takes version 8. Store history that predates
+the native migration at epoch zero if it is
 eligible. Preserve all existing acknowledgments and initialize consumer cutoffs as absent.
 Ineligible and unclassified rows remain distinct and have no epoch-based eligibility.
 In the native migration, backfill eligible history to epoch zero and validate a constraint
