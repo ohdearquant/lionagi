@@ -40,13 +40,22 @@ runs:
       shell: bash
       run: |
         fixture="$GITHUB_WORKSPACE/tests/state/conftest.py"
-        if [[ -f "$fixture" && -r "$fixture" ]] &&
-           grep -Fqx 'RUNNER_POSTGRES_PER_WORKER = True' "$fixture"; then
-          echo "supported=true" >> "$GITHUB_OUTPUT"
+        supported=false
+        if [[ ! -e "$fixture" ]]; then
+          echo "Using the checked-out tests' PostgreSQL setup: fixture file was absent."
+        elif [[ ! -f "$fixture" || ! -r "$fixture" ]]; then
+          echo "::warning::Using the checked-out tests' PostgreSQL setup: fixture marker could not be read."
+        elif grep -Fqx 'RUNNER_POSTGRES_PER_WORKER = True' "$fixture"; then
+          supported=true
         else
-          echo "supported=false" >> "$GITHUB_OUTPUT"
-          echo "Using the checked-out tests' PostgreSQL setup."
+          status=$?
+          if [[ "$status" == 1 ]]; then
+            echo "Using the checked-out tests' PostgreSQL setup: fixture marker was absent."
+          else
+            echo "::warning::Using the checked-out tests' PostgreSQL setup: fixture marker could not be read."
+          fi
         fi
+        echo "supported=$supported" >> "$GITHUB_OUTPUT"
     - name: Start PostgreSQL 16 for tests
       id: postgres
       if: steps.postgres-fixture.outputs.supported == 'true'
