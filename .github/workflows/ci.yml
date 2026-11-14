@@ -634,10 +634,10 @@ jobs:
             - 'lionagi/studio/**'
             - 'lionagi/testing/**'
             - 'lionagi/version.py'
-            # The CLI code the compatibility tests import. The entries above are
-            # derived from lionagi imports only, so the hub's CLI package is listed
-            # by hand.
+            # The compatibility tests import the CLI and the run persistence module.
+            # The filter test checks these paths against direct LionHub imports.
             - 'lionhub/src/lionhub/serve/cli/**'
+            - 'lionhub/src/lionhub/orchestration/runs.py'
             - 'tests/conftest.py'
             - 'tests/_shared_conftest.py'
             - 'tests/state/conftest.py'
