@@ -5,6 +5,7 @@
 import pytest
 
 from lionagi._errors import ConfigurationError
+from lionagi.service.connections._chat_schemas import CHAT_MODELS
 from lionhub.agent.factory import create_agent
 from lionhub.agent.spec import AgentSpec
 
@@ -357,3 +358,54 @@ def test_classifier_separates_reasoning_non_reasoning_and_unlisted_names():
     assert classify_openai_chat_model("o3") == "reasoning"
     assert classify_openai_chat_model("gpt-4.1") == "non_reasoning"
     assert classify_openai_chat_model("gpt-6-luna") == "unlisted"
+
+
+def _spellings(model: str) -> tuple[str, ...]:
+    return (
+        model,
+        model.upper(),
+        f"openai/{model}",
+        f"openrouter/openai/{model}",
+        f"ft:{model}:acme:custom:abc123",
+    )
+
+
+@pytest.mark.parametrize("model", CHAT_MODELS)
+def test_developer_messages_and_the_classifier_agree_on_every_spelling_of_a_listed_model(model):
+    from lionagi.service.connections._chat_schemas import (
+        classify_openai_chat_model,
+        uses_developer_messages,
+    )
+
+    for spelling in _spellings(model):
+        verdict = classify_openai_chat_model(spelling)
+        assert verdict != "unlisted", spelling
+        assert uses_developer_messages(spelling) is (verdict == "reasoning"), spelling
+
+
+@pytest.mark.parametrize("model", ["openrouter/openai/o3-mini", "ft:o3-mini:acme:custom:abc123"])
+def test_a_routed_or_fine_tuned_reasoning_model_drops_sampling_parameters(model):
+    from lionagi.service.connections._chat_schemas import OpenAIChatCompletionsRequest
+
+    payload = OpenAIChatCompletionsRequest(
+        model=model,
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=0.2,
+        reasoning_effort="high",
+    )
+    assert payload.temperature is None
+    assert payload.reasoning_effort == "high"
+    assert payload.model == model
+
+
+def test_a_fine_tuned_non_reasoning_model_drops_reasoning_effort():
+    from lionagi.service.connections._chat_schemas import OpenAIChatCompletionsRequest
+
+    payload = OpenAIChatCompletionsRequest(
+        model="ft:gpt-4o:acme:custom:abc123",
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=0.2,
+        reasoning_effort="high",
+    )
+    assert payload.reasoning_effort is None
+    assert payload.temperature == 0.2

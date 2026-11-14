@@ -107,19 +107,36 @@ ImageModels = Literal[IMAGE_MODELS]
 ModerationModels = Literal[MODERATION_MODELS]
 
 
+def _openai_model_name(model: object) -> str | None:
+    """The bare, lower-case OpenAI model name a model id refers to, or None.
+
+    A routing prefix (``openai/``, ``openrouter/openai/``) is dropped, and a
+    fine-tuned id (``ft:<base-model>:<org>:<suffix>:<id>``) names its base model.
+    """
+    if not isinstance(model, str):
+        return None
+    name = model.rsplit("/", 1)[-1].lower()
+    if name.startswith("ft:"):
+        name = name.split(":", 2)[1]
+    return name
+
+
 def classify_openai_chat_model(
     model: object,
 ) -> Literal["reasoning", "non_reasoning", "unlisted"]:
-    """Classify a model name against the known OpenAI chat models.
+    """Classify a model id against the known OpenAI chat models.
 
     ``reasoning`` models take ``reasoning_effort`` and refuse sampling parameters,
     ``non_reasoning`` models are the reverse, and ``unlisted`` names are not judged
-    here: the provider validates them. Every decision about which parameters a chat
-    model carries should read this verdict rather than the model lists directly.
+    here: the provider validates them. The id is read as ``uses_developer_messages``
+    reads it: a routing prefix is dropped, case is ignored and a fine-tuned id is
+    judged by its base model. Every decision about which parameters a chat model
+    carries should read this verdict rather than the model lists directly.
     """
-    if model in REASONING_MODELS:
+    name = _openai_model_name(model)
+    if name in REASONING_MODELS:
         return "reasoning"
-    if model in CHAT_MODELS:
+    if name in CHAT_MODELS:
         return "non_reasoning"
     return "unlisted"
 
@@ -433,13 +450,9 @@ class OpenAIChatCompletionsRequest(BaseModel):
 def uses_developer_messages(model: object) -> bool:
     """Whether the given model expects `developer` in place of `system` messages;
     fails closed (keeps `system`) for unknown or missing models."""
-    if not isinstance(model, str):
+    model_name = _openai_model_name(model)
+    if model_name is None:
         return False
-    model_name = model.rsplit("/", 1)[-1].lower()
-    if model_name.startswith("ft:"):
-        # Fine-tuned ids are "ft:<base-model>:<org>:<suffix>:<id>"; the family
-        # gate applies to the base model, not the "ft" wrapper.
-        model_name = model_name.split(":", 2)[1]
     return model_name.startswith(("o1", "o3", "o4", "gpt-5"))
 
 
