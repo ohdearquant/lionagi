@@ -560,12 +560,17 @@ async def _prune_session_chunk(
         for i in range(0, len(candidate_prog_ids), _SQL_IN_CHUNK):
             chunk = candidate_prog_ids[i : i + _SQL_IN_CHUNK]
             ph = ", ".join("?" * len(chunk))
+            # Correlated NOT EXISTS probes the progression_id indexes once per
+            # candidate. A NOT IN over every session and branch would read both
+            # tables whole, and on PostgreSQL can be planned as a subplan that is
+            # rescanned for each candidate once that set outgrows work_mem.
             sql = (
                 f"DELETE FROM progressions WHERE id IN ({ph})"  # noqa: S608
-                " AND id NOT IN ("
-                "  SELECT progression_id FROM sessions WHERE progression_id IS NOT NULL"
-                "  UNION"
-                "  SELECT progression_id FROM branches WHERE progression_id IS NOT NULL"
+                " AND NOT EXISTS ("
+                "  SELECT 1 FROM sessions WHERE sessions.progression_id = progressions.id"
+                ")"
+                " AND NOT EXISTS ("
+                "  SELECT 1 FROM branches WHERE branches.progression_id = progressions.id"
                 ")"
             )
             await conn.execute(*_q(sql, chunk))

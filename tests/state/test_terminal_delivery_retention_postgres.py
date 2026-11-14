@@ -407,3 +407,84 @@ async def test_postgresql_shared_prune_plan_avoids_rescanning_retained_members(p
         async with state_db.StateDB(url=store_url) as db:
             rows = await db.fetch_all("SELECT id FROM messages")
             assert {row["id"] for row in rows} == {f"m-{n}" for n in range(1, retained + 1)}
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_postgresql_orphan_progression_delete_probes_instead_of_rescanning(
+    pg_url, monkeypatch
+):
+    branches = 3_000
+    now = time.time()
+    async with _fresh_store(pg_url, monkeypatch) as (store_url, _raw):
+        async with state_db.StateDB(url=store_url) as db:
+            await _terminal(db, "victim")
+            await _terminal(db, "victim-shared")
+            await db.create_progression("keeper")
+            await db.create_session(
+                {"id": "keeper", "progression_id": "keeper", "status": "running"}
+            )
+            async with db.transaction() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO progressions (id, created_at, collection) "
+                        "SELECT 'kp-' || n, :now, '[]' "
+                        "FROM generate_series(1, CAST(:total AS integer)) AS g(n)"
+                    ),
+                    {"now": now, "total": branches},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO branches (id, created_at, session_id, progression_id) "
+                        "SELECT 'kb-' || n, :now, 'keeper', 'kp-' || n "
+                        "FROM generate_series(1, CAST(:total AS integer)) AS g(n)"
+                    ),
+                    {"now": now, "total": branches},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO branches (id, created_at, session_id, progression_id) "
+                        "VALUES ('kb-shared', :now, 'keeper', 'victim-shared')"
+                    ),
+                    {"now": now},
+                )
+                await conn.execute(text("ANALYZE sessions"))
+                await conn.execute(text("ANALYZE branches"))
+                await conn.execute(text("ANALYZE progressions"))
+
+        plans = []
+
+        def capture_plan(conn, _cursor, statement, parameters, _context, _executemany):
+            if not statement.startswith("DELETE FROM progressions WHERE id IN ("):
+                return
+            conn.exec_driver_sql("SET LOCAL work_mem = '64kB'")
+            raw = conn.exec_driver_sql(
+                "EXPLAIN (FORMAT JSON) " + statement, parameters
+            ).scalar_one()
+            plan = json.loads(raw) if isinstance(raw, str) else raw
+            plans.append(plan)
+            pending = [plan[0]["Plan"]]
+            while pending:
+                node = pending.pop()
+                for child in node.get("Plans", ()):
+                    if child.get("Parent Relationship") == "SubPlan":
+                        assert f"hashed {child['Subplan Name']}" in node.get("Filter", ""), plan
+                    pending.append(child)
+
+        class ObservedStore(state_db.StateDB):
+            async def __aenter__(self):
+                await super().__aenter__()
+                event.listen(self._engine.sync_engine, "before_cursor_execute", capture_plan)
+                return self
+
+        with monkeypatch.context() as patch:
+            patch.setattr(db_maintenance, "StateDB", ObservedStore)
+            assert (
+                await db_maintenance.prune_terminal_sessions_by_id(["victim", "victim-shared"]) == 2
+            )
+        assert len(plans) == 1
+        async with state_db.StateDB(url=store_url) as db:
+            rows = await db.fetch_all("SELECT id FROM progressions")
+            remaining = {row["id"] for row in rows}
+            assert "victim" not in remaining
+            assert "victim-shared" in remaining
+            assert {"keeper"} | {f"kp-{n}" for n in range(1, branches + 1)} <= remaining
