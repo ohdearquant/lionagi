@@ -224,6 +224,10 @@ jobs:
       run: uv run python scripts/check_adr_status_sets.py
 
   test:
+    # `needs: changes` only so the matrix below can read its `code` output; the
+    # test job runs whether or not changes succeeded (see the matrix note).
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     # Every job in this workflow has a timeout. After a worker crash the
     # pytest-xdist controller can block with no test running, where no per-test
@@ -241,18 +245,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The full supported set on every event, pull_request included. This
-        # used to be oldest + newest on PRs, which made the gate's population a
-        # strict subset of the supported population: a failure exclusive to
-        # 3.11, 3.12 or 3.13 could not be seen before merge and reached main by
-        # construction, which is what happened. It is the same silent-population
-        # defect the paths-ignore, types and branches notes above each describe,
-        # and it survived those three passes because it was shaped like a cost
-        # decision rather than a filter. The cost it saved was runner minutes,
-        # which are free for a public repository on standard runners; the legs
-        # run in parallel, so wall-clock is the slowest leg either way. The
-        # `endpoints` choice stays, as an explicit manual diagnostic.
-        python-version: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
+        # Which Python versions run depends on where the change is headed:
+        #   - a pull request into dev/lionagi whose changes are all
+        #     documentation (docs/, changelog.d/, top-level *.md) runs one leg,
+        #     3.10. Not zero: the
+        #     suite reads documentation (ADR citation pins, numbering, status
+        #     sets, API-doc drift), so a docs-only change can still fail it.
+        #   - any other pull request into dev/lionagi runs the two ends, 3.10
+        #     and 3.14.
+        #   - every other event runs the full supported set: the dev/lionagi to
+        #     main pull request, pushes to main, and manual runs unless they ask
+        #     for `endpoints`.
+        # The full set on every pull request was the earlier contract: a failure
+        # exclusive to 3.11, 3.12 or 3.13 could not be seen before merge and
+        # reached main. It still cannot reach main, because the promotion pull
+        # request into main runs the full set and ci-gate requires it; what moves
+        # is where such a failure is found, from the fix PR to the promotion PR.
+        # The full set is five legs of 11 to 29 minutes each, and every leg
+        # waits for a runner from the account's shared concurrency, so on a busy
+        # night the full set on each fix PR held the whole queue for hours. If
+        # `changes` fails or is skipped its outputs are empty, which selects the
+        # two ends on a dev/lionagi pull request and the full set otherwise.
+        python-version: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '["3.10","3.14"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '["3.10"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
     # Force every `uv` call (venv, sync, run) onto the matrix interpreter; the
     # repo's .python-version (3.10) otherwise pins all legs to 3.10.
     env:
@@ -572,6 +586,7 @@ jobs:
       compat: ${{ steps.filter.outputs.compat }}
       lionrs: ${{ steps.filter.outputs.lionrs }}
       lion1: ${{ steps.filter.outputs.lion1 }}
+      code: ${{ steps.code.outputs.code }}
     steps:
     - uses: actions/checkout@v7
       with:
@@ -654,6 +669,19 @@ jobs:
           lion1:
             - 'lion1/**'
             - '.github/workflows/ci.yml'
+    # `code` is true when any changed file is outside the documentation paths.
+    # A separate step because `every` applies to all filters of a step: a file
+    # counts only when it matches every pattern, so the negations exclude.
+    - uses: dorny/paths-filter@v4
+      id: code
+      with:
+        predicate-quantifier: every
+        filters: |
+          code:
+            - '**'
+            - '!docs/**'
+            - '!changelog.d/**'
+            - '!*.md'
 
   # Build the Studio image (Vite SPA + FastAPI single-origin) whenever its inputs
   # change, so a broken image is caught on the PR that breaks it instead of at
