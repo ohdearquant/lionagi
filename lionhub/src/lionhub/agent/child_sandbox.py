@@ -42,6 +42,7 @@ __all__ = (
     "claude_settings_for",
     "default_allow_write",
     "effective_policy",
+    "lionagi_home_config_paths",
     "policy_from_dict",
     "resolve_child_sandbox",
     "run_state_paths",
@@ -226,6 +227,105 @@ def run_state_paths() -> tuple[str, ...]:
     )
 
 
+# Configuration under ``LIONAGI_HOME`` that later runs load: files, then directories.
+_HOME_CONFIG_FILES = (
+    "operator_hooks.json",
+    "operator_hooks.settings.json",
+    "operator_mcp.json",
+    "operator_house_rules.md",
+    "mcp_servers.json",
+    ".mcp.json",
+)
+_HOME_CONFIG_DIRS = ("hooks", "playbooks", "skills")
+
+
+# More links than this in one chain is treated as a loop, as the operating system does.
+_MAX_LINK_HOPS = 40
+
+
+def _link_hops(path: str) -> list[str]:
+    """Every link ``path`` passes through, then the path it finally resolves to.
+
+    Each hop is named, not only the last, because replacing any link in a chain redirects
+    what the first one loads. Resolution is not strict, so a link whose target is missing
+    still names that target.
+    """
+    hops: list[str] = []
+    current = os.path.abspath(os.path.expanduser(path))
+    for _ in range(_MAX_LINK_HOPS):
+        if not os.path.islink(current):
+            break
+        try:
+            target = os.readlink(current)
+        except OSError:
+            break
+        parent = os.path.realpath(os.path.dirname(current))
+        nxt = os.path.join(parent, target)
+        name = os.path.basename(nxt)
+        if name in ("", ".", ".."):
+            nxt = os.path.realpath(nxt)
+        else:
+            nxt = os.path.join(os.path.realpath(os.path.dirname(nxt)), name)
+        if nxt in hops:
+            break
+        hops.append(nxt)
+        current = nxt
+    try:
+        hops.append(str(Path(path).expanduser().resolve()))
+    except (OSError, RuntimeError):
+        pass
+    return list(dict.fromkeys(hops))
+
+
+def _written_and_resolved(path: str) -> list[str]:
+    """``path`` as written, then every link it passes through and the path it resolves to."""
+    written = re.sub(r"/{2,}", "/", path).rstrip("/")
+    return list(dict.fromkeys([written, *_link_hops(path)]))
+
+
+def _link_targets_under(root: str) -> list[str]:
+    """Every hop and target of each link in the tree at ``root``, linked directories followed."""
+    targets: list[str] = []
+    seen: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen:
+            dirnames[:] = []
+            continue
+        seen.add(real)
+        for name in (*dirnames, *filenames):
+            entry = os.path.join(dirpath, name)
+            if os.path.islink(entry):
+                targets += _link_hops(entry)
+    return targets
+
+
+def lionagi_home_config_paths() -> tuple[str, ...]:
+    """Configuration under ``LIONAGI_HOME`` that later runs load outside the sandbox.
+
+    Studio's hook library and operator hooks become the Claude Code hooks of later operator
+    turns, the MCP server registry, the ``.mcp.json`` synced from it and the operator's own MCP
+    configuration start MCP servers, the operator's house rules are loaded into its later turns,
+    and playbooks and skills are loaded into later runs. A child that rewrote any of them could
+    steer or run code outside its sandbox the next time they are read.
+
+    Each entry is named as written and as the path it resolves to, and every link inside the
+    hook, playbook and skill directories is named by its target too, so a child cannot rewrite
+    loaded configuration through a link target. A link whose target is missing names that target,
+    so the child cannot create it either.
+    """
+    from lionagi._paths import LIONAGI_HOME
+
+    home = str(LIONAGI_HOME)
+    paths: list[str] = []
+    for name in (*_HOME_CONFIG_FILES, *_HOME_CONFIG_DIRS):
+        written = f"{home}/{name}"
+        paths += _written_and_resolved(written)
+        if name in _HOME_CONFIG_DIRS and os.path.isdir(written):
+            paths += _link_targets_under(written)
+    return tuple(dict.fromkeys(paths))
+
+
 def _lionagi_home_credentials() -> tuple[str, ...]:
     """Credential files lionagi itself reads from ``LIONAGI_HOME``: its user-wide ``.env``."""
     from lionagi._paths import LIONAGI_HOME
@@ -323,10 +423,9 @@ def _read_extends(raw: Any) -> list[tuple[list[str], dict]]:
         path = Path(entry.strip()).expanduser()
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            real = str(path.resolve(strict=True))
         except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
             raise _refusal(f"child_sandbox: cannot read extends file {entry!r}: {exc}") from exc
-        names = list(dict.fromkeys([re.sub(r"/{2,}", "/", entry.strip()).rstrip("/"), real]))
+        names = _written_and_resolved(entry.strip())
         layers.append((names, _mapping(f"extends file {entry!r}", {} if data is None else data)))
     return layers
 
@@ -494,7 +593,9 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
     ``permissions.deny`` rules. Bash writes are held to the working directory and
     ``allowWrite`` by the sandbox, which does not cover the file tools, so ``Edit`` rules deny
     them ``policy.deny_edit``, ``DEFAULT_DENY_EDIT``, the read list, the run files
-    (``run_state_paths``) and every ``PROJECT_CONFIG_NAMES`` entry at any depth. Claude Code
+    (``run_state_paths``), the configuration later runs load from the lionagi home
+    (``lionagi_home_config_paths``) and every ``PROJECT_CONFIG_NAMES`` entry at any depth. Every
+    other path outside the working directory stays writable to the file tools. Claude Code
     also applies ``Edit`` denials to the sandbox's write limit, so Bash is refused the same
     paths inside the working directory. In permission rules an absolute ``/x`` is written
     ``//x``, because a single leading slash is relative to the settings source.
@@ -508,7 +609,13 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
     rules: list[str] = []
     for path in policy.deny_read:
         rules += [f"Read({rule_path(path)})", f"Read({rule_path(path)}/**)"]
-    edit = [*DEFAULT_DENY_EDIT, *policy.deny_edit, *policy.deny_read, *run_state_paths()]
+    edit = [
+        *DEFAULT_DENY_EDIT,
+        *policy.deny_edit,
+        *policy.deny_read,
+        *run_state_paths(),
+        *lionagi_home_config_paths(),
+    ]
     for path in dict.fromkeys(edit):
         rules += [f"Edit({rule_path(path)})", f"Edit({rule_path(path)}/**)"]
     for name in PROJECT_CONFIG_NAMES:

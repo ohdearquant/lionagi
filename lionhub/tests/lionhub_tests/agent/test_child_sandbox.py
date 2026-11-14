@@ -32,6 +32,7 @@ from lionhub.agent.child_sandbox import (
     claude_settings_argument,
     claude_settings_for,
     effective_policy,
+    lionagi_home_config_paths,
     policy_from_dict,
     resolve_child_sandbox,
     run_state_paths,
@@ -60,9 +61,14 @@ GLOBAL_PROFILES = ("builder", "keeper")
 
 
 def _fixed_edit_rules():
-    """The Edit rules every enabled policy ends with: the run files, then project configuration."""
+    """The Edit rules every enabled policy ends with: the run files, the lionagi home's loaded
+    configuration, then project configuration."""
     return [
-        *[rule for path in run_state_paths() for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")],
+        *[
+            rule
+            for path in (*run_state_paths(), *lionagi_home_config_paths())
+            for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")
+        ],
         *[
             rule
             for name in PROJECT_CONFIG_NAMES
@@ -272,6 +278,132 @@ def test_claude_codes_user_files_are_denied_to_the_file_tools(path):
     assert f"Read({path})" in rules
     assert path in settings["sandbox"]["filesystem"]["denyRead"]
     assert f"Edit({path})" in rules
+
+
+# Studio's hook library and operator hooks, the operator's MCP configuration and house rules,
+# the MCP server registry and its synced copy, and the playbooks and skills directories: later
+# runs load them and run what they name.
+_HOME_CONFIG_FILES = (
+    "operator_hooks.json",
+    "operator_hooks.settings.json",
+    "operator_mcp.json",
+    "operator_house_rules.md",
+    "mcp_servers.json",
+    ".mcp.json",
+)
+_HOME_CONFIG_DIRS = ("hooks", "playbooks", "skills")
+
+
+def test_configuration_later_runs_load_from_the_lionagi_home_is_denied_to_the_file_tools(
+    isolated_home,
+):
+    home = isolated_home / ".lionagi"
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    for name in _HOME_CONFIG_FILES:
+        assert f"Edit(/{home}/{name})" in rules
+    for name in _HOME_CONFIG_DIRS:
+        assert f"Edit(/{home}/{name}/**)" in rules
+    # The child may still read them; only writing is refused.
+    for name in (*_HOME_CONFIG_FILES, *_HOME_CONFIG_DIRS):
+        assert f"Read(/{home}/{name})" not in rules
+
+
+def test_the_lionagi_home_configuration_denial_follows_lionagi_home(tmp_path, monkeypatch):
+    elsewhere = tmp_path / "relocated"
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", elsewhere)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{elsewhere}/operator_hooks.json)" in rules
+    assert f"Edit(/{elsewhere}/hooks/**)" in rules
+
+
+def test_a_linked_lionagi_home_configuration_entry_is_also_denied_at_its_target(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "lionagi-home"
+    home.mkdir()
+    source = tmp_path / "maintained" / "house_rules.md"
+    source.parent.mkdir()
+    source.write_text("rules\n", encoding="utf-8")
+    (home / "operator_house_rules.md").symlink_to(source)
+    skills = tmp_path / "shared-skills"
+    skills.mkdir()
+    (home / "skills").symlink_to(skills, target_is_directory=True)
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{home}/operator_house_rules.md)" in rules
+    assert f"Edit(/{source.resolve()})" in rules
+    assert f"Edit(/{home}/skills/**)" in rules
+    assert f"Edit(/{skills.resolve()}/**)" in rules
+
+
+def test_the_home_configuration_lists_here_match_the_modules():
+    assert set(_HOME_CONFIG_FILES) == set(child_sandbox._HOME_CONFIG_FILES)
+    assert set(_HOME_CONFIG_DIRS) == set(child_sandbox._HOME_CONFIG_DIRS)
+
+
+def test_links_inside_the_lionagi_home_configuration_directories_are_denied_at_their_targets(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "lionagi-home"
+    source = tmp_path / "maintained"
+    (source / "skill-a").mkdir(parents=True)
+    (source / "hook.sh").write_text("true\n", encoding="utf-8")
+    shared = tmp_path / "shared-skills"
+    shared.mkdir()
+    # A linked skills directory whose entries are themselves links, as an installed tree is.
+    (shared / "skill-a").symlink_to(source / "skill-a", target_is_directory=True)
+    (shared / "loop").symlink_to(shared, target_is_directory=True)
+    (home / "hooks").mkdir(parents=True)
+    (home / "hooks" / "pre.sh").symlink_to(source / "hook.sh")
+    (home / "hooks" / "gone.sh").symlink_to(tmp_path / "missing" / "gone.sh")
+    (home / "skills").symlink_to(shared, target_is_directory=True)
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{(source / 'hook.sh').resolve()})" in rules
+    assert f"Edit(/{(source / 'skill-a').resolve()}/**)" in rules
+    # A link whose target is missing still names it, so the child cannot create it.
+    assert f"Edit(/{tmp_path.resolve() / 'missing' / 'gone.sh'})" in rules
+
+
+def test_every_link_in_a_lionagi_home_configuration_chain_is_denied(tmp_path, monkeypatch):
+    home = tmp_path / "lionagi-home"
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "hooks").mkdir()
+    (repo / "src" / "pre.sh").write_text("true\n", encoding="utf-8")
+    # home/hooks/pre.sh -> repo/hooks/pre.sh -> ../src/pre.sh
+    (repo / "hooks" / "pre.sh").symlink_to(Path("..") / "src" / "pre.sh")
+    (home / "hooks").mkdir(parents=True)
+    (home / "hooks" / "pre.sh").symlink_to(repo / "hooks" / "pre.sh")
+    (home / "operator_mcp.json").symlink_to(repo / "hooks" / "pre.sh")
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    real = repo.resolve()
+    for path in (real / "hooks" / "pre.sh", real / "src" / "pre.sh"):
+        assert f"Edit(/{path})" in rules
+
+
+def test_a_link_loop_in_the_lionagi_home_configuration_ends(tmp_path, monkeypatch):
+    home = tmp_path / "lionagi-home"
+    home.mkdir()
+    (home / "operator_mcp.json").symlink_to(home / "loop-b")
+    (home / "loop-b").symlink_to(home / "operator_mcp.json")
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{home.resolve() / 'loop-b'})" in rules
+
+
+def test_a_dangling_lionagi_home_configuration_link_is_denied_at_its_missing_target(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "lionagi-home"
+    home.mkdir()
+    missing = tmp_path / "not-yet" / "house_rules.md"
+    (home / "operator_house_rules.md").symlink_to(missing)
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{home}/operator_house_rules.md)" in rules
+    assert f"Edit(/{tmp_path.resolve() / 'not-yet' / 'house_rules.md'})" in rules
 
 
 @pytest.mark.parametrize("path", _CLAUDE_USER_FILES)
