@@ -13,6 +13,7 @@ import anyio.lowlevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lionagi.ln.concurrency import CancelScope
+from lionagi.service.accounts._types import _PROVIDER_ERROR_TYPES, _REJECTION_CLASSES
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
@@ -580,8 +581,6 @@ def _classify_rejection(body: bytes) -> tuple[str, str]:
     after one debug log that names only the type of the exception.
     """
     try:
-        from lionagi.service.accounts._types import _PROVIDER_ERROR_TYPES, _REJECTION_CLASSES
-
         if len(body) > _REJECTION_BODY_LIMIT:
             return "other", "other"
         decoded = json.loads(body)
