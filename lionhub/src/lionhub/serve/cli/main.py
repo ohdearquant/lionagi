@@ -541,6 +541,9 @@ def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int, argv: 
             envelope = _failure("unavailable", mask_credentials(message), {"exit_code": exit_code})
             encoded = _encode_envelope(envelope)
             stdout = sys.stdout
+            if stdout is None:
+                # Started with stdout closed: there is nowhere to write the envelope.
+                return exit_code
             try:
                 fd = stdout.fileno()
             except (AttributeError, io.UnsupportedOperation):

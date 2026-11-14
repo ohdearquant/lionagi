@@ -452,6 +452,22 @@ def test_startup_envelope_write_failure_keeps_environment_exit(capfd, monkeypatc
     assert "No run was started" in captured.err
 
 
+def test_startup_envelope_without_stdout_keeps_environment_exit(capfd, monkeypatch):
+    def _missing_machine():
+        raise ModuleNotFoundError("No module named 'example'", name="example")
+
+    monkeypatch.setattr(cli_main, "_load_machine", _missing_machine)
+    with monkeypatch.context() as output:
+        # A process started with stdout closed has sys.stdout set to None.
+        output.setattr(sys, "stdout", None)
+        assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
+
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert "cannot start: example" in captured.err
+    assert "No run was started" in captured.err
+
+
 def test_startup_envelope_closed_pipe_keeps_process_exit_78():
     script = textwrap.dedent(
         """
