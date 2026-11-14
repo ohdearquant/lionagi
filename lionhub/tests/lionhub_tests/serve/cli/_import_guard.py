@@ -5,9 +5,8 @@
 
 The shared CLI modules (``_inspection``, ``_runs``, ``_engine_definitions``, ``_team_service``,
 ``_providers``, ``_orchestrate_parsing``) sit under the command modules, so none of them may
-import a command module or the orchestrate package. These helpers read a module's source and
-return every import with full dotted names, relative imports resolved against the module's
-package, so ``from lionhub.serve.cli.status import x`` and ``from .status import x`` are both visible.
+import a command module or the orchestrate package. These helpers read static imports and literal
+dynamic imports from a module's source, resolving relative names against the module's package.
 """
 
 from __future__ import annotations
@@ -16,16 +15,28 @@ import ast
 from importlib.util import resolve_name
 from pathlib import Path
 
-_DYNAMIC_COMMAND_IMPORT_PROBES = (
+_SHARED_DYNAMIC_COMMAND_IMPORT_PROBES = (
     "import importlib; importlib.import_module('lionhub.serve.cli.status')",
     "from importlib import import_module; import_module('lionhub.serve.cli.status')",
     "__import__('lionhub.serve.cli.orchestrate')",
     "from importlib import import_module as load; load('.status', 'lionhub.serve.cli')",
 )
 
+_DYNAMIC_COMMAND_IMPORT_PROBES = (
+    *_SHARED_DYNAMIC_COMMAND_IMPORT_PROBES,
+    "__import__('status', globals(), None, None, 1)",
+    "__import__('', globals(), None, ['status'], 1)",
+)
+
+_ORCHESTRATION_DYNAMIC_COMMAND_IMPORT_PROBES = (
+    *_SHARED_DYNAMIC_COMMAND_IMPORT_PROBES,
+    "__import__('serve.cli.status', globals(), None, None, 2)",
+    "__import__('serve.cli', globals(), None, ['status'], 2)",
+)
+
 #: One-line imports of a command module or of the orchestrate package, as they can be written
 #: from a module that lives directly in ``lionhub/src/lionhub/serve/cli``.
-COMMAND_IMPORT_PROBES = (
+_STATIC_COMMAND_IMPORT_PROBES = (
     "from lionhub.serve.cli.status import _x",
     "from .status import _x",
     "from . import status",
@@ -34,7 +45,12 @@ COMMAND_IMPORT_PROBES = (
     "from lionhub.serve.cli.orchestrate import _x",
     "from .orchestrate import _x",
     "from . import orchestrate",
-    *_DYNAMIC_COMMAND_IMPORT_PROBES,
+)
+
+COMMAND_IMPORT_PROBES = (*_STATIC_COMMAND_IMPORT_PROBES, *_DYNAMIC_COMMAND_IMPORT_PROBES)
+TEAM_COMMAND_IMPORT_PROBES = (
+    *_STATIC_COMMAND_IMPORT_PROBES,
+    *_ORCHESTRATION_DYNAMIC_COMMAND_IMPORT_PROBES,
 )
 
 
@@ -45,7 +61,7 @@ ORCHESTRATION_COMMAND_IMPORT_PROBES = (
     "import lionhub.serve.cli.status",
     "from lionhub.serve.cli.orchestrate import _x",
     "from lionhub.serve.cli import orchestrate",
-    *_DYNAMIC_COMMAND_IMPORT_PROBES,
+    *_ORCHESTRATION_DYNAMIC_COMMAND_IMPORT_PROBES,
 )
 
 
@@ -53,6 +69,29 @@ def _call_argument(call: ast.Call, index: int, name: str) -> ast.expr | None:
     if index < len(call.args):
         return call.args[index]
     return next((argument.value for argument in call.keywords if argument.arg == name), None)
+
+
+def _builtin_imports(call: ast.Call, name: str, package: str) -> set[str]:
+    level = _call_argument(call, 4, "level")
+    if level is not None and (
+        not isinstance(level, ast.Constant) or type(level.value) is not int or level.value < 0
+    ):
+        return set()
+    depth = level.value if level is not None else 0
+    if depth:
+        if name.startswith(".") or not package or depth > len(package.split(".")):
+            return set()
+        name = resolve_name("." * depth + name, package)
+    elif not name or name.startswith("."):
+        # The builtin uses level for relativity, so a leading dot alone is not resolvable.
+        return set()
+    imported = {name}
+    fromlist = _call_argument(call, 3, "fromlist")
+    if isinstance(fromlist, ast.List | ast.Tuple) and all(
+        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in fromlist.elts
+    ):
+        imported.update(f"{name}.{item.value}" for item in fromlist.elts)
+    return imported
 
 
 def _dynamic_imports(nodes: list[ast.AST], package: str) -> set[str]:
@@ -86,23 +125,23 @@ def _dynamic_imports(nodes: list[ast.AST], package: str) -> set[str]:
         name = _call_argument(node, 0, "name")
         if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
             continue
-        if not name.value.startswith("."):
+        if builtin:
+            imported.update(_builtin_imports(node, name.value, package))
+        elif not name.value.startswith("."):
             if name.value:
                 imported.add(name.value)
-            continue
-        if builtin:
-            continue
-        anchor = _call_argument(node, 1, "package")
-        if anchor is None or isinstance(anchor, ast.Name) and anchor.id == "__package__":
-            package_name = package
-        elif isinstance(anchor, ast.Constant) and isinstance(anchor.value, str):
-            package_name = anchor.value
         else:
-            continue
-        try:
-            imported.add(resolve_name(name.value, package_name))
-        except ImportError:
-            continue
+            anchor = _call_argument(node, 1, "package")
+            if anchor is None or (isinstance(anchor, ast.Name) and anchor.id == "__package__"):
+                package_name = package
+            elif isinstance(anchor, ast.Constant) and isinstance(anchor.value, str):
+                package_name = anchor.value
+            else:
+                continue
+            try:
+                imported.add(resolve_name(name.value, package_name))
+            except ImportError:
+                continue
     return imported
 
 
@@ -113,8 +152,10 @@ def resolved_imports(source: str | Path, package: str) -> set[str]:
     ``from a.b import c`` yields both ``a.b`` and ``a.b.c``, so a command module imported by
     name is visible as well as one imported by path.
     Literal dynamic imports are also included. Relative ``import_module`` calls use a
-    literal package or the source package. Computed arguments and names that cannot be
-    resolved statically, including rebinding imported names, are outside this check.
+    literal package or the source package. The builtin uses the source package and a
+    literal level, and includes named entries of a literal fromlist. Computed arguments
+    and names that cannot be resolved statically, including rebinding imported names, are
+    outside this check.
     """
     parts = package.split(".")
     imported: set[str] = set()

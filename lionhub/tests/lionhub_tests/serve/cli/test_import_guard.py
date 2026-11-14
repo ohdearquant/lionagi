@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from ._import_guard import (
+    _DYNAMIC_COMMAND_IMPORT_PROBES,
     COMMAND_IMPORT_PROBES,
     command_module_imports,
     resolved_imports,
@@ -68,15 +69,18 @@ def test_orchestration_relative_import_does_not_name_a_command(tmp_path: Path, l
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        (
-            "import importlib; importlib.import_module('lionhub.serve.cli.status')",
-            "lionhub.serve.cli.status",
+        *zip(
+            _DYNAMIC_COMMAND_IMPORT_PROBES,
+            (
+                "lionhub.serve.cli.status",
+                "lionhub.serve.cli.status",
+                "lionhub.serve.cli.orchestrate",
+                "lionhub.serve.cli.status",
+                "{package}.status",
+                "{package}.status",
+            ),
+            strict=True,
         ),
-        (
-            "from importlib import import_module; import_module('lionhub.serve.cli.status')",
-            "lionhub.serve.cli.status",
-        ),
-        ("__import__('lionhub.serve.cli.orchestrate')", "lionhub.serve.cli.orchestrate"),
         (
             "from importlib import import_module as load; load('lionhub.serve.cli.status')",
             "lionhub.serve.cli.status",
@@ -93,11 +97,42 @@ def test_orchestration_relative_import_does_not_name_a_command(tmp_path: Path, l
             "from importlib import import_module; import_module(name='.status')",
             "{package}.status",
         ),
+        (
+            "__import__(name='', globals=globals(), fromlist=['status'], level=1)",
+            "{package}.status",
+        ),
     ],
 )
 def test_literal_dynamic_imports_resolve(tmp_path: Path, package: str, line: str, expected: str):
     imported = resolved_imports(_write(tmp_path, line + "\n"), package)
     assert expected.format(package=package) in imported
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "__import__('lionhub.serve.cli.status', level=0)",
+            {"lionhub.serve.cli.status"},
+        ),
+        (
+            "__import__('lionhub.serve.cli.status', level=depth)",
+            set(),
+        ),
+        (
+            "__import__('lionhub.serve.cli', fromlist=['status', 'orchestrate'], level=0)",
+            {"lionhub.serve.cli", "lionhub.serve.cli.status", "lionhub.serve.cli.orchestrate"},
+        ),
+        (
+            "__import__('lionhub.serve.cli', fromlist=targets)",
+            {"lionhub.serve.cli"},
+        ),
+    ],
+)
+def test_builtin_import_reports_statically_known_targets(
+    tmp_path: Path, line: str, expected: set[str]
+) -> None:
+    assert resolved_imports(_write(tmp_path, line + "\n"), "lionhub.orchestration") == expected
 
 
 @pytest.mark.parametrize(
@@ -110,7 +145,7 @@ def test_literal_dynamic_imports_resolve(tmp_path: Path, package: str, line: str
         "import importlib; importlib.import_module('....status', 'lionhub.serve.cli')",
     ],
 )
-def test_unresolved_calls_do_not_report_command_imports(tmp_path: Path, line: str):
+def test_unresolved_or_unrelated_calls_do_not_report_command_imports(tmp_path: Path, line: str):
     imported = resolved_imports(_write(tmp_path, line + "\n"), "lionhub.serve.cli")
     assert command_module_imports(imported) == set()
 
