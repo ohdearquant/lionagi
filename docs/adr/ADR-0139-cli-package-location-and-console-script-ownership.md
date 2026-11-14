@@ -155,7 +155,7 @@ place, as a package.
 Changing the path now costs nothing. At `ad5c45eb4` no part of the CLI body has moved: `lionagi/cli/`
 still holds the command modules, and `li` still targets `lionagi.cli.main:main`. `lionhub.cli` holds
 only the command catalog and the `studio` and `schedule` command adapters
-(`lionhub/src/lionhub/serve/cli/catalog.py`, `lionhub/src/lionhub/cli/schedule.py`,
+(`lionhub/src/lionhub/cli/catalog.py`, `lionhub/src/lionhub/cli/schedule.py`,
 `lionhub/src/lionhub/cli/studio.py`). No release contains them, because 0.37.0 was cut before the
 catalog moved. Under ADR-0136 D6, a `lionhub` path becomes public with the first release that ships
 it. Until that release the path can change with no compatibility row. After it, the same change would
