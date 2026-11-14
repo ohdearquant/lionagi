@@ -601,6 +601,11 @@ class Endpoint:
                 # a caller that passes either per call must not get it sent to the provider.
                 "prompt_caching",
                 "system_blocks",
+                # Options of the HTTP request itself (see _client_for_request). A proxy URL can
+                # carry a user and password, and none of these is a field of any provider's API.
+                "proxy",
+                "ssl",
+                "allow_redirects",
             }
             payload = {k: v for k, v in payload.items() if k not in non_api_params}
 
@@ -1571,13 +1576,17 @@ def _names_credential_header(name: Any) -> bool:
 
 
 def _cache_key_digest(value: Any) -> str:
-    """``sha256:`` and the first 16 hex digits of the SHA-256 of *value*'s text."""
+    """``sha256:`` and the first 16 hex digits of the SHA-256 of *value*'s ``repr``.
+
+    The ``repr`` keeps values of different types apart where their text is the same
+    (``None`` and ``"None"``), as the cache key built from the values themselves did.
+    """
     if isinstance(value, SecretStr):
         value = value.get_secret_value()
     if isinstance(value, (bytes, bytearray)):
-        data = bytes(value)
+        data = b"b" + bytes(value)
     else:
-        data = str(value).encode("utf-8", "surrogatepass")
+        data = repr(value).encode("utf-8", "surrogatepass")
     return "sha256:" + hashlib.sha256(data).hexdigest()[:16]
 
 
