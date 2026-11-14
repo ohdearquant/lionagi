@@ -112,14 +112,15 @@ class TestDetectProject:
         assert name is None
         assert source is None
 
-    def test_lionagi_repo_detection(self):
-        """Smoke test: detect_project from the actual lionagi repo should find config.toml."""
-        repo_root = Path(__file__).resolve().parents[4]
+    @pytest.mark.parametrize("project_name", ["lionagi", "test-project"])
+    def test_lionagi_repo_detection(self, tmp_path: Path, project_name: str):
+        """Read the project name from a checkout's local config."""
+        repo_root = tmp_path / "checkout"
         config_toml = repo_root / ".lionagi" / "config.toml"
-        if not config_toml.exists():
-            pytest.skip(".lionagi/config.toml not present in checkout")
+        config_toml.parent.mkdir(parents=True)
+        config_toml.write_text(f'[project]\nname = "{project_name}"\n')
         name, source = detect_project(repo_root)
-        assert name == "lionagi"
+        assert name == project_name
         assert source == "config_toml"
 
 

@@ -71,6 +71,21 @@ async def _seed_session(
     return sid
 
 
+async def _seed_session_with_id(db: StateDB, sid: str, *, pid: int | None = None) -> str:
+    prog_id = str(uuid.uuid4())
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "status": "running",
+            "started_at": time.time(),
+            "node_metadata": {"pid": pid} if pid is not None else {},
+        }
+    )
+    return sid
+
+
 async def _seed_invocation(
     db: StateDB,
     *,
@@ -171,7 +186,7 @@ def _mock_psutil(
     """Install a fake psutil + capture os.kill calls. Returns the calls list."""
     kill_calls: list[tuple[int, int]] = []
     patched_pid_alive = lambda pid: True
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 

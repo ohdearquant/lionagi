@@ -7,7 +7,7 @@ Studio keeps one authoritative registry (``LIONAGI_HOME/mcp_servers.json``,
 full configs including secret values, enable/disable state, last connection
 status) and derives a plain ``.mcp.json`` from it on every write
 (``LIONAGI_HOME/.mcp.json``), containing only the *enabled* servers in
-exactly the ``{"mcpServers": {...}}`` shape ``lionagi/cli/_mcp_resolve.py``
+exactly the ``{"mcpServers": {...}}`` shape ``lionhub.orchestration.mcp_config``
 already parses. A run submitted with ``--mcp-config
 ~/.lionagi/.mcp.json`` sees exactly the servers Studio manages, and never a
 disabled one -- disabled servers are simply absent from the derived file

@@ -31,8 +31,8 @@ from typing import Any
 
 from lionagi._auto import CliSeed
 from lionagi.ln import hash_file
-from lionhub.cli.catalog import build_cli_parser, iter_cli_seeds, seed_for
 from lionhub.orchestration.arguments import BoundedInt, JsonArgument
+from lionhub.serve.cli.catalog import build_cli_parser, iter_cli_seeds, seed_for
 
 __all__ = (
     "SchemaProjectionError",
@@ -524,7 +524,7 @@ _PLAYBOOK_DEST = "playbook"
 
 
 def _orchestrate() -> ModuleType:
-    return import_module("lionagi.cli.orchestrate")
+    return import_module("lionhub.serve.cli.orchestrate")
 
 
 def _has_playbook_parameter(parser: argparse.ArgumentParser) -> bool:

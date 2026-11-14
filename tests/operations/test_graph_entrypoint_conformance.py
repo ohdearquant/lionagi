@@ -168,8 +168,8 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="cli-o-fanout",
-        symbol="lionagi.cli.orchestrate.fanout._run_fanout_inner",
-        location=("lionagi/cli/orchestrate/fanout.py", "_run_fanout_inner"),
+        symbol="lionhub.serve.cli.orchestrate.fanout._run_fanout_inner",
+        location=("lionhub/src/lionhub/serve/cli/orchestrate/fanout.py", "_run_fanout_inner"),
         role="adapter",
         expected_target="env.session.flow",
         persistence="required",
@@ -186,8 +186,8 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="cli-o-flow-exec",
-        symbol="lionagi.cli.orchestrate.flow._execute_dag",
-        location=("lionagi/cli/orchestrate/flow.py", "_execute_dag"),
+        symbol="lionhub.serve.cli.orchestrate.flow._execute_dag",
+        location=("lionhub/src/lionhub/serve/cli/orchestrate/flow.py", "_execute_dag"),
         role="adapter",
         expected_target="EngineRun.run_dag",
         persistence="required",
@@ -205,8 +205,8 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="cli-o-flow-synth",
-        symbol="lionagi.cli.orchestrate.flow._synthesize",
-        location=("lionagi/cli/orchestrate/flow.py", "_synthesize"),
+        symbol="lionhub.serve.cli.orchestrate.flow._synthesize",
+        location=("lionhub/src/lionhub/serve/cli/orchestrate/flow.py", "_synthesize"),
         role="adapter",
         expected_target="EngineRun.run_dag",
         persistence="inherited",
@@ -220,7 +220,7 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="cli-o-flow-resume",
-        symbol="lionagi.cli.orchestrate.flow._resume_flow",
+        symbol="lionhub.serve.cli.orchestrate.flow._resume_flow",
         location=None,
         role="alias",
         expected_target="_run_flow",
@@ -233,7 +233,7 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="cli-play",
-        symbol="lionagi.cli.main._handle_play_shortcut",
+        symbol="lionhub.serve.cli.main._handle_play_shortcut",
         location=None,
         role="alias",
         expected_target='["o", "flow", "-p", NAME, ...]',
@@ -337,8 +337,11 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="cli-builder-owner",
-        symbol="lionagi.cli.orchestrate._orchestration.setup_orchestration",
-        location=("lionagi/cli/orchestrate/_orchestration.py", "setup_orchestration"),
+        symbol="lionhub.serve.cli.orchestrate._orchestration.setup_orchestration",
+        location=(
+            "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py",
+            "setup_orchestration",
+        ),
         role="builder",
         expected_target=None,
         persistence="not_applicable",
@@ -3392,7 +3395,7 @@ def test_manifest_keys_and_symbols_are_unique():
     "symbol",
     [
         "lionagi.session.session.Session.flow",
-        "lionagi.cli.orchestrate.flow._resume_flow",
+        "lionhub.serve.cli.orchestrate.flow._resume_flow",
         "lionhub.orchestration.engine_definitions.KIND_META['planning']",
         "lionagi.operations.builder.OperationGraphBuilder",
     ],
@@ -3431,7 +3434,7 @@ def test_symbol_resolves_rejects_broken_symbols(symbol):
 def test_orchestrate_subcommands_are_exactly_fanout_flow_and_non_graph_ctl():
     import argparse
 
-    from lionagi.cli.orchestrate import add_orchestrate_subparser
+    from lionhub.serve.cli.orchestrate import add_orchestrate_subparser
 
     parser = argparse.ArgumentParser(prog="li", add_help=False)
     subparsers = parser.add_subparsers(dest="command")
@@ -3450,7 +3453,7 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     and drive the REAL PlanningEngine class (not merely whatever
     `import_engine_class` happens to return) and, with persistence enabled,
     leave a completed row behind in a real StateDB — replacing the prior
-    free-form "tests/cli/engine" evidence string, which named a path that
+    free-form "lionhub/tests/lionhub_tests/serve/cli/engine" evidence string, which named a path that
     does not exist and was never checked. Only the LLM-touching
     _plan/_synthesize stages and the run_dag hop (already pinned
     identity-preserving by test_planning_engine_run_delegates_to_
@@ -3459,9 +3462,9 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     from types import SimpleNamespace as _SimpleNamespace
     from uuid import UUID
 
-    import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
+    import lionhub.serve.cli.engine as engine_mod
     from lionagi.state.db import StateDB
     from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines.engine import EngineRun
@@ -3746,10 +3749,11 @@ async def test_planning_engine_run_delegates_to_engine_run_run_dag():
 
 @pytest.mark.asyncio
 async def test_run_fanout_inner_calls_env_session_flow_with_builder_graph(tmp_path):
-    from lionagi.cli.orchestrate import fanout as fanout_mod
+    from lionhub_tests.serve.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
+
     from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
-    from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
+    from lionhub.serve.cli.orchestrate import fanout as fanout_mod
 
     env = _make_env(tmp_path)
     env.exchange = None
@@ -3796,12 +3800,12 @@ async def test_run_fanout_inner_calls_env_session_flow_with_builder_graph(tmp_pa
 def _persistence_seam_env(tmp_path):
     """Real Session/Branch OrchestrationEnv for driving a CLI wrapper's own
     start_live_persist call site for real, the same shape
-    tests/cli/orchestrate/test_flow_terminal_notify.py's `_make_env` uses —
-    unlike the generic tests/cli/orchestrate/test_live_persist.py fixture,
+    lionhub/tests/lionhub_tests/serve/cli/orchestrate/test_flow_terminal_notify.py's `_make_env` uses —
+    unlike the generic lionhub/tests/lionhub_tests/serve/cli/orchestrate/test_live_persist.py fixture,
     the tests below never call start_live_persist directly."""
     from lionagi import Branch, Session
-    from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
     from lionhub.orchestration.runs import RunDir
+    from lionhub.serve.cli.orchestrate._orchestration import OrchestrationEnv
 
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
@@ -3837,26 +3841,26 @@ async def test_run_fanout_persists_session_via_start_live_persist(tmp_path, monk
     """cli-o-fanout persistence: drives the REAL `_run_fanout` wrapper (only
     `setup_orchestration` and the heavy `_run_fanout_inner` execution are
     stubbed — the wrapper's own `start_live_persist` call at
-    lionagi/cli/orchestrate/fanout.py:243 is NOT) and asserts a real StateDB
+    lionhub/src/lionhub/serve/cli/orchestrate/fanout.py:243 is NOT) and asserts a real StateDB
     session row exists afterward. This is the seam the generic
-    tests/cli/orchestrate/test_live_persist.py::
+    lionhub/tests/lionhub_tests/serve/cli/orchestrate/test_live_persist.py::
     test_start_creates_session_and_registers_hook_on_orc_branch test cannot
     cover: that test calls start_live_persist directly and never touches
     `_run_fanout` at all, so deleting fanout.py's call site would leave it
     green. Deleting that call site here leaves no StateDB row and fails."""
-    from lionagi.cli.orchestrate.fanout import _run_fanout
     from lionagi.state.db import StateDB
+    from lionhub.serve.cli.orchestrate.fanout import _run_fanout
 
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     session, env = _persistence_seam_env(tmp_path)
 
     with (
         mock.patch(
-            "lionagi.cli.orchestrate.fanout.setup_orchestration",
+            "lionhub.serve.cli.orchestrate.fanout.setup_orchestration",
             AsyncMock(return_value=env),
         ),
         mock.patch(
-            "lionagi.cli.orchestrate.fanout._run_fanout_inner",
+            "lionhub.serve.cli.orchestrate.fanout._run_fanout_inner",
             AsyncMock(return_value="ok result"),
         ),
     ):
@@ -3878,13 +3882,13 @@ async def test_run_flow_persists_session_via_start_live_persist(tmp_path, monkey
     """cli-o-flow-exec/cli-o-flow-synth persistence: drives the REAL
     `_run_flow` wrapper (only `setup_orchestration` and the heavy
     `_run_flow_inner` execution are stubbed — the wrapper's own
-    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:3291 is NOT)
+    `start_live_persist` call at lionhub/src/lionhub/serve/cli/orchestrate/flow.py:3291 is NOT)
     and asserts a real StateDB session row exists afterward, closing the
     same gap as test_run_fanout_persists_session_via_start_live_persist for
     the flow CLI. HOME is isolated so the finally block's
     fire_terminal_notify never picks up a real machine's notify settings."""
-    from lionagi.cli.orchestrate.flow import _run_flow
     from lionagi.state.db import StateDB
+    from lionhub.serve.cli.orchestrate.flow import _run_flow
 
     monkeypatch.setenv("HOME", str(tmp_path / "isolated_home"))
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
@@ -3892,11 +3896,11 @@ async def test_run_flow_persists_session_via_start_live_persist(tmp_path, monkey
 
     with (
         mock.patch(
-            "lionagi.cli.orchestrate.flow.setup_orchestration",
+            "lionhub.serve.cli.orchestrate.flow.setup_orchestration",
             AsyncMock(return_value=env),
         ),
         mock.patch(
-            "lionagi.cli.orchestrate.flow._run_flow_inner",
+            "lionhub.serve.cli.orchestrate.flow._run_flow_inner",
             AsyncMock(return_value="ok result"),
         ),
     ):
@@ -3918,11 +3922,12 @@ async def test_execute_dag_delegates_to_planning_engine_run_dag(tmp_path):
     """cli-o-flow: the run_dag -> Session.flow hop itself is proven by
     engine-run-dag; this only pins that _execute_dag reaches run_dag once
     with the built graph — reusing the same fake-env/PlanningEngine.new_run
-    seam tests/cli/orchestrate/test_flow_phases.py already established."""
-    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    seam lionhub/tests/lionhub_tests/serve/cli/orchestrate/test_flow_phases.py already established."""
+    from lionhub_tests.serve.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
+
     from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines import PlanningEngine
-    from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
+    from lionhub.serve.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
 
     env = _make_env(tmp_path)
     assignments = [TaskAssignment(task="x", assignee="researcher")]
@@ -3962,9 +3967,10 @@ async def test_execute_dag_delegates_to_planning_engine_run_dag(tmp_path):
 @pytest.mark.asyncio
 async def test_synthesize_calls_execution_engine_with_builder_graph(tmp_path):
     """cli-o-flow-synth: synthesis reuses the execution engine's run_dag bridge."""
-    from lionagi.cli.orchestrate.flow import _DagState, _ExecResult, _PlanResult, _synthesize
+    from lionhub_tests.serve.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
+
     from lionhub.agent.casts.emission import TaskAssignment
-    from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
+    from lionhub.serve.cli.orchestrate.flow import _DagState, _ExecResult, _PlanResult, _synthesize
 
     env = _make_env(tmp_path)
     env.session.include_branches(_FakeBranch("researcher"))
@@ -4028,7 +4034,7 @@ async def test_resume_flow_calls_run_flow_with_resolved_checkpoint(tmp_path):
     import json as _json
 
     import lionhub.orchestration.flow.checkpoint as ckmod
-    from lionagi.cli.orchestrate import flow as flow_mod
+    from lionhub.serve.cli.orchestrate import flow as flow_mod
 
     runs_root = tmp_path / "runs"
     run_dir = runs_root / "20260703T000000-abc123"
@@ -4065,7 +4071,7 @@ async def test_resume_flow_calls_run_flow_with_resolved_checkpoint(tmp_path):
 
 
 def test_play_shortcut_rewrites_to_registered_o_flow_subcommand():
-    from lionagi.cli.main import _handle_play_shortcut
+    from lionhub.serve.cli.main import _handle_play_shortcut
 
     result = _handle_play_shortcut(["play", "myplaybook", "do the thing"])
 

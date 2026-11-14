@@ -7,6 +7,7 @@ that a request's decision outlives a failed send. The endpoint is scripted, so n
 leaves the process."""
 
 import pytest
+from lionhub_tests.serve.cli.test_agent_api_provider import _text
 
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
@@ -16,7 +17,6 @@ from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionhub.agent.context_fold import ContextFold, install_context_fold
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
-from tests.cli.test_agent_api_provider import _text
 
 _CAP = 8_000
 
@@ -86,6 +86,14 @@ def _summarizing(monkeypatch):
     monkeypatch.setattr(AnthropicMessagesEndpoint, "call", call)
 
 
+def test_cache_bounds_exposes_named_indexes_without_prompt_cache():
+    branch = Branch(chat_model=_haiku(_CAP, places=False))
+    bounds = ContextFold(branch, cap=_CAP)._cache_bounds(list(branch.progression))
+
+    assert bounds._fields == ("protected_members", "round_end_index", "note_index")
+    assert bounds == (set(), -1, -1)
+
+
 @pytest.mark.asyncio
 async def test_the_fold_protects_a_pending_or_included_round_and_never_an_excluded_one():
     branch = Branch(chat_model=_haiku(_CAP))
@@ -96,8 +104,13 @@ async def test_the_fold_protects_a_pending_or_included_round_and_never_an_exclud
     fold = ContextFold(branch, cap=_CAP)
 
     def bounds():
-        protected, frontier, note = fold._cache_bounds(list(branch.progression))
-        return sorted(str(uid) for uid in protected), frontier, note
+        result = fold._cache_bounds(list(branch.progression))
+        assert result._fields == ("protected_members", "round_end_index", "note_index")
+        return (
+            sorted(str(uid) for uid in result.protected_members),
+            result.round_end_index,
+            result.note_index,
+        )
 
     newest_at = list(branch.progression).index(newest.id)
     assert newest_at > list(branch.progression).index(first_note.id)

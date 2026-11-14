@@ -54,7 +54,7 @@ def test_launch_markers_stay_alive_across_boot_time_slew(monkeypatch):
     a run's markers and the one asking about it later. Recorded under a value
     moved by five seconds and read under one moved by ten, a live process must
     still read as alive, not as a recycled pid."""
-    from lionagi.cli.kill import current_pid_markers
+    from lionhub.serve.cli.kill import current_pid_markers
 
     psplatform = psutil._psplatform
     if not hasattr(psplatform, "INIT_BOOT_TIME"):

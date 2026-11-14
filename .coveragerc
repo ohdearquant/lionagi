@@ -4,7 +4,7 @@ parallel = true
 concurrency = thread,multiprocessing
 omit =
     tests/*
-    lionagi/cli/*
+    lionhub/src/lionhub/serve/cli/*
     lionagi/service/connections/providers/*
     lionagi/service/third_party/*
     lionagi/operations/_visualize_graph.py

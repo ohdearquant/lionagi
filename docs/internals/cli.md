@@ -1,4 +1,4 @@
-# `lionagi/cli/` internals
+# `lionhub/src/lionhub/serve/cli/` internals
 
 Non-obvious invariants, protocol contracts, and design rationale for the CLI package that
 don't belong inline as long-form comments/docstrings. Organized by module. Source-of-truth
@@ -356,7 +356,7 @@ added to what its CLI discovers. With no set resolved it is handed nothing.
 When the run resolved a set, leaf workers, nodes spawned while the flow runs
 and the fanout synthesis branch are handed an exact set: when the run's set
 came from discovery, lionagi's own job-control server (`li mcp`, `python -m
-lionhub.serve.mcp` or `python -m lionagi.cli mcp`, under whatever alias it is
+lionhub.serve.mcp` or `python -m lionhub.serve.cli mcp`, under whatever alias it is
 registered and behind a launcher such as `uv run` or `env`, recognised by
 `_is_job_control_server`; any program named `li` run with `mcp` is taken for
 it) is withheld and the rest of the found set reaches them, and a planned
@@ -679,7 +679,7 @@ agent-run session row that predates the `drains_controls` declaration is
 still admitted, because it does have a real turn-end drain. The precise set
 of session shapes/transitions this covers is intentionally not enumerated in
 prose — every attempt drifted out of date — see the resume cases in
-`tests/cli/test_agent_steer.py` for the executable version of that contract.
+`lionhub/tests/lionhub_tests/serve/cli/test_agent_steer.py` for the executable version of that contract.
 
 The running-session check and the `session_controls` insert are two separate
 statements; a session can go terminal between them. The insert re-checks the
@@ -1570,7 +1570,7 @@ The state, passes and `mirror_forever` described below are defined in
 `lionhub/src/lionhub/serve/mirror.py`, and the preview-size setting in
 `lionhub.serve.mirror_settings`. `mirror.py` keeps the `li mirror` parser, its
 `_run` loop and `run_mirror`, and imports the service names back for callers that
-read them from `lionagi.cli.mirror`.
+read them from `lionhub.serve.cli.mirror`.
 
 **`_Lineage`** — cross-session conversation-lineage detection protocol. A continued
 conversation opens a fresh transcript whose first message points — via `parentUuid` — at the

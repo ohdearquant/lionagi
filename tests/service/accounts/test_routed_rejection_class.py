@@ -703,6 +703,13 @@ async def test_a_cancelled_caller_still_has_its_streamed_rejection_classified(
     assert _rejection_columns(path) == [("rejection_zero", INVALID, "prompt_too_long")]
 
 
+def test_rejection_classifier_uses_module_level_error_names():
+    from lionagi.service.accounts import _types
+
+    assert messages_module._PROVIDER_ERROR_TYPES is _types._PROVIDER_ERROR_TYPES
+    assert messages_module._REJECTION_CLASSES is _types._REJECTION_CLASSES
+
+
 @pytest.mark.asyncio
 async def test_a_streamed_body_that_fails_midway_records_other(monkeypatch, tmp_path, caplog):
     caplog.set_level(logging.DEBUG)

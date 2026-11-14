@@ -2,12 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Only the serializer's exact depth error triggers the arguments fallback."""
 
-import importlib
-
 import orjson
 import pytest
 
 from lionagi.protocols.action.function_calling import FunctionCalling, Tool
+from lionagi.protocols.generic import element
 
 
 def sample_tool(value: str) -> str:
@@ -19,18 +18,19 @@ def _call():
     return FunctionCalling(func_tool=Tool(func_callable=sample_tool), arguments={"value": "ok"})
 
 
-def _inject_first_serializer_error(monkeypatch, error):
-    json_dump = importlib.import_module("lionagi.ln._json_dump")
-    original = json_dump.orjson.dumps
+def _inject_first_serializer_error(monkeypatch, call, error):
+    original = element.json_dumps
+    call_id = str(call.id)
     attempts = []
 
     def controlled_dumps(obj, *args, **kwargs):
-        attempts.append(obj)
-        if len(attempts) == 1:
-            raise error
+        if obj.get("id") == call_id:
+            attempts.append(obj)
+            if len(attempts) == 1:
+                raise error
         return original(obj, *args, **kwargs)
 
-    monkeypatch.setattr(json_dump.orjson, "dumps", controlled_dumps)
+    monkeypatch.setattr(element, "json_dumps", controlled_dumps)
     return attempts
 
 
@@ -50,7 +50,7 @@ class _OtherTypeError(TypeError):
 )
 def test_other_type_errors_propagate(monkeypatch, error):
     call = _call()
-    attempts = _inject_first_serializer_error(monkeypatch, error)
+    attempts = _inject_first_serializer_error(monkeypatch, call, error)
 
     with pytest.raises(TypeError) as caught:
         call.to_dict(mode="json")
@@ -63,7 +63,11 @@ def test_other_type_errors_propagate(monkeypatch, error):
 @pytest.mark.parametrize("error", [TypeError("Recursion limit reached"), RecursionError()])
 def test_measured_depth_errors_take_existing_fallback(monkeypatch, error):
     call = _call()
-    attempts = _inject_first_serializer_error(monkeypatch, error)
+    attempts = _inject_first_serializer_error(monkeypatch, call, error)
+
+    assert orjson.dumps({"foreign": True}) == b'{"foreign":true}'
+    assert _call().to_dict(mode="json")["arguments"] == {"value": "ok"}
+    assert attempts == []
 
     result = call.to_dict(mode="json")
 

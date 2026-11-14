@@ -113,7 +113,7 @@ def test_provider_digest_family_keeps_blake2b_for_manifest_and_files(tmp_path, m
 
 
 def test_brief_digest_family_keeps_blake2b_snapshot(tmp_path):
-    from lionagi.cli.orchestrate._manifest import _BriefCache, _validate_brief
+    from lionhub.serve.cli.orchestrate._manifest import _BriefCache, _validate_brief
 
     payload = "A café brief\n".encode()
     path = tmp_path / "brief.md"
@@ -188,15 +188,15 @@ def test_state_lazy_exports_keep_identity_and_cache(name, module, monkeypatch):
 
 
 def test_cli_lazy_export_keeps_callable_over_submodule(monkeypatch):
-    package = importlib.import_module("lionagi.cli")
-    expected = importlib.import_module("lionagi.cli.main").main
+    package = importlib.import_module("lionhub.serve.cli")
+    expected = importlib.import_module("lionhub.serve.cli.main").main
     monkeypatch.setattr(package, "main", None, raising=False)
     monkeypatch.delattr(package, "main")
     assert package.__getattr__("main") is expected
     assert callable(package.main)
 
 
-@pytest.mark.parametrize("module", ["lionagi.cli", "lionagi.state"])
+@pytest.mark.parametrize("module", ["lionhub.serve.cli", "lionagi.state"])
 @pytest.mark.parametrize("name", ["missing", "missing'attribute\n"])
 def test_lazy_unknown_attributes_keep_original_exception_text(module, name):
     package = importlib.import_module(module)

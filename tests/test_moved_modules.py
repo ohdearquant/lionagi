@@ -535,6 +535,9 @@ def test_a_moved_module_keeps_the_logger_name_it_had():
         ("lionhub.tools.coding", "lionagi.tools.coding"),
         ("lionhub.tools.communication.messenger", "lionagi.tools.communication.messenger"),
         ("lionhub.tools.khive_injection", "lionagi.tools.khive_injection"),
+        ("lionhub.serve.cli._notify_outcomes", "lionagi.cli._notify_outcomes"),
+        ("lionhub.serve.cli.orchestrate._notify", "lionagi.cli.orchestrate._notify"),
+        ("lionhub.serve.cli.orchestrate.flow", "lionagi.cli.orchestrate.flow"),
     ],
 )
 def test_agent_and_tool_loggers_keep_their_original_names(module_name, logger_name):
@@ -1089,6 +1092,11 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
                         or name.startswith("lionagi.studio.scheduler.")
                         or name == "lionagi.studio.scheduler"
                         or name.startswith("lionagi.studio.services.scheduler_state")
+                        # The CLI's logger names stay as they were (D5): its channel loggers,
+                        # the package logger other modules log through, and the names its
+                        # modules had before the move. A module moved by a row of its own
+                        # keeps only its own old name, as above.
+                        or ((row := _moved._row(name)) is not None and row.old == "lionagi.cli")
                         or (
                             own
                             and (new := _moved.resolve(name))
@@ -1186,11 +1194,11 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
 
 
 # The core packages under lionagi/ that name a lionhub module: they hold a listed
-# interim edge into the hub (see test_provider_interim_edge_inventory) or, for cli and
-# studio, import a hub orchestration or serve module. Every other package never names
+# interim edge into the hub (see test_provider_interim_edge_inventory) or, for studio,
+# import a hub orchestration or serve module. Every other package never names
 # lionhub. The set must match what the tree does, and it shrinks as each interim edge is
 # removed, so a package that stops naming lionhub is removed from it too.
-LIONHUB_USERS_UNDER_LIONAGI = frozenset({"cli", "operations", "service", "studio"})
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"operations", "service", "studio"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
@@ -1200,7 +1208,7 @@ def _deprecated_catalog_target_nodes(path: Path, tree: ast.Module) -> set[int]:
     if path != ROOT / "lionagi" / "_auto.py":
         return set()
     expected = {
-        name: f"lionhub.cli.catalog.{name}"
+        name: f"lionhub.serve.cli.catalog.{name}"
         for name in (
             "build_cli_parser",
             "command_exists",
@@ -1288,16 +1296,16 @@ def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
         "load_cli_command",
         "seed_for",
     )
-    aliases = {name: (f"lionhub.cli.catalog.{name}", "2.0.0") for name in names}
+    aliases = {name: (f"lionhub.serve.cli.catalog.{name}", "2.0.0") for name in names}
     source = f"_DEPRECATED_ALIASES = {aliases!r}\n"
     assert _lionhub_names(path, source) == []
-    additional = "import lionhub.cli.catalog\nEXTRA = 'lionhub.cli.catalog.seed_for'\n"
+    additional = "import lionhub.serve.cli.catalog\nEXTRA = 'lionhub.serve.cli.catalog.seed_for'\n"
     assert [hit.rsplit(": ", 1)[1] for hit in _lionhub_names(path, source + additional)] == [
-        "lionhub.cli.catalog",
-        "lionhub.cli.catalog.seed_for",
+        "lionhub.serve.cli.catalog",
+        "lionhub.serve.cli.catalog.seed_for",
     ]
     assert len(_lionhub_names(ROOT / "lionagi" / "_other.py", source)) == len(names)
-    aliases["other"] = ("lionhub.cli.catalog.other", "2.0.0")
+    aliases["other"] = ("lionhub.serve.cli.catalog.other", "2.0.0")
     assert len(_lionhub_names(path, f"_DEPRECATED_ALIASES = {aliases!r}\n")) == len(aliases)
 
 
@@ -1370,8 +1378,6 @@ PROVIDER_INTERIM_EDGES = {
     # ``_MANIFEST_MODULE`` in the compatibility loader: the hub's manifest module, imported on
     # the first call that needs the default provider catalog.
     "service/connections/_provider_compat.py": ["lionhub.providers.manifest"],
-    "cli/agent.py": ["lionhub.providers.google.gemini_code"],
-    "cli/orchestrate/_orchestration.py": ["lionhub.providers.openai._codex_profile"],
     "studio/operator/engine.py": [
         "lionhub.providers.anthropic.claude_code",
         "lionhub.providers.google.gemini_code",
@@ -1700,8 +1706,9 @@ def test_a_root_lndl_export_is_the_moved_object_and_warns_at_the_callers_line():
 
 
 # Every lionhub.lndl module a file under lionagi/ names, by file (relative to lionagi/). The CLI's
-# API leg builds the LNDL Middle lazily until the CLI move; no other file names the language.
-LNDL_INTERIM_EDGES = {"cli/agent.py": ["lionhub.lndl.middle"]}
+# API leg built the LNDL Middle lazily until the CLI moved to the hub; no file under lionagi/
+# names the language now.
+LNDL_INTERIM_EDGES: dict[str, list[str]] = {}
 
 _HUB_LNDL = re.compile(r"lionhub\.lndl(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
