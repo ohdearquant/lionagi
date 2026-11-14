@@ -316,6 +316,26 @@ def test_the_lionagi_home_configuration_denial_follows_lionagi_home(tmp_path, mo
     assert f"Edit(/{elsewhere}/hooks/**)" in rules
 
 
+def test_a_linked_lionagi_home_configuration_entry_is_also_denied_at_its_target(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "lionagi-home"
+    home.mkdir()
+    source = tmp_path / "maintained" / "house_rules.md"
+    source.parent.mkdir()
+    source.write_text("rules\n", encoding="utf-8")
+    (home / "operator_house_rules.md").symlink_to(source)
+    skills = tmp_path / "shared-skills"
+    skills.mkdir()
+    (home / "skills").symlink_to(skills, target_is_directory=True)
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{home}/operator_house_rules.md)" in rules
+    assert f"Edit(/{source.resolve()})" in rules
+    assert f"Edit(/{home}/skills/**)" in rules
+    assert f"Edit(/{skills.resolve()}/**)" in rules
+
+
 @pytest.mark.parametrize("path", _CLAUDE_USER_FILES)
 def test_a_read_exemption_for_a_claude_user_file_lifts_only_the_read_denial(path):
     settings = _settings(profiles={"builder": {"allow_read": [path]}})

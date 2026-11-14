@@ -228,31 +228,40 @@ def run_state_paths() -> tuple[str, ...]:
 
 
 def lionagi_home_config_paths() -> tuple[str, ...]:
-    """Configuration under ``LIONAGI_HOME`` that later runs load and run outside the sandbox.
+    """Configuration under ``LIONAGI_HOME`` that later runs load outside the sandbox.
 
     Studio's hook library and operator hooks become the Claude Code hooks of later operator
     turns, the MCP server registry, the ``.mcp.json`` synced from it and the operator's own MCP
     configuration start MCP servers, the operator's house rules are loaded into its later turns,
-    and playbooks and skills are loaded into later runs. A child that rewrote any of them could have
-    code run outside its sandbox the next time they are read.
+    and playbooks and skills are loaded into later runs. A child that rewrote any of them could steer
+    or run code outside its sandbox the next time they are read.
+
+    An entry that exists and resolves elsewhere, such as house rules kept as a link to their
+    maintained source, is named both as written and as the file it resolves to, so a child cannot
+    rewrite it through the link target.
     """
     from lionagi._paths import LIONAGI_HOME
 
     home = str(LIONAGI_HOME)
-    return tuple(
-        f"{home}/{name}"
-        for name in (
-            "hooks",
-            "operator_hooks.json",
-            "operator_hooks.settings.json",
-            "operator_mcp.json",
-            "operator_house_rules.md",
-            "mcp_servers.json",
-            ".mcp.json",
-            "playbooks",
-            "skills",
-        )
-    )
+    paths: list[str] = []
+    for name in (
+        "hooks",
+        "operator_hooks.json",
+        "operator_hooks.settings.json",
+        "operator_mcp.json",
+        "operator_house_rules.md",
+        "mcp_servers.json",
+        ".mcp.json",
+        "playbooks",
+        "skills",
+    ):
+        written = f"{home}/{name}"
+        paths.append(written)
+        try:
+            paths.append(str(Path(written).resolve(strict=True)))
+        except (OSError, RuntimeError):
+            pass
+    return tuple(dict.fromkeys(paths))
 
 
 def _lionagi_home_credentials() -> tuple[str, ...]:
