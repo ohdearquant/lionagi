@@ -874,10 +874,18 @@ allocation order are unsafe as a commit boundary
   The same entry order applies to
   `lionagi/state/db.py::StateDB.create_schedule_run_and_advance` and
   `lionagi/state/db.py::StateDB.tombstone_and_replace_schedule_run`.
+  Studio's `lionagi/studio/services/admin.py::transition_sessions` opens its
+  own outer transaction with shared mode before its session reads and
+  updates. Its raw writer and
   `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`
-  and Studio's `lionagi/studio/services/admin.py::transition_sessions` verify
-  the granted fence and fail closed if it is missing. Neither acquires it.
-  Standalone dispatch initialization remains ineligible
+  verify the existing grant for eligible history and fail closed if it is
+  missing. They do not acquire a grant after locking application rows.
+  Creation for a schedule run, invocation or play remains inherently
+  ineligible, including via `lionagi/state/db.py::StateDB.create_schedule_run`,
+  `lionagi/state/db.py::StateDB.create_invocation` and
+  `lionagi/state/db.py::StateDB.create_play`. The composite writers above
+  retain their entry requirement. Schedule-definition, show, team and
+  dispatch history needs no producer grant. Standalone dispatch initialization remains ineligible
   (`lionhub/src/lionhub/orchestration/dispatch/outbox.py::enqueue_dispatch`).
   Keep the history classification migration separate from these writes
   (`lionagi/state/db.py::StateDB._classify_terminal_delivery_history_once`).
@@ -944,15 +952,25 @@ now-registration and active registration keep their existing eligibility diagnos
 
 Keep the exact pre-counts for operator mutations in their transaction. Read the
 active attachment row in shared mode under the same PostgreSQL fence whose
-exclusive mode protects the prune debt check. On SQLite use the writer
-reservation for that check. An already-active row needs no exclusive work and
-establishes no cutoff. If an absent or retired row may be created or reactivated,
+exclusive mode protects the prune debt check. The attachment check reads
+only. On SQLite it still takes the writer reservation. An already-active row
+found in the first transaction establishes no cutoff or enrollment mutation.
+If an absent or retired row may be created or reactivated,
 end the read transaction and recheck state in a fresh exclusive transaction.
-Only that transaction can publish a new cutoff and advance the epoch. It
+If another writer activated it in the meantime, return the existing active
+registration without changing its cutoff or the epoch. Only the exclusive
+transaction can publish a new cutoff and advance the epoch. It
 serializes against producers, retention, and competing enrollment. Per-pass
 catalog reflection and unclassified-history diagnostics run outside the
 exclusive transaction. Operator mutations may keep their state-change-specific
 counts in the snapshot that reports the result.
+
+An attachment result describes that transaction's snapshot. It does not
+authorize later delivery. Before serving a page, read active state and
+apply the current cutoff and debt together. If retirement made the
+registration inactive, stop and rewind. If it has reactivated, the current
+cutoff governs even when the in-memory replay cursor was set earlier. The
+final effect admission still performs its own active-and-owed check.
 
 After `prepare` raises or times out, reread settlement and activity before
 recording a prepare failure. An inactive replay stops and rewinds to its
@@ -995,9 +1013,11 @@ human and machine listing on SQLite. The daemon reports the same persisted total
 consumer on either backend through
 `lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::run_terminal_reconciliation`.
 The total survives attempt-record cleanup. The same operator surfaces also expose
-a separate store-wide persisted count of resolver-pruned transitions. It counts
-each newly marked transition once, even if its history is later archived.
-It is independent of consumer registration and admitted-attempt settlement. Keep pending admissions available while
+a separate store-wide persisted count of resolver-pruned transitions, even
+with zero consumer rows. Show it separately in human output and in a
+top-level machine field. It counts each newly marked transition once, even
+if its history is later archived. It is independent of consumer registration
+and admitted-attempt settlement. Keep pending admissions available while
 their owners can still settle them, including detached effects. The handler wait budget
 does not prove an effect has ended. Reclaim unresolved records only after the owner is
 known to have stopped and can no longer settle. Compact completed records after the
@@ -1036,11 +1056,19 @@ Require an offline, coordinated cutover for the native store. Quiesce and close 
 every old producer, consumer, daemon and client using the store, and stop old instances from
 reopening it during the migration. The open-time version check cannot exclude a handle that
 is already open (`lionagi/state/db.py::StateDB._open`). Fresh native writable
-opens compare versions. True read-only SQLite file opens skip version refusal
-because they perform no writes
-(`lionagi/state/db.py::read_only_open_supported`). Shipped older read-only
-binaries can overstate owed history and replay candidates since they cannot
-interpret the logical cutoff or resolver-pruned history. Migrate and verify the constraints
+opens compare versions. True read-only SQLite file opens skip the general
+open-time check because they perform no writes
+(`lionagi/state/db.py::read_only_open_supported`). Debt counts, consumer lists
+and previews, and exact and paged replay must check the supported schema
+version in the same read snapshot that supplies the result
+(`lionagi/state/lifecycle/deliveries.py::_check_schema`,
+`lionagi/state/lifecycle/consumer_inspection.py::list_consumers`). Refuse an
+unsupported version through the existing schema and compatibility error
+paths before interpreting eligibility, the cutoff or the resolver disposition.
+A newer version uses the existing `SchemaTooNewError` contract. Binaries
+shipped before this check can still open old or newer stores read-only and
+produce inexact debt or replay reports. Do not use those reports to make
+enrollment, replay or retention decisions. Migrate and verify the constraints
 and version with no old handles present, then start the upgraded processes and enable cutoffs.
 If the operator cannot fence off old instances, defer migration. Future fact-backed sources
 need equivalent commit ordering before joining this baseline.
@@ -1049,33 +1077,58 @@ Routine pruning protects the current and resolving rows of each eligible
 transition owed to an active consumer. A registered consumer that stops
 reconciling still holds that protection. PR #4396 added the physical-ACK guard
 for sessions on `dev/lionagi`. Issue #4402 tracks the full linked-entity guard.
-Apply it to the CLI's `retained_tables`, explicit and age session pruning,
-run pruning, mirror absorption, and schedule cascades. Resolve the entire
-deletion set against `plays.session_id`, invocation sessions, and the schedule
-run's invocation and its sessions
+Apply it to explicit and age session pruning, CLI session pruning, run
+pruning, mirror absorption, and schedule cascades. Resolve the entire deletion
+set against `plays.session_id`, invocation sessions, and the schedule run's
+invocation and its sessions. Use the consumer's resolution rule. For the
+settings consumer, a session with a null project cannot resolve an
+invocation or a schedule run through that invocation. Preserve the existing
+handling of multiple distinct projects
 (`lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::_project_for_transition`).
 Stabilize every surviving link used to prove resolution through the write
-boundary, or keep all candidates that participate in an owed resolution. A
-session that can be reparented without holding the retention fence cannot serve
-as an unlocked proof of survival
-(`lionagi/state/db.py::StateDB.attach_session_invocation`).
-Keep the terminal-state and worker-ownership guards. An owed child under a
-schedule refuses the cascade for that schedule and remains reportable. The
-parent row stays locked from the child check through delete.
+boundary. Serialize link creation, reparenting, detachment and project changes
+with that check, or retain affected candidates whose survival cannot be
+proved. This includes `lionagi/state/db.py::StateDB.attach_session_invocation`,
+`lionagi/state/db.py::StateDB.update_session`,
+`lionagi/state/db.py::StateDB.set_session_provenance`,
+`lionagi/state/db.py::StateDB.update_play` and
+`lionagi/state/db.py::StateDB.update_schedule_run`.
+Use the same debt and resolver checks for detachments through those writers.
+
+Keep existing terminal-state and worker-ownership guards. The CLI's
+`lionhub/src/lionhub/serve/cli/state.py::_prune` currently selects on age and
+worker ownership and protects every session linked by `retained_tables`,
+including plays. Add the terminal-state predicate to its preview and apply
+selection. Preserve its existing protection for those explicit references.
+The resolver disposition below applies when the path can actually remove the
+last resolver.
+
+Keep a parent's last resolver while that parent is still nonterminal and can
+emit its terminal transition. Once the parent is terminal, use its committed
+history and the debt rule before removing the resolver. Keep the parent or
+the links it uses stable through that decision. If a schedule cascade would
+remove an owed child or a last resolver protected by this rule, refuse the
+delete for the entire schedule and report the refusal separately from a
+missing schedule. Keep the schedule row locked from the child check through
+delete. The schema's schedule-run cascade otherwise removes those runs with
+the parent schedule (`lionagi/state/schema.sql`). Refuse the entire delete
+if a surviving dependency would prevent it. Report the dependency refusal
+through the same result boundary before a partial deletion or receipt.
 
 When no active consumer owes the affected history, apply the following
 retention rules under the same fence:
 
-1. **Own entity removed.** Every remover named above archives the entity's
-   removed transition rows. Delete its physical ACK children and then the
-   transitions in the same database transaction as entity removal. The
-   archive manifest lists both the removed transitions and their physical
-   ACK children. At the source pin
-   `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk`
-   already deletes the session's transitions.
-   `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_run_chunk`
-   leaves them behind, so this adds cleanup for run pruning. Mark
-   outstanding admissions to removed transitions as pruned. A subsequent
+1. **Own entity removed.** Write the own-history audit archive and receipt
+   in the same StateDB transaction that deletes the physical ACK children,
+   their transition rows, and the entity. The manifest lists the actual
+   removed transition and ACK rows. This is new for every path in the table.
+   Store the archived history and its manifest receipt under a durable
+   deletion identity in the state database. Read back that identity after
+   uncertain commit before repeating a deletion. A CLI preview uses the
+   eligibility rules without publishing archives or receipts.
+   The ordinary external ZIP is optional. StateDB owns the database write
+   and has no dependency on LionHub's ZIP code. Mark outstanding admissions
+   to removed transitions as pruned. A subsequent
    `start="all"` owes no removed transition, while an admitted effect can
    still record `settled_after_prune` when it completes.
 2. **Own entity survives, last resolver removed.** Keep the transition as
@@ -1088,40 +1141,77 @@ retention rules under the same fence:
    `no_session` attempt. An already-admitted effect that completes while its
    transition survives keeps the physical ACK behavior above. An active
    consumer's owed transition retains its resolver, so the disposition only
-   arises once no active consumer owes it.
+   arises once no active consumer owes it. A transition can retain an earlier
+   physical ACK when it acquires a disposition. A completion admitted before
+   pruning can also write a physical ACK to a transition that now has a
+   disposition. The ACK records the consumer's completed effect and the
+   disposition records the loss of a resolver. Count each fact once in its
+   own measure.
 
-Archive use is split into two units. Capture the candidate rows and the
-archive's dependent rows and preimages together from a stable read snapshot.
+| Entity removal path | History behavior before this amendment |
+| --- | --- |
+| `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk`, shared by explicit `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_terminal_sessions_by_id` and age-based `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_old_data` | Deletes the session's ACKs and transitions. The optional ZIP covers other session dependencies. Add the own-history archive and receipt. |
+| `lionagi/state/db.py::StateDB.delete_imported_session` | Deletes the imported session's ACKs and transitions without an own-history archive or receipt. Add both for mirror absorption. |
+| `lionhub/src/lionhub/serve/cli/state.py::_prune` and `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_run_chunk` | Delete sessions or runs and leave their own transition history in the store. Add ACK and transition cleanup together with the archive and receipt. For run pruning, removing the run's own transitions and ACKs is new behavior. |
+| `lionagi/state/db.py::StateDB.delete_schedule` and `lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted` | Both delete the schedule and cascade its runs. Studio's `lionagi/studio/services/schedules.py::delete_schedule` delegates to StateDB. Polymorphic history has no entity foreign key, so the cascade leaves the schedule and run history behind. Archive and receipt the previous history and ACKs for the schedule and every deleted run. |
+
+Keep the new `deleted` audit event in the live schedule history. It records
+the deletion and remains the row that prevents reuse of the definition's ID
+(`lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.record_change`,
+`lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.assert_id_available`).
+
+ACKs reference transitions without a cascade in
+`lionagi/state/schema.sql`. Neither foreign-key entity cascades nor consumer
+retirement remove ACKs implicitly. Dispatch retention removes outbox rows,
+and `lionhub/src/lionhub/orchestration/scheduler/retention_archive.py::read_archive_chunk`
+only decodes a ZIP. Those paths remove no own lifecycle history.
+
+When configured, prepare the external ZIP in a separate read unit. Capture
+the candidate rows and every potentially deleted dependent row or detached
+preimage together from a stable read snapshot.
 Close it before writing, sealing or verifying the archive. During filesystem
 work the chunk holds neither the fence nor the retention table locks.
 Then open the delete transaction, take the exclusive fence and the listed
 locks, lock candidates in stable order and recheck terminal state, worker
-protection, debt, row contents and dependent membership. Keep rows whose
-required archive coverage has changed. The same short write unit records
-the removed rows and detachments as an authoritative manifest receipt, keyed
-by store, immutable archive identity and digest. The archive may be a
-superset of that manifest. Retained rows neither count as removed nor belong
-to the restorable subset.
+protection, debt, row contents and dependent membership. The locked recheck
+alone cannot authorize later broad deletes or detachments under PostgreSQL
+READ COMMITTED. Restrict each write to covered primary keys and matching
+locked preimages. Protect surviving dependency links through commit, using
+key-conflicting locks for foreign-key dependents and fencing soft-link
+writers. A message or progression that becomes unreferenced after the
+snapshot stays if it lacks archive coverage. If an uncovered dependent
+prevents an entity delete, retain the root with its dependencies. Verify that
+the actual changed keys match the manifest before committing. The same write
+unit records the removed rows and detachments as an authoritative manifest
+receipt, keyed by store, immutable archive identity and digest. The archive
+may be a superset of that manifest. Retained rows neither count as removed
+nor belong to the restorable subset.
 
-A retry for a confirmed `55P03`, `40P01` or `40001` rollback repeats the
-database unit only. Keep the staged archive and revalidate the same coverage.
+A retry after a confirmed `55P03`, `40P01` or `40001` rollback repeats the
+database unit only. Reacquire locks and revalidate row preimages and dependent
+membership against the same staged archive before writing.
 A crash between archive and commit leaves no committed deletion receipt.
 On restart reconcile by the archive identity and digest against the store's
 receipt, after confirming any old transaction has ended. No receipt means
-zero deletions from that archive. A committed receipt can finalize the same
-manifest again without deletion or accounting twice. A missing or mismatched
-archive for a committed receipt is a recovery error. This order also makes
+zero deletions from that archive. A committed receipt can be read or exported
+again without deletion or accounting twice. The sealed ZIP and its candidate
+inventory remain immutable. A missing or mismatched external archive for a
+receipt that names it is a recovery error. This order also makes
 the reverse entity locking against `insert_messages` retryable.
 
 Mirror reconciliation can add eligible events to imported sessions through
 `lionagi/state/_mirror_common.py::reconcile_status`. Absorption checks debt
 and dependencies before detaching or deleting any row. In
 `lionagi/state/db.py::StateDB.delete_imported_session`, a debt deferral is
-distinct from deleted, absent or ineligible. The mirror keeps a debt-deferred
-ID pending without latching `orchestrated` or `backfilled`. Recheck that work
-after debt clears, including work whose rollout file has aged out of the
-scan window. Existing failure and worker-protection outcomes retain their
-own handling.
+distinct from deleted, absent or ineligible. Persist both candidate session
+IDs for a debt-deferred rollout before leaving it pending, including a
+pre-header ID derived from the file stem. While pending, exclude the rollout
+from ordinary import and status reconciliation. Retry the explicit IDs
+before the file-age gate and independently of the one-time backfill latch,
+including on the next invocation of one-pass mirror mode. Close the pending
+record only when absorption or a definitive ineligible or absent result
+resolves it. A pending backfill does not latch completion. Existing failure
+and worker-protection outcomes retain their own handling.
 
 ### Consequences of commit-ordered enrollment
 
@@ -1147,8 +1237,10 @@ own handling.
   budget defaults to 10 s and is checked across pages
   (`lionagi/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`,
   `lionhub/src/lionhub/orchestration/scheduler/settings.py`).
-  Removing archive I/O and per-pass exclusive attachment reduces contention.
-  Verify measured holds against those budgets on both backends.
+  Moving external archive I/O shortens the retention write window on both
+  backends. The already-active attachment path uses a shared fence on
+  PostgreSQL, while SQLite still serializes the check with its writer
+  reservation. Verify measured holds against those budgets on both backends.
 - **A newly owed backdated event can miss the current pass.** Its key precedes
   the current cursor. The next traversal reads it after an empty page resets
   the cursor. This delays it by one pass when there is enough budget to wrap.
@@ -1158,6 +1250,15 @@ own handling.
   can read or write the store and verify the upgrade before restarting participants.
   Availability during the upgrade depends on the deployment's ability to coordinate
   the shutdown and restart.
+  A resumed run's availability, deferred launch or flow preflight may today
+  open SQLite read-only before triggering an effect. Such a read proves the
+  row exists or is terminal, but supplies no writer compatibility proof
+  (`lionagi/studio/services/run_resume.py::resume_availability`,
+  `lionagi/studio/services/run_resume_worker.py::_wait_for_terminal`,
+  `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_validate_flow_invocation`).
+  When supported clients use these reads as effect gates, check the schema
+  version before reporting readiness or starting work. The offline stop
+  covers older clients that cannot perform that check.
 
 ### Verification required with implementation
 
@@ -1188,8 +1289,14 @@ own handling.
 3. Migrate an existing database with active and retired identities, physical ACKs and
    eligibility classes. Verify rollback, refusal on fresh older writable opens,
    and a coordinated restart that closes every old handle. Exercise a shipped
-   older SQLite read-only reader against the migrated fixture and check its
-   cutoff-blind report against the upgraded result. Cover classification
+   older SQLite read-only reader against the migrated fixture and record its
+   cutoff-blind output as an inexact legacy observation. Verify current
+   inspection and replay refuse a newer unsupported version before returning
+   a count, a preview or a candidate. Ordinary read-only inspection may still
+   open the same fixture. Check the resume availability, deferred resume
+   launch and invocation flow preflight separately with an unsupported
+   version. They must refuse before reporting ready or starting a process.
+   Cover classification
    before epoch backfill and verify eligible INSERT and UPDATE without epochs
    are rejected on migrated SQLite and PostgreSQL. Include SQLite private and
    shared-memory stores, the raw keeper and the runner's PostgreSQL fixture.
@@ -1208,9 +1315,18 @@ own handling.
    Exercise the surviving-entity case where applicable. Verify the marked
    audit row and one resolver-pruned count. Neither the reactivated consumer
    nor a consumer first registered with `all` after pruning sees an attempt,
-   ACK, failure or `no_session`. A prior admitted completion on a surviving
-   transition writes its ordinary physical ACK. Include active debt
-   controls that retain the resolving rows for each case.
+   ACK, failure or `no_session`. For each consumer, assert their owed count,
+   exact selection, paged replay, and inspection or preview all exclude the
+   transition. Also check its store-wide disposition total with zero consumer
+   rows. A prior admitted completion on a surviving transition writes its
+   ordinary physical ACK without changing the disposition total. Include
+   active debt controls that retain the resolving rows for each case.
+   Include an invocation with a qualifying project-bearing session and a
+   second session without a project. Pause `StateDB.attach_session_invocation`
+   on a second connection while retention relies on the old link, and verify
+   the link is protected through the commit or rechecked under the fence.
+   Keep the last resolver for a nonterminal parent with no terminal event,
+   then exercise terminal completion and the subsequent debt check.
 5. Run fresh now-registration, now-reactivation, operator retire, active attachment and
    uncontended terminal writes at 10,000, 100,000 and 1,000,000 rows. Repeat the SQLite
    witness with a live PostgreSQL comparison. Include old ACK-heavy history and nonempty
@@ -1224,25 +1340,41 @@ own handling.
 
 7. Verify a schedule cascade is refused through StateDB, the typed lifecycle
    adapter, and the Studio route when any child run has owed history, and that
-   all three report it separately from absence. Acknowledge the last owed
-   transition, then delete and verify the archive and settled outcomes.
+   all three report it separately from absence. Add a running-child witness
+   with no terminal history and a separate surviving dependent-reference
+   fixture. Neither may leave any partial deletion or receipt. Acknowledge
+   the last owed transition, resolve the fixture dependencies, then delete
+   and verify the archive and settled outcomes.
 8. Run the mirror per-file and backfill callers with debt on a duplicate
    imported session. Assert that `orchestrated` and `backfilled` remain
-   unlatched and that the deferred session stays available. Settle the debt,
-   including one whose file is outside the scan window, and observe removal
-   and latching on a later pass.
+   unlatched for pending work and that the deferred session stays available.
+   Also create deferred work after the one-time backfill has completed, with
+   an earlier stem-based session ID missing originator metadata. Verify no
+   import or status reconciliation touches pending rows. Settle the debt,
+   age the file out of the scan window, and retry via the pending IDs in
+   the periodic loop and a later one-pass invocation.
 9. Exercise real PostgreSQL caller-owned transactions under a held fence.
    Cover raw `StateDB.transaction`, Studio ingress, the two session creation
    parents of `_create_session_in_tx`, cursor-claim creation and direct
    tombstone replacement. Verify they are waiting before their first entity
    or FK lock. Test rejection of shared-to-exclusive acquisition and of
-   unfenced ingress. Race `insert_messages` and retention to show either
-   safe completion or fresh retries after rollback.
+   unfenced eligible ingress. Exercise unfenced, ineligible creation
+   history for schedule runs, invocations, plays, and non-execution
+   show, team, dispatch and schedule-definition history as controls.
+   Race `insert_messages` and retention to show either safe completion or
+   fresh retries after rollback.
 10. Block archive publication before deletion. On another connection register
     a consumer and acknowledge one candidate while the archive is blocked.
     Verify the delete recheck leaves the newly owed candidate, the archive
-    holds both, and the receipt identifies only the deletion. Test a crash
-    after archive publication and before the database write, and after
-    commit and before manifest publication. Restart reconciles zero in the
-    first case and finalizes the same receipt once in the second. Run on
-    SQLite and PostgreSQL and measure the two lock windows separately.
+    holds both, and the receipt identifies only the deletion. On both
+    backends, change a progression membership and a surviving foreign-key
+    link while staging or before a fresh retry. Verify that changed or
+    uncovered rows are retained, or the write rolls back. A receipt's actual
+    removed history and ACK keys must match committed writes. Without an
+    external archive configured, assert the same atomic history receipt
+    and verify a forced rollback leaves neither receipt nor deletion.
+    Test a crash after archive sealing and before the database write, and
+    after database commit and before reading or exporting the receipt.
+    Restart counts zero in the first case and reads the same receipt once in
+    the second. The candidate archive stays immutable. Measure both lock
+    windows separately.
