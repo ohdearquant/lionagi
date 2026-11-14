@@ -122,6 +122,8 @@ class TestFailureKindSurvives:
 
         assert isinstance(result, UnparsedResponse)
         assert result.failure_kind == "validation"
+        assert result.reason is not None
+        assert "validation error" in result.reason
         assert result.validation_error is not None
         first = result.validation_error.errors()[0]
         assert tuple(first["loc"]) == ("courses", 2, "name")
@@ -132,6 +134,7 @@ class TestFailureKindSurvives:
 
         assert isinstance(result, UnparsedResponse)
         assert result.failure_kind == "extraction"
+        assert result.reason
         assert result.validation_error is None
 
     @pytest.mark.asyncio
@@ -240,7 +243,10 @@ class TestUnparsedResponseIsStillAnOrdinaryString:
 
     def _response(self, error: Exception | None = None) -> UnparsedResponse:
         return UnparsedResponse(
-            "some model text", failure_kind="validation", validation_error=error
+            "some model text",
+            failure_kind="validation",
+            validation_error=error,
+            reason="schema rejected the response",
         )
 
     @pytest.mark.parametrize(
@@ -256,6 +262,7 @@ class TestUnparsedResponseIsStillAnOrdinaryString:
         assert type(restored) is UnparsedResponse
         assert restored.failure_kind == "validation"
         assert isinstance(restored.validation_error, ValueError)
+        assert restored.reason == "schema rejected the response"
 
     @pytest.mark.parametrize(
         "roundtrip",
@@ -347,6 +354,7 @@ class TestEmptyText:
         assert isinstance(unparsed, UnparsedResponse)
         assert unparsed.failure_kind == "extraction"
         assert unparsed.validation_error is None
+        assert "no text to parse" in unparsed.reason
 
 
 _CUT_OFF_TEXT = "Let me think about the transcript first. The student is A. Rivera and"
@@ -484,6 +492,7 @@ class TestReplyCutOffAtItsOutputLimit:
         assert outcome == _CUT_OFF_TEXT
         assert outcome.failure_kind == "extraction"
         assert outcome.validation_error is None
+        assert "output token limit" in outcome.reason
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("make_reply", _ENDED_REPLIES.values(), ids=list(_ENDED_REPLIES))

@@ -93,7 +93,7 @@ def test_bind_refusal_accepts_a_free_port_and_leaves_it_free():
 
 def test_a_held_port_stops_the_launch_before_a_code_or_link(launch, held_port, capsys, monkeypatch):
     _interactive(monkeypatch)
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     assert main(["studio", "--port", str(held_port)]) == 1
 
@@ -115,7 +115,7 @@ def test_a_free_port_mints_opens_and_starts_the_daemon(launch, capsys, monkeypat
     _interactive(monkeypatch)
     port = _free_port()
 
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     assert main(["studio", "--port", str(port)]) == 0
 
@@ -130,7 +130,7 @@ def test_a_daemon_already_answering_skips_the_bind_check(launch, held_port, caps
     _interactive(monkeypatch)
     # A daemon answered, so the held port is that daemon's: no bind is tried for it.
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", lambda port: "code-from-daemon")
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     assert main(["studio", "--port", str(held_port)]) == 0
 
@@ -153,7 +153,7 @@ def test_a_daemon_already_answering_is_never_probed_for_a_bind(launch, capsys, m
 
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", lambda port: "code-from-daemon")
     monkeypatch.setattr(studio_cli, "_bind_refusal", refuse)
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     assert main(["studio", "--port", "8791"]) == 0
 
@@ -217,7 +217,7 @@ def test_each_bind_failure_gives_advice_that_fits_its_cause(
     # The refusal is stubbed, so no socket is opened and any port number will do.
     port = 8791
     monkeypatch.setattr(studio_cli, "_bind_refusal", lambda _host, _port: refusal)
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     assert main(["studio", "--port", str(port)]) == 1
 

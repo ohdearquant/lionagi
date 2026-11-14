@@ -476,7 +476,7 @@ async def _save_skill_definition(
     Always writes ``<SKILLS_DIR>/<name>/SKILL.md`` regardless of what shape (if
     any) currently exists on disk -- a save through Studio normalizes a skill
     to the one shape ``li skill`` actually resolves (see
-    ``skills.py::_find_skill_md`` / ``lionagi/cli/skill.py``), rather than
+    ``skills.py::_find_skill_md`` / ``lionhub/src/lionhub/serve/cli/skill.py``), rather than
     preserving whatever legacy layout it started from. Plugin-bundled skills
     live under a plugin directory, never under ``SKILLS_DIR``, so they are
     unreachable through this path by construction, not by an extra check.

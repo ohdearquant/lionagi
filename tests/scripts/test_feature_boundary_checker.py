@@ -263,7 +263,7 @@ def test_secondary_users_and_module_coverage_fail_closed(tmp_path):
 
 def test_target_notes_use_recorded_destinations_only():
     fallback = "lionhub (destination not yet recorded)"
-    assert builder.match(builder.TARGET_RULES, "lionagi.cli.agent") == "lionhub.serve.cli"
+    assert builder.match(builder.TARGET_RULES, "lionhub.serve.cli.agent") == "lionhub.serve.cli"
     assert builder.match(builder.TARGET_RULES, "lionagi.studio.cli") == "lionhub.serve.cli"
     assert builder.match(builder.TARGET_RULES, "lionhub.orchestration.scheduler") == (
         "lionhub.orchestration.scheduler"
@@ -272,7 +272,7 @@ def test_target_notes_use_recorded_destinations_only():
     assert (
         builder.match(builder.TARGET_RULES, "lionagi.studio.services.sessions") == "lionhub.serve"
     )
-    assert builder.ADDITIONAL_TARGETS["lionagi.cli.orchestrate"] == [
+    assert builder.ADDITIONAL_TARGETS["lionhub.serve.cli.orchestrate"] == [
         "lionhub.orchestration.flow.parsing"
     ]
 

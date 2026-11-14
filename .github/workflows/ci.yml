@@ -124,7 +124,7 @@ jobs:
         venv = os.path.join(os.environ["GITHUB_WORKSPACE"], ".venv")
         for module in (
             "lionagi",
-            "lionagi.cli.main",
+            "lionhub.serve.cli.main",
             "lionagi.operations.flow",
             "lionagi.session.branch",
             "lionagi.session.session",
@@ -626,7 +626,6 @@ jobs:
             - 'lionagi/_paths.py'
             - 'lionagi/_provider_errors.py'
             - 'lionagi/_settings.py'
-            - 'lionagi/cli/**'
             - 'lionagi/config.py'
             - 'lionagi/hooks/**'
             - 'lionagi/libs/**'
@@ -640,6 +639,10 @@ jobs:
             - 'lionagi/studio/**'
             - 'lionagi/testing/**'
             - 'lionagi/version.py'
+            # The CLI code the compatibility tests import. The entries above are
+            # derived from lionagi imports only, so the hub's CLI package is listed
+            # by hand.
+            - 'lionhub/src/lionhub/serve/cli/**'
             - 'tests/conftest.py'
             - 'tests/_shared_conftest.py'
             - 'tests/state/conftest.py'

@@ -524,7 +524,7 @@ _PLAYBOOK_DEST = "playbook"
 
 
 def _orchestrate() -> ModuleType:
-    return import_module("lionagi.cli.orchestrate")
+    return import_module("lionhub.serve.cli.orchestrate")
 
 
 def _has_playbook_parameter(parser: argparse.ArgumentParser) -> bool:

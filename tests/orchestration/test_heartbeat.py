@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from lionagi.cli.orchestrate import flow as flow_mod
+from lionhub.serve.cli.orchestrate import flow as flow_mod
 
 
 def _running_segment(now: float, age: float = 601) -> dict:

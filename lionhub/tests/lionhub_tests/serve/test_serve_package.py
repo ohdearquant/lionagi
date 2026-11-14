@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import lionhub
 
 
@@ -18,11 +20,12 @@ def test_no_lionhub_cli_package_directory():
     assert importlib.util.find_spec("lionhub.cli") is None
 
 
-def test_serve_cli_import_loads_no_server():
-    script = """
+@pytest.mark.parametrize("module", ["lionhub.serve.cli.catalog", "lionhub.serve.cli.main"])
+def test_serve_cli_import_loads_no_server(module):
+    script = f"""
 import json
 import sys
-import lionhub.serve.cli.catalog
+import {module}
 print(json.dumps(sorted(name for name in sys.modules if name == 'lionhub.serve' or name.startswith('lionhub.serve.'))))
 """
     # The child imports the same lionhub this process imported, installed or not.
@@ -37,6 +40,7 @@ print(json.dumps(sorted(name for name in sys.modules if name == 'lionhub.serve' 
         env=env,
     )
     loaded = json.loads(result.stdout)
+    assert module in loaded
     assert not any(
         name == "lionhub.serve.mcp" or name.startswith("lionhub.serve.mcp.") for name in loaded
     )

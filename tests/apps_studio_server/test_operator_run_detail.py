@@ -637,7 +637,7 @@ async def test_every_projection_that_emits_an_end_also_emits_its_provenance():
 
     roots = [
         Path(__file__).resolve().parents[2] / "lionagi" / "studio",
-        Path(__file__).resolve().parents[2] / "lionagi" / "cli",
+        Path(__file__).resolve().parents[2] / "lionhub" / "src" / "lionhub" / "serve" / "cli",
     ]
     files = [p for root in roots for p in root.rglob("*.py")]
     assert files, "no source files found -- the walk is broken, not the code"

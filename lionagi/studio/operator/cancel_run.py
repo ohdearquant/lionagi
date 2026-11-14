@@ -576,7 +576,7 @@ async def _execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
             }
 
         # `_persist_cancel` guards its write on the row still being 'running'
-        # at persist time (lionagi/cli/kill.py) -- a race that lets the run
+        # at persist time (lionhub/src/lionhub/serve/cli/kill.py) -- a race that lets the run
         # finish naturally during the human approval window makes that write
         # a no-op rather than an overwrite. Re-read the row instead of
         # inferring success from the OS-signal outcome, so this adapter never

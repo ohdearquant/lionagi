@@ -52,7 +52,7 @@ MODULE_RULES = {
     "lionagi.tools": ("adapter", "tools"),
     "lionagi.tools.base": ("sdk", "tools"),
     "lionagi.testing": ("adapter", "testing"),
-    "lionagi.cli": ("root", "cli"),
+    "lionhub.serve.cli": ("root", "cli"),
     "lionagi.studio": ("root", "studio"),
 }
 
@@ -88,13 +88,13 @@ TARGET_RULES = {
     "lionhub.agent.casts": "lionhub.agent.casts",
     "lionagi.integrations": "lionhub (destination not yet recorded)",
     "lionagi.tools": "lionhub (destination not yet recorded)",
-    "lionagi.cli": "lionhub.serve.cli",
-    "lionagi.cli.orchestrate._orchestration": "lionhub.orchestration.runs",
-    "lionagi.cli.status": "lionhub.orchestration.inspection",
-    "lionagi.cli.kill": "lionhub.orchestration.kill",
-    "lionagi.cli.team": "lionhub.orchestration.team",
-    "lionagi.cli.engine": "lionhub.orchestration.engine_definitions",
-    "lionagi.cli.mirror": "lionhub.serve.mirror",
+    "lionhub.serve.cli": "lionhub.serve.cli",
+    "lionhub.serve.cli.orchestrate._orchestration": "lionhub.orchestration.runs",
+    "lionhub.serve.cli.status": "lionhub.orchestration.inspection",
+    "lionhub.serve.cli.kill": "lionhub.orchestration.kill",
+    "lionhub.serve.cli.team": "lionhub.orchestration.team",
+    "lionhub.serve.cli.engine": "lionhub.orchestration.engine_definitions",
+    "lionhub.serve.cli.mirror": "lionhub.serve.mirror",
     "lionhub.orchestration.scheduler": "lionhub.orchestration.scheduler",
     "lionagi.studio.services.schedules": "lionhub.orchestration.schedule",
     "lionagi.studio.cli": "lionhub.serve.cli",
@@ -116,7 +116,7 @@ TARGET_RULES = {
 
 # Mixed modules retain their existing owner while multiple portions move.
 ADDITIONAL_TARGETS = {
-    "lionagi.cli.orchestrate": ["lionhub.orchestration.flow.parsing"],
+    "lionhub.serve.cli.orchestrate": ["lionhub.orchestration.flow.parsing"],
     "lionagi.studio.services.schedules": ["lionhub.serve"],
 }
 

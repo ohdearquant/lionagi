@@ -32,13 +32,13 @@ _CLI_SEEDS: tuple[CliSeed, ...] = (
     CliSeed(
         name="orchestrate",
         help="Multi-agent orchestration patterns.",
-        module="lionagi.cli.orchestrate",
+        module="lionhub.serve.cli.orchestrate",
         aliases=("o",),
     ),
     CliSeed(
         name="agent",
         help="Spawn one-shot subagent (blocking); prints final response.",
-        module="lionagi.cli.agent",
+        module="lionhub.serve.cli.agent",
     ),
     CliSeed(
         name="casts",
@@ -48,12 +48,12 @@ _CLI_SEEDS: tuple[CliSeed, ...] = (
     CliSeed(
         name="engine",
         help="Run domain-specific multi-agent engine pipelines.",
-        module="lionagi.cli.engine",
+        module="lionhub.serve.cli.engine",
     ),
     CliSeed(
         name="team",
         help="Team messaging — send/receive between named agents.",
-        module="lionagi.cli.team",
+        module="lionhub.serve.cli.team",
     ),
     CliSeed(
         name="studio",
@@ -68,73 +68,73 @@ _CLI_SEEDS: tuple[CliSeed, ...] = (
     CliSeed(
         name="state",
         help="Inspect and migrate lionagi state.db.",
-        module="lionagi.cli.state",
+        module="lionhub.serve.cli.state",
     ),
     CliSeed(
         name="invoke",
         help="Track a skill-level orchestration.",
-        module="lionagi.cli.invoke",
+        module="lionhub.serve.cli.invoke",
     ),
     CliSeed(
         name="kill",
         help="Terminate a running entity (run/session/play/show).",
-        module="lionagi.cli.kill",
+        module="lionhub.serve.cli.kill",
     ),
     CliSeed(
         name="mirror",
         help="Mirror Claude Code sessions into studio (live).",
-        module="lionagi.cli.mirror",
+        module="lionhub.serve.cli.mirror",
     ),
     CliSeed(
         name="monitor",
         help="Observe play/agent/run progress in real-time.",
-        module="lionagi.cli.monitor",
+        module="lionhub.serve.cli.monitor",
         aliases=("mon",),
     ),
     CliSeed(
         name="dispatch",
         help="Inspect and acknowledge durable dispatch_outbox rows.",
-        module="lionagi.cli.dispatch",
+        module="lionhub.serve.cli.dispatch",
     ),
     CliSeed(
         name="doctor",
         help="Check the lionagi CLI environment/install for common failure modes.",
-        module="lionagi.cli.doctor",
+        module="lionhub.serve.cli.doctor",
     ),
     CliSeed(
         name="stats",
         help="Read-only aggregate reporting over lionagi's StateDB.",
-        module="lionagi.cli.stats",
+        module="lionhub.serve.cli.stats",
     ),
     CliSeed(
         name="plugin",
         help="Inspect, trust, and enable/disable LionAGI plugin bundles.",
-        module="lionagi.cli.plugin",
+        module="lionhub.serve.cli.plugin",
     ),
     CliSeed(
         name="hooks",
         help="Import Claude Code / Codex hook configs; trust imported hook commands.",
-        module="lionagi.cli.hooks",
+        module="lionhub.serve.cli.hooks",
     ),
     CliSeed(
         name="handshake",
         help="Report the machine-result contract version this build speaks.",
-        module="lionagi.cli.machine",
+        module="lionhub.serve.cli.machine",
     ),
     CliSeed(
         name="runs",
         help="List recorded runs and what each one wrote.",
-        module="lionagi.cli.machine",
+        module="lionhub.serve.cli.machine",
     ),
     CliSeed(
         name="lifecycle",
         help="Report the recorded lifecycle state of a run.",
-        module="lionagi.cli.machine",
+        module="lionhub.serve.cli.machine",
     ),
     CliSeed(
         name="mcp",
         help="Serve the lionagi MCP server (background job submit/query) over stdio.",
-        module="lionagi.cli.mcp",
+        module="lionhub.serve.cli.mcp",
     ),
 )
 

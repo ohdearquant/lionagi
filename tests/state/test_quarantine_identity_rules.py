@@ -7,13 +7,13 @@ import socket
 
 import pytest
 
-from lionagi.cli._pid_quarantine import quarantine_identity as cli_identity
 from lionagi.state._quarantine_identity import (
     UNVERIFIABLE_PID_QUARANTINE_THRESHOLD,
     encode_identity,
     is_current_quarantine,
     quarantine_identity,
 )
+from lionhub.serve.cli._pid_quarantine import quarantine_identity as cli_identity
 
 
 def row(**metadata):

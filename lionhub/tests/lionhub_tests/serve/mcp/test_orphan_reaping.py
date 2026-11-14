@@ -1236,7 +1236,7 @@ def test_reap_upgrades_the_reason_code_when_the_run_recorded_an_undelivered_noti
     """A run whose own directory says its terminal notice never arrived is not
     pure silence, and the reap it gets should say so.
 
-    This is the shape `deliver_flow_notify_now` (`lionagi/cli/orchestrate/
+    This is the shape `deliver_flow_notify_now` (`lionhub/src/lionhub/serve/cli/orchestrate/
     _notify.py`) and the pre-existing `record_notify_rejection_to_run` both
     leave behind for a run that lost its persistence: `notify_outcome.json`
     with `ok: false`.

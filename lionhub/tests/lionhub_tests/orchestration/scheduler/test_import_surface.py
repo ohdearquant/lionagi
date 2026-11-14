@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression: names that must stay importable at lionagi.cli.orchestrate module level.
+"""Regression: names that must stay importable at lionhub.serve.cli.orchestrate module level.
 
 Covers the validate_path_component re-export and the parser builders, which are defined in
 lionhub.orchestration.flow.parsing and re-exported here.
@@ -33,11 +33,11 @@ def _resolved_imports(module_file: str, package: str) -> set[str]:
 
 
 def _orchestrate_or_command_imports(imported: set[str]) -> set[str]:
-    """The names in ``imported`` that sit under ``lionagi.cli.orchestrate`` or under a CLI
+    """The names in ``imported`` that sit under ``lionhub.serve.cli.orchestrate`` or under a CLI
     command module."""
     from pathlib import Path
 
-    from lionagi.cli import orchestrate
+    from lionhub.serve.cli import orchestrate
 
     cli_dir = Path(orchestrate.__file__).resolve().parent.parent
     command_modules = {
@@ -45,13 +45,13 @@ def _orchestrate_or_command_imports(imported: set[str]) -> set[str]:
         for entry in cli_dir.iterdir()
         if not entry.name.startswith("_") and (entry.suffix == ".py" or entry.is_dir())
     }
-    package = "lionagi.cli.orchestrate"
+    package = "lionhub.serve.cli.orchestrate"
     return {
         name
         for name in imported
         if name == package
         or name.startswith(package + ".")
-        or (name.startswith("lionagi.cli.") and name.split(".")[2] in command_modules)
+        or (name.startswith("lionhub.serve.cli.") and name.split(".")[3] in command_modules)
     }
 
 

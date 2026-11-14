@@ -269,36 +269,56 @@ def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
 
 
 @pytest.mark.parametrize(
-    ("text", "contained", "warns"),
+    ("text", "contained", "warns", "refused"),
     [
-        ("\u3164---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n", False, True),
+        (
+            "\u3164---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n",
+            False,
+            True,
+            False,
+        ),
+        # After prompt text every span between --- lines is checked, the one after a
+        # closing line included, so a line setting the flag there is refused, not ignored.
         (
             "# notes\n---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n",
             False,
             False,
+            True,
         ),
         (
             "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: false\n"
             "notes: [unclosed\n---\n\nWork.\n",
             False,
             False,
+            True,
         ),
         (
             "\u3164---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n\nWork.\n",
             True,
             True,
+            False,
         ),
-        ("\u3164---\nmodel: claude_code/sonnet\n# contain_user_settings: true\n---\n", False, True),
+        (
+            "\u3164---\nmodel: claude_code/sonnet\n# contain_user_settings: true\n---\n",
+            False,
+            True,
+            False,
+        ),
     ],
 )
-def test_a_hidden_block_ends_at_its_closing_delimiter(caplog, text, contained, warns):
+def test_a_hidden_block_ends_at_its_closing_delimiter(caplog, text, contained, warns, refused):
     """A hidden block runs to its closing ``---`` line, so a flag in the body after it is
     prompt text; one that does not read runs to the end when it has no closing line."""
     import logging
 
+    from lionagi._errors import ConfigurationError
     from lionhub.orchestration.spawn import _parse_profile
 
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        if refused:
+            with pytest.raises(ConfigurationError, match="contain_user_settings declaration"):
+                _parse_profile("role", text)
+            return
         profile = _parse_profile("role", text)
 
     assert profile.model is None
@@ -364,6 +384,9 @@ def test_a_hidden_block_that_reads_as_a_list_or_text_contains_when_it_names_the_
         ("Work.\n---\ncontain_user_settings:true\n---\nMore.\n", 2),
         ("Work.\n---\n{contain_user_settings: true}\n---\nMore.\n", 2),
         ("Work.\n---\n---\ncontain_user_settings: true\n", 3),
+        # A rule in the prompt ahead of the block shifts which line opens it.
+        ("Work.\n---\nMore.\n---\ncontain_user_settings: true\n---\nEnd.\n", 4),
+        ("Work.\n---\nMore.\n---\ncontain_user_settings: true\n", 4),
         (
             "Work.\n---\nmodel: claude_code/sonnet\n---\nNotes.\n---\n"
             "contain_user_settings: true\n---\nMore.\n",
@@ -371,26 +394,37 @@ def test_a_hidden_block_that_reads_as_a_list_or_text_contains_when_it_names_the_
         ),
     ],
 )
-def test_a_block_after_text_on_lines_of_its_own_names_the_flag_without_containing(
-    caplog, text, line
-):
+def test_a_misplaced_block_that_names_the_flag_is_refused(text, line):
     """Text on lines of its own ahead of the first ``---`` line leaves the profile all prompt,
     as before, so a block after it sets nothing, the flag included, whatever value it gives.
     Any block after that text, closed or not and whichever it is, that sets the flag as a key
-    or does not read and names it warns rather than lose it in silence; a block runs from a
+    or does not read and names it is refused; a block runs from a
     line of three or more dashes to the next such line."""
-    import logging
-
+    from lionagi._errors import ConfigurationError
     from lionhub.orchestration.spawn import _parse_profile
 
-    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        profile = _parse_profile("role", text)
+    with pytest.raises(
+        ConfigurationError, match=f"block on line {line}.*move the block to the top"
+    ):
+        _parse_profile("role", text)
 
-    assert profile.model is None
-    assert profile.contain_user_settings is False
-    assert f"the --- block on line {line} follows text on lines of its own" in caplog.text
-    assert "its worker is not contained, though the block names" in caplog.text
-    assert "hides the frontmatter" not in caplog.text
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("Work.\n---\nmcp: none\n---\nMore.\n", 2),
+        ("Work.\n---\nMore.\n---\nmcp: none\n---\nEnd.\n", 4),
+        ("Work.\n---\nMore.\n---\nmcp: none\n", 4),
+    ],
+)
+def test_a_misplaced_block_that_declares_mcp_is_refused(text, line):
+    """An mcp declaration in a block after prompt text is refused wherever the block sits,
+    including after a rule in the prompt."""
+    from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.spawn import _parse_profile
+
+    with pytest.raises(ConfigurationError, match=f"block on line {line} .*mcp declaration"):
+        _parse_profile("role", text)
 
 
 @pytest.mark.parametrize(

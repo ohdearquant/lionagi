@@ -553,14 +553,14 @@ def test_schedule_quick_create_validates_before_any_network_call(specialized_cas
 # unrelated to this module's own registry/dispatch consolidation, so the
 # import-laziness oracle allowlists exactly these two instead of asserting a
 # blanket zero that would misreport them as regressions:
-#   - orchestrate: lionagi/cli/orchestrate/_common.py:15 does a *module-level*
+#   - orchestrate: lionhub/src/lionhub/serve/cli/orchestrate/_common.py:15 does a *module-level*
 #     `from .. import team as _team_module` (team-mode support), so importing
-#     lionagi.cli.orchestrate always pulls in lionagi.cli.team.
-#   - stats: lionagi/cli/stats.py:14 does a *module-level*
+#     lionhub.serve.cli.orchestrate always pulls in lionhub.serve.cli.team.
+#   - stats: lionhub/src/lionhub/serve/cli/stats.py:14 does a *module-level*
 #     `from .monitor import _since_timestamp`, reusing a helper function.
 _KNOWN_CROSS_SEED_IMPORTS: dict[str, tuple[str, ...]] = {
-    "orchestrate": ("lionagi.cli.team",),
-    "stats": ("lionagi.cli.monitor",),
+    "orchestrate": ("lionhub.serve.cli.team",),
+    "stats": ("lionhub.serve.cli.monitor",),
 }
 
 
@@ -582,6 +582,8 @@ def test_import_laziness_traces_all_21_seeds_cleanly():
         leaked = set(result["other_seed_modules_imported"])
         unexpected = leaked - allowed
         assert not unexpected, f"{name}: unexpected cross-seed imports {sorted(unexpected)}"
+        # Positive control: the known imports must be seen, or the trace is blind.
+        assert allowed <= leaked, f"{name}: trace missed known imports {sorted(allowed - leaked)}"
 
 
 def test_import_laziness_casts_seed_stays_cli_only():

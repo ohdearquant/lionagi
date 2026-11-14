@@ -863,7 +863,7 @@ _LI_SHIM_WITH_A_SHORT_OUTER_NOTIFY_BUDGET = """\
 import asyncio, json, os, sys, time
 from pathlib import Path
 
-from lionagi.cli.orchestrate._notify import register_flow_notify_scope
+from lionhub.serve.cli.orchestrate._notify import register_flow_notify_scope
 from lionhub.serve.mcp import config
 from lionagi.state.lifecycle.callbacks import (
     EntityRef,
