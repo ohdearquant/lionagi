@@ -1012,8 +1012,10 @@ storage, a nullable `status_transitions.resolver_pruned_at`, a store-wide durabl
 index for eligible epoch lookups.
 Set the timestamp and increment the counter in the same retention transaction,
 counting only rows whose timestamp was previously unset. These additions share
-the enrollment migration's schema version. Store history that predates the native
-migration at epoch zero if it is
+the enrollment migration's schema version, version 7 with ADR-0141 preservation
+in one offline cutover, or version 8 if preservation is ready to merge before
+the enrollment migration has merged and so takes version 7 alone. Store history
+that predates the native migration at epoch zero if it is
 eligible. Preserve all existing acknowledgments and initialize consumer cutoffs as absent.
 Ineligible and unclassified rows remain distinct and have no epoch-based eligibility.
 In the native migration, backfill eligible history to epoch zero and validate a constraint
