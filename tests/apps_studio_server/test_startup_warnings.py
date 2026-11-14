@@ -572,7 +572,7 @@ class TestCLIHostWiring:
     """
 
     def test_backend_only_exports_resolved_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import lionhub.cli.studio as studio_cli
+        import lionhub.serve.cli.studio as studio_cli
 
         monkeypatch.delenv("LIONAGI_STUDIO_HOST", raising=False)
         monkeypatch.setattr(studio_cli, "_ensure_apps_importable", lambda: True)
@@ -604,7 +604,7 @@ class TestCLIHostWiring:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """_start_local must overwrite a stale LIONAGI_STUDIO_HOST before uvicorn.run."""
-        import lionhub.cli.studio as studio_cli
+        import lionhub.serve.cli.studio as studio_cli
 
         # Stale env claims 0.0.0.0; the CLI is about to bind 127.0.0.1.
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")

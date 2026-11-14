@@ -159,6 +159,8 @@ its area block.
   CLI agents (sequential number; see Numbering)
 - [ADR-0140](ADR-0140-provider-discovery-contract.md) — Provider discovery and composition
   through the 1.x transition (sequential number; see Numbering)
+- [ADR-0142](ADR-0142-child-agent-credential-isolation.md) — Child-agent credential isolation
+  from the OS keychain and credential helpers (sequential number; see Numbering)
 
 ### orchestration (0033-0040)
 

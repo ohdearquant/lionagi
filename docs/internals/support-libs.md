@@ -17,8 +17,8 @@ counted, because a count goes stale silently when a reader is added while a
 missing name is visible:
 
 - `lionagi/_flow_spec.py`
-- `lionagi/cli/agent.py`
-- `lionagi/cli/orchestrate/__init__.py`
+- `lionhub/src/lionhub/serve/cli/agent.py`
+- `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py`
 - `lionhub/src/lionhub/serve/mcp/dispatch.py`
 - `lionhub/src/lionhub/orchestration/scheduler/subprocess.py`
 - `lionagi/studio/services/run_resume.py`

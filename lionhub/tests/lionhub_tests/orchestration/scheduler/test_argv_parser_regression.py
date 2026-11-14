@@ -93,12 +93,12 @@ async def _fake_run_fanout(
 
 
 def _run_main_with_argv(argv: list[str]) -> int:
-    """Call lionagi.cli.main.main(argv) with run functions patched."""
-    import lionagi.cli.agent as agent_mod
-    import lionagi.cli.orchestrate as orch_mod
-    import lionagi.cli.orchestrate.fanout as fanout_mod
-    import lionagi.cli.orchestrate.flow as flow_mod
-    from lionagi.cli.main import main
+    """Call lionhub.serve.cli.main.main(argv) with run functions patched."""
+    import lionhub.serve.cli.agent as agent_mod
+    import lionhub.serve.cli.orchestrate as orch_mod
+    import lionhub.serve.cli.orchestrate.fanout as fanout_mod
+    import lionhub.serve.cli.orchestrate.flow as flow_mod
+    from lionhub.serve.cli.main import main
 
     with (
         patch.object(agent_mod, "_run_agent", _fake_run_agent),

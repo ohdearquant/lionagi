@@ -11,10 +11,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from lionagi import Branch, Session
-from lionagi.cli.orchestrate import _orchestration
 from lionhub.orchestration import runs as _runs
 from lionhub.orchestration.flow import checkpoint as _checkpoint
 from lionhub.orchestration.flow.checkpoint import FlowResumeError
+from lionhub.serve.cli.orchestrate import _orchestration
 from lionhub.serve.mcp import config, jobs
 
 

@@ -13,7 +13,7 @@ from lionagi.state.reasons import VALID_REASON_CODES, RunReasons
 class TestTeardownReasonResolution:
     """Smoke tests for the cli/agent.py _resolve_run_reason() helper.
 
-    The full CLI path is tested in tests/cli/test_agent_*; here we only
+    The full CLI path is tested in lionhub/tests/lionhub_tests/serve/cli/test_agent_*; here we only
     verify the mapping each terminal status produces is in the namespace.
     """
 

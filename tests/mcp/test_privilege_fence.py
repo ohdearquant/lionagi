@@ -20,7 +20,7 @@ import asyncio
 
 import pytest
 
-from lionagi.cli import machine
+from lionhub.serve.cli import machine
 from lionhub.serve.mcp import dispatch, jobs, projection, verbs
 
 # Named by the operation an agent could otherwise perform on itself, not by a

@@ -103,7 +103,7 @@ class TestRoleNodeBuilder:
             nb(SpawnRequest(instruction="x", assignee="writer-3"), None)
 
     def test_rejected_spawn_is_visible_in_run_state(self, monkeypatch):
-        from lionagi.cli.orchestrate import flow as flow_mod
+        from lionhub.serve.cli.orchestrate import flow as flow_mod
 
         emitted: list[str] = []
         env = SimpleNamespace()
@@ -130,7 +130,7 @@ class TestRoleNodeBuilder:
         leave structured evidence for the run's status/terminal reason rather
         than surviving only as the executor's warning line.
         """
-        from lionagi.cli.orchestrate import flow as flow_mod
+        from lionhub.serve.cli.orchestrate import flow as flow_mod
 
         emitted: list[str] = []
         env = SimpleNamespace()

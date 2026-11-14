@@ -16,7 +16,7 @@ through `Branch.to_dict()`/`from_dict()` with the rest of `metadata`, so a
 later resume/continue-last leg can consult the *persisted* branch itself
 instead of re-deriving "was this create_agent-composed?" from whatever
 profile happens to be supplied on the resuming invocation (which may differ,
-or may have since dropped its `role:` key). See `lionagi/cli/agent.py`
+or may have since dropped its `role:` key). See `lionhub/src/lionhub/serve/cli/agent.py`
 `_run_agent`'s system-prompt reapply guard.
 
 ## external-hook-wiring

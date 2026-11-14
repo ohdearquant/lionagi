@@ -2791,8 +2791,8 @@ async def test_a_refused_setup_finishes_the_runs_record(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    import lionagi.cli.agent as agent_mod
     import lionhub.orchestration.runs as runs_mod
+    import lionhub.serve.cli.agent as agent_mod
     from lionagi.service.manager import iModelManager
     from lionhub.orchestration.runs import allocate_run
 
@@ -2818,7 +2818,7 @@ async def test_a_refused_setup_finishes_the_runs_record(tmp_path, monkeypatch):
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", refused_setup)
 
-    from lionagi.cli.agent import _run_agent
+    from lionhub.serve.cli.agent import _run_agent
 
     with pytest.raises(StateCompatibilityRefused):
         await _run_agent("codex/model", "do the thing")
@@ -2839,7 +2839,7 @@ async def test_an_orchestrate_run_json_names_the_reason_in_compatibility_mode(
 ):
     from types import SimpleNamespace
 
-    from lionagi.cli.orchestrate import _orchestration
+    from lionhub.serve.cli.orchestrate import _orchestration
 
     async def teardown(ctx, **kwargs):
         ctx["terminal_reason"] = ("failed", "The store refused a write: x")

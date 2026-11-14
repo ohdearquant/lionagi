@@ -408,8 +408,8 @@ async def test_admin_workers_shield_the_default_wait(monkeypatch, tmp_path, site
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [None, "os", "value"])
 async def test_monitor_status_keeps_the_worker_result_and_oserror_boundary(monkeypatch, failure):
-    from lionagi.cli import monitor
     from lionagi.service import _subagent_admission as admission
+    from lionhub.serve.cli import monitor
 
     error = PermissionError("status denied") if failure == "os" else ValueError("bad status")
     result = {"pools": [{"name": "all"}]}
@@ -438,8 +438,8 @@ async def test_monitor_status_keeps_the_worker_result_and_oserror_boundary(monke
 
 @pytest.mark.asyncio
 async def test_monitor_status_shields_the_default_worker_wait(monkeypatch):
-    from lionagi.cli import monitor
     from lionagi.service import _subagent_admission as admission
+    from lionhub.serve.cli import monitor
 
     probe = _WorkerProbe({"pools": []}, blocked=True)
     monkeypatch.setattr(admission, "subagent_admission_status", probe.worker)
@@ -467,7 +467,7 @@ def _delivery_subject(monkeypatch, tmp_path, consumer, handler):
         )
         return lambda: registry.emit(envelope), records
 
-    from lionagi.cli.orchestrate import _notify
+    from lionhub.serve.cli.orchestrate import _notify
 
     run = SimpleNamespace(run_id="run-worker", notify_outcome_path=tmp_path / "notify.json")
     monkeypatch.setattr(
@@ -871,8 +871,8 @@ async def test_thread_callers_delegate_to_the_shared_worker_helper(monkeypatch, 
         owner = scheduler_liveness if site in {"snapshot", "phantom"} else owner
         monkeypatch.setattr(owner, "_run_sync", delegated, raising=False)
     elif site == "monitor":
-        from lionagi.cli import monitor
         from lionagi.service import _subagent_admission as admission
+        from lionhub.serve.cli import monitor
 
         probe = _WorkerProbe({"pools": []})
         monkeypatch.setattr(admission, "subagent_admission_status", probe.worker)
@@ -880,8 +880,8 @@ async def test_thread_callers_delegate_to_the_shared_worker_helper(monkeypatch, 
         monkeypatch.setattr(concurrency, "run_sync", delegated)
         subject = monitor._subagent_status
     else:
-        from lionagi.cli.orchestrate import _notify
         from lionagi.state.lifecycle import callbacks
+        from lionhub.serve.cli.orchestrate import _notify
 
         probe = _WorkerProbe(None)
         subject, _ = _delivery_subject(monkeypatch, tmp_path, site, probe.worker)

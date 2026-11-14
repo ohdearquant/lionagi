@@ -516,7 +516,8 @@ async def test_exec_handler_redacts_argv_and_bounds_stderr_in_warn_and_outcome(
 
 
 @pytest.mark.asyncio
-async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_path):
+@pytest.mark.parametrize("safe_logging", [True, False])
+async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_path, safe_logging):
     import lionhub.orchestration.runs as runs_mod
     from lionhub.orchestration.runs import allocate_run
 
@@ -544,7 +545,7 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
     async def _fake_terminate(proc, grace=None, group_witnesses=None):
         cleanup_calls.append((proc, grace, group_witnesses))
 
-    async def _fake_await_dead(proc, grace=2.0):
+    async def _fake_await_dead(proc, grace=2.0, *, safe_logging=False):
         return None
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
@@ -570,7 +571,9 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
     )
 
     handler = build_handler(
-        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+        ResolvedNotifyHandler(argv=("notify-hook",)),
+        outcome_fn=_outcome_fn_for(run),
+        safe_logging=safe_logging,
     )
     await handler(_envelope())  # must not raise
     assert cleanup_calls == [(proc, None, witnesses)]
@@ -581,8 +584,9 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
         "exit_code": None,
         "stderr_path": None,
     }
-    assert len(warn_calls) == 1
-    assert "timed out" in warn_calls[0]
+    if not safe_logging:
+        assert len(warn_calls) == 1
+        assert "timed out" in warn_calls[0]
 
 
 @pytest.mark.asyncio
@@ -811,8 +815,10 @@ async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.slow_timing
+@pytest.mark.parametrize("safe_logging", [True, False])
 async def test_cancelled_exec_handler_still_kills_its_child_process_group(
     monkeypatch: pytest.MonkeyPatch,
+    safe_logging: bool,
 ):
     # Reproduces the race: TerminalCallbackRegistry's own move_on_after
     # budget is set far shorter than the exec handler's internal
@@ -837,7 +843,7 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(
     cmd = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(30)"'
     resolved = resolve_notify_config(override=cmd).handler
     assert resolved is not None
-    handler = build_handler(resolved)
+    handler = build_handler(resolved, safe_logging=safe_logging)
     assert handler is not None
 
     registry = TerminalCallbackRegistry(budget_seconds=0.3)
@@ -955,7 +961,7 @@ def test_register_settings_terminal_callback_non_callable_python_ref_disabled(mo
 def test_register_settings_terminal_callback_malformed_filter_never_raises(monkeypatch, caplog):
     # The exact regression this guards: `notify.on_terminal.filter.kinds: 1`
     # (a scalar where the schema expects a list) used to raise TypeError out
-    # of a bare tuple(...) coercion, aborting CLI startup (lionagi/cli/main.py)
+    # of a bare tuple(...) coercion, aborting CLI startup (lionhub/src/lionhub/serve/cli/main.py)
     # and Studio lifespan startup (lionagi/studio/app.py) -- both call this
     # function once per process with no guard of their own around it.
     monkeypatch.setattr(

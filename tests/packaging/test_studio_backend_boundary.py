@@ -74,7 +74,7 @@ def test_fresh_wheel_schedule_validate_and_export_without_backend() -> None:
                 refused.append(fullname)
                 raise ImportError("blocked application import: " + fullname)
     sys.meta_path.insert(0, RefuseApplication())
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
     manifest = sys.argv[2]
     def run(argv):
         if "--machine" in argv:

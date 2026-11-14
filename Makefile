@@ -54,7 +54,7 @@ pg-down:        ## Stop and remove the throwaway Postgres
 	-@docker rm -f $(PG_CONTAINER) >/dev/null 2>&1 || true
 
 test-sqlite:    ## StateDB tests on the default SQLite backend
-	@$(CI) test-python tests/state tests/apps_studio_server tests/cli tests/hooks
+	@$(CI) test-python tests/state tests/apps_studio_server lionhub/tests/lionhub_tests/serve/cli tests/hooks
 
 test-pg:        ## StateDB tests against a running Postgres (run `make pg-up` first)
 	@LIONAGI_TEST_PG_URL=$(PG_TEST_URL) $(CI) test-python tests/state

@@ -7,7 +7,6 @@ import math
 import pytest
 
 from lionagi._errors import InputTokenCapError
-from lionagi.cli._api_usage import APIUsageCollector
 from lionagi.protocols.generic.processor import Processor
 from lionagi.service._api_telemetry import (
     activate_request,
@@ -19,6 +18,7 @@ from lionagi.service.connections.api_calling import APICalling, estimate_payload
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.imodel import iModel
+from lionhub.serve.cli._api_usage import APIUsageCollector
 
 
 @pytest.fixture
