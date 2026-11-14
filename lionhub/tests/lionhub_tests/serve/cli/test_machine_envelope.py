@@ -11,6 +11,7 @@ decides which of the exit status and the envelope answers.
 
 from __future__ import annotations
 
+import builtins
 import errno
 import importlib
 import json
@@ -23,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from lionagi._feature_errors import MissingFeatureError
 from lionhub.orchestration.job import (
     EXIT_CODE_ENVIRONMENT_ERROR,
     clear_run_allocation,
@@ -361,22 +363,143 @@ def test_a_refusal_still_exits_zero(capfd):
     assert _one_object(capfd.readouterr().out)["ok"] is False
 
 
-def test_an_unusable_environment_exits_78_with_no_envelope(capfd, monkeypatch):
-    """Nothing executed, so there is nothing on stdout for a consumer to parse.
-
-    An envelope here would describe a request that never ran, which sends the
-    consumer looking for a result instead of at its own installation.
-    """
+def test_an_unusable_environment_exits_78_with_the_normal_failure_shape(capfd, monkeypatch):
+    """The command's diagnostic stays on stderr when stdout is restored."""
 
     def _boom(argv):
+        print("handler diagnostic")
         raise ModuleNotFoundError("No module named 'sniffio'", name="sniffio")
 
     monkeypatch.setitem(machine._MACHINE_COMMANDS, "handshake", _boom)
 
     assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
     captured = capfd.readouterr()
-    assert captured.out.strip() == ""
+    assert "handler diagnostic" in captured.err
+    message = captured.err.splitlines()[-1].removeprefix("error: ")
+    assert "sniffio" in message
+    assert "No run was started" in message
+    detail = {"exit_code": EXIT_CODE_ENVIRONMENT_ERROR}
+    startup_envelope = _one_object(captured.out)
+    assert startup_envelope == machine.failure("unavailable", message, detail)
+
+    def _refuse(argv):
+        raise machine.MachineError("unavailable", message, detail)
+
+    monkeypatch.setitem(machine._MACHINE_COMMANDS, "handshake", _refuse)
+
+    assert cli_main.main(["handshake", "--machine"]) == 0
+    assert _one_object(capfd.readouterr().out) == startup_envelope
+
+
+@pytest.mark.parametrize("block_masker_reimport", [False, True])
+def test_startup_envelope_matches_the_masked_stderr_summary(
+    capfd, monkeypatch, block_masker_reimport
+):
+    def _missing_machine():
+        raise MissingFeatureError(
+            feature="machine",
+            missing_distribution="example-dependency",
+            install_hint="See the example setting password=placeholder",
+        )
+
+    monkeypatch.setattr(cli_main, "_load_machine", _missing_machine)
+
+    original_import = builtins.__import__
+
+    def _import_without_masker(name, *args, **kwargs):
+        if name == "lionagi.state.engine":
+            raise ModuleNotFoundError(name, name=name)
+        return original_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as imports:
+        if block_masker_reimport:
+            imports.setattr(builtins, "__import__", _import_without_masker)
+        assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
+    captured = capfd.readouterr()
+    summary = captured.err.splitlines()[-1].removeprefix("error: ")
+    assert "password=***" in summary
+    assert "placeholder" not in summary
+    envelope = _one_object(captured.out)
+    assert envelope["error"]["message"] == summary
+
+
+@pytest.mark.parametrize("write_error", [BrokenPipeError, OSError, ValueError])
+def test_startup_envelope_write_failure_keeps_environment_exit(capfd, monkeypatch, write_error):
+    def _missing_machine():
+        raise ModuleNotFoundError("No module named 'example'", name="example")
+
+    attempted = []
+
+    class _BrokenOutput:
+        @property
+        def buffer(self):
+            return self
+
+        def write(self, data):
+            attempted.append(data)
+            raise write_error("stdout could not be written")
+
+    monkeypatch.setattr(cli_main, "_load_machine", _missing_machine)
+    with monkeypatch.context() as output:
+        output.setattr(sys, "stdout", _BrokenOutput())
+        assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
+
+    assert len(attempted) == 1
+    assert _one_object(attempted[0].decode("utf-8"))["error"]["kind"] == "unavailable"
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert "cannot start: example" in captured.err
     assert "No run was started" in captured.err
+
+
+def test_startup_envelope_without_stdout_keeps_environment_exit(capfd, monkeypatch):
+    def _missing_machine():
+        raise ModuleNotFoundError("No module named 'example'", name="example")
+
+    monkeypatch.setattr(cli_main, "_load_machine", _missing_machine)
+    with monkeypatch.context() as output:
+        # A process started with stdout closed has sys.stdout set to None.
+        output.setattr(sys, "stdout", None)
+        assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
+
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert "cannot start: example" in captured.err
+    assert "No run was started" in captured.err
+
+
+def test_startup_envelope_closed_pipe_keeps_process_exit_78():
+    script = textwrap.dedent(
+        """
+        from importlib import import_module
+        import sys
+
+        cli = import_module("lionhub.serve.cli.main")
+
+        def missing():
+            raise ModuleNotFoundError("No module named 'example'", name="example")
+
+        cli._load_machine = missing
+        sys.exit(cli.main(["handshake", "--machine"]))
+        """
+    )
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            stdout=write_fd,
+            stderr=subprocess.PIPE,
+            cwd=REPO_ROOT,
+            env={**os.environ, "PYTHONPATH": SOURCE_PATH},
+            timeout=30,
+        )
+    finally:
+        os.close(write_fd)
+
+    assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
+    assert b"cannot start: example" in proc.stderr
+    assert b"Exception ignored" not in proc.stderr
 
 
 def test_a_missing_import_after_a_run_exists_is_an_envelope(capfd, monkeypatch):
@@ -398,45 +521,48 @@ def test_a_missing_import_after_a_run_exists_is_an_envelope(capfd, monkeypatch):
 
 
 def test_78_survives_end_to_end_under_the_machine_flag():
-    """The environment fault is decided before machine mode can answer at all.
-
-    Asserted through a real interpreter because the import that fails here has
-    to fail for real: the in-process test above supplies the error, which cannot
-    prove that the code path a broken installation takes reaches this rule.
-    """
+    """The adapter writes UTF-8 with the dispatcher missing and ASCII stdout."""
     script = textwrap.dedent(
         """
+        import runpy
         import sys
 
         BLOCKED = "lionhub.serve.cli.machine"
+        MISSING = BLOCKED + ".caf" + chr(233)
 
         class _RefuseOne:
             def find_spec(self, fullname, path=None, target=None):
                 if fullname == BLOCKED:
                     raise ModuleNotFoundError(
-                        f"No module named {fullname!r}", name=fullname
+                        f"No module named {MISSING!r}", name=MISSING
                     )
                 return None
 
         sys.modules.pop(BLOCKED, None)
         sys.meta_path.insert(0, _RefuseOne())
 
-        from lionhub.serve.cli.main import main
-
-        sys.exit(main(["handshake", "--machine"]))
+        assert sys.stdout.encoding == "ascii", sys.stdout.encoding
+        sys.argv = ["li", "handshake", "--machine"]
+        runpy.run_module("lionhub.serve.cli", run_name="__main__")
         """
     )
     proc = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True,
-        text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH, "PYTHONIOENCODING": "ascii"},
         timeout=120,
     )
 
     assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
-    assert proc.stdout.strip() == ""
+    summary = proc.stderr.splitlines()[-1].decode("ascii").removeprefix("error: ")
+    message = summary.replace(r"\xe9", "é")
+    assert "lionhub.serve.cli.machine.café" in message
+    assert "No run was started" in message
+    assert b"caf\xc3\xa9" in proc.stdout
+    assert _one_object(proc.stdout.decode("utf-8")) == machine.failure(
+        "unavailable", message, {"exit_code": EXIT_CODE_ENVIRONMENT_ERROR}
+    )
 
 
 # the machine path leaves SIGPIPE where the interpreter put it
@@ -613,6 +739,9 @@ def machine_import_file(tmp_path, monkeypatch):
         "name='forged_optional', path='forged/machine.py')\n"
         "missing = ModuleNotFoundError('missing nested dependency', "
         "name='nested_optional', path='dependency/path.py')\n"
+        "from lionagi._feature_errors import MissingFeatureError\n"
+        "feature = MissingFeatureError(feature='fixture provider', "
+        "missing_distribution='fixture-dist', install_hint='install fixture-dist')\n"
     )
     errors = importlib.import_module("_machine_loader_errors")
     return tmp_path / "_machine_loader_fixture.py", errors
@@ -688,3 +817,26 @@ def test_machine_module_missing_error_keeps_allocation_boundary(machine_import_f
     assert envelope["ok"] is False
     assert envelope["error"]["kind"] == "internal"
     assert envelope["error"]["message"] == "a required module is not installed"
+
+
+def test_machine_missing_feature_error_keeps_allocation_boundary(machine_import_file, capfd):
+    path, errors = machine_import_file
+    # The provider registry raises this when a selected provider is called, not at import.
+    path.write_text(
+        "from _machine_loader_errors import feature\ndef machine_result(argv):\n    raise feature\n"
+    )
+    with pytest.raises(MissingFeatureError) as before_allocation:
+        machine.dispatch_machine(["fixture"])
+    assert before_allocation.value is errors.feature
+    assert capfd.readouterr().out == ""
+
+    mark_run_allocated()
+    assert machine.dispatch_machine(["fixture"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "internal"
+    message = envelope["error"]["message"]
+    assert message.startswith("MissingFeatureError: ")
+    assert "fixture provider" in message
+    assert "fixture-dist" in message
+    assert "install fixture-dist" in message

@@ -1114,6 +1114,11 @@ environment could not run the work at all — and stdout must not be parsed on i
 because attributing an environment fault to the submitted work is the
 misattribution the code exists to prevent.
 
+For `--machine` before the first `--`, the CLI makes a best-effort attempt to emit an
+`unavailable` envelope on exit 78. If the write fails, exit 78 still reports the
+environment fault and stdout is empty. Consumers that inspect stdout on exit 78
+should accept either case. Without machine mode, stdout stays empty on exit 78.
+
 The full contract, including how `status`, `terminal` and `outcome` divide the
 question of whether a run is over, is in
 [ADR-0106](adr/ADR-0106-lion-machine-result-contract-v1.md).
