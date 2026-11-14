@@ -787,3 +787,61 @@ def test_create_agent_file_always_opens_with_frontmatter(tmp_path, monkeypatch, 
     create_agent("bare", data)
 
     assert (root / "bare.md").read_text() == expected
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("# no settings yet\n", id="comments-only"),
+        pytest.param("null\n", id="explicit-null"),
+        pytest.param("~\n", id="tilde-null"),
+    ],
+)
+def test_partial_update_accepts_a_closed_frontmatter_block_with_no_settings(
+    tmp_path, monkeypatch, block
+):
+    from lionagi.libs.frontmatter import parse_frontmatter
+    from lionagi.studio.services.agents import update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    (root / "blank.md").write_text(f"---\n{block}---\nKeep this body.\n")
+
+    updated = update_agent("blank", {"effort": "high"})
+
+    assert updated is not None
+    assert updated["effort"] == "high"
+    fm, body = parse_frontmatter((root / "blank.md").read_text())
+    assert fm["effort"] == "high"
+    assert body == "Keep this body."
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param("- a\n- b\n", id="list"),
+        pytest.param("just text\n", id="scalar"),
+    ],
+)
+def test_partial_update_still_refuses_a_block_that_is_not_a_mapping(tmp_path, monkeypatch, block):
+    from lionagi.studio.services.agents import AgentProtectedError, update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    original = f"---\n{block}---\nbody\n"
+    (root / "odd.md").write_text(original)
+
+    with pytest.raises(AgentProtectedError, match="frontmatter could not be read"):
+        update_agent("odd", {"effort": "high"})
+    assert (root / "odd.md").read_text() == original
+
+
+def test_a_comment_naming_lion_system_still_protects_an_empty_block(tmp_path, monkeypatch):
+    from lionagi.studio.services.agents import AgentProtectedError, update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    original = "---\n# lion_system: true\n---\nbody\n"
+    (root / "guarded.md").write_text(original)
+
+    with pytest.raises(AgentProtectedError, match="system agent"):
+        update_agent("guarded", {"effort": "high"})
+    assert (root / "guarded.md").read_text() == original

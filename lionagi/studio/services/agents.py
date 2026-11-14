@@ -64,6 +64,13 @@ class _AgentWriteRead:
     unreadable_block: bool = False
 
 
+def _is_empty_yaml_document(block: str) -> bool:
+    try:
+        return yaml.safe_load(block) is None
+    except (yaml.YAMLError, ValueError, RecursionError):
+        return False
+
+
 def _read_agent_for_write(text: str) -> _AgentWriteRead:
     """Classify frontmatter for agent writes.
 
@@ -88,6 +95,10 @@ def _read_agent_for_write(text: str) -> _AgentWriteRead:
                 unreadable_block=True,
             )
         rest = parts[2].strip() if len(parts) > 2 else ""
+        if len(parts) > 2 and _is_empty_yaml_document(block):
+            # A closed block that is empty, only comments, or an explicit null
+            # holds no settings, so a partial update has nothing to discard.
+            return _AgentWriteRead({}, rest)
         return _AgentWriteRead({}, rest, unreadable_block=True)
     reason = "is a system agent" if _is_protected_system(fm) else None
     return _AgentWriteRead(fm, body, reason)
