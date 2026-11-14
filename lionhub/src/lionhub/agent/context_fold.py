@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 __all__ = ("ContextFold", "estimate_next_request_tokens", "install_context_fold")
 
 
-class CacheBounds(NamedTuple):
+class _CacheBounds(NamedTuple):
     protected_members: set
     round_end_index: int
     note_index: int
@@ -365,13 +365,13 @@ class ContextFold:
             decided_by="context_fold",
         )
 
-    def _cache_bounds(self, active: list[Any]) -> CacheBounds:
+    def _cache_bounds(self, active: list[Any]) -> _CacheBounds:
         """With the prompt cache placed (ADR-0130 Amendment 4): the protected first round's
         messages, the index in ``active`` of its last one, and of the newest compaction note
         (-1 for none). A round still pending, answered and not yet decided, is protected; an
         excluded one is not."""
         if not self._places_cache():
-            return CacheBounds(set(), -1, -1)
+            return _CacheBounds(set(), -1, -1)
         from lionagi.operations.chat._prepare import first_round, is_note
         from lionagi.service._prompt_cache import protection
 
@@ -384,7 +384,7 @@ class ContextFold:
         protected = {uid for uid in active if str(uid) in members}
         round_end = max((i for i, uid in enumerate(active) if uid in protected), default=-1)
         note = max((i for i, uid in enumerate(active) if is_note(pile[uid])), default=-1)
-        return CacheBounds(protected, round_end, note)
+        return _CacheBounds(protected, round_end, note)
 
     def _note_tokens(self, active: list[Any]) -> int:
         """The compaction notes in the view, counted as the cap counts."""
