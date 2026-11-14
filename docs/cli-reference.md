@@ -1116,9 +1116,10 @@ submitted work is the misattribution the code exists to prevent.
 
 For `--machine` before the first `--`, the CLI makes a best-effort attempt to emit an
 `unavailable` envelope on exit 78. If the write fails, exit 78 still reports the
-environment fault, and stdout is empty or, when the write stopped partway, holds
-bytes that do not parse. Consumers that inspect stdout on exit 78 should accept
-all three cases and ignore stdout that does not parse. Without machine mode, stdout stays empty on exit 78.
+environment fault. Stdout then holds nothing, a complete `unavailable` envelope
+when only the trailing newline was lost, or bytes that do not parse when the write
+stopped earlier. Consumers that inspect stdout on exit 78 should accept all three
+cases and ignore stdout that does not parse. Without machine mode, stdout stays empty on exit 78.
 
 The full contract, including how `status`, `terminal` and `outcome` divide the
 question of whether a run is over, is in

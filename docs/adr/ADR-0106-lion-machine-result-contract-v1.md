@@ -531,9 +531,10 @@ rather than left to the reader:
   run exists, because a run that started and then failed is a failed run, and reporting
   it as an environment fault sends the consumer away from durable state it should read.
   In machine mode the entry point emits an `unavailable` envelope on a best-effort
-  basis. If the write fails, the exit status is still 78 and stdout is empty or, when
-  the write stopped partway, holds bytes that do not parse. Without `--machine`,
-  stdout stays empty. The diagnostic goes to stderr in both modes.
+  basis. If the write fails, the exit status is still 78 and stdout holds nothing, a
+  complete envelope when only the trailing newline was lost, or bytes that do not
+  parse when the write stopped earlier. Without `--machine`, stdout stays empty. The
+  diagnostic goes to stderr in both modes.
 - **Any other exit without a parseable envelope is a transport fault**: the process
   could not be launched at all, it was killed by a signal, it timed out under the
   consumer's own bound, or stdout did not parse. These are distinct from both of the

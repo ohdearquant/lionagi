@@ -72,8 +72,9 @@ When a missing dependency prevents startup, the entry point exits 78. With `--ma
 before the first `--`, it makes a best-effort attempt to emit an `unavailable` envelope with
 `error.detail.exit_code` set to 78 for diagnostics. The standard-library-only
 `_machine_envelope.py` helper holds the shared contract version, failure constructor and
-encoder. If the write fails, the exit stays 78 and stdout is empty, or holds bytes that do
-not parse when the write stopped partway. Outside machine mode,
+encoder. If the write fails, the exit stays 78 and stdout holds nothing, a complete envelope
+when only the trailing newline was lost, or bytes that do not parse when the write stopped
+earlier. Outside machine mode,
 stdout stays empty on this path. The startup diagnostic goes to stderr in both modes.
 
 ## `lionhub/src/lionhub/orchestration/mcp_config.py` — MCP server resolution at submit time

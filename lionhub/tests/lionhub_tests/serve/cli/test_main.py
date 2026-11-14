@@ -702,11 +702,13 @@ def test_a_machine_envelope_write_that_stops_partway_still_exits_78(monkeypatch)
 
     read_fd, write_fd = os.pipe()
     real_write = os.write
-    calls = []
+    sizes = []
 
     def short_then_fail(fd, data):
-        calls.append(len(data))
-        if len(calls) == 1:
+        if fd != write_fd:
+            return real_write(fd, data)
+        sizes.append(len(data))
+        if len(sizes) == 1:
             return real_write(fd, bytes(data[:10]))
         raise OSError("device full")
 
@@ -714,22 +716,24 @@ def test_a_machine_envelope_write_that_stops_partway_still_exits_78(monkeypatch)
         def fileno(self):
             return write_fd
 
-    monkeypatch.setattr(cli_main.os, "write", short_then_fail)
-    monkeypatch.setattr(cli_main.sys, "stdout", _Stdout())
     try:
-        code = cli_main._report_broken_environment(
-            ModuleNotFoundError("No module named 'absent_pkg'", name="absent_pkg"),
-            exit_code=EXIT_CODE_ENVIRONMENT_ERROR,
-            argv=["doctor", "--machine"],
-        )
+        with monkeypatch.context() as patched:
+            patched.setattr(cli_main.os, "write", short_then_fail)
+            patched.setattr(cli_main.sys, "stdout", _Stdout())
+            code = cli_main._report_broken_environment(
+                ModuleNotFoundError("No module named 'absent_pkg'", name="absent_pkg"),
+                exit_code=EXIT_CODE_ENVIRONMENT_ERROR,
+                argv=["doctor", "--machine"],
+            )
     finally:
-        monkeypatch.undo()
         os.close(write_fd)
     with os.fdopen(read_fd, "rb") as stream:
         written = stream.read()
 
     assert code == EXIT_CODE_ENVIRONMENT_ERROR
-    assert len(calls) == 2
-    assert written and len(written) == 10
+    # The first write was cut short, and the retry for the rest is the one that failed.
+    assert sizes[0] > 10
+    assert len(sizes) >= 2
+    assert len(written) == 10
     with pytest.raises(json.JSONDecodeError):
         json.loads(written)
