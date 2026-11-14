@@ -57,7 +57,12 @@ def stop(*_):
 signal.signal(signal.SIGTERM, stop)
 child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
 try:
-    Path(sys.argv[1]).write_text(json.dumps({'child': child.pid}))
+    ready = Path(sys.argv[1])
+    pending = ready.with_suffix(".tmp")
+    with pending.open("w") as output:
+        json.dump({"child": child.pid}, output)
+        output.flush()
+    pending.replace(ready)
     while True:
         time.sleep(0.01)
 finally:
