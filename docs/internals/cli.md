@@ -1801,10 +1801,12 @@ from a terminal run's schedule `on_success`/`on_fail` (engine records `chain_par
 going terminal is not necessarily the end of its chain, so once it lands the watch frontier is
 extended with any already-fired children and watching continues. A schedule that declares a
 chain action for the outcome but whose child hasn't fired yet gets a bounded grace window
-(`_CHAIN_GRACE_TICKS` poll ticks) before the chain is concluded on the parent's own exit code —
-a schedule with no matching chain action needs no grace wait at all. The aggregate exit code is
-**final-link-wins**: each chain's *last* link decides, not every link along the way (an
-`on_fail` recovery child that succeeds means the chain as a whole succeeded).
+(`_CHAIN_GRACE_TICKS` poll ticks) before the chain concludes on the parent's stored status.
+A schedule with no matching chain action needs no grace wait. The aggregate exit code
+follows the final link of each chain. A chain succeeds only when its final run has stored
+status `completed`, including an `on_fail` recovery child that succeeds. The printed
+`exit_code` remains the subprocess diagnostic, and chain discovery still uses it to
+decide whether to wait for a child.
 
 **`_MAX_CHAIN_DEPTH`** — mirrors the scheduler engine's own chain-depth cap
 (`lionhub/src/lionhub/orchestration/scheduler/engine.py` `_MAX_CHAIN_DEPTH`) — the engine never fires a chain
@@ -1843,15 +1845,14 @@ the wait can't hang on state that never comes back.
 bookkeeping: extends `pending` with any already-fired children, resolves roots with no matching
 chain action immediately, and starts/advances a grace countdown for roots awaiting one. Mutates
 `pending` in place, tick-by-tick, like `_poll_pending_once` mutates `done`. `chain_state` keys:
-`root_of` (run_id -> watched roots it accounts for), `chain_tail_exit` (root id -> most recent
-terminal exit_code), `awaiting_grace` (run_id -> `{roots, ticks_left}`), `resolved_roots`
+`root_of` (run_id -> watched roots it accounts for), `chain_tail_status` (root id -> most recent
+terminal status), `awaiting_grace` (run_id -> `{roots, ticks_left}`), `resolved_roots`
 (roots whose chain concluded), `schedule_cache` (memoized schedule lookups), `chain` (bool,
 chain-following on/off), `done_ids` (already-folded run ids — lets discovery tell an
-already-processed child apart from one still in `pending`), `exit_of` (run id -> its folded
-exit_code — unlike `chain_tail_exit`, keyed by root, this answers "what did run X itself exit
-with" for any folded run, watched root or not), `handoff` (parent run id -> the chain child its
-grace window handed off to — lets a later-discovering ancestor follow an already-processed link
-forward to wherever the chain currently lives instead of stopping at that link's own exit).
+already-processed child apart from one still in `pending`), `status_of` (run id -> stored
+terminal status of that folded run), `handoff` (parent run id -> the chain child its grace
+window handed off to, so an ancestor that discovers the child later can find the current
+tail of the chain).
 
 Only terminal runs that actually reached the engine's fire path can ever get a chain child: the
 engine only fires one when `chain_depth` is still under its cap AND the chain block (which sits
@@ -1869,7 +1870,7 @@ once the child (now the chain's tail) goes terminal. If the child already went t
 re-adding it to `pending` would print it again next tick — instead, the handoff trail is
 followed to the chain's current carrier first (a child's own grace window may itself have
 already handed off to a deeper link; stopping at this child would resolve the parent's root(s)
-with an intermediate exit code instead of the final link's). If the trail ends at a still-live
+with an intermediate status). If the trail ends at a still-live
 descendant in `pending`, the parent's root(s) ride on it. If it ends at a terminal carrier: join
 its already-open grace window if it has a matching chain action of its own, else the parent's
 root(s) resolve right along with it.

@@ -1553,13 +1553,13 @@ def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict
     each originally-watched id in `pending` starts out owning itself as its own root."""
     return {
         "root_of": {rid: {rid} for rid in pending},
-        "chain_tail_exit": {},
+        "chain_tail_status": {},
         "awaiting_grace": {},
         "resolved_roots": set(),
         "schedule_cache": {},
         "chain": chain,
         "done_ids": set(),
-        "exit_of": {},
+        "status_of": {},
         "handoff": {},
     }
 
@@ -1575,27 +1575,28 @@ async def _advance_chains(
     """Fold the newly-terminal tail of `done` into chain bookkeeping; returns
     the new `processed` index. See docs/internals/cli.md for the algorithm."""
     root_of = chain_state["root_of"]
-    chain_tail_exit = chain_state["chain_tail_exit"]
+    chain_tail_status = chain_state["chain_tail_status"]
     awaiting_grace = chain_state["awaiting_grace"]
     resolved_roots = chain_state["resolved_roots"]
     schedule_cache = chain_state["schedule_cache"]
     chain = chain_state["chain"]
     done_ids = chain_state["done_ids"]
-    exit_of = chain_state["exit_of"]
+    status_of = chain_state["status_of"]
     handoff = chain_state["handoff"]
 
     for row in done[processed:]:
         done_ids.add(row["id"])
-        exit_of[row["id"]] = row.get("exit_code")
+        status = row["status"]
+        status_of[row["id"]] = status
         roots = root_of.get(row["id"]) or {row["id"]}
         for root in roots:
-            chain_tail_exit[root] = row.get("exit_code")
+            chain_tail_status[root] = status
         # A cancelled/skipped/no-exit-code run can never get a chain child —
         # skip the grace window rather than burn it waiting on nothing.
         if (
             chain
             and row.get("chain_depth", 0) < parsing._MAX_CHAIN_DEPTH
-            and row.get("status") not in ("cancelled", "skipped")
+            and status not in ("cancelled", "skipped")
             and row.get("exit_code") is not None
             and await _schedule_declares_chain_action(
                 db, row["schedule_id"], row.get("exit_code"), cache=schedule_cache
@@ -1629,9 +1630,9 @@ async def _advance_chains(
                             # Still-live descendant in `pending` — ride on it.
                             root_of.setdefault(carrier, set()).update(info["roots"])
                         else:
-                            carrier_exit = exit_of.get(carrier)
+                            carrier_status = status_of[carrier]
                             for root in info["roots"]:
-                                chain_tail_exit[root] = carrier_exit
+                                chain_tail_status[root] = carrier_status
                             if carrier in awaiting_grace:
                                 # Join the carrier's own still-open grace
                                 # window instead of separate bookkeeping.
@@ -1779,7 +1780,7 @@ def _dispatch_wait(
             _sleep_interval(interval)
 
         resolved_roots = chain_state["resolved_roots"]
-        chain_tail_exit = chain_state["chain_tail_exit"]
+        chain_tail_status = chain_state["chain_tail_status"]
         from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 
         session_ok = all(EXIT_CODE_BY_STATUS.get(r["status"], 1) == 0 for r in session_done)
@@ -1788,9 +1789,11 @@ def _dispatch_wait(
         elif len(resolved_roots) < total_watched or len(session_done) < total_sessions:
             # Some watched chain (or session) never concluded before we stopped.
             exit_code = EXIT_RUNNING
-        elif all(chain_tail_exit.get(root) == 0 for root in resolved_roots) and session_ok:
-            # Final-link-wins: each resolved chain's most recently seen terminal
-            # exit_code decides, not every link along the way.
+        elif (
+            all(chain_tail_status.get(root) == "completed" for root in resolved_roots)
+            and session_ok
+        ):
+            # Final-link-wins: a chain succeeds if its final run is stored as completed.
             exit_code = 0
         else:
             exit_code = 1
