@@ -336,7 +336,7 @@ def test_a_linked_lionagi_home_configuration_entry_is_also_denied_at_its_target(
     assert f"Edit(/{skills.resolve()}/**)" in rules
 
 
-def test_the_tests_name_every_lionagi_home_configuration_entry():
+def test_the_home_configuration_lists_here_match_the_modules():
     assert set(_HOME_CONFIG_FILES) == set(child_sandbox._HOME_CONFIG_FILES)
     assert set(_HOME_CONFIG_DIRS) == set(child_sandbox._HOME_CONFIG_DIRS)
 
@@ -363,6 +363,34 @@ def test_links_inside_the_lionagi_home_configuration_directories_are_denied_at_t
     assert f"Edit(/{(source / 'skill-a').resolve()}/**)" in rules
     # A link whose target is missing still names it, so the child cannot create it.
     assert f"Edit(/{tmp_path.resolve() / 'missing' / 'gone.sh'})" in rules
+
+
+def test_every_link_in_a_lionagi_home_configuration_chain_is_denied(tmp_path, monkeypatch):
+    home = tmp_path / "lionagi-home"
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "hooks").mkdir()
+    (repo / "src" / "pre.sh").write_text("true\n", encoding="utf-8")
+    # home/hooks/pre.sh -> repo/hooks/pre.sh -> ../src/pre.sh
+    (repo / "hooks" / "pre.sh").symlink_to(Path("..") / "src" / "pre.sh")
+    (home / "hooks").mkdir(parents=True)
+    (home / "hooks" / "pre.sh").symlink_to(repo / "hooks" / "pre.sh")
+    (home / "operator_mcp.json").symlink_to(repo / "hooks" / "pre.sh")
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    real = repo.resolve()
+    for path in (real / "hooks" / "pre.sh", real / "src" / "pre.sh"):
+        assert f"Edit(/{path})" in rules
+
+
+def test_a_link_loop_in_the_lionagi_home_configuration_ends(tmp_path, monkeypatch):
+    home = tmp_path / "lionagi-home"
+    home.mkdir()
+    (home / "operator_mcp.json").symlink_to(home / "loop-b")
+    (home / "loop-b").symlink_to(home / "operator_mcp.json")
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{home.resolve() / 'loop-b'})" in rules
 
 
 def test_a_dangling_lionagi_home_configuration_link_is_denied_at_its_missing_target(

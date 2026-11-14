@@ -239,21 +239,52 @@ _HOME_CONFIG_FILES = (
 _HOME_CONFIG_DIRS = ("hooks", "playbooks", "skills")
 
 
-def _written_and_resolved(path: str) -> list[str]:
-    """``path`` as written and, when it differs, the path it resolves to.
+# More links than this in one chain is treated as a loop, as the operating system does.
+_MAX_LINK_HOPS = 40
 
-    Resolution is not strict, so a link whose target is missing still names that target.
+
+def _link_hops(path: str) -> list[str]:
+    """Every link ``path`` passes through, then the path it finally resolves to.
+
+    Each hop is named, not only the last, because replacing any link in a chain redirects
+    what the first one loads. Resolution is not strict, so a link whose target is missing
+    still names that target.
     """
-    names = [re.sub(r"/{2,}", "/", path).rstrip("/")]
+    hops: list[str] = []
+    current = os.path.abspath(os.path.expanduser(path))
+    for _ in range(_MAX_LINK_HOPS):
+        if not os.path.islink(current):
+            break
+        try:
+            target = os.readlink(current)
+        except OSError:
+            break
+        parent = os.path.realpath(os.path.dirname(current))
+        nxt = os.path.join(parent, target)
+        name = os.path.basename(nxt)
+        if name in ("", ".", ".."):
+            nxt = os.path.realpath(nxt)
+        else:
+            nxt = os.path.join(os.path.realpath(os.path.dirname(nxt)), name)
+        if nxt in hops:
+            break
+        hops.append(nxt)
+        current = nxt
     try:
-        names.append(str(Path(path).expanduser().resolve()))
+        hops.append(str(Path(path).expanduser().resolve()))
     except (OSError, RuntimeError):
         pass
-    return list(dict.fromkeys(names))
+    return list(dict.fromkeys(hops))
+
+
+def _written_and_resolved(path: str) -> list[str]:
+    """``path`` as written, then every link it passes through and the path it resolves to."""
+    written = re.sub(r"/{2,}", "/", path).rstrip("/")
+    return list(dict.fromkeys([written, *_link_hops(path)]))
 
 
 def _link_targets_under(root: str) -> list[str]:
-    """The resolved target of every link in the tree at ``root``, linked directories followed."""
+    """Every hop and target of each link in the tree at ``root``, linked directories followed."""
     targets: list[str] = []
     seen: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
@@ -265,7 +296,7 @@ def _link_targets_under(root: str) -> list[str]:
         for name in (*dirnames, *filenames):
             entry = os.path.join(dirpath, name)
             if os.path.islink(entry):
-                targets += _written_and_resolved(entry)[1:]
+                targets += _link_hops(entry)
     return targets
 
 
