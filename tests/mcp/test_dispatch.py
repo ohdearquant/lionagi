@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -740,6 +741,102 @@ def test_a_machine_verb_that_writes_something_other_than_json_is_an_error(monkey
     answer = call(ops=[{"op": "handshake"}])
     assert answer["ops"][0]["ok"] is False
     assert "one JSON value" in answer["ops"][0]["error"]["message"]
+
+
+@pytest.fixture
+def machine_process_result(monkeypatch):
+    def set_result(returncode, stdout, stderr=b""):
+        def run(argv, **kwargs):
+            assert argv == ["fixture-li", "handshake", "--machine"]
+            assert kwargs["capture_output"] is True
+            assert kwargs["check"] is False
+            return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+        monkeypatch.setattr(dispatch.config, "li_command", lambda: ["fixture-li"])
+        monkeypatch.setattr(dispatch.subprocess, "run", run)
+
+    return set_result
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [b"", b'{"ok": false,', b"null", b"\xff", b'{"ok": true, "contract_version": 1, "data": {}}'],
+    ids=["empty", "truncated", "not-an-envelope", "invalid-utf8", "contradictory-success"],
+)
+def test_machine_environment_exit_without_unavailable_envelope_is_unavailable(
+    machine_process_result, stdout
+):
+    machine_process_result(78, stdout, b"Example missing feature\n")
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "unavailable"
+    assert "handshake" in result["error"]["message"]
+    assert result["error"]["detail"] == {"exit_code": 78, "stderr": "Example missing feature\n"}
+
+
+def test_machine_environment_exit_preserves_unavailable_envelope_diagnostics(
+    machine_process_result,
+):
+    message = "Example missing feature"
+    detail = {"exit_code": 78, "feature": "optional-feature"}
+    envelope = {
+        "ok": False,
+        "contract_version": 1,
+        "data": None,
+        "error": {"kind": "unavailable", "message": message, "detail": detail},
+    }
+    # The source text contains a synthetic URL split by the tail boundary.
+    # Masking before trimming leaves only the placeholder and host.
+    stderr = "postgresql://fixture:" + "x" * 2010 + "@example.invalid\n" + "p" * 1980
+    machine_process_result(78, json.dumps(envelope).encode(), stderr.encode())
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "unavailable"
+    assert result["error"]["message"] == message
+    expected_stderr = ("postgresql://fixture:***@example.invalid\n" + "p" * 1980)[-2000:]
+    assert result["error"]["detail"] == {**detail, "stderr": expected_stderr}
+
+
+def test_machine_environment_exit_does_not_parse_oversized_result(
+    machine_process_result, monkeypatch
+):
+    stdout = json.dumps(
+        {
+            "ok": False,
+            "contract_version": 1,
+            "data": None,
+            "error": {
+                "kind": "unavailable",
+                "message": "The envelope exceeds the configured bound",
+                "detail": {"feature": "optional-feature"},
+            },
+        }
+    ).encode()
+    monkeypatch.setattr(dispatch, "MACHINE_OUTPUT_LIMIT", len(stdout) - 1)
+    machine_process_result(78, stdout, b"Example missing feature\n")
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "unavailable"
+    assert result["error"]["detail"] == {"exit_code": 78, "stderr": "Example missing feature\n"}
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "message"),
+    [(0, b"", "no machine result"), (1, b'{"ok": false,', "one JSON value")],
+)
+def test_other_machine_exit_codes_keep_transport_errors(
+    machine_process_result, returncode, stdout, message
+):
+    machine_process_result(returncode, stdout, b"Example diagnostic\n")
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "internal"
+    assert message in result["error"]["message"]
+    assert result["error"]["detail"] == {"stderr": "Example diagnostic\n"}
 
 
 def test_a_machine_command_that_cannot_be_launched_is_an_error(monkeypatch):

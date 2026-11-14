@@ -23,6 +23,7 @@ from typing import Any
 from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
+from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 
 from . import config, jobs, projection, roster
 from .verbs import (
@@ -50,6 +51,7 @@ MACHINE_TIMEOUT_SECONDS = 60.0
 # result is an explicit overflow error rather than a truncated JSON document that
 # would fail to parse with a misleading message.
 MACHINE_OUTPUT_LIMIT = 1_000_000
+_MACHINE_STDERR_TAIL = 2_000
 
 _STARTED_AT = now_utc().isoformat()
 _STARTED_MONOTONIC = time.time()
@@ -957,6 +959,41 @@ def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
         raise OpError("invalid_input", str(exc)) from exc
 
 
+def _machine_environment_error(
+    cli_path: str, completed: subprocess.CompletedProcess[bytes]
+) -> OpError:
+    """Classify a startup refusal from its exit status and keep usable diagnostics."""
+    from lionagi.state.engine import mask_credentials
+    from lionhub.serve.cli._machine_envelope import _CONTRACT_VERSION
+
+    stderr = mask_credentials(completed.stderr.decode("utf-8", "replace"))[-_MACHINE_STDERR_TAIL:]
+    detail = {"exit_code": completed.returncode, "stderr": stderr}
+    fallback = OpError("unavailable", f"`{cli_path}` could not start in this environment", detail)
+    if not completed.stdout or len(completed.stdout) > MACHINE_OUTPUT_LIMIT:
+        return fallback
+    try:
+        envelope = json.loads(completed.stdout.decode("utf-8"))
+    except (ValueError, RecursionError):
+        return fallback
+    if not isinstance(envelope, dict) or envelope.get("ok") is not False:
+        return fallback
+    version = envelope.get("contract_version")
+    if type(version) is not int or version != _CONTRACT_VERSION:
+        return fallback
+    if "data" not in envelope or envelope["data"] is not None:
+        return fallback
+    error = envelope.get("error")
+    if not isinstance(error, dict) or error.get("kind") != "unavailable":
+        return fallback
+    message = error.get("message")
+    envelope_detail = error.get("detail")
+    if not isinstance(message, str) or (
+        envelope_detail is not None and not isinstance(envelope_detail, dict)
+    ):
+        return fallback
+    return OpError("unavailable", message, {**(envelope_detail or {}), **detail})
+
+
 def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     """Run the verb's CLI path as a subprocess and return its versioned envelope.
 
@@ -980,6 +1017,8 @@ def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> di
     except OSError as exc:
         raise OpError("internal", f"could not launch `{verb.cli_path}`: {exc}") from exc
 
+    if completed.returncode == EXIT_CODE_ENVIRONMENT_ERROR:
+        raise _machine_environment_error(verb.cli_path, completed)
     if len(completed.stdout) > MACHINE_OUTPUT_LIMIT:
         raise OpError(
             "internal",
@@ -988,7 +1027,7 @@ def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> di
         )
 
     text = completed.stdout.decode("utf-8", "replace").strip()
-    stderr_tail = completed.stderr.decode("utf-8", "replace")[-2000:]
+    stderr_tail = completed.stderr.decode("utf-8", "replace")[-_MACHINE_STDERR_TAIL:]
     if not text:
         raise OpError(
             "internal",
