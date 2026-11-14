@@ -477,10 +477,13 @@ class CodingToolkit(LionTool):
         self._bound_nudge_engine = engine
 
         dormant_reads: dict[str, float] = {}
+        resolved_read_paths: dict[str, str | None] = {}
 
         def _invalidate_stale_reads(*, only_recorded: bool = False) -> None:
             """Drop file_state entries whose backing read was evicted/compacted —
             otherwise the read-before-edit guard stays satisfied for a read the model can no longer see."""
+            if not read_tracked and not dormant_reads:
+                return
             active = set(branch.progression)
             pile = msgs.messages
             active_paths: set[str] = set()
@@ -497,13 +500,19 @@ class CodingToolkit(LionTool):
                 p = args.get("path")
                 if not p:
                     continue
-                try:
-                    resolved = str(_resolve_workspace_path(p, workspace_root).resolve())
-                    recorded_paths.add(resolved)
-                    if m.id in active:
-                        active_paths.add(resolved)
-                except PermissionError:
+                if m.id not in resolved_read_paths:
+                    try:
+                        resolved_read_paths[m.id] = str(
+                            _resolve_workspace_path(p, workspace_root).resolve()
+                        )
+                    except PermissionError:
+                        resolved_read_paths[m.id] = None
+                resolved = resolved_read_paths[m.id]
+                if resolved is None:
                     continue
+                recorded_paths.add(resolved)
+                if m.id in active:
+                    active_paths.add(resolved)
             for p in [p for p in dormant_reads if p in active_paths]:
                 file_state[p] = dormant_reads.pop(p)
                 read_tracked.add(p)
