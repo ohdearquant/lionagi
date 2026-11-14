@@ -3,8 +3,8 @@
 - **Status**: Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: not-started. File containment for Claude Code children (the
-  `child_sandbox` settings key) is shipped separately and is the starting point this record
-  builds on; nothing in D1-D6 is implemented.
+  `child_sandbox` settings key) is delivered separately, by #4311, and is the starting point this
+  record builds on; nothing in D1-D6 is implemented.
 - **Area**: service-providers
 - **Date**: 2026-11-13
 - **Origin**: #4306, the end state for child-agent file-read containment (its second candidate,
@@ -94,7 +94,8 @@ profile, with these differences and requirements:
   identity, `PATH`, locale, terminal, temporary directory, and the proxy and certificate-bundle
   variables the provider needs to reach its service, a proxy address carrying a user name or
   password refusing the launch), copies each listed name from the launching process, and adds the
-  values this record sets (the empty start-up directory of D4, the self-update switch). A profile may
+  values this record sets (the snapshot shell and the empty start-up directory of D4, the
+  self-update switch). A profile may
   name further variables; naming one is the user's statement that its value is not a credential.
   Three things never enter, under any name, whatever a list says: a value lionagi resolved as an
   account credential under ADR-0126, a value lionagi loaded from a dotenv file, and a variable that
@@ -109,10 +110,16 @@ profile, with these differences and requirements:
 - **Files.** Reads of the configured credential locations are denied (the list the `child_sandbox`
   key resolves today: built-in defaults plus global additions, minus a profile's named exemptions).
   Writes are limited to the working directory and the configured caches, minus the files git, a
-  shell or the provider later executes or obeys there: the repository's `.git/config` and
-  `.git/hooks`, and the provider's own configuration and instruction files in the working directory
-  (for Claude Code, `.claude/`, `.mcp.json`, `CLAUDE.md` and `CLAUDE.local.md`), so that a command
-  cannot plant what the provider loads on a later turn. The profile, the launchers that apply it, and
+  shell or the provider later executes or obeys there, and the provider's own configuration and
+  instruction files in the working directory (for Claude Code, `.claude/`, `.mcp.json`, `CLAUDE.md`
+  and `CLAUDE.local.md`), so that a command cannot plant what the provider loads on a later turn.
+  For git that is the repository's git directory as a whole, not a list of files in it: the `.git`
+  entry of the working directory cannot be renamed, removed or replaced, whether it is a directory
+  or a gitfile; no `.git` entry can be created anywhere else in the working directory or the
+  caches; and inside the git directory, `config`, `config.worktree`, `hooks/`, `info/` and
+  `modules/` are not writable. When `.git` is a gitfile, the directory it names stays outside the
+  write set. Refs, objects and the index stay writable, so the child can commit; what a commit
+  carries reaches the launching process only as D6 allows. The profile, the launchers that apply it, and
   the provider CLI's installed files are never writable from inside, wherever they live, the
   configured caches included. The rules must hold on the
   resolved path, so that a symlink in the working directory does not widen them.
@@ -197,9 +204,15 @@ and starts the child with Claude Code's own sandbox off (`{"sandbox": {"enabled"
   Code: until acceptance row 13 passes for a named configuration, Claude Code does not qualify.
 - Shell set-up. Every routed Bash command sources an environment snapshot that Claude Code made by
   running the user's shell start-up files once, outside the prefix (that command never reached the
-  prefix in the measured run). lionagi starts the child with the shell's start-up directory pointed at
-  an empty directory of its own (`ZDOTDIR` for zsh), so the snapshot carries nothing from the user's
-  start-up files into the tools.
+  prefix in the measured run). zsh is the one supported shell for this mode. lionagi sets `SHELL` to
+  `/bin/zsh` and `ZDOTDIR` to an empty directory of its own in the child's environment, so the
+  snapshot reads no start-up file of the user's (zsh reads the user's `.zshenv`, `.zprofile`,
+  `.zshrc` and `.zlogin` from `ZDOTDIR` when it is set; the system files under `/etc` are not
+  writable by the user). No other shell's start-up files run: `BASH_ENV` and `ENV` are not passed,
+  and a profile that names `SHELL`, `ZDOTDIR`, `BASH_ENV` or `ENV` refuses the launch. Which shell
+  a provider version builds its snapshot with, and that it takes it from `SHELL`, is part of that
+  version's qualification (row 14); a version that builds it with another shell, or ignores `SHELL`,
+  is outside the qualified set and refuses the launch. Row 15 tests this.
 
 Measured on macOS with Claude Code 2.1.323 in one single-turn run, with a test keychain item and a
 test file. The probe profile was `(allow default)` with only the four credential-store Mach services
@@ -301,7 +314,12 @@ broken probe cannot read as a denial.
 9. The profile is no weaker than file containment: the file containment acceptance for file reads
    and writes, and its network refusal checks, pass unchanged under it, from a nested shell and a
    background descendant; writes to the repository's git configuration and hooks, and to the
-   provider's configuration and instruction files in the working directory, are refused. While
+   provider's configuration and instruction files in the working directory, are refused. The git
+   directory holds as a whole: the child tries to rename and to remove `.git`, to replace it with a
+   gitfile naming a directory inside the working directory, to create a `.git` in a subdirectory,
+   and to write a `core.fsmonitor` setting into `config`, `config.worktree` and `info/`, each
+   refused; a git command then run outside the profile in the working directory and in that
+   subdirectory starts no planted command; and a commit the child makes still succeeds. While
    outbound network is denied, reaching the allowed domains is a stated loss, not a check; turning on
    the filtering proxy requires the whole file containment network acceptance to pass through it.
 10. A nested provider CLI started from a tool fails to start a turn.
@@ -322,6 +340,14 @@ broken probe cannot read as a denial.
     every qualified version, so that a minimum check fails the row; the refusal comes before any turn,
     hook or MCP server starts. A write from inside a child to the provider CLI's installed files is
     refused.
+15. The shell set-up carries nothing from the user's start-up files (D4). Planted in the user's
+    home: zsh's `.zshenv`, `.zprofile` and `.zshrc`, bash's `.bashrc` and `.bash_profile`, and a
+    file named by `BASH_ENV` in the launching process, each reading the denied test file and
+    exporting a marker variable. With the launching process's `SHELL` set to zsh and then to bash,
+    no tool and no hook sees a marker, the denied file is not read, and the snapshot is shown to be
+    built by `/bin/zsh` with the empty start-up directory; a profile naming `SHELL` or `BASH_ENV`
+    refuses the launch; a control launch outside the mode shows the planted export does reach a
+    tool.
 
 ## Consequences
 
