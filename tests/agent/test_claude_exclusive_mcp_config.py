@@ -62,6 +62,37 @@ def test_dropped_bare_config_token_is_not_logged(caplog):
     assert marker not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "sk-ant-api03-AbCd/EfGh+IjKl/MnOp==",
+        "Authorization: Bearer abc/def",
+        "C:\\token\\value",
+    ],
+    ids=["base64", "header", "backslash"],
+)
+def test_dropped_secret_with_a_path_separator_is_not_logged(caplog, secret):
+    kwargs = {"mcp_config": secret}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "non-path config" in caplog.text
+    assert secret not in caplog.text
+    assert "abc/def" not in caplog.text and "EfGh" not in caplog.text
+
+
+def test_dropped_existing_config_file_without_json_suffix_is_named(caplog, tmp_path):
+    path = tmp_path / "agent-mcp.conf"
+    path.write_text("{}")
+    kwargs = {"mcp_config": str(path)}
+
+    with caplog.at_level(logging.WARNING):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    _assert_drop_warning(caplog, inherited_file=True, config_arg=str(path))
+
+
 def test_dropped_long_config_path_is_truncated(caplog):
     path = "configs/" + "a" * 1200 + ".json"
     kwargs = {"mcp_config": path}

@@ -1175,11 +1175,15 @@ def apply_forwarded_mcp_servers(
                                 or (unicodedata.category(char) == "Zs" and char != " ")
                                 for char in config_text
                             )
-                            path_shaped = (
-                                "/" in config_text
-                                or "\\" in config_text
-                                or candidate.endswith(".json")
-                            )
+                            # Named only when it reads as a config file: a .json
+                            # name, or a file that exists. A slash alone is not
+                            # enough, since base64 secrets and header values carry
+                            # one too.
+                            try:
+                                is_file = os.path.isfile(config_text)
+                            except (OSError, ValueError):
+                                is_file = False
+                            path_shaped = candidate.lower().endswith(".json") or is_file
                             if unsafe or not path_shaped:
                                 description = "non-path config"
                             elif len(config_text) > 1024:
