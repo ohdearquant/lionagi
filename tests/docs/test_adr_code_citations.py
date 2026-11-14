@@ -229,8 +229,6 @@ PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {
         "test_chain_decision_branch_follows_child",
         "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
         "test_chain_decision_survives_schedule_edit",
-        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
-        "test_chain_decision_unknown_version_is_legacy_with_one_warning",
     ),
 }
 

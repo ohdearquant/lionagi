@@ -273,6 +273,9 @@ inside a generic false result.
 
 ### D2 — One complete policy per managed entity
 
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+proposes refusing terminal-to-nonterminal overrides for schedule runs.
+
 One registry maps each entity type to its table, vocabulary, initial states, terminal set, allowed
 edges, same-status rule, allowed same-row patch fields, and reason-code namespace.
 
