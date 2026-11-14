@@ -765,7 +765,7 @@ class _BoundedCleanupResult:
 
 async def _bounded_cli_cleanup(
     proc: Any,
-    spawned: SpawnedProcess,
+    spawned: SpawnedProcess | None,
     *,
     helpers: tuple[tuple[str, asyncio.Task | None], ...] = (),
     stderr_task: asyncio.Task | None = None,
@@ -780,6 +780,8 @@ async def _bounded_cli_cleanup(
     final synchronous backstop; no fresh scan is used on the cutoff path. The
     spawn-bound witness capture walks the process table on a worker thread so
     the event loop keeps running, and is bounded by one grace period.
+    ``spawned`` is None when no identity could be read for the child; there is
+    then no group authority, and only the direct child is signalled.
     """
     result = _BoundedCleanupResult()
     loop = asyncio.get_running_loop()
@@ -810,20 +812,21 @@ async def _bounded_cli_cleanup(
     witnesses: tuple[tuple[int, float], ...] = ()
     capture: asyncio.Future | None = None
     try:
-        # The process-table walk runs on a worker thread so the event loop keeps
-        # serving other work, and a shield keeps the inherited AnyIO deadline from
-        # abandoning it. A direct Task.cancel is still recorded by wait_until.
-        capture = loop.run_in_executor(None, _witnesses_for_spawn, proc, spawned)
-        with CancelScope(shield=True):
-            await wait_until({capture}, min(group_deadline, loop.time() + grace))
-        if capture.done():
-            witnesses = capture.result()
-        else:
-            # A walk that outlives its budget yields no group authority; its late
-            # result is discarded rather than trusted after the fact.
-            witness_unconfirmed = True
-            capture.add_done_callback(_consume_future_outcome)
-            log.warning("CLI cleanup witness capture exceeded its budget (pid %s)", proc.pid)
+        if spawned is not None:
+            # The process-table walk runs on a worker thread so the event loop keeps
+            # serving other work, and a shield keeps the inherited AnyIO deadline from
+            # abandoning it. A direct Task.cancel is still recorded by wait_until.
+            capture = loop.run_in_executor(None, _witnesses_for_spawn, proc, spawned)
+            with CancelScope(shield=True):
+                await wait_until({capture}, min(group_deadline, loop.time() + grace))
+            if capture.done():
+                witnesses = capture.result()
+            else:
+                # A walk that outlives its budget yields no group authority; its late
+                # result is discarded rather than trusted after the fact.
+                witness_unconfirmed = True
+                capture.add_done_callback(_consume_future_outcome)
+                log.warning("CLI cleanup witness capture exceeded its budget (pid %s)", proc.pid)
     except BaseException as exc:
         # No group authority can be derived after a failed observation, but the
         # direct child and helper tasks still need bounded, gated cleanup.
@@ -1474,25 +1477,42 @@ async def ndjson_from_cli(
             if admission is not None:
                 await admission.record(_worker_spawn_identity(observed))
             return child, observed
-        except BaseException:
-            try:
-                if not attempted:
-                    lease.release()
-                elif child is None:
-                    # An exception with no handle can occur after OS launch.
-                    # Without positive provenance it proves no group absence.
-                    _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED, launch_outcome=True)
-                else:
-                    outcome = _ChildGroupCleanup.UNCONFIRMED
-                    try:
-                        outcome = await end_child_group(child, spawned=observed)
-                    except BaseException:
-                        log.warning("failed worker admission cleanup remains unconfirmed")
-                    _finish_child_lease(lease, outcome)
-            finally:
-                if admission is not None:
-                    admission.finish()
-            raise
+        except BaseException as exc:
+            spawn_error = exc
+        # The handler is closed before cleanup awaits, so the failure is not the
+        # exception under handling while the child's group is being ended.
+        cleanup = None
+        cleanup_error = None
+        outcome = _ChildGroupCleanup.UNCONFIRMED
+        try:
+            if not attempted:
+                lease.release()
+            elif child is None:
+                # An exception with no handle can occur after OS launch.
+                # Without positive provenance it proves no group absence.
+                _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED, launch_outcome=True)
+            else:
+                # Shielded from this task's own cancellation and bounded by one
+                # budget, so a cancelled launch still ends the child's group.
+                try:
+                    cleanup = await _bounded_cli_cleanup(child, observed)
+                except BaseException as exc:
+                    cleanup_error = exc
+                if cleanup_error is not None or (cleanup is not None and cleanup.error is not None):
+                    log.warning("failed worker admission cleanup remains unconfirmed")
+                outcome = _finish_bounded_lease(lease, cleanup)
+        finally:
+            if admission is not None:
+                admission.finish()
+        _raise_bounded_cleanup_result(
+            cleanup,
+            cleanup_error,
+            spawn_error,
+            outcome,
+            admission,
+            label="worker admission cleanup",
+        )
+        raise spawn_error
 
     spawn_coro = _spawn_and_register()
     try:

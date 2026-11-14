@@ -413,3 +413,131 @@ async def test_early_close_reports_unconfirmed_admitted_group_cleanup(
         assert lease.released == 0
     finally:
         await stream.aclose()
+
+
+class _FailingAdmission:
+    """A worker admission whose durable registration step fails."""
+
+    def __init__(self, failure, tasks):
+        self._failure = failure
+        self.tasks = tasks
+        self.finished = 0
+
+    async def record(self, _identity):
+        raise self._failure
+
+    def retain(self, task):
+        self.tasks.append(task)
+
+    def finish(self):
+        self.finished += 1
+
+
+def _install_failing_admission(monkeypatch, process, failure, tasks):
+    admission = _FailingAdmission(failure, tasks)
+    monkeypatch.setattr(
+        cli, "_get_cli_worker_recorder", lambda: SimpleNamespace(admit=lambda: admission)
+    )
+    monkeypatch.setattr(cli, "_worker_spawn_identity", lambda _spawned: {"pid": process.pid})
+    return admission
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_failed_admission_cleanup_lets_group_teardown_finish(
+    fake_observer_boundary, monkeypatch
+):
+    """A cancelled spawn task still ends the child's group after a failed registration."""
+    process, lease, _seen = fake_observer_boundary
+    failure = RuntimeError("registration refused")
+    tasks = []
+    admission = _install_failing_admission(monkeypatch, process, failure, tasks)
+    entered, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    interrupted = []
+
+    async def fake_end(child, *, spawned=None, **_kwargs):
+        assert child is process and spawned.pid == process.pid
+        entered.set()
+        try:
+            await release.wait()
+        except BaseException as exc:
+            interrupted.append(type(exc).__name__)
+            raise
+        completed.set()
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    monkeypatch.setattr(cli, "end_child_group", fake_end)
+    stream = cli.ndjson_from_cli(["fake-cli"], env={})
+    consumer = asyncio.create_task(stream.__anext__())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert len(tasks) == 1
+        spawn_task = tasks[0]
+        spawn_task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(asyncio.wait({spawn_task}), 2)
+        assert interrupted == []
+        assert completed.is_set()
+        assert spawn_task.cancelled()
+        assert lease.recorded == [(process.pid, 1.0)] and lease.released == 1
+        assert admission.finished == 1
+    finally:
+        release.set()
+        if not consumer.done():
+            consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome, released",
+    [("CONFIRMED_EMPTY", 1), ("UNCONFIRMED", 0)],
+)
+async def test_failed_admission_cleanup_raises_the_original_error_and_finishes_lease_from_outcome(
+    fake_observer_boundary, monkeypatch, outcome, released
+):
+    process, lease, _seen = fake_observer_boundary
+    failure = RuntimeError("registration refused")
+    admission = _install_failing_admission(monkeypatch, process, failure, [])
+
+    async def fake_end(child, *, spawned=None, **_kwargs):
+        assert child is process and spawned.pid == process.pid
+        await asyncio.sleep(0)
+        return cli._ChildGroupCleanup[outcome]
+
+    monkeypatch.setattr(cli, "end_child_group", fake_end)
+    stream = cli.ndjson_from_cli(["fake-cli"], env={})
+    with pytest.raises(RuntimeError) as caught:
+        await stream.__anext__()
+    assert caught.value is failure
+    assert lease.released == released
+    assert admission.finished == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_identity_observation_still_ends_the_group_without_witnesses(
+    fake_observer_boundary, monkeypatch
+):
+    """No identity was read, yet the child's group is still ended under the bounded teardown."""
+    process, lease, _seen = fake_observer_boundary
+    admission = _install_failing_admission(monkeypatch, process, RuntimeError("unused"), [])
+    ended = []
+
+    def unreadable(_pid, **_kwargs):
+        raise OSError("identity unreadable")
+
+    async def fake_end(child, *, spawned=None, witnesses=None, **_kwargs):
+        assert child is process
+        await asyncio.sleep(0)
+        ended.append((spawned, witnesses))
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    monkeypatch.setattr(cli, "observe_spawned", unreadable)
+    monkeypatch.setattr(cli, "end_child_group", fake_end)
+    stream = cli.ndjson_from_cli(["fake-cli"], env={})
+    with pytest.raises(cli._WorkerSpawnAdmissionError, match="identity observation failed"):
+        await stream.__anext__()
+    [(spawned, witnesses)] = ended
+    assert spawned is None and not witnesses
+    assert lease.released == 1
+    assert admission.finished == 1
