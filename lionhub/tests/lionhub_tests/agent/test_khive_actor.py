@@ -67,35 +67,7 @@ def test_pack_flags_in_the_arguments_are_kept():
     args = ["mcp", "--pack", "kg", "--pack", "comm", "--pack=comm"]
     servers = {"khive": _khive({"KHIVE_PACKS": "kg"}, args=args)}
     result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["args"] == [*args, "--actor", "agent:x"]
-
-
-@pytest.mark.parametrize(
-    ("args", "expected"),
-    [
-        (["mcp"], ["mcp", "--actor", "agent:reviewer"]),
-        (["mcp", "--actor", "other"], ["mcp", "--actor", "agent:reviewer"]),
-        (["mcp", "--actor=other"], ["mcp", "--actor", "agent:reviewer"]),
-        (["mcp", "--actor"], ["mcp", "--actor", "agent:reviewer"]),
-        (
-            ["mcp", "--actor=other", "--pack", "kg"],
-            ["mcp", "--pack", "kg", "--actor", "agent:reviewer"],
-        ),
-        (
-            ["mcp", "--actor", "--pack", "kg"],
-            ["mcp", "--pack", "kg", "--actor", "agent:reviewer"],
-        ),
-        (
-            ["mcp", "--actor", "a", "--pack", "kg", "--actor=b"],
-            ["mcp", "--pack", "kg", "--actor", "agent:reviewer"],
-        ),
-    ],
-)
-def test_actor_argument_overrides_directory_and_server_actor(args, expected):
-    server = _khive({"KHIVE_ACTOR": "other"}, args=args)
-    result = attribute_khive_servers({"khive": server}, "agent:reviewer")
-    assert result["khive"]["args"] == expected
-    assert result["khive"]["env"]["KHIVE_ACTOR"] == "agent:reviewer"
+    assert result["khive"]["args"] == args
 
 
 def test_an_existing_actor_is_replaced():
@@ -129,7 +101,7 @@ def test_other_keys_of_the_server_pass_through():
     result = attribute_khive_servers(servers, "agent:x")
     server = result["khive"]
     assert server["command"] == "/usr/local/bin/kkernel"
-    assert server["args"] == ["mcp", "--actor", "agent:x"]
+    assert server["args"] == ["mcp"]
     assert server["cwd"] == "/work"
     assert server["timeout"] == 30
 
@@ -253,28 +225,16 @@ def test_another_servers_khive_actor_is_still_a_secret_field(codex_env):
 
 
 @pytest.mark.parametrize(
-    ("args", "expected"),
+    "args",
     [
-        (["mcp", "--namespace", "other"], ["mcp", "--actor", "agent:reviewer"]),
-        (
-            ["mcp", "--namespace=other", "--pack", "kg"],
-            ["mcp", "--pack", "kg", "--actor", "agent:reviewer"],
-        ),
-        (["mcp", "--actor", "a", "--namespace", "b"], ["mcp", "--actor", "agent:reviewer"]),
+        ["mcp"],
+        ["mcp", "--actor", "team:runner"],
+        ["mcp", "--namespace=team", "--pack", "kg"],
     ],
 )
-def test_a_configured_namespace_is_replaced_by_the_childs_own(args, expected):
-    # `--actor` is the server's default namespace and `--namespace` its older alias,
-    # so the child's actor is the only one left on the command line.
-    result = attribute_khive_servers(
-        {"khive": {"command": "kkernel", "args": args}}, "agent:reviewer"
-    )
-    assert result["khive"]["args"] == expected
-
-
-@pytest.mark.parametrize("args", [[], ["doctor"], ["--pack", "kg"]])
-def test_an_entry_that_does_not_run_mcp_gets_only_the_variable(args):
-    # Only the `mcp` subcommand's parser accepts `--actor`; the top-level one refuses it.
+def test_the_server_arguments_are_left_as_configured(args):
+    # `--actor` and `--namespace` choose the server's default namespace, so the
+    # child's actor travels only in the attribution variable.
     result = attribute_khive_servers({"khive": {"command": "kkernel", "args": args}}, "agent:x")
     assert result["khive"]["args"] == args
     assert result["khive"]["env"]["KHIVE_ACTOR"] == "agent:x"

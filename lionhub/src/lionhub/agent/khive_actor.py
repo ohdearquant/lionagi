@@ -2,18 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Give the khive MCP servers a child agent is handed an actor of their own.
 
-khive resolves its default namespace as: the ``--actor`` flag (``--namespace``
-is its older alias, and ``--actor`` wins over it), then ``[actor] id`` in
-``<cwd>/.khive/config.toml``, then anonymous. The ``KHIVE_ACTOR`` environment
-variable sets attribution only, never the namespace. A child's ``kkernel mcp``
-server is given ``--actor agent:<profile>``, so the child's attribution and its
-default namespace are both its own: reads and writes that name no namespace use
-``agent:<profile>``, not the namespace of its working directory or ``local``.
-Any ``--actor`` or ``--namespace`` already in the server's arguments is
-replaced. The environment variable is set too, and is all an entry gets when it
-has no argument list or does not run the ``mcp`` subcommand, whose parser is the
-one that accepts the flag. The server's packs are left as configured, so a child
-keeps every verb its server loads, ``comm`` included, under its own actor.
+khive resolves its actor as: the ``--actor`` flag, then ``[actor] id`` in
+``<cwd>/.khive/config.toml``, then the ``KHIVE_ACTOR`` environment variable,
+then anonymous. Setting ``KHIVE_ACTOR`` in a server's environment is therefore
+a fallback: a child whose directory holds an actor config acts as that actor,
+and every other child acts as ``agent:<profile>`` instead of anonymously or as
+whoever launched it. The variable sets attribution only: khive takes a server's
+default namespace from ``--actor``, ``--namespace`` or the directory config, never
+from ``KHIVE_ACTOR``, so the server's arguments are left as configured and the
+child reads and writes the same namespace it would without this module. The
+server's packs are left as configured too, so a child keeps every verb its server
+loads, ``comm`` included, under its own actor.
 """
 
 from __future__ import annotations
@@ -58,55 +57,24 @@ def is_khive_server(spec: Any) -> bool:
     return isinstance(command, str) and os.path.basename(command) == _KHIVE_COMMAND
 
 
-_NAMESPACE_FLAGS = ("--actor", "--namespace")
-
-
-def _without_actor_flags(args: list[Any]) -> list[Any]:
-    """``args`` without any ``--actor`` or ``--namespace`` flag, in ``--flag=<id>``, ``--flag <id>`` or bare form."""
-    kept: list[Any] = []
-    index = 0
-    while index < len(args):
-        value = args[index]
-        if value in _NAMESPACE_FLAGS:
-            following = args[index + 1] if index + 1 < len(args) else None
-            has_value = isinstance(following, str) and not following.startswith("-")
-            index += 2 if has_value else 1
-            continue
-        if isinstance(value, str) and value.startswith(
-            tuple(f"{flag}=" for flag in _NAMESPACE_FLAGS)
-        ):
-            index += 1
-            continue
-        kept.append(value)
-        index += 1
-    return kept
-
-
 def _attributed(spec: Mapping[str, Any], actor: str) -> dict[str, Any]:
-    """A shallow copy of a khive server entry whose arguments and env name ``actor``."""
-    args = spec.get("args")
-    if isinstance(args, (list, tuple)) and "mcp" in args:
-        args = [*_without_actor_flags(list(args)), "--actor", actor]
+    """A shallow copy of a khive server entry whose env names ``actor``."""
     existing = spec.get("env")
     env: dict[str, Any] = dict(existing) if isinstance(existing, Mapping) else {}
     env[KHIVE_ACTOR_ENV] = actor
     server = dict(spec)
-    if args is not None:
-        server["args"] = args
     server["env"] = env
     return server
 
 
 def attribute_khive_servers(servers: Mapping[str, Any] | None, actor: str) -> dict[str, Any] | None:
-    """Copy ``servers`` with each khive server's actor flag and environment set.
+    """Copy ``servers`` with each khive server's ``KHIVE_ACTOR`` set to ``actor``.
 
     Returns None for None. Otherwise returns a new mapping in which every server
     whose ``command`` basename is ``kkernel`` is a shallow copy with a new ``env``
-    whose ``KHIVE_ACTOR`` is ``actor``, replacing any value there; when its
-    arguments run the ``mcp`` subcommand they also end in ``--actor`` ``actor``,
-    with any earlier ``--actor`` or ``--namespace`` removed, which makes ``actor``
-    the server's default namespace as well as its attribution. Every other server, and every other key, is passed through
-    unchanged. The input is never mutated.
+    whose ``KHIVE_ACTOR`` is ``actor``, replacing any value there. Every other
+    server, and every other key, is passed through unchanged. The input is never
+    mutated.
     """
     if servers is None:
         return None
