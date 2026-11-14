@@ -1218,19 +1218,24 @@ async def _prune(
                 # so a message no surviving referent mentions is unreachable.
                 # This runs while the orphaned progressions still exist, since
                 # their collections are what says which messages are in play.
+                members = (
+                    "json_each(p.collection) AS members"
+                    if db.dialect == "sqlite"
+                    else "jsonb_array_elements_text(p.collection::jsonb) AS members(value)"
+                )
                 deleted_messages = (
                     await conn.execute(
                         text(
-                            "DELETE FROM messages WHERE id IN ("
-                            "  SELECT value FROM progressions, json_each(progressions.collection)"
-                            "  WHERE progressions.id IN (SELECT id FROM prune_orphan_progressions)"
+                            "DELETE FROM messages WHERE id IN ("  # noqa: S608 -- fixed dialect fragments
+                            f"  SELECT members.value FROM progressions p CROSS JOIN {members}"
+                            "  WHERE p.id IN (SELECT id FROM prune_orphan_progressions)"
                             "  UNION"
                             "  SELECT id FROM prune_direct_messages"
                             ") AND id NOT IN ("
-                            "  SELECT value FROM progressions, json_each(progressions.collection)"
-                            "  WHERE progressions.id NOT IN"
+                            f"  SELECT members.value FROM progressions p CROSS JOIN {members}"
+                            "  WHERE p.id NOT IN"
                             "    (SELECT id FROM prune_orphan_progressions)"
-                            "    AND json_each.value IS NOT NULL"
+                            "    AND members.value IS NOT NULL"
                             ") AND id NOT IN ("
                             "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
                             "  UNION"
