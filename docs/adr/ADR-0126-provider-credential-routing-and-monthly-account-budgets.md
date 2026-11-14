@@ -1741,10 +1741,15 @@ cancellation takes the existing classified settlement, including Amendment 12's
 atomic billing block for a qualifying rejection. A deadline or read failure that
 returns the ordinary unread-body result takes that existing settlement path.
 
-**Rule 4. Caller cancellation.** Except for the limits in rule 6, a caller
-cancellation observed in the read, response exit or session exit reaches the
-caller and is never converted to a transport error or retried. Make at most
-one accounting call for the attempt.
+**Rule 4. Caller cancellation.** Caller cancellation is a cancellation
+requested by the caller's own scope or task. The classifier's own read deadline
+is never caller cancellation, including when its cancellation appears in the
+chain of an exception that replaces it. Except for the limits in rule 6, a
+caller cancellation observed in the read, response exit or session exit reaches
+the caller and is never converted to a transport error or retried. Make at most
+one accounting call for the attempt. A ledger failure or a cleanup failure
+during this unwind cannot replace the caller's cancellation or trigger another
+settlement.
 
 **Rule 5. Provider data.** Keep body bytes and provider text out of the exception,
 its chain and adapter-owned traceback locals, including on rule 6 paths.
@@ -1755,8 +1760,8 @@ file and emits no capture event.
 4.15.1 and CPython 3.10 through 3.14, a native cancellation requested after
 the read deadline cancels its wait and before the task resumes can merge with
 the deadline. The caller's cancellation is then undelivered at that point.
-An ordinary cleanup error that clears every exception link to a native
-cancellation can also leave it unobserved. In either case, the attempt takes
+An ordinary cleanup error that clears every exception link to the caller's
+native cancellation can also leave it unobserved. In either case, the attempt takes
 the ordinary deadline or failure path. For HTTP 529, that may include a
 further retry within the existing retry budget and reservation rules.
 This is the only exception to Decision 4's sentence that cancellation does not
@@ -1800,8 +1805,8 @@ A native cancellation arriving after the accounting call starts and before
 worker admission can still leave an open attempt with no recorded reason or
 status, as in Amendment 5.
 
-When native cancellation merges with the read deadline or cleanup erases
-every link to it before it is observed, the attempt takes the ordinary deadline
+When the caller's native cancellation merges with the read deadline or cleanup
+erases every link to it before it is observed, the attempt takes the ordinary deadline
 or failure path. For HTTP 529, that may include a further retry within the
 existing retry budget and reservation rules. This is the only exception to
 Decision 4's sentence that cancellation does not retry or move the request to
@@ -1824,7 +1829,9 @@ for any deadline 529.
   billing-prefix case. Verify existing classified settlement and the atomic block.
   Repeat with cancellation after the classifier returns and before or during
   settlement. Verify the classified outcome and the atomic block for a qualifying
-  400, subject to the accounting shield's stated limits.
+  400, subject to the accounting shield's stated limits. Expire the read
+  deadline and raise a replacing read or close error during unwinding; verify
+  the ordinary unread-body result and that no cancellation is re-raised.
 - Rule 4. During observed cancellation, raise ordinary exceptions in read
   cleanup, response close and session close. Enable retries and verify one
   transport request, no transport error and one accounting call. The native
