@@ -666,6 +666,11 @@ the same transaction as the definition write. Metadata carries provenance and a 
 snapshot, not a copy of the schedule prompt. The ledger entity id has no definition foreign
 key, so deletion retains its event and all previous history. No new table or column is needed.
 
+[ADR-0095's proposed enrollment amendment](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md#proposed-partial-amendment-commit-ordered-consumer-enrollment)
+keeps the deletion event in the live ledger to prevent definition ID reuse.
+Its own-history receipt records the prior history moved out of the live ledger
+by the same write transaction.
+
 The adapter uses `same_status=noop`: repeated enable/disable adds no event. Configuration,
 cursor, health and firing-time writes also add no state event. A typed same-state transition
 returns applied with no transition id; compatibility methods retain their existing row-match
