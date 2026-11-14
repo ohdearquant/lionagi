@@ -22,14 +22,24 @@ other tables under the same ``lock_timeout``, so the refused lock can be on any 
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import time
 from typing import TYPE_CHECKING
 
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncConnection
+
     from lionagi.state.db import StateDB
 
+logger = logging.getLogger(__name__)
+
+_DATABASE_IN_USE = "55006"
+_DROP_TIMEOUT = 7.0
+_DROP_RETRY_DELAY = 0.1
 _LOCK_NOT_AVAILABLE = "55P03"
 _BUDGET_SECONDS = 5.0
 _INITIAL_DELAY = 0.05
@@ -57,6 +67,50 @@ WHERE l.locktype = 'relation'
 ORDER BY l.pid, l.relation::regclass::text, l.mode
 LIMIT :limit
 """
+
+_DATABASE_BACKENDS = text(
+    """
+    SELECT CASE
+        WHEN usename IS NOT NULL THEN usename = current_user
+        WHEN backend_type = 'autovacuum worker' THEN false
+        ELSE NULL
+    END
+    FROM pg_stat_activity
+    WHERE datname = :name
+    """
+)
+
+
+async def drop_test_database(conn: AsyncConnection, name: str) -> None:
+    """Drop a test database from an autocommit connection to a different database."""
+    identifier = conn.dialect.identifier_preparer.quote_identifier(name)
+    # Plain DROP waits for disconnects and handles autovacuum without asking
+    # the test role to signal a backend owned by another role.
+    drop = f"DROP DATABASE {identifier}"
+    try:
+        await asyncio.wait_for(conn.exec_driver_sql(drop), _DROP_TIMEOUT)
+        return
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) != _DATABASE_IN_USE:
+            raise
+
+    await asyncio.sleep(_DROP_RETRY_DELAY)
+    try:
+        await asyncio.wait_for(conn.exec_driver_sql(drop), _DROP_TIMEOUT)
+    except DBAPIError as exc:
+        if (
+            getattr(exc.orig, "sqlstate", None) != _DATABASE_IN_USE
+            or os.environ.get("GITHUB_ACTIONS") != "true"
+            or not os.environ.get("LIONAGI_TEST_PG_RUNNER")
+        ):
+            raise
+        backends = await asyncio.wait_for(
+            conn.execute(_DATABASE_BACKENDS, {"name": name}), _DROP_TIMEOUT
+        )
+        ownership = backends.scalars().all()
+        if not ownership or any(owned is not False for owned in ownership):
+            raise
+        logger.warning("Disposable test database %s still has other roles connected", name)
 
 
 async def delete_imported_session_with_retry(

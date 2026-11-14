@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import create_async_engine
 
 import lionagi.state.db as state_db
 from lionagi.state.lifecycle.deliveries import (
@@ -30,6 +31,7 @@ from lionagi.state.lifecycle.deliveries import (
     retire_consumer,
 )
 from lionhub.orchestration.scheduler import db_maintenance, settings
+from tests.state._pg_cleanup import drop_test_database
 from tests.state.test_terminal_delivery_retention import CONSUMER, _mixed_session, _terminal
 from tests.state.test_terminal_delivery_retention import store as sqlite_store  # noqa: F401
 
@@ -47,33 +49,34 @@ _WAITING_LOCK = (
 
 @asynccontextmanager
 async def _fresh_store(pg_url, monkeypatch):
-    asyncpg = pytest.importorskip("asyncpg")
+    pytest.importorskip("asyncpg")
     url = make_url(pg_url)
-    admin = url.set(drivername="postgresql").render_as_string(hide_password=False)
     name = f"retention_{uuid.uuid4().hex[:12]}"
-    conn = await asyncpg.connect(admin, timeout=5, command_timeout=5)
-    created = False
+    admin = create_async_engine(
+        url.set(drivername="postgresql+asyncpg"),
+        isolation_level="AUTOCOMMIT",
+        connect_args={"timeout": 5},
+    )
     try:
-        await conn.execute(f'CREATE DATABASE "{name}"')
-        created = True
-        store_url = url.set(database=name).render_as_string(hide_password=False)
-        raw_url = url.set(database=name, drivername="postgresql").render_as_string(
-            hide_password=False
-        )
-        monkeypatch.setattr(
-            state_db,
-            "settings",
-            state_db.settings.model_copy(update={"LIONAGI_STATE_DB_URL": store_url}),
-        )
-        monkeypatch.setattr(settings, "PRUNE_ARCHIVE_DIR", None)
-        monkeypatch.setattr(settings, "PRUNE_CHUNK_ROWS", 5)
-        yield store_url, raw_url
+        async with admin.connect() as conn:
+            await conn.exec_driver_sql(f'CREATE DATABASE "{name}"')
+            try:
+                store_url = url.set(database=name).render_as_string(hide_password=False)
+                raw_url = url.set(database=name, drivername="postgresql").render_as_string(
+                    hide_password=False
+                )
+                monkeypatch.setattr(
+                    state_db,
+                    "settings",
+                    state_db.settings.model_copy(update={"LIONAGI_STATE_DB_URL": store_url}),
+                )
+                monkeypatch.setattr(settings, "PRUNE_ARCHIVE_DIR", None)
+                monkeypatch.setattr(settings, "PRUNE_CHUNK_ROWS", 5)
+                yield store_url, raw_url
+            finally:
+                await drop_test_database(conn, name)
     finally:
-        try:
-            if created:
-                await conn.execute(f'DROP DATABASE "{name}" WITH (FORCE)')
-        finally:
-            await conn.close()
+        await admin.dispose()
 
 
 @asynccontextmanager

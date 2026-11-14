@@ -39,15 +39,17 @@ async def _manage_runner_database(admin_url, worker_url, *, create):
     from sqlalchemy.engine import make_url
     from sqlalchemy.ext.asyncio import create_async_engine
 
+    from tests.state._pg_cleanup import drop_test_database
+
     name = make_url(worker_url).database
     engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
-            identifier = conn.dialect.identifier_preparer.quote_identifier(name)
             if create:
+                identifier = conn.dialect.identifier_preparer.quote_identifier(name)
                 await conn.exec_driver_sql(f"CREATE DATABASE {identifier}")
             else:
-                await conn.exec_driver_sql(f"DROP DATABASE {identifier} WITH (FORCE)")
+                await drop_test_database(conn, name)
     finally:
         await engine.dispose()
 

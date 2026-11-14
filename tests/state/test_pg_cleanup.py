@@ -19,9 +19,11 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError
 
 from lionagi.state.db import StateDB
@@ -43,6 +45,67 @@ class _DriverError(Exception):
     def __init__(self, message: str, sqlstate: str) -> None:
         super().__init__(message)
         self.sqlstate = sqlstate
+
+
+@pytest.mark.asyncio
+async def test_drop_database_retries_without_forcing_backends(monkeypatch):
+    monkeypatch.setattr(_pg_cleanup, "_DROP_RETRY_DELAY", 0)
+    in_use = DBAPIError(None, None, _DriverError("database in use", "55006"))
+    conn = SimpleNamespace(
+        dialect=postgresql.dialect(),
+        exec_driver_sql=AsyncMock(side_effect=[in_use, None]),
+        execute=AsyncMock(),
+    )
+
+    await _pg_cleanup.drop_test_database(conn, "test_database")
+
+    assert [call.args for call in conn.exec_driver_sql.await_args_list] == [
+        ('DROP DATABASE "test_database"',),
+        ('DROP DATABASE "test_database"',),
+    ]
+    conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("disposable", "owners", "sqlstate", "deferred", "attempts"),
+    [
+        (True, [False], "55006", True, 2),
+        (True, [False, True], "55006", False, 2),
+        (True, [None], "55006", False, 2),
+        (True, [], "55006", False, 2),
+        (False, [False], "55006", False, 2),
+        (True, [False], "42501", False, 1),
+    ],
+)
+async def test_drop_database_defers_only_foreign_connections_on_disposable_runner(
+    monkeypatch, caplog, disposable, owners, sqlstate, deferred, attempts
+):
+    monkeypatch.setattr(_pg_cleanup, "_DROP_RETRY_DELAY", 0)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    if disposable:
+        monkeypatch.setenv("LIONAGI_TEST_PG_RUNNER", "b72a83e45042d93d")
+    else:
+        monkeypatch.delenv("LIONAGI_TEST_PG_RUNNER", raising=False)
+    refused = DBAPIError(None, None, _DriverError("drop failed", sqlstate))
+    conn = SimpleNamespace(
+        dialect=postgresql.dialect(),
+        exec_driver_sql=AsyncMock(side_effect=refused),
+        execute=AsyncMock(
+            return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: owners))
+        ),
+    )
+
+    if deferred:
+        await _pg_cleanup.drop_test_database(conn, "test_database")
+        assert "Disposable test database test_database" in caplog.text
+    else:
+        with pytest.raises(DBAPIError) as caught:
+            await _pg_cleanup.drop_test_database(conn, "test_database")
+        assert caught.value is refused
+    assert conn.exec_driver_sql.await_count == attempts
+    if not disposable or sqlstate != "55006":
+        conn.execute.assert_not_awaited()
 
 
 def _lock_refused() -> DBAPIError:
