@@ -1127,8 +1127,14 @@ retention rules under the same fence:
    uncertain commit before repeating a deletion. A CLI preview uses the
    eligibility rules without publishing archives or receipts.
    The ordinary external ZIP is optional. StateDB owns the database write
-   and has no dependency on LionHub's ZIP code. Mark outstanding admissions
-   to removed transitions as pruned. A subsequent
+   and has no dependency on LionHub's ZIP code. Without a ZIP, key the
+   receipt by store and the StateDB own-history archive's durable identity
+   and digest. Each removal path's deletion and detachment rules for other
+   rows still apply under the retention fence and dependency checks. These
+   rules can delete orphaned messages and progressions, detach surviving
+   soft links, and retain rows protected by surviving references. The
+   own-history archive covers only the removed transitions and ACKs.
+   Mark outstanding admissions to removed transitions as pruned. A subsequent
    `start="all"` owes no removed transition, while an admitted effect can
    still record `settled_after_prune` when it completes.
 2. **Own entity survives, last resolver removed.** Keep the transition as
@@ -1150,7 +1156,7 @@ retention rules under the same fence:
 
 | Entity removal path | History behavior before this amendment |
 | --- | --- |
-| `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk`, shared by explicit `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_terminal_sessions_by_id` and age-based `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_old_data` | Deletes the session's ACKs and transitions. The optional ZIP covers other session dependencies. Add the own-history archive and receipt. |
+| `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk`, shared by explicit `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_terminal_sessions_by_id` and age-based `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_old_data` | Deletes session transitions with no ACK children. An ACK referencing a transition prevents its deletion and rolls back the chunk. The optional ZIP covers other session dependencies. Add ACK deletion before transition deletion, with the own-history archive and receipt. |
 | `lionagi/state/db.py::StateDB.delete_imported_session` | Deletes the imported session's ACKs and transitions without an own-history archive or receipt. Add both for mirror absorption. |
 | `lionhub/src/lionhub/serve/cli/state.py::_prune` and `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_run_chunk` | Delete sessions or runs and leave their own transition history in the store. Add ACK and transition cleanup together with the archive and receipt. For run pruning, removing the run's own transitions and ACKs is new behavior. |
 | `lionagi/state/db.py::StateDB.delete_schedule` and `lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted` | Both delete the schedule and cascade its runs. Studio's `lionagi/studio/services/schedules.py::delete_schedule` delegates to StateDB. Polymorphic history has no entity foreign key, so the cascade leaves the schedule and run history behind. Archive and receipt the previous history and ACKs for the schedule and every deleted run. |
@@ -1291,11 +1297,12 @@ and worker-protection outcomes retain their own handling.
    and a coordinated restart that closes every old handle. Exercise a shipped
    older SQLite read-only reader against the migrated fixture and record its
    cutoff-blind output as an inexact legacy observation. Verify current
-   inspection and replay refuse a newer unsupported version before returning
-   a count, a preview or a candidate. Ordinary read-only inspection may still
-   open the same fixture. Check the resume availability, deferred resume
-   launch and invocation flow preflight separately with an unsupported
-   version. They must refuse before reporting ready or starting a process.
+   inspection and replay refuse both a newer unsupported version and an
+   unmigrated older store before returning a count, preview or candidate.
+   Ordinary read-only inspection may still open those fixtures. Check resume
+   availability, deferred resume launch and invocation flow preflight separately
+   against both fixtures. Each must refuse before reporting ready or starting
+   a process.
    Cover classification
    before epoch backfill and verify eligible INSERT and UPDATE without epochs
    are rejected on migrated SQLite and PostgreSQL. Include SQLite private and
@@ -1321,10 +1328,15 @@ and worker-protection outcomes retain their own handling.
    rows. A prior admitted completion on a surviving transition writes its
    ordinary physical ACK without changing the disposition total. Include
    active debt controls that retain the resolving rows for each case.
-   Include an invocation with a qualifying project-bearing session and a
-   second session without a project. Pause `StateDB.attach_session_invocation`
-   on a second connection while retention relies on the old link, and verify
-   the link is protected through the commit or rechecked under the fence.
+   Include a terminal invocation with a qualifying project-bearing session and a
+   second session without a project. While retention relies on the old link,
+   use `StateDB.attach_session_invocation` on a second connection to attempt to
+   reparent the qualifying project-bearing session to a different invocation.
+   With active debt, assert the last-resolver move is refused and the old
+   invocation keeps its qualifying resolver. With no active debt, let the
+   session move and check the debt and resolver state after both transactions
+   commit. The old invocation's surviving history must have the disposition
+   that excludes it from future debt.
    Keep the last resolver for a nonterminal parent with no terminal event,
    then exercise terminal completion and the subsequent debt check.
 5. Run fresh now-registration, now-reactivation, operator retire, active attachment and
@@ -1371,8 +1383,11 @@ and worker-protection outcomes retain their own handling.
     link while staging or before a fresh retry. Verify that changed or
     uncovered rows are retained, or the write rolls back. A receipt's actual
     removed history and ACK keys must match committed writes. Without an
-    external archive configured, assert the same atomic history receipt
-    and verify a forced rollback leaves neither receipt nor deletion.
+    external archive configured, look up the atomic receipt by store and
+    the StateDB archive's identity and digest and match the removed
+    transition and ACK keys. Exercise orphan cleanup, protection for
+    surviving references and soft-link detachment on a path that performs
+    them. A forced rollback must leave neither receipt nor row changes.
     Test a crash after archive sealing and before the database write, and
     after database commit and before reading or exporting the receipt.
     Restart counts zero in the first case and reads the same receipt once in
