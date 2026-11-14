@@ -7,6 +7,8 @@
   builds on; nothing in D1-D6 is implemented.
 - **Area**: service-providers
 - **Date**: 2026-11-13
+- **Origin**: #4306, the end state for child-agent file-read containment (its second candidate,
+  credentials out of the child's reach). Maintainer-initiated hardening; no user request is behind it.
 - **Relations**: extends ADR-0030 (the agentic provider-adapter boundary gains a credential
   isolation obligation); complements ADR-0126 (provider credential custody in the launching
   process, which this record leaves unchanged)
@@ -120,7 +122,19 @@ A provider integration qualifies for credential isolation only if each of the fo
   included;
 - every command the provider starts on its own behalf outside the router (status lines, credential
   helpers, environment set-up) is turned off or runs with nothing from the user's or the working
-  directory's configuration, and its output carries no credential into the tools.
+  directory's configuration, and its output carries no credential into the tools;
+- every instruction, memory or extension file the provider loads from the user's or the working
+  directory's configuration is accounted for: the instruction files it reads into context and the
+  files they import by path (for Claude Code, `CLAUDE.md` files and their `@path` import lines,
+  which can name a file outside the working directory), and the project skills, commands and agent
+  definitions it loads (for Claude Code, under the working directory's `.claude/`). Each is either
+  not loaded, or loaded only through a read that D2's file rules hold, and none of them can start a
+  command outside the D2 boundary or name a tool the launch turned off;
+- every MCP server the launch starts runs through the D2 boundary: the provider starts a server by
+  running the command in its configuration, so lionagi writes each server's command as the launcher
+  with the original command and arguments after it, and the server runs in its own profile instance.
+  A server whose configuration lionagi cannot rewrite this way (one the provider adds from a source
+  lionagi does not pass) is not started.
 
 A provider that cannot meet this is unavailable in this mode. lionagi does not approximate it with a
 wrapper around the whole CLI (P3) or with a settings file the working directory can affect.
@@ -234,8 +248,10 @@ broken probe cannot read as a denial.
    inherited descriptors; process inspection of and signals to the provider process and to MCP
    servers lionagi started are refused.
 7. Every path is accounted for: Bash, background commands and hooks reach the prefix, shown by a
-   marker each path writes only when it runs inside the profile; every in-process tool the launch
-   leaves on passes its own qualification row, symlinks included; every other path is shown to be off.
+   marker each path writes only when it runs inside the profile; each MCP server lionagi passes
+   writes such a marker from its own process at start-up, and the provider's MCP tool call to it
+   succeeds; every in-process tool the launch leaves on passes its own qualification row, symlinks
+   included; every other path is shown to be off.
 8. No settings source but lionagi's own loads: a user settings file and a project settings file that
    each define a status line, a credential helper and a hook produce no command outside the prefix
    and cannot turn the prefix off or widen the profile.
@@ -247,6 +263,12 @@ broken probe cannot read as a denial.
     filter, a tracked hook manager configuration, a symlink to a test key, a submodule change and a
     build script. None runs in the launching process, and the symlink and submodule are refused.
 12. A missing or failing backend refuses the launch; nothing runs outside the profile on a retry.
+13. Instruction and extension files are accounted for (D3): a working directory that plants each of
+    a `CLAUDE.md` with an `@path` import of a denied test file, a project skill, a project command and
+    a project agent definition, each of which asks for that file and for a command, produces no read
+    of a denied file and no command outside the prefix.
+14. A provider version outside the qualified set refuses the launch with a message naming the version
+    found and the qualified ones (see Consequences).
 
 ## Consequences
 
@@ -260,6 +282,13 @@ broken probe cannot read as a denial.
 - Credentialed operations move to the launching process under D6, which costs a hand-off step for
   every commit, push or authenticated fetch. A child cannot sign its own commits; its work arrives as
   an unsigned change the launching process commits.
+- Qualification is per provider version, and provider CLIs update themselves. lionagi probes rather
+  than pins: it does not install or hold back the provider CLI, it reads the version at every launch
+  that requests this mode, and it refuses any version that is not in the qualified set, which is a
+  list of exact versions, never a minimum. After an update the mode therefore refuses until the new
+  version passes the acceptance list and is added to the set; file containment, which states its
+  own minimum version, keeps working meanwhile. The cost is a requalification run per provider
+  update, and an operator who wants the mode without interruption holds the CLI's own updates back.
 - Claude Code in this mode edits through its shell only, and has no web fetch and no outbound
   network until lionagi's filtering proxy exists. That is a real loss of capability, and the reason
   this is a requested mode rather than the default.
