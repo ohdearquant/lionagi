@@ -280,11 +280,14 @@ def test_claude_codes_user_files_are_denied_to_the_file_tools(path):
     assert f"Edit({path})" in rules
 
 
-# Studio's hook library and operator hooks, the MCP server registry and its synced copy, and
-# the playbooks and skills directories: later runs load them and run what they name.
+# Studio's hook library and operator hooks, the operator's MCP configuration and house rules,
+# the MCP server registry and its synced copy, and the playbooks and skills directories: later
+# runs load them and run what they name.
 _HOME_CONFIG_FILES = (
     "operator_hooks.json",
     "operator_hooks.settings.json",
+    "operator_mcp.json",
+    "operator_house_rules.md",
     "mcp_servers.json",
     ".mcp.json",
 )

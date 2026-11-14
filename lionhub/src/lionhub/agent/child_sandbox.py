@@ -231,8 +231,9 @@ def lionagi_home_config_paths() -> tuple[str, ...]:
     """Configuration under ``LIONAGI_HOME`` that later runs load and run outside the sandbox.
 
     Studio's hook library and operator hooks become the Claude Code hooks of later operator
-    turns, the MCP server registry and the ``.mcp.json`` synced from it start MCP servers, and
-    playbooks and skills are loaded into later runs. A child that rewrote any of them could have
+    turns, the MCP server registry, the ``.mcp.json`` synced from it and the operator's own MCP
+    configuration start MCP servers, the operator's house rules are loaded into its later turns,
+    and playbooks and skills are loaded into later runs. A child that rewrote any of them could have
     code run outside its sandbox the next time they are read.
     """
     from lionagi._paths import LIONAGI_HOME
@@ -244,6 +245,8 @@ def lionagi_home_config_paths() -> tuple[str, ...]:
             "hooks",
             "operator_hooks.json",
             "operator_hooks.settings.json",
+            "operator_mcp.json",
+            "operator_house_rules.md",
             "mcp_servers.json",
             ".mcp.json",
             "playbooks",
