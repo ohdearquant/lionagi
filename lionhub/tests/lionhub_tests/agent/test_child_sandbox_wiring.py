@@ -31,11 +31,14 @@ EXEMPT = "~/.npmrc"
 
 @pytest.fixture(autouse=True)
 def _exemption_for_one_profile(monkeypatch, tmp_path):
-    """A throwaway HOME and a global setting that exempts one path for the profile ``builder``."""
+    """A throwaway HOME and a global setting that exempts one path for the profile ``builder``,
+    whose file sits in the throwaway home's global agents directory."""
     home = tmp_path / "home"
-    home.mkdir()
+    (home / ".lionagi" / "agents").mkdir(parents=True)
+    (home / ".lionagi" / "agents" / "builder.md").write_text("---\nname: builder\n---\n")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
     settings = {"child_sandbox": {"profiles": {"builder": {"allow_read": [EXEMPT]}}}}
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: settings)
@@ -60,7 +63,7 @@ def test_a_bare_worker_and_another_profile_keep_the_full_list():
         model = _model(CLAUDE)
         _confine_claude_worker(model, profile)
         deny = model.endpoint.config.kwargs["child_sandbox"]["deny_read"]
-        assert deny == list(child_sandbox.DEFAULT_DENY_READ)
+        assert deny == [*child_sandbox.DEFAULT_DENY_READ, "~/.lionagi/.env"]
 
 
 def test_the_policy_is_a_plain_dict_that_survives_json():
@@ -130,7 +133,7 @@ async def test_create_agent_never_matches_the_role_name(monkeypatch):
     # profile name given as sandbox_profile selects an exemption.
     for kwargs in ({"sandbox_profile": None}, {}):
         policy = await _policy_of_built_agent(monkeypatch, **kwargs)
-        assert policy["deny_read"] == list(child_sandbox.DEFAULT_DENY_READ)
+        assert policy["deny_read"] == [*child_sandbox.DEFAULT_DENY_READ, "~/.lionagi/.env"]
 
 
 @pytest.mark.asyncio
@@ -211,8 +214,9 @@ async def test_a_flow_orchestrator_with_a_loaded_profile_gets_that_profiles_exem
     from lionhub.orchestration.runs import RunDir
 
     work = tmp_path / "work"
-    agents = work / ".lionagi" / "agents"
-    agents.mkdir(parents=True)
+    work.mkdir()
+    # The profile is the global one the exemption was written for.
+    agents = tmp_path / "home" / ".lionagi" / "agents"
     (agents / "builder.md").write_text(f"---\nmodel: {CLAUDE}/haiku\n---\nOrchestrate.\n")
     monkeypatch.chdir(work)
     monkeypatch.setattr("lionhub.orchestration.spawn._plugin_agent_profiles", lambda: {})

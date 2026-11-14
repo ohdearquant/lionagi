@@ -31,6 +31,7 @@ from lionhub.agent.child_sandbox import (
     check_sandbox_backend,
     claude_settings_argument,
     claude_settings_for,
+    effective_policy,
     policy_from_dict,
     resolve_child_sandbox,
     run_state_paths,
@@ -44,11 +45,18 @@ _REAL_GLOBAL_SETTINGS = child_sandbox._global_settings
 
 POLICY = ChildSandboxPolicy(True, ("~/.ssh", "/opt/keys"), ("~/.cache/uv",))
 
+#: What a resolved policy denies reading when no layer adds anything: the built-in list, then
+#: lionagi's own credential file under ``LIONAGI_HOME`` (pointed at the test home below).
+RESOLVED_DENY_READ = (*DEFAULT_DENY_READ, "~/.lionagi/.env")
+
 #: What the file tools are denied when no layer adds anything: the configuration list, then the
 #: read list.
-DEFAULT_EDIT = tuple(dict.fromkeys([*DEFAULT_DENY_EDIT, *DEFAULT_DENY_READ]))
+DEFAULT_EDIT = tuple(dict.fromkeys([*DEFAULT_DENY_EDIT, *RESOLVED_DENY_READ]))
 
-DEFAULT_POLICY = ChildSandboxPolicy(True, DEFAULT_DENY_READ, DEFAULT_ALLOW_WRITE, DEFAULT_EDIT)
+DEFAULT_POLICY = ChildSandboxPolicy(True, RESOLVED_DENY_READ, DEFAULT_ALLOW_WRITE, DEFAULT_EDIT)
+
+#: Profiles the tests exempt; each has a file in the test home's global agents directory.
+GLOBAL_PROFILES = ("builder", "keeper")
 
 
 def _fixed_edit_rules():
@@ -71,6 +79,11 @@ def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
+    agents = home / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    for name in GLOBAL_PROFILES:
+        (agents / f"{name}.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
     return home
 
 
@@ -167,19 +180,19 @@ def test_extra_paths_are_added_to_the_defaults():
         None,
         _settings(deny_read=["~/vault/", "/opt/keys"], allow_write=["~/.cache/ruff"]),
     )
-    assert policy.deny_read == (*DEFAULT_DENY_READ, "~/vault", "/opt/keys")
+    assert policy.deny_read == (*RESOLVED_DENY_READ, "~/vault", "/opt/keys")
     assert policy.allow_write == (*DEFAULT_ALLOW_WRITE, "~/.cache/ruff")
 
 
 def test_a_path_already_listed_is_not_repeated():
     policy = resolve_child_sandbox(None, _settings(deny_read=["~/.ssh"], allow_write=["~/.npm"]))
-    assert policy.deny_read == DEFAULT_DENY_READ
+    assert policy.deny_read == RESOLVED_DENY_READ
     assert policy.allow_write == DEFAULT_ALLOW_WRITE
 
 
 def test_repeated_slashes_collapse_into_one_path_and_one_rule():
     policy = resolve_child_sandbox(None, _settings(deny_read=["//opt//keys/", "/opt/keys"]))
-    assert policy.deny_read == (*DEFAULT_DENY_READ, "/opt/keys")
+    assert policy.deny_read == (*RESOLVED_DENY_READ, "/opt/keys")
     rules = claude_settings_for(policy)["permissions"]["deny"]
     assert "Read(//opt/keys)" in rules
     assert not any(rule.startswith("Read(///") for rule in rules)
@@ -203,15 +216,51 @@ _WITH_EXEMPTION = _settings(profiles={"builder": {"allow_read": _EXEMPT}})
 
 def test_a_profile_exemption_removes_exactly_the_named_entries():
     policy = resolve_child_sandbox("builder", _WITH_EXEMPTION)
-    assert policy.deny_read == tuple(p for p in DEFAULT_DENY_READ if p not in _EXEMPT)
-    assert set(DEFAULT_DENY_READ) - set(policy.deny_read) == set(_EXEMPT)
+    assert policy.deny_read == tuple(p for p in RESOLVED_DENY_READ if p not in _EXEMPT)
+    assert set(RESOLVED_DENY_READ) - set(policy.deny_read) == set(_EXEMPT)
     assert policy.allow_write == DEFAULT_ALLOW_WRITE
     assert policy.enabled is True
 
 
 @pytest.mark.parametrize("profile", ["reviewer", None])
 def test_an_exemption_does_not_apply_to_other_profiles_or_bare_launches(profile):
-    assert resolve_child_sandbox(profile, _WITH_EXEMPTION).deny_read == DEFAULT_DENY_READ
+    assert resolve_child_sandbox(profile, _WITH_EXEMPTION).deny_read == RESOLVED_DENY_READ
+
+
+def test_a_project_profile_of_the_same_name_does_not_inherit_the_exemption(
+    tmp_path, monkeypatch, caplog
+):
+    # The exemption was written for the profile in the global agents directory. A project
+    # directory is searched first, so its file of the same name is the profile -a loads, and
+    # it gets the full list.
+    project = tmp_path / "repo"
+    (project / ".lionagi" / "agents").mkdir(parents=True)
+    (project / ".lionagi" / "agents" / "builder.md").write_text("---\nname: builder\n---\n")
+    monkeypatch.chdir(project)
+    with caplog.at_level("WARNING", logger="lionhub.agent.child_sandbox"):
+        policy = resolve_child_sandbox("builder", _WITH_EXEMPTION)
+    assert policy.deny_read == RESOLVED_DENY_READ
+    assert "does not resolve to a file in ~/.lionagi/agents" in caplog.text
+
+
+def test_an_exemption_for_a_profile_with_no_global_file_is_not_applied():
+    settings = _settings(profiles={"nobody": {"allow_read": _EXEMPT}})
+    assert resolve_child_sandbox("nobody", settings).deny_read == RESOLVED_DENY_READ
+
+
+def test_lionagis_own_credential_file_is_denied_where_lionagi_home_points(tmp_path, monkeypatch):
+    assert "~/.lionagi/.env" in resolve_child_sandbox(None, {}).deny_read
+    elsewhere = tmp_path / "relocated"
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", elsewhere)
+    policy = resolve_child_sandbox(None, {})
+    assert str(elsewhere / ".env") in policy.deny_read
+    rules = claude_settings_for(policy)["permissions"]["deny"]
+    assert f"Read(/{elsewhere}/.env)" in rules
+
+
+def test_claude_codes_user_state_file_is_denied_to_the_file_tools():
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert "Edit(~/.claude.json)" in rules
 
 
 def test_an_exemption_may_name_a_path_added_to_the_list():
@@ -273,16 +322,16 @@ def test_extends_files_are_merged_in_order(tmp_path):
     )
     settings = _settings(deny_read=["~/own"], extends=[first, second])
     bare = resolve_child_sandbox(None, settings)
-    assert bare.deny_read == (*DEFAULT_DENY_READ, "~/own", "~/a-secret", "/b/secret")
+    assert bare.deny_read == (*RESOLVED_DENY_READ, "~/own", "~/a-secret", "/b/secret")
     assert bare.allow_write == (*DEFAULT_ALLOW_WRITE, "~/a-cache")
     builder = resolve_child_sandbox("builder", settings)
-    assert builder.deny_read == (*DEFAULT_DENY_READ, "~/own", "/b/secret")
+    assert builder.deny_read == (*RESOLVED_DENY_READ, "~/own", "/b/secret")
 
 
 def test_an_extends_entry_may_start_with_the_home_marker(isolated_home):
     _write(isolated_home / "policy.yaml", 'deny_read: ["~/vault"]\n')
     policy = resolve_child_sandbox(None, _settings(extends=["~/policy.yaml"]))
-    assert policy.deny_read == (*DEFAULT_DENY_READ, "~/vault")
+    assert policy.deny_read == (*RESOLVED_DENY_READ, "~/vault")
 
 
 def test_an_empty_extends_file_adds_only_itself_to_the_edit_denial(tmp_path):
@@ -350,7 +399,7 @@ def test_without_a_settings_file_the_default_policy_is_on(monkeypatch):
 def test_the_policy_is_read_from_the_global_settings_file(isolated_home, monkeypatch):
     monkeypatch.setattr(child_sandbox, "_global_settings", _REAL_GLOBAL_SETTINGS)
     directory = isolated_home / ".lionagi"
-    directory.mkdir()
+    directory.mkdir(exist_ok=True)
     _write(
         directory / "settings.yaml",
         "child_sandbox:\n"
@@ -359,7 +408,7 @@ def test_the_policy_is_read_from_the_global_settings_file(isolated_home, monkeyp
         "    builder:\n"
         '      allow_read: ["~/.npmrc"]\n',
     )
-    assert resolve_child_sandbox(None).deny_read == (*DEFAULT_DENY_READ, "~/vault")
+    assert resolve_child_sandbox(None).deny_read == (*RESOLVED_DENY_READ, "~/vault")
     assert "~/.npmrc" not in resolve_child_sandbox("builder").deny_read
 
 
@@ -441,7 +490,7 @@ def test_every_default_path_gets_two_permission_rules():
     reads = [rule for rule in rules if rule.startswith("Read(")]
     edits = [rule for rule in rules if rule.startswith("Edit(")]
     fixed = _fixed_edit_rules()
-    assert len(reads) == 2 * len(DEFAULT_DENY_READ)
+    assert len(reads) == 2 * len(RESOLVED_DENY_READ)
     assert len(edits) == 2 * len(DEFAULT_EDIT) + len(fixed)
     assert len(reads) + len(edits) == len(rules)
     assert rules[-len(fixed) :] == fixed
@@ -559,6 +608,55 @@ def test_a_malformed_deny_edit_refuses(value):
 
 
 # --------------------------------------------------------------------------- policy dicts
+
+
+# --------------------------------------------------------------------------- stored policies
+
+
+def _stored(deny_read, *, profile=None, allow_write=("~/.cache/uv",), enabled=True):
+    return ChildSandboxPolicy(enabled, tuple(deny_read), tuple(allow_write), (), profile)
+
+
+def test_a_stored_policy_follows_the_global_switch_off(monkeypatch):
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+    assert effective_policy(_stored(["~/.ssh"])).enabled is False
+
+
+def test_a_stored_policy_regains_a_denial_whose_exemption_was_removed(monkeypatch):
+    # Launched as builder while ~/.npmrc was exempt; the exemption is gone when it resumes.
+    launched = _stored([p for p in RESOLVED_DENY_READ if p != "~/.npmrc"], profile="builder")
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+    assert "~/.npmrc" in effective_policy(launched).deny_read
+
+
+def test_a_stored_exemption_holds_while_it_is_still_configured(monkeypatch):
+    launched = _stored([p for p in RESOLVED_DENY_READ if p != "~/.npmrc"], profile="builder")
+    monkeypatch.setattr(
+        child_sandbox,
+        "_global_settings",
+        lambda: _settings(profiles={"builder": {"allow_read": ["~/.npmrc"]}}),
+    )
+    assert "~/.npmrc" not in effective_policy(launched).deny_read
+
+
+def test_a_stored_policy_without_a_profile_gets_no_exemption(monkeypatch):
+    # A policy stored before the profile was recorded resolves as a bare launch.
+    old = {"enabled": True, "deny_read": ["~/.ssh"], "allow_write": [], "deny_edit": []}
+    monkeypatch.setattr(
+        child_sandbox,
+        "_global_settings",
+        lambda: _settings(profiles={"builder": {"allow_read": ["~/.npmrc"]}}),
+    )
+    assert "~/.npmrc" in effective_policy(policy_from_dict(old)).deny_read
+
+
+def test_a_stored_policy_keeps_its_own_extra_denials_and_only_allowed_writes(monkeypatch):
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+    policy = effective_policy(_stored(["/opt/keys"], allow_write=["~/.cache/uv", "/tmp/anything"]))
+    assert policy.deny_read == ("/opt/keys", *RESOLVED_DENY_READ)
+    assert policy.allow_write == ("~/.cache/uv",)
 
 
 def test_a_policy_survives_a_round_trip_through_json():

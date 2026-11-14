@@ -5,9 +5,10 @@
 
 One list names the credential locations a child must not read, the toolchain caches it may
 write, and the configuration a child must not edit. It is resolved from the global lionagi
-settings file only and rendered into the settings Claude Code understands. Any malformed value raises ``ConfigurationError`` so a child never
-starts unconfined because of a configuration mistake. Every refusal raised here ends with the
-same sentence naming the opt-out, ``CHILD_SANDBOX_OPT_OUT``.
+settings file only and rendered into the settings Claude Code understands. Any malformed value
+raises ``ConfigurationError`` so a child never starts unconfined because of a configuration
+mistake. Every refusal raised here ends with the same sentence naming the opt-out,
+``CHILD_SANDBOX_OPT_OUT``.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ __all__ = (
     "claude_settings_argument",
     "claude_settings_for",
     "default_allow_write",
+    "effective_policy",
     "policy_from_dict",
     "resolve_child_sandbox",
     "run_state_paths",
@@ -109,10 +111,12 @@ DEFAULT_ALLOW_WRITE: tuple[str, ...] = (
 #: Configuration a child may not change with its file tools: the files that decide how the next
 #: child is launched and confined, and what Claude Code loads into every session. The sandbox's
 #: write limit covers Bash only, so these are denied to the Edit and Write tools by permission
-#: rules. Every ``deny_read`` entry and every ``extends`` file is denied the same way.
+#: rules. ``~/.claude.json`` holds Claude Code's user-scope MCP servers, which run outside the
+#: sandbox. Every ``deny_read`` entry and every ``extends`` file is denied the same way.
 DEFAULT_DENY_EDIT: tuple[str, ...] = (
     "~/.lionagi/settings.yaml",
     "~/.lionagi/agents",
+    "~/.claude.json",
     "~/.claude/settings.json",
     "~/.claude/settings.local.json",
     "~/.claude/CLAUDE.md",
@@ -161,13 +165,16 @@ class ChildSandboxPolicy:
     and what the file tools may not change.
 
     ``deny_edit`` adds to the rules every policy renders: ``DEFAULT_DENY_EDIT`` and the
-    ``deny_read`` entries are denied to the file tools whatever it holds.
+    ``deny_read`` entries are denied to the file tools whatever it holds. ``profile`` is the
+    agent profile the policy was resolved for, so a later launch from a stored policy can
+    resolve it again for that profile (``effective_policy``).
     """
 
     enabled: bool
     deny_read: tuple[str, ...]
     allow_write: tuple[str, ...]
     deny_edit: tuple[str, ...] = ()
+    profile: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-dict form that survives endpoint kwargs, clones and resumes."""
@@ -176,6 +183,7 @@ class ChildSandboxPolicy:
             "deny_read": list(self.deny_read),
             "allow_write": list(self.allow_write),
             "deny_edit": list(self.deny_edit),
+            "profile": self.profile,
         }
 
 
@@ -206,6 +214,38 @@ def run_state_paths() -> tuple[str, ...]:
         f"{home}/logs/agents",
         f"{home}/last_branch.json",
     )
+
+
+def _lionagi_home_credentials() -> tuple[str, ...]:
+    """Credential files lionagi itself reads from ``LIONAGI_HOME``: its user-wide ``.env``."""
+    from lionagi._paths import LIONAGI_HOME
+
+    env = LIONAGI_HOME / ".env"
+    try:
+        # Written the way a user writes it in ``allow_read`` when it sits under the home.
+        return (f"~/{env.relative_to(Path.home()).as_posix()}",)
+    except ValueError:
+        return (str(env),)
+
+
+def _profile_file_is_global(profile: str) -> bool:
+    """Whether ``profile`` resolves to a file in the user's ``~/.lionagi/agents``.
+
+    The directories are searched the way ``load_agent_profile`` searches them, project ones
+    first, so a project that declares the same name shadows the global file and this returns
+    False. A plugin profile, a name no directory declares and an ambiguous name all return False.
+    """
+    from lionagi._paths import _resolve_profile_path, find_lionagi_dirs
+
+    home = (Path.home() / ".lionagi").resolve()
+    for directory in find_lionagi_dirs():
+        try:
+            path = _resolve_profile_path(directory / "agents", profile)
+        except (OSError, ValueError):
+            return False
+        if path is not None:
+            return directory.resolve() == home
+    return False
 
 
 def _path_list(label: str, value: Any) -> list[str]:
@@ -350,7 +390,7 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
     layers = [("child_sandbox", {k: v for k, v in raw.items() if k in _LAYER_KEYS})]
     extends = _read_extends(raw.get("extends", []))
     layers += [(f"extends[{i}]", d) for i, (_, d) in enumerate(extends)]
-    deny: list[str] = list(DEFAULT_DENY_READ)
+    deny: list[str] = [*DEFAULT_DENY_READ, *_lionagi_home_credentials()]
     allow: list[str] = list(default_allow_write())
     edit: list[str] = [name for names, _ in extends for name in names]
     profiles: dict[str, list[str]] = {}
@@ -370,28 +410,70 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
                 f"child_sandbox: profile {name!r} allow_read names paths not on the deny list: "
                 f"{missing}"
             )
-    exempt = set(profiles.get(profile, [])) if profile else set()
+    exempt: set[str] = set()
+    if profile and profiles.get(profile):
+        # The exemption is the user's, written for the profile in their global agents
+        # directory; a project file of the same name, searched first, does not inherit it.
+        if _profile_file_is_global(profile):
+            exempt = set(profiles[profile])
+        else:
+            logger.warning(
+                "child_sandbox: profile %r has an allow_read exemption, but that name does not "
+                "resolve to a file in ~/.lionagi/agents; the exemption is not applied",
+                profile,
+            )
     return ChildSandboxPolicy(
         enabled=enabled,
         deny_read=tuple(p for p in deny if p not in exempt),
         allow_write=tuple(dict.fromkeys(allow)),
         # A read exemption never lifts the edit denial, so the whole read list is kept here.
         deny_edit=tuple(dict.fromkeys([*DEFAULT_DENY_EDIT, *edit, *deny])),
+        profile=profile or None,
     )
 
 
 def policy_from_dict(data: dict) -> ChildSandboxPolicy:
     """Rebuild a policy from ``ChildSandboxPolicy.to_dict`` output, validating it again."""
     data = _mapping("policy", data)
-    _reject_unknown("policy", data, {"enabled", "deny_read", "allow_write", "deny_edit"})
+    _reject_unknown("policy", data, {"enabled", "deny_read", "allow_write", "deny_edit", "profile"})
     enabled = data.get("enabled", True)
     if not isinstance(enabled, bool):
         raise _refusal("child_sandbox: enabled must be true or false")
+    profile = data.get("profile")
+    if profile is not None and (not isinstance(profile, str) or not profile):
+        raise _refusal("child_sandbox: profile must be a profile name or null")
     return ChildSandboxPolicy(
         enabled=enabled,
         deny_read=tuple(_path_list("deny_read", data.get("deny_read", []))),
         allow_write=tuple(_path_list("allow_write", data.get("allow_write", []))),
         deny_edit=tuple(_path_list("deny_edit", data.get("deny_edit", []))),
+        profile=profile,
+    )
+
+
+def effective_policy(stored: ChildSandboxPolicy) -> ChildSandboxPolicy:
+    """The policy a launch from ``stored`` runs under, given the global settings now.
+
+    A stored policy comes back from run files on resume and from a caller's endpoint kwargs,
+    so it can only add to what the global settings resolve now for the profile it names: the
+    global ``enabled`` decides whether the sandbox applies, every path the settings deny stays
+    denied (a profile exemption holds only while it is still configured and the profile still
+    resolves to the global file), and ``allow_write`` keeps only entries the settings allow.
+
+    Raises:
+        ConfigurationError: the global settings do not resolve.
+    """
+    current = resolve_child_sandbox(stored.profile)
+    if not current.enabled:
+        return current
+    return ChildSandboxPolicy(
+        enabled=True,
+        deny_read=tuple(dict.fromkeys([*stored.deny_read, *current.deny_read])),
+        allow_write=tuple(p for p in stored.allow_write if p in current.allow_write)
+        if stored.enabled
+        else current.allow_write,
+        deny_edit=tuple(dict.fromkeys([*stored.deny_edit, *current.deny_edit])),
+        profile=current.profile,
     )
 
 

@@ -765,6 +765,7 @@ class ClaudeCodeRequest(BaseModel):
             check_claude_cli_floor,
             check_sandbox_backend,
             claude_settings_argument,
+            effective_policy,
             policy_from_dict,
             resolve_child_sandbox,
         )
@@ -772,18 +773,16 @@ class ClaudeCodeRequest(BaseModel):
         if self.child_sandbox is None:
             policy = resolve_child_sandbox(None)
         else:
-            policy = policy_from_dict(self.child_sandbox)
-            if not policy.enabled:
-                # A stored policy is read back from run files on resume, so it may turn the
-                # sandbox off only while the global settings still do. Otherwise the policy is
-                # resolved again, with no profile exemption.
-                current = resolve_child_sandbox(None)
-                if current.enabled:
-                    log.warning(
-                        "child_sandbox: the stored policy turns the sandbox off but the global "
-                        "settings do not; the child runs under the global policy"
-                    )
-                    policy = current
+            # A stored policy is read back from run files on resume, so it is resolved again
+            # against the global settings now: it can add denials, never remove one, and the
+            # global switch decides whether the sandbox applies.
+            stored = policy_from_dict(self.child_sandbox)
+            policy = effective_policy(stored)
+            if not stored.enabled and policy.enabled:
+                log.warning(
+                    "child_sandbox: the stored policy turns the sandbox off but the global "
+                    "settings do not; the child runs under the global policy"
+                )
         if not policy.enabled:
             return None
         check_sandbox_backend()

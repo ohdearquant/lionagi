@@ -48,6 +48,15 @@ def _stubbed_cli(monkeypatch, tmp_path):
     monkeypatch.setattr(claude_code, "resolve_claude_cli", lambda: "claude")
     monkeypatch.setattr(child_sandbox, "_cli_version", lambda binary: CLAUDE_CLI_FLOOR)
     monkeypatch.setattr(child_sandbox, "check_sandbox_backend", lambda: None)
+    # A stored policy can only add to what the global settings resolve, so the global layer is
+    # set to the defaults with the sandbox on; tests of the global switch override it.
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
+
+
+def _effective(policy=POLICY):
+    """The policy a request carrying ``policy`` runs under, with the global settings above."""
+    return child_sandbox.effective_policy(policy)
 
 
 def _request(**kwargs):
@@ -70,7 +79,7 @@ def _settings_json(args):
 
 def test_the_argv_carries_one_settings_flag_with_the_sandbox_block(tmp_path):
     args = _request(repo=tmp_path).as_cmd_args()
-    assert _settings_json(args) == claude_settings_for(POLICY)
+    assert _settings_json(args) == claude_settings_for(_effective())
 
 
 def test_the_policy_field_is_not_a_command_line_flag(tmp_path):
@@ -81,7 +90,7 @@ def test_the_policy_field_is_not_a_command_line_flag(tmp_path):
 
 def test_a_light_request_keeps_its_tool_denials_beside_the_sandbox(tmp_path):
     args = _request(repo=tmp_path, workload="light").as_cmd_args()
-    assert _settings_json(args) == claude_settings_for(POLICY)
+    assert _settings_json(args) == claude_settings_for(_effective())
     text = " ".join(args)
     assert all(tool in text for tool in LIGHT_DISALLOWED_TOOLS)
 
@@ -96,7 +105,7 @@ def test_a_request_that_names_no_policy_resolves_the_default(monkeypatch, tmp_pa
     assert block["enabled"] is True
     assert block["failIfUnavailable"] is True
     assert block["allowUnsandboxedCommands"] is False
-    assert block["filesystem"]["denyRead"] == list(DEFAULT_DENY_READ)
+    assert block["filesystem"]["denyRead"] == [*DEFAULT_DENY_READ, "~/.lionagi/.env"]
 
 
 def test_the_default_policy_follows_the_global_settings(monkeypatch, tmp_path):
@@ -105,7 +114,7 @@ def test_the_default_policy_follows_the_global_settings(monkeypatch, tmp_path):
     )
     args = ClaudeCodeRequest(prompt="hi", repo=tmp_path).as_cmd_args()
     deny = _settings_json(args)["sandbox"]["filesystem"]["denyRead"]
-    assert deny == [*DEFAULT_DENY_READ, "~/vault"]
+    assert deny == [*DEFAULT_DENY_READ, "~/.lionagi/.env", "~/vault"]
 
 
 def test_the_global_settings_can_turn_the_default_off(monkeypatch, tmp_path):
@@ -135,7 +144,7 @@ def test_inline_settings_are_merged_into_the_one_flag(tmp_path):
     own = json.dumps({"model": "haiku", "permissions": {"deny": ["Bash(rm:*)"]}})
     args = _request(repo=tmp_path, settings=own).as_cmd_args()
     merged = _settings_json(args)
-    ours = claude_settings_for(POLICY)
+    ours = claude_settings_for(_effective())
     assert merged["model"] == "haiku"
     assert merged["sandbox"] == ours["sandbox"]
     assert merged["permissions"]["deny"] == ["Bash(rm:*)", *ours["permissions"]["deny"]]
@@ -152,7 +161,7 @@ def test_a_settings_file_is_read_and_merged_into_the_one_flag(tmp_path):
     args = _request(repo=tmp_path, settings="base.json").as_cmd_args()
     merged = _settings_json(args)
     assert merged["model"] == "haiku"
-    assert merged["sandbox"] == claude_settings_for(POLICY)["sandbox"]
+    assert merged["sandbox"] == claude_settings_for(_effective())["sandbox"]
     assert "base.json" not in args
 
 
@@ -170,13 +179,19 @@ def test_a_settings_file_that_is_not_an_object_refuses_the_launch(tmp_path):
 # --------------------------------------------------------------------------- a disabled policy
 
 
-def test_a_disabled_policy_emits_no_sandbox(tmp_path):
+def test_a_disabled_policy_emits_no_sandbox(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
     args = _request(repo=tmp_path, child_sandbox=OFF.to_dict()).as_cmd_args()
     assert "--settings" not in args
     assert not any('"sandbox"' in a for a in args)
 
 
-def test_a_disabled_policy_leaves_the_callers_settings_as_they_were(tmp_path):
+def test_a_disabled_policy_leaves_the_callers_settings_as_they_were(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
     own = json.dumps({"model": "haiku"})
     args = _request(repo=tmp_path, settings=own, child_sandbox=OFF.to_dict()).as_cmd_args()
     assert _settings_values(args) == [own]
@@ -196,6 +211,15 @@ def test_a_stored_disabled_policy_is_overruled_while_the_global_settings_keep_th
     assert "the stored policy turns the sandbox off" in caplog.text
 
 
+def test_a_stored_enabled_policy_follows_the_global_opt_out(monkeypatch, tmp_path):
+    # A resumed leg is launched from the policy stored with its branch; the documented global
+    # opt-out still reaches it.
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+    assert "--settings" not in _request(repo=tmp_path).as_cmd_args()
+
+
 def test_a_stored_disabled_policy_holds_while_the_global_settings_turn_the_sandbox_off(
     monkeypatch, tmp_path
 ):
@@ -206,6 +230,10 @@ def test_a_stored_disabled_policy_holds_while_the_global_settings_turn_the_sandb
 
 
 def test_a_disabled_policy_runs_no_version_probe(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+
     def probe(binary):
         raise AssertionError("the version probe ran for a disabled policy")
 
@@ -247,6 +275,10 @@ def test_the_backend_check_runs_before_the_cli_probe(monkeypatch, tmp_path):
 
 
 def test_a_disabled_policy_runs_no_backend_check(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+
     def probe():
         raise AssertionError("the backend check ran for a disabled policy")
 
