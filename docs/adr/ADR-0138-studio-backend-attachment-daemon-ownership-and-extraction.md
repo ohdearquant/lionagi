@@ -2,7 +2,9 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial — F5's scheduler state, maintenance, lifecycle reaper, schedule
+  declaration, shared command parsing, and mirror and diagnostics rows are implemented in `lionhub`;
+  F1 to F4, F6, F7, and F5's configuration, detached-launch, and execution-inspection rows remain
 - **Area**: studio
 - **Date**: 2026-10-25
 - **Relations**: decides the Studio backend form that ADR-0136 D7 deferred and that ADR-0136 Amendment 1
@@ -30,7 +32,7 @@ The following current behaviors constrain the boundary:
 
 ## Decision
 
-The Basis column says where each decision comes from: a direction already set for the project, this record's own judgment, or a question this record leaves open.
+The Basis column says where each decision comes from: a direction already set for the project, a project decision taken for 1.x that an amendment to this record can change, or this record's own judgment.
 
 | Fork | Decision | Basis |
 | --- | --- | --- |
