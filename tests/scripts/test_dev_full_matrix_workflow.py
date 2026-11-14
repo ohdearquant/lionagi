@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import runpy
 from pathlib import Path
@@ -212,3 +213,22 @@ def test_runner_postgres_uses_one_database_per_worker_and_preserves_explicit_url
     prefix = "postgresql+asyncpg://test_user@127.0.0.1:55432/"
     url = prefix + "test_db?ssl=disable"
     assert helper(url, token, worker) == prefix + database + "?ssl=disable"
+
+
+def test_runner_database_setup_works_inside_a_running_event_loop():
+    """The session fixture can be set up from an async test, while a loop is running."""
+    namespace = runpy.run_path(str(GITHUB.parent / "tests" / "state" / "conftest.py"))
+    set_up = namespace["_set_up_runner_database"]
+    calls = []
+
+    async def fake_manage(admin_url, worker_url, *, create):
+        calls.append((admin_url, worker_url, create))
+
+    set_up.__globals__["_manage_runner_database"] = fake_manage
+
+    async def inside_loop():
+        set_up("admin", "worker", create=True)
+        set_up("admin", "worker", create=False)
+
+    asyncio.run(inside_loop())
+    assert calls == [("admin", "worker", True), ("admin", "worker", False)]

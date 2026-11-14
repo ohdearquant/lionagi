@@ -10,6 +10,7 @@ import contextlib
 import importlib
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -46,6 +47,18 @@ async def _manage_runner_database(admin_url, worker_url, *, create):
                 await conn.exec_driver_sql(f"DROP DATABASE {identifier} WITH (FORCE)")
     finally:
         await engine.dispose()
+
+
+def _set_up_runner_database(admin_url, worker_url, *, create):
+    """Create or drop the worker database on a thread with its own event loop.
+
+    ``pg_url`` can be set up while an async test's event loop is already
+    running, where ``asyncio.run`` refuses to start a second loop.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(
+            asyncio.run, _manage_runner_database(admin_url, worker_url, create=create)
+        ).result()
 
 
 @pytest.fixture(scope="session")
@@ -111,11 +124,11 @@ def pg_url():
         if worker_url == url:
             yield url
             return
-        asyncio.run(_manage_runner_database(url, worker_url, create=True))
+        _set_up_runner_database(url, worker_url, create=True)
         try:
             yield worker_url
         finally:
-            asyncio.run(_manage_runner_database(url, worker_url, create=False))
+            _set_up_runner_database(url, worker_url, create=False)
         return
 
     try:
