@@ -859,3 +859,11 @@ def test_machine_dispatch_reads_the_entry_points_environment_faults(
     with pytest.raises(tagged):
         machine.dispatch_machine(["fixture"])
     assert capfd.readouterr().out == ""
+
+    # After allocation it is a failure of that run. Its own message is kept, masked,
+    # rather than the missing-module text, which describes only ModuleNotFoundError.
+    mark_run_allocated()
+    assert machine.dispatch_machine(["fixture"]) == 0
+    message = _one_object(capfd.readouterr().out)["error"]["message"]
+    assert message.startswith("TaggedImportError: backend refused postgresql://reader:")
+    assert "private-pass" not in message

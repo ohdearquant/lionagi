@@ -242,7 +242,8 @@ another copy of our rules living in code we do not control.
   mode it builds a best-effort envelope using a standard-library-only helper at
   `lionhub/src/lionhub/serve/cli/_machine_envelope.py`, which holds the contract version.
   This keeps the version available even when the dispatcher cannot load. D8 defines how
-  the consumer handles this diagnostic and how to interpret exit 78 with empty stdout.
+  the consumer handles this diagnostic and how to interpret exit 78 when stdout holds no
+  valid envelope.
 
 ### D4 — `status` is opaque; `terminal` and `outcome` are the producer's derivations
 
@@ -531,8 +532,8 @@ rather than left to the reader:
   it as an environment fault sends the consumer away from durable state it should read.
   In machine mode the entry point emits an `unavailable` envelope on a best-effort
   basis. If the write fails, the exit status is still 78 and stdout is empty or, when
-  the write stopped partway, holds a truncated object that does not parse. Without `--machine`, stdout stays empty. The diagnostic goes to stderr in
-  both modes.
+  the write stopped partway, holds bytes that do not parse. Without `--machine`,
+  stdout stays empty. The diagnostic goes to stderr in both modes.
 - **Any other exit without a parseable envelope is a transport fault**: the process
   could not be launched at all, it was killed by a signal, it timed out under the
   consumer's own bound, or stdout did not parse. These are distinct from both of the

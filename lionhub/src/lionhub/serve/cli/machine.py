@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
-from lionagi._feature_errors import MissingFeatureError
 from lionagi.ln import import_module
 
 from ._machine_envelope import _CONTRACT_VERSION, _ERROR_KINDS, _encode_envelope, _failure
@@ -789,12 +788,14 @@ def dispatch_machine(argv: list[str]) -> int:
         except _ENVIRONMENT_FAULTS as exc:
             if not run_was_allocated():
                 raise
-            if isinstance(exc, MissingFeatureError):
-                # Its message is built from its own fields, so it names the
-                # feature and the install guidance and carries nothing else.
-                channel.emit(failure("internal", f"{type(exc).__name__}: {exc}"))
-            else:
+            if isinstance(exc, ModuleNotFoundError):
                 channel.emit(failure("internal", "a required module is not installed"))
+            else:
+                from lionagi.state.engine import mask_credentials
+
+                # A missing feature's message names the feature and its install
+                # guidance. It is masked like any other message this sink prints.
+                channel.emit(failure("internal", mask_credentials(f"{type(exc).__name__}: {exc}")))
         except Exception as exc:  # noqa: BLE001 — a crash with no envelope is unreadable
             from lionagi.state.engine import mask_credentials
 
