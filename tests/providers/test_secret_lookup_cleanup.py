@@ -211,6 +211,7 @@ async def test_cleanup_bounds_wait_and_drain_and_closes_pipe(
 ):
     proc = install_fake(_Child(stall_read=stall_read, stall_wait=stall_wait, overflow=overflow))
     caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
+    reap_timeouts = []
 
     class _ReapWait:
         def __getattr__(self, name):
@@ -222,7 +223,9 @@ async def test_cleanup_bounds_wait_and_drain_and_closes_pipe(
                 # pauses before one of them reaches its wait point.
                 await proc.wait_started.wait()
                 await proc.stdout.drain_started.wait()
-                assert tasks == {*proc.wait_tasks, *proc.stdout.drain_tasks}
+                reap_timeouts.append(
+                    (timeout, tasks == {*proc.wait_tasks, *proc.stdout.drain_tasks})
+                )
             return await asyncio.wait(tasks, timeout=timeout, return_when=return_when)
 
     monkeypatch.setattr(secret_lookup, "asyncio", _ReapWait())
@@ -238,6 +241,9 @@ async def test_cleanup_bounds_wait_and_drain_and_closes_pipe(
             lookup.cancel()
             await asyncio.gather(lookup, return_exceptions=True)
 
+    # The reap wait went through the gate once, over the two reap tasks, with the
+    # configured reap timeout; the 10 s guard above does not bound the budget.
+    assert reap_timeouts == [(secret_lookup._REAP_TIMEOUT_SECONDS, True)]
     if path == "ordinary":
         assert result is None
     else:
