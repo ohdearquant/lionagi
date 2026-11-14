@@ -521,8 +521,10 @@ rather than left to the reader:
 
 - **A well-formed envelope whose `contract_version` the consumer accepts is
   authoritative.** The command exits 0 when it emits one, including for a handled
-  refusal with `ok: false`. The sole exception is the machine-mode environment
-  envelope, which keeps exit 78.
+  refusal with `ok: false`. A structured refusal is a successfully handled request;
+  encoding the refusal a second time in the exit status creates two answers to one
+  question, which is the ambiguity D3 exists to remove. The sole exception is the
+  machine-mode environment envelope, which keeps exit 78.
 - **78 (`EX_CONFIG`)** is returned when a required module cannot be imported and no run
   has been allocated — that is, when nothing was executed. It is never returned once a
   run exists, because a run that started and then failed is a failed run, and reporting
