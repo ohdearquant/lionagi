@@ -1032,12 +1032,12 @@ storage, a nullable `status_transitions.resolver_pruned_at`, a store-wide durabl
 index for eligible epoch lookups.
 Set the timestamp and increment the counter in the same retention transaction,
 counting only rows whose timestamp was previously unset. The enrollment migration
-and these additions use schema version 7. Ship the proposed ADR-0141 change
-that keeps recorded chain decisions in schedule-run status evidence in that
-same version and offline cutover. If the ADR-0141 migration merges first, it
-takes version 7 and enrollment takes version 8. Store history that predates
-the native migration at epoch zero if it is
-eligible. Preserve all existing acknowledgments and initialize consumer cutoffs as absent.
+ships at the next schema version, allocated and recorded here at implementation.
+If the ADR-0141 preservation change ships in the same release, both changes share
+one version and one offline cutover. Otherwise each takes its own version in
+implementation order. Store history that predates the native migration at epoch
+zero if it is eligible. Preserve all existing acknowledgments and initialize
+consumer cutoffs as absent.
 Ineligible and unclassified rows remain distinct and have no epoch-based eligibility.
 In the native migration, backfill eligible history to epoch zero and validate a constraint
 that requires a non-null epoch whenever `delivery_eligible IS TRUE`. Both native schema
@@ -1075,8 +1075,13 @@ need equivalent commit ordering before joining this baseline.
 
 Routine pruning protects the current and resolving rows of each eligible
 transition owed to an active consumer. A registered consumer that stops
-reconciling still holds that protection. PR #4396 added the physical-ACK guard
-for sessions on `dev/lionagi`. Issue #4402 tracks the full linked-entity guard.
+reconciling still holds that protection. At the enrollment cutover,
+`notify.settings.on_terminal` keeps its installed project-gated preparation,
+which acknowledges events with no session or ambiguous project and therefore
+falls short of the context-independent delivery rule in Scope and configuration
+until project-independent preparation is installed separately.
+PR #4396 added the physical-ACK guard for sessions on `dev/lionagi`.
+Issue #4402 tracks the full linked-entity guard.
 Apply it to explicit and age session pruning, CLI session pruning, run
 pruning, mirror absorption, and schedule cascades. Resolve the entire deletion
 set against `plays.session_id`, invocation sessions, and the schedule run's
@@ -1143,8 +1148,13 @@ retention rules under the same fence:
    One transition record settles replayable debt for every present and
    future consumer. Exclude it from consumer counts, exact and paged replay,
    and final admission. Neither a new `start="all"` registration nor
-   reactivation makes it owed again. The disposition itself creates no ACK, no failure and no
-   `no_session` attempt. An already-admitted effect that completes while its
+   reactivation makes it owed again. Like rule 1's removed transitions, the
+   disposition is a retention outcome for a transition that no active consumer
+   owes and that a later `start="all"` registration cannot receive regardless of
+   its preparation, distinct from the context labels in Scope and configuration
+   for retained events owed to an active subscription. The disposition itself
+   creates no ACK, no failure and no `no_session` attempt. An already-admitted
+   effect that completes while its
    transition survives keeps the physical ACK behavior above. An active
    consumer's owed transition retains its resolver, so the disposition only
    arises once no active consumer owes it. A transition can retain an earlier
