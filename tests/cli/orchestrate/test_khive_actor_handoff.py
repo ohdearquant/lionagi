@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 
 from lionagi import Branch
 from lionagi.cli.orchestrate import fanout as fanout_module
 from lionagi.cli.orchestrate._orchestration import build_worker_branch
+from lionagi.cli.orchestrate.flow import _DagState, _PlanResult, _reconstruct_spawned_nodes
+from lionagi.operations.builder import OperationGraphBuilder
+from lionhub.agent.casts.emission import TaskAssignment
 from tests.cli.orchestrate.test_no_mcp_config_handoff import (  # noqa: F401
     AgentProfile,
     _setup,
@@ -37,6 +41,80 @@ _OTHER = {
     "args": ["serve"],
     "env": {"KHIVE_ACTOR": "someone-else", "KHIVE_PACKS": "kg,comm"},
 }
+
+
+@pytest.mark.parametrize("clone_site", ["retry", "orchestrator"])
+def test_resume_reconstruction_clone_inherits_source_actor(clone_site, monkeypatch):
+    from lionagi.cli.orchestrate import flow as flow_module
+
+    source = Branch(name="source")
+    builder = OperationGraphBuilder()
+    parent_id = builder.add_operation("operate", branch=source, instruction="parent")
+    if clone_site == "retry":
+        role_branch = source
+        assignee = "reviewer"
+        status = "failed"
+        profile_mcp_disabled = True
+        retry_failed = True
+    else:
+        role_branch = None
+        assignee = None
+        status = "failed"
+        profile_mcp_disabled = False
+        retry_failed = True
+        source.chat_model.endpoint.config.kwargs["account_connectors"] = ["drive"]
+        monkeypatch.setattr(flow_module, "strip_connector_grant", lambda kwargs: None)
+
+    env = SimpleNamespace(
+        builder=builder,
+        orc_branch=source,
+        session=SimpleNamespace(include_branches=lambda branch: None),
+        khive_actors={str(source.id): "agent:reviewer"},
+        mcp_config_explicit=False,
+    )
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="parent", assignee="reviewer")],
+        agent_ids=["reviewer"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"reviewer": role_branch} if role_branch is not None else {},
+        worker_models=[],
+    )
+    checkpoint_ops = {"reviewer": {"status": "completed"}}
+    node_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": node_id,
+            "status": status,
+            "operation": "operate",
+            "assignee": assignee,
+            "instruction": "retry task",
+            "parent_id": str(parent_id),
+            "spawn_id": "spawn-1",
+            "profile_mcp_disabled": profile_mcp_disabled,
+        }
+    ]
+
+    _reconstruct_spawned_nodes(
+        env,
+        plan_result,
+        dag_state,
+        checkpoint_ops,
+        checkpoint_spawned,
+        retry_failed=retry_failed,
+    )
+
+    node = builder.get_graph().internal_nodes[UUID(node_id)]
+    assert node.branch_id is not None
+    assert env.khive_actors[str(node.branch_id)] == "agent:reviewer"
 
 
 def _write_config(launch_dir) -> None:

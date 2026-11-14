@@ -975,6 +975,15 @@ _PRUNE_VICTIMS = (
 _PRUNE_VICTIM_INSERT_BATCH_SIZE = 500
 
 
+def _prune_progression_collection_sql(dialect: str) -> tuple[str, str]:
+    if dialect == "sqlite":
+        return "json_each(progressions.collection)", "value"
+    return (
+        "jsonb_array_elements_text(progressions.collection::jsonb) AS collection_item(value)",
+        "collection_item.value",
+    )
+
+
 async def _prune_candidates(*, keep_days: int, keep_n: int) -> dict[str, Any]:
     """Recount what the prune's own predicate selects, and how old the oldest
     session is. Printed beside the prune's result as a cross-check: after a
@@ -1218,19 +1227,20 @@ async def _prune(
                 # so a message no surviving referent mentions is unreachable.
                 # This runs while the orphaned progressions still exist, since
                 # their collections are what says which messages are in play.
+                collection_items, collection_value = _prune_progression_collection_sql(db.dialect)
                 deleted_messages = (
                     await conn.execute(
                         text(
-                            "DELETE FROM messages WHERE id IN ("
-                            "  SELECT value FROM progressions, json_each(progressions.collection)"
+                            "DELETE FROM messages WHERE id IN ("  # noqa: S608 - dialect fragments are constants
+                            f"  SELECT {collection_value} FROM progressions, {collection_items}"
                             "  WHERE progressions.id IN (SELECT id FROM prune_orphan_progressions)"
                             "  UNION"
                             "  SELECT id FROM prune_direct_messages"
                             ") AND id NOT IN ("
-                            "  SELECT value FROM progressions, json_each(progressions.collection)"
+                            f"  SELECT {collection_value} FROM progressions, {collection_items}"
                             "  WHERE progressions.id NOT IN"
                             "    (SELECT id FROM prune_orphan_progressions)"
-                            "    AND json_each.value IS NOT NULL"
+                            f"    AND {collection_value} IS NOT NULL"
                             ") AND id NOT IN ("
                             "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
                             "  UNION"
@@ -1238,7 +1248,7 @@ async def _prune(
                             "  UNION"
                             "  SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
                             ")"
-                        )
+                        ),
                     )
                 ).rowcount
 
