@@ -816,12 +816,14 @@ class iModel:  # noqa: N801
         api_call: APICalling | None,
         served_model: str | None,
     ) -> None:
-        """Record the provider's report on the call and on the model.
+        """Record the provider's report on the call, on the model and in the run record.
 
         ``APICalling.metadata`` is the call-correlated evidence. The model-level
         value holds what the last invoke or stream on this model to write it
         wrote, so under concurrency it is never evidence about a particular call.
-        Recording none clears both values. A call that failed records none. A
+        When the call carries a telemetry frame, the same value is written to that
+        request's row in the run's API usage section. Recording none clears the call
+        and model values and writes ``null`` to the row. A call that failed records none. A
         stream its consumer closed early, and a stream cancelled after the provider
         named its model (a timeout that cancels it included), have not failed: each
         keeps the model read from what it delivered. A timeout raised inside the
