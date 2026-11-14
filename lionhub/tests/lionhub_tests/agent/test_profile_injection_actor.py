@@ -83,3 +83,29 @@ async def test_profile_name_that_is_not_a_valid_actor_is_anonymous():
 
     config = await _config_sent_to_pool(_registered_provider(branch))
     assert config["env"][KHIVE_ACTOR_ENV] == "agent:anonymous"
+
+
+@pytest.mark.asyncio
+async def test_create_agent_runs_the_injection_client_as_the_named_actor():
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
+
+    branch = await create_agent(
+        AgentSpec.coding(khive_injection=True),
+        load_settings=False,
+        khive_actor="agent:reviewer",
+    )
+
+    config = await _config_sent_to_pool(_registered_provider(branch))
+    assert config["env"][KHIVE_ACTOR_ENV] == "agent:reviewer"
+
+
+@pytest.mark.asyncio
+async def test_create_agent_without_an_actor_leaves_the_injection_server_as_configured():
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
+
+    branch = await create_agent(AgentSpec.coding(khive_injection=True), load_settings=False)
+
+    config = await _config_sent_to_pool(_registered_provider(branch))
+    assert KHIVE_ACTOR_ENV not in (config.get("env") or {})
