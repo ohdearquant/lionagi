@@ -189,8 +189,10 @@ async def test_postgresql_prune_binds_debt_and_ack_statements(monkeypatch):
         executed.append((str(compiled), bound))
         if str(statement).startswith("SELECT id FROM sessions WHERE status IN"):
             return SimpleNamespace(fetchall=lambda: [("session-1",)])
-        if str(statement).startswith("SELECT progression_id FROM sessions"):
-            return SimpleNamespace(fetchall=lambda: [])
+        if str(statement).startswith("SELECT id, progression_id, first_msg_id"):
+            return SimpleNamespace(fetchall=lambda: [("session-1", None, None, None)])
+        if str(statement).startswith("SELECT COUNT(*) FROM progressions"):
+            return SimpleNamespace(scalar_one=lambda: 0)
         return SimpleNamespace(rowcount=1, fetchall=lambda: [])
 
     async def lock_candidates(_conn, ids, *, dialect):

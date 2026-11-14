@@ -1352,3 +1352,157 @@ def test_the_prune_keeps_a_chunk_message_a_surviving_session_or_branch_points_at
     finally:
         con.close()
     assert left == {first, last, system}
+
+
+@pytest.fixture
+def shared_progression_prune_store(tmp_path, monkeypatch):
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    monkeypatch.setattr(
+        state_db_mod,
+        "settings",
+        state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None}),
+    )
+    _patch_prune_config(monkeypatch, archive_dir=None, chunk_rows=8)
+
+
+async def _shared_progression_prune(entry, session_ids):
+    from lionhub.orchestration.scheduler import db_maintenance as maint
+
+    if entry == "explicit":
+        return await maint.prune_terminal_sessions_by_id(session_ids)
+    result = await maint.prune_old_data(keep_days=30, actor="test")
+    return result["sessions_pruned"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("shared_progression_prune_store")
+@pytest.mark.parametrize("entry", ["explicit", "age"])
+@pytest.mark.parametrize("chunk_rows", [8, 1], ids=["one-chunk", "across-chunks"])
+async def test_shared_prune_defers_non_array_victim_message_reclamation(
+    entry, chunk_rows, monkeypatch, caplog
+):
+    # The deferred owner sorts first when the victims use separate chunks.
+    monkeypatch.setattr(scheduler_settings, "PRUNE_CHUNK_ROWS", chunk_rows)
+    deferred_direct_ids = {"first", "last", "system"}
+    deferred_history_ids = {"deferred-member", "shared-branch-only"}
+    survivor_ids = {"object-member", "string-member", "1"}
+    ordinary_ids = deferred_direct_ids | survivor_ids | {"deferred-member", "reclaimed"}
+    kept_ids = deferred_direct_ids | deferred_history_ids | survivor_ids
+    candidate_ids = sorted(kept_ids | {"reclaimed"})
+    old = time.time() - 60 * 86400
+    async with StateDB() as db:
+        for id_ in candidate_ids:
+            await db.insert_message({"id": id_, "created_at": old, "role": "user", "content": {}})
+        await db.create_progression("ordinary-history", sorted(ordinary_ids))
+        await db.create_progression("deferred-history")
+        await db.execute(
+            "UPDATE progressions SET collection = ? WHERE id = 'deferred-history'",
+            ('{"legacy":"deferred-member"}',),
+        )
+        await db.create_progression("deferred-branch-history", ["shared-branch-only"])
+        await db.create_session(
+            {
+                "id": "ordinary",
+                "progression_id": "ordinary-history",
+                "status": "completed",
+                "updated_at": old,
+            }
+        )
+        await db.create_session(
+            {
+                "id": "deferred",
+                "progression_id": "deferred-history",
+                "status": "completed",
+                "updated_at": old,
+                "first_msg_id": "first",
+                "last_msg_id": "last",
+            }
+        )
+        await db.create_branch(
+            {
+                "id": "deferred-branch",
+                "session_id": "deferred",
+                "progression_id": "deferred-branch-history",
+                "system_msg_id": "system",
+            }
+        )
+        # The ordinary victim can offer the earlier victim’s branch history for deletion.
+        await db.create_branch(
+            {
+                "id": "ordinary-branch",
+                "session_id": "ordinary",
+                "progression_id": "deferred-branch-history",
+            }
+        )
+        for id_, collection in {
+            "object-survivor": '{"message":"object-member","number":1,"nested":{"id":"reclaimed"}}',
+            "string-survivor": '"string-member"',
+            "null-survivor": "null",
+        }.items():
+            await db.create_progression(id_)
+            await db.execute(
+                "UPDATE progressions SET collection = ? WHERE id = ?", (collection, id_)
+            )
+
+    with caplog.at_level("INFO", logger="lionagi.studio.services.db_maintenance"):
+        assert await _shared_progression_prune(entry, ["ordinary", "deferred"]) == 2
+
+    async with StateDB() as db:
+        assert await db.fetch_all("SELECT id FROM sessions") == []
+        assert await db.fetch_all("SELECT id FROM branches") == []
+        assert {row["id"] for row in await db.fetch_all("SELECT id FROM messages")} == kept_ids
+        assert await db.get_progression("deferred-branch-history") == ["shared-branch-only"]
+        assert {row["id"] for row in await db.fetch_all("SELECT id FROM progressions")} == {
+            "deferred-history",
+            "deferred-branch-history",
+            "object-survivor",
+            "string-survivor",
+            "null-survivor",
+        }
+
+    assert "deferred_victim_progressions=1" in caplog.text
+    assert "non_array_survivor_progressions=3" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("shared_progression_prune_store")
+@pytest.mark.parametrize("entry", ["explicit", "age"])
+@pytest.mark.parametrize("malformed", ["victim-history", "survivor-history"])
+async def test_shared_prune_rolls_back_malformed_progressions(entry, malformed):
+    from sqlalchemy.exc import DBAPIError
+
+    old = time.time() - 60 * 86400
+    async with StateDB() as db:
+        await db.insert_message(
+            {"id": "old-message", "created_at": old, "role": "user", "content": {}}
+        )
+        await db.create_progression("victim-history", ["old-message"])
+        await db.create_progression("survivor-history")
+        await db.create_session(
+            {"id": "victim", "status": "running", "progression_id": "victim-history"}
+        )
+        assert await db.update_status(
+            "session", "victim", new_status="completed", reason_code="run.completed.ok"
+        )
+        await db.execute("UPDATE sessions SET updated_at = ? WHERE id = 'victim'", (old,))
+        await db.create_branch(
+            {"id": "victim-branch", "session_id": "victim", "progression_id": "victim-history"}
+        )
+        await db.execute(
+            "UPDATE progressions SET collection = ? WHERE id = ?", ("[malformed", malformed)
+        )
+
+    async def stored_rows():
+        async with StateDB() as db:
+            return (
+                await db.fetch_all("SELECT * FROM sessions ORDER BY id"),
+                await db.fetch_all("SELECT * FROM branches ORDER BY id"),
+                await db.fetch_all("SELECT * FROM progressions ORDER BY id"),
+                await db.fetch_all("SELECT * FROM messages ORDER BY id"),
+                await db.fetch_all("SELECT * FROM status_transitions ORDER BY id"),
+            )
+
+    before = await stored_rows()
+    with pytest.raises(DBAPIError, match="malformed JSON"):
+        await _shared_progression_prune(entry, ["victim"])
+    assert await stored_rows() == before

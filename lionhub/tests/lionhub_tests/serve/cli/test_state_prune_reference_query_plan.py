@@ -49,8 +49,8 @@ async def test_retained_reference_queries_avoid_correlated_outbox_scan_and_prese
             if (
                 sql.startswith(
                     (
-                        "SELECT COUNT(*) FROM prune_victims WHERE ",
-                        "DELETE FROM prune_victims WHERE ",
+                        "SELECT COUNT(*) FROM temp.prune_victims WHERE ",
+                        "DELETE FROM temp.prune_victims WHERE ",
                     )
                 )
                 and "dispatch_outbox" in sql
