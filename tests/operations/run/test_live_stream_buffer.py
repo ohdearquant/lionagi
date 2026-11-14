@@ -249,7 +249,7 @@ async def test_reader_displays_the_actual_nonfinite_fallback(tmp_path):
 
 
 def test_reader_windows_after_filtering_and_ignores_non_string_legacy_text(tmp_path):
-    from lionagi.cli.monitor import _stream_tail
+    from lionhub.serve.cli.monitor import _stream_tail
 
     stream = tmp_path / "stream"
     stream.mkdir()
@@ -269,7 +269,7 @@ def test_reader_windows_after_filtering_and_ignores_non_string_legacy_text(tmp_p
 
 
 def test_reader_preserves_joiners_and_soft_hyphen(tmp_path):
-    from lionagi.cli.monitor import _stream_tail
+    from lionhub.serve.cli.monitor import _stream_tail
 
     stream = tmp_path / "stream"
     stream.mkdir()
