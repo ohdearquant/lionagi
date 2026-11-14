@@ -424,7 +424,7 @@ The cutover procedure applies to both backends:
    the same acceptance schedule with
    `lionagi/studio/services/schedules.py::delete_schedule`.
    The delete can be refused where the store protects child debt or last
-   resolvers. See [ADR-0095](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md).
+   resolvers.
    The delete cascades to runs under that schedule, including parent and child when
    both belong to it. A surviving link such as a child in another schedule, an
    outbox reference or a worker lease can block deletion
