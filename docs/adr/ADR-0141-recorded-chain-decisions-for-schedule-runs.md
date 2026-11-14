@@ -345,13 +345,11 @@ Why this way: a monitor that understands the ref follows the scheduler's recorde
 This decision changes no table or column. It reverses the earlier no-schema-bump
 position because a version-6 writer can replace an evidence list and erase a decision.
 
-Ship preservation and the
-[ADR-0095 enrollment migration](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md#proposed-partial-amendment-commit-ordered-consumer-enrollment)
-together as schema version **7**, in one offline cutover. Land the enrollment
-amendment before this record so the dependency resolves. If the enrollment
-migration has not merged when the preservation migration is ready to merge,
-preservation takes version 7 alone and enrollment takes version 8. The first
-implementation records the allocated versions in both ADRs. A version-7
+Ship preservation at the next schema version. Allocate and record that version
+here when preservation is implemented. If the
+[ADR-0095 enrollment migration](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md)
+is implemented in the same release, both share one version and one offline
+cutover. Otherwise each takes its own version in implementation order. Every
 writer admitted to a decision-enabled store must include preservation.
 
 An upgraded native writable open on SQLite or PostgreSQL migrates the store
@@ -359,8 +357,8 @@ and stamps the binary's version
 (`lionagi/state/db.py::StateDB._open`, `lionagi/state/db.py::StateDB._apply_schema`).
 The D1 and D3 persistence paths read the stamp from `schema_meta` on the
 write transaction's own connection, under the same lock as the row read
-for the transition or creation. They enable decisions on a stamped version
-of 7 or later. An older native binary is
+for the transition or creation. They enable decisions at the preservation
+version or later. An older native binary is
 refused on a fresh writable open by
 `lionagi/state/db.py::StateDB._raise_if_schema_too_new`; step 2 handles
 previously opened handles (Consequence 11).
@@ -424,9 +422,8 @@ The cutover procedure applies to both backends:
    checks pass, resolve surviving fixture references and attempt to delete
    the same acceptance schedule with
    `lionagi/studio/services/schedules.py::delete_schedule`.
-   The delete checks child debt and protected last resolvers under the
-   retention fence as required by the
-   [ADR-0095 schedule cascade refusal](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md#native-upgrade-and-maintenance).
+   The delete can be refused where the store protects child debt or last
+   resolvers. See [ADR-0095](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md).
    The delete cascades to runs under that schedule, including parent and child when
    both belong to it. A surviving link such as a child in another schedule, an
    outbox reference or a worker lease can block deletion
@@ -540,14 +537,15 @@ New tests (none exist at this checkout):
     orphan with ordinary evidence is replaced successfully.
 19. In `tests/state/lifecycle/test_service.py` and
     `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_occurrence_atomicity.py`,
-    use a controlled persistence fixture that exposes a version-6 stamp to the
-    real D1 and D3 gates without running native auto-migration in that arm.
+    use a controlled persistence fixture that exposes a stamp below the
+    preservation version (version 6 at this checkout) to the real D1 and D3
+    gates without running native auto-migration in that arm.
     Verify guarded terminal writes and scheduler terminal creation leave both
-    current and history refs without a decision. Repeat at version 7 on SQLite
+    current and history refs without a decision. Repeat at the preservation version on SQLite
     and PostgreSQL and verify both records contain it. In
     `tests/state/test_db.py`, exercise the ordinary native open, verify it
     stamps the upgraded store, and verify a version-6 writer opening the
-    version-7 store gets `SchemaTooNewError`.
+    store stamped at the preservation version gets `SchemaTooNewError`.
 20. In `tests/state/test_lifecycle_gate.py`, attempt to change a stored decision
     using a stale `expected_updated_at`.
     Assert that `update_status` returns `False` and writes no rejection event.
