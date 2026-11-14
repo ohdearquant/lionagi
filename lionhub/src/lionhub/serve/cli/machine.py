@@ -776,21 +776,26 @@ def dispatch_machine(argv: list[str]) -> int:
     """
     from lionhub.orchestration.job import run_was_allocated
 
+    # The entry point owns the set of environment faults. Reading it from there
+    # keeps the two paths from disagreeing about which errors mean the
+    # installation lacks something.
+    from .main import _ENVIRONMENT_FAULTS
+
     with reserve_stdout() as channel:
         try:
             data = _run_machine_command(argv)
         except MachineError as exc:
             channel.emit(failure(exc.kind, str(exc), exc.detail))
-        except ModuleNotFoundError:
+        except _ENVIRONMENT_FAULTS as exc:
             if not run_was_allocated():
                 raise
-            channel.emit(failure("internal", "a required module is not installed"))
+            if isinstance(exc, MissingFeatureError):
+                # Its message is built from its own fields, so it names the
+                # feature and the install guidance and carries nothing else.
+                channel.emit(failure("internal", f"{type(exc).__name__}: {exc}"))
+            else:
+                channel.emit(failure("internal", "a required module is not installed"))
         except Exception as exc:  # noqa: BLE001 — a crash with no envelope is unreadable
-            # A missing feature before allocation is an environment refusal, like a
-            # missing module. After allocation it is reported like any other failure,
-            # so the envelope keeps the feature name and its install guidance.
-            if isinstance(exc, MissingFeatureError) and not run_was_allocated():
-                raise
             from lionagi.state.engine import mask_credentials
 
             # The only sink that prints a message from code we do not own. The

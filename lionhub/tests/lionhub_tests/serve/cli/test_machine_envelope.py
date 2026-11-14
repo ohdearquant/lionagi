@@ -840,3 +840,22 @@ def test_machine_missing_feature_error_keeps_allocation_boundary(machine_import_
     assert "fixture provider" in message
     assert "fixture-dist" in message
     assert "install fixture-dist" in message
+
+
+def test_machine_dispatch_reads_the_entry_points_environment_faults(
+    machine_import_file, capfd, monkeypatch
+):
+    """Adding a type to the entry point's set changes dispatch too, with no second edit."""
+    path, errors = machine_import_file
+    path.write_text(
+        "from _machine_loader_errors import broken\ndef machine_result(argv):\n    raise broken\n"
+    )
+    # Control: outside the set, the error is an ordinary failure even before allocation.
+    assert machine.dispatch_machine(["fixture"]) == 0
+    assert _one_object(capfd.readouterr().out)["error"]["kind"] == "internal"
+
+    tagged = type(errors.broken)
+    monkeypatch.setattr(cli_main, "_ENVIRONMENT_FAULTS", (*cli_main._ENVIRONMENT_FAULTS, tagged))
+    with pytest.raises(tagged):
+        machine.dispatch_machine(["fixture"])
+    assert capfd.readouterr().out == ""

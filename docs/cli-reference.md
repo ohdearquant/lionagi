@@ -1110,14 +1110,15 @@ read" from sharing an encoding, which is the difference between a caller
 reporting an empty result and reporting a broken one.
 
 Check the exit status before parsing. **78 means nothing executed** — the
-environment could not run the work at all — and stdout must not be parsed on it,
-because attributing an environment fault to the submitted work is the
-misattribution the code exists to prevent.
+environment could not run the work at all — and stdout on it is never read as a
+result of the submitted work, because attributing an environment fault to the
+submitted work is the misattribution the code exists to prevent.
 
 For `--machine` before the first `--`, the CLI makes a best-effort attempt to emit an
 `unavailable` envelope on exit 78. If the write fails, exit 78 still reports the
-environment fault and stdout is empty. Consumers that inspect stdout on exit 78
-should accept either case. Without machine mode, stdout stays empty on exit 78.
+environment fault, and stdout is empty or, when the write stopped partway, holds
+bytes that do not parse. Consumers that inspect stdout on exit 78 should accept
+all three cases and ignore stdout that does not parse. Without machine mode, stdout stays empty on exit 78.
 
 The full contract, including how `status`, `terminal` and `outcome` divide the
 question of whether a run is over, is in

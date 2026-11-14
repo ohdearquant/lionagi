@@ -530,8 +530,8 @@ rather than left to the reader:
   run exists, because a run that started and then failed is a failed run, and reporting
   it as an environment fault sends the consumer away from durable state it should read.
   In machine mode the entry point emits an `unavailable` envelope on a best-effort
-  basis. If it cannot write the envelope, stdout is empty and the exit status is still
-  78. Without `--machine`, stdout stays empty. The diagnostic goes to stderr in
+  basis. If the write fails, the exit status is still 78 and stdout is empty or, when
+  the write stopped partway, holds a truncated object that does not parse. Without `--machine`, stdout stays empty. The diagnostic goes to stderr in
   both modes.
 - **Any other exit without a parseable envelope is a transport fault**: the process
   could not be launched at all, it was killed by a signal, it timed out under the
@@ -802,8 +802,9 @@ being asked of them in one place.
 6. **Check the exit status before parsing stdout, and never read stdout on 78 as a
    result of the submitted work** (D8). Attributing an environment fault to the
    submitted work is the misattribution this contract was written to remove. On 78,
-   stdout holds either nothing or a valid `unavailable` envelope. A consumer may read
-   that envelope as a diagnostic, and never treats empty stdout there as malformed.
+   stdout holds nothing, a valid `unavailable` envelope, or bytes that do not parse,
+   which the consumer ignores on 78. A consumer may read the envelope as a diagnostic,
+   and never treats empty or unparseable stdout there as malformed.
 7. **Never treat a terminal notice as proof, or as the only discovery path** (D9).
    Delivery can fail, and the record of that failure lives in state a non-polling
    consumer is not reading.
