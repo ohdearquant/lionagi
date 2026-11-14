@@ -19,6 +19,8 @@ did not change the CLI path.
 
 from __future__ import annotations
 
+import gc
+
 import pytest
 
 from lionhub.providers.openai._codex_profile import resolve_codex_config_profile
@@ -147,16 +149,28 @@ class TestOrderingAndPrecedence:
 
 
 class TestAProfileTheParserCannotRead:
+    @staticmethod
+    def _parse_without_collection(call):
+        collection_was_enabled = gc.isenabled()
+        if collection_was_enabled:
+            gc.disable()
+        try:
+            return call()
+        finally:
+            if collection_was_enabled:
+                gc.enable()
+            gc.collect()
+
     def test_a_profile_nested_too_deep_refuses_and_names_the_file(self, codex_home):
         """A profile file nested past the parser's limit is unreadable, not a
         reason to hand codex the profile name as a model id. The refusal names
         the file so a caller can find and fix it."""
         _write(codex_home, "deep", "x = " + "[" * 3000 + "]" * 3000 + "\n")
         with pytest.raises(ValueError, match="could not be read") as raised:
-            resolve_codex_config_profile("deep")
+            self._parse_without_collection(lambda: resolve_codex_config_profile("deep"))
         assert str(codex_home / "deep.config.toml") in str(raised.value)
 
     def test_the_request_over_that_profile_refuses_the_same_way(self, codex_home):
         _write(codex_home, "deep", "x = " + "[" * 3000 + "]" * 3000 + "\n")
         with pytest.raises(ValueError, match="could not be read"):
-            CodexCodeRequest(model="deep", prompt="x")
+            self._parse_without_collection(lambda: CodexCodeRequest(model="deep", prompt="x"))

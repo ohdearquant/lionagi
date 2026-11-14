@@ -1,6 +1,7 @@
 """Static inventory and manifest validation tests."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -276,6 +277,30 @@ def test_target_notes_use_recorded_destinations_only():
     assert builder.ADDITIONAL_TARGETS["lionagi.cli.orchestrate"] == [
         "lionhub.orchestration.flow.parsing"
     ]
+
+
+def test_step3_whole_module_targets_match_adr_0139():
+    adr = (
+        Path(builder.ROOT)
+        / "docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md"
+    ).read_text(encoding="utf-8")
+    table = adr.split("**Seventeen complete source modules move during step 3:**", 1)[1].split(
+        "Each row above", 1
+    )[0]
+    rows = []
+    for line in table.splitlines():
+        if not line.startswith("| `lionagi/"):
+            continue
+        cells = line.split("|")
+        source = re.search(r"`(lionagi/[^`:]+\.py)", cells[1])
+        destination = re.search(r"`([^`]+)`", cells[2])
+        assert source is not None and destination is not None, line
+        rows.append((source.group(1), destination.group(1)))
+
+    assert len(rows) == 17
+    for source, destination in rows:
+        module = source.split(":", 1)[0].removesuffix(".py").replace("/", ".")
+        assert builder.TARGET_RULES.get(module) == destination, module
 
 
 def test_committed_inventory_matches_generator_and_rejects_hand_edit(tmp_path):

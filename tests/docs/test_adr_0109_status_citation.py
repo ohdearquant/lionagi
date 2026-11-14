@@ -37,3 +37,18 @@ def test_status_update_citation_points_to_source_and_actor_parameters() -> None:
     actor = _source_of("lionagi/state/lifecycle/models.py", "ActorRecord")
     assert actor.startswith("class ActorRecord:")
     assert "id: str" in actor
+
+
+def test_terminal_status_consumers_name_the_reading_functions() -> None:
+    record = RECORD.read_text(encoding="utf-8")
+    monitor_row = next(line for line in record.splitlines() if "cli/monitor.py" in line)
+    agent_row = next(line for line in record.splitlines() if "cli/agent.py" in line)
+
+    assert "_effective_session_status" in monitor_row
+    assert "_poll_pending_sessions_once" in monitor_row
+    assert "_DEFAULT_MAX_WAIT_SECONDS" not in monitor_row
+    assert "_split_watched_ids" not in monitor_row
+    assert "_tombstone_pending_steers" in agent_row
+    assert "cli/agent.py::_run_agent`" in agent_row
+    assert "_drain_pending_steers" not in agent_row
+    assert "_api_turn" not in agent_row

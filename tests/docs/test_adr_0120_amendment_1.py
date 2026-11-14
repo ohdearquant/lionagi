@@ -352,7 +352,10 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:845-849" in flat
+    signal_table = _table("lionagi/state/schema.sql", "session_signals")
+    assert "session_id" in signal_table
+    assert "seq" in signal_table
+    assert "session_signals` in `lionagi/state/schema.sql" in flat
     assert "lionagi/state/db.py::StateDB.insert_session_signal" in flat
     assert "lionagi/state/db.py::StateDB.get_session_signals_after" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
