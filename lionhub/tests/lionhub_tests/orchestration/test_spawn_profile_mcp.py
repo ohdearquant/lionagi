@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from lionagi._errors import ConfigurationError
@@ -112,12 +114,45 @@ def test_mcp_after_same_line_preface_is_refused():
         _parse_profile("reviewer", "Reviewer ---\nmcp: none\n---\nReview.")
 
 
+@pytest.fixture(params=[1000, 3000], ids=["default-limit", "raised-limit"])
+def recursion_limit(request):
+    # A library can raise the limit for the whole process (jedi sets 3000 on import),
+    # so a depth refusal is checked at the default and at a raised limit.
+    saved = sys.getrecursionlimit()
+    sys.setrecursionlimit(request.param)
+    yield request.param
+    sys.setrecursionlimit(saved)
+
+
+def _nested_flow(depth: int) -> str:
+    return "x: " + "[" * depth + "a" + "]" * depth + "\n"
+
+
 @pytest.mark.parametrize("position", ["before", "after"])
-def test_deep_closed_mcp_frontmatter_is_refused(position):
-    nested = "x: " + "[" * 500 + "a" + "]" * 500 + "\n"
+def test_deep_closed_mcp_frontmatter_is_refused(position, recursion_limit):
+    nested = _nested_flow(500)
     block = "mcp: none\n" + nested if position == "before" else nested + "mcp: none\n"
-    with pytest.raises(ConfigurationError, match="mcp"):
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
         _parse_profile("reviewer", "---\n" + block + "---\nReview.")
+
+
+def test_deep_closed_frontmatter_without_mcp_is_refused(recursion_limit):
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
+        _parse_profile("reviewer", "---\n" + _nested_flow(65) + "---\nReview.")
+
+
+def test_closed_frontmatter_at_the_depth_bound_is_read(recursion_limit):
+    # The top mapping is one level, so 63 lists under it reach the bound of 64.
+    flow = _parse_profile("reviewer", "---\nmcp: none\n" + _nested_flow(63) + "---\nReview.")
+    assert flow.mcp == "none" and "x" in flow.extra
+    lines = "".join("  " * i + f"k{i}:\n" for i in range(63)) + "  " * 63 + "v: 1\n"
+    block = _parse_profile("reviewer", "---\n" + lines + "---\nReview.")
+    assert "k0" in block.extra
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
+        _parse_profile(
+            "reviewer",
+            "---\n" + lines.replace("v: 1", "k63:\n" + "  " * 64 + "v: 1") + "---\nReview.",
+        )
 
 
 @pytest.mark.parametrize(
@@ -489,13 +524,13 @@ def test_unclosed_valid_yaml_does_not_rescan_each_line(monkeypatch):
     assert scans <= 1
 
 
-def test_deep_unclosed_unrelated_frontmatter_keeps_leniency():
+def test_deep_unclosed_unrelated_frontmatter_keeps_leniency(recursion_limit):
     text = "---\nx: " + "[" * 500 + "a" + "]" * 500
     assert _parse_profile("reviewer", text).mcp is None
 
 
 @pytest.mark.parametrize("position", ["before", "after"])
-def test_deep_unclosed_mcp_frontmatter_is_refused(position):
+def test_deep_unclosed_mcp_frontmatter_is_refused(position, recursion_limit):
     nested = "x: " + "[" * 500 + "a" + "]" * 500 + "\n"
     block = "mcp: none\n" + nested if position == "before" else nested + "mcp: none\n"
     with pytest.raises(ConfigurationError, match="mcp"):
