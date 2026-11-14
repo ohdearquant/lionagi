@@ -1463,7 +1463,7 @@ async def test_fire_now_returns_none_when_schedule_missing():
         (
             {
                 "action_kind": "engine",
-                "action_agent": "summarize",
+                "action_agent": "research",
                 "action_prompt": "{{pr_number}}",
             },
             "{{pr_number}}",
@@ -1573,8 +1573,12 @@ async def test_fire_now_is_not_refused_for_a_placeholder_its_launch_does_not_sen
         ),
         ({"action_kind": "engine"}, "engine launches require action_agent"),
         (
-            {"action_kind": "engine", "action_agent": "summarize", "action_prompt": ""},
+            {"action_kind": "engine", "action_agent": "research", "action_prompt": ""},
             "engine launches require action_prompt",
+        ),
+        (
+            {"action_kind": "engine", "action_agent": "unknownengine"},
+            "action_agent 'unknownengine' is not a registered engine kind",
         ),
         (
             {"action_kind": "engine", "action_agent": "coding"},
@@ -1727,7 +1731,7 @@ async def test_fire_now_refuses_when_the_execution_root_cannot_be_resolved(monke
     [
         ({"action_kind": "agent"}, "check 7"),
         ({"action_kind": "play", "action_playbook": "triage"}, "check 7"),
-        ({"action_kind": "engine", "action_agent": "summarize"}, "check 7"),
+        ({"action_kind": "engine", "action_agent": "research"}, "check 7"),
         ({"action_kind": "play"}, None),
         ({"action_kind": "playbook", "action_playbook": ""}, None),
         ({"action_kind": "flow_yaml", "action_flow_yaml": "prompt: summarize\n"}, None),
@@ -1760,7 +1764,7 @@ def test_an_engine_spec_that_renders_empty_is_refused_when_the_launch_is_built()
     from lionhub.orchestration.scheduler.subprocess import build_argv
 
     schedule = _minimal_schedule(
-        action_kind="engine", action_agent="summarize", action_prompt="{{pr_body}}"
+        action_kind="engine", action_agent="research", action_prompt="{{pr_body}}"
     )
     poll_context = {"github_events": [{"pr_body": ""}], "fired_at": 1.0}
 
@@ -5394,6 +5398,50 @@ async def test_a_scheduled_fire_of_a_play_playbook_named_for_a_subcommand_spawns
     assert [s.error_detail for s in failed] == [
         "ValueError: action_playbook 'list' names a `li play` subcommand, not a playbook"
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine_kind", ["unknownengine", "research"])
+async def test_a_scheduled_engine_fire_requires_a_registered_kind(
+    monkeypatch, tmp_path, engine_kind
+):
+    from lionhub.orchestration.scheduler import subprocess as sched_subprocess
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(sched_subprocess, "resolve_li_executable", lambda: (["fixture-li"], None))
+    spawn = AsyncMock(return_value=(0, ""))
+    monkeypatch.setattr(sched_subprocess, "spawn_and_wait", spawn)
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        trigger_type="once",
+        action_kind="engine",
+        action_agent=engine_kind,
+        action_prompt="Example topic",
+        action_model=None,
+        action_cwd=str(tmp_path),
+    )
+
+    await fire_with_claim(engine, schedule, "run-engine", trigger_context={"scheduled": True})
+
+    svc.create_schedule_run_and_advance.assert_awaited_once()
+    occurrence = svc.create_schedule_run_and_advance.await_args.args[0]
+    if engine_kind == "research":
+        spawn.assert_awaited_once()
+        assert spawn.await_args.args[0] == [
+            "fixture-li",
+            "engine",
+            "run",
+            "--",
+            "research",
+            "Example topic",
+        ]
+    else:
+        spawn.assert_not_awaited()
+        assert occurrence["status"] == "failed"
+        assert occurrence["error_detail"] == (
+            "action_agent 'unknownengine' is not a registered engine kind"
+        )
 
 
 def test_merge_chain_action_overlays_the_named_action_fields():
