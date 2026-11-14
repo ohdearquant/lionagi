@@ -115,13 +115,14 @@ profile, with these differences and requirements:
   and `CLAUDE.local.md`), so that a command cannot plant what the provider loads on a later turn.
   For git that is the repository's git directory as a whole, not a list of files in it. This holds
   for every `.git` entry present at launch, the working directory's own and any in a subdirectory (a
-  nested or vendored repository): none can be renamed, removed or replaced, whether it is a
-  directory or a gitfile, and no new `.git` entry can be created anywhere in the working directory
+  nested or vendored repository): none can be renamed, removed, replaced or rewritten in place,
+  whether it is a directory or a gitfile, and no new `.git` entry can be created anywhere in the working directory
   or the caches. Inside a `.git` directory the write set is an allow-list, not a deny-list: `HEAD`,
-  `index`, `refs/`, `packed-refs`, `objects/`, `logs/`, and the transient files a commit writes at
+  `index`, `refs/`, `packed-refs`, `objects/` except `objects/info/`, `logs/`, and the transient files a commit writes at
   the top of the git directory (`COMMIT_EDITMSG`, `ORIG_HEAD` and the lock files of the listed
   entries) are writable. Everything else there is not, including `config`, `config.worktree`,
-  `commondir`, `gitdir`, `worktrees/`, `hooks/`, `info/` and `modules/`, because a file git reads
+  `commondir`, `gitdir`, `worktrees/`, `hooks/`, `info/`, `objects/info/` (whose `alternates` names
+  further object stores) and `modules/`, because a file git reads
   for where its configuration lives (`commondir` names the directory whose `config` git then obeys)
   plants a command as surely as `config` itself. So when `.git` is a directory, the child can
   commit. When `.git` is a gitfile (a linked worktree, the usual case for
@@ -134,9 +135,9 @@ profile, with these differences and requirements:
   anything else it writes: the launching process never runs it with the withheld credentials (D6),
   and a later build of the user's that uses those caches is the user's call (D6). The rules must hold on the
   resolved path, so that a symlink in the working directory does not widen them, and on the whole
-  path to each entry they protect: no directory between the working directory and a protected entry
-  (a `.git` entry, a provider configuration or instruction file) can be renamed, removed or
-  replaced, since moving that directory aside, planting into the copy and moving it back reaches the
+  path to each entry they protect: neither the working directory itself nor any directory between
+  it and a protected entry (a `.git` entry, a provider configuration or instruction file) can be
+  renamed, moved, removed or replaced, since moving that directory aside, planting into the copy and moving it back reaches the
   entry without writing to its path.
 - **Network.** No wider than under file containment. `sandbox-exec` filters by local port, not by
   domain, and turning the provider's sandbox off also turns off the local proxy it filters through;
