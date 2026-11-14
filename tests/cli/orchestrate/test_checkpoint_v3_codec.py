@@ -114,6 +114,82 @@ def test_duplicate_array_insert_replays_exactly():
     assert thaw_json(apply_patch(before, patch)) == thaw_json(target)
 
 
+def test_many_member_replacements_validate_the_object_once(monkeypatch):
+    before = freeze_json({f"k{i}": i for i in range(10_000)} | {"keep": {"x": 1}})
+    operations = tuple(PatchOp("replace", f"/k{i}", -i) for i in range(10_000))
+    original = FrozenObject.__post_init__
+    validations = 0
+
+    def count_validation(self):
+        nonlocal validations
+        validations += 1
+        original(self)
+
+    monkeypatch.setattr(FrozenObject, "__post_init__", count_validation)
+    replayed = apply_patch(before, operations)
+    assert validations == 1
+    assert replayed["k9999"] == -9999
+    assert replayed["keep"] is before["keep"]
+
+
+def _apply_one_by_one(context, patch):
+    result = context
+    for op in patch:
+        codec._validate_op(op)
+        result = codec._apply(result, codec._pointer(op.path), op)
+    return result
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        # A root replacement followed by member operations on the new root.
+        (
+            PatchOp("replace", "", freeze_json({"a": 1})),
+            PatchOp("add", "/b", 2),
+            PatchOp("replace", "/a", 3),
+        ),
+        # Members of a nested object, then members of the root.
+        (
+            PatchOp("replace", "/keep/x", 5),
+            PatchOp("add", "/keep/y", 6),
+            PatchOp("remove", "/k0"),
+            PatchOp("add", "/new", freeze_json([1])),
+        ),
+        # Members of an object inside an array, and array elements themselves.
+        (
+            PatchOp("add", "/items/0/z", 1),
+            PatchOp("remove", "/items/0/w"),
+            PatchOp("add", "/items/-", 7),
+            PatchOp("remove", "/items/1"),
+        ),
+        # Removing and re-adding the same member within one run.
+        (PatchOp("remove", "/k1"), PatchOp("add", "/k1", "again"), PatchOp("replace", "/k2", None)),
+    ],
+)
+def test_grouped_patch_matches_one_by_one(patch):
+    before = freeze_json({"k0": 0, "k1": 1, "k2": 2, "keep": {"x": 1}, "items": [{"w": 0}, 9]})
+    expected = _apply_one_by_one(before, patch)
+    replayed = apply_patch(before, patch)
+    assert thaw_json(replayed) == thaw_json(expected)
+    assert list(thaw_json(replayed)) == list(thaw_json(expected))
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        (PatchOp("replace", "/k0", 1), PatchOp("add", "/k0", 2)),
+        (PatchOp("replace", "/k0", 1), PatchOp("remove", "/missing")),
+        (PatchOp("replace", "/k0", 1), "not an operation"),
+    ],
+)
+def test_grouped_patch_failure_leaves_the_input_unchanged(patch):
+    before = freeze_json({"k0": 0})
+    with pytest.raises(CodecError):
+        apply_patch(before, patch)
+    assert thaw_json(before) == {"k0": 0}
+
+
 @pytest.mark.parametrize(
     "old, new, types", [([1], [True, 1], [bool, int]), ([1.0], [1, 1.0], [int, float])]
 )
