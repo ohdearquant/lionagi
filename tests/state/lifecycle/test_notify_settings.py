@@ -13,13 +13,18 @@ import json
 import logging
 import os
 import shlex
+import signal
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
+from lionagi.ln.concurrency import current_time, move_on_after
+from lionagi.state.lifecycle import callbacks
 from lionagi.state.lifecycle.callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
     EntityRef,
@@ -555,7 +560,7 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
         lambda env=None: ({"MARKED": "notify"}, "notify-token"),
     )
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.observe_process_group_leader",
+        "lionagi.ln._proc.observe_process_group_leader",
         lambda pid, *, expected_marker: (
             17.0 if (pid, expected_marker) == (456, "notify-token") else None
         ),
@@ -621,6 +626,79 @@ async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, t
     assert "failed to run" in warn_calls[0]
     assert "notify-hook" in warn_calls[0]
     assert "('notify-hook',)" not in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_safe_exec_handler_keeps_launch_failure_reason(monkeypatch, caplog):
+    async def unavailable(*args, **kwargs):
+        raise FileNotFoundError("example launch text")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unavailable)
+    reasons = []
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)),
+        safe_logging=True,
+        on_exec_failure=reasons.append,
+    )
+    await handler(_envelope())
+
+    assert reasons == ["exec_adapter_launch_failed"]
+    assert "exec_adapter_launch_failed" in caplog.text
+    assert "example launch text" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_safe_exec_handler_retrieves_spawn_failure_after_cancellation(monkeypatch, caplog):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    spawn_tasks = []
+    reported = []
+
+    async def unavailable(*args, **kwargs):
+        spawn_tasks.append(asyncio.current_task())
+        entered.set()
+        await release.wait()
+        raise OSError("example late launch text")
+
+    loop = asyncio.get_running_loop()
+    previous_exception_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unavailable)
+    reasons = []
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)),
+        safe_logging=True,
+        on_exec_failure=reasons.append,
+    )
+    caller = asyncio.create_task(handler(_envelope()))
+    spawn_finished = asyncio.Event()
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        (inner,) = spawn_tasks
+        assert inner is not None
+        inner.add_done_callback(lambda _: spawn_finished.set())
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert not spawn_finished.is_set()
+
+        release.set()
+        await asyncio.wait_for(spawn_finished.wait(), timeout=5)
+        assert not inner.cancelled()
+        # Allow the shield and cleanup callbacks to run without retrieving the
+        # exception through the test itself.
+        await asyncio.sleep(0)
+        spawn_tasks.clear()
+        del inner
+        assert reported == []
+        assert reasons == []
+        assert "example late launch text" not in caplog.text
+    finally:
+        release.set()
+        if not caller.done():
+            caller.cancel()
+            await asyncio.gather(caller, return_exceptions=True)
+        loop.set_exception_handler(previous_exception_handler)
 
 
 @pytest.mark.asyncio
@@ -891,10 +969,9 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(
     # well short of its 30 s sleep, with room for a loaded runner.
     assert _CANCEL_BUDGET_SECONDS <= elapsed < 10.0
 
-    # aterminate_process_group's own SIGKILL + proc.wait() already ran
-    # inside the shielded cleanup before emit() returned; give the OS a
-    # brief grace period for the zombie to clear, then confirm the process
-    # is actually gone -- never left running past the run's own return.
+    # Once the handler has the process handle, its cleanup runs before emit()
+    # returns. Cancellation before that handoff delegates cleanup to the spawn
+    # task and its child watcher. Wait for the PID to clear in either case.
     for _ in range(50):
         try:
             os.kill(child_pid, 0)
@@ -907,6 +984,290 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(
         with contextlib.suppress(ProcessLookupError):
             spawned[0].kill()
         pytest.fail(f"child pid {child_pid} was still alive after cancellation cleanup")
+
+
+_NOTIFY_DEADMAN = 10
+_NOTIFY_GROUP_SCRIPT = """\
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+marker = Path(sys.argv[1])
+if len(sys.argv) == 3:
+    temp = marker.with_suffix(".tmp")
+    temp.write_text(json.dumps({"pid": os.getpid(), "pgid": os.getpgrp()}))
+    temp.replace(marker)
+    time.sleep(60)
+else:
+    child = subprocess.Popen(
+        [sys.executable, __file__, str(marker), "descendant"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    child.wait(timeout=65)
+"""
+
+
+async def _wait_for_notify_condition(check, description):
+    async def wait():
+        while not check():
+            await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(wait(), _NOTIFY_DEADMAN)
+    except asyncio.TimeoutError:
+        pytest.fail(description)
+
+
+def _live_notify_process(process):
+    try:
+        return process is not None and process.status() not in {
+            psutil.STATUS_DEAD,
+            psutil.STATUS_ZOMBIE,
+        }
+    except psutil.NoSuchProcess:
+        return False
+
+
+class _NotifyProcessGroup:
+    def __init__(self, argv, marker, *, park_spawn):
+        self.argv = argv
+        self.marker = marker
+        self.park_spawn = park_spawn
+        self.ready = asyncio.Event()
+        self.release = asyncio.Event()
+        self.spawn_left = asyncio.Event()
+        self.communicating = asyncio.Event()
+        self.proc = None
+        self.leader = None
+        self.descendant = None
+
+    def install(self, monkeypatch):
+        real_spawn = asyncio.create_subprocess_exec
+        real_communicate = asyncio.subprocess.Process.communicate
+
+        async def start(*argv, **kwargs):
+            proc = await real_spawn(*argv, **kwargs)
+            if argv != self.argv:
+                return proc
+            self.proc = proc
+            self.leader = psutil.Process(proc.pid)
+            assert os.getpgid(proc.pid) == proc.pid != os.getpgrp()
+            try:
+                await _wait_for_notify_condition(
+                    self.marker.is_file, "notify descendant did not report readiness"
+                )
+                record = json.loads(self.marker.read_text())
+                assert record["pgid"] == proc.pid
+                self.descendant = psutil.Process(record["pid"])
+                assert os.getpgid(self.descendant.pid) == proc.pid
+                self.ready.set()
+                if self.park_spawn:
+                    await self.release.wait()
+                return proc
+            except asyncio.CancelledError:
+                # At this test seam asyncio already returned the handle. Mirror
+                # its real interrupted-spawn cleanup, which reaps only the child.
+                if proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.kill()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(proc.wait())
+                raise
+            finally:
+                self.spawn_left.set()
+
+        async def communicate(proc, *args, **kwargs):
+            if proc is self.proc:
+                self.communicating.set()
+            return await real_communicate(proc, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+        monkeypatch.setattr(asyncio.subprocess.Process, "communicate", communicate)
+
+    def group_alive(self):
+        return _live_notify_process(self.leader) or _live_notify_process(self.descendant)
+
+    async def assert_group_stopped(self):
+        await asyncio.wait_for(self.spawn_left.wait(), _NOTIFY_DEADMAN)
+        await _wait_for_notify_condition(
+            lambda: not self.group_alive(), "notify process group still has a live member"
+        )
+        assert self.proc is not None
+        await asyncio.wait_for(self.proc.wait(), _NOTIFY_DEADMAN)
+
+    async def clean_up(self):
+        self.release.set()
+        if self.proc is None:
+            return
+        pgid = self.proc.pid
+        assert pgid != os.getpgrp()
+        # Even a failing test kills survivors only while a recorded process
+        # still has the same create time and group as the fixture started.
+        for process in (self.leader, self.descendant):
+            if not _live_notify_process(process):
+                continue
+            try:
+                if process.is_running() and os.getpgid(process.pid) == pgid:
+                    os.killpg(pgid, signal.SIGKILL)
+                    break
+            except ProcessLookupError:
+                continue
+        await self.assert_group_stopped()
+
+
+@contextlib.asynccontextmanager
+async def _notify_process_group(tmp_path, monkeypatch, *, park_spawn):
+    script = tmp_path / "notify_group.py"
+    script.write_text(_NOTIFY_GROUP_SCRIPT)
+    marker = tmp_path / "notify_descendant.json"
+    group = _NotifyProcessGroup(
+        (sys.executable, str(script), str(marker)), marker, park_spawn=park_spawn
+    )
+    group.install(monkeypatch)
+    try:
+        yield group
+    finally:
+        await group.clean_up()
+
+
+def _notify_group_handler(group, *, safe_logging):
+    handler = build_handler(ResolvedNotifyHandler(argv=group.argv), safe_logging=safe_logging)
+    assert handler is not None
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("safe_logging", [False, True], ids=["legacy", "safe"])
+@pytest.mark.parametrize("park_spawn", [True, False], ids=["during-spawn", "prompt-spawn"])
+async def test_notify_deadline_reaps_the_spawned_group(
+    tmp_path, monkeypatch, safe_logging, park_spawn
+):
+    scope_ready = asyncio.get_running_loop().create_future()
+
+    @contextlib.contextmanager
+    def track_deadline(seconds):
+        with move_on_after(seconds) as scope:
+            scope_ready.set_result(scope)
+            yield scope
+
+    monkeypatch.setattr(callbacks, "move_on_after", track_deadline)
+    async with _notify_process_group(tmp_path, monkeypatch, park_spawn=park_spawn) as group:
+        registry = TerminalCallbackRegistry(budget_seconds=2 * _NOTIFY_DEADMAN)
+        registry.register("notify", _notify_group_handler(group, safe_logging=safe_logging))
+        delivery = asyncio.create_task(registry.emit(_envelope()))
+        try:
+            milestone = group.ready if park_spawn else group.communicating
+            await asyncio.wait_for(milestone.wait(), _NOTIFY_DEADMAN)
+            scope = await scope_ready
+            scope.deadline = current_time()
+            await asyncio.wait_for(delivery, _NOTIFY_DEADMAN)
+            assert scope.cancelled_caught
+            if park_spawn:
+                assert not group.communicating.is_set()
+                group.release.set()
+            await group.assert_group_stopped()
+        finally:
+            if not delivery.done():
+                delivery.cancel()
+            await asyncio.gather(delivery, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_second_notify_cancellation_preserves_abandoned_spawn_cleanup(tmp_path, monkeypatch):
+    caller_unwinding = asyncio.Event()
+    caller_parked = asyncio.Event()
+    async with _notify_process_group(tmp_path, monkeypatch, park_spawn=True) as group:
+        handler = _notify_group_handler(group, safe_logging=True)
+
+        async def deliver():
+            try:
+                await handler(_envelope())
+            except asyncio.CancelledError:
+                caller_unwinding.set()
+                await caller_parked.wait()
+                raise
+
+        delivery = asyncio.create_task(deliver())
+        try:
+            await asyncio.wait_for(group.ready.wait(), _NOTIFY_DEADMAN)
+            assert delivery.cancel()
+            await asyncio.wait_for(caller_unwinding.wait(), _NOTIFY_DEADMAN)
+            assert delivery.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(delivery, _NOTIFY_DEADMAN)
+            assert not group.communicating.is_set()
+            group.release.set()
+            await group.assert_group_stopped()
+        finally:
+            if not delivery.done():
+                delivery.cancel()
+            await asyncio.gather(delivery, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reconciliation_reaps_notify_group_without_ack(tmp_path, monkeypatch):
+    from uuid import uuid4
+
+    from lionagi.state.db import StateDB
+    from lionagi.state.lifecycle.deliveries import is_acknowledged
+    from lionagi.state.lifecycle.reconciler import TerminalReconciler
+    from lionhub.orchestration.scheduler import terminal_reconciliation
+
+    async with (
+        _notify_process_group(tmp_path, monkeypatch, park_spawn=True) as group,
+        StateDB(tmp_path / "state.db") as db,
+    ):
+        monkeypatch.setattr(
+            terminal_reconciliation,
+            "load_settings",
+            lambda **_: {
+                "notify": {"on_terminal": {"adapter": {"kind": "exec", "argv": list(group.argv)}}}
+            },
+        )
+        session_id, progression_id = str(uuid4()), str(uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {"id": session_id, "progression_id": progression_id, "status": "running"}
+        )
+        db._lifecycle_service()._terminal_callbacks = TerminalCallbackRegistry()
+        assert await db.update_status(
+            "session", session_id, new_status="failed", reason_code="session.stale.no_heartbeat"
+        )
+        transition = await db.fetch_one(
+            "SELECT id FROM status_transitions "
+            "WHERE entity_type = ? AND entity_id = ? AND status = ?",
+            ("session", session_id, "failed"),
+        )
+        assert transition is not None
+        consumer = terminal_reconciliation.CONSUMER_NAME
+        reconciler = TerminalReconciler(
+            consumer,
+            terminal_reconciliation._prepare_settings_delivery,
+            timeout=2 * _NOTIFY_DEADMAN,
+        )
+        delivery = asyncio.create_task(reconciler.run_pass(db))
+        try:
+            await asyncio.wait_for(group.ready.wait(), _NOTIFY_DEADMAN)
+            assert delivery.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(delivery, _NOTIFY_DEADMAN)
+            await _wait_for_notify_condition(
+                lambda: reconciler._pending()[1] == 0, "cancelled delivery did not settle"
+            )
+            assert not group.communicating.is_set()
+            assert not await is_acknowledged(db, transition["id"], consumer)
+            group.release.set()
+            await group.assert_group_stopped()
+            assert not await is_acknowledged(db, transition["id"], consumer)
+        finally:
+            if not delivery.done():
+                delivery.cancel()
+            await asyncio.gather(delivery, return_exceptions=True)
 
 
 # build_handler: a malformed python adapter must never raise
