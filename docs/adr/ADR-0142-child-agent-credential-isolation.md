@@ -113,12 +113,18 @@ profile, with these differences and requirements:
   shell or the provider later executes or obeys there, and the provider's own configuration and
   instruction files in the working directory (for Claude Code, `.claude/`, `.mcp.json`, `CLAUDE.md`
   and `CLAUDE.local.md`), so that a command cannot plant what the provider loads on a later turn.
-  For git that is the repository's git directory as a whole, not a list of files in it: the `.git`
-  entry of the working directory cannot be renamed, removed or replaced, whether it is a directory
-  or a gitfile; no `.git` entry can be created anywhere else in the working directory or the
-  caches; and inside the git directory, `config`, `config.worktree`, `hooks/`, `info/` and
-  `modules/` are not writable. When `.git` is a directory, refs, objects and the index stay
-  writable, so the child can commit. When `.git` is a gitfile (a linked worktree, the usual case for
+  For git that is the repository's git directory as a whole, not a list of files in it. This holds
+  for every `.git` entry present at launch, the working directory's own and any in a subdirectory (a
+  nested or vendored repository): none can be renamed, removed or replaced, whether it is a
+  directory or a gitfile, and no new `.git` entry can be created anywhere in the working directory
+  or the caches. Inside a `.git` directory the write set is an allow-list, not a deny-list: `HEAD`,
+  `index`, `refs/`, `packed-refs`, `objects/`, `logs/`, and the transient files a commit writes at
+  the top of the git directory (`COMMIT_EDITMSG`, `ORIG_HEAD` and the lock files of the listed
+  entries) are writable. Everything else there is not, including `config`, `config.worktree`,
+  `commondir`, `gitdir`, `worktrees/`, `hooks/`, `info/` and `modules/`, because a file git reads
+  for where its configuration lives (`commondir` names the directory whose `config` git then obeys)
+  plants a command as surely as `config` itself. So when `.git` is a directory, the child can
+  commit. When `.git` is a gitfile (a linked worktree, the usual case for
   a child), the directory it names, which holds that worktree's HEAD and index, and the repository's
   shared refs and objects all stay outside the write set, so the child cannot commit. In both cases
   the change is taken from the working tree, and what the child wrote reaches the launching process
@@ -217,8 +223,9 @@ and starts the child with Claude Code's own sandbox off (`{"sandbox": {"enabled"
   writable by the user). No other shell's start-up files run: `BASH_ENV` and `ENV` are not passed,
   and a profile that names `SHELL`, `ZDOTDIR`, `BASH_ENV` or `ENV` refuses the launch. Which shell
   a provider version builds its snapshot with, and that it takes it from `SHELL`, is part of that
-  version's qualification (row 14); a version that builds it with another shell, or ignores `SHELL`,
-  is outside the qualified set and refuses the launch. Row 15 tests this.
+  version's qualification (see Consequences); a version that builds it with another shell, or
+  ignores `SHELL`, is kept out of the qualified set, so row 14's refusal applies to it. Row 15 tests
+  the shell set-up.
 
 Measured on macOS with Claude Code 2.1.323 in one single-turn run, with a test keychain item and a
 test file. The probe profile was `(allow default)` with only the four credential-store Mach services
@@ -331,9 +338,11 @@ broken probe cannot read as a denial.
    provider's configuration and instruction files in the working directory, are refused. The git
    directory holds as a whole: the child tries to rename and to remove `.git`, to replace it with a
    gitfile naming a directory inside the working directory, to create a `.git` in a subdirectory,
-   and to write a `core.fsmonitor` setting into `config`, `config.worktree` and `info/`, each
-   refused; a git command then run outside the profile in the working directory and in that
-   subdirectory starts no planted command; and a commit the child makes succeeds when `.git` is a
+   to write a `core.fsmonitor` setting into `config`, `config.worktree` and `info/`, to write
+   `commondir` naming a directory inside the working directory whose `config` carries a
+   `core.fsmonitor` command, and to write a `core.fsmonitor` setting into the `config` of a nested
+   repository present at launch, each refused; a git command then run outside the profile in the
+   working directory, in that subdirectory and in the nested repository starts no planted command; and a commit the child makes succeeds when `.git` is a
    directory and is refused when it is a gitfile, with the working-tree change extracted in both
    cases (D6). While
    outbound network is denied, reaching the allowed domains is a stated loss, not a check; turning on
@@ -342,7 +351,8 @@ broken probe cannot read as a denial.
 11. D6 holds against a child that plants each of: a git hook, repository configuration, an attributes
     filter, a tracked hook manager configuration, a symlink to a test key, a submodule change, a
     build script, and a commit holding a provider configuration file the working tree does not hold
-    (for Claude Code, a `.claude/` settings file). None runs in the launching process, the symlink
+    (for Claude Code, a `.claude/` settings file; this case runs with `.git` as a directory, since a
+    child whose `.git` is a gitfile cannot commit). None runs in the launching process, the symlink
     and submodule are refused, and the committed file is not in the change.
 12. A missing or failing backend refuses the launch; nothing runs outside the profile on a retry.
 13. Instruction and extension files are accounted for (D3). Planted in the working directory, in a
