@@ -1,7 +1,14 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Teardown helper for PostgreSQL tests that delete an imported session.
+"""Teardown helpers for PostgreSQL tests: dropping a test database and deleting an imported session.
+
+``drop_test_database`` drops a database with a plain ``DROP DATABASE``. The server waits about
+five seconds for other sessions to leave and then refuses with SQLSTATE 55006; the helper retries
+that refusal once. On a disposable CI runner, a database still held only by backends of other
+roles (an autovacuum worker, for one) is left for the runner to discard and a warning is logged.
+Every other failure, including a drop that neither completes nor is refused within the client
+bound, propagates.
 
 ``StateDB.delete_imported_session`` does not wait for locks on PostgreSQL. That is deliberate:
 its transaction sets ``lock_timeout`` to 250 ms and takes ``LOCK TABLE branches, progressions,
@@ -38,7 +45,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DATABASE_IN_USE = "55006"
-_DROP_TIMEOUT = 7.0
+# PostgreSQL waits about five seconds for other sessions to leave before it refuses a drop with
+# 55006, longer on a loaded host. The client bound sits well above that so the refusal, not a
+# client timeout, reaches the retry and the runner check below.
+_DROP_TIMEOUT = 30.0
 _DROP_RETRY_DELAY = 0.1
 _LOCK_NOT_AVAILABLE = "55P03"
 _BUDGET_SECONDS = 5.0
@@ -84,8 +94,9 @@ _DATABASE_BACKENDS = text(
 async def drop_test_database(conn: AsyncConnection, name: str) -> None:
     """Drop a test database from an autocommit connection to a different database."""
     identifier = conn.dialect.identifier_preparer.quote_identifier(name)
-    # Plain DROP waits for disconnects and handles autovacuum without asking
-    # the test role to signal a backend owned by another role.
+    # Without FORCE the server signals only autovacuum workers in the database and waits
+    # for every other session to leave, so the test role never needs the right to end a
+    # backend owned by another role.
     drop = f"DROP DATABASE {identifier}"
     try:
         await asyncio.wait_for(conn.exec_driver_sql(drop), _DROP_TIMEOUT)

@@ -108,6 +108,36 @@ async def test_drop_database_defers_only_foreign_connections_on_disposable_runne
         conn.execute.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_a_drop_that_outlasts_the_client_bound_propagates_without_deferring(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(_pg_cleanup, "_DROP_TIMEOUT", 0.05)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("LIONAGI_TEST_PG_RUNNER", "b72a83e45042d93d")
+
+    async def never_answers(_statement):
+        await asyncio.sleep(_WAIT)
+
+    conn = SimpleNamespace(
+        dialect=postgresql.dialect(),
+        exec_driver_sql=AsyncMock(side_effect=never_answers),
+        execute=AsyncMock(),
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        await _pg_cleanup.drop_test_database(conn, "test_database")
+
+    assert conn.exec_driver_sql.await_count == 1
+    conn.execute.assert_not_awaited()
+    assert "Disposable test database" not in caplog.text
+
+
+def test_the_client_bound_exceeds_the_server_wait_for_other_sessions():
+    # PostgreSQL waits about five seconds for other sessions before refusing a drop.
+    assert _pg_cleanup._DROP_TIMEOUT >= 4 * 5.0
+
+
 def _lock_refused() -> DBAPIError:
     return DBAPIError(
         "LOCK TABLE branches, progressions, sessions IN EXCLUSIVE MODE NOWAIT",
@@ -405,6 +435,46 @@ async def _imported_session(pg_url):
                     )
             finally:
                 await db.execute("DELETE FROM progressions WHERE id = :id", {"id": progression_id})
+
+
+@pytest.mark.asyncio
+async def test_postgres_drop_held_by_a_session_is_refused_with_55006_not_a_timeout(
+    pg_url, monkeypatch
+):
+    asyncpg = pytest.importorskip("asyncpg")
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("LIONAGI_TEST_PG_RUNNER", "b72a83e45042d93d")
+    url = make_url(pg_url)
+    name = f"drop_held_{uuid.uuid4().hex[:12]}"
+    admin = create_async_engine(
+        url.set(drivername="postgresql+asyncpg"), isolation_level="AUTOCOMMIT"
+    )
+    try:
+        async with admin.connect() as conn:
+            await conn.exec_driver_sql(f'CREATE DATABASE "{name}"')
+            holder = await asyncpg.connect(
+                url.set(database=name, drivername="postgresql").render_as_string(
+                    hide_password=False
+                ),
+                timeout=5,
+            )
+            try:
+                # The holder belongs to the test role, so even the runner check refuses.
+                with pytest.raises(DBAPIError) as caught:
+                    await _pg_cleanup.drop_test_database(conn, name)
+            finally:
+                await holder.close()
+            assert getattr(caught.value.orig, "sqlstate", None) == "55006"
+            await _pg_cleanup.drop_test_database(conn, name)
+            exists = await conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": name}
+            )
+            assert exists.first() is None
+    finally:
+        await admin.dispose()
 
 
 @asynccontextmanager
