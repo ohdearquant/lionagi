@@ -164,6 +164,52 @@ def test_file_only_pid_is_not_assumed_current() -> None:
     assert monitor._session_to_row(row)["unverifiable_quarantined"] is False
 
 
+def test_stale_quarantine_is_labeled_separately() -> None:
+    row = {
+        "id": "sample",
+        "status": "running",
+        "node_metadata": {
+            "pid": 124,
+            "pid_create_time": 42.0,
+            "unverifiable_identity": "[123,42.0,null]",
+            "unverifiable_quarantined": True,
+            "unverifiable_count": 3,
+            "unverifiable_epoch": 0,
+        },
+    }
+
+    table_row = monitor._session_to_row(row)
+    assert table_row["_quarantine_label"] == "quarantine record stale"
+    rendered = monitor._format_table([table_row])
+    assert "quarantine record stale: session sample" in rendered
+    assert "unreadable" not in rendered
+
+
+def test_host_probe_failure_is_labeled_as_a_probe_failure(monkeypatch) -> None:
+    import socket
+
+    def fail():
+        raise OSError("private")
+
+    row = {
+        "id": "sample",
+        "status": "running",
+        "node_metadata": {
+            "pid": 123,
+            "pid_create_time": 42.0,
+            "pid_host": "host",
+            "unverifiable_identity": "[123,42.0,null]",
+            "unverifiable_quarantined": True,
+            "unverifiable_count": 3,
+            "unverifiable_epoch": 0,
+        },
+    }
+    monkeypatch.setattr(socket, "gethostname", fail)
+    rendered = monitor._format_table([monitor._invocation_to_row(row)])
+    assert "quarantine host probe failed: invocation sample" in rendered
+    assert "unreadable" not in rendered
+
+
 @pytest.mark.parametrize("identity", [None, "not-json", "[true,42.0,null]", "[123,42.0]"])
 def test_invalid_identity_never_displays_quarantine(identity) -> None:
     row = {
