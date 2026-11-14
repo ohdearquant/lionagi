@@ -222,3 +222,19 @@ def test_another_servers_khive_actor_is_still_a_secret_field(codex_env):
 
     with pytest.raises(ConfigurationError, match="ignores the user config"):
         apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["mcp"],
+        ["mcp", "--actor", "team:runner"],
+        ["mcp", "--namespace=team", "--pack", "kg"],
+    ],
+)
+def test_the_server_arguments_are_left_as_configured(args):
+    # `--actor` and `--namespace` choose the server's default namespace, so the
+    # child's actor travels only in the attribution variable.
+    result = attribute_khive_servers({"khive": {"command": "kkernel", "args": args}}, "agent:x")
+    assert result["khive"]["args"] == args
+    assert result["khive"]["env"]["KHIVE_ACTOR"] == "agent:x"

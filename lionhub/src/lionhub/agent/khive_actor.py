@@ -7,8 +7,12 @@ khive resolves its actor as: the ``--actor`` flag, then ``[actor] id`` in
 then anonymous. Setting ``KHIVE_ACTOR`` in a server's environment is therefore
 a fallback: a child whose directory holds an actor config acts as that actor,
 and every other child acts as ``agent:<profile>`` instead of anonymously or as
-whoever launched it. The server's packs are left as configured, so a child keeps
-every verb its server loads, ``comm`` included, under its own actor.
+whoever launched it. The variable sets attribution only: khive takes a server's
+default namespace from ``--actor``, ``--namespace`` or the directory config, never
+from ``KHIVE_ACTOR``, so the server's arguments are left as configured and the
+child reads and writes the same namespace it would without this module. The
+server's packs are left as configured too, so a child keeps every verb its server
+loads, ``comm`` included, under its own actor.
 """
 
 from __future__ import annotations
