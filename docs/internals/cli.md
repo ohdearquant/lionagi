@@ -68,8 +68,9 @@ is the only thing it has to negotiate. Pieces: `ok`/`failure` are the two envelo
 none" and "could not establish whether there are any" never share an encoding; `reserve_stdout`
 takes stdout away from everything except the envelope at the file-descriptor level, so a stray
 `print` (or a child process that inherited the descriptor) lands on stderr instead of corrupting
-the result; `dispatch_machine` runs one machine command and turns any failure into an envelope
-rather than a traceback.
+the result; `dispatch_machine` runs one machine command and encodes its result. When a missing
+dependency prevents startup, the entry point exits 78 and emits an `unavailable` envelope with
+`error.detail.exit_code` set to 78. The startup diagnostic goes to stderr.
 
 ## `lionhub/src/lionhub/orchestration/mcp_config.py` — MCP server resolution at submit time
 

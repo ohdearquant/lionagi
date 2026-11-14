@@ -22,6 +22,8 @@ from typing import Any
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import import_module
 
+from ._machine_envelope import _CONTRACT_VERSION, _ERROR_KINDS, _encode_envelope, _failure
+
 __all__ = (
     "CONTRACT_VERSION",
     "MIN_SUPPORTED_CONTRACT_VERSION",
@@ -52,19 +54,13 @@ __all__ = (
     "run_lifecycle",
 )
 
-# The one place the current contract version lives. Incremented only by a change
-# that could break a conforming consumer — which includes any field that changes
-# what an existing field means to a reader that ignores it.
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = _CONTRACT_VERSION
 
 # The oldest contract this implementation still answers, so a consumer pinned to
 # a version we have dropped can say so instead of failing mysteriously.
 MIN_SUPPORTED_CONTRACT_VERSION = 1
 
-# Closed, on purpose: this vocabulary describes our own refusal to answer, which
-# we control, so a consumer may branch on it and a new kind costs a version
-# increment. Run status is the opposite case and is not modelled here.
-ERROR_KINDS = ("not_found", "invalid_input", "conflict", "unavailable", "internal")
+ERROR_KINDS = _ERROR_KINDS
 
 # Availability reason codes are advisory qualifiers, not a closed vocabulary; a
 # consumer surfaces them and must not need one to decide `available`.
@@ -92,14 +88,7 @@ def ok(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def failure(kind: str, message: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
-    if kind not in ERROR_KINDS:
-        raise ValueError(f"error kind {kind!r} is not one of {ERROR_KINDS}")
-    return {
-        "ok": False,
-        "contract_version": CONTRACT_VERSION,
-        "data": None,
-        "error": {"kind": kind, "message": message, "detail": detail},
-    }
+    return _failure(kind, message, detail)
 
 
 def validate_envelope(envelope: Any) -> None:
@@ -380,7 +369,7 @@ class MachineChannel:
         if self.emitted:
             raise RuntimeError("a machine call emits exactly one envelope")
         validate_envelope(envelope)
-        text = json.dumps(envelope, ensure_ascii=False) + "\n"
+        text = _encode_envelope(envelope)
         self.emitted = True
         if self._out_fd is not None:
             os.write(self._out_fd, text.encode())
@@ -778,10 +767,8 @@ def dispatch_machine(argv: list[str]) -> int:
     the refusal a second time in the exit status would give a consumer two
     answers to one question.
 
-    `ModuleNotFoundError` is the exception, in both senses. When nothing has been
-    allocated yet, nothing executed, and the caller must be told that by exit
-    status alone rather than handed an envelope describing a request that never
-    ran — so it is re-raised for the entry point to report. Once a run exists on
+    A `ModuleNotFoundError` before run allocation is re-raised so the entry
+    point can emit an environment refusal with exit 78. Once a run exists on
     disk it is an ordinary failure of that run and gets an envelope like any
     other.
     """

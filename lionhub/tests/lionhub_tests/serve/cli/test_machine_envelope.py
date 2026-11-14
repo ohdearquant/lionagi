@@ -361,22 +361,32 @@ def test_a_refusal_still_exits_zero(capfd):
     assert _one_object(capfd.readouterr().out)["ok"] is False
 
 
-def test_an_unusable_environment_exits_78_with_no_envelope(capfd, monkeypatch):
-    """Nothing executed, so there is nothing on stdout for a consumer to parse.
-
-    An envelope here would describe a request that never ran, which sends the
-    consumer looking for a result instead of at its own installation.
-    """
+def test_an_unusable_environment_exits_78_with_the_normal_failure_shape(capfd, monkeypatch):
+    """The command's diagnostic stays on stderr when stdout is restored."""
 
     def _boom(argv):
+        print("handler diagnostic")
         raise ModuleNotFoundError("No module named 'sniffio'", name="sniffio")
 
     monkeypatch.setitem(machine._MACHINE_COMMANDS, "handshake", _boom)
 
     assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
     captured = capfd.readouterr()
-    assert captured.out.strip() == ""
-    assert "No run was started" in captured.err
+    assert "handler diagnostic" in captured.err
+    message = captured.err.splitlines()[-1].removeprefix("error: ")
+    assert "sniffio" in message
+    assert "No run was started" in message
+    detail = {"exit_code": EXIT_CODE_ENVIRONMENT_ERROR}
+    startup_envelope = _one_object(captured.out)
+    assert startup_envelope == machine.failure("unavailable", message, detail)
+
+    def _refuse(argv):
+        raise machine.MachineError("unavailable", message, detail)
+
+    monkeypatch.setitem(machine._MACHINE_COMMANDS, "handshake", _refuse)
+
+    assert cli_main.main(["handshake", "--machine"]) == 0
+    assert _one_object(capfd.readouterr().out) == startup_envelope
 
 
 def test_a_missing_import_after_a_run_exists_is_an_envelope(capfd, monkeypatch):
@@ -398,14 +408,10 @@ def test_a_missing_import_after_a_run_exists_is_an_envelope(capfd, monkeypatch):
 
 
 def test_78_survives_end_to_end_under_the_machine_flag():
-    """The environment fault is decided before machine mode can answer at all.
-
-    Asserted through a real interpreter because the import that fails here has
-    to fail for real: the in-process test above supplies the error, which cannot
-    prove that the code path a broken installation takes reaches this rule.
-    """
+    """The public adapter can emit the envelope with the dispatcher missing."""
     script = textwrap.dedent(
         """
+        import runpy
         import sys
 
         BLOCKED = "lionhub.serve.cli.machine"
@@ -421,9 +427,8 @@ def test_78_survives_end_to_end_under_the_machine_flag():
         sys.modules.pop(BLOCKED, None)
         sys.meta_path.insert(0, _RefuseOne())
 
-        from lionhub.serve.cli.main import main
-
-        sys.exit(main(["handshake", "--machine"]))
+        sys.argv = ["li", "handshake", "--machine"]
+        runpy.run_module("lionhub.serve.cli", run_name="__main__")
         """
     )
     proc = subprocess.run(
@@ -436,7 +441,12 @@ def test_78_survives_end_to_end_under_the_machine_flag():
     )
 
     assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
-    assert proc.stdout.strip() == ""
+    message = proc.stderr.splitlines()[-1].removeprefix("error: ")
+    assert "lionhub.serve.cli.machine" in message
+    assert "No run was started" in message
+    assert _one_object(proc.stdout) == machine.failure(
+        "unavailable", message, {"exit_code": EXIT_CODE_ENVIRONMENT_ERROR}
+    )
 
 
 # the machine path leaves SIGPIPE where the interpreter put it

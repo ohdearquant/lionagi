@@ -324,6 +324,13 @@ def _parse_prompt_args(parser: argparse.ArgumentParser, tail: list[str]) -> argp
     return args
 
 
+def _args_before_sentinel(argv: list[str]) -> list[str]:
+    try:
+        return argv[: argv.index("--")]
+    except ValueError:
+        return argv
+
+
 def _run(argv: list[str] | None = None) -> int:
     if _catalog_import_error is not None:
         raise _catalog_import_error
@@ -336,11 +343,7 @@ def _run(argv: list[str] | None = None) -> int:
     _argv = argv if argv is not None else sys.argv[1:]
     # Scan only before the '--' sentinel so a scheduled action_prompt
     # containing '--verbose' can't flip verbose mode.
-    try:
-        _sentinel_idx = _argv.index("--")
-        _pre_sentinel = _argv[:_sentinel_idx]
-    except ValueError:
-        _pre_sentinel = _argv
+    _pre_sentinel = _args_before_sentinel(_argv)
     verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
 
@@ -500,7 +503,7 @@ def _run(argv: list[str] | None = None) -> int:
     return 1
 
 
-def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int) -> int:
+def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int, argv: list[str]) -> int:
     """Report a missing import as an environment fault, not a failed run.
 
     A ``ModuleNotFoundError`` reaching the top of the CLI means some import
@@ -521,11 +524,18 @@ def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int) -> int
     """
     traceback.print_exc()
     missing, guidance = _missing_requirement(exc)
-    log_error(
+    message = (
         f"cannot start: {missing} is not installed in this environment. "
         "No run was started, so this is an unusable environment rather than a "
         f"failed run. Install the missing dependency, then re-run.{guidance}"
     )
+    log_error(message)
+    if "--machine" in _args_before_sentinel(argv):
+        from ._machine_envelope import _encode_envelope, _failure
+
+        envelope = _failure("unavailable", message, {"exit_code": exit_code})
+        sys.stdout.write(_encode_envelope(envelope))
+        sys.stdout.flush()
     return exit_code
 
 
@@ -541,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
     allocation marker decides, and once a run exists the error is left to
     propagate and be reported the way any other failure during a run is.
     """
+    argv = argv if argv is not None else sys.argv[1:]
     startup_error = (
         _catalog_import_error if _catalog_import_error is not None else _job_import_error
     )
@@ -548,14 +559,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             raise startup_error
         except _ENVIRONMENT_FAULTS as exc:
-            return _report_broken_environment(exc, exit_code=_STARTUP_ENVIRONMENT_EXIT)
+            return _report_broken_environment(exc, exit_code=_STARTUP_ENVIRONMENT_EXIT, argv=argv)
     begin_invocation()
     try:
         return _run(argv)
     except _ENVIRONMENT_FAULTS as exc:
         if run_was_allocated():
             raise
-        return _report_broken_environment(exc, exit_code=EXIT_CODE_ENVIRONMENT_ERROR)
+        return _report_broken_environment(exc, exit_code=EXIT_CODE_ENVIRONMENT_ERROR, argv=argv)
     finally:
         end_invocation()
 

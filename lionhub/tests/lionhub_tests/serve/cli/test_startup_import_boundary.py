@@ -129,9 +129,10 @@ def _run_fresh(tmp_path: Path, body: str) -> subprocess.CompletedProcess[str]:
     return process
 
 
-def _assert_environment_refusal(process: subprocess.CompletedProcess[str], missing: str) -> None:
+def _assert_environment_refusal(
+    process: subprocess.CompletedProcess[str], missing: str, *, machine: bool = False
+) -> None:
     assert process.returncode == 78, process.stderr
-    assert process.stdout == ""
     lines = [line for line in process.stderr.splitlines() if line.strip()]
     assert lines, process.stderr
     assert missing in lines[-1]
@@ -140,36 +141,67 @@ def _assert_environment_refusal(process: subprocess.CompletedProcess[str], missi
     assert process.stderr.index("Traceback (most recent call last):") < process.stderr.rindex(
         "No run was started"
     )
+    if machine:
+        stdout_lines = process.stdout.splitlines()
+        assert len(stdout_lines) == 1, process.stdout
+        assert json.loads(stdout_lines[0]) == {
+            "ok": False,
+            "contract_version": 1,
+            "data": None,
+            "error": {
+                "kind": "unavailable",
+                "message": lines[-1].removeprefix("error: "),
+                "detail": {"exit_code": 78},
+            },
+        }
+    else:
+        assert process.stdout == ""
 
 
-@pytest.mark.parametrize("argv", [["doctor"], ["doctor", "--machine"]], ids=["human", "machine"])
-def test_missing_hub_keeps_the_pre_run_environment_exit(tmp_path: Path, argv: list[str]) -> None:
+@pytest.mark.parametrize(
+    ("argv", "machine"),
+    [
+        pytest.param(["doctor"], False, id="human"),
+        pytest.param(["doctor", "--machine"], True, id="machine"),
+        pytest.param(["doctor", "--", "--machine"], False, id="after-sentinel"),
+    ],
+)
+def test_missing_hub_keeps_the_pre_run_environment_exit(
+    tmp_path: Path, argv: list[str], machine: bool
+) -> None:
     """The CLI's entry module is in the hub, so the rest of the hub is what can be missing."""
     process = _run_fresh(
         tmp_path,
         f"""
         refused = []
         entry = {{'lionhub', 'lionhub.serve', 'lionhub.serve.cli', 'lionhub.serve.cli.main'}}
+        helper = 'lionhub.serve.cli._machine_envelope'
 
         class RefuseHub:
             def find_spec(self, fullname, path=None, target=None):
-                if fullname.partition('.')[0] == 'lionhub' and fullname not in entry:
+                if fullname.partition('.')[0] == 'lionhub' and fullname not in entry | {{helper}}:
                     refused.append(fullname)
                     raise ModuleNotFoundError(f"No module named {{fullname!r}}", name=fullname)
                 return None
 
         sys.meta_path.insert(0, RefuseHub())
         cli_main = import_main()
+        before = set(sys.modules)
+        assert helper not in before
         code = cli_main.main({argv!r})
-        assert refused
-        assert not [
-            name for name in sys.modules if name.partition('.')[0] == 'lionhub' and name not in entry
-        ]
+        assert refused == ['lionhub.serve.cli.catalog']
+        added = sys.modules.keys() - before
+        unexpected = {{
+            name for name in added
+            if name != helper and name.partition('.')[0] not in sys.stdlib_module_names
+        }}
+        assert not unexpected, unexpected
+        assert (helper in sys.modules) == {machine!r}
         assert_no_startup_effects()
         sys.exit(code)
         """,
     )
-    _assert_environment_refusal(process, "lionhub")
+    _assert_environment_refusal(process, "lionhub", machine=machine)
 
 
 def test_catalog_missing_dependency_keeps_its_original_name(tmp_path: Path) -> None:
@@ -236,9 +268,11 @@ def test_catalog_broken_import_is_not_reported_as_a_missing_environment(
 
 
 @pytest.mark.parametrize("error_kind", ["module", "feature"])
+@pytest.mark.parametrize("machine", [False, True], ids=["human", "machine"])
 def test_configuration_import_environment_fault_is_reported_before_a_run(
-    tmp_path: Path, error_kind: str
+    tmp_path: Path, error_kind: str, machine: bool
 ) -> None:
+    argv = ["doctor", "--machine"] if machine else ["doctor"]
     process = _run_fresh(
         tmp_path,
         f"""
@@ -266,13 +300,13 @@ def test_configuration_import_environment_fault_is_reported_before_a_run(
         cli_main = import_main()
         from lionagi._log_channels import log_error
         assert cli_main.log_error is log_error
-        code = cli_main.main(['doctor'])
+        code = cli_main.main({argv!r})
         assert refused == ['lionhub.orchestration.console']
         assert_no_startup_effects()
         sys.exit(code)
         """,
     )
-    _assert_environment_refusal(process, "startup_console_dependency")
+    _assert_environment_refusal(process, "startup_console_dependency", machine=machine)
     if error_kind == "feature":
         last_line = [line for line in process.stderr.splitlines() if line.strip()][-1]
         assert "install startup-console-dependency" in last_line
@@ -294,7 +328,7 @@ def test_configuration_import_error_is_not_a_missing_environment(tmp_path: Path)
         sys.meta_path.insert(0, RefuseConfiguration())
         try:
             cli_main = import_main()
-            cli_main.main(['doctor'])
+            cli_main.main(['doctor', '--machine'])
         except ImportError:
             assert refused == ['lionhub.orchestration.console']
             assert_no_startup_effects()
@@ -420,7 +454,7 @@ def test_missing_job_dependency_keeps_the_pre_run_environment_exit(tmp_path, arg
         sys.exit(code)
         """,
     )
-    _assert_environment_refusal(process, "startup_job_dependency")
+    _assert_environment_refusal(process, "startup_job_dependency", machine="--machine" in argv)
 
 
 @pytest.mark.parametrize("error_type", ["ImportError", "RuntimeError"])
