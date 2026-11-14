@@ -218,15 +218,27 @@ a windowed report from downloaded artifact directories:
 uv run python scripts/flake_report.py path/to/downloaded-artifacts/
 ```
 
-Or let the report download matching artifacts from run-list JSON:
+Or let the report list and download matching artifacts from LionAGI's GitHub
+repository using run-list JSON:
 
 ```bash
-gh run list --workflow ci.yml --limit 60 --json databaseId \
+set -o pipefail
+gh run list --repo github.com/ohdearquant/lionagi --workflow ci.yml --limit 60 --json databaseId \
   | uv run python scripts/flake_report.py --gh-runs -
 ```
 
 The report separates failure occurrences from distinct run IDs, lists every
 signature with its own run count, and labels each nodeid as quarantined or new.
+GitHub mode also reports the number of distinct requested runs, completely
+read runs, read artifacts, and distinct failed tests. A successful listing
+with no matching artifacts counts as a read run. This only describes what
+GitHub still lists, since previously purged artifacts are absent from the
+inventory.
+
+An incomplete listing or an expired, missing, or unreadable matching artifact
+prints an incomplete report with the rows recovered from readable artifacts
+and exits 3. Invalid run-list input, argument errors, and failed local input
+reads exit 2. A complete report, including an observed empty window, exits 0.
 The peak-RSS report remains the companion diagnostic for hard worker crashes.
 
 ## Timeouts and distribution
