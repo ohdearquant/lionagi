@@ -334,17 +334,16 @@ async def _prune_session_chunk(
     retention_params: tuple[Any, ...],
     archive_destination: Path | None,
     archive_id: str,
-) -> int:
+) -> tuple[int, int]:
     """Archive-then-delete one chunk of candidate session ids in the
     caller's transaction, running the same lock/recheck/soft-FK-nullify/
     delete/orphan-cleanup sequence ``prune_old_data`` always had, scoped to
     this chunk. When *archive_destination* is set, doomed rows are durably
     archived before any DELETE runs; a failed archive write raises and the
     caller's transaction rolls back, so this chunk's rows are refused
-    rather than lost. Returns sessions actually deleted (0 if the chunk
-    raced empty on recheck)."""
+    rather than lost. Returns the counts deleted and retained for consumer debt."""
     if not session_ids:
-        return 0
+        return 0, 0
 
     session_ids = sorted(set(session_ids))
 
@@ -362,7 +361,7 @@ async def _prune_session_chunk(
         conn, session_ids, dialect=conn.dialect.name
     )
     if not session_ids:
-        return 0
+        return 0, 0
 
     # Recheck under lock, narrowed to this chunk's ids.
     rows = await _fetch_chunked(
@@ -373,7 +372,28 @@ async def _prune_session_chunk(
     )
     session_ids = sorted({r[0] for r in rows})
     if not session_ids:
-        return 0
+        return 0, 0
+
+    # SQLite's writer reservation already serializes enrollment, ACKs and pruning.
+    # PostgreSQL must also exclude new consumer registrations, which row locks
+    # cannot protect. Keep the consumer lock ahead of the ACK ledger lock.
+    if conn.dialect.name == "postgresql":
+        await conn.execute(text("LOCK TABLE terminal_consumers IN SHARE MODE"))
+        await conn.execute(text("LOCK TABLE terminal_deliveries IN SHARE ROW EXCLUSIVE MODE"))
+    owed_rows = await _fetch_chunked(
+        conn,
+        "SELECT DISTINCT st.entity_id FROM status_transitions st "
+        "WHERE st.entity_type = 'session' AND st.delivery_eligible IS TRUE "
+        "AND EXISTS (SELECT 1 FROM terminal_consumers tc "
+        "WHERE tc.retired_at IS NULL AND NOT EXISTS ("
+        "SELECT 1 FROM terminal_deliveries td "
+        "WHERE td.transition_id = st.id AND td.consumer = tc.name)) AND st.entity_id",
+        session_ids,
+    )
+    retained = {row[0] for row in owed_rows}
+    session_ids = [session_id for session_id in session_ids if session_id not in retained]
+    if not session_ids:
+        return 0, len(retained)
 
     # Capture child ids BEFORE archiving or deleting anything.
     rows = await _fetch_chunked(conn, "SELECT progression_id FROM sessions WHERE id", session_ids)
@@ -495,6 +515,14 @@ async def _prune_session_chunk(
         )
     await _exec_chunked(
         conn,
+        "DELETE FROM terminal_deliveries WHERE transition_id IN ("
+        "SELECT id FROM status_transitions WHERE entity_type = 'session' AND entity_id",
+        session_ids,
+        suffix=f" AND entity_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph})))",  # noqa: S608
+        suffix_params=_TERMINAL_SESSION_STATUSES,
+    )
+    await _exec_chunked(
+        conn,
         "DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id",
         session_ids,
         suffix=(
@@ -565,7 +593,7 @@ async def _prune_session_chunk(
         )
         await conn.execute(text("DROP TABLE prune_candidate_messages"))
 
-    return sessions_pruned
+    return sessions_pruned, len(retained)
 
 
 async def _prune_run_chunk(
@@ -709,6 +737,7 @@ async def prune_terminal_sessions_by_id(session_ids: Sequence[str]) -> int:
     retention_params: tuple[Any, ...] = _TERMINAL_SESSION_STATUSES
     prune_started_at = time.time()
     pruned = 0
+    retained_for_delivery = 0
 
     chunks = [ids[i : i + PRUNE_CHUNK_ROWS] for i in range(0, len(ids), PRUNE_CHUNK_ROWS)]
 
@@ -720,7 +749,7 @@ async def prune_terminal_sessions_by_id(session_ids: Sequence[str]) -> int:
                 kind="session-explicit",
             )
             async with db.transaction() as conn:
-                pruned += await _prune_session_chunk(
+                deleted, retained = await _prune_session_chunk(
                     conn,
                     chunk_ids,
                     sess_ph=sess_ph,
@@ -729,6 +758,11 @@ async def prune_terminal_sessions_by_id(session_ids: Sequence[str]) -> int:
                     archive_destination=PRUNE_ARCHIVE_DIR,
                     archive_id=archive_id,
                 )
+            pruned += deleted
+            retained_for_delivery += retained
+
+    if retained_for_delivery:
+        _log.info("Retained %d terminal sessions with owed deliveries", retained_for_delivery)
 
     return pruned
 
@@ -776,6 +810,7 @@ async def prune_old_data(
     retention_sql, retention_params = _session_retention_predicate(cutoff)
 
     sessions_pruned = 0
+    sessions_retained_for_delivery = 0
     runs_pruned = 0
     session_archive_ids: list[str] = []
     run_archive_ids: list[str] = []
@@ -795,7 +830,7 @@ async def prune_old_data(
             chunk_index += 1
             archive_id = archive_chunk_id(cutoff=cutoff, chunk_index=chunk_index)
             async with db.transaction() as conn:
-                chunk_pruned = await _prune_session_chunk(
+                chunk_pruned, retained = await _prune_session_chunk(
                     conn,
                     chunk_ids,
                     sess_ph=sess_ph,
@@ -810,6 +845,7 @@ async def prune_old_data(
             # hook exists so tests can simulate exactly that interruption
             # point without it rolling back the chunk that just landed.
             sessions_pruned += chunk_pruned
+            sessions_retained_for_delivery += retained
             # An archive is only ever written when the chunk actually deleted
             # something (see _prune_session_chunk: an empty post-recheck
             # chunk returns before write_archive_chunk runs), so chunk_pruned
@@ -891,6 +927,7 @@ async def prune_old_data(
                 "keep_days": keep_days,
                 "cutoff": cutoff,
                 "sessions_pruned": sessions_pruned,
+                "sessions_retained_for_delivery": sessions_retained_for_delivery,
                 "runs_pruned": runs_pruned,
                 "dispatch_success_keep_days": dispatch_success_keep_days,
                 "dispatch_dead_letter_keep_days": dispatch_dead_letter_keep_days,
@@ -906,10 +943,12 @@ async def prune_old_data(
         )
 
     _log.info(
-        "Prune old data (keep_days=%d, cutoff=%.0f): sessions=%d runs=%d dispatch=%d",
+        "Prune old data (keep_days=%d, cutoff=%.0f): sessions=%d retained_for_delivery=%d "
+        "runs=%d dispatch=%d",
         keep_days,
         cutoff,
         sessions_pruned,
+        sessions_retained_for_delivery,
         runs_pruned,
         dispatch_purged,
     )
