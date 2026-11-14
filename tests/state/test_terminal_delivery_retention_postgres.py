@@ -371,6 +371,39 @@ async def test_postgresql_shared_prune_preserves_surviving_message_references(
         await _check_message_references(entry)
 
 
+async def test_postgresql_shared_prune_keeps_a_surviving_sessions_last_message(pg_url, monkeypatch):
+    async with _fresh_store(pg_url, monkeypatch) as (store_url, _):
+        async with state_db.StateDB(url=store_url) as db:
+            await _terminal(db, "victim")
+            await db.create_progression("survivor")
+            for message_id in ("last-only", "reclaimable"):
+                await db.insert_message(
+                    {
+                        "id": message_id,
+                        "created_at": time.time(),
+                        "role": "user",
+                        "content": {},
+                    }
+                )
+            await db.create_session(
+                {
+                    "id": "survivor",
+                    "status": "running",
+                    "progression_id": "survivor",
+                    "last_msg_id": "last-only",
+                }
+            )
+            await db.set_progression("victim", ["last-only", "reclaimable"])
+
+        assert await db_maintenance.prune_terminal_sessions_by_id(["victim"]) == 1
+
+        async with state_db.StateDB(url=store_url) as db:
+            assert await db.get_session("victim") is None
+            assert (await db.get_session("survivor"))["last_msg_id"] == "last-only"
+            assert await db.get_progression("survivor") == []
+            assert await db.fetch_all("SELECT id FROM messages") == [{"id": "last-only"}]
+
+
 async def test_postgresql_shared_prune_removes_an_empty_victim_progression(pg_url, monkeypatch):
     async with _fresh_store(pg_url, monkeypatch):
         async with state_db.StateDB() as db:
