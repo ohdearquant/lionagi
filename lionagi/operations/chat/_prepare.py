@@ -389,7 +389,9 @@ def _prepare_run_kwargs(
             if places_cache:
                 return g
             injected = "\n".join(context_blocks) if context_blocks else ""
-            return branch.msgs.system.rendered + injected + g
+            if not injected:
+                return branch.msgs.system.rendered + g
+            return "\n\n".join(part for part in (branch.msgs.system.rendered, injected, g) if part)
 
         current_context = _turn_context(ins) if places_cache else ()
         if len(_contents) == 0:
