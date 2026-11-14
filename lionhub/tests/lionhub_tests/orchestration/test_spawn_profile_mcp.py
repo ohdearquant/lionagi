@@ -298,6 +298,45 @@ def test_tool_names_in_an_unreadable_profile_value_or_comment_are_refused(mentio
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "You are a reviewer.\n\n---\n\n**Rules**\n* Use the tools: read: carefully\n\n---\n\nEnd.\n",
+        "You are a reviewer.\n\n---\n\n**Rules**\n* Use the tools: read: carefully\n",
+        "Intro ---\n* Use the tools: read: carefully\n---\nEnd.\n",
+    ],
+    ids=["closed-rule", "single-rule", "hidden-block"],
+)
+def test_markdown_after_prompt_text_that_mentions_tools_loads(text):
+    profile = _parse_profile("reviewer", text)
+    assert "tools" in profile.raw_body
+    assert profile.extra == {}
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "disallowed_tools: [Example]\n",
+        "'allowed_tools': [Example]\n",
+        "- tools: [Example]\n",
+        "&example !!str disallowed_tools: [Example]\n",
+        "? disallowed_tools\n: [Example]\n",
+        "{bad: x, disallowed_tools: [Example]}\n",
+    ],
+    ids=["key", "quoted-key", "list-item", "anchored-tagged-key", "explicit-key", "flow-mapping"],
+)
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [("Prompt.\n\n---\n", "bad: [\n---\nEnd.\n"), ("Intro ---\n", "bad: [\n---\nEnd.\n")],
+    ids=["after-prose", "hidden-block"],
+)
+def test_a_tool_key_line_in_an_unreadable_block_after_prompt_text_is_refused(
+    declaration, before, after
+):
+    with pytest.raises(ConfigurationError, match="agent profile 'reviewer'.*tool settings"):
+        _parse_profile("reviewer", f"{before}{declaration}{after}")
+
+
+@pytest.mark.parametrize(
     ("value", "expected"),
     [("2026-02-28", date(2026, 2, 28)), ('"2026-02-30"', "2026-02-30")],
     ids=["valid-date", "quoted-date"],

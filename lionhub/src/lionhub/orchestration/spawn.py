@@ -1221,6 +1221,16 @@ _LIGHT_WORKLOAD_LINE = re.compile(
     re.M,
 )
 _DASHES = re.compile(r"-{3,}")
+_TOOL_FIELD = "(?:" + "|".join(_PROFILE_TOOL_FIELDS) + ")"
+_KEY_PROPERTIES = r"(?:[&!][^\s]*[ \t]+)*"
+# A line that sets a tool field as a key: in a mapping or a list item, quoted or not, with an
+# anchor or tag, as an explicit ``?`` key, or as a key of a flow mapping opened on that line.
+_TOOL_KEY_LINE = re.compile(
+    rf"^[ \t]*(?:-[ \t]+)*{_KEY_PROPERTIES}[\"']?{_TOOL_FIELD}[\"']?[ \t]*:"
+    rf"|^[ \t]*(?:-[ \t]+)*\?[ \t]+{_KEY_PROPERTIES}[\"']?{_TOOL_FIELD}\b"
+    rf"|\{{(?:[^{{}}\n]*,)?[ \t]*(?:\?[ \t]+)?{_KEY_PROPERTIES}[\"']?{_TOOL_FIELD}[\"']?[ \t]*:",
+    re.M,
+)
 
 
 def _contain_flag_values(block: str) -> list[Any]:
@@ -1327,9 +1337,14 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             settings["workload"] = "light"
         return settings
 
-    def refuse_unread_tool_settings(block: str) -> None:
-        """Even a tool mention in a value triggers refusal because the settings cannot be read."""
-        if "tools" in block:
+    def refuse_unread_tool_settings(block: str, *, key_lines_only: bool = False) -> None:
+        """Refuse an unreadable block that may set tool fields.
+
+        A block that opens the file is the profile's frontmatter, so even a tool mention in a
+        value refuses: its settings cannot be read. A span after prompt text may be ordinary
+        markdown, so there only a line that sets a tool field as a key refuses.
+        """
+        if _TOOL_KEY_LINE.search(block) if key_lines_only else "tools" in block:
             raise ConfigurationError(
                 f"agent profile {name!r}: tool settings could not be read; "
                 "fix the frontmatter to proceed"
@@ -1403,7 +1418,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                 reads, document = read(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)
                 if not reads:
-                    refuse_unread_tool_settings(block)
+                    refuse_unread_tool_settings(block, key_lines_only=True)
                 declared = set(_FLAG_KEY_LINE.findall(block))
                 if not reads or isinstance(document, dict):
                     declared.update(containment_settings(block, document))
@@ -1423,7 +1438,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         reads, document = read(block)
         refuse_misplaced_mcp(block, reads, document, 1)
         if not reads:
-            refuse_unread_tool_settings(block)
+            refuse_unread_tool_settings(block, key_lines_only=True)
         if reads and isinstance(document, dict):
             if not document:
                 return {}
