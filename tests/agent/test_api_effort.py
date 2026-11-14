@@ -301,3 +301,59 @@ async def test_yaml_model_suffix_keeps_profile_origin_after_effort_assignment(
         {"messages": [{"role": "user", "content": "hi"}]}
     )
     assert "reasoning_effort" not in payload
+
+
+def _openai_model_names_to_walk():
+    from lionagi.service.connections._chat_schemas import CHAT_MODELS
+
+    return (*CHAT_MODELS, "gpt-6-luna", "new-reasoning-model")
+
+
+def _request_keeps_effort(model):
+    from lionagi.service.connections._chat_schemas import OpenAIChatCompletionsRequest
+
+    request = OpenAIChatCompletionsRequest(
+        model=model, messages=[{"role": "user", "content": "hi"}], reasoning_effort="low"
+    )
+    return request.reasoning_effort == "low"
+
+
+def _agent_forwards_effort(model):
+    from lionhub.agent.factory import _api_effort_kwargs
+
+    try:
+        update = _api_effort_kwargs("openai", model, "low")
+    except ConfigurationError:
+        return False
+    return update == {"reasoning_effort": "low"}
+
+
+def test_request_validator_and_agent_factory_agree_on_every_openai_model_name():
+    disagree = [
+        model
+        for model in _openai_model_names_to_walk()
+        if _request_keeps_effort(model) != _agent_forwards_effort(model)
+    ]
+    assert disagree == []
+
+
+@pytest.mark.parametrize("model", ["gpt-5", "gpt-4.1", "new-reasoning-model"])
+@pytest.mark.parametrize(
+    ("verdict", "carries"),
+    [("reasoning", True), ("non_reasoning", False), ("unlisted", True)],
+)
+def test_both_effort_call_sites_follow_one_classifier(monkeypatch, model, verdict, carries):
+    from lionagi.service.connections import _chat_schemas
+
+    monkeypatch.setattr(_chat_schemas, "classify_openai_chat_model", lambda _name: verdict)
+    assert _request_keeps_effort(model) is carries
+    assert _agent_forwards_effort(model) is carries
+
+
+def test_classifier_separates_reasoning_non_reasoning_and_unlisted_names():
+    from lionagi.service.connections._chat_schemas import classify_openai_chat_model
+
+    assert classify_openai_chat_model("gpt-5") == "reasoning"
+    assert classify_openai_chat_model("o3") == "reasoning"
+    assert classify_openai_chat_model("gpt-4.1") == "non_reasoning"
+    assert classify_openai_chat_model("gpt-6-luna") == "unlisted"

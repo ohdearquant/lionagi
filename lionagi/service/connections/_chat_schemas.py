@@ -107,6 +107,23 @@ ImageModels = Literal[IMAGE_MODELS]
 ModerationModels = Literal[MODERATION_MODELS]
 
 
+def classify_openai_chat_model(
+    model: object,
+) -> Literal["reasoning", "non_reasoning", "unlisted"]:
+    """Classify a model name against the known OpenAI chat models.
+
+    ``reasoning`` models take ``reasoning_effort`` and refuse sampling parameters,
+    ``non_reasoning`` models are the reverse, and ``unlisted`` names are not judged
+    here: the provider validates them. Every decision about which parameters a chat
+    model carries should read this verdict rather than the model lists directly.
+    """
+    if model in REASONING_MODELS:
+        return "reasoning"
+    if model in CHAT_MODELS:
+        return "non_reasoning"
+    return "unlisted"
+
+
 # Audio models
 AUDIO_MODELS = {
     "tts": ["tts-1", "tts-1-hd", "gpt-4o-mini-tts"],
@@ -393,24 +410,24 @@ class OpenAIChatCompletionsRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_reasoning_model_params(self):
-        if self.is_openai_model:
-            if self.is_reasoning_model:
-                self.temperature = None
-                self.top_p = None
-                self.logprobs = None
-                self.top_logprobs = None
-                self.logit_bias = None
-            else:
-                self.reasoning_effort = None
+        verdict = classify_openai_chat_model(self.model)
+        if verdict == "reasoning":
+            self.temperature = None
+            self.top_p = None
+            self.logprobs = None
+            self.top_logprobs = None
+            self.logit_bias = None
+        elif verdict == "non_reasoning":
+            self.reasoning_effort = None
         return self
 
     @property
     def is_reasoning_model(self) -> bool:
-        return self.model in REASONING_MODELS
+        return classify_openai_chat_model(self.model) == "reasoning"
 
     @property
     def is_openai_model(self) -> bool:
-        return self.model in CHAT_MODELS
+        return classify_openai_chat_model(self.model) != "unlisted"
 
 
 def uses_developer_messages(model: object) -> bool:
