@@ -1313,7 +1313,7 @@ class EngineRun:
             if cleanup is None or cleanup.done():
                 cleanup = asyncio.ensure_future(_end_group(tracked))
                 tracked.cleanup = cleanup
-            return await asyncio.shield(cleanup)
+            return await shield_quietly(cleanup)
 
         if not processes:
             return 0, 0
