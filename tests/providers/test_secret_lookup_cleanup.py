@@ -51,6 +51,7 @@ class _Reader:
         self.overflow = overflow
         self.before_kill_reads = 0
         self.drain_started = asyncio.Event()
+        self.drain_release = asyncio.Event()
         self.drain_finished = asyncio.Event()
         self.drain_tasks = []
 
@@ -80,7 +81,7 @@ class _Reader:
             if self.proc.rendezvous:
                 await self.proc.wait_started.wait()
             if self.stall:
-                await asyncio.Event().wait()
+                await self.drain_release.wait()
             return b""
         finally:
             self.drain_finished.set()
@@ -113,6 +114,7 @@ class _Child:
         self.failure_release = asyncio.Event()
         self.failure = OSError(_SECRET)
         self.wait_started = asyncio.Event()
+        self.wait_release = asyncio.Event()
         self.wait_finished = asyncio.Event()
         self.wait_tasks = []
         self.pipe = _Pipe(closed=pipe_kind == "closed")
@@ -138,7 +140,7 @@ class _Child:
             if self.rendezvous:
                 await self.stdout.drain_started.wait()
             if self.stall_wait:
-                await asyncio.Event().wait()
+                await self.wait_release.wait()
             return -9
         finally:
             self.wait_finished.set()
@@ -205,13 +207,43 @@ async def test_cleanup_reap_budget_is_two_seconds():
     ],
 )
 async def test_cleanup_bounds_wait_and_drain_and_closes_pipe(
-    install_fake, caplog, path, overflow, stall_read, stall_wait, failure
+    install_fake, monkeypatch, caplog, path, overflow, stall_read, stall_wait, failure
 ):
     proc = install_fake(_Child(stall_read=stall_read, stall_wait=stall_wait, overflow=overflow))
     caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
+    reap_timeouts = []
 
-    result = await asyncio.wait_for(_lookup(path, proc), timeout=0.75)
+    class _ReapWait:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
 
+        async def wait(self, tasks, *, timeout, return_when):
+            if len(tasks) == 2 and return_when == asyncio.FIRST_EXCEPTION:
+                # Give both reap tasks their full deadline even if the runner
+                # pauses before one of them reaches its wait point.
+                await proc.wait_started.wait()
+                await proc.stdout.drain_started.wait()
+                reap_timeouts.append(
+                    (timeout, tasks == {*proc.wait_tasks, *proc.stdout.drain_tasks})
+                )
+            return await asyncio.wait(tasks, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(secret_lookup, "asyncio", _ReapWait())
+    lookup = asyncio.create_task(_lookup(path, proc))
+    try:
+        done, _ = await asyncio.wait({lookup}, timeout=10.0)
+        assert lookup in done, "lookup did not settle after the reap deadline"
+        result = lookup.result()
+    finally:
+        proc.wait_release.set()
+        proc.stdout.drain_release.set()
+        if not lookup.done():
+            lookup.cancel()
+            await asyncio.gather(lookup, return_exceptions=True)
+
+    # The reap wait went through the gate once, over the two reap tasks, with the
+    # configured reap timeout; the 10 s guard above does not bound the budget.
+    assert reap_timeouts == [(secret_lookup._REAP_TIMEOUT_SECONDS, True)]
     if path == "ordinary":
         assert result is None
     else:
