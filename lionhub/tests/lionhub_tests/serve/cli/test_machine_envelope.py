@@ -423,6 +423,69 @@ def test_startup_envelope_matches_the_masked_stderr_summary(
     assert envelope["error"]["message"] == summary
 
 
+@pytest.mark.parametrize("write_error", [BrokenPipeError, OSError, ValueError])
+def test_startup_envelope_write_failure_keeps_environment_exit(capfd, monkeypatch, write_error):
+    def _missing_machine():
+        raise ModuleNotFoundError("No module named 'example'", name="example")
+
+    attempted = []
+
+    class _BrokenOutput:
+        @property
+        def buffer(self):
+            return self
+
+        def write(self, data):
+            attempted.append(data)
+            raise write_error("stdout could not be written")
+
+    monkeypatch.setattr(cli_main, "_load_machine", _missing_machine)
+    with monkeypatch.context() as output:
+        output.setattr(sys, "stdout", _BrokenOutput())
+        assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
+
+    assert len(attempted) == 1
+    assert _one_object(attempted[0].decode("utf-8"))["error"]["kind"] == "unavailable"
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert "cannot start: example" in captured.err
+    assert "No run was started" in captured.err
+
+
+def test_startup_envelope_closed_pipe_keeps_process_exit_78():
+    script = textwrap.dedent(
+        """
+        from importlib import import_module
+        import sys
+
+        cli = import_module("lionhub.serve.cli.main")
+
+        def missing():
+            raise ModuleNotFoundError("No module named 'example'", name="example")
+
+        cli._load_machine = missing
+        sys.exit(cli.main(["handshake", "--machine"]))
+        """
+    )
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            stdout=write_fd,
+            stderr=subprocess.PIPE,
+            cwd=REPO_ROOT,
+            env={**os.environ, "PYTHONPATH": SOURCE_PATH},
+            timeout=30,
+        )
+    finally:
+        os.close(write_fd)
+
+    assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
+    assert b"cannot start: example" in proc.stderr
+    assert b"Exception ignored" not in proc.stderr
+
+
 def test_a_missing_import_after_a_run_exists_is_an_envelope(capfd, monkeypatch):
     """78 claims nothing ran, and once a run directory exists that is false.
 

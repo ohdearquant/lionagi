@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The machine-result contract: one envelope, one JSON object on stdout.
 
-Every `li <command> --machine` call answers with exactly one JSON object on
-stdout, nothing else; every human-facing byte goes to stderr. See
-docs/internals/cli.md for the module's pieces (envelope constructors,
-availability wrapper, fd-level stdout reservation, dispatch).
+The dispatcher answers with one JSON object on stdout and sends human-facing
+output to stderr. If the environment fails before a run is allocated, the CLI
+entry point returns exit 78 and emits an unavailable envelope on a best-effort
+basis. See docs/internals/cli.md for the machine result implementation.
 """
 
 from __future__ import annotations
@@ -768,9 +768,9 @@ def dispatch_machine(argv: list[str]) -> int:
     answers to one question.
 
     A `ModuleNotFoundError` before run allocation is re-raised so the entry
-    point can emit an environment refusal with exit 78. Once a run exists on
-    disk it is an ordinary failure of that run and gets an envelope like any
-    other.
+    point can return exit 78 with a best-effort environment refusal. Once a run
+    exists on disk it is an ordinary failure of that run and gets an envelope
+    like any other.
     """
     from lionhub.orchestration.job import run_was_allocated
 

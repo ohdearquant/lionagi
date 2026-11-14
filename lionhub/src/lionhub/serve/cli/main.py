@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import argparse
+import io
+import os
 import signal
 import sys
 import traceback
@@ -521,6 +523,8 @@ def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int, argv: 
     only thing that identifies which package went missing and from where. The
     single-line summary goes last so that a caller which keeps only the tail of
     stderr still receives the diagnosis rather than the middle of a stack.
+    Machine mode also attempts an unavailable envelope on stdout. A failure
+    preparing or writing that envelope leaves the environment exit code intact.
     """
     traceback.print_exc()
     missing, guidance = _missing_requirement(exc)
@@ -533,16 +537,31 @@ def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int, argv: 
     if "--machine" in _args_before_sentinel(argv):
         from ._machine_envelope import _encode_envelope, _failure
 
-        envelope = _failure("unavailable", mask_credentials(message), {"exit_code": exit_code})
-        encoded = _encode_envelope(envelope)
-        stdout = sys.stdout
-        binary_stdout = getattr(stdout, "buffer", None)
-        if binary_stdout is None:
-            stdout.write(encoded)
-            stdout.flush()
-        else:
-            binary_stdout.write(encoded.encode("utf-8"))
-            binary_stdout.flush()
+        try:
+            envelope = _failure("unavailable", mask_credentials(message), {"exit_code": exit_code})
+            encoded = _encode_envelope(envelope)
+            stdout = sys.stdout
+            try:
+                fd = stdout.fileno()
+            except (AttributeError, io.UnsupportedOperation):
+                stream = getattr(stdout, "buffer", None)
+                if stream is None:
+                    stdout.write(encoded)
+                    stdout.flush()
+                else:
+                    stream.write(encoded.encode("utf-8"))
+                    stream.flush()
+            else:
+                # A failed buffered flush can retry at interpreter shutdown
+                # and replace the intended exit status.
+                remaining = memoryview(encoded.encode("utf-8"))
+                while remaining:
+                    written = os.write(fd, remaining)
+                    if not written:
+                        break
+                    remaining = remaining[written:]
+        except (OSError, ValueError):
+            pass
     return exit_code
 
 
