@@ -1008,6 +1008,68 @@ def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
     raise ConfigurationError(f"agent profile {name!r}: mcp must be 'none'")
 
 
+# The deepest nesting of collections a profile's frontmatter may have. The YAML loaders
+# recurse at least once per level, so whether a deeper block reads depends on the
+# interpreter's recursion limit; a block within the bound reads at the default limit.
+_MAX_FRONTMATTER_DEPTH = 64
+
+
+def _node_depth(root: Any) -> int:
+    """The deepest nesting of mapping and sequence nodes under *root*, as written.
+
+    Depth is read from where each node is written, by how many other collections' text
+    encloses its own, never from the edges between nodes: an alias edge can reach a deeply
+    written node from a shallow one, and the loaders recurse along the written nesting.
+    Computed without recursion.
+    """
+    import yaml
+
+    spans: list[tuple[int, int]] = []
+    pending = [root]
+    seen: set[int] = set()
+    while pending:
+        node = pending.pop()
+        if id(node) in seen or not isinstance(node, yaml.CollectionNode):
+            continue
+        seen.add(id(node))
+        spans.append((node.start_mark.index, node.end_mark.index))
+        if isinstance(node, yaml.MappingNode):
+            pending.extend(child for pair in node.value for child in pair)
+        else:
+            pending.extend(node.value)
+    # Enclosing spans come first: by start, and the longer of two that start together.
+    spans.sort(key=lambda span: (span[0], -span[1]))
+    deepest = 0
+    open_ends: list[int] = []
+    for start, end in spans:
+        while open_ends and open_ends[-1] <= start:
+            open_ends.pop()
+        open_ends.append(end)
+        deepest = max(deepest, len(open_ends))
+    return deepest
+
+
+def _token_depth(tokens: list[Any]) -> int:
+    """The deepest nesting of block and flow collections that *tokens* open."""
+    import yaml
+
+    opening = (
+        yaml.BlockMappingStartToken,
+        yaml.BlockSequenceStartToken,
+        yaml.FlowMappingStartToken,
+        yaml.FlowSequenceStartToken,
+    )
+    closing = (yaml.BlockEndToken, yaml.FlowMappingEndToken, yaml.FlowSequenceEndToken)
+    depth = deepest = 0
+    for token in tokens:
+        if isinstance(token, opening):
+            depth += 1
+            deepest = max(deepest, depth)
+        elif isinstance(token, closing):
+            depth -= 1
+    return deepest
+
+
 def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     """Refuse an unreadable or ambiguous MCP declaration without changing other settings."""
     if not text.startswith("---"):
@@ -1025,32 +1087,36 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     def readable_yaml_has_mcp_key(block: str) -> bool:
         # An unclosed frontmatter block can itself be readable YAML. Preserve
         # its existing key-token behavior, including anchors and aliases.
+        try:
+            tokens = list(yaml.scan(block, Loader=yaml.SafeLoader))
+        except yaml.YAMLError:
+            return False
+        if _token_depth(tokens) > _MAX_FRONTMATTER_DEPTH:
+            # Deeper than the bound reads as unreadable, at any recursion limit.
+            return unreadable_yaml_has_sensitive_text(block)
         anchors: dict[str, str] = {}
         expecting_key = False
         pending_anchor = None
-        try:
-            for token in yaml.scan(block, Loader=yaml.SafeLoader):
-                if isinstance(token, yaml.AnchorToken):
-                    pending_anchor = token.value
-                elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
-                    anchors[pending_anchor] = token.value
-                    pending_anchor = None
-                elif pending_anchor is not None and not isinstance(token, yaml.TagToken):
-                    pending_anchor = None
-                if isinstance(token, yaml.KeyToken):
-                    expecting_key = True
-                elif expecting_key and isinstance(token, yaml.ScalarToken):
-                    expecting_key = False
-                    if token.value == "mcp":
-                        return True
-                elif expecting_key and isinstance(token, yaml.AliasToken):
-                    expecting_key = False
-                    if anchors.get(token.value) == "mcp":
-                        return True
-                elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
-                    expecting_key = False
-        except yaml.YAMLError:
-            return False
+        for token in tokens:
+            if isinstance(token, yaml.AnchorToken):
+                pending_anchor = token.value
+            elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
+                anchors[pending_anchor] = token.value
+                pending_anchor = None
+            elif pending_anchor is not None and not isinstance(token, yaml.TagToken):
+                pending_anchor = None
+            if isinstance(token, yaml.KeyToken):
+                expecting_key = True
+            elif expecting_key and isinstance(token, yaml.ScalarToken):
+                expecting_key = False
+                if token.value == "mcp":
+                    return True
+            elif expecting_key and isinstance(token, yaml.AliasToken):
+                expecting_key = False
+                if anchors.get(token.value) == "mcp":
+                    return True
+            elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
+                expecting_key = False
         return False
 
     parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
@@ -1074,13 +1140,33 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         # otherwise make the ordinary frontmatter reader discard the block.
         yaml.safe_load(block)
         root = yaml.compose(block, Loader=yaml.SafeLoader)
-    except (yaml.YAMLError, RecursionError):
+        too_deep = _node_depth(root) > _MAX_FRONTMATTER_DEPTH
+    except RecursionError:
+        # The loaders recurse once per level, so the stack ran out either on a block nested
+        # past what it allows or in a caller already deep in its own stack. The scanner does
+        # not recurse, so its count tells the two apart; only the first is this refusal.
+        try:
+            written = _token_depth(list(yaml.scan(block, Loader=yaml.SafeLoader)))
+        except yaml.YAMLError:
+            written = 0
+        if written <= _MAX_FRONTMATTER_DEPTH:
+            raise
+        too_deep = True
+    except yaml.YAMLError:
         if unreadable_yaml_has_sensitive_text(block):
             raise ConfigurationError(
                 f"agent profile {name!r}: frontmatter could not be parsed (invalid YAML); "
                 "it mentions mcp or contains a backslash; fix the YAML to proceed"
             ) from None
         return
+    if too_deep:
+        # Refused whatever it holds. Past the bound, whether the loaders can read the
+        # block depends on the interpreter's recursion limit, so the same profile would
+        # be refused in one process and have its mcp setting read in another.
+        raise ConfigurationError(
+            f"agent profile {name!r}: frontmatter nests deeper than "
+            f"{_MAX_FRONTMATTER_DEPTH} levels; flatten its settings to proceed"
+        )
 
     def contains_mcp_key(node: Any) -> bool:
         pending = [node]
