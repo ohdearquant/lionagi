@@ -951,11 +951,12 @@ def _finish_strict_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) 
 
 
 def _reraise_unexpected_late_base_exception(worker: _Worker, exc: BaseException) -> None:
-    """Preserve non-strict process-control exceptions while strict workers settle.
+    """Let strict late settlement follow its normal reservation release path.
 
     Late settlement runs on a background thread, where a process-control
-    exception cannot stop the main thread. Re-raising it would skip reservation
-    release, so strict workers record the failure and release their capacity.
+    exception cannot stop the main thread. Strict settlement logs the failure
+    and follows the normal release path. A deferred memory-store acknowledgement
+    retains the reservation until the drain releases it.
     """
     if not worker.strict_outcomes and not isinstance(exc, Exception):
         raise exc
