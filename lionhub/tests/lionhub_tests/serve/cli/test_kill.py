@@ -1,0 +1,1865 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Tests for `li kill`: entity resolution, pid signal flow, cascade kill, stale sweep."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import psutil
+import pytest
+import yaml
+
+from lionagi.ln._proc import process_create_time as _real_process_create_time
+from lionagi.ln._proc import raw_create_time
+from lionagi.state.db import StateDB
+from lionagi.state.reasons import RunReasons
+from lionhub.orchestration.kill import _BOOT_TIME_TOLERANCE, _terminate_pid
+from lionhub.serve.cli.kill import (
+    _REFUSED_SIGNAL_REASONS,
+    NOT_STOPPED_SIGNALS,
+    _do_kill,
+    _do_kill_all_stale,
+    _persist_cancel,
+    _pid_alive,
+    _resolve_entity,
+    check_pid_identity,
+    list_running_children,
+)
+from tests._kill_scope_test_support import stable_boot_time as stable_boot_time
+from tests._kill_test_support import _await as _await
+from tests._kill_test_support import _is_zombie as _is_zombie
+from tests._kill_test_support import _mock_psutil as _mock_psutil
+from tests._kill_test_support import _script_create_time as _script_create_time
+from tests._kill_test_support import _seed_invocation as _seed_invocation
+from tests._kill_test_support import _seed_play as _seed_play
+from tests._kill_test_support import _seed_session as _seed_session
+from tests._kill_test_support import _seed_show as _seed_show
+from tests._kill_test_support import _spawn_marked_child as _spawn_marked_child
+from tests._kill_test_support import temp_db_path as temp_db_path
+
+
+def _mock_runner_probe(monkeypatch: pytest.MonkeyPatch, pid: int, state: str) -> None:
+    """Give the running-session cleanup path an explicit observation."""
+
+    def probe(actual_pid: int) -> tuple[str, float | None]:
+        assert actual_pid == pid, f"unexpected runner pid: {actual_pid}"
+        return state, None
+
+    monkeypatch.setattr("lionhub.orchestration.kill._runner_process_create_time", probe)
+
+
+# Fixtures
+
+
+# _pid_alive
+
+
+def test_pid_alive_returns_false_for_nonexistent_pid():
+    # PID 999999999 is virtually guaranteed not to exist.
+    assert _pid_alive(999999999) is False
+
+
+def test_pid_alive_returns_false_for_non_positive():
+    assert _pid_alive(0) is False
+    assert _pid_alive(-1) is False
+
+
+def test_pid_alive_returns_true_for_own_process():
+    import os
+
+    assert _pid_alive(os.getpid()) is True
+
+
+def test_pid_alive_treats_permission_error_as_alive():
+    """PermissionError means the process exists (not ours); must return True."""
+    with patch("os.kill", side_effect=PermissionError):
+        assert _pid_alive(1234) is True
+
+
+# _terminate_pid
+
+
+# _terminate_pid identity checks
+
+
+# A real, unreaped child
+#
+# Everything below uses a process this test actually started. A SIGTERMed child
+# whose parent has not called wait() is a zombie: it holds its pid, so `kill -0`
+# keeps reporting it present, but it has no command line, no environment and no
+# way to be killed again. That is a third answer next to "this is our process"
+# and "this pid belongs to something else", and the kill path has to record the
+# cancellation for it instead of refusing.
+
+
+@pytest.mark.skipif(os.name != "posix", reason="zombies are a POSIX process state")
+async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`li kill` against a SIGTERMed-but-unreaped child must persist the cancel.
+
+    This is the window a caller opens by starting a run and never waiting on
+    it: the process is gone, nobody has reaped it, and the row is still
+    'running'. Refusing here loses the cancellation for a run that has in fact
+    stopped.
+    """
+    sid = str(uuid.uuid4())
+    child = _spawn_marked_child(sid)
+    assert child.pid > 1
+
+    try:
+        assert _await(
+            lambda: check_pid_identity(child.pid, "lionagi", expected_session_id=sid) == "ours"
+        ), "child never came up carrying its session marker"
+        # The reader production records with. The public create_time() is
+        # adjusted for clock slew on some platforms, so a value read that way
+        # is not the value the identity check will compare against.
+        create_time = raw_create_time(psutil.Process(child.pid))
+
+        # While it is alive the identity check accepts it. Nothing about the
+        # arguments changes below, so whatever answer comes back after the
+        # SIGTERM differs only because the process died without being reaped.
+        assert (
+            check_pid_identity(
+                child.pid,
+                "lionagi",
+                expected_session_id=sid,
+                expected_create_time=create_time,
+            )
+            == "ours"
+        )
+
+        async with StateDB() as db:
+            prog = str(uuid.uuid4())
+            await db.create_progression(prog)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": prog,
+                    "status": "running",
+                    "started_at": time.time(),
+                    "node_metadata": {"pid": child.pid, "pid_create_time": create_time},
+                }
+            )
+
+        os.kill(child.pid, signal.SIGTERM)
+        # Deliberately no child.wait()/poll(): an unreaped exit is the state
+        # under test, and reaping it here would test a pid that is simply gone.
+        assert _await(lambda: _is_zombie(child.pid)), (
+            "child did not become a zombie — this environment reaps children "
+            "on its own and cannot exercise the window"
+        )
+        assert _pid_alive(child.pid) is True, "a zombie still answers kill -0"
+        assert (
+            check_pid_identity(
+                child.pid,
+                "lionagi",
+                expected_session_id=sid,
+                expected_create_time=create_time,
+            )
+            == "zombie"
+        )
+
+        def probe_owned_child(pid: int) -> tuple[str, float | None]:
+            assert pid == child.pid, f"unexpected runner pid: {pid}"
+            return _real_process_create_time(pid)
+
+        monkeypatch.setattr(
+            "lionhub.orchestration.kill._runner_process_create_time", probe_owned_child
+        )
+        rc = await _do_kill(sid, grace_seconds=0.5)
+        assert rc == 0, "a run that has already stopped is not a blocked kill"
+
+        async with StateDB() as db:
+            row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert row is not None
+        assert row["status"] == "cancelled", (
+            "the process is dead and the row must say so; leaving it 'running' "
+            "loses the cancellation"
+        )
+    finally:
+        if child.poll() is None and child.pid > 1:
+            child.kill()
+        child.wait()
+
+
+async def test_do_kill_identity_mismatch_reports_failure(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """identity_mismatch must NOT report success: no 'killed' line, exit code 1.
+
+    The session stays running and `li kill` returns non-zero so callers/scripts
+    see the kill was blocked rather than silently 'successful'.
+    """
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": time.time(),
+                "node_metadata": {"pid": 4242, "pid_create_time": 100.0},
+            }
+        )
+
+    # Live pid but a different create_time → recycled → identity_mismatch.
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionhub.serve.cli"],
+        create_time=999.0,
+        runner_pid=4242,
+    )
+
+    rc = await _do_kill(sid)
+    assert rc == 1, "blocked kill must return non-zero"
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running", "must not cancel an unverified PID"
+
+
+async def test_do_kill_invocation_without_pid_create_time_does_not_signal(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An invocation whose metadata carries a pid but no pid_create_time refuses the kill.
+
+    Reproduces the reported hazard: `li invoke start --metadata '{"pid": N}'`
+    stores a pid with no creation-time marker, and invocations never carry a
+    session id either, so a live process that merely looks like a lionagi
+    invocation must not receive SIGTERM.
+    """
+    kill_calls = _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionhub.serve.cli"],
+    )
+
+    async with StateDB() as db:
+        inv_id = await _seed_invocation(db, status="running", pid=4242)
+
+    rc = await _do_kill(inv_id)
+    assert rc == 1, "an unverifiable identity must block the kill"
+    assert kill_calls == [], "must not signal a process with no durable identity to confirm"
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (inv_id,))
+        assert row["status"] == "running", "must not cancel a row whose kill was refused"
+
+
+# current_pid_markers (launch-time recording)
+
+
+def test_current_pid_markers_records_own_pid():
+    """Markers describe the calling process; create_time present when psutil is."""
+    import os
+
+    from lionhub.serve.cli.kill import current_pid_markers
+
+    markers = current_pid_markers()
+    assert markers["pid"] == os.getpid()
+    # dev env has psutil; create_time must be a real float matching this process.
+    import psutil
+
+    assert markers["pid_create_time"] == pytest.approx(psutil.Process(os.getpid()).create_time())
+    assert markers["pid_host"]
+    assert markers["pid_boot_time"] == pytest.approx(psutil.boot_time())
+    assert markers["process_identity_mode"] == "local"
+
+
+def test_current_pid_markers_is_the_process_module_function():
+    """The kill command re-exports the function that the shared modules import from the process module."""
+    from lionagi.ln import _proc
+    from lionhub.serve.cli import kill
+
+    assert kill.current_pid_markers is _proc.current_pid_markers
+
+
+# Records its own launch markers the way a launching process does, under a
+# boot-time value moved by five seconds, then stays alive to be checked.
+
+
+# _resolve_entity
+
+
+async def test_resolve_entity_by_full_uuid(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _seed_session(db)
+        result = await _resolve_entity(db, sid)
+        assert result is not None
+        table, entity_type, row = result
+        assert table == "sessions"
+        assert entity_type == "session"
+        assert row["id"] == sid
+
+
+async def test_resolve_entity_by_short_prefix(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _seed_session(db)
+        short = sid[:8]
+        result = await _resolve_entity(db, short)
+        assert result is not None
+        _, _, row = result
+        assert row["id"] == sid
+
+
+async def test_resolve_entity_returns_none_for_unknown(temp_db_path: Path):
+    async with StateDB() as db:
+        result = await _resolve_entity(db, "deadbeef00000000")
+        assert result is None
+
+
+async def test_resolve_entity_finds_invocation(temp_db_path: Path):
+    async with StateDB() as db:
+        inv_id = await _seed_invocation(db)
+        result = await _resolve_entity(db, inv_id)
+        assert result is not None
+        table, entity_type, _ = result
+        assert table == "invocations"
+        assert entity_type == "invocation"
+
+
+async def test_resolve_entity_finds_show(temp_db_path: Path):
+    async with StateDB() as db:
+        show_id = await _seed_show(db)
+        result = await _resolve_entity(db, show_id)
+        assert result is not None
+        _, entity_type, _ = result
+        assert entity_type == "show"
+
+
+# _persist_cancel
+
+
+# _kill_one
+
+
+# _do_kill (end-to-end)
+
+
+async def test_do_kill_by_full_id(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("lionhub.orchestration.kill._terminate_pid", lambda pid, **kw: "sigterm")
+    _mock_runner_probe(monkeypatch, 12345, "found")
+
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=12345)
+
+    rc = await _do_kill(sid, user_reason="integration test")
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
+
+
+async def test_do_kill_by_prefix(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "lionhub.orchestration.kill._terminate_pid", lambda pid, **kw: "already_dead"
+    )
+
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=None)
+
+    rc = await _do_kill(sid[:10])
+    assert rc == 0
+
+
+async def test_do_kill_unknown_id_returns_1(temp_db_path: Path):
+    async with StateDB():
+        pass  # ensure DB exists
+
+    rc = await _do_kill("00000000deadbeef")
+    assert rc == 1
+
+
+async def test_do_kill_non_running_returns_1(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="completed")
+
+    rc = await _do_kill(sid)
+    assert rc == 1
+
+
+# _do_kill_all_stale
+
+
+async def test_do_kill_all_stale_cancels_dead_pid(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Running session with a dead PID and old start time is cancelled."""
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    old_start = time.time() - 7200  # 2h ago
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=99999, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
+
+
+async def test_do_kill_all_stale_skips_live_pid(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Running session with a LIVE, identity-matching PID is not touched."""
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **kw: "ours"
+    monkeypatch.setattr("lionhub.serve.cli.kill.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionhub.orchestration.kill.check_pid_identity", patched_check_pid_identity)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=12345, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running"
+
+
+async def test_do_kill_all_stale_sweeps_reused_pid(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A live PID that no longer identifies as the tracked process (reused
+    after the original died) must still be swept, not treated as live."""
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **kw: "not_ours"
+    monkeypatch.setattr("lionhub.serve.cli.kill.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionhub.orchestration.kill.check_pid_identity", patched_check_pid_identity)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=12345, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
+
+
+async def test_do_kill_all_stale_skips_recent(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Session started recently (under threshold) must not be swept."""
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    recent_start = time.time() - 60  # only 1 min ago
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=None, started_at=recent_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running"
+
+
+async def test_do_kill_all_stale_dry_run_does_not_write(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """--dry-run must not modify any rows."""
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=None, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=True)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running"
+
+
+async def test_do_kill_all_stale_uses_stale_auto_reason(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """CANCELLED_STALE_AUTO reason code is written for stale sweeps."""
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=None, started_at=old_start)
+
+    await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+
+    async with StateDB() as db:
+        row = await db.fetch_one(
+            "SELECT reason_code FROM status_transitions "
+            "WHERE entity_id = ? AND previous_status = 'running' AND status = 'cancelled'",
+            (sid,),
+        )
+        assert row is not None
+        assert row["reason_code"] == RunReasons.CANCELLED_STALE_AUTO
+
+
+async def test_do_kill_all_stale_recycled_pid_swept_with_correlation(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A recycled pid occupied by an unrelated lionagi-shaped process must be
+    swept once the row's own pid_create_time is correlated against it, even
+    though the cmdline alone still looks like a genuine lionagi invocation."""
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    fake_psutil = MagicMock()
+    fake_psutil.LINUX = False
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionhub.serve.cli"]
+    fake_proc.environ.return_value = {}
+    _script_create_time(fake_proc, 999.0)  # does NOT match recorded 100.0
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
+    # that omits it lets the code under test claim a distinction it never made.
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    monkeypatch.setattr("lionhub.orchestration.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": old_start,
+                "node_metadata": {"pid": 12345, "pid_create_time": 100.0},
+            }
+        )
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled", "recycled pid with mismatched create_time must be swept"
+
+
+async def test_do_kill_all_stale_not_ours_evidence_reports_pid_was_alive(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The cancellation evidence for a recycled-pid sweep must say the pid WAS
+    alive, distinguishing "gone" from "alive but not ours" -- the two call for
+    different operator follow-up, and only one of them means the process is
+    actually gone.
+    """
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    fake_psutil = MagicMock()
+    fake_psutil.LINUX = False
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionhub.serve.cli"]
+    fake_proc.environ.return_value = {}
+    _script_create_time(fake_proc, 999.0)  # does NOT match recorded 100.0
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    monkeypatch.setattr("lionhub.orchestration.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": old_start,
+                "node_metadata": {"pid": 12345, "pid_create_time": 100.0},
+            }
+        )
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "cancelled"
+    evidence_raw = s["status_evidence_refs"]
+    evidence = json.loads(evidence_raw) if isinstance(evidence_raw, str) else evidence_raw
+    assert isinstance(evidence, list) and evidence
+    entry = evidence[0]
+    assert entry["pid_alive"] is True, (
+        "the pid WAS alive -- only its recorded identity didn't match"
+    )
+    assert entry["identity_verdict"] == "not_ours"
+
+
+async def test_do_kill_all_stale_matching_correlation_skips_live(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """When the row's pid_create_time genuinely matches the live process,
+    the sweep must still skip it as live (not a regression on the happy path)."""
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionhub.serve.cli"]
+    fake_proc.environ.return_value = {}
+    _script_create_time(fake_proc, 100.0)  # matches recorded value
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
+    # that omits it lets the code under test claim a distinction it never made.
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    monkeypatch.setattr("lionhub.orchestration.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": old_start,
+                "node_metadata": {"pid": 12345, "pid_create_time": 100.0},
+            }
+        )
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running", "a genuinely live, correlated process must not be swept"
+
+
+async def test_do_kill_all_stale_access_denied_not_cancelled(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A live pid we cannot inspect (psutil.AccessDenied) must be treated as
+    still alive by the sweep, not cancelled out from under a running worker.
+
+    Discrimination: an identity check that collapses AccessDenied into "not
+    ours" gets the row cancelled while the process keeps running. The verdict
+    reports "unverifiable" instead and the sweep skips it.
+    """
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionhub.orchestration.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running", "AccessDenied must not be treated as a dead/recycled pid"
+
+
+async def test_do_kill_all_stale_unverifiable_pid_persists_first_observed_marker(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A row skipped as unverifiable must retain evidence of that across sweeps.
+
+    Before this fix the fail-safe "treat as live" decision was only a local
+    counter for the one sweep: the record kept no `unverifiable_since` or
+    count, so a permanently-uninspectable pid was silently skipped on every
+    run forever with nothing durable to show for it. The first sweep must
+    record when this was first observed; a second sweep must keep that
+    timestamp fixed while advancing the count, not restart the clock.
+    """
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionhub.orchestration.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "running"
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    first_seen = meta["unverifiable_since"]
+    assert isinstance(first_seen, float)
+    assert meta["unverifiable_count"] == 1
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta["unverifiable_since"] == first_seen, "first-observed marker must not reset"
+    assert meta["unverifiable_count"] == 2
+
+
+async def test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_write(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Ordinary flow progress must not erase the unverifiable-pid evidence a
+    sweep just recorded.
+
+    flow.py's session metadata writers (the early-graph snapshot, segment
+    writes, control-log writes) go through a shared merge-preserving helper
+    so they layer their own fields onto whatever is already in
+    `node_metadata` instead of replacing the column outright. This proves
+    the merge survives a full sweep → flow-write → sweep cycle: the marker
+    set by the first sweep must still be there, unmodified, for the second
+    sweep to build on.
+    """
+    from lionhub.serve.cli.orchestrate.flow import _persist_node_metadata_patch
+
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionhub.orchestration.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    first_seen = meta["unverifiable_since"]
+    assert meta["unverifiable_count"] == 1
+
+    # Ordinary flow progress: a segment/control-log style metadata write,
+    # the same write shape flow.py's live-persist callbacks use.
+    async with StateDB() as db:
+        await _persist_node_metadata_patch(
+            db, sid, {"segments": [{"branch_name": "worker-1", "status": "completed"}]}
+        )
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta["unverifiable_since"] == first_seen, (
+        "a flow metadata write must not reset the first-observed marker"
+    )
+    assert meta["unverifiable_count"] == 2, (
+        "the sweep count must still increment after an intervening flow metadata write"
+    )
+    assert meta["segments"] == [{"branch_name": "worker-1", "status": "completed"}], (
+        "the flow metadata write itself must still land"
+    )
+
+
+async def test_do_kill_all_stale_sweep_write_does_not_clobber_interleaved_flow_write(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A flow metadata write landing INSIDE the sweep's own read-to-write
+    window must survive the sweep's write, not just a flow write that lands
+    between two separate sweep calls.
+
+    test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_write
+    (above) only proves the marker survives a full sweep -> explicit flow
+    write -> full sweep round trip; each sweep call there completes its own
+    read and write before the flow write is ever issued, so it cannot catch
+    a whole-column writer racing a concurrent write. This test forces the
+    flow write to fire from inside the sweep's SELECT (the read the sweep's
+    marker-write patch is computed from), before the sweep's own write for
+    that row runs, reproducing the exact interleaving a whole-column
+    `update_session(node_metadata=json.dumps(new_meta))` write loses:
+    seed the unverifiable markers, let the sweep read the row, land a flow
+    segment write, then let the sweep write its markers back.
+    """
+    from lionhub.serve.cli.orchestrate.flow import _persist_node_metadata_patch
+
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionhub.orchestration.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+        # Seed the markers the way a prior sweep would have, so this sweep's
+        # read sees a `meta` dict that already carries them (matching round
+        # 6's reproduction, which seeded unverifiable_since/count before the
+        # interleaving).
+        await db.merge_session_node_metadata(
+            sid,
+            {
+                "unverifiable_since": 111.0,
+                "unverifiable_count": 1,
+                "unverifiable_epoch": 0,
+                "unverifiable_quarantined": False,
+                "unverifiable_identity": json.dumps([54321, None, None], separators=(",", ":")),
+            },
+        )
+
+    real_fetch_all = StateDB.fetch_all
+    flow_write_done = asyncio.Event()
+
+    async def gated_fetch_all(self, query, params):
+        result = await real_fetch_all(self, query, params)
+        if "FROM sessions WHERE status" in query and not flow_write_done.is_set():
+            # This is the sweep's read of live session rows -- the read the
+            # per-row `meta`/marker computation below is taken from. Land a
+            # concurrent flow write right now, before the sweep issues its
+            # own write for this row.
+            async with StateDB() as flow_db:
+                await _persist_node_metadata_patch(
+                    flow_db, sid, {"segments": [{"branch_name": "worker-1"}]}
+                )
+            flow_write_done.set()
+        return result
+
+    monkeypatch.setattr(StateDB, "fetch_all", gated_fetch_all)
+    try:
+        assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+    finally:
+        monkeypatch.setattr(StateDB, "fetch_all", real_fetch_all)
+
+    assert flow_write_done.is_set(), "the gated fetch_all never fired the interleaved flow write"
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta.get("unverifiable_since") == 111.0
+    assert meta.get("unverifiable_count") == 2, (
+        "the sweep's own marker write must still land after the interleaved flow write"
+    )
+    assert meta.get("segments") == [{"branch_name": "worker-1"}], (
+        "a flow write landing inside the sweep's read-to-write window must survive "
+        "the sweep's own metadata write, not be clobbered by a whole-column snapshot"
+    )
+
+
+async def test_persist_node_metadata_patch_concurrent_writers_both_land(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Two concurrent flow-metadata writers merging onto the SAME session row
+    must both survive -- the read and the write have to happen as one atomic
+    database operation, not a get_session() followed by a separate
+    update_session(), or the second writer's read (taken before the first
+    writer's write lands) silently clobbers the first writer's patch.
+
+    This is not a hypothetical: the segment writer and the control-log writer
+    (flow.py's _persist_segments / _persist_control_log) both merge onto the
+    same session row, from independent callbacks that DAG execution can fire
+    close together, and a stale-sweep can write between either of them.
+
+    get_session() is gated so both callers finish their read before either
+    is allowed to proceed -- the worst-case interleaving -- rather than
+    relying on incidental asyncio scheduling to happen to hit it. Under the
+    fix neither caller calls get_session() at all (the merge is one atomic
+    UPDATE), so the gate never fires and sits inert; this instrumentation
+    only forces the window open for a read-then-write implementation.
+    """
+    from lionhub.serve.cli.orchestrate.flow import _persist_node_metadata_patch
+
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321)
+        await db.merge_session_node_metadata(sid, {"seed": 1})
+
+    real_get_session = StateDB.get_session
+    barrier = asyncio.Event()
+    entered = 0
+
+    async def gated_get_session(self, session_id):
+        nonlocal entered
+        result = await real_get_session(self, session_id)
+        entered += 1
+        if entered >= 2:
+            barrier.set()
+        await barrier.wait()
+        return result
+
+    monkeypatch.setattr(StateDB, "get_session", gated_get_session)
+
+    async def _write(patch):
+        async with StateDB() as db:
+            await _persist_node_metadata_patch(db, sid, patch)
+
+    await asyncio.gather(_write({"left": 1}), _write({"right": 2}))
+
+    # Un-gate before the verification read: it must not itself wait on a
+    # barrier only the (absent, under the fix) get_session() callers could
+    # have opened past count 1.
+    monkeypatch.setattr(StateDB, "get_session", real_get_session)
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta.get("seed") == 1, "pre-existing metadata must survive both concurrent writes"
+    assert meta.get("left") == 1, "the first writer's patch must not be lost to the race"
+    assert meta.get("right") == 2, "the second writer's patch must not be lost to the race"
+
+
+async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_sweep(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A process dying between the liveness check and the psutil detail reads
+    (NoSuchProcess from environ/create_time/cmdline) must classify the row as
+    stale and keep the sweep going — not escape and abort the whole sweep with
+    later rows unprocessed."""
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    fake_no_such = type("NoSuchProcess", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = fake_no_such
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_no_such,), {})
+    fake_proc = MagicMock()
+    fake_proc.environ.side_effect = fake_no_such("gone")
+    fake_proc.cmdline.side_effect = fake_no_such("gone")
+    fake_proc.create_time.side_effect = fake_no_such("gone")
+    fake_psutil.Process.return_value = fake_proc
+    monkeypatch.setattr("lionhub.orchestration.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        first = await _seed_session(db, status="running", pid=11111, started_at=old_start)
+        second = await _seed_session(db, status="running", pid=22222, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        for sid in (first, second):
+            assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+                "status"
+            ] == "cancelled", "vanished processes are stale; BOTH rows must be swept"
+
+
+# cascade kill
+
+
+async def test_do_kill_play_leaves_workers_running_and_exits_non_zero(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """A play kill cannot reach the play's workers, and reports that as a failure.
+
+    Both rows here are shaped the way the running system shapes them: the play
+    row carries no session link, and the worker session carries no play
+    reference, so neither end of the pair can name the other. The kill marks
+    the play row terminal, leaves the worker session running, and exits
+    non-zero so a caller cannot read the run as stopped.
+    """
+    import lionhub.orchestration.kill as kill_service
+    import lionhub.serve.cli.kill as kill_mod
+    from lionhub.orchestration.console import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+
+    signalled_pids: list[int] = []
+
+    def fake_terminate(pid: int, **kwargs: Any) -> str:
+        signalled_pids.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr(kill_service, "_terminate_pid", fake_terminate)
+
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running", pid=42002)
+        worker_session_id = await _seed_session(db, status="running", pid=42001)
+        await db.update_session(worker_session_id, invocation_id=invocation_id)
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id)
+
+    capsys.readouterr()
+    rc = await _do_kill(play_id)
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert "no worker process was stopped" in captured.err.replace("\n", " ")
+    # No worker was signalled: the play row has no path to either of them.
+    assert signalled_pids == []
+    async with StateDB() as db:
+        assert (
+            await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (worker_session_id,))
+        )["status"] == "running"
+        assert (
+            await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (invocation_id,))
+        )["status"] == "running"
+        play_status = (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ]
+    assert play_status == "blocked"
+    # The message has to name the status that was actually written. Asserting the
+    # literal word here would pass just as well against a message that names a
+    # status the kill never wrote, which is what it used to do.
+    assert f"is marked {play_status}" in captured.err.replace("\n", " ")
+
+
+async def test_do_kill_play_with_recorded_session_reaps_the_worker_chain(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """A play whose row records its worker session has that chain terminated.
+
+    This is the shape the Studio show importer writes: `plays.session_id` is
+    bound to the session it matched by name. Both worker pids are signalled,
+    both rows go terminal, and the kill exits 0 — it did stop the work.
+    """
+    import lionhub.orchestration.kill as kill_service
+    import lionhub.serve.cli.kill as kill_mod
+    from lionhub.orchestration.console import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+
+    signalled_pids: list[int] = []
+
+    def fake_terminate(pid: int, **kwargs: Any) -> str:
+        signalled_pids.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr(kill_service, "_terminate_pid", fake_terminate)
+
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running", pid=44002)
+        worker_session_id = await _seed_session(db, status="running", pid=44001)
+        await db.update_session(worker_session_id, invocation_id=invocation_id)
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id, session_id=worker_session_id)
+
+    capsys.readouterr()
+    rc = await _do_kill(play_id)
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert signalled_pids == [44002, 44001]
+    assert "no worker process was stopped" not in captured.err.replace("\n", " ")
+    async with StateDB() as db:
+        assert (
+            await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (worker_session_id,))
+        )["status"] == "cancelled"
+        assert (
+            await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (invocation_id,))
+        )["status"] == "cancelled"
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "blocked"
+
+
+async def test_do_kill_play_reaps_worker_chain_without_recursive_flag(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The play's worker chain is not gated behind `--recursive`.
+
+    A play row carries no PID of its own, so resolving the sessions it started
+    is the whole kill rather than an opt-in extra.
+    """
+    import lionhub.orchestration.kill as kill_service
+    import lionhub.serve.cli.kill as kill_mod
+
+    signalled_pids: list[int] = []
+    monkeypatch.setattr(
+        kill_service,
+        "_terminate_pid",
+        lambda pid, **kwargs: (signalled_pids.append(pid), "sigterm")[1],
+    )
+
+    async with StateDB() as db:
+        worker_session_id = await _seed_session(db, status="running", pid=45001)
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id, session_id=worker_session_id)
+
+    assert await _do_kill(play_id, recursive=False) == 0
+    assert signalled_pids == [45001]
+
+
+async def test_do_kill_active_show_succeeds(temp_db_path: Path):
+    """`li kill <show-id>` on a fresh, unmocked active show maps to 'aborted'."""
+    async with StateDB() as db:
+        show_id = await _seed_show(db)  # default status="active" -- no mocking
+
+    rc = await _do_kill(show_id)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,)))[
+            "status"
+        ] == "aborted"
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "aborted", "imported"])
+async def test_do_kill_show_terminal_statuses_refuse(temp_db_path: Path, terminal_status: str):
+    """A show already in a terminal (non-'active') status is rejected, rc=1."""
+    async with StateDB() as db:
+        show_id = await _seed_show(db, status=terminal_status)
+
+    rc = await _do_kill(show_id)
+    assert rc == 1
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,)))[
+            "status"
+        ] == terminal_status
+
+
+async def test_do_kill_recursive_show_does_not_reap_play_workers(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """--recursive is a documented no-op boundary for shows (ADR-0104): the
+    show row goes terminal, but its plays/workers are left untouched."""
+    from lionhub.orchestration.console import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+    signalled_pids: list[int] = []
+
+    def fake_terminate(pid: int, **kwargs: Any) -> str:
+        signalled_pids.append(pid)
+        return "sigterm"
+
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running", pid=43002)
+        session_id = await _seed_session(db, status="running", pid=43001)
+        await db.update_session(session_id, invocation_id=invocation_id)
+        show_id = await _seed_show(db)  # default status="active" -- no mocking
+        play_id = await _seed_play(db, show_id)
+
+    monkeypatch.setattr("lionhub.orchestration.kill._terminate_pid", fake_terminate)
+
+    capsys.readouterr()
+    assert await _do_kill(show_id, recursive=True) == 0
+    assert signalled_pids == []
+    assert "does not reap a show's plays or their workers" in capsys.readouterr().err
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,)))[
+            "status"
+        ] == "aborted"
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "running"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (session_id,)))[
+            "status"
+        ] == "running"
+        assert (
+            await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (invocation_id,))
+        )["status"] == "running"
+
+
+async def test_do_kill_emits_settings_terminal_notification(temp_db_path: Path, tmp_path: Path):
+    """The kill transition still reaches the settings notify handler exactly once."""
+    async with StateDB() as db:
+        session_id = await _seed_session(db, status="running")
+
+    output_path = tmp_path / "kill-notify.jsonl"
+    project_dir = tmp_path / "project"
+    settings_dir = project_dir / ".lionagi"
+    settings_dir.mkdir(parents=True)
+    capture_script = (
+        "import pathlib, sys; pathlib.Path(sys.argv[1]).open('a').write(sys.stdin.read() + '\\n')"
+    )
+    (settings_dir / "settings.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "notify": {
+                    "on_terminal": {
+                        "enabled": True,
+                        "adapter": {
+                            "kind": "exec",
+                            "argv": [sys.executable, "-c", capture_script, str(output_path)],
+                        },
+                        "filter": {"ids": [session_id]},
+                    }
+                }
+            }
+        )
+    )
+
+    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+
+    callback_name = "notify.settings.on_terminal"
+    DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
+    assert register_settings_terminal_callback(project_dir=str(project_dir)) is True
+    try:
+        assert await _do_kill(session_id) == 0
+    finally:
+        DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
+
+    payloads = [json.loads(line) for line in output_path.read_text().splitlines()]
+    assert len(payloads) == 1
+    assert payloads[0]["entity"] == {"kind": "session", "id": session_id}
+    assert payloads[0]["terminal_status"] == "cancelled"
+    assert payloads[0]["reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
+
+
+async def test_do_kill_play_emits_blocked_terminal_envelope(temp_db_path: Path):
+    """A play kill emits its blocked envelope through the lifecycle callback seam."""
+    from lionagi.state.lifecycle.callbacks import (
+        DEFAULT_TERMINAL_CALLBACKS,
+        RunTerminalEnvelope,
+    )
+
+    async with StateDB() as db:
+        session_id = await _seed_session(db, status="running")
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id)
+
+    received: list[RunTerminalEnvelope] = []
+
+    async def collect(envelope: RunTerminalEnvelope) -> None:
+        received.append(envelope)
+
+    callback_name = "test.kill.play-terminal"
+    DEFAULT_TERMINAL_CALLBACKS.register(
+        callback_name,
+        collect,
+        kinds=["play"],
+        ids=[play_id],
+    )
+    try:
+        # Non-zero: the play row went terminal, but its workers were not reached.
+        assert await _do_kill(play_id) == 1
+    finally:
+        DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
+
+    assert len(received) == 1
+    envelope = received[0]
+    assert envelope.entity.kind == "play"
+    assert envelope.entity.id == play_id
+    assert envelope.previous_status == "running"
+    assert envelope.terminal_status == "blocked"
+    assert envelope.reason_code == RunReasons.CANCELLED_MANUAL_KILL
+
+
+async def test_do_kill_recursive_kills_child_invocations(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """--recursive: a session's linked invocation is also cancelled."""
+    monkeypatch.setattr("lionhub.orchestration.kill._terminate_pid", lambda pid, **kw: "sigterm")
+
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running")
+        # Create an invocation and link it to the session.
+        inv_id = await _seed_invocation(db, status="running")
+        await db.update_session(sid, invocation_id=inv_id)
+
+    rc = await _do_kill(sid, recursive=True)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
+        # The name of this test promises the invocation goes too, and until
+        # now nothing checked it: the traversal could have been dropped
+        # entirely and this stayed green.
+        assert (await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (inv_id,)))[
+            "status"
+        ] == "cancelled"
+
+
+async def test_do_kill_recursive_invocation_cancels_child_sessions(temp_db_path: Path):
+    """The downward edge: an invocation's sessions are cancelled with it.
+
+    `sessions.invocation_id` is read in both directions — up from a session to
+    the invocation running it, and down from an invocation to the sessions it
+    owns. This pins the downward half, which the upward tests do not cover.
+    """
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running")
+        child_ids = [
+            await _seed_session(db, status="running"),
+            await _seed_session(db, status="running"),
+        ]
+        for child_id in child_ids:
+            await db.update_session(child_id, invocation_id=invocation_id)
+
+    assert await _do_kill(invocation_id, recursive=True) == 0
+
+    async with StateDB() as db:
+        invocation = await db.fetch_one(
+            "SELECT status FROM invocations WHERE id = ?", (invocation_id,)
+        )
+        children = await db.fetch_all(
+            "SELECT id, status FROM sessions WHERE invocation_id = ?", (invocation_id,)
+        )
+
+    assert invocation is not None and invocation["status"] == "cancelled"
+    assert {row["id"]: row["status"] for row in children} == {
+        child_id: "cancelled" for child_id in child_ids
+    }
+
+
+# CLI wiring smoke test
+
+
+def test_kill_subparser_registered():
+    """Verify `li kill --help` exits 0 (subparser is wired correctly)."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "lionhub.serve.cli", "kill", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    # --help exits with code 0
+    assert result.returncode == 0
+    assert "kill" in result.stdout.lower() or "kill" in result.stderr.lower()
+
+
+def _kill_help_text() -> str:
+    """`li kill --help` stdout, whitespace-normalised so argparse's line
+    wrapping does not decide whether a sentence is present."""
+    result = subprocess.run(
+        [sys.executable, "-m", "lionhub.serve.cli", "kill", "--help"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return " ".join(result.stdout.split())
+
+
+def test_help_qualifies_the_degraded_run_process_record():
+    help_text = _kill_help_text()
+
+    assert "stops the process only when run.json records a process identity" in help_text
+    assert "`li agent` writes that identity and prints its run id when it starts" in help_text
+    assert "`li kill` uses a matching degraded run.json when it can identify a process" in help_text
+
+
+def test_help_states_what_the_sweep_does_to_a_play():
+    """The sweep's two conditions have to survive into the text people read.
+
+    A play does not go `cancelled` — that word belongs to sessions and
+    invocations — and the sweep does not act on every play: one whose row
+    records no worker session is left running, because its age says nothing
+    about whether its workers are gone. Help text that promises either of those
+    describes a command that does not exist, and the MCP schema below is
+    generated from the same strings, so a caller reading the projection gets
+    whatever this says.
+    """
+    help_text = _kill_help_text()
+
+    assert "is marked 'blocked'" in help_text
+    assert "records no worker session is left running" in help_text
+    assert "and ALL of its plays are terminal" in help_text
+    # The sweep is conditional; nothing may claim it acts on every play.
+    assert "cancels play and show rows once their workers are gone" not in help_text
+
+
+def test_mcp_projection_carries_the_same_sweep_contract():
+    """The projected schema is the same text by another route.
+
+    An MCP caller never sees `--help`; it sees this schema, and it cannot check
+    the claim against the database. Pinning the contract on both surfaces is
+    what stops a correction to one of them from leaving the other promising the
+    old behaviour.
+    """
+    golden = json.loads(
+        (
+            Path(__file__).resolve().parents[5]
+            / "tests"
+            / "mcp"
+            / "golden_projections"
+            / "kill.json"
+        ).read_text()
+    )
+    schema = golden["schema"]
+    all_stale = schema["properties"]["all_stale"]["description"]
+
+    assert "is marked 'blocked'" in all_stale
+    assert "records no worker session is left running" in all_stale
+    assert "A show is marked 'aborted' only once" in all_stale
+    assert "cancels play and show rows once their workers are gone" not in schema["description"]
+
+
+def test_kill_all_stale_subparser_flags():
+    """Verify --all-stale, --threshold, --dry-run are accepted."""
+    import tempfile
+
+    import lionagi.state.db as _db_mod
+    from lionhub.serve.cli.main import main
+
+    # Calling with --dry-run + --all-stale against a missing DB should
+    # exit cleanly (0) and print nothing killed.
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        tmp_path = f.name
+
+    import lionhub.serve.cli.kill as _kill_mod
+
+    original = _db_mod.DEFAULT_DB_PATH
+    _db_mod.DEFAULT_DB_PATH = Path(tmp_path)
+    try:
+        rc = main(["kill", "--all-stale", "--dry-run", "--threshold", "3600"])
+        assert rc == 0
+    finally:
+        _db_mod.DEFAULT_DB_PATH = original
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+# plays and shows excluded from sweep
+
+
+async def test_do_kill_all_stale_does_NOT_touch_show_at_all(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Shows are skipped entirely in the all-stale sweep.
+
+    Shows have no direct PID; treating pid=None as 'stale' would abort
+    long-running shows whose child plays/sessions are still alive.
+    Both the show and any co-seeded child play must survive unchanged.
+    """
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    old_time = time.time() - 7200  # 2 hours ago
+    async with StateDB() as db:
+        show_id = await _seed_show(db, status="active")
+        # Backdate so the show looks stale by age threshold.
+        await db.execute(
+            "UPDATE shows SET updated_at = ?, created_at = ? WHERE id = ?",
+            (old_time, old_time, show_id),
+        )
+        # Seed a child play so we also verify plays are not swept.
+        play_id = await _seed_play(db, show_id, status="running")
+        await db.execute(
+            "UPDATE plays SET started_at = ? WHERE id = ?",
+            (old_time, play_id),
+        )
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,))
+        assert row is not None
+        # Show must remain active — the sweep must not have touched it.
+        assert row["status"] == "active"
+
+        row2 = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,))
+        assert row2 is not None
+        # Play must also remain running — the sweep must not have touched it.
+        assert row2["status"] == "running"
+
+
+async def test_do_kill_all_stale_does_NOT_touch_play_at_all(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Plays are skipped entirely in the all-stale sweep.
+
+    Plays are orchestrators with no direct PID; their child sessions carry
+    the actual OS process. Sweeping by PID-absence would silently abort
+    legitimate long-running plays. The play's status must remain 'running'
+    after the sweep regardless of age or PID presence.
+    """
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    old_start = time.time() - 7200  # 2 hours ago
+    async with StateDB() as db:
+        show_id = await _seed_show(db, status="active")
+        play_id = await _seed_play(db, show_id, status="running")
+        # Backdate so the play is well outside the stale threshold.
+        await db.execute(
+            "UPDATE plays SET started_at = ? WHERE id = ?",
+            (old_start, play_id),
+        )
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,))
+        assert row is not None
+        # Play must remain running — the sweep must not have touched it.
+        assert row["status"] == "running"
+
+
+async def test_do_kill_all_stale_reports_plays_it_could_not_assess(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """A play with no recorded worker session is counted and named once.
+
+    The sweep has no way to tell whether such a play is abandoned, so it leaves
+    it alone. Saying so once per sweep, with a count in the closing line, keeps
+    the operator from reading silence as "nothing was stale". A per-row message
+    would read as an observation about that row rather than the structural fact
+    it is.
+    """
+    from lionhub.orchestration.console import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        show_id = await _seed_show(db, status="active")
+        play_id = await _seed_play(db, show_id, status="running")
+        await db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_start, play_id))
+
+    capsys.readouterr()
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+    captured = capsys.readouterr()
+
+    assert "skipped_unlinked_plays=1" in captured.out
+    operator_output = captured.err.replace("\n", " ")
+    assert "1 running play row(s) were not swept" in operator_output
+    assert "record no link to the sessions they started" in operator_output
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "running"
+
+
+async def test_do_kill_all_stale_sweeps_play_whose_worker_session_is_terminal(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """A play the sweep *can* assess is swept, and is marked blocked.
+
+    This is the case the CLI reference describes: an old play whose recorded
+    worker session has already gone terminal. The persisted status is `blocked`
+    — the word a play takes — not the `cancelled` a session takes.
+    """
+    from lionhub.orchestration.console import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        dead_session_id = await _seed_session(db, status="cancelled")
+        show_id = await _seed_show(db, status="active")
+        play_id = await _seed_play(db, show_id, status="running", session_id=dead_session_id)
+        await db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_start, play_id))
+
+    capsys.readouterr()
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+    captured = capsys.readouterr()
+
+    assert "skipped_unlinked_plays=0" in captured.out
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "blocked"
+
+
+# Ambiguous short-id prefixes
+#
+# A prefix that matches two rows must never resolve to "whichever came first":
+# `li kill` would then signal a process the caller never named.
+
+
+async def _seed_session_with_id(db: StateDB, sid: str, *, pid: int | None = None) -> str:
+    prog_id = str(uuid.uuid4())
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "status": "running",
+            "started_at": time.time(),
+            "node_metadata": {"pid": pid} if pid is not None else {},
+        }
+    )
+    return sid
+
+
+async def test_resolve_entity_rejects_ambiguous_prefix(temp_db_path: Path):
+    from lionhub.orchestration.job import AmbiguousIdError
+
+    async with StateDB() as db:
+        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001")
+        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002")
+
+        with pytest.raises(AmbiguousIdError) as excinfo:
+            await _resolve_entity(db, "abcde")
+
+    assert set(excinfo.value.candidates) == {first, second}
+    assert "abcde" in str(excinfo.value)
+
+
+async def test_do_kill_ambiguous_prefix_signals_nothing_and_fails(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+):
+    async with StateDB() as db:
+        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001", pid=4242)
+        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002", pid=4243)
+
+    with (
+        patch("lionhub.serve.cli.kill.kill_one") as kill_one,
+        patch("lionhub.orchestration.kill.kill_one"),
+    ):
+        with caplog.at_level("ERROR"):
+            rc = await _do_kill("abcde")
+
+    assert rc == 1, "an ambiguous prefix must not be a success exit code"
+    kill_one.assert_not_called()
+    assert "ambiguous" in caplog.text
+    assert first in caplog.text and second in caplog.text
+
+
+# host / boot identity: a pid only names a process on the machine that recorded it
+
+
+async def test_stale_sweep_leaves_another_hosts_rows_alone(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`--all-stale` reads this host's process table, so foreign rows are not its business — the local row beside it is the discriminator that would fail if the sweep stopped working."""
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    old = time.time() - 86400
+    async with StateDB() as db:
+        remote = await _seed_session(
+            db,
+            status="running",
+            pid=4242,
+            started_at=old,
+            extra_meta={"pid_host": "some-other-host"},
+        )
+        local = await _seed_session(
+            db,
+            status="running",
+            pid=4243,
+            started_at=old,
+            extra_meta={"pid_host": "this-host"},
+        )
+
+    await _do_kill_all_stale(threshold_seconds=60, dry_run=False)
+
+    async with StateDB() as db:
+        remote_after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (remote,))
+        local_after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (local,))
+
+    assert remote_after["status"] == "running", "another host's stale row must not be swept here"
+    assert local_after["status"] == "cancelled", (
+        "a local stale row must still be swept — otherwise this test passes on a dead sweep"
+    )
+
+
+# runtimes this CLI does not manage: the identity mode decides whether the
+# recorded pid names the run's own process at all
+
+
+async def test_stale_sweep_leaves_runtimes_it_does_not_manage_alone(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`--all-stale` skipped only on the host marker, so local-looking rows fell through — an in_process or external run has no pid to contest the sweep; the local row is the discriminator."""
+    monkeypatch.setattr("lionhub.orchestration.job.socket.gethostname", lambda: "this-host")
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+
+    old = time.time() - 86400
+    async with StateDB() as db:
+        hosted = await _seed_session(
+            db,
+            status="running",
+            started_at=old,
+            extra_meta={
+                "pid_host": "this-host",
+                "process_identity_mode": "in_process",
+                "host_pid": os.getpid(),
+            },
+        )
+        unmanaged = await _seed_session(
+            db,
+            status="running",
+            started_at=old,
+            pid=4242,
+            extra_meta={
+                "pid_host": "this-host",
+                "process_identity_mode": "external",
+            },
+        )
+        local = await _seed_session(
+            db,
+            status="running",
+            pid=4243,
+            started_at=old,
+            extra_meta={"pid_host": "this-host", "process_identity_mode": "local"},
+        )
+
+    await _do_kill_all_stale(threshold_seconds=60, dry_run=False)
+
+    async with StateDB() as db:
+        hosted_after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (hosted,))
+        unmanaged_after = await db.fetch_one(
+            "SELECT status FROM sessions WHERE id = ?", (unmanaged,)
+        )
+        local_after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (local,))
+
+    assert hosted_after["status"] == "running", (
+        "a run inside a shared host process is not swept by a pid table that never saw it"
+    )
+    assert unmanaged_after["status"] == "running", (
+        "a runtime this CLI does not manage is not swept on a local pid reading"
+    )
+    assert local_after["status"] == "cancelled", (
+        "a local stale row must still be swept — otherwise this test passes on a dead sweep"
+    )
+
+
+@pytest.mark.parametrize("entity_type", ["session", "invocation"])
+@pytest.mark.parametrize("existing_markers", [False, True])
+async def test_unverifiable_stale_dry_run_preserves_complete_row(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_type: str,
+    existing_markers: bool,
+):
+    """An inspection-only sweep neither starts nor advances durable evidence."""
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **k: "unverifiable"
+    monkeypatch.setattr("lionhub.serve.cli.kill.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionhub.orchestration.kill.check_pid_identity", patched_check_pid_identity)
+    query = {
+        "session": "SELECT * FROM sessions WHERE id = ?",
+        "invocation": "SELECT * FROM invocations WHERE id = ?",
+    }[entity_type]
+    async with StateDB() as db:
+        seed = _seed_session if entity_type == "session" else _seed_invocation
+        entity_id = await seed(db, pid=54321, started_at=time.time() - 7200)
+        if existing_markers:
+            merge = (
+                db.merge_session_node_metadata
+                if entity_type == "session"
+                else db.merge_invocation_node_metadata
+            )
+            await merge(entity_id, {"unverifiable_since": 111.0, "unverifiable_count": 4})
+        before = dict(await db.fetch_one(query, (entity_id,)))
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=True) == 0
+
+    async with StateDB() as db:
+        after = dict(await db.fetch_one(query, (entity_id,)))
+    assert before["status"] == "running"
+    assert after == before
+
+
+async def test_unverifiable_invocation_preserves_first_observation_across_sweeps(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Invocation evidence persists across sweeps without cancelling the run."""
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **k: "unverifiable"
+    monkeypatch.setattr("lionhub.serve.cli.kill.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionhub.orchestration.kill.check_pid_identity", patched_check_pid_identity)
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, pid=54321, started_at=time.time() - 7200)
+        await db.merge_invocation_node_metadata(invocation_id, {"caller_context": "keep"})
+
+    observations = []
+    for expected_count in (1, 2):
+        assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+        async with StateDB() as db:
+            row = await db.fetch_one(
+                "SELECT status, node_metadata FROM invocations WHERE id = ?", (invocation_id,)
+            )
+        assert row["status"] == "running"
+        metadata = row["node_metadata"]
+        metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+        assert metadata["pid"] == 54321
+        assert metadata["caller_context"] == "keep"
+        assert metadata["unverifiable_count"] == expected_count
+        assert isinstance(metadata["unverifiable_since"], float)
+        observations.append(metadata["unverifiable_since"])
+    assert observations[0] == observations[1]

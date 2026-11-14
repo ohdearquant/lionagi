@@ -451,7 +451,7 @@ Exact replay semantics:
 - Previously completed nodes are pre-marked `COMPLETED` with their response. Previously failed
   nodes are not: a checkpoint that records one refuses the resume, because replaying a failed node
   as terminal skips it and everything downstream, so resuming would finish nothing
-  (`lionagi/cli/orchestrate/flow.py::_apply_checkpoint_precompletion` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)). `--retry-failed` runs the failed nodes again
+  (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_apply_checkpoint_precompletion` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)). `--retry-failed` runs the failed nodes again
   instead, which resume does not do silently because it re-executes whatever side effects the first
   attempt already had.
   **Amended by Amendment 1:** this pre-marking is from the recorded `status` alone — the settled
@@ -463,19 +463,19 @@ Exact replay semantics:
   empty branch while retaining result context.
 - A checkpoint `spawned` list whose entries can all be rebuilt is reconstructed into the fresh
   graph rather than refused as a whole. Refusal is whole-resume, not per-entry:
-  `_reconstruct_spawned_nodes` (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)) runs before any spawned node is
+  `_reconstruct_spawned_nodes` (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)) runs before any spawned node is
   added by reconstruction, and each of its six checks raises `FlowResumeError` for the whole resume when any single
   entry fails: (1) the entry must carry `operation` (`CHECKPOINT_VERSION` 2+; a pre-2 entry carries
-  nothing to rebuild from, `lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)); (2) its `status` must be
-  `completed` or `failed` (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)); (3) an entry with an `assignee`
-  must also carry `spawn_id` (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)); (4) under `--retry-failed`, a
+  nothing to rebuild from, `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)); (2) its `status` must be
+  `completed` or `failed` (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)); (3) an entry with an `assignee`
+  must also carry `spawn_id` (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)); (4) under `--retry-failed`, a
   failed entry naming no assignee must not record the class of the worker that asked for it, or,
-  for an escalation retry, the class it ran at (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`),
+  for an escalation retry, the class it ran at (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`),
   ADR-0133); (5) under `--retry-failed`, a failed entry asked for by a worker that read no
   settings files must not be rebuilt on a branch that reads them
-  (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)); (6) a `parent_id` must itself
+  (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)); (6) a `parent_id` must itself
   be checkpointed terminal or another entry in the same list
-  (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)). One failing entry refuses the resume, naming that
+  (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)). One failing entry refuses the resume, naming that
   entry's node, and no entry is rebuilt. The rule is therefore "no spawned entry is replayed unless
   every spawned entry is soundly rebuilt".
   **Amended by Amendment 1:** that is what the code does today, and Amendment 1 records it as such
@@ -524,7 +524,7 @@ explicit degraded flag makes the one supported fidelity loss visible to the call
 path reads the checkpoint entry and pre-marks on the stored status with no other check:
 
 ```python
-# lionagi/cli/orchestrate/flow.py::_apply_checkpoint_precompletion
+# lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_apply_checkpoint_precompletion
 entry = checkpoint_ops.get(agent_id)
 if entry and entry.get("status") == "completed":
     node.execution.status = EventStatus.COMPLETED
@@ -532,7 +532,7 @@ if entry and entry.get("status") == "completed":
 ```
 
 The spawned path pre-marks the same way, from `entry["status"] == "completed"`
-(`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`). The executor then admits an already-completed
+(`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`). The executor then admits an already-completed
 operation and stores its response as that node's result (`lionagi/operations/flow.py::DependencyAwareExecutor.__init__`), and
 dependents read the stored value into their own context (`lionagi/operations/flow.py::DependencyAwareExecutor._prepare_operation`).
 Nothing on the replay path reads, re-checks, or hashes the result a dependent consumes. The line numbers are at `ee589cb22c388b2dc3cfa7ceb877670170b68277`.
@@ -550,14 +550,14 @@ against the artifact set a node declared, it does not make.
 - **A node that declared an artifact contract.** Its recorded `status` is replayed with no check of
   the declared set, and resume does not even use the contract the first run persisted: `_build_dag`
   re-folds each leg's profile or role `artifact_defaults` from the live roles at resume
-  (`lionagi/cli/orchestrate/flow.py::_build_dag` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)), so removing a role's `artifact_defaults` between runs
+  (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_build_dag` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)), so removing a role's `artifact_defaults` between runs
   loses that leg's contract. The persisted record exists — `artifact_contract_json` is the column
   ADR-0064 D3 has a flow write
   (`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:412`; declared at
   `lionagi/state/schema.sql:193`). Two stages fill it: `_build_dag` resolves planned role declarations and persists them
-  before execution (`lionagi/cli/orchestrate/flow.py::_build_dag` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)). Spawned instructions use the
+  before execution (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_build_dag` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)). Spawned instructions use the
   cached role declarations before injection, but `_execute_dag` appends their entries to the
-  session contract only after the DAG finishes (`lionagi/cli/orchestrate/flow.py::_execute_dag` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)).
+  session contract only after the DAG finishes (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag` (line numbers at `ee589cb22c388b2dc3cfa7ceb877670170b68277`)).
   Resume does not read either persisted set. The column is also nullable — the schema records that a NULL contract means verification
   is skipped (`lionagi/state/schema.sql:192`) — so an absent or unreadable record is not evidence
   that the declared set is still present. Delta row 2 covers both the read and the check.
@@ -569,11 +569,11 @@ against the artifact set a node declared, it does not make.
   original run's. `resolve_checkpoint_target` returns the original run's `RunDir` with its
   `artifact_root` (`resolve_checkpoint_target` → `_find_run_dir_by_id`,
   `lionagi/cli/orchestrate/_checkpoint.py:188@ee589cb2`), but `_resume_flow` keeps only the checkpoint dict
-  and drops the run dir (`lionagi/cli/orchestrate/flow.py::_resume_flow`), and `_run_flow` allocates a run
+  and drops the run dir (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_resume_flow`), and `_run_flow` allocates a run
   again through `allocate_run`, whose root is chosen from `--save`: without `--save` the resumed
   run's `artifact_root` is a fresh directory, and with `--save` it is the path `--save` names. The
   path the resume passes comes from the replayed config, which carries the original `save_dir`
-  (`lionagi/cli/orchestrate/flow.py::_run_flow`); `allocate_run` uses `save_dir` as the artifact root when
+  (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_run_flow`); `allocate_run` uses `save_dir` as the artifact root when
   it is given and falls back to a fresh `<state_root>/artifacts` when it is not
   (`lionagi/cli/_runs.py:631-634@ee589cb2`). Either way the root is not read from the original `RunDir` the
   resolver returned, so without `--save` every completed node's declared artifacts are absent from
@@ -597,12 +597,12 @@ build on decisions this ADR already carries: D4 keys planned nodes by stable `ag
 (`CheckpointWriter.record`, `lionagi/cli/orchestrate/_checkpoint.py:80@ee589cb2`) and spawned nodes in a
 separate list keyed by node id (`record_spawned`, `lionagi/cli/orchestrate/_checkpoint.py:100@ee589cb2`), and
 a leg's declared entries are namespaced under that leg's own id — the planned `agent_id`
-(`lionagi/cli/orchestrate/flow.py::_build_dag`), and for a reactively spawned leg its `spawn_id`, which
+(`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_build_dag`), and for a reactively spawned leg its `spawn_id`, which
 `role_node_builder` stamps (`lionhub/src/lionhub/orchestration/patterns.py::role_node_builder.build`), which the checkpoint stores
 beside `node_id` (`CheckpointWriter.record_spawned`, `lionagi/cli/orchestrate/_checkpoint.py:136@ee589cb2`),
 and which is the key a spawned leg's artifact directory is built from
-(`env.run.agent_artifact_dir(spawn_id)`, `lionagi/cli/orchestrate/flow.py::_execute_dag._spawn_branch_setup`; the contract
-entries likewise use it at `lionagi/cli/orchestrate/flow.py::_execute_dag._decorate_spawn_instruction` and `lionagi/cli/orchestrate/flow.py::_execute_dag`). A resume that looked up a spawned leg's artifacts
+(`env.run.agent_artifact_dir(spawn_id)`, `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._spawn_branch_setup`; the contract
+entries likewise use it at `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._decorate_spawn_instruction` and `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag`). A resume that looked up a spawned leg's artifacts
 under its node id would find no directory at all. The line numbers are at `ee589cb22c388b2dc3cfa7ceb877670170b68277`.
 
 The identity delta row 6 asks for is a digest recorded in the checkpoint entry when the node
@@ -620,19 +620,19 @@ digest to match.
 
 **Spawned replay today, and the `--retry-failed` trade.** A checkpoint `spawned` list whose entries
 can all be rebuilt is reconstructed into the fresh graph rather than refused as a whole:
-`_reconstruct_spawned_nodes` (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`) runs before any spawned node is added by reconstruction,
+`_reconstruct_spawned_nodes` (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`) runs before any spawned node is added by reconstruction,
 and each of its six checks refuses the whole resume, not just the failing entry, when any single
-entry fails — `operation` present (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1258`), `status`
-in `completed|failed` (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1269`), `assignee` paired with a `spawn_id` (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`,
+entry fails — `operation` present (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1258`), `status`
+in `completed|failed` (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1269`), `assignee` paired with a `spawn_id` (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`,
 raise at `1279`), under `--retry-failed` no failed entry naming no assignee that records the class of
-the worker that asked for it (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1299`; ADR-0133), under `--retry-failed` no
+the worker that asked for it (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1299`; ADR-0133), under `--retry-failed` no
 failed entry asked for by a worker that read no settings files that would run again on a branch that
-reads them (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1343`), and a `parent_id` that is
-itself checkpointed terminal or another entry in the same list (`lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1370`). One
+reads them (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1343`), and a `parent_id` that is
+itself checkpointed terminal or another entry in the same list (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes`, raise at `1370`). One
 failing entry means no entry is rebuilt and the resume
 fails. One live behaviour already trades recorded spawns away: with `--retry-failed`, the resume
 drops every recorded spawn descended from a re-running (formerly failed) parent
-(`_drop_spawns_under_rerun_parents`, `lionagi/cli/orchestrate/flow.py::_drop_spawns_under_rerun_parents`, called at `1537`),
+(`_drop_spawns_under_rerun_parents`, `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_drop_spawns_under_rerun_parents`, called at `1537`),
 which D5's rule that refusal is preferable to silently dropping spawned work disfavours. The line numbers are at `ee589cb22c388b2dc3cfa7ceb877670170b68277`.
 
 **Rejected paths, kept with their reasons.** Three ways of settling a node were weighed, and each
@@ -981,8 +981,8 @@ artifact/output questions by recorded status alone.
   that would narrow this is delta rows 2, 6, 7, 8, and 9, and it is not shipped.
 - Resume is planner-free and preserves completed outcomes, but a checkpoint that records a failed
   node refuses the resume (`_apply_checkpoint_precompletion` raises `FlowResumeError`,
-  `lionagi/cli/orchestrate/flow.py::_apply_checkpoint_precompletion`) unless `--retry-failed` re-runs those entries as
-  pending (`lionagi/cli/orchestrate/flow.py::_apply_checkpoint_precompletion` for a planned node, `lionagi/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` for a
+  `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_apply_checkpoint_precompletion`) unless `--retry-failed` re-runs those entries as
+  pending (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_apply_checkpoint_precompletion` for a planned node, `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_reconstruct_spawned_nodes` for a
   spawned one). It rebuilds a checkpoint's spawn entries when all of them can be soundly rebuilt
   and refuses the whole resume on any entry that cannot, and requires an explicit flag to lose
   inherited conversation state.
@@ -997,11 +997,11 @@ artifact/output questions by recorded status alone.
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Add a terminal reactive-flow cancel control; acceptance: after acknowledgement, no new operation starts and the run persists a cancelled terminal state. | M | (filled at issue-open time) |
-| 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing or empty (presence and non-empty size, not content), it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles, and a reactively spawned node's contract is persisted when that node completes rather than only after `run_dag`, where the spawned-entry extension is written today (`lionagi/cli/orchestrate/flow.py::_execute_dag`). Depends on delta 9 — without the original run's artifact root every declared path resolves against a root that never held the artifact, so presence cannot be checked until row 9 lands. | M | #2015 |
+| 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing or empty (presence and non-empty size, not content), it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles, and a reactively spawned node's contract is persisted when that node completes rather than only after `run_dag`, where the spawned-entry extension is written today (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag`). Depends on delta 9 — without the original run's artifact root every declared path resolves against a root that never held the artifact, so presence cannot be checked until row 9 lands. | M | #2015 |
 | 3 | Persist predecessor conversation state needed by `inherit_context`; acceptance: eligible resumed operations receive the same inherited conversation without requiring degraded mode. | L | #2015 |
 | 4 | Enforce checkpoint-version compatibility and report unsupported versions before graph construction; acceptance: a checkpoint with an unknown version fails with a typed migration/compatibility error. | S | (filled at issue-open time) |
 | 5 | Add operator recovery for controls stranded in `applying`; acceptance: status distinguishes definitely-applied, definitely-not-applied, and indeterminate messages without automatic duplicate injection. | M | (filled at issue-open time) |
-| 6 | Give a completed node's settlement an independent recorded result identity, for the nodes delta 2's artifact check cannot cover; acceptance: a checkpoint records a `result_digest` beside the entry's `status` and `response` when the node completes, so a completed node that declared no artifact contract is re-checked from that digest instead of being trusted from its recorded `status`. The bytes hashed are the node's own recorded result — the `<id>.md` file `_record_result` writes into the node's artifact directory once the DAG finishes (`lionagi/cli/orchestrate/flow.py::_execute_dag._record_result`), which today lands only after `run_dag`, not at node completion. | L | (filled at issue-open time) |
+| 6 | Give a completed node's settlement an independent recorded result identity, for the nodes delta 2's artifact check cannot cover; acceptance: a checkpoint records a `result_digest` beside the entry's `status` and `response` when the node completes, so a completed node that declared no artifact contract is re-checked from that digest instead of being trusted from its recorded `status`. The bytes hashed are the node's own recorded result — the `<id>.md` file `_record_result` writes into the node's artifact directory once the DAG finishes (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._record_result`), which today lands only after `run_dag`, not at node completion. | L | (filled at issue-open time) |
 | 7 | Make the artifact check byte-level with a per-artifact completion digest, and recompute the dependent closure when a value a consumer already read must be re-produced; acceptance: a checkpoint records a completion digest per declared artifact, so a result whose bytes changed under a preserved path, size, and mtime is detected, and a dependent of a re-run producer is never left reading a stale value. Depends on delta 2 — the digest is compared against artifacts row 2 has already shown are present; the size-and-mtime check alone narrows the window rather than closing it. | L | (filled at issue-open time) |
 | 8 | Route a producer result whose recorded value is missing or changed to exactly one outcome by whether a dependent already consumed it, describing the behaviour before delta 7's byte-level check lands; acceptance: when a dependent consumed the producer's result, resume refuses and names the producer and the consumer that read it, and never re-runs that producer, while a producer no dependent consumed may run again — a resume over a consumed-and-changed producer result raises a typed refusal naming both, and no run re-executes a producer a dependent has read. The recomputation that would let such a producer re-run is delta 7. | M | (filled at issue-open time) |
 | 9 | Thread the original run's `artifact_root` through a resume so a settled node's declared artifacts are read from the run that produced them, not from the fresh root a resumed run is given; acceptance: resuming a run without `--save` still resolves every completed node's declared artifacts against the original run's artifact root. | M | (filled at issue-open time) |

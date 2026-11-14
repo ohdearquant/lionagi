@@ -285,11 +285,11 @@ def test_pre_parse_shims_are_all_declared() -> None:
 
     from lionhub.serve.cli.catalog import iter_cli_seeds
 
-    # `import_module` reaches the module unambiguously; `from lionagi.cli
+    # `import_module` reaches the module unambiguously; `from lionhub.serve.cli
     # import main` can resolve to the lazily-exported callable instead,
     # depending on which spelling a prior import in this process used first
     # (see tests/mcp/test_projection.py's attribute-vs-dotted-import probe).
-    cli_main = import_module("lionagi.cli.main")
+    cli_main = import_module("lionhub.serve.cli.main")
 
     source = Path(cli_main.__file__).read_text(encoding="utf-8")
     candidates = _shim_candidates_in(source)

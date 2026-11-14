@@ -3,7 +3,7 @@
 """Transcript mirror service: tail Claude Code and Codex transcripts into StateDB.
 
 The studio server runs `mirror_forever` from this module; `li mirror` drives the
-same per-pass functions from its own loop in `lionagi.cli.mirror`. This module
+same per-pass functions from its own loop in `lionhub.serve.cli.mirror`. This module
 imports neither a command module nor the studio, so either side can load it on
 its own.
 """
@@ -810,7 +810,7 @@ async def mirror_forever(
     "both") and defaults to claude alone — a caller that scopes ``root`` must
     not silently also acquire an unscoped codex tree under the home directory,
     so codex is opt-in. Studio's in-process entry point; ``li mirror`` keeps
-    its own loop in ``lionagi.cli.mirror._run``. See docs/internals/cli.md#mirror.py.
+    its own loop in ``lionhub.serve.cli.mirror._run``. See docs/internals/cli.md#mirror.py.
     """
     from lionagi.state.db import StateDB
 

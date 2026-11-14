@@ -955,7 +955,7 @@ def test_register_settings_terminal_callback_non_callable_python_ref_disabled(mo
 def test_register_settings_terminal_callback_malformed_filter_never_raises(monkeypatch, caplog):
     # The exact regression this guards: `notify.on_terminal.filter.kinds: 1`
     # (a scalar where the schema expects a list) used to raise TypeError out
-    # of a bare tuple(...) coercion, aborting CLI startup (lionagi/cli/main.py)
+    # of a bare tuple(...) coercion, aborting CLI startup (lionhub/src/lionhub/serve/cli/main.py)
     # and Studio lifespan startup (lionagi/studio/app.py) -- both call this
     # function once per process with no guard of their own around it.
     monkeypatch.setattr(

@@ -1579,7 +1579,7 @@ async def test_execute_cancel_command_missing_session_id_raises():
 async def test_execute_cancel_command_reaps_a_running_child_invocation(tmp_path, monkeypatch):
     """Cancelling a session must not leave its owning invocation's process
     running -- the same deepest-first traversal `li kill --recursive` uses
-    (lionagi/cli/kill.py::_list_running_children/_kill_one) must also run
+    (lionhub/src/lionhub/serve/cli/kill.py::_list_running_children/_kill_one) must also run
     here, or the child process is orphaned."""
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
@@ -1709,8 +1709,8 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
             "pid": row.get("node_metadata", {}).get("pid"),
         }
 
-    import lionagi.cli.kill as kill_mod
     import lionhub.orchestration.kill as kill_service
+    import lionhub.serve.cli.kill as kill_mod
 
     monkeypatch.setattr(kill_mod, "kill_one", fake_kill_one)
     monkeypatch.setattr(kill_service, "kill_one", fake_kill_one)
@@ -1787,8 +1787,8 @@ async def test_execute_cancel_command_terminalized_during_approval_is_not_cancel
         )
         return await real_kill_one(db, entity_type, entity_id, row, **kwargs)
 
-    import lionagi.cli.kill as kill_mod
     import lionhub.orchestration.kill as kill_service
+    import lionhub.serve.cli.kill as kill_mod
 
     real_kill_one = kill_mod.kill_one
     monkeypatch.setattr(kill_mod, "kill_one", racing_kill_one)
@@ -1822,8 +1822,8 @@ async def test_cancel_run_allow_path_identity_mismatch_reports_not_cancelled(tmp
             "pid": row.get("node_metadata", {}).get("pid"),
         }
 
-    import lionagi.cli.kill as kill_mod
     import lionhub.orchestration.kill as kill_service
+    import lionhub.serve.cli.kill as kill_mod
 
     monkeypatch.setattr(kill_mod, "kill_one", fake_kill_one)
     monkeypatch.setattr(kill_service, "kill_one", fake_kill_one)

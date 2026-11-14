@@ -7,6 +7,7 @@ that a request's decision outlives a failed send. The endpoint is scripted, so n
 leaves the process."""
 
 import pytest
+from lionhub_tests.serve.cli.test_agent_api_provider import _text
 
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
@@ -16,7 +17,6 @@ from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionhub.agent.context_fold import ContextFold, install_context_fold
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
-from tests.cli.test_agent_api_provider import _text
 
 _CAP = 8_000
 

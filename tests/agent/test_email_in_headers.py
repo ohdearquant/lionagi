@@ -379,7 +379,7 @@ async def test_engine_agent_uses_global_guard_settings(tmp_path, monkeypatch):
 
 
 def test_cli_api_preset_uses_global_guard_settings(tmp_path, monkeypatch):
-    from lionagi.cli.agent import _make_api_agent_spec
+    from lionhub.serve.cli.agent import _make_api_agent_spec
 
     home = tmp_path / "home"
     (home / ".lionagi").mkdir(parents=True)

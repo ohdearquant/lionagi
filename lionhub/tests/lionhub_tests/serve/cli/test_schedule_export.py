@@ -9,8 +9,8 @@ import types
 import pytest
 import yaml
 
-from lionhub_tests.orchestration.schedule import _test_support_schedule_export as _support
-from lionhub_tests.orchestration.schedule._test_support_schedule_export import _legacy_row
+from ...orchestration.schedule import _test_support_schedule_export as _support
+from ...orchestration.schedule._test_support_schedule_export import _legacy_row
 
 # Fixtures shared with the support module, bound here so they apply to this module only.
 agent_profile = _support.agent_profile

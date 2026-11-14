@@ -96,7 +96,7 @@ def test_the_daemon_serves_with_sigpipe_ignored(mode, tmp_path, monkeypatch):
         with _stubbed_serve() as mock_run:
             mock_run.side_effect = lambda *a, **k: seen.append(signal.getsignal(signal.SIGPIPE))
             if mode == "backend":
-                from lionagi.cli.main import main
+                from lionhub.serve.cli.main import main
 
                 assert main(["studio", "--no-open"]) == 0
             else:
@@ -113,7 +113,7 @@ def test_studio_bare_invocation_does_not_raise(monkeypatch):
     """``main(["studio"])`` must not raise AttributeError when argparse omits --port/--host/--frontend-mode."""
     # Prevent the real uvicorn server (and a real frontend build) from starting.
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         # Should complete without AttributeError or SystemExit.
         result = main(["studio"])
@@ -125,7 +125,7 @@ def test_studio_bare_invocation_does_not_raise(monkeypatch):
 def test_studio_start_explicit_subcommand_does_not_raise(monkeypatch):
     """``main(["studio", "start"])`` must also work (regression guard)."""
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "start"])
 
@@ -136,7 +136,7 @@ def test_studio_start_explicit_subcommand_does_not_raise(monkeypatch):
 def test_studio_start_with_port_flag(monkeypatch):
     """``main(["studio", "start", "--port", "9000"])`` passes port to uvicorn."""
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "start", "--port", "9000"])
 
@@ -149,7 +149,7 @@ def test_studio_bare_uses_default_port(monkeypatch):
     """Bare ``li studio`` must fall back to port 8765 (or env override)."""
     monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio"])
 
@@ -164,7 +164,7 @@ def test_studio_bare_uses_default_port(monkeypatch):
 def test_studio_bare_defaults_to_hosted_web_mode(capsys):
     """Bare ``li studio`` prints the hosted URL and starts the backend only."""
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio"])
 
@@ -178,7 +178,7 @@ def test_studio_bare_defaults_to_hosted_web_mode(capsys):
 def test_studio_web_flag_matches_default(capsys):
     """``li studio --web`` is explicit but behaves identically to bare invocation."""
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--web"])
 
@@ -194,7 +194,7 @@ def test_studio_web_does_not_build_local_frontend():
         patch("uvicorn.run"),
         patch("lionhub.serve.cli.studio._ensure_frontend_built") as mock_build,
     ):
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--web"])
 
@@ -209,7 +209,7 @@ def test_studio_web_opens_browser_when_interactive(monkeypatch):
     monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
     with patch("webbrowser.open") as mock_open, patch("uvicorn.run"):
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--web"])
 
@@ -225,7 +225,7 @@ def test_studio_web_no_open_flag_suppresses_browser(monkeypatch):
     monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
     with patch("webbrowser.open") as mock_open, patch("uvicorn.run"):
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--web", "--no-open"])
 
@@ -236,7 +236,7 @@ def test_studio_web_no_open_flag_suppresses_browser(monkeypatch):
 def test_studio_no_frontend_flag_skips_hosted_messaging(capsys):
     """--no-frontend stays backend-only with no hosted-URL messaging."""
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--no-frontend"])
 
@@ -252,7 +252,7 @@ def test_studio_docker_flag_invokes_docker_path():
         patch("lionhub.serve.cli.studio._start_docker", return_value=0) as mock_docker,
         patch("uvicorn.run"),
     ):
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--docker"])
 
@@ -263,7 +263,7 @@ def test_studio_docker_flag_invokes_docker_path():
 def test_studio_docker_flag_without_docker_installed_errors(capsys):
     """--docker without the docker binary available fails loudly instead of falling back."""
     with patch("lionhub.serve.cli.studio._has_docker", return_value=False), patch("uvicorn.run"):
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--docker"])
 
@@ -275,7 +275,7 @@ def test_studio_mode_flags_are_mutually_exclusive():
     """Combining two mode flags (e.g. --web and --docker) is a usage error."""
     import pytest
 
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     with pytest.raises(SystemExit) as exc_info:
         main(["studio", "--web", "--docker"])
@@ -289,7 +289,7 @@ def test_studio_mode_flag_before_start_is_preserved():
         patch("lionhub.serve.cli.studio._start_docker", return_value=0) as mock_docker,
         patch("uvicorn.run"),
     ):
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--docker", "start"])
 
@@ -305,7 +305,7 @@ def test_studio_no_open_before_start_is_preserved():
         patch("sys.stdout.isatty", return_value=True),
         patch("sys.stdin.isatty", return_value=True),
     ):
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--no-open", "start"])
 
@@ -316,7 +316,7 @@ def test_studio_no_open_before_start_is_preserved():
 def test_studio_port_before_start_is_preserved():
     """`li studio --port 9001 start` keeps the parent-level port."""
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--port", "9001", "start"])
 
@@ -327,7 +327,7 @@ def test_studio_port_before_start_is_preserved():
 def test_studio_no_docker_flag_is_deprecated_warn_and_ignore(capsys):
     """--no-docker no longer exists as a mode; it must warn and fall through to hosted mode."""
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--no-docker"])
 
@@ -340,7 +340,7 @@ def test_studio_no_docker_flag_is_deprecated_warn_and_ignore(capsys):
 def test_studio_no_docker_flag_before_start_is_preserved(capsys):
     """`li studio --no-docker start` still warns and preserves parent-level flag handling."""
     with _stubbed_serve() as mock_run:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--no-docker", "start"])
 
@@ -360,7 +360,7 @@ def test_studio_no_docker_combines_with_a_real_mode_flag(capsys):
         patch("lionhub.serve.cli.studio._start_docker", return_value=0) as mock_docker,
         patch("uvicorn.run"),
     ):
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         result = main(["studio", "--no-docker", "--docker"])
 
@@ -373,7 +373,7 @@ def test_studio_cross_level_mode_flags_are_mutually_exclusive():
     """Mode flags split across parser levels (`li studio --docker start --web`) must be rejected."""
     import pytest
 
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     for argv in (
         ["studio", "--docker", "start", "--web"],
@@ -1525,7 +1525,7 @@ def _interactive(monkeypatch):
 def test_studio_opens_the_hosted_page_with_a_code_this_daemon_redeems(monkeypatch, fresh_launch):
     _interactive(monkeypatch)
     with _stubbed_serve() as mock_run, patch("webbrowser.open", return_value=True) as mock_open:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         assert main(["studio"]) == 0
 
@@ -1542,7 +1542,7 @@ def test_studio_opens_the_hosted_page_with_a_code_this_daemon_redeems(monkeypatc
 def test_studio_names_the_daemon_port_when_it_is_not_the_default(monkeypatch, fresh_launch):
     _interactive(monkeypatch)
     with _stubbed_serve(), patch("webbrowser.open", return_value=True) as mock_open:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         assert main(["studio", "--port", "8766"]) == 0
 
@@ -1552,7 +1552,7 @@ def test_studio_names_the_daemon_port_when_it_is_not_the_default(monkeypatch, fr
 
 def test_studio_prints_the_paired_link_when_it_opens_no_browser(capsys, fresh_launch):
     with _stubbed_serve(), patch("webbrowser.open") as mock_open:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         assert main(["studio", "--no-open"]) == 0
 
@@ -1568,7 +1568,7 @@ def test_studio_pairs_with_a_daemon_already_running_instead_of_starting_one(monk
     _interactive(monkeypatch)
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", lambda port: "code-from-daemon")
     with _stubbed_serve() as mock_run, patch("webbrowser.open", return_value=True) as mock_open:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         assert main(["studio"]) == 0
 
@@ -1585,7 +1585,7 @@ def test_studio_stops_when_a_running_daemon_will_not_pair(monkeypatch, capsys):
 
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", _refuse)
     with _stubbed_serve() as mock_run, patch("webbrowser.open") as mock_open:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         assert main(["studio"]) == 1
 
@@ -1796,7 +1796,7 @@ def test_li_studio_on_a_port_whose_daemon_does_not_own_the_socket_exits_1_withou
     prove = functools.partial(reconnect.port_proof, secrets.token_bytes(32))
     with _socket_daemon(monkeypatch), _loopback_server(routes, prove=prove) as (port, _):
         with _stubbed_serve() as mock_run, patch("webbrowser.open") as mock_open:
-            from lionagi.cli.main import main
+            from lionhub.serve.cli.main import main
 
             assert main(["studio", "--port", str(port)]) == 1
 

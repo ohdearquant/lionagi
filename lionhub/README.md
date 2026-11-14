@@ -11,7 +11,7 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/agent/` | Agent profiles, permissions, hooks, and construction. |
 | `lionhub/src/lionhub/agent/casts/` | Cast patterns, roles, modes, profiles, packs, and emission contracts. |
 | `lionhub/src/lionhub/tools/` | Built-in tool interfaces and implementations. |
-| `lionhub/src/lionhub/serve/cli/` | Built-in CLI command catalog, lazy command discovery, and the `li studio` and `li schedule` command adapters. |
+| `lionhub/src/lionhub/serve/cli/` | The `li` command-line interface: the entry point, the built-in command catalog, lazy command discovery, and every command module. |
 | `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, work forms, and scheduler services and helpers. |
 | `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
@@ -44,11 +44,13 @@ Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0. The a
 | `lionagi.providers._subagent_admission` | `lionagi.service._subagent_admission` |
 | `lionagi.providers.openai._chat_schemas` | `lionagi.service.connections._chat_schemas` |
 
-The shared CLI leaf modules below are deprecated at their old paths in 0.38.0
-and are scheduled for removal in 2.0.0.
+The CLI package and the shared CLI leaf modules below are deprecated at their old
+paths in 0.38.0 and are scheduled for removal in 2.0.0. Each leaf module row takes
+precedence over the package row.
 
 | Old import | Current import |
 | --- | --- |
+| `lionagi.cli` | `lionhub.serve.cli` |
 | `lionagi.cli._project` | `lionhub.orchestration.project` |
 | `lionagi.cli._mcp_resolve` | `lionhub.orchestration.mcp_config` |
 | `lionagi.cli._team_service` | `lionhub.orchestration.team` |

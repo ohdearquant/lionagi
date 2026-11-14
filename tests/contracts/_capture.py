@@ -271,7 +271,7 @@ def capture_cli() -> dict[str, Any]:
 
 def _run_cli(argv: list[str], timeout: float = 20.0) -> dict[str, Any]:
     proc = subprocess.run(
-        [sys.executable, "-m", "lionagi.cli.main", *argv],
+        [sys.executable, "-m", "lionhub.serve.cli.main", *argv],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -297,7 +297,7 @@ def _run_cli_env(
     either."""
     env = {**os.environ, **(env_overrides or {})}
     proc = subprocess.run(
-        [sys.executable, "-m", "lionagi.cli.main", *argv],
+        [sys.executable, "-m", "lionhub.serve.cli.main", *argv],
         cwd=cwd or REPO_ROOT,
         capture_output=True,
         text=True,
@@ -681,7 +681,9 @@ def capture_machine() -> list[dict[str, Any]]:
 # *other* seeds' modules leaked in, whether the HTTP registry got realized as
 # a side effect, and which seed(s) ended up in `_cli_realized`. Comparing
 # against modules belonging to other seeds catches an adapter loaded as a
-# side effect of selecting a different command.
+# side effect of selecting a different command. The comparison takes every
+# newly imported module, whatever its package: seed modules live under
+# lionhub, so a lionagi-only filter would see no leak at all.
 _IMPORT_TRACE_SCRIPT = (
     "import sys, json\n"
     "from lionagi._auto import _http\n"
@@ -693,7 +695,7 @@ _IMPORT_TRACE_SCRIPT = (
     "load_cli_command(seed)\n"
     "after = set(sys.modules)\n"
     "new_lionagi = sorted(m for m in (after - before) if m.startswith('lionagi.'))\n"
-    "leaked = sorted(other_modules & set(new_lionagi))\n"
+    "leaked = sorted(other_modules & (after - before))\n"
     "result = {\n"
     "    'seed': name,\n"
     "    'module': seed.module,\n"
