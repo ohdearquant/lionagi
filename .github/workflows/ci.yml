@@ -276,29 +276,9 @@ jobs:
     - uses: actions/checkout@v7
       with:
         persist-credentials: false
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v7
+    - uses: ./.github/actions/setup-python-tests
       with:
         python-version: ${{ matrix.python-version }}
-        allow-prereleases: true
-
-    - name: Install uv
-      run: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-    - name: Cache uv downloads
-      uses: actions/cache@v6
-      with:
-        path: ~/.cache/uv
-        key: uv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
-        restore-keys: |
-          uv-${{ runner.os }}-py${{ matrix.python-version }}-
-
-    - name: Install dependencies
-      run: |
-        uv venv
-        uv sync --all-extras
 
     # Coverage runs on 3.10, only on pushes and manual runs — never on a pull
     # request.

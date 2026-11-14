@@ -1094,7 +1094,14 @@ def test_a_required_workflow_without_a_secret_still_passes(tmp_path: Path) -> No
     workflows = tmp_path / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "ci.yml").write_text(ci)
-    assert _required_switches(tmp_path) == {".github/workflows/ci.yml": []}
+    expected = {".github/workflows/ci.yml": []}
+    for source in _required_files()[1:]:
+        relative = source.relative_to(REPO)
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        expected[relative.as_posix()] = []
+    assert _required_switches(tmp_path) == expected
 
 
 def test_a_repeated_mapping_key_is_refused(tmp_path: Path) -> None:

@@ -1,0 +1,36 @@
+name: Set up Python tests
+description: Install the matrix interpreter and LionAGI test dependencies.
+inputs:
+  python-version:
+    description: Python interpreter for uv and pytest.
+    required: true
+  cache-prefix:
+    description: Cache namespace for uv downloads.
+    default: uv
+runs:
+  using: composite
+  steps:
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+        allow-prereleases: true
+    - name: Install uv
+      shell: bash
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+    - name: Cache uv downloads
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/uv
+        key: ${{ inputs.cache-prefix }}-${{ runner.os }}-py${{ inputs.python-version }}-${{ hashFiles('uv.lock') }}
+        restore-keys: |
+          ${{ inputs.cache-prefix }}-${{ runner.os }}-py${{ inputs.python-version }}-
+    - name: Install dependencies
+      shell: bash
+      env:
+        UV_PYTHON: ${{ inputs.python-version }}
+      run: |
+        uv venv
+        uv sync --all-extras
