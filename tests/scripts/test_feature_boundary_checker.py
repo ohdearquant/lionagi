@@ -335,6 +335,17 @@ def test_target_notes_require_public_evidence(tmp_path):
     data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.cli.catalog"
     with pytest.raises(checker.ManifestError, match="superseded CLI destination"):
         checker.validate_target_notes(root, data, checker.lionhub_targets(root))
+    # A superseded name is refused even when a package of that name still exists.
+    with pytest.raises(checker.ManifestError, match="superseded CLI destination"):
+        checker.validate_target_notes(
+            root, data, checker.lionhub_targets(root) | {"lionhub.cli.catalog"}
+        )
+    # The placeholder used before the decision is no longer accepted.
+    data["modules"]["lionagi.foundation"]["target_owner"] = (
+        "pending the CLI location decision (ADR-0139 D1)"
+    )
+    with pytest.raises(checker.ManifestError, match="unrecorded destination"):
+        checker.validate_target_notes(root, data, checker.lionhub_targets(root))
 
 
 @pytest.mark.parametrize(
