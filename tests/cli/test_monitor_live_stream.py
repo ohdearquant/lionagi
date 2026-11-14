@@ -103,7 +103,8 @@ def test_stream_tail_waits_for_a_newline_and_keeps_terminated_malformed_fallback
     path.write_text('{"text":"not yet complete"}')
     assert monitor._stream_tail(tmp_path, "branch") == []
     path.write_text("".join(json.dumps({"text": str(i)}) + "\n" for i in range(5)) + partial)
-    assert monitor._stream_tail(tmp_path, "branch") == ["1", "2", "3", "4"]
+    # The window counts text records, not physical lines, so the unterminated line takes no slot.
+    assert monitor._stream_tail(tmp_path, "branch") == ["0", "1", "2", "3", "4"]
 
 
 def test_stream_tail_splits_only_on_line_feed(tmp_path):

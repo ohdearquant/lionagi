@@ -303,29 +303,34 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
 
         with buf_path.open(encoding="utf-8", errors="replace", newline="") as stream:
             data = stream.read()
-        tail = data.removesuffix("\n").split("\n")[-n_lines:] if data else []
+        lines = data.removesuffix("\n").split("\n") if data else []
         if data and not data.endswith("\n"):
-            tail = tail[:-1]
+            lines = lines[:-1]
         texts: list[str] = []
-        for line in (line.removesuffix("\r") for line in tail):
+        from lionagi.operations.run.stream_buffer import STREAM_CHUNK_MARKER, legacy_stream_text
+
+        for line in (line.removesuffix("\r") for line in lines):
             try:
                 obj = _json.loads(line)
-                if obj.get("_lionagi_stream_chunk") is True:
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get(STREAM_CHUNK_MARKER) is True:
                     if obj.get("type") != "text":
                         continue
                     text = obj.get("content") if isinstance(obj.get("content"), str) else ""
                 else:
-                    # Older records use delta.text or text, sometimes with their own type.
-                    text = (obj.get("delta") or {}).get("text") or obj.get("text") or ""
+                    text = legacy_stream_text(obj) or ""
                 if text:
                     texts.append(text[:120])
-            except (ValueError, AttributeError):
+            except (ValueError, TypeError, AttributeError):
                 texts.append(line[:120])
+        texts = texts[-n_lines:]
         return [
             "".join(
                 char
                 for char in text
-                if char == "\t" or category(char) not in {"Cc", "Cf", "Zl", "Zp"}
+                if char in {"\t", "\u200c", "\u200d", "\u00ad"}
+                or category(char) not in {"Cc", "Cf", "Zl", "Zp"}
             )
             for text in texts
         ]
