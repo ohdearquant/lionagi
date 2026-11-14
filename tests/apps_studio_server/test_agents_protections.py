@@ -559,37 +559,42 @@ def _make_definitions_client(tmp_path, monkeypatch):
     ],
 )
 @pytest.mark.parametrize(
-    "text, protected",
+    "text, refused_methods",
     [
         pytest.param(
             "---\nlion_system: true\nDeadline: 2026-02-30\n---\nOriginal prompt.\n",
-            True,
-            id="invalid-date",
+            ("PUT", "DELETE", "POST"),
+            id="system-invalid-date",
         ),
         pytest.param(
             "---\nlion_system: true\nNotes: [unfinished\n---\nOriginal prompt.\n",
-            True,
-            id="invalid-yaml",
+            ("PUT", "DELETE", "POST"),
+            id="system-invalid-yaml",
         ),
         pytest.param(
             "---\nlion_system: true\nOriginal prompt.\n",
-            True,
-            id="unclosed",
+            ("PUT", "DELETE", "POST"),
+            id="system-unclosed",
+        ),
+        pytest.param(
+            "---\nDeadline: 2026-02-30\n---\nOriginal prompt.\n",
+            ("PUT",),
+            id="ordinary-invalid-date",
         ),
         pytest.param(
             "---\nNotes: [unfinished\n---\nOriginal prompt mentions lion_system.\n",
-            False,
-            id="marker-only-in-body",
+            ("PUT",),
+            id="ordinary-invalid-yaml-marker-only-in-body",
         ),
         pytest.param(
-            "---\nlion_system: false\n---\nOriginal prompt.\n",
-            False,
+            "---\nlion_system: false\ncustom: kept\n---\nOriginal prompt.\n",
+            (),
             id="readable-false",
         ),
     ],
 )
 def test_agent_writes_protect_system_frontmatter(
-    tmp_path, monkeypatch, method, url, body, text, protected
+    tmp_path, monkeypatch, method, url, body, text, refused_methods
 ):
     client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
     path = agents_dir / "sample.md"
@@ -598,9 +603,14 @@ def test_agent_writes_protect_system_frontmatter(
 
     response = client.request(method, url, json=body, headers={"Content-Type": "application/json"})
 
-    if protected:
+    if method in refused_methods:
         assert response.status_code == 403, response.text
-        assert "frontmatter could not be read" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert "sample" in detail
+        assert "frontmatter could not be read" in detail
+        assert "Original prompt" not in detail
+        assert "2026-02-30" not in detail
+        assert "unfinished" not in detail
         assert path.read_bytes() == original
     else:
         assert response.status_code == 200, response.text
@@ -611,6 +621,7 @@ def test_agent_writes_protect_system_frontmatter(
             assert "New prompt." in path.read_text()
             if method == "PUT" and "lion_system: false" in text:
                 assert "lion_system: false" in path.read_text()
+                assert "custom: kept" in path.read_text()
 
 
 def test_definitions_save_route_refuses_system_agent(tmp_path, monkeypatch):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
@@ -55,26 +56,44 @@ def _is_protected_system(fm: dict[str, Any]) -> bool:
     return "lion_system" in fm and bool(fm["lion_system"])
 
 
-def _read_agent_for_write(text: str) -> tuple[dict[str, Any], str, str | None]:
-    """Return frontmatter, prompt body and the shared protection decision for agent writes.
+@dataclass(frozen=True)
+class _AgentWriteRead:
+    frontmatter: dict[str, Any]
+    body: str
+    protection: str | None = None
+    unreadable_block: bool = False
 
-    An unreadable frontmatter block that mentions ``lion_system`` keeps the agent
-    protected. Agent update/delete and definition saves use this decision.
+
+def _read_agent_for_write(text: str) -> _AgentWriteRead:
+    """Classify frontmatter for agent writes.
+
+    Readable settings supply the parsed mapping and its system-agent protection.
+    An unreadable block that mentions ``lion_system`` is protected for every write.
+    A closed unreadable block without that mention refuses partial updates, since
+    merging would discard existing settings. Deleting or replacing the whole
+    file only uses the system-agent protection.
     """
     try:
         fm, body = parse_frontmatter_strict(text)
     except (yaml.YAMLError, RecursionError):
         stripped = text.strip()
         if _FM_SPLIT.match(stripped):
-            _, block, *_ = _FM_SPLIT.split(stripped, maxsplit=2)
+            _, block, *body = _FM_SPLIT.split(stripped, maxsplit=2)
             if "lion_system" in block:
-                return {}, "", "may be a system agent because its frontmatter could not be read"
+                return _AgentWriteRead(
+                    {},
+                    "",
+                    "may be a system agent because its frontmatter could not be read",
+                    unreadable_block=True,
+                )
+            if body:
+                return _AgentWriteRead({}, body[0].strip(), unreadable_block=True)
         fm, body = _parse_frontmatter(text)
     reason = "is a system agent" if _is_protected_system(fm) else None
-    return fm, body, reason
+    return _AgentWriteRead(fm, body, reason)
 
 
-def _read_agent_file_for_write(path: Path, name: str) -> tuple[dict[str, Any], str, str | None]:
+def _read_agent_file_for_write(path: Path, name: str) -> _AgentWriteRead:
     try:
         text = path.read_text()
     except OSError as exc:
@@ -326,7 +345,7 @@ def delete_agent(name: str) -> bool:
     if stem == DEFAULT_AGENT_NAME:
         raise AgentProtectedError(f"Agent '{stem}' is the default agent and cannot be deleted")
 
-    _, _, protection = _read_agent_file_for_write(path, stem)
+    protection = _read_agent_file_for_write(path, stem).protection
     if protection:
         raise AgentProtectedError(f"Agent '{stem}' {protection} and cannot be deleted")
 
@@ -342,10 +361,12 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if not path.exists():
         return None
 
-    existing_fm, existing_body, protection = _read_agent_file_for_write(path, stem)
-    if protection:
-        raise AgentProtectedError(f"Agent '{stem}' {protection} and cannot be edited")
-    existing_fm = _normalize_frontmatter(existing_fm)
+    existing = _read_agent_file_for_write(path, stem)
+    if existing.protection:
+        raise AgentProtectedError(f"Agent '{stem}' {existing.protection} and cannot be edited")
+    if existing.unreadable_block:
+        raise AgentProtectedError(f"Agent '{stem}' frontmatter could not be read")
+    existing_fm = _normalize_frontmatter(existing.frontmatter)
 
     # While demo mode is on, a client that fetched the redacted view and posted
     # it back unmodified must not be able to overwrite the real file with the
@@ -378,7 +399,7 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 
     new_body = data.get("system_prompt")
     if new_body is None:
-        new_body = existing_body
+        new_body = existing.body
     new_body = (new_body or "").strip()
 
     if fm:

@@ -244,6 +244,13 @@ def test_profile_loads_with_an_unreadable_date(monkeypatch):
         ("disallowed_tools: [Example]\ninvalid: [\n", "---\nBody.\n"),
         ("disallowed_tools: [Example]\n", ""),
         ("description: |\n  notes\ntools: [Example]\ninvalid: [\n", "---\nBody.\n"),
+        ("{disallowed_tools: [Example], bad: [}\n", "---\nBody.\n"),
+        ("? disallowed_tools\n: [Example]\nbad: [\n", "---\nBody.\n"),
+        ("&example !!str disallowed_tools: [Example]\nbad: [\n", "---\nBody.\n"),
+        (
+            'description: "Example settings:\n  {disallowed_tools: [Example]}"\nbad: [\n',
+            "---\nBody.\n",
+        ),
     ],
     ids=[
         "deny-list-date",
@@ -252,6 +259,10 @@ def test_profile_loads_with_an_unreadable_date(monkeypatch):
         "deny-list-syntax",
         "unclosed",
         "key-after-scalar",
+        "flow-mapping",
+        "explicit-key",
+        "anchored-tagged-key",
+        "multiline-double-quoted-scalar",
     ],
 )
 def test_unreadable_profile_tool_settings_are_refused(block, ending):
@@ -274,23 +285,16 @@ def test_readable_profile_keeps_tool_settings():
 @pytest.mark.parametrize(
     "mention",
     [
-        "description: 'allowed_tools: [Example]'\n# disallowed_tools: [Example]\n",
+        "description: 'allowed_tools: [Example]'\n",
+        "# Notes about tools\n",
         "description: |-\n  tools: [Example]\n",
         "description: >2 # Example\n  disallowed_tools: [Example]\n",
         "description:\n  - |-\n    allowed_tools: [Example]\n",
     ],
 )
-def test_tool_names_in_an_unreadable_profile_value_or_comment_are_ignored(monkeypatch, mention):
-    warnings = []
-    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
-    profile = _parse_profile(
-        "reviewer",
-        f"---\n{mention}Deadline: 2026-02-30\n---\nBody.\n",
-    )
-
-    assert profile.raw_body == "Body."
-    assert profile.extra == {}
-    assert any("frontmatter" in warning and "ignored" in warning for warning in warnings)
+def test_tool_names_in_an_unreadable_profile_value_or_comment_are_refused(mention):
+    with pytest.raises(ConfigurationError, match="agent profile 'reviewer'.*tool settings"):
+        _parse_profile("reviewer", f"---\n{mention}Deadline: 2026-02-30\n---\nBody.\n")
 
 
 @pytest.mark.parametrize(

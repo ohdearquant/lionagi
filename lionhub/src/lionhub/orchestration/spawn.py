@@ -1214,38 +1214,7 @@ _CONTAINMENT_KEYS = (_CONTAIN_KEY, _CONTAIN_ACCOUNT_KEY)
 _FLAG_KEY_LINE = re.compile(
     rf"^[ \t]*(?:-[ \t]+)*[\"']?({'|'.join(_CONTAINMENT_KEYS)})[\"']?[ \t]*:", re.M
 )
-_TOOL_KEY_LINE = re.compile(
-    rf"""^[ \t]*(?:-[ \t]+)*(?P<quote>["']?)(?:{"|".join(_PROFILE_TOOL_FIELDS)})(?P=quote)[ \t]*:"""
-)
-_BLOCK_SCALAR_LINE = re.compile(
-    r"""^(?P<prefix>[ \t]*(?:-[ \t]+)*)(?:(?P<key>[^\s:#"'\[\]{}][^:#]*?|"[^"]*"|'[^']*')"""
-    r"""[ \t]*:[ \t]+)?[|>](?P<indicator>[+-][1-9]?|[1-9][+-]?)?(?:[ \t]+(?:#.*)?)?$"""
-)
 _DASHES = re.compile(r"-{3,}")
-
-
-def _unread_frontmatter_names_tool_settings(block: str) -> bool:
-    """Find tool key lines while skipping literal and folded scalar contents."""
-    scalar_column = None
-    scalar_indent = None
-    for line in block.splitlines():
-        content = line.lstrip(" \t")
-        if not content:
-            continue
-        indent = len(line) - len(content)
-        if scalar_column is not None:
-            if scalar_indent is None and indent > scalar_column:
-                scalar_indent = indent
-            if scalar_indent is not None and indent >= scalar_indent:
-                continue
-            scalar_column = scalar_indent = None
-        if _TOOL_KEY_LINE.match(line):
-            return True
-        if scalar := _BLOCK_SCALAR_LINE.match(line):
-            scalar_column = scalar.end("prefix") if scalar.group("key") else indent
-            digit = (scalar.group("indicator") or "").strip("+-")
-            scalar_indent = scalar_column + int(digit) if digit else None
-    return False
 
 
 def _contain_flag_values(block: str) -> list[Any]:
@@ -1345,7 +1314,8 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         return {key for key in _CONTAINMENT_KEYS if key in block}
 
     def refuse_unread_tool_settings(block: str) -> None:
-        if _unread_frontmatter_names_tool_settings(block):
+        """Even a tool mention in a value triggers refusal because the settings cannot be read."""
+        if "tools" in block:
             raise ConfigurationError(
                 f"agent profile {name!r}: tool settings could not be read; "
                 "fix the frontmatter to proceed"

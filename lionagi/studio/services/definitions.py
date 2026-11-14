@@ -461,7 +461,7 @@ async def save_definition(
             # calling into agents.py, since that module resolves its own _AGENTS_ROOT
             # independently of this module's (test-patchable) AGENTS_DIR/KIND_DIRS.
             existing_text = await run_sync(disk_file.read_text)
-            _, _, protection = _read_agent_for_write(existing_text)
+            protection = _read_agent_for_write(existing_text).protection
             if protection:
                 raise PermissionError(f"Agent '{name}' {protection} and cannot be edited")
 
