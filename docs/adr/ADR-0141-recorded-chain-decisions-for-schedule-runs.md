@@ -386,7 +386,8 @@ The cutover procedure applies to both backends:
    census shows zero surviving handles, including ones outside the inventory.
 3. Open once with the upgraded binary. Read the committed schema version with
    `StateDB.schema_version` and confirm it enables preservation. With admission
-   still closed, exercise a fresh version-6 writable open and verify that it
+   still closed, exercise a fresh writable open by a binary at the version
+   immediately below the preservation version and verify that it
    fails with the version error
    (`lionagi/state/db.py::StateDB._raise_if_schema_too_new`).
 4. Restart only the upgraded clients for acceptance. Check a fresh store open
@@ -537,14 +538,15 @@ New tests (none exist at this checkout):
     orphan with ordinary evidence is replaced successfully.
 19. In `tests/state/lifecycle/test_service.py` and
     `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_occurrence_atomicity.py`,
-    use a controlled persistence fixture that exposes a stamp below the
-    preservation version (version 6 at this checkout) to the real D1 and D3
+    use a controlled persistence fixture that exposes the stamp immediately below
+    the preservation version (version 6 at this checkout) to the real D1 and D3
     gates without running native auto-migration in that arm.
     Verify guarded terminal writes and scheduler terminal creation leave both
     current and history refs without a decision. Repeat at the preservation version on SQLite
     and PostgreSQL and verify both records contain it. In
     `tests/state/test_db.py`, exercise the ordinary native open, verify it
-    stamps the upgraded store, and verify a version-6 writer opening the
+    stamps the upgraded store, and verify that a writer at the version immediately
+    below the preservation version opening the
     store stamped at the preservation version gets `SchemaTooNewError`.
 20. In `tests/state/test_lifecycle_gate.py`, attempt to change a stored decision
     using a stale `expected_updated_at`.
