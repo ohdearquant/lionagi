@@ -108,7 +108,7 @@ profile, with these differences and requirements:
 - **Other processes.** No process inspection of, or signal to, any process outside the command's own
   sandbox instance.
 - **Files.** Reads of the configured credential locations are denied (the list the `child_sandbox`
-  key resolves today: built-in defaults plus global additions, minus a profile's named exemptions).
+  key of #4311 resolves: built-in defaults plus global additions, minus a profile's named exemptions).
   Writes are limited to the working directory and the configured caches, minus the files git, a
   shell or the provider later executes or obeys there, and the provider's own configuration and
   instruction files in the working directory (for Claude Code, `.claude/`, `.mcp.json`, `CLAUDE.md`
@@ -117,16 +117,21 @@ profile, with these differences and requirements:
   entry of the working directory cannot be renamed, removed or replaced, whether it is a directory
   or a gitfile; no `.git` entry can be created anywhere else in the working directory or the
   caches; and inside the git directory, `config`, `config.worktree`, `hooks/`, `info/` and
-  `modules/` are not writable. When `.git` is a gitfile, the directory it names stays outside the
-  write set. Refs, objects and the index stay writable, so the child can commit; what a commit
-  carries reaches the launching process only as D6 allows. The profile, the launchers that apply it, and
-  the provider CLI's installed files are never writable from inside, wherever they live, the
-  configured caches included. The rules must hold on the
+  `modules/` are not writable. When `.git` is a directory, refs, objects and the index stay
+  writable, so the child can commit. When `.git` is a gitfile (a linked worktree, the usual case for
+  a child), the directory it names, which holds that worktree's HEAD and index, and the repository's
+  shared refs and objects all stay outside the write set, so the child cannot commit. In both cases
+  the change is taken from the working tree, and what the child wrote reaches the launching process
+  only as D6 allows. The profile, the launchers that apply it, the empty start-up directory of
+  D4, and the provider CLI's installed files are never writable from inside, wherever they live, the
+  configured caches included. What the child writes into the configured caches is its output like
+  anything else it writes: the launching process never runs it with the withheld credentials (D6),
+  and a later build of the user's that uses those caches is the user's call (D6). The rules must hold on the
   resolved path, so that a symlink in the working directory does not widen them.
 - **Network.** No wider than under file containment. `sandbox-exec` filters by local port, not by
   domain, and turning the provider's sandbox off also turns off the local proxy it filters through;
-  outbound traffic is therefore allowed only to a filtering proxy lionagi runs with the file
-  containment domain policy. Until that proxy exists, outbound network from tools is denied.
+  outbound traffic is therefore allowed only to a filtering proxy lionagi runs with the domain
+  policy of file containment (the `child_sandbox` settings of #4311). Until that proxy exists, outbound network from tools is denied.
 
 The rule for every axis: the profile is no weaker than file containment's, so requesting credential
 isolation never loosens anything that file containment holds.
@@ -150,7 +155,8 @@ A provider integration qualifies for credential isolation only if each of the fo
   to D2's read-deny list, write set and network policy under the launch's permission mode, symlinks
   included;
 - every command the provider starts on its own behalf outside the router (status lines, credential
-  helpers, environment set-up) is turned off or runs with nothing from the user's or the working
+  helpers, environment set-up, and any git command it runs for its own context, which reads the
+  working directory's git configuration) is turned off or runs with nothing from the user's or the working
   directory's configuration, and its output carries no credential into the tools;
 - every instruction, memory or extension file the provider loads is accounted for, from the working
   directory, every directory above it, and the user's own configuration: the instruction files it
@@ -255,12 +261,17 @@ GitHub CLI) do not work inside the child. That work runs in the launching proces
 everything the child wrote as untrusted data:
 
 - **Inputs first.** Authenticated fetches and dependency installs happen before the child starts,
-  into locations the child can read and cannot write.
+  into locations the child can read and cannot write where the toolchain allows it. A dependency
+  directory the toolchain keeps inside the working directory (`node_modules`, `.venv`) is writable
+  by the child and is therefore treated like the rest of what it wrote: nothing in it runs in the
+  launching process, and a later install or build from it is the user's call (below).
 - **Extracting the result.** The launching process produces the child's change without running
   anything from the child's tree: no git command that reads that tree's configuration, attributes or
   hooks (it reads the tree with its own configuration only), and no file copy that follows a symlink.
   Symlinks, submodule changes and changes under the repository's git directory are refused, not
-  applied.
+  applied. The change is the working tree compared with the commit the child started from; commits
+  and refs the child made are not read, so a file reaches the change only as a working-tree file,
+  under the same refusals.
 - **Applying and publishing.** The change is applied in a tree of the launching process's own, and
   the commit and push there run with hooks disabled, with no hook manager, filter driver or build
   step from the change executed, and with the launching process's own configuration.
@@ -268,7 +279,8 @@ everything the child wrote as untrusted data:
   dependency manifest, or a provider's configuration or instruction files (for Claude Code,
   `.claude/`, `.mcp.json`, `CLAUDE.md`), which D2 does not let the child write and which reach the
   change only through a path D2 does not cover, is published as data; any later build or install of it runs under the same
-  isolation as the child, never with the withheld credentials.
+  isolation as the child, never with the withheld credentials. The same holds for what the child
+  left in the configured caches and in dependency directories inside the working directory.
 
 Otherwise the child plants a git hook, a `core.fsmonitor`, filter or `credential.helper` setting, a
 symlink to a key, or a build script, and the unconfined process runs or publishes it with the
@@ -310,7 +322,9 @@ broken probe cannot read as a denial.
    qualification row, symlinks included; every other path is shown to be off.
 8. No settings source but lionagi's own loads: a user settings file and a project settings file that
    each define a status line, a credential helper and a hook produce no command outside the prefix
-   and cannot turn the prefix off or widen the profile.
+   and cannot turn the prefix off or widen the profile. A repository configuration with a
+   `core.fsmonitor` command and a hook, planted before launch, runs neither from any git command the
+   provider starts on its own behalf.
 9. The profile is no weaker than file containment: the file containment acceptance for file reads
    and writes, and its network refusal checks, pass unchanged under it, from a nested shell and a
    background descendant; writes to the repository's git configuration and hooks, and to the
@@ -319,13 +333,17 @@ broken probe cannot read as a denial.
    gitfile naming a directory inside the working directory, to create a `.git` in a subdirectory,
    and to write a `core.fsmonitor` setting into `config`, `config.worktree` and `info/`, each
    refused; a git command then run outside the profile in the working directory and in that
-   subdirectory starts no planted command; and a commit the child makes still succeeds. While
+   subdirectory starts no planted command; and a commit the child makes succeeds when `.git` is a
+   directory and is refused when it is a gitfile, with the working-tree change extracted in both
+   cases (D6). While
    outbound network is denied, reaching the allowed domains is a stated loss, not a check; turning on
    the filtering proxy requires the whole file containment network acceptance to pass through it.
 10. A nested provider CLI started from a tool fails to start a turn.
 11. D6 holds against a child that plants each of: a git hook, repository configuration, an attributes
-    filter, a tracked hook manager configuration, a symlink to a test key, a submodule change and a
-    build script. None runs in the launching process, and the symlink and submodule are refused.
+    filter, a tracked hook manager configuration, a symlink to a test key, a submodule change, a
+    build script, and a commit holding a provider configuration file the working tree does not hold
+    (for Claude Code, a `.claude/` settings file). None runs in the launching process, the symlink
+    and submodule are refused, and the committed file is not in the change.
 12. A missing or failing backend refuses the launch; nothing runs outside the profile on a retry.
 13. Instruction and extension files are accounted for (D3). Planted in the working directory, in a
     directory above it, and in the user's provider configuration: an instruction file with `@path`
@@ -345,8 +363,8 @@ broken probe cannot read as a denial.
     file named by `BASH_ENV` in the launching process, each reading the denied test file and
     exporting a marker variable. With the launching process's `SHELL` set to zsh and then to bash,
     no tool and no hook sees a marker, the denied file is not read, and the snapshot is shown to be
-    built by `/bin/zsh` with the empty start-up directory; a profile naming `SHELL` or `BASH_ENV`
-    refuses the launch; a control launch outside the mode shows the planted export does reach a
+    built by `/bin/zsh` with the empty start-up directory; a child write of `.zshenv` into that
+    directory is refused; a profile naming `SHELL` or `BASH_ENV` refuses the launch; a control launch outside the mode shows the planted export does reach a
     tool.
 
 ## Consequences
