@@ -133,7 +133,11 @@ profile, with these differences and requirements:
   configured caches included. What the child writes into the configured caches is its output like
   anything else it writes: the launching process never runs it with the withheld credentials (D6),
   and a later build of the user's that uses those caches is the user's call (D6). The rules must hold on the
-  resolved path, so that a symlink in the working directory does not widen them.
+  resolved path, so that a symlink in the working directory does not widen them, and on the whole
+  path to each entry they protect: no directory between the working directory and a protected entry
+  (a `.git` entry, a provider configuration or instruction file) can be renamed, removed or
+  replaced, since moving that directory aside, planting into the copy and moving it back reaches the
+  entry without writing to its path.
 - **Network.** No wider than under file containment. `sandbox-exec` filters by local port, not by
   domain, and turning the provider's sandbox off also turns off the local proxy it filters through;
   outbound traffic is therefore allowed only to a filtering proxy lionagi runs with the domain
@@ -340,8 +344,9 @@ broken probe cannot read as a denial.
    gitfile naming a directory inside the working directory, to create a `.git` in a subdirectory,
    to write a `core.fsmonitor` setting into `config`, `config.worktree` and `info/`, to write
    `commondir` naming a directory inside the working directory whose `config` carries a
-   `core.fsmonitor` command, and to write a `core.fsmonitor` setting into the `config` of a nested
-   repository present at launch, each refused; a git command then run outside the profile in the
+   `core.fsmonitor` command, to write a `core.fsmonitor` setting into the `config` of a nested
+   repository present at launch, and to rename the directory holding that nested repository, plant
+   the setting in the renamed copy and rename it back, each refused; a git command then run outside the profile in the
    working directory, in that subdirectory and in the nested repository starts no planted command; and a commit the child makes succeeds when `.git` is a
    directory and is refused when it is a gitfile, with the working-tree change extracted in both
    cases (D6). While
@@ -389,6 +394,12 @@ broken probe cannot read as a denial.
 - Credentialed operations move to the launching process under D6, which costs a hand-off step for
   every commit, push or authenticated fetch. A child cannot sign its own commits; its work arrives as
   an unsigned change the launching process commits.
+- A child's git is limited to commits and fast-forwards. With `.git` a directory, the write set
+  inside it (D2) holds what a commit writes and nothing more, so a merge that is not a fast-forward,
+  a cherry-pick or a revert (which lock `AUTO_MERGE` at the top of `.git`), a rebase (which creates
+  `rebase-merge/`) and a stash (which writes a temporary index file beside `index`) fail in the
+  child; with `.git` a gitfile the child cannot commit at all. Work that needs those operations runs
+  in the launching process on the extracted change (D6).
 - Qualification is per provider version, and provider CLIs update themselves. lionagi probes rather
   than pins: it does not install or hold back the provider CLI, it reads the version at every launch
   that requests this mode, and it refuses any version that is not in the qualified set, which is a
