@@ -37,7 +37,7 @@ def test_module_fallback_when_no_sibling_li(monkeypatch, tmp_path):
     (bindir / "python").write_text("#!/bin/sh\n")  # no sibling `li`
     monkeypatch.setattr(sys, "executable", str(bindir / "python"))
     cmd = config.li_command()
-    assert cmd == [str(bindir / "python"), "-m", "lionagi.cli"]
+    assert cmd == [str(bindir / "python"), "-m", "lionhub.serve.cli"]
 
 
 def test_finds_li_in_a_venv_whose_python_is_a_symlink(monkeypatch, tmp_path):
@@ -75,4 +75,4 @@ def test_path_is_never_consulted(monkeypatch, tmp_path):
     monkeypatch.delenv("LIONAGI_MCP_LI_BIN", raising=False)
     monkeypatch.setenv("PATH", str(decoy_bin))
     monkeypatch.setattr(sys, "executable", str(bindir / "python"))
-    assert config.li_command() == [str(bindir / "python"), "-m", "lionagi.cli"]
+    assert config.li_command() == [str(bindir / "python"), "-m", "lionhub.serve.cli"]

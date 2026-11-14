@@ -113,7 +113,7 @@ def docker_run(tmp_path, monkeypatch):
     monkeypatch.setattr(studio_module.subprocess, "run", fake_run)
 
     def invoke(*argv: str) -> list[str]:
-        from lionagi.cli.main import main
+        from lionhub.serve.cli.main import main
 
         assert main(["studio", "--docker", *argv]) == 0
         assert len(captured) == 2, f"expected a pull and a run, saw {captured}"
@@ -228,7 +228,7 @@ def test_a_host_that_is_not_an_address_is_refused(docker_run, host, capsys):
 
 def test_a_refused_host_is_a_nonzero_launch(docker_run):
     """The refusal is the launch failing, reported by `main` as a nonzero result."""
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     assert main(["studio", "--docker", "--host", "studio.example.com"]) == 2
 
@@ -298,7 +298,7 @@ def test_a_failed_run_is_the_launch_return_code(tmp_path, monkeypatch):
         return Result()
 
     monkeypatch.setattr(studio_module.subprocess, "run", fake_run)
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     assert main(["studio", "--docker"]) == 125
     assert calls[1][1] == "run", calls
@@ -459,7 +459,7 @@ def test_a_bind_spelling_that_is_a_special_address_keeps_its_rule(host, publishe
 def test_an_address_carrying_a_port_names_the_port_flag(docker_run, host, capsys):
     """`--host` takes an address, not an address and port, so a value carrying a
     port is refused with a message that says where the port goes."""
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     _, captured, _ = docker_run
     assert main(["studio", "--docker", "--host", host]) == 2
@@ -487,7 +487,7 @@ def test_an_interrupt_during_the_pull_is_not_a_failed_launch(tmp_path, monkeypat
         return Result()
 
     monkeypatch.setattr(studio_module.subprocess, "run", fake_run)
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     escaped: BaseException | None = None
     rc = None

@@ -137,8 +137,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.agent",
-        "new_lionagi_module_count": 145,
+        "module": "lionhub.serve.cli.agent",
+        "new_lionagi_module_count": 140,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "agent"
@@ -161,8 +161,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.dispatch",
-        "new_lionagi_module_count": 3,
+        "module": "lionhub.serve.cli.dispatch",
+        "new_lionagi_module_count": 1,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "dispatch"
@@ -173,8 +173,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.doctor",
-        "new_lionagi_module_count": 3,
+        "module": "lionhub.serve.cli.doctor",
+        "new_lionagi_module_count": 1,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "doctor"
@@ -185,8 +185,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.engine",
-        "new_lionagi_module_count": 9,
+        "module": "lionhub.serve.cli.engine",
+        "new_lionagi_module_count": 7,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "engine"
@@ -197,8 +197,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.machine",
-        "new_lionagi_module_count": 3,
+        "module": "lionhub.serve.cli.machine",
+        "new_lionagi_module_count": 1,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "handshake"
@@ -209,8 +209,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.hooks",
-        "new_lionagi_module_count": 7,
+        "module": "lionhub.serve.cli.hooks",
+        "new_lionagi_module_count": 5,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "hooks"
@@ -221,8 +221,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.invoke",
-        "new_lionagi_module_count": 7,
+        "module": "lionhub.serve.cli.invoke",
+        "new_lionagi_module_count": 5,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "invoke"
@@ -233,8 +233,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.kill",
-        "new_lionagi_module_count": 36,
+        "module": "lionhub.serve.cli.kill",
+        "new_lionagi_module_count": 33,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "kill"
@@ -245,8 +245,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.machine",
-        "new_lionagi_module_count": 3,
+        "module": "lionhub.serve.cli.machine",
+        "new_lionagi_module_count": 1,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "lifecycle"
@@ -257,8 +257,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.mcp",
-        "new_lionagi_module_count": 7,
+        "module": "lionhub.serve.cli.mcp",
+        "new_lionagi_module_count": 5,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "mcp"
@@ -269,8 +269,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.mirror",
-        "new_lionagi_module_count": 8,
+        "module": "lionhub.serve.cli.mirror",
+        "new_lionagi_module_count": 6,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "mirror"
@@ -281,8 +281,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.monitor",
-        "new_lionagi_module_count": 22,
+        "module": "lionhub.serve.cli.monitor",
+        "new_lionagi_module_count": 20,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "monitor"
@@ -293,10 +293,10 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.orchestrate",
-        "new_lionagi_module_count": 141,
+        "module": "lionhub.serve.cli.orchestrate",
+        "new_lionagi_module_count": 131,
         "other_seed_modules_imported": [
-          "lionagi.cli.team"
+          "lionhub.serve.cli.team"
         ],
         "other_seed_modules_imported_count": 1,
         "seed": "orchestrate"
@@ -307,8 +307,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.plugin",
-        "new_lionagi_module_count": 7,
+        "module": "lionhub.serve.cli.plugin",
+        "new_lionagi_module_count": 5,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "plugin"
@@ -319,8 +319,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.machine",
-        "new_lionagi_module_count": 3,
+        "module": "lionhub.serve.cli.machine",
+        "new_lionagi_module_count": 1,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "runs"
@@ -343,8 +343,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.state",
-        "new_lionagi_module_count": 22,
+        "module": "lionhub.serve.cli.state",
+        "new_lionagi_module_count": 20,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "state"
@@ -355,10 +355,10 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.stats",
-        "new_lionagi_module_count": 23,
+        "module": "lionhub.serve.cli.stats",
+        "new_lionagi_module_count": 20,
         "other_seed_modules_imported": [
-          "lionagi.cli.monitor"
+          "lionhub.serve.cli.monitor"
         ],
         "other_seed_modules_imported_count": 1,
         "seed": "stats"
@@ -381,8 +381,8 @@
         ],
         "http_registry_count": 0,
         "http_registry_realized": false,
-        "module": "lionagi.cli.team",
-        "new_lionagi_module_count": 18,
+        "module": "lionhub.serve.cli.team",
+        "new_lionagi_module_count": 16,
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "team"

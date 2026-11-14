@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.cli._api_usage import APIUsageCollector
 from lionagi.protocols.types import EventStatus
 from lionagi.service._api_telemetry import collect_api_turn
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionhub.serve.cli._api_usage import APIUsageCollector
 from tests.service.hooks.test_hooked_event import _fake_hook
 
 

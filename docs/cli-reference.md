@@ -382,7 +382,7 @@ li o flow [model] prompt [flags]
 | `--retry-failed` | false | Re-run the ops a resumed checkpoint recorded as failed, instead of refusing; their reactive children from the superseded attempt are dropped |
 | `--notify CMD` | none | Run a terminal callback template with status/invocation payload values |
 
-`-f` and `-p` are mutually exclusive. `--team-mode` and `--team-attach` are mutually exclusive. Source: `cli/orchestrate/__init__.py`. `--background` re-invokes `python -m lionagi.cli` without itself. Common flags apply.
+`-f` and `-p` are mutually exclusive. `--team-mode` and `--team-attach` are mutually exclusive. Source: `cli/orchestrate/__init__.py`. `--background` re-invokes `python -m lionhub.serve.cli` without itself. Common flags apply.
 
 ### Team lifecycle summary
 
@@ -1022,7 +1022,7 @@ li handshake --machine
 {"ok": true, "contract_version": 1,
  "data": {"contract_version": 1, "min_supported_version": 1,
           "implementation": "lionagi", "implementation_version": "0.30.2",
-          "module": "/path/to/lionagi/cli"},
+          "module": "/path/to/lionhub/serve/cli"},
  "error": null}
 ```
 

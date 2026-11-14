@@ -54,7 +54,7 @@ async def _seed_flow_session(db_path: Path, *, session_id: str, cli_run_id: str)
 
 # Two pending ops that need inherited conversational context resume cannot
 # restore (v1 restores results-context only) -- the exact scenario
-# `_apply_checkpoint_precompletion` (lionagi/cli/orchestrate/flow.py) refuses
+# `_apply_checkpoint_precompletion` (lionhub/src/lionhub/serve/cli/orchestrate/flow.py) refuses
 # unless --allow-degraded-context is passed.
 _PENDING_INHERIT_CONTEXT_OPS = ["reviewer-1", "reviewer-2"]
 

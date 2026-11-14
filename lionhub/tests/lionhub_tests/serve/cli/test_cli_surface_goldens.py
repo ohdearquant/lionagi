@@ -1,0 +1,486 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""CLI contract goldens, part 2: full-registry surface + in-process error paths.
+
+Complements ``lionhub/tests/lionhub_tests/serve/cli/test_cli_contracts.py`` (out-of-process ``subprocess``
+goldens for ``li agent`` / ``li schedule`` / ``li monitor``). This module
+walks the whole top-level command registry plus the ``li o flow`` /
+``li o fanout`` / remaining ``li schedule`` subcommands the other file
+doesn't pin, calls ``lionhub.serve.cli.main.main`` in-process instead of
+subprocessing (faster, and immune to any state a subprocess could leak
+across ``pytest-xdist`` workers), and pins the regression this file exists
+for: a spawn-forwarding surface (``li agent``, ``li o flow``, ``li o fanout``)
+must reject a nonexistent ``--cwd`` before allocating a run record or
+spawning a provider, not silently create the directory and report success as
+a prior version did. Each case monkeypatches the run-allocation function to
+raise if reached, then asserts the *validation* error propagates — proving
+allocation was never reached, not just that the process exits non-zero.
+
+``--effort`` has no argparse ``choices=`` deliberately — it's passed through
+unvalidated so a new provider effort tier is never rejected by a stale
+allowlist (see ``lionagi/service/providers.py::normalize_effort``), so there
+is no hermetic "invalid --effort" case to pin here. ``--trigger-type`` and
+``--action-kind`` on ``li schedule create`` are the CLI's actual
+choices=-validated flags and stand in for that contract instead.
+
+Every assertion here is deterministic: pure argparse introspection, or an
+in-process call whose only external dependency is a nonexistent path the
+test itself builds under ``tmp_path``. A flake here is a test bug, not
+grounds to skip.
+"""
+
+from __future__ import annotations
+
+import argparse
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+import lionhub.serve.cli.main as cli_main
+from lionagi._errors import ConfigurationError
+
+# Shared introspection + invocation helpers
+
+
+def _command_parser(command: str, *subs: str) -> argparse.ArgumentParser:
+    """Build the real parser for a command (and optional nested subcommand)
+    the same way `li` does, and return the subcommand's parser object.
+
+    Mirrors the helper in test_cli_contracts.py: introspecting
+    ``option_strings``/``_actions`` off the live parser is immune to
+    argparse's rendered-help formatting changing across Python versions.
+    """
+    from lionhub.serve.cli.catalog import build_cli_parser, seed_for
+
+    seed = seed_for(command)
+    parser = build_cli_parser(seed).parser
+    for name in (command, *subs):
+        sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        parser = sub_action.choices[name]
+    return parser
+
+
+def _flag_set(command: str, *subs: str) -> list[str]:
+    parser = _command_parser(command, *subs)
+    return sorted({s for action in parser._actions for s in action.option_strings})
+
+
+def _positional_dests(command: str, *subs: str) -> list[str]:
+    """Dests of positional (non-flag, non-subparsers) actions, in order."""
+    parser = _command_parser(command, *subs)
+    return [
+        a.dest
+        for a in parser._actions
+        if not a.option_strings
+        and a.dest != "help"
+        and not isinstance(a, argparse._SubParsersAction)
+    ]
+
+
+def _top_level_subcommand_set() -> list[str]:
+    from lionhub.serve.cli.catalog import build_cli_parser
+
+    parser = build_cli_parser(None).parser
+    sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    return sorted(sub_action.choices.keys())
+
+
+def _run_main(argv: list[str]) -> int:
+    """Invoke the real `li` entrypoint in-process.
+
+    Mirrors exactly what the installed console script sees at
+    ``sys.exit(main())``: a ``SystemExit`` raised inside argparse (unknown
+    flag, invalid choice, missing required positional, unknown subcommand)
+    becomes its integer code; a plain ``return`` from ``main()`` is used
+    as-is. Anything else — e.g. the unhandled ``ConfigurationError`` the
+    --cwd fail-fast path raises — propagates out of this helper exactly as
+    it would out of an uncaught exception in a real process; callers that
+    expect that shape wrap the call in ``pytest.raises`` directly.
+    """
+    try:
+        return cli_main.main(argv)
+    except SystemExit as exc:
+        code = exc.code
+        return code if isinstance(code, int) else 1
+
+
+@pytest.mark.parametrize(
+    ("command", "subs"),
+    [("agent", ()), ("orchestrate", ("flow",)), ("orchestrate", ("fanout",))],
+)
+def test_submit_snapshot_carrier_is_parsed_but_hidden_from_help(command, subs):
+    parser = _command_parser(command, *subs)
+    action = next(a for a in parser._actions if a.dest == "mcp_submit_snapshot")
+    assert action.help == argparse.SUPPRESS
+    assert "--mcp-submit-snapshot" not in parser.format_help()
+    assert parser.parse_args(["--mcp-submit-snapshot", "snapshot.json"]).mcp_submit_snapshot == (
+        "snapshot.json"
+    )
+
+
+# Goldens — sorted flag/positional sets, pinned from the actual parser tree
+
+TOP_LEVEL_COMMANDS = [
+    "agent",
+    "casts",
+    "dispatch",
+    "doctor",
+    "engine",
+    "handshake",
+    "hooks",
+    "invoke",
+    "kill",
+    "lifecycle",
+    "mcp",
+    "mirror",
+    "mon",
+    "monitor",
+    "o",
+    "orchestrate",
+    "plugin",
+    "runs",
+    "schedule",
+    "state",
+    "stats",
+    "studio",
+    "team",
+]
+
+ORCHESTRATE_FANOUT_FLAGS = [
+    "--agent",
+    "--bypass",
+    "--cwd",
+    "--effort",
+    "--fast",
+    "--help",
+    "--invocation",
+    "--max-concurrent",
+    "--mcp-config",
+    "--mcp-submit-snapshot",
+    "--no-mcp-config",
+    "--notify",
+    "--num-workers",
+    "--output",
+    "--pack",
+    "--project",
+    "--resume-on-timeout",
+    "--save",
+    "--synthesis-prompt",
+    "--team-mode",
+    "--theme",
+    "--timeout",
+    "--verbose",
+    "--with-synthesis",
+    "--workers",
+    "--yolo",
+    "-a",
+    "-h",
+    "-n",
+    "-v",
+]
+ORCHESTRATE_FANOUT_POSITIONALS = ["query"]
+
+ORCHESTRATE_FLOW_FLAGS = [
+    "--agent",
+    "--allow-degraded-context",
+    "--background",
+    "--bare",
+    "--bypass",
+    "--cwd",
+    "--dry-run",
+    "--effort",
+    "--fast",
+    "--file",
+    "--help",
+    "--invocation",
+    "--max-agents",
+    "--max-concurrent",
+    "--max-ops",
+    "--mcp-config",
+    "--mcp-submit-snapshot",
+    "--no-mcp-config",
+    "--notify",
+    "--output",
+    "--pack",
+    "--playbook",
+    "--project",
+    "--reactive",
+    "--resume",
+    "--resume-on-timeout",
+    "--retry-failed",
+    "--save",
+    "--show-graph",
+    "--team-attach",
+    "--team-max-rounds",
+    "--team-mode",
+    "--theme",
+    "--timeout",
+    "--verbose",
+    "--with-synthesis",
+    "--workers",
+    "--yolo",
+    "-a",
+    "-f",
+    "-h",
+    "-p",
+    "-v",
+]
+ORCHESTRATE_FLOW_POSITIONALS = ["query"]
+
+# `li schedule` subcommands not already pinned by test_cli_contracts.py
+# (which only pins `create`). Every one of these has just -h/--help for
+# flags; they differ only in whether they take a positional `id`.
+SCHEDULE_SIMPLE_SUBCOMMAND_POSITIONALS = {
+    "list": [],
+    "limits": [],
+    "get": ["id"],
+    "enable": ["id"],
+    "delete": ["id"],
+}
+
+# Phase 1 observability subcommands (RunView): carry extra flags beyond
+# --help/-h, so they get their own golden rather than the "simple" shape.
+SCHEDULE_OBSERVABILITY_SUBCOMMAND_SHAPES = {
+    "disable": (["--help", "--reason", "-h"], ["id"]),
+    "trigger": (["--help", "--wait", "-h"], ["id"]),
+    "runs": (["--help", "--json", "--limit", "--status", "-h"], ["id"]),
+    "run": (["--help", "--json", "-h"], ["id"]),
+    "status": (["--help", "--json", "--wait", "-h"], ["id"]),
+    "validate": (["--help", "--json", "-h"], ["file"]),
+    "apply": (["--adopt", "--dry-run", "--help", "--json", "-h"], ["file"]),
+    "export": (["--help", "--legacy", "--output", "--report", "-h"], []),
+}
+
+
+class TestTopLevelCommandRegistryGolden:
+    def test_top_level_command_set_is_pinned(self):
+        """A command (or alias) silently added to or removed from
+        the typed CLI seed registry must fail this golden until the change to
+        the set of things `li` accepts as a first argument is deliberate."""
+        assert _top_level_subcommand_set() == sorted(TOP_LEVEL_COMMANDS)
+
+
+class TestOrchestrateFlagGoldens:
+    def test_orchestrate_top_has_only_help(self):
+        # `li o` / `li orchestrate` itself carries no flags of its own —
+        # everything lives on the `fanout`/`flow` subcommands.
+        assert _flag_set("orchestrate") == ["--help", "-h"]
+
+    def test_orchestrate_subcommand_set(self):
+        # `ctl` (status/pause/resume/msg) is a separate, narrower
+        # control-plane surface addressed by run id, not a spawn-forwarding
+        # surface — out of scope for the flag/exit-code/error-shape goldens
+        # below, but its presence in the subcommand set is still pinned so a
+        # new orchestrate subcommand can't slip in unnoticed.
+        parser = _command_parser("orchestrate")
+        sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        assert sorted(sub_action.choices.keys()) == ["ctl", "fanout", "flow"]
+
+    def test_fanout_flag_and_positional_set(self):
+        assert _flag_set("orchestrate", "fanout") == ORCHESTRATE_FANOUT_FLAGS
+        assert _positional_dests("orchestrate", "fanout") == ORCHESTRATE_FANOUT_POSITIONALS
+
+    def test_flow_flag_and_positional_set(self):
+        assert _flag_set("orchestrate", "flow") == ORCHESTRATE_FLOW_FLAGS
+        assert _positional_dests("orchestrate", "flow") == ORCHESTRATE_FLOW_POSITIONALS
+
+
+class TestScheduleSubcommandShapeGoldens:
+    @pytest.mark.parametrize("name", sorted(SCHEDULE_SIMPLE_SUBCOMMAND_POSITIONALS))
+    def test_simple_subcommand_shape(self, name):
+        assert _flag_set("schedule", name) == ["--help", "-h"]
+        assert _positional_dests("schedule", name) == SCHEDULE_SIMPLE_SUBCOMMAND_POSITIONALS[name]
+
+    @pytest.mark.parametrize("name", sorted(SCHEDULE_OBSERVABILITY_SUBCOMMAND_SHAPES))
+    def test_observability_subcommand_shape(self, name):
+        flags, positionals = SCHEDULE_OBSERVABILITY_SUBCOMMAND_SHAPES[name]
+        assert _flag_set("schedule", name) == flags
+        assert _positional_dests("schedule", name) == positionals
+
+
+# In-process exit-code / error-shape contracts (no subprocess)
+
+
+class TestInProcessContractErrors:
+    def test_unknown_top_level_command_is_nonzero_and_named(self, capsys):
+        rc = _run_main(["bogus-top-level-command"])
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "bogus-top-level-command" in captured.err
+        assert captured.out == ""
+
+    def test_flow_missing_prompt_is_nonzero(self, capsys):
+        rc = _run_main(["o", "flow"])
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "prompt is required" in captured.err
+        assert captured.out == ""
+
+    def test_fanout_missing_prompt_is_nonzero(self, capsys):
+        rc = _run_main(["o", "fanout"])
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "prompt is required" in captured.err
+
+    def test_flow_unknown_flag_is_nonzero_and_named(self, capsys):
+        rc = _run_main(["o", "flow", "--this-flag-does-not-exist"])
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "--this-flag-does-not-exist" in captured.err
+
+    def test_fanout_unknown_flag_is_nonzero_and_named(self, capsys):
+        rc = _run_main(["o", "fanout", "--this-flag-does-not-exist"])
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "--this-flag-does-not-exist" in captured.err
+
+    def test_schedule_create_invalid_trigger_type_is_nonzero_and_named(self, capsys):
+        rc = _run_main(["schedule", "create", "a-name", "--trigger-type", "bogus"])
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "bogus" in captured.err
+        assert "--trigger-type" in captured.err
+
+    def test_schedule_create_invalid_action_kind_is_nonzero_and_named(self, capsys):
+        rc = _run_main(["schedule", "create", "a-name", "--action-kind", "bogus"])
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "bogus" in captured.err
+        assert "--action-kind" in captured.err
+
+
+# The regression class itself: nonexistent --cwd must fail fast, end-to-end
+
+
+class TestNonexistentCwdFailFastEndToEnd:
+    """`li agent` / `li o flow` / `li o fanout` --cwd <nonexistent> must raise
+    ConfigurationError, naming the path and the flag, before the run
+    allocator each surface uses is ever called — i.e. before any run row
+    could be persisted and before any provider process could be spawned.
+    Exercised through the real `li` argv-to-dispatch path (`main()`), not by
+    calling the internal validator directly (that is already unit-tested in
+    lionhub/tests/lionhub_tests/serve/cli/test_agent_cwd_failfast.py and
+    lionhub/tests/lionhub_tests/serve/cli/orchestrate/test_orchestration_cwd_failfast.py) — this pins the
+    contract as an external caller of `li` actually observes it.
+    """
+
+    def test_agent_cwd_failfast(self, monkeypatch, tmp_path, capsys):
+        import lionhub.serve.cli.agent as agent_mod
+
+        def _boom():
+            raise AssertionError(
+                "allocate_run must not be reached — cwd validation must fire first"
+            )
+
+        monkeypatch.setattr(agent_mod, "allocate_run", _boom)
+        bad_cwd = str(tmp_path / "nonexistent-workspace")
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            _run_main(["agent", "--cwd", bad_cwd, "claude", "hi"])
+
+        assert bad_cwd in str(exc_info.value)
+        assert "--cwd" in str(exc_info.value)
+        # `li agent` additionally logs a clean one-line diagnostic to stderr
+        # before re-raising (as-observed current behavior — see
+        # lionhub/src/lionhub/serve/cli/agent.py's `except BaseException` handler in run_agent).
+        captured = capsys.readouterr()
+        assert bad_cwd in captured.err
+        assert captured.err.startswith("error: ")
+        assert captured.out == ""
+
+    def test_flow_cwd_failfast(self, monkeypatch, tmp_path, capsys):
+        import lionhub.serve.cli.orchestrate._orchestration as orch_mod
+
+        def _boom(*a, **kw):
+            raise AssertionError(
+                "allocate_run must not be reached — cwd validation must fire first"
+            )
+
+        monkeypatch.setattr(orch_mod, "allocate_run", _boom)
+        bad_cwd = str(tmp_path / "nonexistent-workspace")
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            _run_main(["o", "flow", "--cwd", bad_cwd, "claude", "hi"])
+
+        assert bad_cwd in str(exc_info.value)
+        assert "--cwd" in str(exc_info.value)
+        # Contract surprise, pinned as-observed (unlike `li agent`, this path
+        # does not call log_error before re-raising — `_run_orch_command`'s
+        # generic BaseException branch only logs for its known
+        # extra_handlers, not for a bare re-raise): nothing reaches stdout or
+        # stderr from CLI-owned code before the exception propagates.
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_fanout_cwd_failfast(self, monkeypatch, tmp_path, capsys):
+        import lionhub.serve.cli.orchestrate._orchestration as orch_mod
+
+        def _boom(*a, **kw):
+            raise AssertionError(
+                "allocate_run must not be reached — cwd validation must fire first"
+            )
+
+        monkeypatch.setattr(orch_mod, "allocate_run", _boom)
+        bad_cwd = str(tmp_path / "nonexistent-workspace")
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            _run_main(["o", "fanout", "--cwd", bad_cwd, "claude", "hi"])
+
+        assert bad_cwd in str(exc_info.value)
+        assert "--cwd" in str(exc_info.value)
+        # Same as the flow case above: fanout shares `_run_orch_command`'s
+        # generic BaseException branch, which only calls log_error for its
+        # own extra_handlers, not for a bare re-raise — pin that nothing
+        # reaches either stream before the exception propagates.
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_flow_json_output_mode_emits_no_partial_json_on_cwd_failure(self, tmp_path, capsys):
+        """--output json must never leave partial/invalid JSON on stdout: an
+        early config-time failure (before any DAG execution or JSON
+        serialization begins) must leave stdout untouched, same as the
+        text-output case above — nothing is printed until a real result
+        exists to format."""
+        bad_cwd = str(tmp_path / "nonexistent-workspace")
+
+        with pytest.raises(ConfigurationError):
+            _run_main(["o", "flow", "--output", "json", "--cwd", bad_cwd, "claude", "hi"])
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+
+# Console-script entrypoint smoke test (the one deliberate subprocess case)
+
+
+def _find_li_console_script() -> str | None:
+    """Locate the installed `li` console script the same way a real caller
+    would run it — NOT `python -m lionhub.serve.cli`, which only proves the module
+    imports, not that `[project.scripts] li = ...` is actually wired up in
+    this environment (an editable reinstall has silently left a stale/broken
+    console script before)."""
+    candidate = Path(sys.executable).parent / "li"
+    if candidate.is_file():
+        return str(candidate)
+    return shutil.which("li")
+
+
+class TestConsoleScriptEntryPointSmoke:
+    def test_li_console_script_resolves_and_runs(self):
+        li_path = _find_li_console_script()
+        if li_path is None:
+            pytest.skip("`li` console script not found on PATH or next to sys.executable")
+        result = subprocess.run(
+            [li_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip(), "expected a non-empty version string"

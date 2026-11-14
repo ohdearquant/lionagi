@@ -4,7 +4,7 @@
 """A codex config profile must resolve on the LIBRARY path, not only the CLI.
 
 ``codex/<name>`` may name a codex config profile rather than a model, and
-resolving it used to live under ``lionagi/cli/``. Every caller that reached
+resolving it used to live under ``lionhub/src/lionhub/serve/cli/``. Every caller that reached
 codex through the CLI got the resolution; every caller that built a request in
 process -- ``Branch(chat_model="codex/deepseek-flash")`` -- did not. Those legs
 carried the profile NAME all the way to the spawn, codex read it as a model id,
@@ -12,7 +12,7 @@ and the run died with an unsupported-model error naming a model nobody had
 asked for.
 
 The tests here enter through the same door a library consumer does. The CLI's
-own behaviour is covered by ``tests/cli/test_codex_config_profile_spec.py``,
+own behaviour is covered by ``lionhub/tests/lionhub_tests/serve/cli/test_codex_config_profile_spec.py``,
 and those tests keep passing against the re-export, which is what says the move
 did not change the CLI path.
 """

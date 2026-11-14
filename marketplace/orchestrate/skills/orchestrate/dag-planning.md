@@ -26,7 +26,7 @@ The planner must use roles from its supplied roster. Model and profile routing a
 after planning; `assignee` is a role, not a model name.
 
 Source: `lionhub/src/lionhub/agent/casts/emission.py`, `lionhub/src/lionhub/orchestration/prompts.py`, and
-`lionagi/cli/orchestrate/flow.py`.
+`lionhub/src/lionhub/serve/cli/orchestrate/flow.py`.
 
 ---
 

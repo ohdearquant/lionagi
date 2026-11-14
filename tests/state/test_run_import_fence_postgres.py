@@ -17,9 +17,9 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import event, text
 
-from lionagi.cli import state as state_mod
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
+from lionhub.serve.cli import state as state_mod
 from tests.state._pg_cleanup import delete_imported_session_with_retry
 
 _WAIT = 10.0

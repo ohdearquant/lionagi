@@ -1190,6 +1190,9 @@ CI_CHANGES_FILTERS = {
     "compat": [
         "pyproject.toml",
         "uv.lock",
+        # Hub code the compatibility tests import, listed by hand: only lionagi imports
+        # are derived.
+        "lionhub/src/lionhub/serve/cli/**",
         "tests/conftest.py",
         "tests/_shared_conftest.py",
         "tests/state/conftest.py",

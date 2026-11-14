@@ -55,12 +55,15 @@ def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
                 path == CORE / "_log_channels.py" and value in logger_names
             ):
                 continue
+            # The core keeps lazy forwards to the catalog's public functions for 0.x
+            # callers; they name the catalog, not a command module.
+            if path == CORE / "_auto.py" and value.startswith("lionhub.serve.cli.catalog."):
+                continue
             prefixes = (
                 "lionagi.cli",
+                "lionhub.serve.cli",
                 "lionagi.studio.cli",
                 "lionhub.agent.casts.surfaces",
-                "lionhub.serve.cli.studio",
-                "lionhub.serve.cli.schedule",
             )
             if any(value == prefix or value.startswith(prefix + ".") for prefix in prefixes):
                 hits.append((node.lineno, value))
@@ -88,7 +91,7 @@ def test_core_catalog_guard_sees_construction_and_target_literals():
     probe = CORE / "state" / "_probe.py"
     source = (
         "from lionagi._auto import CliSeed as Seed\n"
-        "item = Seed(name='x', help='h', module='lionagi.cli.agent')\n"
+        "item = Seed(name='x', help='h', module='lionhub.serve.cli.agent')\n"
         "module = 'lionhub.agent.casts.surfaces'\n"
         "other = auto.CliSeed(name='x', help='h', module='lionagi.studio.cli')\n"
     )
@@ -97,6 +100,9 @@ def test_core_catalog_guard_sees_construction_and_target_literals():
     assert _core_catalog_references(CORE / "_log_channels.py", "name = 'lionagi.cli.warn'") == []
     assert _core_catalog_references(probe, "logging.getLogger('lionagi.cli')") == []
     assert _core_catalog_references(probe, "target = 'lionagi.cli'") == [(1, "lionagi.cli")]
+    assert _core_catalog_references(probe, "target = 'lionhub.serve.cli'") == [
+        (1, "lionhub.serve.cli")
+    ]
     assert _core_catalog_references(probe, "target = 'lionhub.serve.cli.schedule'") == [
         (1, "lionhub.serve.cli.schedule")
     ]
@@ -145,7 +151,7 @@ print(json.dumps({
     source = """
 import sys
 assert not any(m == 'lionhub' or m.startswith('lionhub.') for m in sys.modules)
-from lionagi.cli.main import main
+from lionhub.serve.cli.main import main
 main([sys.argv[1], '--help'])
 """
     for name in ("schedule", "plugin", "casts", "studio"):
@@ -204,7 +210,7 @@ if {selected!r} == 'schedule':
 
     _fresh("""
 import importlib
-main = importlib.import_module('lionagi.cli.main')
+main = importlib.import_module('lionhub.serve.cli.main')
 from lionhub.serve.cli import schedule
 schedule.run_schedule_quick_create = lambda kind, argv: (kind, argv)
 assert main.main(['schedule', 'create', 'agent', 'sample']) == ('agent', ['sample'])
@@ -371,7 +377,7 @@ options:
 
 def test_cli_version_source_is_unchanged(capsys):
     """The base commit printed this version through the composition root."""
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
@@ -406,9 +412,9 @@ import sys
 assert not any(m == 'lionhub' or m.startswith('lionhub.') for m in sys.modules)
 from lionhub.serve.cli import catalog
 from lionhub.serve.mcp import projection
-from lionagi.cli import machine
+from lionhub.serve.cli import machine
 import importlib
-main = importlib.import_module('lionagi.cli.main')
+main = importlib.import_module('lionhub.serve.cli.main')
 seed = catalog.seed_for('casts')
 token = 'new-catalog-alias'
 catalog._cli_seed_by_token[token] = seed

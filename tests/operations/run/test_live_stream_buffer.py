@@ -220,7 +220,7 @@ async def test_fallback_keeps_string_subclass_text_without_calling_its_str(tmp_p
 @pytest.mark.asyncio
 @pytest.mark.parametrize("separator", [chr(0x2028), chr(0x2029), chr(0x85)])
 async def test_reader_keeps_unicode_separators_in_one_record_but_hides_them(tmp_path, separator):
-    from lionagi.cli.monitor import _stream_tail
+    from lionhub.serve.cli.monitor import _stream_tail
 
     stream = tmp_path / "stream"
     stream.mkdir()
@@ -237,7 +237,7 @@ async def test_reader_keeps_unicode_separators_in_one_record_but_hides_them(tmp_
 
 @pytest.mark.asyncio
 async def test_reader_displays_the_actual_nonfinite_fallback(tmp_path):
-    from lionagi.cli.monitor import _stream_tail
+    from lionhub.serve.cli.monitor import _stream_tail
 
     stream = tmp_path / "stream"
     stream.mkdir()

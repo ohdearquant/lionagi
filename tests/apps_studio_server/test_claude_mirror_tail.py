@@ -164,7 +164,7 @@ def test_mirror_forever_missing_root_is_noop(tmp_path, monkeypatch):
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    from lionagi.cli.mirror import mirror_forever
+    from lionhub.serve.cli.mirror import mirror_forever
 
     async def _body() -> None:
         stop = asyncio.Event()

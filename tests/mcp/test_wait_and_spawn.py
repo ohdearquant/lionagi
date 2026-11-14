@@ -667,7 +667,7 @@ def _parse(argv: list[str]):
     """Read a captured child argv with the parser that build will read it with."""
     import argparse
 
-    from lionagi.cli.agent import add_agent_subparser
+    from lionhub.serve.cli.agent import add_agent_subparser
 
     root = argparse.ArgumentParser(prog="li")
     add_agent_subparser(root.add_subparsers(dest="command"))
@@ -728,7 +728,7 @@ def test_a_switch_looking_query_reaches_the_child_as_a_positional(spawned):
     parsed = _parse(argv)
     assert parsed.query == ["--machine"]
     # And the scan that runs before any parsing does not see a switch either.
-    from lionagi.cli import machine
+    from lionhub.serve.cli import machine
 
     assert not machine.has_machine_flag(argv[1:])
 

@@ -171,7 +171,7 @@ def _mock_psutil(
     """Install a fake psutil + capture os.kill calls. Returns the calls list."""
     kill_calls: list[tuple[int, int]] = []
     patched_pid_alive = lambda pid: True
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionhub.serve.cli.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
