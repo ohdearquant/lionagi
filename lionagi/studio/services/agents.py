@@ -10,7 +10,12 @@ import yaml
 from fastapi import Body, HTTPException
 
 from lionagi._paths import LIONAGI_HOME
-from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
+from lionagi.libs.frontmatter import (
+    _FM_SPLIT,
+    _load_frontmatter_yaml,
+    _strip_frontmatter_prefix,
+    parse_frontmatter_strict,
+)
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.ln.concurrency import run_sync
 from lionhub.agent.casts.pattern import list_modes as _list_modes
@@ -66,8 +71,8 @@ class _AgentWriteRead:
 
 def _is_empty_yaml_document(block: str) -> bool:
     try:
-        return yaml.safe_load(block) is None
-    except (yaml.YAMLError, ValueError, RecursionError):
+        return _load_frontmatter_yaml(block) is None
+    except (yaml.YAMLError, RecursionError):
         return False
 
 
@@ -76,15 +81,19 @@ def _read_agent_for_write(text: str) -> _AgentWriteRead:
 
     Readable settings supply the parsed mapping and its system-agent protection.
     An unreadable block, closed or not, that mentions ``lion_system`` is
-    protected for every write. Any other unreadable block refuses partial
-    updates, since merging would discard existing settings. Deleting or
-    replacing the whole file only uses the system-agent protection.
+    protected for every write. A closed block with no settings, including an
+    explicit null, allows partial updates. Other unreadable blocks refuse
+    partial updates to preserve existing settings. Deleting or replacing the
+    whole file only uses the system-agent protection.
     """
+    normalized = _strip_frontmatter_prefix(text)
+    if normalized.startswith("---"):
+        text = normalized
     try:
         fm, body = parse_frontmatter_strict(text)
     except (yaml.YAMLError, RecursionError):
-        # The strict parser only raises once the text opens a frontmatter block.
-        # Without a closing delimiter the block runs to the end of the file.
+        # A closed block may be empty. Without a closing delimiter, inspect
+        # everything through the end of the file and refuse partial updates.
         parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
         block = parts[1] if len(parts) > 1 else text
         if "lion_system" in block:

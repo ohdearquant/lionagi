@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Callable
 from typing import Any
 
 import yaml
 
 _FM_SPLIT = re.compile(r"^---\s*$", re.MULTILINE)
+
+
+def _strip_frontmatter_prefix(text: str) -> str:
+    """Ignore leading whitespace and Unicode format characters before parsing."""
+    start = 0
+    while start < len(text) and (
+        text[start].isspace() or unicodedata.category(text[start]) == "Cf"
+    ):
+        start += 1
+    return text[start:]
 
 
 def _load_frontmatter_yaml(document: str) -> Any:

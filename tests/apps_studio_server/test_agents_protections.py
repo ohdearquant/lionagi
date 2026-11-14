@@ -634,6 +634,26 @@ def test_agent_writes_protect_system_frontmatter(
                 assert "custom: kept" in path.read_text()
 
 
+@pytest.mark.parametrize("prefix", ["\ufeff", "\u200b"], ids=["bom", "zero-width-space"])
+@pytest.mark.parametrize("operation", ["update", "delete"])
+def test_system_agent_with_leading_format_character_is_protected(
+    tmp_path, monkeypatch, prefix, operation
+):
+    from lionagi.studio.services.agents import AgentProtectedError, delete_agent, update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    path = root / "guarded.md"
+    original = f"{prefix}---\nlion_system: true\n---\nOriginal prompt.\n".encode()
+    path.write_bytes(original)
+
+    with pytest.raises(AgentProtectedError, match="is a system agent"):
+        if operation == "update":
+            update_agent("guarded", {"system_prompt": "New prompt."})
+        else:
+            delete_agent("guarded")
+    assert path.read_bytes() == original
+
+
 def test_definitions_save_route_refuses_system_agent(tmp_path, monkeypatch):
     client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
     _write_agent_md(

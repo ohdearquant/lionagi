@@ -21,6 +21,7 @@ from lionagi._paths import (
     _unreadable_symlink_target,
 )
 from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
+from lionagi.libs.frontmatter import _strip_frontmatter_prefix
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
@@ -1214,6 +1215,11 @@ _CONTAINMENT_KEYS = (_CONTAIN_KEY, _CONTAIN_ACCOUNT_KEY)
 _FLAG_KEY_LINE = re.compile(
     rf"^[ \t]*(?:-[ \t]+)*[\"']?({'|'.join(_CONTAINMENT_KEYS)})[\"']?[ \t]*:", re.M
 )
+_LIGHT_WORKLOAD_LINE = re.compile(
+    r"""^(?:workload|"workload"|'workload')[ \t]*:[ \t]+(?:light|"light"|'light')"""
+    r"(?:[ \t]+(?:#[^\r\n]*)?)?\r?$",
+    re.M,
+)
 _DASHES = re.compile(r"-{3,}")
 
 
@@ -1291,9 +1297,11 @@ def _keys_like_the_contain_flag(document: Any) -> list[str]:
 def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     """Retain containment and refuse discarded tool settings.
 
-    A containment key in a readable mapping, or a mention in an unreadable block,
-    enables the corresponding containment. Empty blocks have no settings to lose.
-    A block after prompt text that declares containment raises with its opening line.
+    A containment flag in a readable mapping, or a mention in an unreadable block,
+    enables the corresponding containment. The light workload also restricts the
+    worker, so keep it when a readable mapping sets it or an unreadable block has
+    a top-level line declaring it. Empty blocks have no settings to lose. A block
+    after prompt text that declares containment raises with its opening line.
     """
     from itertools import pairwise
 
@@ -1308,10 +1316,16 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         except (yaml.YAMLError, RecursionError):
             return False, None
 
-    def named_containment_keys(block: str, document: Any) -> set[str]:
+    def containment_settings(block: str, document: Any) -> dict[str, Any]:
         if isinstance(document, dict):
-            return {key for key in _CONTAINMENT_KEYS if key in document}
-        return {key for key in _CONTAINMENT_KEYS if key in block}
+            settings = dict.fromkeys((key for key in _CONTAINMENT_KEYS if key in document), True)
+            light = document.get("workload") == "light"
+        else:
+            settings = dict.fromkeys((key for key in _CONTAINMENT_KEYS if key in block), True)
+            light = _LIGHT_WORKLOAD_LINE.search(block) is not None
+        if light:
+            settings["workload"] = "light"
+        return settings
 
     def refuse_unread_tool_settings(block: str) -> None:
         """Even a tool mention in a value triggers refusal because the settings cannot be read."""
@@ -1344,10 +1358,10 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         if reads and document is None:
             return {}
         refuse_unread_tool_settings(block)
-        named = named_containment_keys(block, document)
+        settings = containment_settings(block, document)
         if _CONTAIN_KEY in block:
             # Keep containment for mentions in an unclosed user-settings block.
-            named.add(_CONTAIN_KEY)
+            settings[_CONTAIN_KEY] = True
         what = f"its frontmatter does not read as YAML settings ({reason})"
     else:
         lines = text.splitlines()
@@ -1392,7 +1406,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                     refuse_unread_tool_settings(block)
                 declared = set(_FLAG_KEY_LINE.findall(block))
                 if not reads or isinstance(document, dict):
-                    declared.update(named_containment_keys(block, document))
+                    declared.update(containment_settings(block, document))
                 if declared:
                     keys = ", ".join(sorted(declared))
                     raise ConfigurationError(
@@ -1413,7 +1427,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         if reads and isinstance(document, dict):
             if not document:
                 return {}
-            named = named_containment_keys(block, document)
+            settings = containment_settings(block, document)
         elif reads and document is None:
             # Empty or comments only, a block has no settings to lose.
             return {}
@@ -1421,32 +1435,25 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             # A hidden block that reads as a list or a line of text holds no settings, and
             # one that does not read has none to apply: either counts, as a frontmatter
             # that does not read does, when it names the flag anywhere in its text.
-            named = named_containment_keys(block, document)
-            if not named and (reads or closing is None):
+            settings = containment_settings(block, document)
+            if not settings and (reads or closing is None):
                 return {}
         what = "text ahead of the --- on line 1 hides the frontmatter after it"
-    warn(
-        f"agent profile {name!r}: {what}; every setting in it is ignored"
-        + (
-            f", and its worker is contained, since it names {', '.join(sorted(named))}"
-            if named
-            else ""
-        )
+    flags = sorted(key for key in _CONTAINMENT_KEYS if key in settings)
+    retained = (
+        "workload 'light' is kept and other settings are ignored"
+        if "workload" in settings
+        else "every setting in it is ignored"
     )
-    return {key: True for key in _CONTAINMENT_KEYS if key in named}
+    warn(
+        f"agent profile {name!r}: {what}; {retained}"
+        + (f", and its worker is contained, since it names {', '.join(flags)}" if flags else "")
+    )
+    return settings
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
-    import unicodedata
-
-    # Whitespace or an invisible format character (a byte-order mark, a zero-width
-    # space) ahead of the opening delimiter would hide it and, with it, every setting.
-    start = 0
-    while start < len(text) and (
-        text[start].isspace() or unicodedata.category(text[start]) == "Cf"
-    ):
-        start += 1
-    text = text[start:]
+    text = _strip_frontmatter_prefix(text)
     _check_profile_mcp_frontmatter(name, text)
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:
