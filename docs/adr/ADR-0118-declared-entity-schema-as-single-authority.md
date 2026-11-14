@@ -44,8 +44,9 @@ counts, the numeric P1 inventory figures below have not been reverified at `bb57
 4. `MIGRATION_COLUMNS` / `MIGRATION_INDEXES` in `state/schema_migrations.py`: a per-table
    ledger of additive columns (the `sessions` list alone carries ~30 entries) and a per-dialect
    index list, both re-stating what 1 and 2 already declare.
-5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 334, `_INVOCATION_COLUMNS`
-   392, `_SHOW_COLUMNS` 406, `_PLAY_COLUMNS` 420, `_BRANCH_COLUMNS` 443) guarding the dynamic
+5. Five `_*_COLUMNS` frozensets in `state/db.py` (`lionagi/state/db.py::_SESSION_COLUMNS`,
+   `lionagi/state/db.py::_INVOCATION_COLUMNS`, `lionagi/state/db.py::_SHOW_COLUMNS`,
+   `lionagi/state/db.py::_PLAY_COLUMNS`, `lionagi/state/db.py::_BRANCH_COLUMNS`) guarding the dynamic
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
    The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
    thing and are not part of this five.
