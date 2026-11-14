@@ -20,9 +20,55 @@ from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery
 from tests.state.lifecycle.test_exact_terminal_attempt import _seed, _wait_for_attempt_release
 from tests.state.lifecycle.test_late_foreign_awaitables import _ForeignOwner, _wait_thread_event
 
+STARTUP_TIMEOUT = 10
+
 
 def _forbid(*_args, **_kwargs):
     raise AssertionError("offline test forbids processes, signals, and network")
+
+
+class _ModuleProxy:
+    def __init__(self, module, **overrides):
+        self._module = module
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        return self._overrides.get(name, getattr(self._module, name))
+
+
+class _AttemptDeadline:
+    """Expire the real outer attempt only after the foreign watchdog starts."""
+
+    def __init__(self, monkeypatch, watchdog_started):
+        self.watchdog_started = watchdog_started
+        self.expired = False
+        monkeypatch.setattr(
+            reconciliation, "asyncio", _ModuleProxy(asyncio, wait_for=self.wait_for)
+        )
+
+    async def wait_for(self, awaitable, timeout):
+        if (
+            getattr(awaitable, "__qualname__", "")
+            != "TerminalReconciler._attempt_one.<locals>.perform"
+        ):
+            return await asyncio.wait_for(awaitable, timeout)
+        attempt = asyncio.create_task(awaitable)
+        started = asyncio.create_task(_wait_thread_event(self.watchdog_started))
+        try:
+            done, _ = await asyncio.wait(
+                {attempt, started}, timeout=STARTUP_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+            )
+            if attempt in done:
+                return attempt.result()
+            if started not in done:
+                pytest.fail("foreign watchdog did not start before the test's startup timeout")
+            started.result()
+            self.expired = True
+            return await asyncio.wait_for(attempt, timeout=0)
+        finally:
+            started.cancel()
+            attempt.cancel()
+            await asyncio.gather(started, attempt, return_exceptions=True)
 
 
 @pytest.fixture(autouse=True)
@@ -58,8 +104,8 @@ async def test_foreign_watchdog_start_failure_reports_stuck_without_releasing(
         def cancel(self):
             pass
 
-    monkeypatch.setattr(reconciliation.threading, "Timer", FailingTimer)
-    monkeypatch.setattr(reconciliation, "HANDLER_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(reconciliation, "threading", _ModuleProxy(threading, Timer=FailingTimer))
+    deadline = _AttemptDeadline(monkeypatch, started)
     foreign_loop = asyncio.new_event_loop()
     future = foreign_loop.create_future()  # the loop is deliberately never running
 
@@ -71,13 +117,17 @@ async def test_foreign_watchdog_start_failure_reports_stuck_without_releasing(
             event_id = await _seed(db)
             await register_consumer(db, "timer-failure", start="all")
             key = (reconciliation._store_identity(db), "timer-failure", event_id)
-            first = TerminalReconciler("timer-failure", prepare, batch_size=1, timeout=0.05)
-            second = TerminalReconciler("timer-failure", prepare, batch_size=1, timeout=0.05)
+            first = TerminalReconciler(
+                "timer-failure", prepare, batch_size=1, timeout=STARTUP_TIMEOUT
+            )
+            second = TerminalReconciler(
+                "timer-failure", prepare, batch_size=1, timeout=STARTUP_TIMEOUT
+            )
             with caplog.at_level(logging.WARNING, logger=reconciliation.__name__):
                 try:
                     result = await getattr(first, adapter)(db, event_id)
+                    assert deadline.expired
                     assert result.status == "failed" and result.attempted
-                    await _wait_thread_event(started)
 
                     async def stuck_warning():
                         while not any(
@@ -112,6 +162,7 @@ async def test_foreign_watchdog_ignores_deferred_ack_drained_before_timer_fires(
 ):
     """A retained result is no longer stuck once deferred ACK is drained."""
     timers = []
+    watchdog_started = threading.Event()
     settle_finished = threading.Event()
     original_thread = threading.Thread
 
@@ -123,7 +174,7 @@ async def test_foreign_watchdog_ignores_deferred_ack_drained_before_timer_fires(
             timers.append(self)
 
         def start(self):
-            pass
+            watchdog_started.set()
 
         def cancel(self):
             self.cancelled = True
@@ -146,8 +197,12 @@ async def test_foreign_watchdog_ignores_deferred_ack_drained_before_timer_fires(
         return original_thread(*args, **kwargs)
 
     owner = _ForeignOwner("future")
-    monkeypatch.setattr(reconciliation.threading, "Timer", CapturedTimer)
-    monkeypatch.setattr(reconciliation.threading, "Thread", instrument_thread)
+    monkeypatch.setattr(
+        reconciliation,
+        "threading",
+        _ModuleProxy(threading, Timer=CapturedTimer, Thread=instrument_thread),
+    )
+    deadline = _AttemptDeadline(monkeypatch, watchdog_started)
 
     async def fail_ack(_target):
         raise reconciliation._LateAckDeferredError("private-deferred-message")
@@ -162,10 +217,13 @@ async def test_foreign_watchdog_ignores_deferred_ack_drained_before_timer_fires(
             await register_consumer(db, "deferred-watchdog", start="all")
             store = reconciliation._store_identity(db)
             key = (store, "deferred-watchdog", event_id)
-            runner = TerminalReconciler("deferred-watchdog", prepare, batch_size=1, timeout=0.05)
+            runner = TerminalReconciler(
+                "deferred-watchdog", prepare, batch_size=1, timeout=STARTUP_TIMEOUT
+            )
             with caplog.at_level(logging.WARNING, logger=reconciliation.__name__):
                 try:
                     result = await getattr(runner, adapter)(db, event_id)
+                    assert deadline.expired
                     assert result.status == "failed" and result.attempted
                     owner.settle(DeliveryOutcome.SUCCESS)
                     await _wait_thread_event(owner.done)
