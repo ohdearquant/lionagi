@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Annotated, Any
 
 import yaml
 from fastapi import Body, HTTPException
 
 from lionagi._paths import LIONAGI_HOME
+from lionagi.libs.frontmatter import (
+    _FM_SPLIT,
+    _load_frontmatter_yaml,
+    _strip_frontmatter_prefix,
+    parse_frontmatter_strict,
+)
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.ln.concurrency import run_sync
 from lionhub.agent.casts.pattern import list_modes as _list_modes
@@ -49,21 +57,68 @@ def _is_protected_system(fm: dict[str, Any]) -> bool:
       cannot be edited" means. Agents created through the Studio API stamp
       ``lion_system: false`` explicitly, so they are unambiguously
       editable/deletable by their owner.
-
-    This is the single place both write-protection call sites (this module and
-    ``definitions.py``'s agent save path) resolve the predicate, so they cannot
-    drift apart from each other or from the runtime again.
     """
     return "lion_system" in fm and bool(fm["lion_system"])
 
 
-def _read_frontmatter(path) -> dict[str, Any]:
+@dataclass(frozen=True)
+class _AgentWriteRead:
+    frontmatter: dict[str, Any]
+    body: str
+    protection: str | None = None
+    unreadable_block: bool = False
+
+
+def _is_empty_yaml_document(block: str) -> bool:
+    try:
+        return _load_frontmatter_yaml(block) is None
+    except (yaml.YAMLError, RecursionError):
+        return False
+
+
+def _read_agent_for_write(text: str) -> _AgentWriteRead:
+    """Classify frontmatter for agent writes.
+
+    Readable settings supply the parsed mapping and its system-agent protection.
+    An unreadable block, closed or not, that mentions ``lion_system`` is
+    protected for every write. A closed block with no settings, including an
+    explicit null, allows partial updates. Other unreadable blocks refuse
+    partial updates to preserve existing settings. Deleting or replacing the
+    whole file only uses the system-agent protection.
+    """
+    normalized = _strip_frontmatter_prefix(text)
+    if normalized.startswith("---"):
+        text = normalized
+    try:
+        fm, body = parse_frontmatter_strict(text)
+    except (yaml.YAMLError, RecursionError):
+        # A closed block may be empty. Without a closing delimiter, inspect
+        # everything through the end of the file and refuse partial updates.
+        parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
+        block = parts[1] if len(parts) > 1 else text
+        if "lion_system" in block:
+            return _AgentWriteRead(
+                {},
+                "",
+                "may be a system agent because its frontmatter could not be read",
+                unreadable_block=True,
+            )
+        rest = parts[2].strip() if len(parts) > 2 else ""
+        if len(parts) > 2 and _is_empty_yaml_document(block):
+            # A closed block that is empty, only comments, or an explicit null
+            # holds no settings, so a partial update has nothing to discard.
+            return _AgentWriteRead({}, rest)
+        return _AgentWriteRead({}, rest, unreadable_block=True)
+    reason = "is a system agent" if _is_protected_system(fm) else None
+    return _AgentWriteRead(fm, body, reason)
+
+
+def _read_agent_file_for_write(path: Path, name: str) -> _AgentWriteRead:
     try:
         text = path.read_text()
-    except OSError:
-        return {}
-    fm, _ = _parse_frontmatter(text)
-    return _normalize_frontmatter(fm)
+    except OSError as exc:
+        raise AgentProtectedError(f"Agent '{name}' file could not be read") from exc
+    return _read_agent_for_write(text)
 
 
 def _normalize_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
@@ -310,9 +365,9 @@ def delete_agent(name: str) -> bool:
     if stem == DEFAULT_AGENT_NAME:
         raise AgentProtectedError(f"Agent '{stem}' is the default agent and cannot be deleted")
 
-    fm = _read_frontmatter(path)
-    if _is_protected_system(fm):
-        raise AgentProtectedError(f"Agent '{stem}' is a system agent and cannot be deleted")
+    protection = _read_agent_file_for_write(path, stem).protection
+    if protection:
+        raise AgentProtectedError(f"Agent '{stem}' {protection} and cannot be deleted")
 
     path.unlink()
     return True
@@ -326,15 +381,12 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if not path.exists():
         return None
 
-    try:
-        existing_text = path.read_text()
-    except OSError:
-        existing_text = ""
-    existing_fm, existing_body = _parse_frontmatter(existing_text)
-    existing_fm = _normalize_frontmatter(existing_fm)
-
-    if _is_protected_system(existing_fm):
-        raise AgentProtectedError(f"Agent '{stem}' is a system agent and cannot be edited")
+    existing = _read_agent_file_for_write(path, stem)
+    if existing.protection:
+        raise AgentProtectedError(f"Agent '{stem}' {existing.protection} and cannot be edited")
+    if existing.unreadable_block:
+        raise AgentProtectedError(f"Agent '{stem}' frontmatter could not be read")
+    existing_fm = _normalize_frontmatter(existing.frontmatter)
 
     # While demo mode is on, a client that fetched the redacted view and posted
     # it back unmodified must not be able to overwrite the real file with the
@@ -367,7 +419,7 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 
     new_body = data.get("system_prompt")
     if new_body is None:
-        new_body = existing_body
+        new_body = existing.body
     new_body = (new_body or "").strip()
 
     if fm:

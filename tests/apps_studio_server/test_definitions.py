@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
@@ -271,6 +272,52 @@ def _make_patched_client(tmp_path, monkeypatch):
         base_url="http://127.0.0.1:8765",
         headers={"Content-Type": "application/json"},
     )
+
+
+@pytest.fixture
+def existing_agent_definition(tmp_path, monkeypatch):
+    client = _make_patched_client(tmp_path, monkeypatch)
+    agent_file = tmp_path / "lionagi_home" / "agents" / "save-agent.md"
+    agent_file.write_bytes(b"---\nname: save-agent\n---\n\nOriginal body.\n")
+    return client, agent_file
+
+
+@pytest.mark.integration
+def test_save_agent_definition_rejects_invalid_date(existing_agent_definition):
+    client, agent_file = existing_agent_definition
+    original = agent_file.read_bytes()
+    frontmatter = "name: save-agent\nDeadline: 2026-02-30\n"
+    with pytest.raises(ValueError) as invalid_date:
+        yaml.safe_load(frontmatter)
+
+    response = client.post(
+        "/api/definitions/agent/save-agent",
+        json={"content": f"---\n{frontmatter}---\n\nNew body.\n"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json() == {"detail": str(invalid_date.value)}
+    assert agent_file.read_bytes() == original
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("---\nname: save-agent\nDeadline: 2026-02-30\n", id="unclosed"),
+        pytest.param("---\nname: save-agent\nDeadline: [\n---\n\nNew body.\n", id="syntax-error"),
+        pytest.param("---\nname: save-agent\nDeadline: 2026-02-28\n---\n\nNew body.\n", id="valid"),
+    ],
+)
+def test_save_agent_definition_preserves_frontmatter_compatibility(
+    existing_agent_definition, content
+):
+    client, agent_file = existing_agent_definition
+
+    response = client.post("/api/definitions/agent/save-agent", json={"content": content})
+
+    assert response.status_code == 200, response.text
+    assert agent_file.read_text() == content
 
 
 @pytest.mark.parametrize(

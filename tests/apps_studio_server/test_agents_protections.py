@@ -313,6 +313,43 @@ def test_delete_default_agent_refused_even_when_user_owned(tmp_path, monkeypatch
 # update_agent() protections
 
 
+@pytest.mark.parametrize("operation", ["update", "delete"])
+def test_agent_writes_refuse_when_existing_file_cannot_be_read(tmp_path, monkeypatch, operation):
+    from lionagi.studio.services.agents import AgentProtectedError, delete_agent, update_agent
+
+    name = "unreadable"
+    path = _make_agents_root(tmp_path, monkeypatch) / f"{name}.md"
+    original = b"---\nlion_system: true\n---\nOriginal prompt.\n"
+    path.write_bytes(original)
+    read_text = type(path).read_text
+
+    def fail_on_agent_read(candidate, *args, **kwargs):
+        if candidate == path:
+            raise OSError("fixture could not read the agent file")
+        return read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), "read_text", fail_on_agent_read)
+
+    with pytest.raises(AgentProtectedError) as refused:
+        if operation == "update":
+            update_agent(name, {"system_prompt": "New prompt."})
+        else:
+            delete_agent(name)
+
+    assert name in str(refused.value)
+    assert "could not be read" in str(refused.value)
+    assert path.read_bytes() == original
+
+
+def test_update_missing_agent_returns_none(tmp_path, monkeypatch):
+    from lionagi.studio.services.agents import update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+
+    assert update_agent("never-existed", {"system_prompt": "New prompt."}) is None
+    assert not (root / "never-existed.md").exists()
+
+
 def test_edit_system_agent_refused(tmp_path, monkeypatch):
     from lionagi.studio.services.agents import AgentProtectedError, update_agent
 
@@ -511,6 +548,112 @@ def _make_definitions_client(tmp_path, monkeypatch):
     return TestClient(app, base_url="http://127.0.0.1:8765"), agents_dir
 
 
+@pytest.mark.parametrize(
+    "method, url, body",
+    [
+        pytest.param("PUT", "/api/agents/sample", {"system_prompt": "New prompt."}, id="update"),
+        pytest.param("DELETE", "/api/agents/sample", None, id="delete"),
+        pytest.param(
+            "POST", "/api/definitions/agent/sample", {"content": "New prompt."}, id="definition"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "text, refused_methods",
+    [
+        pytest.param(
+            "---\nlion_system: true\nDeadline: 2026-02-30\n---\nOriginal prompt.\n",
+            ("PUT", "DELETE", "POST"),
+            id="system-invalid-date",
+        ),
+        pytest.param(
+            "---\nlion_system: true\nNotes: [unfinished\n---\nOriginal prompt.\n",
+            ("PUT", "DELETE", "POST"),
+            id="system-invalid-yaml",
+        ),
+        pytest.param(
+            "---\nlion_system: true\nOriginal prompt.\n",
+            ("PUT", "DELETE", "POST"),
+            id="system-unclosed",
+        ),
+        pytest.param(
+            "---\nDeadline: 2026-02-30\n---\nOriginal prompt.\n",
+            ("PUT",),
+            id="ordinary-invalid-date",
+        ),
+        pytest.param(
+            "---\nNotes: [unfinished\n---\nOriginal prompt mentions lion_system.\n",
+            ("PUT",),
+            id="ordinary-invalid-yaml-marker-only-in-body",
+        ),
+        pytest.param(
+            "---\nname: sample\ntools: [Read]\nOriginal prompt.\n",
+            ("PUT",),
+            id="ordinary-unclosed",
+        ),
+        pytest.param(
+            "---name: sample\ntools: [Read]\nOriginal prompt.\n",
+            ("PUT",),
+            id="ordinary-opening-not-on-its-own-line",
+        ),
+        pytest.param(
+            "---\nlion_system: false\ncustom: kept\n---\nOriginal prompt.\n",
+            (),
+            id="readable-false",
+        ),
+    ],
+)
+def test_agent_writes_protect_system_frontmatter(
+    tmp_path, monkeypatch, method, url, body, text, refused_methods
+):
+    client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
+    path = agents_dir / "sample.md"
+    original = text.encode()
+    path.write_bytes(original)
+
+    response = client.request(method, url, json=body, headers={"Content-Type": "application/json"})
+
+    if method in refused_methods:
+        assert response.status_code == 403, response.text
+        detail = response.json()["detail"]
+        assert "sample" in detail
+        assert "frontmatter could not be read" in detail
+        assert "Original prompt" not in detail
+        assert "2026-02-30" not in detail
+        assert "unfinished" not in detail
+        assert path.read_bytes() == original
+    else:
+        assert response.status_code == 200, response.text
+        if method == "DELETE":
+            assert not path.exists()
+        else:
+            assert path.read_bytes() != original
+            assert "New prompt." in path.read_text()
+            if method == "PUT" and "lion_system: false" in text:
+                assert "lion_system: false" in path.read_text()
+                assert "custom: kept" in path.read_text()
+
+
+@pytest.mark.parametrize("prefix", ["\ufeff", "\u200b"], ids=["bom", "zero-width-space"])
+@pytest.mark.parametrize("operation", ["update", "delete"])
+def test_system_agent_with_leading_format_character_is_protected(
+    tmp_path, monkeypatch, prefix, operation
+):
+    from lionagi.studio.services.agents import AgentProtectedError, delete_agent, update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    path = root / "guarded.md"
+    original = f"{prefix}---\nlion_system: true\n---\nOriginal prompt.\n".encode()
+    path.write_bytes(original)
+
+    with pytest.raises(AgentProtectedError, match="is a system agent"):
+        if operation == "update":
+            update_agent("guarded", {"system_prompt": "New prompt."})
+        else:
+            delete_agent("guarded")
+    assert path.read_bytes() == original
+
+
 def test_definitions_save_route_refuses_system_agent(tmp_path, monkeypatch):
     client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
     _write_agent_md(
@@ -664,3 +807,61 @@ def test_create_agent_file_always_opens_with_frontmatter(tmp_path, monkeypatch, 
     create_agent("bare", data)
 
     assert (root / "bare.md").read_text() == expected
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("# no settings yet\n", id="comments-only"),
+        pytest.param("null\n", id="explicit-null"),
+        pytest.param("~\n", id="tilde-null"),
+    ],
+)
+def test_partial_update_accepts_a_closed_frontmatter_block_with_no_settings(
+    tmp_path, monkeypatch, block
+):
+    from lionagi.libs.frontmatter import parse_frontmatter
+    from lionagi.studio.services.agents import update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    (root / "blank.md").write_text(f"---\n{block}---\nKeep this body.\n")
+
+    updated = update_agent("blank", {"effort": "high"})
+
+    assert updated is not None
+    assert updated["effort"] == "high"
+    fm, body = parse_frontmatter((root / "blank.md").read_text())
+    assert fm["effort"] == "high"
+    assert body == "Keep this body."
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param("- a\n- b\n", id="list"),
+        pytest.param("just text\n", id="scalar"),
+    ],
+)
+def test_partial_update_still_refuses_a_block_that_is_not_a_mapping(tmp_path, monkeypatch, block):
+    from lionagi.studio.services.agents import AgentProtectedError, update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    original = f"---\n{block}---\nbody\n"
+    (root / "odd.md").write_text(original)
+
+    with pytest.raises(AgentProtectedError, match="frontmatter could not be read"):
+        update_agent("odd", {"effort": "high"})
+    assert (root / "odd.md").read_text() == original
+
+
+def test_a_comment_naming_lion_system_still_protects_an_empty_block(tmp_path, monkeypatch):
+    from lionagi.studio.services.agents import AgentProtectedError, update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    original = "---\n# lion_system: true\n---\nbody\n"
+    (root / "guarded.md").write_text(original)
+
+    with pytest.raises(AgentProtectedError, match="system agent"):
+        update_agent("guarded", {"effort": "high"})
+    assert (root / "guarded.md").read_text() == original
