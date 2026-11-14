@@ -1207,8 +1207,13 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     block that is empty or comments only has none to lose. Text on lines of its own ahead of
     the first ``---`` line leaves the profile all prompt, as before, and contains nothing: any
     block after it, closed or not, that sets the flag as a key or does not read and names it
-    is refused with the opening line. A profile with no line of dashes has no block, and
+    is refused with the opening line. Every span between two ``---`` lines counts as a
+    block, the one after a closing line included, so a rule in the prompt cannot hide a
+    declaration and a flag line after a closed block is refused rather than ignored. A
+    profile with no line of dashes has no block, and
     all of it is the prompt."""
+    from itertools import pairwise
+
     import yaml
 
     from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
@@ -1272,9 +1277,10 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                     continue
                 if _DASHES.fullmatch(line.rstrip()):
                     delimiters.append(i)
-            for index in range(0, len(delimiters), 2):
-                opening = delimiters[index]
-                end = delimiters[index + 1] if index + 1 < len(delimiters) else len(lines)
+            # Every span between consecutive ``---`` lines is read, not only alternate ones: which
+            # line opens a block depends on how many rules came before it, and a rule in the
+            # prompt must not hide a declaration from this check.
+            for opening, end in pairwise([*delimiters, len(lines)]):
                 block = "\n".join(lines[opening + 1 : end])
                 reads, document = read(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)

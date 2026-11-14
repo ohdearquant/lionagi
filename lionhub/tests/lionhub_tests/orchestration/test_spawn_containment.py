@@ -277,11 +277,13 @@ def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
             True,
             False,
         ),
+        # After prompt text every span between --- lines is checked, the one after a
+        # closing line included, so a line setting the flag there is refused, not ignored.
         (
             "# notes\n---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n",
             False,
             False,
-            False,
+            True,
         ),
         (
             "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: false\n"
@@ -381,6 +383,10 @@ def test_a_hidden_block_that_reads_as_a_list_or_text_contains_when_it_names_the_
         ("Work.\r\n---\r\ncontain_user_settings: true\r\n", 2),
         ("Work.\n---\ncontain_user_settings:true\n---\nMore.\n", 2),
         ("Work.\n---\n{contain_user_settings: true}\n---\nMore.\n", 2),
+        ("Work.\n---\n---\ncontain_user_settings: true\n", 3),
+        # A rule in the prompt ahead of the block shifts which line opens it.
+        ("Work.\n---\nMore.\n---\ncontain_user_settings: true\n---\nEnd.\n", 4),
+        ("Work.\n---\nMore.\n---\ncontain_user_settings: true\n", 4),
         (
             "Work.\n---\nmodel: claude_code/sonnet\n---\nNotes.\n---\n"
             "contain_user_settings: true\n---\nMore.\n",
@@ -400,6 +406,24 @@ def test_a_misplaced_block_that_names_the_flag_is_refused(text, line):
     with pytest.raises(
         ConfigurationError, match=f"block on line {line}.*move the block to the top"
     ):
+        _parse_profile("role", text)
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("Work.\n---\nmcp: none\n---\nMore.\n", 2),
+        ("Work.\n---\nMore.\n---\nmcp: none\n---\nEnd.\n", 4),
+        ("Work.\n---\nMore.\n---\nmcp: none\n", 4),
+    ],
+)
+def test_a_misplaced_block_that_declares_mcp_is_refused(text, line):
+    """An mcp declaration in a block after prompt text is refused wherever the block sits,
+    including after a rule in the prompt."""
+    from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.spawn import _parse_profile
+
+    with pytest.raises(ConfigurationError, match=f"block on line {line} .*mcp declaration"):
         _parse_profile("role", text)
 
 
