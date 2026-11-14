@@ -123,9 +123,11 @@ independently.
 ### G4. D2, the inventory and the tests
 
 D2's exempt set is the one Amendment 3 C2 governs. At this amendment's base it is
-`{cli, operations, service, studio}`. `studio` leaves it in the move change, because no source file that
-names `lionhub` then remains under `lionagi/studio/`; C2's `studio/operator/engine.py` row is removed in
-the same change. The other members leave on their own steps, and the set is empty at 2.0. The same
+`{operations, service, studio}`: `cli` left it in the CLI move (ADR-0139 Amendment 5), which also ended
+C2's `cli/agent.py` and `cli/orchestrate/_orchestration.py` rows. `studio` leaves it in the move change,
+because no source file that names `lionhub` then remains under `lionagi/studio/`; C2's
+`studio/operator/engine.py` row is removed in the same change. The other members leave on their own
+steps, and the set is empty at 2.0. The same
 boundary test gains the application root: no file under `lionagi/` names `lionagi_studio` except the
 table in `_moved.py`, and no file under `lionhub/` names it except the explicit Studio launch adapter.
 
