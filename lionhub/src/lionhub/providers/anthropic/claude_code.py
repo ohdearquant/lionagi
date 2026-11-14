@@ -977,6 +977,7 @@ async def stream_claude_code_cli(  # noqa: C901
     partial_message_ids: set[str] = set()
     current_partial_message_id: str | None = None
     partial_without_message_id = False
+    saw_result = False
 
     stream = stream_cc_cli_events(request)
     try:
@@ -1160,6 +1161,7 @@ async def stream_claude_code_cli(  # noqa: C901
 
             # ------------------------ RESULT -----------------------------------
             elif typ == "result":
+                saw_result = True
                 result = obj.get("result")
                 session.result = result.strip() if isinstance(result, str) else ""
                 session.usage = obj.get("usage", {})
@@ -1206,9 +1208,19 @@ async def stream_claude_code_cli(  # noqa: C901
     finally:
         await stream.aclose()
 
+    if not saw_result:
+        session.is_error = True
+        session.error_status = None
+        session.result = (
+            "Claude Code stream ended without a result event "
+            "(stream disconnected before completion)"
+        )
+        if session.session_id:
+            session.result += f" for session {session.session_id}"
+
     if on_final:
         await maybe_await(on_final(session))
-    if request.verbose_output:
+    if request.verbose_output and saw_result:
         _pp_final(session, theme)
 
     yield session
