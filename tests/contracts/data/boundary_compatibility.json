@@ -3887,6 +3887,7 @@
       "run_casts"
     ],
     "lionhub/src/lionhub/agent/context_fold.py": [
+      "CacheBounds",
       "ContextFold",
       "estimate_next_request_tokens",
       "install_context_fold"
