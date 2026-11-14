@@ -1015,24 +1015,37 @@ _MAX_FRONTMATTER_DEPTH = 64
 
 
 def _node_depth(root: Any) -> int:
-    """The deepest nesting of mapping and sequence nodes under *root*, walked without
-    recursion. A node reached again through an alias is not walked twice."""
+    """The deepest nesting of mapping and sequence nodes under *root*, as written.
+
+    Depth is read from where each node is written, by how many other collections' text
+    encloses its own, never from the edges between nodes: an alias edge can reach a deeply
+    written node from a shallow one, and the loaders recurse along the written nesting.
+    Computed without recursion.
+    """
     import yaml
 
-    deepest = 0
-    pending = [(root, 1)]
+    spans: list[tuple[int, int]] = []
+    pending = [root]
     seen: set[int] = set()
     while pending:
-        node, depth = pending.pop()
+        node = pending.pop()
         if id(node) in seen or not isinstance(node, yaml.CollectionNode):
             continue
         seen.add(id(node))
-        deepest = max(deepest, depth)
+        spans.append((node.start_mark.index, node.end_mark.index))
         if isinstance(node, yaml.MappingNode):
-            children = [child for pair in node.value for child in pair]
+            pending.extend(child for pair in node.value for child in pair)
         else:
-            children = node.value
-        pending.extend((child, depth + 1) for child in children)
+            pending.extend(node.value)
+    # Enclosing spans come first: by start, and the longer of two that start together.
+    spans.sort(key=lambda span: (span[0], -span[1]))
+    deepest = 0
+    open_ends: list[int] = []
+    for start, end in spans:
+        while open_ends and open_ends[-1] <= start:
+            open_ends.pop()
+        open_ends.append(end)
+        deepest = max(deepest, len(open_ends))
     return deepest
 
 

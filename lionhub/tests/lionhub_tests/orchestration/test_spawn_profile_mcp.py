@@ -141,6 +141,28 @@ def test_deep_closed_frontmatter_without_mcp_is_refused(recursion_limit):
         _parse_profile("reviewer", "---\n" + _nested_flow(65) + "---\nReview.")
 
 
+def _aliased_stages(stages: int = 40, width: int = 30) -> str:
+    # Each stage is written inside the one before it and anchored; a later top-level key
+    # aliases it, so the shortest path to every stage is two levels however deep it is written.
+    inner = "a"
+    for k in reversed(range(stages + 1)):
+        inner = f"&A{k} " + "[" * width + inner + "]" * width
+    keys = [f"b{k}: *A{k}" for k in range(1, stages)]
+    return "\n".join(["a: " + inner, *keys, "mcp: none"]) + "\n"
+
+
+def test_deep_closed_frontmatter_reached_through_aliases_is_refused(recursion_limit):
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
+        _parse_profile("reviewer", "---\n" + _aliased_stages() + "---\nReview.")
+
+
+def test_deep_unclosed_frontmatter_reached_through_aliases_is_refused(recursion_limit):
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", "---\n" + _aliased_stages())
+    lenient = _aliased_stages().replace("mcp: none", "other: none")
+    assert _parse_profile("reviewer", "---\n" + lenient).mcp is None
+
+
 def test_closed_frontmatter_at_the_depth_bound_is_read(recursion_limit):
     # The top mapping is one level, so 63 lists under it reach the bound of 64.
     flow = _parse_profile("reviewer", "---\nmcp: none\n" + _nested_flow(63) + "---\nReview.")
