@@ -84,6 +84,78 @@ async def test_deleted_detail_is_404_but_definition_history_remains(tmp_path, mo
         assert result["events"][0]["status"] == "deleted"
 
 
+async def test_schedule_routes_refuse_unsupported_persisted_kinds(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    body = {
+        "name": "daily",
+        "trigger_type": "interval",
+        "interval_sec": 60,
+        "action_kind": "agent",
+        "action_agent": "research",
+    }
+    for target in ("research", "unknownengine"):
+        with pytest.raises(HTTPException, match="Invalid schedule action_kind 'engine'") as bad:
+            await schedules.create_schedule_route(
+                schedules.CreateScheduleRequest(
+                    **(body | {"action_kind": "engine", "action_agent": target})
+                )
+            )
+        assert bad.value.status_code == 400
+
+    result = await schedules.create_schedule_route(schedules.CreateScheduleRequest(**body))
+    with pytest.raises(HTTPException) as duplicate:
+        await schedules.create_schedule_route(schedules.CreateScheduleRequest(**body))
+    assert duplicate.value.status_code == 409
+
+    with pytest.raises(HTTPException, match="Invalid schedule action_kind 'engine'") as bad:
+        await schedules.update_schedule_route(
+            result["id"], schedules.UpdateScheduleRequest(action_kind="engine", name="changed")
+        )
+    assert bad.value.status_code == 400
+    async with StateDB(path) as db:
+        row = await db.get_schedule(result["id"])
+        assert row is not None
+        assert (row["name"], row["action_kind"], row["action_agent"]) == (
+            "daily",
+            "agent",
+            "research",
+        )
+
+
+@pytest.mark.parametrize("operation", ["create", "update"])
+async def test_schedule_routes_report_an_action_kind_check_as_bad_input(
+    tmp_path, monkeypatch, operation
+):
+    from sqlalchemy.exc import IntegrityError
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    original = sqlite3.IntegrityError("CHECK constraint failed: ck_schedules_action_kind")
+
+    async def refuse(*_args, **_kwargs):
+        raise IntegrityError(None, (), original)
+
+    monkeypatch.setattr(StateDB, "create_schedule", refuse)
+    monkeypatch.setattr(StateDB, "update_schedule", refuse)
+
+    async def existing(*_args):
+        return {"action_kind": "agent", "trigger_type": "interval", "interval_sec": 60}
+
+    monkeypatch.setattr(StateDB, "get_schedule", existing)
+    with pytest.raises(HTTPException, match="Invalid schedule action_kind") as bad:
+        if operation == "create":
+            await schedules.create_schedule_route(
+                schedules.CreateScheduleRequest(
+                    name="daily", trigger_type="interval", interval_sec=60, action_kind="agent"
+                )
+            )
+        else:
+            await schedules.update_schedule_route(
+                "daily", schedules.UpdateScheduleRequest(action_kind="play")
+            )
+    assert bad.value.status_code == 400
+
+
 async def test_disable_persists_the_reason_in_definition_history(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
