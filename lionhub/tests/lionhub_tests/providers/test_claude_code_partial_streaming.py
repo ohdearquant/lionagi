@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from lionagi.service.types import StreamChunk
+from lionagi.service.types.cli_session import CLISession
 from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest, stream_claude_code_cli
 
 
@@ -23,7 +24,9 @@ async def _chunks(events: list[dict]) -> list[StreamChunk]:
         side_effect=fake_events,
     ):
         async for item in stream_claude_code_cli(request):
-            if isinstance(item, StreamChunk):
+            if isinstance(item, CLISession):
+                assert item.is_error is False
+            else:
                 out.append(item)
     return out
 
@@ -59,6 +62,7 @@ async def test_partial_text_events_are_forwarded_as_deltas_without_duplicate_fin
                 "content": [{"type": "text", "text": "hello"}],
             },
         },
+        {"type": "result", "result": "hello"},
         {"type": "done"},
     ]
 
@@ -80,6 +84,7 @@ async def test_complete_assistant_text_is_kept_when_no_partial_delta_arrived():
                     "content": [{"type": "text", "text": "complete"}],
                 },
             },
+            {"type": "result", "result": "complete"},
             {"type": "done"},
         ]
     )
@@ -119,6 +124,7 @@ async def test_partial_text_does_not_suppress_final_tool_use_from_same_message()
                     ],
                 },
             },
+            {"type": "result", "result": ""},
             {"type": "done"},
         ]
     )
