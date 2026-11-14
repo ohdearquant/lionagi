@@ -61,19 +61,33 @@ def records_from_paths(paths: Iterable[Path]) -> Iterator[dict[str, object]]:
             yield from _records_from_file(file_path)
 
 
-def _read_gh_run_ids(path: str) -> list[str]:
+@dataclass(frozen=True)
+class _Run:
+    id: str
+    status: str | None
+    conclusion: str | None
+
+
+def _read_gh_runs(path: str) -> list[_Run]:
     raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
     value = json.loads(raw)
     rows = value if isinstance(value, list) else [value]
-    run_ids: list[str] = []
+    runs: dict[str, _Run] = {}
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("expected a GitHub run object")
-        run_id = row.get("databaseId") or row.get("run_id") or row.get("id")
-        if not _RUN_ID.fullmatch(str(run_id)):
+        run_id = str(row.get("databaseId") or row.get("run_id") or row.get("id"))
+        if not _RUN_ID.fullmatch(run_id):
             raise ValueError("expected a positive GitHub run ID")
-        run_ids.append(str(run_id))
-    return list(dict.fromkeys(run_ids))
+        status, conclusion = row.get("status"), row.get("conclusion")
+        if (status is not None and not isinstance(status, str)) or (
+            conclusion is not None and not isinstance(conclusion, str)
+        ):
+            raise ValueError(f"expected status and conclusion strings for GitHub run {run_id}")
+        run = _Run(run_id, status, conclusion)
+        if runs.setdefault(run_id, run) != run:
+            raise ValueError(f"conflicting outcomes for GitHub run {run_id}")
+    return list(runs.values())
 
 
 def _gh(*args: str) -> str:
@@ -180,23 +194,29 @@ def _artifact_records(
 
 
 def _collect_gh_records(
-    run_ids: Iterable[str], destination: Path
+    runs: Iterable[_Run], destination: Path
 ) -> tuple[list[dict[str, object]], int, int]:
     records: list[dict[str, object]] = []
     artifacts_read = incomplete_runs = 0
-    for run_id in run_ids:
+    for run in runs:
+        incomplete = run.status != "completed" or run.conclusion not in {"success", "failure"}
+        if incomplete:
+            print(
+                f"warning: run {run.id}: incomplete outcome "
+                f"(status={run.status!r}, conclusion={run.conclusion!r})",
+                file=sys.stderr,
+            )
         try:
-            artifacts = _list_gh_artifacts(run_id)
+            artifacts = _list_gh_artifacts(run.id)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            print(f"warning: run {run_id}: could not list artifacts: {exc}", file=sys.stderr)
+            print(f"warning: run {run.id}: could not list artifacts: {exc}", file=sys.stderr)
             incomplete_runs += 1
             continue
-        incomplete = False
         for artifact in artifacts:
             try:
-                records.extend(_artifact_records(run_id, artifact, destination))
+                records.extend(_artifact_records(run.id, artifact, destination))
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                print(f"warning: run {run_id}, artifact {artifact.name!r}: {exc}", file=sys.stderr)
+                print(f"warning: run {run.id}, artifact {artifact.name!r}: {exc}", file=sys.stderr)
                 incomplete = True
             else:
                 artifacts_read += 1
@@ -246,7 +266,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--gh-runs",
         metavar="PATH",
-        help="JSON from `gh run list/view --json ...`; use - for stdin",
+        help="JSON from `gh run list/view --json databaseId,status,conclusion`; use - for stdin",
     )
     parser.add_argument("--quarantine", type=Path, default=DEFAULT_MANIFEST)
     return parser.parse_args(argv)
@@ -270,20 +290,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(render_report(direct_records, quarantined=quarantined))
             return 0
 
-        run_ids = _read_gh_run_ids(args.gh_runs)
+        runs = _read_gh_runs(args.gh_runs)
         with tempfile.TemporaryDirectory(prefix="lionagi-flakes-") as temp_dir:
-            remote_records, artifacts_read, incomplete = _collect_gh_records(
-                run_ids, Path(temp_dir)
-            )
+            remote_records, artifacts_read, incomplete = _collect_gh_records(runs, Path(temp_dir))
         records = [*direct_records, *remote_records]
         if incomplete:
             print(
-                f"Incomplete flake report: {incomplete} of {len(run_ids)} runs could not be read completely."
+                f"Incomplete flake report: {incomplete} of {len(runs)} runs could not be read completely."
             )
         tests = {str(record["nodeid"]) for record in records if record.get("nodeid")}
         tests.discard("<pytest-session>")
         print(
-            f"Runs requested: {len(run_ids)}; runs read: {len(run_ids) - incomplete}; "
+            f"Runs requested: {len(runs)}; runs read: {len(runs) - incomplete}; "
             f"artifacts read: {artifacts_read}; distinct tests: {len(tests)}."
         )
         print(render_report(records, quarantined=quarantined))

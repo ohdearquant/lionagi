@@ -86,24 +86,28 @@ def report(monkeypatch, tmp_path):
     quarantine = tmp_path / "quarantine.txt"
     quarantine.write_text(f"2026-07-01 | {KNOWN} | {SIGNATURE}\n", encoding="utf-8")
 
-    def run(*run_ids, paths=()):
+    def run(*runs, paths=()):
         args = [*map(str, paths), "--quarantine", str(quarantine)]
-        if run_ids:
+        if runs:
             run_file = tmp_path / "runs.json"
-            run_file.write_text(
-                json.dumps([{"databaseId": run_id} for run_id in run_ids]), encoding="utf-8"
-            )
+            rows = [
+                row
+                if isinstance(row, dict)
+                else {"databaseId": row, "status": "completed", "conclusion": "success"}
+                for row in runs
+            ]
+            run_file.write_text(json.dumps(rows), encoding="utf-8")
             args.extend(("--gh-runs", str(run_file)))
         return flake_report.main(args)
 
     return run, listings, downloads, calls
 
 
-def test_empty_remote_runs_are_observed_successes(report, capsys):
+def test_empty_remote_runs_with_known_outcomes_are_read(report, capsys):
     run, listings, _, calls = report
     listings.update({"42": _listing(), "43": _listing(_artifact(3, "coverage", expired=True))})
 
-    assert run(42, 43, 42) == 0
+    assert run(42, {"databaseId": 43, "status": "completed", "conclusion": "failure"}, "42") == 0
 
     output = capsys.readouterr()
     assert output.out.splitlines() == [
@@ -113,6 +117,57 @@ def test_empty_remote_runs_are_observed_successes(report, capsys):
     assert output.err == ""
     assert len(calls) == 2
     assert all(call[1] == "api" for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "diagnostic"),
+    [
+        pytest.param(
+            {"status": "completed", "conclusion": "cancelled"}, "cancelled", id="cancelled"
+        ),
+        pytest.param({}, "status=None, conclusion=None", id="id-only"),
+        pytest.param({"status": "in_progress", "conclusion": ""}, "in_progress", id="in-progress"),
+        pytest.param({"status": "completed", "conclusion": "timed_out"}, "timed_out", id="timeout"),
+        pytest.param(
+            {"status": "completed", "conclusion": "startup_failure"},
+            "startup_failure",
+            id="startup",
+        ),
+        pytest.param({"status": "completed", "conclusion": "skipped"}, "skipped", id="skipped"),
+    ],
+)
+def test_unknown_or_interrupted_outcome_marks_run_incomplete(report, capsys, outcome, diagnostic):
+    run, listings, _, calls = report
+    listings["42"] = _listing()
+
+    assert run({"databaseId": 42, **outcome}) == 3
+
+    output = capsys.readouterr()
+    assert "Incomplete flake report: 1 of 1 runs could not be read completely." in output.out
+    assert "Runs requested: 1; runs read: 0; artifacts read: 0; distinct tests: 0." in output.out
+    assert "run 42" in output.err and diagnostic in output.err
+    assert len(calls) == 1 and calls[0][1] == "api"
+
+
+def test_interrupted_run_keeps_its_readable_artifact_rows(report, capsys):
+    run, listings, downloads, _ = report
+    listings["42"] = _listing(_artifact(1, FIRST))
+    downloads[("42", FIRST)] = [_record(KNOWN, "42")]
+
+    assert run({"databaseId": 42, "status": "completed", "conclusion": "cancelled"}) == 3
+
+    output = capsys.readouterr()
+    assert "runs read: 0; artifacts read: 1; distinct tests: 1." in output.out
+    assert KNOWN in output.out and "cancelled" in output.err
+
+
+def test_conflicting_outcomes_for_duplicate_runs_are_an_input_error(report, capsys):
+    run, _, _, calls = report
+
+    assert run(42, {"run_id": "42", "status": "completed", "conclusion": "failure"}) == 2
+
+    assert "conflicting outcomes for GitHub run 42" in capsys.readouterr().err
+    assert calls == []
 
 
 def test_empty_run_list_does_not_call_github(monkeypatch, report, capsys):
