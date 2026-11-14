@@ -485,7 +485,7 @@ def test_a_removal_that_exhausts_the_stack_is_reported_too(monkeypatch, capsys):
     The root is still left behind, so this must reach the same stderr
     message rather than escape as an atexit traceback.
     """
-    from tests.conftest import _remove_test_home
+    from tests._shared_conftest import _remove_test_home
 
     def _too_deep(_root):
         raise RecursionError("maximum recursion depth exceeded")
@@ -510,7 +510,7 @@ def test_a_bug_in_the_removal_is_not_dressed_up_as_a_cleanup_failure(monkeypatch
     machine would not delete; reporting it as the latter would send a reader
     hunting for a root that isn't there.
     """
-    from tests.conftest import _remove_test_home
+    from tests._shared_conftest import _remove_test_home
 
     def _misused(_root):
         raise TypeError("rmtree() got an unexpected keyword argument")

@@ -39,42 +39,47 @@ def _gate(value, calls, is_async):
     return async_check if is_async else check
 
 
+def _malformed_gate_result(allowed, *, errored=False):
+    result = GateResult(True, "policy", "tool", "authorize", "reason")
+    object.__setattr__(result, "allowed", allowed)
+    object.__setattr__(result, "errored", errored)
+    return result
+
+
 INVALID_VERDICTS = [
     pytest.param(
-        GateResult("yes", "policy", "tool", "authorize", "reason"),
+        _malformed_gate_result("yes"),
         "allowed",
         "str",
         id="allowed-string",
     ),
+    pytest.param(_malformed_gate_result(1), "allowed", "int", id="allowed-int"),
     pytest.param(
-        GateResult(1, "policy", "tool", "authorize", "reason"), "allowed", "int", id="allowed-int"
-    ),
-    pytest.param(
-        GateResult(TruthyDecision(), "policy", "tool", "authorize", "reason"),
+        _malformed_gate_result(TruthyDecision()),
         "allowed",
         "TruthyDecision",
         id="allowed-object",
     ),
     pytest.param(
-        GateResult(True, "policy", "tool", "authorize", "reason", errored=None),
+        _malformed_gate_result(True, errored=None),
         "errored",
         "NoneType",
         id="errored-none",
     ),
     pytest.param(
-        GateResult(True, "policy", "tool", "authorize", "reason", errored=0),
+        _malformed_gate_result(True, errored=0),
         "errored",
         "int",
         id="errored-int",
     ),
     pytest.param(
-        GateResult(True, "policy", "tool", "authorize", "reason", errored="fault"),
+        _malformed_gate_result(True, errored="fault"),
         "errored",
         "str",
         id="errored-string",
     ),
     pytest.param(
-        GateResult(True, "policy", "tool", "authorize", "reason", errored=True),
+        _malformed_gate_result(True, errored=True),
         "allowed",
         "errored",
         id="contradiction",

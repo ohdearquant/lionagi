@@ -20,6 +20,13 @@ class TruthyDecision:
         return True
 
 
+def _malformed_gate_result(allowed, *, errored=False):
+    result = GateResult(True, "policy", "add", "authorize", "reason")
+    object.__setattr__(result, "allowed", allowed)
+    object.__setattr__(result, "errored", errored)
+    return result
+
+
 VERDICTS = [
     pytest.param(GateResult(False, "policy", "add", "authorize", "denied"), False, id="deny"),
     pytest.param(
@@ -36,30 +43,26 @@ VERDICTS = [
         False,
         id="different-rewrite",
     ),
+    pytest.param(_malformed_gate_result("yes"), False, id="allowed-string"),
+    pytest.param(_malformed_gate_result(1), False, id="allowed-int"),
     pytest.param(
-        GateResult("yes", "policy", "add", "authorize", "reason"), False, id="allowed-string"
-    ),
-    pytest.param(GateResult(1, "policy", "add", "authorize", "reason"), False, id="allowed-int"),
-    pytest.param(
-        GateResult(TruthyDecision(), "policy", "add", "authorize", "reason"),
+        _malformed_gate_result(TruthyDecision()),
         False,
         id="allowed-object",
     ),
     pytest.param(
-        GateResult(True, "policy", "add", "authorize", "reason", errored=None),
+        _malformed_gate_result(True, errored=None),
         False,
         id="errored-none",
     ),
+    pytest.param(_malformed_gate_result(True, errored=0), False, id="errored-int"),
     pytest.param(
-        GateResult(True, "policy", "add", "authorize", "reason", errored=0), False, id="errored-int"
-    ),
-    pytest.param(
-        GateResult(True, "policy", "add", "authorize", "reason", errored="fault"),
+        _malformed_gate_result(True, errored="fault"),
         False,
         id="errored-string",
     ),
     pytest.param(
-        GateResult(True, "policy", "add", "authorize", "reason", errored=True),
+        _malformed_gate_result(True, errored=True),
         False,
         id="contradiction",
     ),
