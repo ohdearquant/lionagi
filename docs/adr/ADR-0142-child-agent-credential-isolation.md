@@ -11,7 +11,9 @@
   credentials out of the child's reach). Maintainer-initiated hardening; no user request is behind it.
 - **Relations**: extends ADR-0030 (the agentic provider-adapter boundary gains a credential
   isolation obligation); complements ADR-0126 (provider credential custody in the launching
-  process, which this record leaves unchanged)
+  process). The two meet in the child's environment: D2 keeps the account keys and dotenv values
+  ADR-0126 holds in the launching process out of every child, and with that stated ADR-0126 itself
+  is unchanged
 
 ## Context
 
@@ -50,9 +52,9 @@ Problems, observed on macOS with Claude Code 2.1.323:
 | Concern | Decision |
 |---------|----------|
 | Where the provider authenticates | D1: in the provider CLI's own process, with its normal login, outside the tool boundary |
-| Where tools run | D2: every command a child starts runs inside a deny-by-default OS profile lionagi owns, no weaker than file containment on any axis |
+| Where tools run | D2: every command a child starts runs inside a deny-by-default OS profile lionagi owns, no weaker than file containment on any axis, from an environment lionagi builds by allow-list and never inherits |
 | How a CLI's tools reach that boundary | D3: through an integration point that routes every command; every path that does not start a command is named and confined by other means, or the provider is unavailable |
-| Claude Code integration | D4: the shell-command prefix, Claude Code's own sandbox off, in-process file and fetch tools off until qualified, no settings source but lionagi's, an empty shell start-up directory |
+| Claude Code integration | D4: the shell-command prefix, Claude Code's own sandbox off, in-process file and fetch tools off until qualified, no settings source but lionagi's, an empty shell start-up directory; not qualified until acceptance row 13 passes |
 | Support and failure | D5: a separate, requested capability per provider and platform; it refuses when unqualified and never falls back silently |
 | Credentialed work | D6: runs in the launching process, never inside a tree, configuration or cache the child could write |
 
@@ -69,7 +71,8 @@ environment-carried login (a setup token or an API key) is the other way to keep
 under an outer sandbox; it puts the credential in the environment of the process the tools descend
 from, so it is safe only if every route strips it before a command starts. D1 keeps the credential
 out of the environment altogether and needs only the inspection denial, which D2 requires in any
-case.
+case, together with D2's rule that the child's environment is built by allow-list, so that no other
+credential the launching process holds arrives by inheritance.
 
 ## D2. Tools run inside a deny-by-default profile lionagi owns
 
@@ -86,6 +89,21 @@ profile, with these differences and requirements:
   directory and caches included), except sockets lionagi names for the launch; this covers
   `ssh-agent`, git credential caches and `gpg-agent` whether or not their environment variables are
   set. Those variables (`SSH_AUTH_SOCK` and the like) are not passed either.
+- **Environment.** The provider child's environment is built, never inherited. lionagi starts it
+  from a list of variable names it states per provider (for Claude Code: the user and home
+  identity, `PATH`, locale, terminal, temporary directory, and the proxy and certificate-bundle
+  variables the provider needs to reach its service, a proxy address carrying a user name or
+  password refusing the launch), copies each listed name from the launching process, and adds the
+  values this record sets (the empty start-up directory of D4, the self-update switch). A profile may
+  name further variables; naming one is the user's statement that its value is not a credential.
+  Three things never enter, under any name, whatever a list says: a value lionagi resolved as an
+  account credential under ADR-0126, a value lionagi loaded from a dotenv file, and a variable that
+  would switch the provider to an environment-carried login (for Claude Code, `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`; D1 already rejects that login), which is
+  removed even when a profile names it. Every tool, hook and the shell's environment snapshot
+  descend from this environment, so they carry nothing else. An MCP server lionagi starts gets the
+  same environment plus the variables its own configuration entry sets, which reach that server's
+  process only; D2's process rule keeps tools out of it.
 - **Other processes.** No process inspection of, or signal to, any process outside the command's own
   sandbox instance.
 - **Files.** Reads of the configured credential locations are denied (the list the `child_sandbox`
@@ -212,7 +230,7 @@ limits.
 
 | Platform | Position |
 |---|---|
-| macOS | prefix routing measured for one provider (D4); the D2 profile is not yet written or measured |
+| macOS | prefix routing measured for one provider (D4); the D2 profile is not yet written or measured, and Claude Code is not qualified until acceptance row 13 passes |
 | Linux | unavailable until measured: the candidate is bubblewrap with no route to the session bus that serves the Secret Service, verified by endpoint, not by removing one environment variable |
 | WSL2 | unavailable until the Linux checks and the Windows interoperability routes are measured |
 | native Windows | unavailable: no backend |
@@ -263,9 +281,12 @@ broken probe cannot read as a denial.
 5. Credential agents are refused by socket path, not by a missing variable: a test `ssh-agent` and
    `gpg-agent` reached at their socket paths, a git credential cache socket under the configured
    caches, the pasteboard, and the token and Kerberos services.
-6. Processes are out of reach: no credential in the tools' environment, the environment snapshot or
-   inherited descriptors; process inspection of and signals to the provider process and to MCP
-   servers lionagi started are refused.
+6. Processes are out of reach. A test secret planted in the launching process under an arbitrary
+   variable name, and another in a dotenv file lionagi loads, together with a provider login
+   variable set in the launching process, reach no tool, no hook, no environment snapshot and no MCP
+   server, and the provider still uses its own login; a control launch outside the mode shows the
+   planted secret does reach a tool. No credential is in inherited descriptors, and process
+   inspection of and signals to the provider process and to MCP servers lionagi started are refused.
 7. Every path is accounted for: Bash, background commands and hooks reach the prefix, shown by a
    marker each path writes only when it runs inside the profile; a test local MCP server lionagi
    passes checks from its own process that the test store item, a denied test file and a write to
@@ -325,6 +346,12 @@ broken probe cannot read as a denial.
   version passes the acceptance list and is added to the set; file containment, which states its
   own minimum version, keeps working meanwhile. The cost is a requalification run per provider
   update, and an operator who wants the mode without interruption holds the CLI's own updates back.
+- MCP servers in this mode lose capability too. A server has no outbound network, no writes to the
+  working directory and no connection to a local socket unless lionagi names that socket for the
+  launch, and only local servers start. A server that bridges to a local service or daemon, or one
+  reached by URL, stops working until its socket or host is named and qualified.
+- A tool, script or test that read a variable from the user's shell environment sees it only if
+  the provider's list or the profile names it, so some builds need a profile entry.
 - Claude Code in this mode edits through its shell only, and has no web fetch and no outbound
   network until lionagi's filtering proxy exists. That is a real loss of capability, and the reason
   this is a requested mode rather than the default.
