@@ -133,7 +133,7 @@ verification shell with mock HTTP responses. These checks do not publish images.
 
 Pull requests into `dev/lionagi` run Python 3.10 and 3.14, with only 3.10 for
 documentation-only changes. The required full Python 3.10–3.14 set runs on
-promotion pull requests and protected-branch pushes. A separate advisory workflow
+promotion pull requests and protected-branch pushes. A separate workflow
 runs the full set against the current `dev/lionagi` commit daily at 07:23 UTC and
 on manual dispatch. The scheduled run skips a commit already verified by the
 previous successful scheduled run and reports failures through a single labeled
