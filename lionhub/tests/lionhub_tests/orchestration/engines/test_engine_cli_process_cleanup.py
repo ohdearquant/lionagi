@@ -731,3 +731,179 @@ async def test_a_cli_still_running_at_a_budget_stop_is_reaped_before_the_partial
     await _BudgetEngine().run()
 
     assert reaped_before_export == [527201]
+
+
+class _CleanupProbe:
+    """Stands in for the group-cleanup call and counts overlapping cleanups."""
+
+    def __init__(self, cli_subprocess) -> None:
+        self.calls: list[int] = []
+        self.in_flight = 0
+        self.peak = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self._confirmed = cli_subprocess._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    async def end_child_group(self, process, *args, **kwargs):
+        self.calls.append(process.pid)
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        self.entered.set()
+        try:
+            await self.release.wait()
+        finally:
+            self.in_flight -= 1
+        return self._confirmed
+
+
+def _spawn_task_that_swallows_cancel(run) -> tuple[asyncio.Task, asyncio.Event]:
+    """A spawned task that ignores cancellation until told to stop."""
+    stop = asyncio.Event()
+
+    async def worker() -> None:
+        while not stop.is_set():
+            try:
+                await stop.wait()
+            except asyncio.CancelledError:
+                pass
+
+    task = run.spawn(worker())
+    assert task is not None
+    return task, stop
+
+
+@pytest.mark.asyncio
+async def test_a_second_cancellation_during_cleanup_does_not_start_a_second_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task that swallows cancellation keeps the first cleanup call waiting.
+
+    Cancelling that caller must not leave its reaper running unowned while the
+    next caller starts another one for the same process.
+    """
+    import lionhub.providers._cli_subprocess as cli_subprocess
+
+    probe = _CleanupProbe(cli_subprocess)
+    monkeypatch.setattr(cli_subprocess, "end_child_group", probe.end_child_group)
+
+    run = _StubEngineForTracking(cancel_timeout_s=0.2).new_run()
+    process = _tracked(run, 531001)
+    tracked = run._cli_processes[id(process)]
+    worker, stop = _spawn_task_that_swallows_cancel(run)
+    await asyncio.sleep(0)
+
+    try:
+        first = asyncio.ensure_future(run.cancel_active())
+        await asyncio.wait_for(probe.entered.wait(), timeout=2)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        second = asyncio.ensure_future(run.cancel_active())
+        await asyncio.sleep(0.05)
+        probe.release.set()
+        await asyncio.wait_for(second, timeout=5)
+    finally:
+        probe.release.set()
+        stop.set()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    assert probe.calls == [531001]
+    assert probe.peak == 1
+    assert tracked.reaped is True
+    assert run.cancellation_records[-1].processes_reaped == 1
+
+
+@pytest.mark.asyncio
+async def test_a_single_cancellation_runs_exactly_one_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control: one cancellation, one cleanup, and the entry is retired."""
+    import lionhub.providers._cli_subprocess as cli_subprocess
+
+    probe = _CleanupProbe(cli_subprocess)
+    probe.release.set()
+    monkeypatch.setattr(cli_subprocess, "end_child_group", probe.end_child_group)
+
+    run = _StubEngineForTracking(cancel_timeout_s=0.05).new_run()
+    process = _tracked(run, 531002)
+    tracked = run._cli_processes[id(process)]
+    worker, stop = _spawn_task_that_swallows_cancel(run)
+    await asyncio.sleep(0)
+
+    try:
+        await run.cancel_active()
+    finally:
+        stop.set()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    assert probe.calls == [531002]
+    assert probe.peak == 1
+    assert tracked.reaped is True
+    assert run.cancellation_records[-1].processes_reaped == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cancel_callers_share_one_cleanup_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lionhub.providers._cli_subprocess as cli_subprocess
+
+    probe = _CleanupProbe(cli_subprocess)
+    monkeypatch.setattr(cli_subprocess, "end_child_group", probe.end_child_group)
+
+    run = _StubEngineForTracking().new_run()
+    process = _tracked(run, 531003)
+    tracked = run._cli_processes[id(process)]
+
+    callers = [asyncio.ensure_future(run.cancel_active()) for _ in range(3)]
+    try:
+        await asyncio.wait_for(probe.entered.wait(), timeout=2)
+        await asyncio.sleep(0.05)
+        probe.release.set()
+        await asyncio.wait_for(asyncio.gather(*callers), timeout=5)
+    finally:
+        probe.release.set()
+        await asyncio.gather(*callers, return_exceptions=True)
+
+    assert probe.calls == [531003]
+    assert probe.peak == 1
+    assert tracked.reaped is True
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_caller_leaves_the_in_flight_cleanup_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caller is cancelled; the run still finishes the cleanup it started."""
+    import lionhub.providers._cli_subprocess as cli_subprocess
+
+    probe = _CleanupProbe(cli_subprocess)
+    monkeypatch.setattr(cli_subprocess, "end_child_group", probe.end_child_group)
+
+    run = _StubEngineForTracking().new_run()
+    process = _tracked(run, 531004)
+    tracked = run._cli_processes[id(process)]
+
+    caller = asyncio.ensure_future(run.cancel_active())
+    try:
+        await asyncio.wait_for(probe.entered.wait(), timeout=2)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+
+        await asyncio.sleep(0.05)
+        assert probe.in_flight == 1
+        assert tracked.reaped is False
+
+        probe.release.set()
+        for _ in range(50):
+            if tracked.reaped:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        probe.release.set()
+
+    assert tracked.reaped is True
+    assert probe.in_flight == 0
+    assert probe.calls == [531004]
