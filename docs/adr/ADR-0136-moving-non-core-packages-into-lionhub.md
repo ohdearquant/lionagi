@@ -148,12 +148,14 @@ The move is one change, after the daemon move (B2 step 5) and the CLI move (B2 s
 the scheduler and the CLI's local commands no longer import any application module when it lands.
 Shared-service extraction, resource-lookup corrections, and the manifest with its check land before it
 as separate changes; the check lands once the daemon factory takes the attachment, with the manifest
-beside the application at its old location. The move itself keeps D6's restriction to relocation, import
-rewrites, logger-name literals, the rows, and the packaging entries for the new root. D6's per-change
-items apply, with one difference for item 7: the application's tests move to
-`apps/studio/backend/tests/`, never to `lionhub/tests`, and the repository's test run collects them
-through 1.x. The hub README's summary of the table lists the Studio row with its `lionagi_studio`
-destination. The route, identity, state and lifecycle contracts do not change because files move.
+beside the application at its old location. The finder change that makes a module entry under a kept old
+parent warn once, without a second warning for an entry whose parent is aliased, lands before it too.
+The move itself keeps D6's restriction to relocation, import rewrites, logger-name literals, the rows,
+and the packaging entries for the new root. D6's per-change items apply, with one difference for item 7:
+the application's tests move to `apps/studio/backend/tests/`, never to `lionhub/tests`, and the
+repository's test run collects them through 1.x. The hub README's summary of the table lists the Studio
+row with its `lionagi_studio` destination. The route, identity, state and lifecycle contracts do not
+change because files move.
 
 At 2.0 no application file moves. The core wheel contains neither hub nor application code, the hub is
 its own distribution under D1, and the application leaves both library wheels at the same import root.
