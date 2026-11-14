@@ -427,14 +427,20 @@ def _cli_repair_instruction(schema_hint: str, emits: tuple[type, ...]) -> str:
 
 
 def emission_keys(emits: tuple[type, ...]) -> str:
-    """Render the top-level emission key(s) for a repair hint."""
+    """Render emission keys and their object fields for a repair hint."""
     from lionhub.agent.casts.emission import field_name_for
 
     names = ", ".join(f"'{field_name_for(m)}'" for m in emits)
     if not names:
         return ""
+    fields = []
+    for model in emits:
+        model_fields = getattr(model, "model_fields", {})
+        if model_fields:
+            fields.append(f"'{field_name_for(model)}': {', '.join(model_fields)}")
+    field_hint = f" Object fields by key: {'; '.join(fields)}." if fields else ""
     return (
-        f"Expected top-level key(s): {names}. Each key holds one object; to report "
+        f"Expected top-level key(s): {names}.{field_hint} Each key holds one object; to report "
         "several, emit one object per finding, or a list of objects under the key."
     )
 
