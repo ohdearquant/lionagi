@@ -1,0 +1,116 @@
+name: Nightly dev Python matrix
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: dev-full-matrix-nightly
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.repository == 'ohdearquant/lionagi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      run: ${{ steps.plan.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Resolve the dev commit and check the prior scheduled result
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER: ${{ github.event_name }}
+        run: python3 .github/scripts/dev_full_matrix_plan.py "$TRIGGER" "$GITHUB_RUN_ID"
+
+  test:
+    name: Python ${{ matrix.python-version }}
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      PYTEST_JUNIT_XML: ${{ github.workspace }}/.pytest-results/junit.xml
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      # Use the workflow version of the action even if the dev checkout predates it.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .github/.workflow-source
+          sparse-checkout: .github/actions/setup-python-tests
+          persist-credentials: false
+      - uses: ./.github/.workflow-source/.github/actions/setup-python-tests
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache-prefix: nightly-uv
+      - name: Run tests
+        timeout-minutes: 45
+        env:
+          MAXFAIL: 0
+        run: scripts/ci.sh test-python
+
+  certify:
+    name: Full dev matrix passed ${{ needs.plan.outputs.sha }}
+    needs: [plan, test]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'schedule' && needs.plan.result == 'success' &&
+          ((needs.plan.outputs.run == 'true' && needs.test.result == 'success') ||
+           (needs.plan.outputs.run == 'false' && needs.test.result == 'skipped')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Record the verified dev commit
+        env:
+          DEV_SHA: ${{ needs.plan.outputs.sha }}
+          DID_RUN: ${{ needs.plan.outputs.run }}
+        run: |
+          if [[ "$DID_RUN" == true ]]; then
+            printf 'All five Python versions passed on %s.\n' "$DEV_SHA" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'The prior scheduled matrix already passed on unchanged commit %s.\n' "$DEV_SHA" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  report:
+    needs: [plan, test, certify]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'schedule' &&
+          (needs.plan.result == 'failure' || needs.test.result == 'failure' ||
+           needs.certify.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Report the scheduled failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ needs.plan.outputs.sha }}
+        run: python3 .github/scripts/dev_full_matrix_report.py "$TESTED_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
