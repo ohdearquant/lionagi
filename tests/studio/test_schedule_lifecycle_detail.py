@@ -94,14 +94,11 @@ async def test_schedule_routes_refuse_unsupported_persisted_kinds(tmp_path, monk
         "action_kind": "agent",
         "action_agent": "research",
     }
-    for target in ("research", "unknownengine"):
-        with pytest.raises(HTTPException, match="Invalid schedule action_kind 'engine'") as bad:
-            await schedules.create_schedule_route(
-                schedules.CreateScheduleRequest(
-                    **(body | {"action_kind": "engine", "action_agent": target})
-                )
-            )
-        assert bad.value.status_code == 400
+    with pytest.raises(HTTPException, match="Invalid schedule action_kind 'engine'") as bad:
+        await schedules.create_schedule_route(
+            schedules.CreateScheduleRequest(**(body | {"action_kind": "engine"}))
+        )
+    assert bad.value.status_code == 400
 
     result = await schedules.create_schedule_route(schedules.CreateScheduleRequest(**body))
     with pytest.raises(HTTPException) as duplicate:

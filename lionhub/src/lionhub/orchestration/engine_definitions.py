@@ -55,12 +55,7 @@ KIND_META: dict[str, dict[str, Any]] = {
 
 def _is_registered_engine_kind(kind: object) -> bool:
     """Return whether a value names a currently registered engine kind."""
-    if not isinstance(kind, str):
-        return False
-    try:
-        return kind in KIND_META
-    except TypeError:
-        return False
+    return isinstance(kind, str) and kind in KIND_META
 
 
 def import_engine_class(module: str, name: str) -> type:
