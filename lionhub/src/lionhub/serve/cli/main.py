@@ -526,7 +526,10 @@ def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int, argv: 
     Machine mode also attempts an unavailable envelope on stdout. A failure
     preparing or writing that envelope leaves the environment exit code intact.
     """
-    traceback.print_exc()
+    if sys.stderr is not None:
+        # With stderr closed, print_exc() falls back to stdout, which would put
+        # the traceback where only the envelope may go.
+        traceback.print_exc()
     missing, guidance = _missing_requirement(exc)
     message = (
         f"cannot start: {missing} is not installed in this environment. "

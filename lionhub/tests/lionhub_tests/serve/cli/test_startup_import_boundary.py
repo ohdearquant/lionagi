@@ -83,7 +83,9 @@ def assert_no_startup_effects():
 """
 
 
-def _run_fresh(tmp_path: Path, body: str) -> subprocess.CompletedProcess[str]:
+def _run_fresh(
+    tmp_path: Path, body: str, *, close_stderr: bool = False
+) -> subprocess.CompletedProcess[str]:
     directories = {
         "HOME": "home",
         "USERPROFILE": "home",
@@ -107,15 +109,19 @@ def _run_fresh(tmp_path: Path, body: str) -> subprocess.CompletedProcess[str]:
         environment[name] = str(path)
     work = tmp_path / "work"
     work.mkdir()
+    command = [
+        sys.executable,
+        "-I",
+        "-c",
+        _CHILD_SETUP + textwrap.dedent(body),
+        str(_ROOT),
+        str(tmp_path),
+    ]
+    if close_stderr:
+        # The interpreter starts with descriptor 2 closed, so sys.stderr is None.
+        command = ["/bin/sh", "-c", 'exec "$@" 2>&-', "sh", *command]
     process = subprocess.run(  # noqa: S603 -- this interpreter and fixed test programs
-        [
-            sys.executable,
-            "-I",
-            "-c",
-            _CHILD_SETUP + textwrap.dedent(body),
-            str(_ROOT),
-            str(tmp_path),
-        ],
+        command,
         cwd=work,
         env=environment,
         capture_output=True,
@@ -202,6 +208,48 @@ def test_missing_hub_keeps_the_pre_run_environment_exit(
         """,
     )
     _assert_environment_refusal(process, "lionhub", machine=machine)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="closes descriptor 2 through a POSIX shell")
+@pytest.mark.parametrize("machine", [False, True], ids=["human", "machine"])
+def test_environment_refusal_with_stderr_closed_keeps_stdout_clean(
+    tmp_path: Path, machine: bool
+) -> None:
+    """The traceback must not fall back to stdout when there is no stderr."""
+    argv = ["doctor", "--machine"] if machine else ["doctor"]
+    process = _run_fresh(
+        tmp_path,
+        f"""
+        assert sys.stderr is None
+        entry = {{'lionhub', 'lionhub.serve', 'lionhub.serve.cli', 'lionhub.serve.cli.main'}}
+        helper = 'lionhub.serve.cli._machine_envelope'
+
+        class RefuseHub:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.partition('.')[0] == 'lionhub' and fullname not in entry | {{helper}}:
+                    raise ModuleNotFoundError(f"No module named {{fullname!r}}", name=fullname)
+                return None
+
+        sys.meta_path.insert(0, RefuseHub())
+        cli_main = import_main()
+        code = cli_main.main({argv!r})
+        assert_no_startup_effects()
+        sys.exit(code)
+        """,
+        close_stderr=True,
+    )
+    assert process.returncode == 78
+    assert process.stderr == ""
+    if not machine:
+        assert process.stdout == ""
+        return
+    stdout_lines = process.stdout.splitlines()
+    assert len(stdout_lines) == 1, process.stdout
+    envelope = json.loads(stdout_lines[0])
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "unavailable"
+    assert envelope["error"]["detail"] == {"exit_code": 78}
+    assert "No run was started" in envelope["error"]["message"]
 
 
 def test_catalog_missing_dependency_keeps_its_original_name(tmp_path: Path) -> None:
