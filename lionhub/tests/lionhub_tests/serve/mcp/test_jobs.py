@@ -269,14 +269,56 @@ def test_status_running_then_terminal(sandbox, monkeypatch):
     assert st["terminal"] is True and st["outcome"] == "succeeded"
 
 
+def _wait_until_exited_unreaped(pid: int, timeout: float = 10.0) -> bool:
+    """Poll until ``pid`` has exited, leaving it unreaped (a zombie)."""
+    import sys
+    import time
+
+    flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
+    if hasattr(os, "waitid"):
+
+        def exited() -> bool:
+            info = os.waitid(os.P_PID, pid, flags)
+            return info is not None and info.si_pid == pid
+
+    elif sys.platform == "darwin":
+        import ctypes
+        import struct
+
+        waitid = ctypes.CDLL(None, use_errno=True).waitid
+        waitid.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        waitid.restype = ctypes.c_int
+
+        def exited() -> bool:
+            info = ctypes.create_string_buffer(128)
+            if waitid(os.P_PID, pid, ctypes.byref(info), flags) != 0:
+                return False
+            # Darwin siginfo_t: si_signo, si_errno, si_code, then si_pid at byte 12.
+            return struct.unpack_from("i", info.raw, 12)[0] == pid
+
+    else:
+        pytest.skip("no non-reaping wait on this platform")
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if exited():
+            return True
+        time.sleep(0.01)
+    return False
+
+
 def test_pid_alive_reaps_zombie_child():
     """A detached child that exited must not read as alive via kill -0 (zombie)."""
     import subprocess
-    import time
 
     p = subprocess.Popen(["sleep", "0.05"], start_new_session=True)
-    time.sleep(0.35)  # exited, but an unreaped zombie of this process
+    if not _wait_until_exited_unreaped(p.pid):
+        p.kill()
+        p.wait()
+        raise AssertionError("child did not exit before the deadline")
     assert jobs._pid_alive(p.pid) is False
+    with pytest.raises(ChildProcessError):
+        os.waitpid(p.pid, os.WNOHANG)
 
 
 def test_submit_reaps_the_child_it_spawns(sandbox, monkeypatch):

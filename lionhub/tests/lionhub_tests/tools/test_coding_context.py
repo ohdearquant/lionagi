@@ -3,6 +3,10 @@
 
 """Tests for CodingToolkit: search, context management, and file_state tracking."""
 
+from inspect import getclosurevars
+
+import lionhub.tools.coding as coding_module
+from lionagi.protocols.messages import ActionRequest, ActionResponse
 from lionagi.session.branch import Branch
 from lionhub.tools.coding import ALL_CODING_TOOLS, CodingToolkit
 
@@ -235,6 +239,47 @@ async def test_stale_read_invalidation_forces_reread_after_evict(tmp_path):
     )
     assert result["success"] is False
     assert "read" in result["error"].lower()
+
+
+async def test_read_guard_resolves_recorded_read_path_once(tmp_path, monkeypatch):
+    f = tmp_path / "cached.py"
+    f.write_text("first\n")
+    b = Branch()
+    tools = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS).bind(
+        b
+    )
+    reader = _tool_fn(tools, "reader")
+    read_result = await reader(action="read", path=str(f))
+    req = ActionRequest(
+        content={"function": "reader", "arguments": {"action": "read", "path": str(f)}}
+    )
+    resp = ActionResponse(
+        content={
+            "function": "reader",
+            "arguments": {"action": "read", "path": str(f)},
+            "output": read_result["content"],
+        }
+    )
+    b.msgs.messages.include(req)
+    b.msgs.progression.include(req.id)
+    b.msgs.messages.include(resp)
+    b.msgs.progression.include(resp.id)
+
+    resolve = coding_module._resolve_workspace_path
+    calls = 0
+
+    def counted_resolve(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(coding_module, "_resolve_workspace_path", counted_resolve)
+    check_read = getclosurevars(_tool_fn(tools, "editor")).nonlocals["_check_read_guard"]
+    invalidate = getclosurevars(check_read).nonlocals["_invalidate_stale_reads"]
+    invalidate()
+    assert calls == 1
+    invalidate()
+    assert calls == 1
 
 
 async def test_normal_read_then_edit_flow_unaffected_by_invalidation(tmp_path):
