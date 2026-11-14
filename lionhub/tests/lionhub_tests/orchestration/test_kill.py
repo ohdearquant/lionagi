@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
@@ -47,6 +47,7 @@ from tests._kill_test_support import _script_create_time as _script_create_time
 from tests._kill_test_support import _seed_invocation as _seed_invocation
 from tests._kill_test_support import _seed_play as _seed_play
 from tests._kill_test_support import _seed_session as _seed_session
+from tests._kill_test_support import _seed_session_with_id as _seed_session_with_id
 from tests._kill_test_support import _seed_show as _seed_show
 from tests._kill_test_support import _spawn_marked_child as _spawn_marked_child
 from tests._kill_test_support import temp_db_path as temp_db_path
@@ -84,6 +85,31 @@ def test_runner_probe_guard_does_not_replace_shared_process_probe(monkeypatch):
     assert _proc.process_create_time(4242) == ("found", 100.0)
 
 
+# _pid_alive
+
+
+def test_pid_alive_returns_false_for_nonexistent_pid():
+    # PID 999999999 is virtually guaranteed not to exist.
+    assert _pid_alive(999999999) is False
+
+
+def test_pid_alive_returns_false_for_non_positive():
+    assert _pid_alive(0) is False
+    assert _pid_alive(-1) is False
+
+
+def test_pid_alive_returns_true_for_own_process():
+    import os
+
+    assert _pid_alive(os.getpid()) is True
+
+
+def test_pid_alive_treats_permission_error_as_alive():
+    """PermissionError means the process exists (not ours); must return True."""
+    with patch("os.kill", side_effect=PermissionError):
+        assert _pid_alive(1234) is True
+
+
 def test_terminate_pid_returns_already_dead_for_missing_pid():
     result = _terminate_pid(999999999, grace_seconds=0.1)
     assert result == "already_dead"
@@ -107,7 +133,6 @@ def test_terminate_pid_sigterm_sufficient(monkeypatch: pytest.MonkeyPatch):
         return not bool(calls)
 
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", fake_alive)
-    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", fake_alive)
     monkeypatch.setattr("os.kill", fake_kill)
 
     result = _terminate_pid(42, grace_seconds=1.0)
@@ -125,7 +150,6 @@ def test_terminate_pid_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch):
 
     # Always report alive during the grace window.
     patched_pid_alive = lambda pid: True
-    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", fake_kill)
 
@@ -150,7 +174,6 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
 
     kill_calls: list[tuple[int, int]] = []
     patched_pid_alive = lambda pid: True
-    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
@@ -181,7 +204,6 @@ def test_terminate_pid_identity_match_sends_signal(
     """If cmdline contains expected_cmd, kill proceeds normally."""
     kill_calls: list[tuple[int, int]] = []
     patched_pid_alive = lambda pid: True
-    monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionhub.orchestration.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
@@ -712,6 +734,69 @@ async def test_kill_one_force_kill_uses_force_kill_reason(
             (sid,),
         )
         assert tr["reason_code"] == RunReasons.CANCELLED_FORCE_KILL
+
+
+# _resolve_entity
+
+
+async def test_resolve_entity_by_full_uuid(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _seed_session(db)
+        result = await _resolve_entity(db, sid)
+        assert result is not None
+        table, entity_type, row = result
+        assert table == "sessions"
+        assert entity_type == "session"
+        assert row["id"] == sid
+
+
+async def test_resolve_entity_by_short_prefix(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _seed_session(db)
+        short = sid[:8]
+        result = await _resolve_entity(db, short)
+        assert result is not None
+        _, _, row = result
+        assert row["id"] == sid
+
+
+async def test_resolve_entity_returns_none_for_unknown(temp_db_path: Path):
+    async with StateDB() as db:
+        result = await _resolve_entity(db, "deadbeef00000000")
+        assert result is None
+
+
+async def test_resolve_entity_finds_invocation(temp_db_path: Path):
+    async with StateDB() as db:
+        inv_id = await _seed_invocation(db)
+        result = await _resolve_entity(db, inv_id)
+        assert result is not None
+        table, entity_type, _ = result
+        assert table == "invocations"
+        assert entity_type == "invocation"
+
+
+async def test_resolve_entity_finds_show(temp_db_path: Path):
+    async with StateDB() as db:
+        show_id = await _seed_show(db)
+        result = await _resolve_entity(db, show_id)
+        assert result is not None
+        _, entity_type, _ = result
+        assert entity_type == "show"
+
+
+async def test_resolve_entity_rejects_ambiguous_prefix(temp_db_path: Path):
+    from lionhub.orchestration.job import AmbiguousIdError
+
+    async with StateDB() as db:
+        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001")
+        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002")
+
+        with pytest.raises(AmbiguousIdError) as excinfo:
+            await _resolve_entity(db, "abcde")
+
+    assert set(excinfo.value.candidates) == {first, second}
+    assert "abcde" in str(excinfo.value)
 
 
 async def test_list_running_children_show_behavior_is_unchanged(temp_db_path: Path):

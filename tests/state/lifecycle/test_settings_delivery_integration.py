@@ -108,7 +108,7 @@ async def test_exec_failure_is_not_acked_and_successful_retry_is_acked(
         terminated.append(proc)
 
     monkeypatch.setattr(notify_settings.asyncio, "create_subprocess_exec", launch)
-    monkeypatch.setattr(notify_settings, "observe_process_group_leader", lambda *a, **k: None)
+    monkeypatch.setattr("lionagi.ln._proc.observe_process_group_leader", lambda *a, **k: None)
     monkeypatch.setattr(notify_settings, "aterminate_process_group", terminate)
     async with StateDB(tmp_path / "state.db") as db:
         transition_id = await _seed(db)

@@ -60,16 +60,20 @@ occasional false "something changed".
 
 ## `machine.py` — machine-result envelope contract
 
-Every `li <command> --machine` call answers with exactly one JSON object on stdout and
-nothing else; every human-facing byte goes to stderr — the consumer is a subprocess caller in
-another language that cannot read this file, so the shape is fixed here and `CONTRACT_VERSION`
-is the only thing it has to negotiate. Pieces: `ok`/`failure` are the two envelope constructors
-(`ERROR_KINDS` is closed); `available`/`unavailable` are the availability wrapper, so "there are
-none" and "could not establish whether there are any" never share an encoding; `reserve_stdout`
-takes stdout away from everything except the envelope at the file-descriptor level, so a stray
-`print` (or a child process that inherited the descriptor) lands on stderr instead of corrupting
-the result; `dispatch_machine` runs one machine command and turns any failure into an envelope
-rather than a traceback.
+Every machine request the dispatcher handles emits exactly one JSON object on stdout.
+Human-facing output goes to stderr. The consumer negotiates the shape through
+`CONTRACT_VERSION`. `ok` and `failure` construct envelopes, with failure kinds drawn
+from `ERROR_KINDS`. The `available` and `unavailable` wrappers distinguish an empty result
+from a failed read. `reserve_stdout` reserves the stdout file descriptor for the envelope,
+so output from `print` or a child process lands on stderr. `dispatch_machine` runs the
+command and encodes its result.
+
+When a missing dependency prevents startup, the entry point exits 78. With `--machine`
+before the first `--`, it makes a best-effort attempt to emit an `unavailable` envelope with
+`error.detail.exit_code` set to 78 for diagnostics. The standard-library-only
+`_machine_envelope.py` helper holds the shared contract version, failure constructor and
+encoder. If the write fails, stdout is empty and the exit stays 78. Outside machine mode,
+stdout stays empty on this path. The startup diagnostic goes to stderr in both modes.
 
 ## `lionhub/src/lionhub/orchestration/mcp_config.py` — MCP server resolution at submit time
 

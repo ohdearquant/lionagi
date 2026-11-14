@@ -146,7 +146,7 @@ async def _fetch_ambiguous_candidates(
     dropping any row ``project`` may not see.
 
     fetch_unique_row()/AmbiguousIdError only carry ids (see
-    lionagi/cli/_util.py) — enough to disambiguate on the CLI, not enough to
+    lionhub.orchestration.job) — enough to disambiguate on the CLI, not enough to
     show a project/status card here, so this does one bounded follow-up read.
     A foreign-project row is stripped out entirely rather than merely
     de-emphasized: it must not appear as a candidate at all.
@@ -327,7 +327,7 @@ async def resolve_run(ref: str, *, allow_unscoped_exact_id: bool = True) -> dict
             if len(owned) == 1:
                 return {"found": True, "ambiguous": False, "session_id": owned[0]["id"]}
             # The scoped prefix scan stops one row past the CLI helper's
-            # listing size (lionagi/cli/_util.py::_CANDIDATES_SHOWN), so a
+            # listing size (lionhub.orchestration.job::_CANDIDATES_SHOWN), so a
             # full window is the only honest truncation signal -- and it now
             # means more than that many rows THIS turn may see.
             return {

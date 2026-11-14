@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The machine-result contract: one envelope, one JSON object on stdout.
 
-Every `li <command> --machine` call answers with exactly one JSON object on
-stdout, nothing else; every human-facing byte goes to stderr. See
-docs/internals/cli.md for the module's pieces (envelope constructors,
-availability wrapper, fd-level stdout reservation, dispatch).
+The dispatcher answers with one JSON object on stdout and sends human-facing
+output to stderr. If the environment fails before a run is allocated, the CLI
+entry point returns exit 78 and emits an unavailable envelope on a best-effort
+basis. See docs/internals/cli.md for the machine result implementation.
 """
 
 from __future__ import annotations
@@ -20,7 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi._feature_errors import MissingFeatureError
 from lionagi.ln import import_module
+
+from ._machine_envelope import _CONTRACT_VERSION, _ERROR_KINDS, _encode_envelope, _failure
 
 __all__ = (
     "CONTRACT_VERSION",
@@ -52,19 +55,13 @@ __all__ = (
     "run_lifecycle",
 )
 
-# The one place the current contract version lives. Incremented only by a change
-# that could break a conforming consumer — which includes any field that changes
-# what an existing field means to a reader that ignores it.
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = _CONTRACT_VERSION
 
 # The oldest contract this implementation still answers, so a consumer pinned to
 # a version we have dropped can say so instead of failing mysteriously.
 MIN_SUPPORTED_CONTRACT_VERSION = 1
 
-# Closed, on purpose: this vocabulary describes our own refusal to answer, which
-# we control, so a consumer may branch on it and a new kind costs a version
-# increment. Run status is the opposite case and is not modelled here.
-ERROR_KINDS = ("not_found", "invalid_input", "conflict", "unavailable", "internal")
+ERROR_KINDS = _ERROR_KINDS
 
 # Availability reason codes are advisory qualifiers, not a closed vocabulary; a
 # consumer surfaces them and must not need one to decide `available`.
@@ -92,14 +89,7 @@ def ok(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def failure(kind: str, message: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
-    if kind not in ERROR_KINDS:
-        raise ValueError(f"error kind {kind!r} is not one of {ERROR_KINDS}")
-    return {
-        "ok": False,
-        "contract_version": CONTRACT_VERSION,
-        "data": None,
-        "error": {"kind": kind, "message": message, "detail": detail},
-    }
+    return _failure(kind, message, detail)
 
 
 def validate_envelope(envelope: Any) -> None:
@@ -380,7 +370,7 @@ class MachineChannel:
         if self.emitted:
             raise RuntimeError("a machine call emits exactly one envelope")
         validate_envelope(envelope)
-        text = json.dumps(envelope, ensure_ascii=False) + "\n"
+        text = _encode_envelope(envelope)
         self.emitted = True
         if self._out_fd is not None:
             os.write(self._out_fd, text.encode())
@@ -480,9 +470,9 @@ def runs_data(limit: int = _DEFAULT_RUNS_LIMIT) -> dict[str, Any]:
     Nothing here is status-bearing: it reports which runs exist on disk and what
     each one wrote, not whether any of them finished or succeeded.
     """
-    # Taken from `_runs` rather than from `lionagi._paths`, so this reads the
-    # same root `list_runs` below walks; two bindings of one constant is how a
-    # listing comes back describing a directory nobody wrote to.
+    # Read the runs module's root so the listing and `list_runs` below walk
+    # the same directory. Separate bindings of the root can point at
+    # different directories.
     from lionhub.orchestration.runs import RUNS_ROOT, list_runs
 
     listing = list_directory(RUNS_ROOT, missing_is_empty=True)
@@ -778,12 +768,11 @@ def dispatch_machine(argv: list[str]) -> int:
     the refusal a second time in the exit status would give a consumer two
     answers to one question.
 
-    `ModuleNotFoundError` is the exception, in both senses. When nothing has been
-    allocated yet, nothing executed, and the caller must be told that by exit
-    status alone rather than handed an envelope describing a request that never
-    ran — so it is re-raised for the entry point to report. Once a run exists on
-    disk it is an ordinary failure of that run and gets an envelope like any
-    other.
+    A `ModuleNotFoundError` or `MissingFeatureError` before run allocation is
+    re-raised so the entry point can return exit 78 with a best-effort
+    environment refusal. Once a run exists on disk it is an ordinary failure of
+    that run and gets an envelope like any other; a missing feature's envelope
+    names the feature and how to install it.
     """
     from lionhub.orchestration.job import run_was_allocated
 
@@ -797,6 +786,11 @@ def dispatch_machine(argv: list[str]) -> int:
                 raise
             channel.emit(failure("internal", "a required module is not installed"))
         except Exception as exc:  # noqa: BLE001 — a crash with no envelope is unreadable
+            # A missing feature before allocation is an environment refusal, like a
+            # missing module. After allocation it is reported like any other failure,
+            # so the envelope keeps the feature name and its install guidance.
+            if isinstance(exc, MissingFeatureError) and not run_was_allocated():
+                raise
             from lionagi.state.engine import mask_credentials
 
             # The only sink that prints a message from code we do not own. The

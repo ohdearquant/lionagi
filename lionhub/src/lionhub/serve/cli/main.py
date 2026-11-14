@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import argparse
+import io
+import os
 import signal
 import sys
 import traceback
@@ -20,7 +22,7 @@ except ModuleNotFoundError as exc:
 else:
     _catalog_import_error = None
 
-from lionagi._log_channels import log_error
+from lionagi._log_channels import log_error, mask_credentials
 
 # The canonical exit constant lives in the module whose absence this startup path reports.
 _STARTUP_ENVIRONMENT_EXIT = 78
@@ -324,6 +326,13 @@ def _parse_prompt_args(parser: argparse.ArgumentParser, tail: list[str]) -> argp
     return args
 
 
+def _args_before_sentinel(argv: list[str]) -> list[str]:
+    try:
+        return argv[: argv.index("--")]
+    except ValueError:
+        return argv
+
+
 def _run(argv: list[str] | None = None) -> int:
     if _catalog_import_error is not None:
         raise _catalog_import_error
@@ -336,11 +345,7 @@ def _run(argv: list[str] | None = None) -> int:
     _argv = argv if argv is not None else sys.argv[1:]
     # Scan only before the '--' sentinel so a scheduled action_prompt
     # containing '--verbose' can't flip verbose mode.
-    try:
-        _sentinel_idx = _argv.index("--")
-        _pre_sentinel = _argv[:_sentinel_idx]
-    except ValueError:
-        _pre_sentinel = _argv
+    _pre_sentinel = _args_before_sentinel(_argv)
     verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
 
@@ -500,7 +505,7 @@ def _run(argv: list[str] | None = None) -> int:
     return 1
 
 
-def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int) -> int:
+def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int, argv: list[str]) -> int:
     """Report a missing import as an environment fault, not a failed run.
 
     A ``ModuleNotFoundError`` reaching the top of the CLI means some import
@@ -518,14 +523,51 @@ def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int) -> int
     only thing that identifies which package went missing and from where. The
     single-line summary goes last so that a caller which keeps only the tail of
     stderr still receives the diagnosis rather than the middle of a stack.
+    Machine mode also attempts an unavailable envelope on stdout. A failure
+    preparing or writing that envelope leaves the environment exit code intact.
     """
-    traceback.print_exc()
+    if sys.stderr is not None:
+        # With stderr closed, print_exc() falls back to stdout, which would put
+        # the traceback where only the envelope may go.
+        traceback.print_exc()
     missing, guidance = _missing_requirement(exc)
-    log_error(
+    message = (
         f"cannot start: {missing} is not installed in this environment. "
         "No run was started, so this is an unusable environment rather than a "
         f"failed run. Install the missing dependency, then re-run.{guidance}"
     )
+    log_error(message)
+    if "--machine" in _args_before_sentinel(argv):
+        from ._machine_envelope import _encode_envelope, _failure
+
+        try:
+            envelope = _failure("unavailable", mask_credentials(message), {"exit_code": exit_code})
+            encoded = _encode_envelope(envelope)
+            stdout = sys.stdout
+            if stdout is None:
+                # Started with stdout closed: there is nowhere to write the envelope.
+                return exit_code
+            try:
+                fd = stdout.fileno()
+            except (AttributeError, io.UnsupportedOperation):
+                stream = getattr(stdout, "buffer", None)
+                if stream is None:
+                    stdout.write(encoded)
+                    stdout.flush()
+                else:
+                    stream.write(encoded.encode("utf-8"))
+                    stream.flush()
+            else:
+                # A failed buffered flush can retry at interpreter shutdown
+                # and replace the intended exit status.
+                remaining = memoryview(encoded.encode("utf-8"))
+                while remaining:
+                    written = os.write(fd, remaining)
+                    if not written:
+                        break
+                    remaining = remaining[written:]
+        except (OSError, ValueError):
+            pass
     return exit_code
 
 
@@ -541,6 +583,7 @@ def main(argv: list[str] | None = None) -> int:
     allocation marker decides, and once a run exists the error is left to
     propagate and be reported the way any other failure during a run is.
     """
+    argv = argv if argv is not None else sys.argv[1:]
     startup_error = (
         _catalog_import_error if _catalog_import_error is not None else _job_import_error
     )
@@ -548,14 +591,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             raise startup_error
         except _ENVIRONMENT_FAULTS as exc:
-            return _report_broken_environment(exc, exit_code=_STARTUP_ENVIRONMENT_EXIT)
+            return _report_broken_environment(exc, exit_code=_STARTUP_ENVIRONMENT_EXIT, argv=argv)
     begin_invocation()
     try:
         return _run(argv)
     except _ENVIRONMENT_FAULTS as exc:
         if run_was_allocated():
             raise
-        return _report_broken_environment(exc, exit_code=EXIT_CODE_ENVIRONMENT_ERROR)
+        return _report_broken_environment(exc, exit_code=EXIT_CODE_ENVIRONMENT_ERROR, argv=argv)
     finally:
         end_invocation()
 

@@ -660,6 +660,28 @@ async def test_advance_chains_chain_depth_at_cap_resolves_without_grace(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("depth", "awaits_child"), [(2, True), (3, False)])
+async def test_advance_chains_reads_current_schedule_depth_cap(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, depth: int, awaits_child: bool
+) -> None:
+    from lionhub.orchestration.schedule import parsing
+
+    monkeypatch.setattr(parsing, "_MAX_CHAIN_DEPTH", 3)
+    async with StateDB() as db:
+        schedule_id = await _make_schedule(db, on_success={"kind": "agent"})
+        run_id = await _make_schedule_run(
+            db, schedule_id, status="completed", exit_code=0, chain_depth=depth
+        )
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        chain_state = _new_chain_state(pending, chain=True)
+
+        await _chain_tick(db, pending, [], chain_state, 0)
+
+    assert (run_id in chain_state["awaiting_grace"]) is awaits_child
+    assert (run_id in chain_state["resolved_roots"]) is not awaits_child
+
+
+@pytest.mark.asyncio
 async def test_advance_chains_multi_hop_chain_followed_to_final_link(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
