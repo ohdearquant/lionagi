@@ -816,7 +816,7 @@ def test_machine_module_missing_error_keeps_allocation_boundary(machine_import_f
     envelope = _one_object(capfd.readouterr().out)
     assert envelope["ok"] is False
     assert envelope["error"]["kind"] == "internal"
-    assert envelope["error"]["message"] == "a required module or feature is not installed"
+    assert envelope["error"]["message"] == "a required module is not installed"
 
 
 def test_machine_missing_feature_error_keeps_allocation_boundary(machine_import_file, capfd):
@@ -835,4 +835,8 @@ def test_machine_missing_feature_error_keeps_allocation_boundary(machine_import_
     envelope = _one_object(capfd.readouterr().out)
     assert envelope["ok"] is False
     assert envelope["error"]["kind"] == "internal"
-    assert envelope["error"]["message"] == "a required module or feature is not installed"
+    message = envelope["error"]["message"]
+    assert message.startswith("MissingFeatureError: ")
+    assert "fixture provider" in message
+    assert "fixture-dist" in message
+    assert "install fixture-dist" in message

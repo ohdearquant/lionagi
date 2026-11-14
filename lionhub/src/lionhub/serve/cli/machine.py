@@ -770,9 +770,9 @@ def dispatch_machine(argv: list[str]) -> int:
 
     A `ModuleNotFoundError` or `MissingFeatureError` before run allocation is
     re-raised so the entry point can return exit 78 with a best-effort
-    environment refusal. Once a run
-    exists on disk it is an ordinary failure of that run and gets an envelope
-    like any other.
+    environment refusal. Once a run exists on disk it is an ordinary failure of
+    that run and gets an envelope like any other; a missing feature's envelope
+    names the feature and how to install it.
     """
     from lionhub.orchestration.job import run_was_allocated
 
@@ -781,11 +781,16 @@ def dispatch_machine(argv: list[str]) -> int:
             data = _run_machine_command(argv)
         except MachineError as exc:
             channel.emit(failure(exc.kind, str(exc), exc.detail))
-        except (ModuleNotFoundError, MissingFeatureError):
+        except ModuleNotFoundError:
             if not run_was_allocated():
                 raise
-            channel.emit(failure("internal", "a required module or feature is not installed"))
+            channel.emit(failure("internal", "a required module is not installed"))
         except Exception as exc:  # noqa: BLE001 — a crash with no envelope is unreadable
+            # A missing feature before allocation is an environment refusal, like a
+            # missing module. After allocation it is reported like any other failure,
+            # so the envelope keeps the feature name and its install guidance.
+            if isinstance(exc, MissingFeatureError) and not run_was_allocated():
+                raise
             from lionagi.state.engine import mask_credentials
 
             # The only sink that prints a message from code we do not own. The
