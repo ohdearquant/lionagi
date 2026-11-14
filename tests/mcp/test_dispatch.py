@@ -799,6 +799,38 @@ def test_machine_environment_exit_preserves_unavailable_envelope_diagnostics(
     assert result["error"]["detail"] == {**detail, "stderr": expected_stderr}
 
 
+def test_machine_environment_exit_masks_envelope_diagnostics(machine_process_result):
+    uri = "postgresql://fixture:synthetic-password@example.invalid"
+    masked = "postgresql://fixture:***@example.invalid"
+    envelope = {
+        "ok": False,
+        "contract_version": 1,
+        "data": None,
+        "error": {
+            "kind": "unavailable",
+            "message": f"Unable to access {uri}",
+            "detail": {
+                "endpoint": uri,
+                "causes": [uri, {"endpoint": uri}, None, 2, True],
+                "exit_code": 1,
+            },
+        },
+    }
+    machine_process_result(78, json.dumps(envelope).encode(), b"Startup failed\n")
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    error = result["error"]
+    assert error["kind"] == "unavailable"
+    assert error["message"] == f"Unable to access {masked}"
+    assert error["detail"] == {
+        "endpoint": masked,
+        "causes": [masked, {"endpoint": masked}, None, 2, True],
+        "exit_code": 78,
+        "stderr": "Startup failed\n",
+    }
+
+
 def test_machine_environment_exit_does_not_parse_oversized_result(
     machine_process_result, monkeypatch
 ):

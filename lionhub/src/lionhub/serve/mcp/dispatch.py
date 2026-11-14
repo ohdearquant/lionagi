@@ -991,7 +991,17 @@ def _machine_environment_error(
         envelope_detail is not None and not isinstance(envelope_detail, dict)
     ):
         return fallback
-    return OpError("unavailable", message, {**(envelope_detail or {}), **detail})
+    envelope_detail = envelope_detail or {}
+    pending = [envelope_detail]
+    while pending:
+        container = pending.pop()
+        items = container.items() if isinstance(container, dict) else enumerate(container)
+        for key, value in items:
+            if isinstance(value, str):
+                container[key] = mask_credentials(value)
+            elif isinstance(value, (dict, list)):
+                pending.append(value)
+    return OpError("unavailable", mask_credentials(message), {**envelope_detail, **detail})
 
 
 def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
