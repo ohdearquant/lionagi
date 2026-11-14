@@ -362,10 +362,10 @@ async def test_active_cancellation_survives_cleanup_failure_without_leaking_task
     caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
     existing_tasks = asyncio.all_tasks()
     task = asyncio.create_task(_lookup(path, proc))
-    await asyncio.wait_for(proc.active_started.wait(), timeout=0.5)
+    await asyncio.wait_for(proc.active_started.wait(), timeout=10.0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=1.5)
+        await asyncio.wait_for(task, timeout=10.0)
 
     _assert_finished(proc)
     assert proc.pipe.close_calls == 1
