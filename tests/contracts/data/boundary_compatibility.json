@@ -2326,6 +2326,9 @@
       "run",
       "run_and_collect"
     ],
+    "lionagi/operations/run/stream_buffer.py": [
+      "legacy_stream_text"
+    ],
     "lionagi/operations/schema/json_structure.py": [
       "JsonStructure"
     ],
