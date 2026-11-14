@@ -236,6 +236,64 @@ def test_profile_loads_with_an_unreadable_date(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("block", "ending"),
+    [
+        ("disallowed_tools: [Example]\nDeadline: 2026-02-30\n", "---\nBody.\n"),
+        ("'allowed_tools': [Example]\nDeadline: 2026-02-30\n", "---\nBody.\n"),
+        ('"tools": [Example]\nDeadline: 2026-02-30\n', "---\nBody.\n"),
+        ("disallowed_tools: [Example]\ninvalid: [\n", "---\nBody.\n"),
+        ("disallowed_tools: [Example]\n", ""),
+        ("description: |\n  notes\ntools: [Example]\ninvalid: [\n", "---\nBody.\n"),
+    ],
+    ids=[
+        "deny-list-date",
+        "allow-list-date",
+        "tools-date",
+        "deny-list-syntax",
+        "unclosed",
+        "key-after-scalar",
+    ],
+)
+def test_unreadable_profile_tool_settings_are_refused(block, ending):
+    with pytest.raises(ConfigurationError, match="agent profile 'reviewer'.*tool settings"):
+        _parse_profile("reviewer", f"---\n{block}{ending}")
+
+
+def test_readable_profile_keeps_tool_settings():
+    profile = _parse_profile(
+        "reviewer",
+        "---\ntools: [First, Second]\nallowed_tools: [First]\ndisallowed_tools: [Second]\n---\n",
+    )
+    assert profile.extra == {
+        "tools": ["First", "Second"],
+        "allowed_tools": ["First"],
+        "disallowed_tools": ["Second"],
+    }
+
+
+@pytest.mark.parametrize(
+    "mention",
+    [
+        "description: 'allowed_tools: [Example]'\n# disallowed_tools: [Example]\n",
+        "description: |-\n  tools: [Example]\n",
+        "description: >2 # Example\n  disallowed_tools: [Example]\n",
+        "description:\n  - |-\n    allowed_tools: [Example]\n",
+    ],
+)
+def test_tool_names_in_an_unreadable_profile_value_or_comment_are_ignored(monkeypatch, mention):
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    profile = _parse_profile(
+        "reviewer",
+        f"---\n{mention}Deadline: 2026-02-30\n---\nBody.\n",
+    )
+
+    assert profile.raw_body == "Body."
+    assert profile.extra == {}
+    assert any("frontmatter" in warning and "ignored" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
     ("value", "expected"),
     [("2026-02-28", date(2026, 2, 28)), ('"2026-02-30"', "2026-02-30")],
     ids=["valid-date", "quoted-date"],

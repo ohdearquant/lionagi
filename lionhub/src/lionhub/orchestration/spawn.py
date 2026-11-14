@@ -1214,7 +1214,38 @@ _CONTAINMENT_KEYS = (_CONTAIN_KEY, _CONTAIN_ACCOUNT_KEY)
 _FLAG_KEY_LINE = re.compile(
     rf"^[ \t]*(?:-[ \t]+)*[\"']?({'|'.join(_CONTAINMENT_KEYS)})[\"']?[ \t]*:", re.M
 )
+_TOOL_KEY_LINE = re.compile(
+    rf"""^[ \t]*(?:-[ \t]+)*(?P<quote>["']?)(?:{"|".join(_PROFILE_TOOL_FIELDS)})(?P=quote)[ \t]*:"""
+)
+_BLOCK_SCALAR_LINE = re.compile(
+    r"""^(?P<prefix>[ \t]*(?:-[ \t]+)*)(?:(?P<key>[^\s:#"'\[\]{}][^:#]*?|"[^"]*"|'[^']*')"""
+    r"""[ \t]*:[ \t]+)?[|>](?P<indicator>[+-][1-9]?|[1-9][+-]?)?(?:[ \t]+(?:#.*)?)?$"""
+)
 _DASHES = re.compile(r"-{3,}")
+
+
+def _unread_frontmatter_names_tool_settings(block: str) -> bool:
+    """Find tool key lines while skipping literal and folded scalar contents."""
+    scalar_column = None
+    scalar_indent = None
+    for line in block.splitlines():
+        content = line.lstrip(" \t")
+        if not content:
+            continue
+        indent = len(line) - len(content)
+        if scalar_column is not None:
+            if scalar_indent is None and indent > scalar_column:
+                scalar_indent = indent
+            if scalar_indent is not None and indent >= scalar_indent:
+                continue
+            scalar_column = scalar_indent = None
+        if _TOOL_KEY_LINE.match(line):
+            return True
+        if scalar := _BLOCK_SCALAR_LINE.match(line):
+            scalar_column = scalar.end("prefix") if scalar.group("key") else indent
+            digit = (scalar.group("indicator") or "").strip("+-")
+            scalar_indent = scalar_column + int(digit) if digit else None
+    return False
 
 
 def _contain_flag_values(block: str) -> list[Any]:
@@ -1289,7 +1320,7 @@ def _keys_like_the_contain_flag(document: Any) -> list[str]:
 
 
 def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
-    """Retain containment when frontmatter settings cannot be applied.
+    """Retain containment and refuse discarded tool settings.
 
     A containment key in a readable mapping, or a mention in an unreadable block,
     enables the corresponding containment. Empty blocks have no settings to lose.
@@ -1313,6 +1344,13 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             return {key for key in _CONTAINMENT_KEYS if key in document}
         return {key for key in _CONTAINMENT_KEYS if key in block}
 
+    def refuse_unread_tool_settings(block: str) -> None:
+        if _unread_frontmatter_names_tool_settings(block):
+            raise ConfigurationError(
+                f"agent profile {name!r}: tool settings could not be read; "
+                "fix the frontmatter to proceed"
+            )
+
     def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
         if (reads and isinstance(document, dict) and "mcp" in document) or (
             not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M)
@@ -1335,6 +1373,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         # A block with no settings in it, empty or comments only, has none to lose.
         if reads and document is None:
             return {}
+        refuse_unread_tool_settings(block)
         named = named_containment_keys(block, document)
         if _CONTAIN_KEY in block:
             # Keep containment for mentions in an unclosed user-settings block.
@@ -1379,6 +1418,8 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                 block = "\n".join("" if j in fenced else lines[j] for j in range(opening + 1, end))
                 reads, document = read(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)
+                if not reads:
+                    refuse_unread_tool_settings(block)
                 declared = set(_FLAG_KEY_LINE.findall(block))
                 if not reads or isinstance(document, dict):
                     declared.update(named_containment_keys(block, document))
@@ -1397,6 +1438,8 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         block = "\n".join(rest if closing is None else rest[:closing])
         reads, document = read(block)
         refuse_misplaced_mcp(block, reads, document, 1)
+        if not reads:
+            refuse_unread_tool_settings(block)
         if reads and isinstance(document, dict):
             if not document:
                 return {}

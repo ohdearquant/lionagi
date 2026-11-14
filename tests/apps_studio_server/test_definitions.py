@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
@@ -285,14 +286,17 @@ def existing_agent_definition(tmp_path, monkeypatch):
 def test_save_agent_definition_rejects_invalid_date(existing_agent_definition):
     client, agent_file = existing_agent_definition
     original = agent_file.read_bytes()
+    frontmatter = "name: save-agent\nDeadline: 2026-02-30\n"
+    with pytest.raises(ValueError) as invalid_date:
+        yaml.safe_load(frontmatter)
 
     response = client.post(
         "/api/definitions/agent/save-agent",
-        json={"content": "---\nname: save-agent\nDeadline: 2026-02-30\n---\n\nNew body.\n"},
+        json={"content": f"---\n{frontmatter}---\n\nNew body.\n"},
     )
 
     assert response.status_code == 422, response.text
-    assert response.json() == {"detail": "day is out of range for month"}
+    assert response.json() == {"detail": str(invalid_date.value)}
     assert agent_file.read_bytes() == original
 
 
