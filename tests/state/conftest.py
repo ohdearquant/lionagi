@@ -14,6 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+# The CI setup action checks this capability in the test checkout before provisioning.
+RUNNER_POSTGRES_PER_WORKER = True
+
 
 def _runner_database_url(url, run_token, worker):
     """Give each worker using the runner-local server its own database."""

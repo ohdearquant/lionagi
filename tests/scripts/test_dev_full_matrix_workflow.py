@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import os
 import runpy
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,7 @@ SETUP = ".github/actions/setup-python-tests"
 PLAN_SHA = "${{ needs.plan.outputs.sha }}"
 WORKFLOW_SHA = "${{ github.workflow_sha }}"
 MATRIX_VERSION = "${{ matrix.python-version }}"
+POSTGRES_FIXTURE_GUARD = "steps.postgres-fixture.outputs.supported == 'true'"
 
 
 def _workflow(name):
@@ -152,7 +155,9 @@ def _postgres_setup_problems(workflows, action):
     ]
     assert callers, "the shared Python setup has no workflow callers"
     problems = []
-    provision = next((step for step in action["runs"]["steps"] if step.get("id") == "postgres"), {})
+    steps = action["runs"]["steps"]
+    capability = next((step for step in steps if step.get("id") == "postgres-fixture"), {})
+    provision = next((step for step in steps if step.get("id") == "postgres"), {})
     script = provision.get("run", "")
     for workflow, name, job, setup in callers:
         if job.get("runs-on") != "ubuntu-24.04":
@@ -162,22 +167,30 @@ def _postgres_setup_problems(workflows, action):
             for step in job["steps"][: job["steps"].index(setup)]
         ):
             problems.append(f"{workflow}:{name} runs tests before doing PostgreSQL setup")
-        if any(
-            key in step for step in (setup, provision) for key in ("if", "continue-on-error")
-        ) or not all(
-            token in script
-            for token in (
-                "set -euo pipefail",
-                "/postgresql/16/",
-                "127.0.0.1",
-                "pg_ctl",
-                "SHOW server_version_num",
-                "LIONAGI_TEST_PG_URL=",
-                "LIONAGI_TEST_PG_RUNNER=",
-                '"$GITHUB_ENV"',
+        if (
+            not capability
+            or not provision
+            or steps.index(capability) > steps.index(provision)
+            or any(
+                key in step for step in (setup, capability) for key in ("if", "continue-on-error")
+            )
+            or provision.get("if") != POSTGRES_FIXTURE_GUARD
+            or "continue-on-error" in provision
+            or not all(
+                token in script
+                for token in (
+                    "set -euo pipefail",
+                    "/postgresql/16/",
+                    "127.0.0.1",
+                    "pg_ctl",
+                    "SHOW server_version_num",
+                    "LIONAGI_TEST_PG_URL=",
+                    "LIONAGI_TEST_PG_RUNNER=",
+                    '"$GITHUB_ENV"',
+                )
             )
         ):
-            problems.append(f"{workflow}:{name} lacks required local PostgreSQL provisioning")
+            problems.append(f"{workflow}:{name} lacks guarded local PostgreSQL provisioning")
     return problems
 
 
@@ -191,9 +204,62 @@ def test_all_shared_python_setup_callers_provision_local_postgres():
         step for step in broken["runs"]["steps"] if step.get("id") != "postgres"
     ]
     assert sorted(_postgres_setup_problems(workflows, broken)) == [
-        "ci.yml:test lacks required local PostgreSQL provisioning",
-        "dev-full-matrix.yml:test lacks required local PostgreSQL provisioning",
+        "ci.yml:test lacks guarded local PostgreSQL provisioning",
+        "dev-full-matrix.yml:test lacks guarded local PostgreSQL provisioning",
     ]
+
+    unguarded = copy.deepcopy(action)
+    provision = next(step for step in unguarded["runs"]["steps"] if step.get("id") == "postgres")
+    del provision["if"]
+    assert sorted(_postgres_setup_problems(workflows, unguarded)) == [
+        "ci.yml:test lacks guarded local PostgreSQL provisioning",
+        "dev-full-matrix.yml:test lacks guarded local PostgreSQL provisioning",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("checkout_fixture", "expected"),
+    [("current", True), ("older", False), ("missing", False), ("unreadable", False)],
+)
+def test_runner_postgres_capability_comes_from_the_test_checkout(
+    tmp_path, checkout_fixture, expected
+):
+    action = yaml.safe_load((GITHUB / SETUP.removeprefix(".github/") / "action.yml").read_text())
+    capability = next(
+        step for step in action["runs"]["steps"] if step.get("id") == "postgres-fixture"
+    )
+    probe = capability["run"]
+    current = (GITHUB.parent / "tests" / "state" / "conftest.py").read_text()
+    workflow_source = tmp_path / "workflow"
+    test_source = tmp_path / "tested"
+    source_fixture = workflow_source / "tests" / "state" / "conftest.py"
+    test_fixture = test_source / "tests" / "state" / "conftest.py"
+    for fixture in (source_fixture, test_fixture):
+        fixture.parent.mkdir(parents=True)
+    source_fixture.write_text(current)
+    if checkout_fixture == "older":
+        test_fixture.write_text(
+            'import os\n\ndef pg_url():\n    yield os.environ["LIONAGI_TEST_PG_URL"]\n'
+        )
+    elif checkout_fixture != "missing":
+        test_fixture.write_text(current)
+    if checkout_fixture == "unreadable":
+        # Simulate a failed marker read even on test runners using a privileged UID.
+        probe = "grep() { return 2; }\n" + probe
+
+    output = tmp_path / "output"
+    subprocess.run(
+        ["bash", "-e", "-c", probe],
+        cwd=workflow_source,
+        env={
+            "PATH": os.defpath,
+            "GITHUB_WORKSPACE": str(test_source),
+            "GITHUB_OUTPUT": str(output),
+        },
+        check=True,
+        timeout=10,
+    )
+    assert output.read_text() == f"supported={str(expected).lower()}\n"
 
 
 @pytest.mark.parametrize(
