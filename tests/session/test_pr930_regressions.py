@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-import lionagi.cli.skill as skill_module
-from lionagi.cli.main import _handle_play_shortcut
-from lionagi.cli.orchestrate import _resolve_playbook_path, _validate_spec_fields
-from lionagi.cli.skill import _containment_anchor, _first_line, resolve_skill_path
+import lionhub.serve.cli.skill as skill_module
 from lionagi.service.hooks._types import HookEventTypes
 from lionagi.service.hooks.hook_registry import HookRegistry
 from lionhub.orchestration.spawn import _clamp_claude_effort
+from lionhub.serve.cli.main import _handle_play_shortcut
+from lionhub.serve.cli.orchestrate import _resolve_playbook_path, _validate_spec_fields
+from lionhub.serve.cli.skill import _containment_anchor, _first_line, resolve_skill_path
 
 # Symlink containment
 

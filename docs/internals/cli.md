@@ -1,4 +1,4 @@
-# `lionagi/cli/` internals
+# `lionhub/src/lionhub/serve/cli/` internals
 
 Non-obvious invariants, protocol contracts, and design rationale for the CLI package that
 don't belong inline as long-form comments/docstrings. Organized by module. Source-of-truth
@@ -60,16 +60,20 @@ occasional false "something changed".
 
 ## `machine.py` — machine-result envelope contract
 
-Every `li <command> --machine` call answers with exactly one JSON object on stdout and
-nothing else; every human-facing byte goes to stderr — the consumer is a subprocess caller in
-another language that cannot read this file, so the shape is fixed here and `CONTRACT_VERSION`
-is the only thing it has to negotiate. Pieces: `ok`/`failure` are the two envelope constructors
-(`ERROR_KINDS` is closed); `available`/`unavailable` are the availability wrapper, so "there are
-none" and "could not establish whether there are any" never share an encoding; `reserve_stdout`
-takes stdout away from everything except the envelope at the file-descriptor level, so a stray
-`print` (or a child process that inherited the descriptor) lands on stderr instead of corrupting
-the result; `dispatch_machine` runs one machine command and turns any failure into an envelope
-rather than a traceback.
+Every machine request the dispatcher handles emits exactly one JSON object on stdout.
+Human-facing output goes to stderr. The consumer negotiates the shape through
+`CONTRACT_VERSION`. `ok` and `failure` construct envelopes, with failure kinds drawn
+from `ERROR_KINDS`. The `available` and `unavailable` wrappers distinguish an empty result
+from a failed read. `reserve_stdout` reserves the stdout file descriptor for the envelope,
+so output from `print` or a child process lands on stderr. `dispatch_machine` runs the
+command and encodes its result.
+
+When a missing dependency prevents startup, the entry point exits 78. With `--machine`
+before the first `--`, it makes a best-effort attempt to emit an `unavailable` envelope with
+`error.detail.exit_code` set to 78 for diagnostics. The standard-library-only
+`_machine_envelope.py` helper holds the shared contract version, failure constructor and
+encoder. If the write fails, stdout is empty and the exit stays 78. Outside machine mode,
+stdout stays empty on this path. The startup diagnostic goes to stderr in both modes.
 
 ## `lionhub/src/lionhub/orchestration/mcp_config.py` — MCP server resolution at submit time
 
@@ -356,7 +360,7 @@ added to what its CLI discovers. With no set resolved it is handed nothing.
 When the run resolved a set, leaf workers, nodes spawned while the flow runs
 and the fanout synthesis branch are handed an exact set: when the run's set
 came from discovery, lionagi's own job-control server (`li mcp`, `python -m
-lionhub.serve.mcp` or `python -m lionagi.cli mcp`, under whatever alias it is
+lionhub.serve.mcp` or `python -m lionhub.serve.cli mcp`, under whatever alias it is
 registered and behind a launcher such as `uv run` or `env`, recognised by
 `_is_job_control_server`; any program named `li` run with `mcp` is taken for
 it) is withheld and the rest of the found set reaches them, and a planned
@@ -679,7 +683,7 @@ agent-run session row that predates the `drains_controls` declaration is
 still admitted, because it does have a real turn-end drain. The precise set
 of session shapes/transitions this covers is intentionally not enumerated in
 prose — every attempt drifted out of date — see the resume cases in
-`tests/cli/test_agent_steer.py` for the executable version of that contract.
+`lionhub/tests/lionhub_tests/serve/cli/test_agent_steer.py` for the executable version of that contract.
 
 The running-session check and the `session_controls` insert are two separate
 statements; a session can go terminal between them. The insert re-checks the
@@ -1570,7 +1574,7 @@ The state, passes and `mirror_forever` described below are defined in
 `lionhub/src/lionhub/serve/mirror.py`, and the preview-size setting in
 `lionhub.serve.mirror_settings`. `mirror.py` keeps the `li mirror` parser, its
 `_run` loop and `run_mirror`, and imports the service names back for callers that
-read them from `lionagi.cli.mirror`.
+read them from `lionhub.serve.cli.mirror`.
 
 **`_Lineage`** — cross-session conversation-lineage detection protocol. A continued
 conversation opens a fresh transcript whose first message points — via `parentUuid` — at the

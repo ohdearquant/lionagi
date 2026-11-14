@@ -819,12 +819,12 @@ async def test_a_registered_branch_with_no_messages_does_not_fail_the_teardown(
     """A fanout registers each worker lazily; a worker that produced no message has no branch row,
     so the teardown emits no BRANCH_END write for it and still closes the session."""
     from lionagi import Branch
-    from lionagi.cli.orchestrate import _orchestration
-    from lionagi.cli.orchestrate._orchestration import setup_orchestration_persist
     from lionagi.session.session import Session
     from lionagi.state import db as db_mod
     from lionagi.state.compat import CompatibilityProfile, TableWrites
     from lionhub.orchestration import runs as _runs
+    from lionhub.serve.cli.orchestrate import _orchestration
+    from lionhub.serve.cli.orchestrate._orchestration import setup_orchestration_persist
 
     store = await _managed_store(tmp_path / "managed.db")
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)

@@ -92,7 +92,7 @@ wake it. A consumer restart across a successful delivery loses it the same way.
 |---------|----------|
 | What the contract covers and who owns it | D1: lionagi owns the contract; it is a CLI-level machine surface, not the MCP server's Python API |
 | Version negotiation | D2: `contract_version` is an integer, checked on every envelope, not only at a handshake |
-| The envelope every machine call returns | D3: one envelope shape — `ok`, `contract_version`, `data`, `error` |
+| The machine result envelope | D3: one envelope shape — `ok`, `contract_version`, `data`, `error` |
 | Run status | D4: `status` is opaque and verbatim; the producer also publishes `terminal` and `outcome`, on every status-bearing response |
 | Submit | D5: submit returns a handle; the spawn phase is recorded rather than inferred from a missing pid |
 | Reads | D6: one lifecycle authority for every path; liveness is advisory; a conclusively-gone `started` orphan is reaped terminal where the fenced reap publishes (ADR-0107); a `preparing` or inconclusive one, or a reap whose write was refused, stays non-terminal |
@@ -237,14 +237,12 @@ another copy of our rules living in code we do not control.
   object whose contents are not contractual.
 - The envelope is emitted even when the command fails, because a failure producing no
   JSON is indistinguishable from a crash.
-- **The scope of "every call" is every request that reaches the machine dispatcher.** A
-  failure before that point cannot emit an envelope, because the code that builds one has
-  not loaded and the contract version it would carry is not knowable. Those cases are
-  enumerated in D8 and are diagnosed by exit status alone; a consumer must not classify them
-  as malformed output. Stating this here rather than only in D8 matters because a
-  cross-language consumer implementing D3 literally would turn the intended environment
-  diagnosis into a protocol violation, which is the loudest possible way to report the one
-  fault that has nothing to do with the request.
+- **The one-envelope guarantee applies to every request the machine dispatcher handles.**
+  The entry point can also report a missing dependency before run allocation. For machine
+  mode it builds a best-effort envelope using a standard-library-only helper at
+  `lionhub/src/lionhub/serve/cli/_machine_envelope.py`, which holds the contract version.
+  This keeps the version available even when the dispatcher cannot load. D8 defines how
+  the consumer handles this diagnostic and how to interpret exit 78 with empty stdout.
 
 ### D4 — `status` is opaque; `terminal` and `outcome` are the producer's derivations
 
@@ -516,29 +514,39 @@ rather than left to the reader:
 | Situation | Exit | Envelope | Consumer reads |
 |-----------|------|----------|----------------|
 | Request handled, succeeded or refused | 0 | present, `ok` true or false | the envelope |
-| Environment cannot run the command | 78 | absent | environment fault; nothing executed |
+| Environment cannot run the command | 78 | in machine mode, best-effort `ok: false` with kind `unavailable` | environment fault, nothing executed |
 | No envelope for any other reason | any | absent | transport fault |
 
 **Exact semantics.**
 
 - **A well-formed envelope whose `contract_version` the consumer accepts is
-  authoritative, and the command exits 0 whenever one is emitted** — including for
-  `ok: false`. A structured refusal is a successfully handled request; encoding the
-  refusal a second time in the exit status creates two answers to one question, which
-  is the ambiguity D3 exists to remove.
-- **78 (`EX_CONFIG`)** is returned when a required module cannot be imported and no run
-  has been allocated — that is, when nothing was executed. It is never returned once a
+  authoritative.** The command exits 0 when it emits one, including for a handled
+  refusal with `ok: false`. A structured refusal is a successfully handled request;
+  encoding the refusal a second time in the exit status creates two answers to one
+  question, which is the ambiguity D3 exists to remove. The sole exception is the
+  machine-mode environment envelope, which keeps exit 78.
+- **78 (`EX_CONFIG`)** is returned when a required module or feature is unavailable and
+  no run has been allocated — that is, when nothing was executed. It is never returned once a
   run exists, because a run that started and then failed is a failed run, and reporting
   it as an environment fault sends the consumer away from durable state it should read.
-  No envelope accompanies it, because the failure happens before the code that would
-  emit one.
+  In machine mode the entry point emits an `unavailable` envelope on a best-effort
+  basis. If it cannot write the envelope, stdout is empty and the exit status is still
+  78. Without `--machine`, stdout stays empty. The diagnostic goes to stderr in
+  both modes.
 - **Any other exit without a parseable envelope is a transport fault**: the process
   could not be launched at all, it was killed by a signal, it timed out under the
   consumer's own bound, or stdout did not parse. These are distinct from both of the
   above and the consumer must not attribute them to the submitted work. In particular a
   launch failure cannot return 78, because no child existed to return anything.
-- A consumer that sees a valid envelope ignores the exit status. A consumer that sees
-  no valid envelope uses the exit status, and only then.
+- A consumer that sees a valid envelope uses it as the answer. On 78, a valid
+  `unavailable` envelope and the exit status both say the environment could not run
+  the command and nothing executed. `error.detail.exit_code` repeats the exit status
+  for diagnostics. Its contents remain non-contractual under D3. If no valid envelope
+  is available, the consumer uses the exit status.
+
+(2026-11-14 erratum: the entry point can emit a best-effort `unavailable` envelope
+in machine mode on exit 78. The wire shape, closed error vocabulary and contract
+version remain v1.)
 
 ### D9 — A notification is a prompt to read state, never proof and never the only path
 
@@ -791,9 +799,11 @@ being asked of them in one place.
    branch against a hand-written envelope.
 5. **Never render `available: false` as "none"** (D7). Absence of evidence is not
    evidence of absence, and the whole wrapper exists to stop those sharing an encoding.
-6. **Check the exit status before parsing stdout, and do not parse it at all on 78**
-   (D8). Attributing an environment fault to the submitted work is the misattribution
-   this contract was written to remove.
+6. **Check the exit status before parsing stdout, and never read stdout on 78 as a
+   result of the submitted work** (D8). Attributing an environment fault to the
+   submitted work is the misattribution this contract was written to remove. On 78,
+   stdout holds either nothing or a valid `unavailable` envelope. A consumer may read
+   that envelope as a diagnostic, and never treats empty stdout there as malformed.
 7. **Never treat a terminal notice as proof, or as the only discovery path** (D9).
    Delivery can fail, and the record of that failure lives in state a non-polling
    consumer is not reading.
@@ -829,8 +839,9 @@ suite, before release.
 
 **Harder.** `--machine` is a second output mode for every command that has one, and a
 stray `print` on stdout under it corrupts the result for every consumer while looking
-fine to a human running the same command. This needs a per-command test asserting that
-stdout parses as exactly one JSON object, not a convention.
+fine to a human running the same command. Per-command tests assert that handled
+requests produce exactly one JSON object. Startup failure tests cover the best-effort
+envelope and empty stdout on exit 78.
 
 **Harder, specifically.** D4's `outcome` and D7's wrapper mean the producer now owns
 classifications it previously left to callers. That is the point — it is the only place

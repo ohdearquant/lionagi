@@ -492,7 +492,7 @@ class PluginRegistry:
     @classmethod
     def active_agent_profile_files(cls) -> dict[str, tuple[str, Path]]:
         """``<plugin>/<name>`` -> (plugin name, absolute profile path), for
-        every ACTIVE plugin. Consumed by ``lionagi.cli._providers``.
+        every ACTIVE plugin. Consumed by ``lionhub.orchestration.spawn``.
         """
         out: dict[str, tuple[str, Path]] = {}
         active, _, _ = _fresh_active_plugins(cls._ensure_loaded())
@@ -506,7 +506,7 @@ class PluginRegistry:
     @classmethod
     def active_playbook_files(cls) -> dict[str, tuple[str, Path]]:
         """``<plugin>/<name>`` -> (plugin name, absolute playbook path), for
-        every ACTIVE plugin. Consumed by ``lionagi.cli.orchestrate``.
+        every ACTIVE plugin. Consumed by ``lionhub.serve.cli.orchestrate``.
         """
         out: dict[str, tuple[str, Path]] = {}
         active, _, _ = _fresh_active_plugins(cls._ensure_loaded())

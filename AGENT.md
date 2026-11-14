@@ -35,7 +35,7 @@ CI tests Python 3.10-3.14 on PRs and `main`/`develop` pushes; only the manual `e
 - `lionagi/ln/` — concurrency utils (alcall, bcall), fuzzy JSON, sentinels
 - `lionhub/src/lionhub/agent/casts/` — cast patterns, roles, modes, profiles, packs, and emission contracts
 - `lionhub/src/lionhub/tools/` — tool interfaces and built-ins
-- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `lionhub/src/lionhub/orchestration/runs.py` (RunDir); `cli/team.py`; `lionhub.orchestration.project` (project detection). `li studio` / `li schedule` live in `lionhub/src/lionhub/cli/studio.py` and `lionhub/src/lionhub/cli/schedule.py`; `lionagi/studio/cli.py` only re-exports their names for compatibility. CLI console output helpers live in `lionhub.orchestration.console`.
+- `lionhub/src/lionhub/serve/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `lionhub/src/lionhub/orchestration/runs.py` (RunDir); `cli/team.py`; `lionhub.orchestration.project` (project detection). `li studio` / `li schedule` live in `lionhub/src/lionhub/serve/cli/studio.py` and `lionhub/src/lionhub/serve/cli/schedule.py`; `lionagi/studio/cli.py` only re-exports their names for compatibility. CLI console output helpers live in `lionhub.orchestration.console`.
 - `tests/` — mirrors package structure
 - `benchmarks/` — micro-benchmark runners and baselines
 
@@ -54,7 +54,7 @@ When editing `session/`, `operations/`, or `cli/orchestrate/`: preserve these co
 - `lionagi/protocols/*` → `tests/protocols/*`
 - `lionagi/service/*` → `tests/service/*`
 - `lionagi/ln/*` → `tests/libs/concurrency/*`, `tests/ln/*`
-- `lionagi/cli/*` → `tests/cli/*`; additionally smoke with `li o flow ... --dry-run` for structure or `--bare --yolo` for a short real run, and add smoke assertions in `tests/docs/` when changing user-facing output shape.
+- `lionhub/src/lionhub/serve/cli/*` → `lionhub/tests/lionhub_tests/serve/cli/*`; additionally smoke with `li o flow ... --dry-run` for structure or `--bare --yolo` for a short real run, and add smoke assertions in `tests/docs/` when changing user-facing output shape.
 
 ### Proving a guard is actually covered
 
@@ -183,7 +183,7 @@ This is separate from `settings.yaml` (which is gitignored/local). The detection
 
 Lion Studio can fire agent work on a schedule. The scheduler engine (`lionhub/src/lionhub/orchestration/scheduler/engine.py`) runs in-process inside the Studio server and ticks every 30 seconds.
 
-**CLI** (`lionhub/src/lionhub/cli/schedule.py`):
+**CLI** (`lionhub/src/lionhub/serve/cli/schedule.py`):
 
 ```bash
 li schedule list                                      # List all schedules

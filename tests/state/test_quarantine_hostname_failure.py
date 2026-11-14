@@ -8,9 +8,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from lionagi.cli import kill as kill_cli
 from lionagi.config import settings
 from lionagi.state.db import StateDB
+from lionhub.serve.cli import kill as kill_cli
 
 
 @pytest.mark.parametrize("kind", ["session", "invocation"])

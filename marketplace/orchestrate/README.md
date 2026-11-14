@@ -172,15 +172,15 @@ runs the same playbook in the foreground.
 
 - Issues: https://github.com/ohdearquant/lionagi/issues
 - Discussions: https://github.com/ohdearquant/lionagi/discussions
-- Source: `lionhub/src/lionhub/serve/mcp/` for the MCP server, `lionagi/cli/` for the CLI it wraps,
+- Source: `lionhub/src/lionhub/serve/mcp/` for the MCP server, `lionhub/src/lionhub/serve/cli/` for the CLI it wraps,
   `lionagi/studio/` for the Studio backend and `apps/studio/frontend/` for its UI,
   `lionagi/state/` for the data model
 
 ## Source code reference
 
 - MCP server: `lionhub/src/lionhub/serve/mcp/server.py` (the `request` tool), `lionhub/src/lionhub/serve/mcp/verbs.py` (verb registry)
-- CLI orchestration: `lionagi/cli/orchestrate/flow.py`, `lionagi/cli/orchestrate/fanout.py`
-- Agent system: `lionagi/cli/agent.py`, `lionhub/src/lionhub/agent/`
+- CLI orchestration: `lionhub/src/lionhub/serve/cli/orchestrate/flow.py`, `lionhub/src/lionhub/serve/cli/orchestrate/fanout.py`
+- Agent system: `lionhub/src/lionhub/serve/cli/agent.py`, `lionhub/src/lionhub/agent/`
 - Playbooks: `~/.lionagi/playbooks/*.playbook.yaml`
 - State DB schema: `lionagi/state/schema.sql`
 - Studio: `lionagi/studio/` (backend), `apps/studio/frontend/` (UI)

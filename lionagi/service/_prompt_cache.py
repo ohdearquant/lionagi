@@ -105,7 +105,7 @@ class PromptCacheCall:
     attempts: list[tuple[str, float]] = field(default_factory=list)
     # The protected first round as this request compiled it: ``kept`` when its messages hash as
     # they did at the decision, ``changed`` when they do not (a cache miss, never a re-decision).
-    frontier: str | None = None
+    round_state: str | None = None
     tail_skip: dict[str, int] | None = None
 
 
@@ -122,14 +122,14 @@ def prompt_cache_call(
     intent: Intent | None = None,
     *,
     anchors: tuple[tuple[int, int], ...] = (),
-    frontier: str | None = None,
+    round_state: str | None = None,
     tail_skip: dict[str, int] | None = None,
 ) -> Iterator[PromptCacheCall]:
     call = PromptCacheCall(
         ledger=ledger,
         intent=intent or current_intent(),
         anchors=anchors,
-        frontier=frontier,
+        round_state=round_state,
         tail_skip=tail_skip,
     )
     token = _call.set(call)
@@ -144,7 +144,7 @@ def conversation_call(
     imodel: Any,
     *,
     anchors: tuple[tuple[int, int], ...] = (),
-    frontier: str | None = None,
+    round_state: str | None = None,
     tail_skip: dict[str, int] | None = None,
 ):
     """The call context for one request of a conversation: its branch's rows when the
@@ -152,7 +152,7 @@ def conversation_call(
     if not getattr(getattr(imodel, "endpoint", None), "places_prompt_cache", False):
         return nullcontext()
     return prompt_cache_call(
-        ledger_for(metadata), anchors=anchors, frontier=frontier, tail_skip=tail_skip
+        ledger_for(metadata), anchors=anchors, round_state=round_state, tail_skip=tail_skip
     )
 
 
@@ -291,14 +291,14 @@ def decide_protection(
     """Decide, once, whether the first round stays ahead of every fold, and record it.
 
     ``view`` is the compiler's cache view of this request: the round's member ids and its
-    frontier, the (message, block) place where the round's compiled material ends. The round is
+    round_end, the (message, block) place where the round's compiled material ends. The round is
     included when its compiled size, counted as the input cap counts, is at most a tenth of
     ``cap``; equality fits.
     """
     from lionagi.protocols.messages._result_projection import PROJECTION_VERSION
     from lionagi.service.connections.api_calling import estimate_payload_input_tokens
 
-    message, slot = view["frontier"]
+    message, slot = view["round_end"]
     head = _through(messages, message, slot)
     size = math.ceil(estimate_payload_input_tokens({"messages": head}) * scale)
     record = {
@@ -329,18 +329,18 @@ def cache_anchors(
     end of an included first round and the newest compaction note.
     """
     record = protection(metadata)
-    frontier = view.get("frontier")
-    if record is None and frontier is not None and view.get("round") and decide is not None:
+    round_end = view.get("round_end")
+    if record is None and round_end is not None and view.get("round") and decide is not None:
         record = decide(view, messages)
     anchors: list[tuple[int, int]] = []
-    state = None
-    if record is not None and record["included"] and frontier is not None:
-        anchors.append(tuple(frontier))
-        same = _hash(_through(messages, *frontier)) == record["frontier"]["hash"]
-        state = "kept" if same else "changed"
+    round_state = None
+    if record is not None and record["included"] and round_end is not None:
+        anchors.append(tuple(round_end))
+        same = _hash(_through(messages, *round_end)) == record["frontier"]["hash"]
+        round_state = "kept" if same else "changed"
     if (note := view.get("note")) is not None and tuple(note) not in anchors:
         anchors.append(tuple(note))
-    return tuple(anchors), state
+    return tuple(anchors), round_state
 
 
 def expires_at(entry: dict) -> float:
@@ -437,8 +437,8 @@ def settle(call: PromptCacheCall, api_call: Any) -> dict:
     """
     record = dict(call.placement or {})
     record.setdefault("intent", call.intent)
-    if call.frontier is not None:
-        record["frontier"] = call.frontier
+    if call.round_state is not None:
+        record["frontier"] = call.round_state
     usage = _complete_usage(api_call)
     if usage is None or not call.attempts or call.placement is None:
         record["read"] = "unevaluated"

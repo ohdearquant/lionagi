@@ -216,8 +216,8 @@ def exit_code_for_view(
     invocation: dict[str, Any] | None,
     sessions: list[dict[str, Any]],
 ) -> int:
-    """Reuses the existing shared status vocabulary (cli/_util.py,
-    cli/_inspection.py) rather than inventing a second exit-code table: 0 trusted
+    """Reuses the existing shared status vocabulary (lionhub.orchestration.job,
+    lionhub.orchestration.inspection) rather than inventing a second exit-code table: 0 trusted
     completion, 1 ordinary failure/completed_empty/skip, 2 unknown/no run, 3
     running, and the existing timeout/abort/cancel codes where a session or
     invocation status carries one."""

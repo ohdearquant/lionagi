@@ -592,21 +592,17 @@ def test_profile_frontmatter_examples_in_fences_are_silent(monkeypatch, fence):
 
 
 @pytest.mark.parametrize("fence", ["```", "~~~"])
-def test_profile_real_block_after_a_longer_matching_fence_warns_once(monkeypatch, fence):
+def test_profile_real_block_after_a_longer_matching_fence_is_refused(fence):
+    from lionagi._errors import ConfigurationError
     from lionhub.orchestration.spawn import _parse_profile
 
-    warnings = []
-    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
     text = (
         f"Example profile:\n{fence}yaml\n---\ncontain_user_settings: true\n---\n"
         f"{fence}{fence[0]}\n---\ncontain_user_settings: true\n---\nBody."
     )
 
-    profile = _parse_profile("example", text)
-
-    assert profile.contain_user_settings is False
-    assert len(warnings) == 1
-    assert "its worker is not contained" in warnings[0]
+    with pytest.raises(ConfigurationError, match="block on line 7 .*move the block to the top"):
+        _parse_profile("example", text)
 
 
 @pytest.mark.parametrize("opening,closing", [("```", ""), ("````", "```"), ("~~~", "```")])
@@ -629,17 +625,52 @@ def test_profile_unclosed_or_mismatched_fence_keeps_examples_silent(monkeypatch,
 @pytest.mark.parametrize(
     "prose", ["Use ```yaml inline.", "Use ~~~yaml inline.", "```yaml``` is inline."]
 )
-def test_profile_inline_fence_text_does_not_hide_a_real_block(monkeypatch, prose):
+def test_profile_inline_fence_text_does_not_hide_a_real_block(prose):
+    from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.spawn import _parse_profile
+
+    with pytest.raises(ConfigurationError, match="block on line 2 .*move the block to the top"):
+        _parse_profile("example", prose + "\n---\ncontain_user_settings: true\n---\nBody.")
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+@pytest.mark.parametrize("example", ["mcp:\n  search: {}", "contain_user_settings: true"])
+def test_profile_fenced_example_between_two_rules_is_prompt_text(monkeypatch, fence, example):
     from lionhub.orchestration.spawn import _parse_profile
 
     warnings = []
     monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    text = f"Help.\n\n---\n\nExample:\n\n{fence}yaml\n{example}\n{fence}\n\n---\n\nMore text."
 
-    profile = _parse_profile("example", prose + "\n---\ncontain_user_settings: true\n---\nBody.")
+    profile = _parse_profile("example", text)
 
     assert profile.contain_user_settings is False
-    assert len(warnings) == 1
-    assert "its worker is not contained" in warnings[0]
+    assert profile.raw_body == text
+    assert warnings == []
+
+
+def test_profile_fence_in_a_span_does_not_hide_a_flag_line_beside_it():
+    from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.spawn import _parse_profile
+
+    text = "Help.\n\n---\n```\nx\n```\ncontain_user_settings: true\n---\nBody."
+
+    with pytest.raises(ConfigurationError, match="block on line 3 .*move the block to the top"):
+        _parse_profile("example", text)
+
+
+def test_profile_span_with_a_calendar_invalid_date_loads_as_prompt(monkeypatch):
+    from lionhub.orchestration.spawn import _parse_profile
+
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    text = "Help.\n\n---\n\nDeadline: 2026-02-30\n\n---\n\nMore text."
+
+    profile = _parse_profile("example", text)
+
+    assert profile.contain_user_settings is False
+    assert profile.raw_body == text
+    assert warnings == []
 
 
 @pytest.mark.parametrize("value", [True, False])

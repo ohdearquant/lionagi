@@ -828,7 +828,7 @@ an absolute path even when `manifest_dir` is itself relative.
 - **`_save_skill_definition`** — Always writes
   `<SKILLS_DIR>/<name>/SKILL.md` regardless of what shape currently exists
   on disk, normalizing to the one shape `li skill` actually resolves
-  (`skills.py::_find_skill_md` / `lionagi/cli/skill.py`) rather than
+  (`skills.py::_find_skill_md` / `lionhub/src/lionhub/serve/cli/skill.py`) rather than
   preserving a legacy layout. Plugin-bundled skills live under a plugin
   directory, never under `SKILLS_DIR`, so they're unreachable through this
   path by construction, not by an extra check.
@@ -897,7 +897,7 @@ in that zone), and the next plan reports `UNCHANGED`.
 ## lionagi/studio/services/playbooks.py
 
 - **`_check_spec_fields`** — Mirrors
-  `lionagi/cli/orchestrate/__init__.py::_validate_spec_fields()` exactly,
+  `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py::_validate_spec_fields()` exactly,
   implemented inline to avoid loading the full orchestrate module at import
   time. The two must be kept in sync by hand.
 - **`update_playbook`** — Conservative merge writing a playbook YAML back to

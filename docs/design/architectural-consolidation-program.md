@@ -64,7 +64,7 @@ operational packages account for 87,596 lines before frontend code:
 | Package | Python lines |
 |---|---:|
 | `lionagi/studio` | 38,115 |
-| `lionagi/cli` | 28,612 |
+| `lionhub/src/lionhub/serve/cli` | 28,612 |
 | `lionagi/state` | 14,027 |
 | `lionhub/src/lionhub/serve/mcp` | 6,842 |
 

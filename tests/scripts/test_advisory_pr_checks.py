@@ -17,6 +17,7 @@ bytes in a multibyte encoding can stay silent.
 from __future__ import annotations
 
 import ast
+import copy
 import functools
 import importlib.metadata
 import json
@@ -703,6 +704,32 @@ def _pull_request_branch_filter(parsed: object) -> bool:
     return False
 
 
+# The one event detail a required job may read: the test matrix runs the two
+# ends of the supported set on a pull request into dev/lionagi and the full set
+# on every other base, so the pull request that promotes dev/lionagi into main
+# still runs every version before main moves. It is matched as this exact text
+# and removed before the scan, so any edit to it is refused here and has to be
+# argued again; its selections are pinned by the matrix tests below.
+SANCTIONED_TEST_MATRIX = "${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '[\"3.10\",\"3.14\"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '[\"3.10\"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '[\"3.10\",\"3.14\"]' || '[\"3.10\",\"3.11\",\"3.12\",\"3.13\",\"3.14\"]') }}"
+
+
+def _sanctioned_matrix_removed(parsed: object) -> object:
+    """The parsed workflow with the test job's sanctioned matrix value blanked.
+
+    Only that one location is exempt: the same text anywhere else, a job's
+    `if:` or another job's matrix, stays in the scan and is refused.
+    """
+    try:
+        matrix = parsed["jobs"]["test"]["strategy"]["matrix"]  # type: ignore[index]
+    except (KeyError, TypeError):
+        return parsed
+    if not isinstance(matrix, dict) or matrix.get("python-version") != SANCTIONED_TEST_MATRIX:
+        return parsed
+    parsed = copy.deepcopy(parsed)
+    parsed["jobs"]["test"]["strategy"]["matrix"]["python-version"] = ""  # type: ignore[index]
+    return parsed
+
+
 def _other_switches(text: str) -> list[str]:
     """What in a required workflow or action could act as a switch.
 
@@ -719,16 +746,24 @@ def _other_switches(text: str) -> list[str]:
     `secrets: inherit` does. A `pull_request` or `pull_request_target` trigger
     with a branch or path filter is refused outright, because it starts no run
     for the pull requests it excludes.
+
+    One event detail is exempt: `SANCTIONED_TEST_MATRIX` as the test job's
+    `strategy.matrix.python-version`, and only there. The parsed scan blanks that
+    one value; the raw-text scan drops the expression only where it follows a
+    `python-version:` key, and a copy under another job's matrix is still found
+    by the parsed scan.
     """
     try:
         parsed = _parse(text)
     except _DuplicateKeyError:
         return ["duplicate mapping key"]
-    raw = _uncommented(text)
+    raw = _uncommented(text).replace(
+        f"python-version: {SANCTIONED_TEST_MATRIX}", "python-version: "
+    )
     found = [
         match.group(0)
         for pattern in (LABEL, EVENT_DETAIL, ENV_DETAIL)
-        for string in (raw, *_strings(parsed))
+        for string in (raw, *_strings(_sanctioned_matrix_removed(parsed)))
         for match in pattern.finditer(string)
     ]
     if [s for s in _strings(parsed, "with", reusable_secrets=True) if SECRET.search(s)]:
@@ -807,6 +842,100 @@ def test_a_required_job_cannot_gate_on_a_manual_run_input(tmp_path: Path) -> Non
     (workflows / "ci.yml").write_text(text)
     assert _input_gated(text)
     assert _required_switches(tmp_path)[".github/workflows/ci.yml"]
+
+
+def _test_matrix_versions(
+    expression: str, *, event: str, base: str = "", code: str = "", matrix: str = ""
+) -> list[str]:
+    """Evaluate the test job's python-version expression for one event.
+
+    GitHub's `a && b || c` takes the same branches as Python's `a and b or c` here,
+    because every value the expression selects is a non-empty string.
+    """
+    inner = expression.removeprefix("${{").removesuffix("}}").strip()
+    names = {
+        "github.event_name": "EVENT",
+        "github.base_ref": "BASE",
+        "needs.changes.outputs.code": "CODE",
+        "inputs.python-matrix": "MATRIX",
+        "fromJSON": "FROM_JSON",
+        "&&": " and ",
+        "||": " or ",
+    }
+    for spelling, name in names.items():
+        inner = inner.replace(spelling, name)
+    scope = {"EVENT": event, "BASE": base, "CODE": code, "MATRIX": matrix, "FROM_JSON": json.loads}
+    return eval(inner, {"__builtins__": {}}, scope)  # noqa: S307 - the pinned text above
+
+
+FULL_SET = ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+
+def test_the_test_matrix_reads_the_sanctioned_expression() -> None:
+    matrix = _load("ci.yml")["jobs"]["test"]["strategy"]["matrix"]
+    assert matrix["python-version"] == SANCTIONED_TEST_MATRIX
+
+
+@pytest.mark.parametrize(
+    ("event", "base", "code", "matrix", "expected"),
+    [
+        ("pull_request", "dev/lionagi", "true", "", ["3.10", "3.14"]),
+        ("pull_request", "main", "true", "", FULL_SET),
+        ("pull_request", "release/x", "true", "", FULL_SET),
+        ("pull_request", "dev/lionagi", "false", "", ["3.10"]),
+        ("pull_request", "main", "false", "", FULL_SET),
+        ("pull_request", "release/x", "false", "", FULL_SET),
+        # `changes` failed or was skipped: its output is empty.
+        ("pull_request", "dev/lionagi", "", "", ["3.10", "3.14"]),
+        ("pull_request", "main", "", "", FULL_SET),
+        ("push", "", "true", "", FULL_SET),
+        ("push", "", "false", "", FULL_SET),
+        ("workflow_dispatch", "", "", "full", FULL_SET),
+        ("workflow_dispatch", "", "", "endpoints", ["3.10", "3.14"]),
+    ],
+)
+def test_the_test_matrix_selection(event, base, code, matrix, expected) -> None:
+    versions = _test_matrix_versions(
+        SANCTIONED_TEST_MATRIX, event=event, base=base, code=code, matrix=matrix
+    )
+    assert versions == expected
+
+
+def test_a_base_ref_read_beside_the_sanctioned_matrix_is_still_refused() -> None:
+    text = _ci_gate_text()
+    assert _other_switches(text) == []
+    condition = (
+        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-24.04\n    # Every job in this workflow"
+    )
+    assert text.count(condition) == 1, "the test job header in ci.yml changed; update this fixture"
+    edited = text.replace(
+        condition, condition.replace("!cancelled()", "!cancelled() && github.base_ref != ''"), 1
+    )
+    assert "github.base_ref" in _other_switches(edited)
+
+
+def test_the_sanctioned_matrix_text_is_refused_anywhere_but_the_test_matrix() -> None:
+    text = _ci_gate_text()
+    condition = (
+        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-24.04\n    # Every job in this workflow"
+    )
+    assert text.count(condition) == 1, "the test job header in ci.yml changed; update this fixture"
+    as_condition = text.replace(
+        condition, condition.replace("${{ !cancelled() }}", SANCTIONED_TEST_MATRIX), 1
+    )
+    assert "github.base_ref" in _other_switches(as_condition)
+    as_flag = text.replace(
+        condition, condition + f"\n    continue-on-error: {SANCTIONED_TEST_MATRIX}", 1
+    )
+    assert "github.base_ref" in _other_switches(as_flag)
+
+
+def test_an_edited_matrix_expression_is_refused() -> None:
+    text = _ci_gate_text()
+    widened = SANCTIONED_TEST_MATRIX.replace("'dev/lionagi'", "'main'")
+    assert widened != SANCTIONED_TEST_MATRIX
+    edited = text.replace(SANCTIONED_TEST_MATRIX, widened, 1)
+    assert "github.base_ref" in _other_switches(edited)
 
 
 def test_a_required_job_cannot_switch_off_in_its_own_code(tmp_path: Path) -> None:
@@ -965,7 +1094,14 @@ def test_a_required_workflow_without_a_secret_still_passes(tmp_path: Path) -> No
     workflows = tmp_path / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "ci.yml").write_text(ci)
-    assert _required_switches(tmp_path) == {".github/workflows/ci.yml": []}
+    expected = {".github/workflows/ci.yml": []}
+    for source in _required_files()[1:]:
+        relative = source.relative_to(REPO)
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        expected[relative.as_posix()] = []
+    assert _required_switches(tmp_path) == expected
 
 
 def test_a_repeated_mapping_key_is_refused(tmp_path: Path) -> None:
@@ -1190,6 +1326,9 @@ CI_CHANGES_FILTERS = {
     "compat": [
         "pyproject.toml",
         "uv.lock",
+        # Direct LionHub imports are checked against these pinned paths.
+        "lionhub/src/lionhub/serve/cli/**",
+        "lionhub/src/lionhub/orchestration/runs.py",
         "tests/conftest.py",
         "tests/_shared_conftest.py",
         "tests/state/conftest.py",
@@ -1200,7 +1339,9 @@ CI_CHANGES_FILTERS = {
     "lion1": ["lion1/**", ".github/workflows/ci.yml"],
 }
 CI_CHANGES_OUTPUTS = {
-    name: f"${{{{ steps.filter.outputs.{name} }}}}" for name in CI_CHANGES_FILTERS
+    **{name: f"${{{{ steps.filter.outputs.{name} }}}}" for name in CI_CHANGES_FILTERS},
+    # From its own step: true when any changed file is outside the documentation paths.
+    "code": "${{ steps.code.outputs.code }}",
 }
 
 # Anchored at the start of the `run:` text and at its end: the heredoc has to feed
@@ -2675,13 +2816,46 @@ def _compat_names_in(
     return found, unresolved
 
 
+def _compat_lionhub_imports(source: Path, root: Path) -> list[tuple[str, int]]:
+    """Find the source files named by direct LionHub imports in a test."""
+    imported: list[tuple[str, int]] = []
+
+    def module_file(name: str) -> Path | None:
+        base = root / "lionhub" / "src" / name.replace(".", "/")
+        init = base / "__init__.py"
+        module = base.with_suffix(".py")
+        if init.is_file():
+            return init
+        if module.is_file():
+            return module
+        return None
+
+    def add(name: str, line: int) -> None:
+        if name == "lionhub" or name.startswith("lionhub."):
+            path = module_file(name)
+            imported.append((path.relative_to(root).as_posix() if path else name, line))
+
+    tree = ast.parse(source.read_text(), filename=str(source))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                add(alias.name, node.lineno)
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            name = node.module
+            if name == "lionhub" or name.startswith("lionhub."):
+                for alias in node.names:
+                    submodule = f"{name}.{alias.name}"
+                    add(submodule if module_file(submodule) else name, node.lineno)
+    return imported
+
+
 def _compat_filter_problems(
     workflows: Path = WORKFLOWS,
     root: Path = REPO_ROOT,
     state: Path | None = None,
     init: Path | None = None,
 ) -> list[str]:
-    """How the compat filter's `lionagi/` entries differ from what its sources import.
+    """Check LionAGI filter entries and coverage of direct LionHub test imports.
 
     *state* is the directory read as lionagi/state, *init* the file read as
     lionagi/__init__.py, and the `tests/` files come from the filter's own entries,
@@ -2702,6 +2876,7 @@ def _compat_filter_problems(
             )
         )
     problems = []
+    hub_imports: dict[str, str] = {}
     for pattern in listed:
         if not pattern.startswith("tests/"):
             continue
@@ -2709,6 +2884,9 @@ def _compat_filter_problems(
         if not matched:
             problems.append(f"the compat filter names {pattern!r}, which matches no file")
         sources.extend((p.relative_to(root).as_posix(), p, None) for p in matched)
+        for path in matched:
+            for entry, line in _compat_lionhub_imports(path, root):
+                hub_imports.setdefault(entry, f"{path.relative_to(root).as_posix()}:{line}")
     needed = {"lionagi/state/**": "the lionagi/state tree itself"}
     for label, path, package in sources:
         found, unresolved = _compat_names_in(path, package, names)
@@ -2734,12 +2912,58 @@ def _compat_filter_problems(
             f"the compat filter lists {entry!r}, which none of the {len(sources)} files read "
             "for it import, and lionagi/__init__.py does not import at module load"
         )
+    # The pinned filter uses exact paths and recursive directory entries for LionHub.
+    hub_trees = [
+        entry.removesuffix("**")
+        for entry in listed
+        if entry.startswith("lionhub/") and entry.endswith("/**")
+    ]
+    for entry, source in sorted(hub_imports.items()):
+        if entry not in listed and not any(entry.startswith(tree) for tree in hub_trees):
+            problems.append(f"the compat filter lacks {entry!r}, which {source} needs")
     return problems
 
 
 def test_the_compat_filter_lists_what_its_sources_import() -> None:
     problems = _compat_filter_problems()
     assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize(
+    ("entry", "missing"),
+    [
+        ("lionhub/src/lionhub/orchestration/runs.py", "lionhub/src/lionhub/orchestration/runs.py"),
+        ("lionhub/src/lionhub/serve/cli/**", "lionhub/src/lionhub/serve/cli/agent.py"),
+    ],
+)
+def test_the_compat_filter_refuses_an_uncovered_lionhub_import(
+    entry: str, missing: str, tmp_path: Path
+) -> None:
+    old = f"            - '{entry}'\n"
+    text = _ci_gate_text()
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text.replace(old, ""))
+    problems = _compat_filter_problems(workflows)
+    assert any(
+        f"lacks {missing!r}" in problem and "tests/state/test_compatibility_" in problem
+        for problem in problems
+    ), problems
+
+
+def test_compat_lionhub_imports_resolve_only_named_sources(tmp_path: Path) -> None:
+    assert (REPO_ROOT / "lionhub/src/lionhub/orchestration/job.py").is_file()
+    source = tmp_path / "test_example.py"
+    source.write_text(
+        "import lionhub.orchestration.runs as runs_module\n"
+        "from lionhub.orchestration import runs as _runs\n"
+        "def late_import():\n"
+        "    from lionhub.orchestration.runs import RunDir\n"
+        "# import lionhub.orchestration.job\n"
+    )
+    runs = "lionhub/src/lionhub/orchestration/runs.py"
+    expected = [(runs, line) for line in (1, 2, 4)]
+    assert sorted(_compat_lionhub_imports(source, REPO_ROOT)) == expected
 
 
 def _copy_the_state_tree(tmp_path: Path) -> Path:

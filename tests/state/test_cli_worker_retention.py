@@ -206,7 +206,7 @@ async def test_imported_deletion_preserves_unresolved_graph_and_settled_evidence
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_cli_preview_and_recount_exclude_unresolved_workers(db_path: Path) -> None:
-    from lionagi.cli import state
+    from lionhub.serve.cli import state
 
     async with StateDB(db_path) as db:
         blocked = await _seed(db, settled=False, older_generation=True, with_artifact=False)
@@ -231,7 +231,7 @@ async def test_cli_preview_and_recount_exclude_unresolved_workers(db_path: Path)
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_cli_keep_n_still_ranks_protected_sessions(db_path: Path) -> None:
-    from lionagi.cli import state
+    from lionhub.serve.cli import state
 
     async with StateDB(db_path) as db:
         blocked = await _seed(db, settled=False, age_days=40, with_artifact=False)
@@ -294,7 +294,7 @@ async def test_maintenance_rechecks_workers_after_candidate_selection(
 async def test_cli_filters_a_late_worker_before_temp_tables(
     db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from lionagi.cli import state
+    from lionhub.serve.cli import state
 
     async with StateDB(db_path) as db:
         blocked = await _seed(db, settled=None)
@@ -342,7 +342,7 @@ async def test_cli_filters_a_late_worker_before_temp_tables(
 async def test_cli_rechecks_age_after_locking_candidates(
     db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from lionagi.cli import state
+    from lionhub.serve.cli import state
 
     async with StateDB(db_path) as db:
         refreshed = await _seed(db, settled=True)
