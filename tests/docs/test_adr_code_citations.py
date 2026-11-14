@@ -219,7 +219,7 @@ PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {
         "test_recovery_terminal_write_records_chain_decision",
         "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
         "test_selection_is_none_at_depth_cap",
-        "tests/state/lifecycle/test_schedule_adapter.py::"
+        "tests/state/test_lifecycle_gate.py::"
         "test_schedule_run_status_write_keeps_reason_columns",
         "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
         "test_lost_terminal_cas_does_not_chain_normal_path",

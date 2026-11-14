@@ -285,19 +285,23 @@ initial history entry in
 The initializer takes a keyword-only `seed_chain_decision` flag, off by
 default. Keep the public StateDB creation signatures. Each public method
 shares its transaction implementation with a private StateDB entry point
-and calls it with seeding disabled. The scheduler state service calls those
-private entry points with seeding enabled for the two paths below. The
-initializer applies the flag to a new `schedule_run` only if D5 enables
-recording and its initial status is `skipped` or `failed`. Direct SDK
-creation and all `queued` or `running` rows keep the original evidence shape.
+and calls it with seeding disabled. Keep the ordinary scheduler state service
+creation methods unseeded as well. Give the scheduler service dedicated
+internal methods for skipped insertion, failed create-and-advance and failed
+tombstone-and-replace. Only those methods call the private StateDB entry
+points with seeding enabled. The initializer applies the flag to a new
+`schedule_run` only if D5 enables recording and its initial status is
+`skipped` or `failed`. Direct SDK creation and all `queued` or `running`
+rows keep the original evidence shape.
 
 - `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::create_skipped_run`
-  inserts the skipped row through the private counterpart of
-  `lionagi/state/db.py::StateDB.create_schedule_run`.
+  uses the dedicated skipped-insertion service method, which calls the
+  private counterpart of `lionagi/state/db.py::StateDB.create_schedule_run`.
 - Setup failure in `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`
   records a failed row through
   `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._write_occurrence`.
-  It uses the private counterpart of
+  Only that setup-failure call selects the dedicated failed-creation service
+  methods in the occurrence writer. Those methods use the private counterpart of
   `lionagi/state/db.py::StateDB.create_schedule_run_and_advance` for a normal
   occurrence or of `lionagi/state/db.py::StateDB.tombstone_and_replace_schedule_run`
   when replacing an undispatched orphan. The latter seeds the new failed row only.
@@ -414,16 +418,15 @@ The cutover procedure applies to both backends:
 
    Verify the written current and history records. Exercise a fresh monitor
    open and observe the persisted selection and its child if one exists.
-   Keep ordinary admission closed while upgraded active consumers reconcile
-   the acceptance rows. Use fixtures that allow each consumer to acknowledge
-   its owed terminal transitions through normal processing. Before deleting,
-   verify that the cascade removes neither an owed child nor a last resolver
-   protected by the
+   Let upgraded active consumers reconcile the acceptance rows during these
+   checks. Use fixtures that allow each consumer to acknowledge its owed
+   terminal transitions through normal processing. Once the acceptance
+   checks pass, resolve surviving fixture references and attempt to delete
+   the same acceptance schedule with
+   `lionagi/studio/services/schedules.py::delete_schedule`.
+   The delete checks child debt and protected last resolvers under the
+   retention fence as required by the
    [ADR-0095 schedule cascade refusal](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md#native-upgrade-and-maintenance).
-   Resolve surviving fixture references and delete the same acceptance
-   schedule with `lionagi/studio/services/schedules.py::delete_schedule`.
-   The delete rechecks debt and protected resolvers under the retention
-   fence. If it refuses, retain the fixture until those conditions clear.
    The delete cascades to runs under that schedule, including parent and child when
    both belong to it. A surviving link such as a child in another schedule, an
    outbox reference or a worker lease can block deletion
@@ -431,8 +434,12 @@ The cutover procedure applies to both backends:
    `lionagi/state/schema.sql:634@45fd503ecf2af299d48b762cd895a2b8e650ced5`,
    `lionagi/state/schema.sql:698@45fd503ecf2af299d48b762cd895a2b8e650ced5`,
    `lionagi/state/schema.sql:986@45fd503ecf2af299d48b762cd895a2b8e650ced5`).
-   Clear those fixture dependencies and verify the schedule and its runs are
-   gone as a separate check before restoring ordinary admission.
+   Normally, verify the schedule and its runs are gone as a separate check
+   before restoring ordinary admission. If deletion is still refused after
+   the acceptance checks pass, record the retained fixture IDs as acceptance
+   data in the cutover record and restore ordinary admission. Delete the
+   fixture through the same guarded path when the refusal clears and verify
+   its removal separately.
 
 ## Consequences
 
@@ -471,7 +478,7 @@ New tests (none exist at this checkout):
 1. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_normal_path_terminal_write_records_chain_decision`: an exit-0 child with an `on_fail` branch and a `completed_empty` invocation. The row's `status_evidence_refs` contains `{"kind": "chain_decision", "v": 1, "ref": "on_fail"}` and the invocation ref.
 2. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_recovery_terminal_write_records_chain_decision`: a dispatched orphan with a stored branch. The row carries the same element, and the definition is read before the compare-and-set.
 3. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_selection_is_none_at_depth_cap`: a run at `_MAX_CHAIN_DEPTH` records `none` and launches nothing.
-4. `tests/state/lifecycle/test_schedule_adapter.py::test_schedule_run_status_write_keeps_reason_columns`: a `db.update_status` write for a schedule run persists ordinary `status_evidence_refs`. The legacy `transition()` route records ordinary refs in history only. This is the reason-column gate test (D1).
+4. `tests/state/test_lifecycle_gate.py::test_schedule_run_status_write_keeps_reason_columns`: a `db.update_status` write for a schedule run persists ordinary `status_evidence_refs`. The legacy `transition()` route records ordinary refs in history only. This is the reason-column gate test (D1).
 5. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_lost_terminal_cas_does_not_chain_normal_path` and `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_lost_terminal_cas_does_not_chain_recovery`: a lost compare-and-set on each path launches no child and writes no selection.
 6. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_none_returns_without_sleep`: a `none` row resolves with no sleep, whatever its exit code. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_branch_with_no_chain_returns_without_sleep`: with `--no-chain`, an `on_success` row resolves with no sleep and the wait returns the row's own result.
 7. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_branch_follows_child`: an `on_fail` selection on an exit-0 parent opens grace and prints a child that appears within it.
