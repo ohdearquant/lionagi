@@ -1326,9 +1326,9 @@ CI_CHANGES_FILTERS = {
     "compat": [
         "pyproject.toml",
         "uv.lock",
-        # Hub code the compatibility tests import, listed by hand: only lionagi imports
-        # are derived.
+        # Direct LionHub imports are checked against these pinned paths.
         "lionhub/src/lionhub/serve/cli/**",
+        "lionhub/src/lionhub/orchestration/runs.py",
         "tests/conftest.py",
         "tests/_shared_conftest.py",
         "tests/state/conftest.py",
@@ -2816,13 +2816,46 @@ def _compat_names_in(
     return found, unresolved
 
 
+def _compat_lionhub_imports(source: Path, root: Path) -> list[tuple[str, int]]:
+    """Find the source files named by direct LionHub imports in a test."""
+    imported: list[tuple[str, int]] = []
+
+    def module_file(name: str) -> Path | None:
+        base = root / "lionhub" / "src" / name.replace(".", "/")
+        init = base / "__init__.py"
+        module = base.with_suffix(".py")
+        if init.is_file():
+            return init
+        if module.is_file():
+            return module
+        return None
+
+    def add(name: str, line: int) -> None:
+        if name == "lionhub" or name.startswith("lionhub."):
+            path = module_file(name)
+            imported.append((path.relative_to(root).as_posix() if path else name, line))
+
+    tree = ast.parse(source.read_text(), filename=str(source))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                add(alias.name, node.lineno)
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            name = node.module
+            if name == "lionhub" or name.startswith("lionhub."):
+                for alias in node.names:
+                    submodule = f"{name}.{alias.name}"
+                    add(submodule if module_file(submodule) else name, node.lineno)
+    return imported
+
+
 def _compat_filter_problems(
     workflows: Path = WORKFLOWS,
     root: Path = REPO_ROOT,
     state: Path | None = None,
     init: Path | None = None,
 ) -> list[str]:
-    """How the compat filter's `lionagi/` entries differ from what its sources import.
+    """Check LionAGI filter entries and coverage of direct LionHub test imports.
 
     *state* is the directory read as lionagi/state, *init* the file read as
     lionagi/__init__.py, and the `tests/` files come from the filter's own entries,
@@ -2843,6 +2876,7 @@ def _compat_filter_problems(
             )
         )
     problems = []
+    hub_imports: dict[str, str] = {}
     for pattern in listed:
         if not pattern.startswith("tests/"):
             continue
@@ -2850,6 +2884,9 @@ def _compat_filter_problems(
         if not matched:
             problems.append(f"the compat filter names {pattern!r}, which matches no file")
         sources.extend((p.relative_to(root).as_posix(), p, None) for p in matched)
+        for path in matched:
+            for entry, line in _compat_lionhub_imports(path, root):
+                hub_imports.setdefault(entry, f"{path.relative_to(root).as_posix()}:{line}")
     needed = {"lionagi/state/**": "the lionagi/state tree itself"}
     for label, path, package in sources:
         found, unresolved = _compat_names_in(path, package, names)
@@ -2875,12 +2912,58 @@ def _compat_filter_problems(
             f"the compat filter lists {entry!r}, which none of the {len(sources)} files read "
             "for it import, and lionagi/__init__.py does not import at module load"
         )
+    # The pinned filter uses exact paths and recursive directory entries for LionHub.
+    hub_trees = [
+        entry.removesuffix("**")
+        for entry in listed
+        if entry.startswith("lionhub/") and entry.endswith("/**")
+    ]
+    for entry, source in sorted(hub_imports.items()):
+        if entry not in listed and not any(entry.startswith(tree) for tree in hub_trees):
+            problems.append(f"the compat filter lacks {entry!r}, which {source} needs")
     return problems
 
 
 def test_the_compat_filter_lists_what_its_sources_import() -> None:
     problems = _compat_filter_problems()
     assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize(
+    ("entry", "missing"),
+    [
+        ("lionhub/src/lionhub/orchestration/runs.py", "lionhub/src/lionhub/orchestration/runs.py"),
+        ("lionhub/src/lionhub/serve/cli/**", "lionhub/src/lionhub/serve/cli/agent.py"),
+    ],
+)
+def test_the_compat_filter_refuses_an_uncovered_lionhub_import(
+    entry: str, missing: str, tmp_path: Path
+) -> None:
+    old = f"            - '{entry}'\n"
+    text = _ci_gate_text()
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text.replace(old, ""))
+    problems = _compat_filter_problems(workflows)
+    assert any(
+        f"lacks {missing!r}" in problem and "tests/state/test_compatibility_" in problem
+        for problem in problems
+    ), problems
+
+
+def test_compat_lionhub_imports_resolve_only_named_sources(tmp_path: Path) -> None:
+    assert (REPO_ROOT / "lionhub/src/lionhub/orchestration/job.py").is_file()
+    source = tmp_path / "test_example.py"
+    source.write_text(
+        "import lionhub.orchestration.runs as runs_module\n"
+        "from lionhub.orchestration import runs as _runs\n"
+        "def late_import():\n"
+        "    from lionhub.orchestration.runs import RunDir\n"
+        "# import lionhub.orchestration.job\n"
+    )
+    runs = "lionhub/src/lionhub/orchestration/runs.py"
+    expected = [(runs, line) for line in (1, 2, 4)]
+    assert sorted(_compat_lionhub_imports(source, REPO_ROOT)) == expected
 
 
 def _copy_the_state_tree(tmp_path: Path) -> Path:
