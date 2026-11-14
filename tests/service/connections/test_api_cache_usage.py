@@ -219,6 +219,38 @@ async def test_local_cache_miss_records_and_hit_stays_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cache_hit_does_not_hide_a_later_miss(monkeypatch):
+    from aiocache import SimpleMemoryCache, caches
+    from aiocache.serializers import JsonSerializer
+
+    from lionagi.config import settings
+
+    monkeypatch.setattr(settings.aiocache_config, "alias", "default")
+    cache = SimpleMemoryCache(serializer=JsonSerializer())
+    monkeypatch.setattr(caches, "get", lambda alias: cache)
+    endpoint = _endpoint("openai")
+    transport = AsyncMock(
+        side_effect=[
+            {"usage": {"prompt_tokens_details": {"cached_tokens": 5}}},
+            {"usage": {"prompt_tokens_details": {"cached_tokens": 12}}},
+        ]
+    )
+    monkeypatch.setattr(endpoint, "_call", transport)
+    collector = _collector()
+    with collect_api_turn(collector, 1):
+        first = APICalling(endpoint=endpoint, payload={"key": "first"}, cache_control=True)
+        hit = APICalling(endpoint=endpoint, payload={"key": "first"}, cache_control=True)
+        miss = APICalling(endpoint=endpoint, payload={"key": "second"}, cache_control=True)
+    await first.invoke()
+    await hit.invoke()
+    await miss.invoke()
+
+    rows = collector.snapshot()["requests"]
+    assert [row["cache_read_tokens"] for row in rows] == [5, None, 12]
+    assert transport.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_nested_endpoint_in_cache_lookup_does_not_claim_outer_hit(monkeypatch):
     import aiocache
 

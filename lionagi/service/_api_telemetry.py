@@ -65,6 +65,15 @@ _cache_source: ContextVar[list[bool] | None] = ContextVar("api_usage_cache_sourc
 
 @contextmanager
 def observe_cache_source() -> Iterator[list[bool]]:
+    """Track whether one endpoint response came from transport execution.
+
+    ``Endpoint.call`` claims this marker before dispatch. A noncached call marks
+    it directly, while a cache-enabled call marks it only inside the cached
+    function, which runs on a miss and not on a hit. The mutable marker carries
+    that result back across the endpoint call; callers must treat overridden
+    ``Endpoint.call`` implementations as unattributed because they can change
+    these ordering semantics.
+    """
     source = [False]
     token = _cache_source.set(source)
     try:
