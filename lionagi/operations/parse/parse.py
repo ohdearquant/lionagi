@@ -80,6 +80,7 @@ class _ReformatAttempts:
             validation_error=(
                 exc.validation_error if isinstance(exc, SchemaRejectedError) else None
             ),
+            reason=self.last_error,
         )
 
     def guidance(self) -> str:
@@ -171,7 +172,9 @@ async def parse(
     ``stopped_at_output_limit`` the text came from a response that stopped at its output token
     limit: it is incomplete, so no repair request is sent and ``handle_validation`` decides at
     once: under ``"raise"`` the error names the stop, and ``"return_value"`` gives the text as an
-    ``UnparsedResponse`` of kind ``"extraction"``. A text that parses as it is is still used.
+    ``UnparsedResponse`` of kind ``"extraction"`` with a ``reason`` describing the stop. Any
+    unparsed return value carries the last failure reason; schema rejections also expose the
+    pydantic exception as ``validation_error``. A text that parses as it is is still used.
     """
     structure = parse_param.structure if isinstance(parse_param.structure, Structure) else None
     attempts = _ReformatAttempts()
