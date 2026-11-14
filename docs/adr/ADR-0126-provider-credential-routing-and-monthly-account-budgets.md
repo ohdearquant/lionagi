@@ -1721,7 +1721,8 @@ This amendment changes the following clauses for streamed rejection reads:
 **Rule 1. Interruptible read.** After a rejection status, the streamed body
 read keeps its five-second deadline and decoded bound of 64 KiB plus one byte
 to detect overflow. Caller cancellation can end the read early. Take one
-checkpoint before the deadline starts and before reading the body.
+checkpoint inside the classifier, before the deadline starts and before reading
+the body.
 
 **Rule 2. One record for an interrupted read.** If caller cancellation
 interrupts the classifier before it returns, attempt one settlement using
@@ -1758,6 +1759,10 @@ An ordinary cleanup error that clears every exception link to a native
 cancellation can also leave it unobserved. In either case, the attempt takes
 the ordinary deadline or failure path. For HTTP 529, that may include a
 further retry within the existing retry budget and reservation rules.
+This is the only exception to Decision 4's sentence that cancellation does not
+retry or move the request to another account. The attempt never observes the
+cancellation, so the retry is the deadline's or the failure's own. That retry
+follows the reservation rules for any deadline 529.
 
 <!-- markdownlint-disable-next-line MD029 -->
 4. Keep D6's typed evidence requirement and Amendment 5's accounting shield.
@@ -1796,9 +1801,13 @@ worker admission can still leave an open attempt with no recorded reason or
 status, as in Amendment 5.
 
 When native cancellation merges with the read deadline or cleanup erases
-every link to it before it is observed, the caller gets the ordinary deadline
-or failure outcome, which may include an HTTP 529 retry within the existing
-retry budget and ceiling.
+every link to it before it is observed, the attempt takes the ordinary deadline
+or failure path. For HTTP 529, that may include a further retry within the
+existing retry budget and reservation rules. This is the only exception to
+Decision 4's sentence that cancellation does not retry or move the request to
+another account. The attempt never observes the cancellation, so the retry is
+the deadline's or the failure's own. That retry follows the reservation rules
+for any deadline 529.
 
 ### Verification
 
@@ -1807,12 +1816,15 @@ retry budget and ceiling.
   available body is read. Keep the ordinary five-second timeout and body-size
   controls.
 - Rule 2. Stall HTTP 400, 413 and 529 bodies. Cancel after the read starts with
-  an AnyIO scope and with native `task.cancel()`. Require observed cancellation
-  to reach the caller within a generous bound below five seconds. Verify one
-  open settlement with the corresponding reason, status and diagnostics, the
-  held ceiling, cleared warmth and no new block or zero settlement.
+  an AnyIO scope and with native `task.cancel()`. Require cancellation to reach
+  the caller within a generous bound below five seconds. Verify one open
+  settlement with the corresponding reason, status and diagnostics, the held
+  ceiling, cleared warmth and no new block or zero settlement.
 - Rule 3. Exercise timely typed HTTP 400 and 529 responses and the qualifying
   billing-prefix case. Verify existing classified settlement and the atomic block.
+  Repeat with cancellation after the classifier returns and before or during
+  settlement. Verify the classified outcome and the atomic block for a qualifying
+  400, subject to the accounting shield's stated limits.
 - Rule 4. During observed cancellation, raise ordinary exceptions in read
   cleanup, response close and session close. Enable retries and verify one
   transport request, no transport error and one accounting call. The native
