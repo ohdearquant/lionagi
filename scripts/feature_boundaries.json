@@ -120,52 +120,52 @@
     "lionagi.cli": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.__main__": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli._agent_depth": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli._api_usage": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli._context_from": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli._notify_outcomes": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli._pid_quarantine": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.agent": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.dispatch": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.doctor": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.engine": {
       "layer": "root",
@@ -175,12 +175,12 @@
     "lionagi.cli.hooks": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.invoke": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.kill": {
       "layer": "root",
@@ -190,22 +190,22 @@
     "lionagi.cli.machine": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.machine_schedule": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.main": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.mcp": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.mirror": {
       "layer": "root",
@@ -215,12 +215,12 @@
     "lionagi.cli.monitor": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)",
+      "target_owner": "lionhub.serve.cli",
       "additional_targets": [
         "lionhub.orchestration.flow.parsing"
       ]
@@ -228,32 +228,32 @@
     "lionagi.cli.orchestrate._common": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate._control": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate._finalize": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate._harvest": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate._manifest": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate._notify": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate._orchestration": {
       "layer": "root",
@@ -263,42 +263,42 @@
     "lionagi.cli.orchestrate._quiescence": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate._round_records": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate.fanout": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.orchestrate.flow": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.plugin": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.skill": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.state": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.stats": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.cli.status": {
       "layer": "root",
@@ -313,7 +313,7 @@
     "lionagi.cli.wait": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.config": {
       "layer": "sdk",
@@ -1338,7 +1338,7 @@
     "lionagi.studio.cli": {
       "layer": "root",
       "owner": "studio",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.studio.config": {
       "layer": "root",
