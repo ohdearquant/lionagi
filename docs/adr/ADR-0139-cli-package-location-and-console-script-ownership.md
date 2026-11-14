@@ -929,7 +929,7 @@ run:
 
 ```text
 python -m pytest tests/packaging/test_cli_distribution_ownership.py tests/packaging/test_cli_relocation.py
-python -m pytest tests/test_moved_modules.py tests/contracts/test_auto_registry.py lionhub/tests/lionhub_tests/cli tests/contracts/test_cli_catalog_compatibility.py
+python -m pytest tests/test_moved_modules.py tests/contracts/test_auto_registry.py lionhub/tests/lionhub_tests/serve/cli tests/contracts/test_cli_catalog_compatibility.py
 ```
 
 These commands are acceptance procedures; the two proposed packaging files do not

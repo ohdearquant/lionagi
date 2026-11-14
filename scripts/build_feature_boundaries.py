@@ -97,7 +97,7 @@ TARGET_RULES = {
     "lionhub.serve.cli.mirror": "lionhub.serve.mirror",
     "lionhub.orchestration.scheduler": "lionhub.orchestration.scheduler",
     "lionagi.studio.services.schedules": "lionhub.orchestration.schedule",
-    "lionagi.studio.cli": "pending the CLI location decision (ADR-0139 D1)",
+    "lionagi.studio.cli": "lionhub.serve.cli",
     "lionagi.studio.services.runs": "lionhub.serve",
     "lionagi.studio.services.run_resume": "lionhub.serve",
     "lionagi.studio.services.engine_runs": "lionhub.serve",

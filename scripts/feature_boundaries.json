@@ -1140,7 +1140,7 @@
     "lionagi.studio.cli": {
       "layer": "root",
       "owner": "studio",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.studio.config": {
       "layer": "root",
