@@ -274,6 +274,25 @@ async def test_selected_refusal_with_unreadable_cause_is_still_raised():
     assert caught.value is refusal
 
 
+@pytest.mark.parametrize("contained", [False, True], ids=["uncontained", "contained"])
+async def test_containment_refusal_with_unreadable_cause_is_still_raised(contained):
+    class BrokenCause(ContainmentRefusedError):
+        def __getattribute__(self, name):
+            if name == "__cause__":
+                raise OSError("cause cannot be read")
+            return super().__getattribute__(name)
+
+    refusal = BrokenCause("containment refusal")
+    raised = None
+    # The cause is deliberately unreadable, and a failure report that walks the
+    # exception chain would read it again, so compare the raised object directly.
+    try:
+        await _judge_raising(refusal, contained=contained)
+    except Exception as exc:
+        raised = exc
+    assert raised is refusal
+
+
 @pytest.mark.parametrize("position", [100, 101])
 async def test_repeated_group_members_consume_the_traversal_budget(position):
     refusal = CLIInputRefusedError("refused")
@@ -397,7 +416,7 @@ async def test_oversized_codex_request_construction_is_refused_before_spawn(monk
     assert spawned == []
 
 
-async def test_oversized_copied_codex_request_stays_advisory_before_spawn(monkeypatch, tmp_path):
+async def test_oversized_copied_codex_request_is_refused_before_spawn(monkeypatch, tmp_path):
     from lionhub.providers.openai import codex
 
     spawned = []
@@ -418,8 +437,9 @@ async def test_oversized_copied_codex_request_stays_advisory_before_spawn(monkey
                 async for _ in stream:
                     pass
 
-    with pytest.raises(ValueError):
+    with pytest.raises(CLIInputRefusedError):
         await Agent().operate(instruction="subject")
+    assert spawned == []
     engine = Engine(judge_model="scripted/judge")
     run = engine.new_run()
     events = []
@@ -429,8 +449,9 @@ async def test_oversized_copied_codex_request_stays_advisory_before_spawn(monkey
         return Agent()
 
     run.make_agent = make_agent
-    assert await engine.judge(run, "item", "subject") is True
-    assert [event for event, _ in events] == ["judge_error"]
+    with pytest.raises(CLIInputRefusedError):
+        await engine.judge(run, "item", "subject")
+    assert "judge_error" not in [event for event, _ in events]
     assert spawned == []
 
 

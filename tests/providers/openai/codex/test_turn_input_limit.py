@@ -99,7 +99,7 @@ async def test_a_request_copied_past_the_limit_is_refused_where_the_process_woul
         update={"prompt": "x" * (CODEX_MAX_TURN_INPUT_CHARS + 1)}
     )
 
-    with pytest.raises(ValueError, match="past the CLI's limit"):
+    with pytest.raises(CLIInputRefusedError, match="past the CLI's limit"):
         async for _ in codex_mod.stream_codex_cli(request):
             pass
 
