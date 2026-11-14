@@ -16,7 +16,12 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
+
+import pytest
+
+import lionagi.ln.concurrency.utils as concurrency_utils
 
 # The script run in the subprocess.  It:
 # 1. Writes a "ready" file so the parent knows the event loop is running.
@@ -192,7 +197,13 @@ def test_run_async_sigterm_raises_distinct_type_not_keyboardinterrupt():
     assert issubclass(SigtermInterrupt, BaseException)
 
 
-def test_run_async_sigterm_before_thread_start_still_cancels(monkeypatch):
+@pytest.fixture
+def fresh_sigterm_latch(monkeypatch):
+    """Give the in-process signal handler its own latch for this test."""
+    monkeypatch.setattr(concurrency_utils, "_SIGTERM_RECEIVED", threading.Event())
+
+
+def test_run_async_sigterm_before_thread_start_still_cancels(monkeypatch, fresh_sigterm_latch):
     """A SIGTERM latched before the worker thread starts must still cancel.
 
     Regression test for a race where SIGTERM arriving after the handler is
@@ -206,12 +217,8 @@ def test_run_async_sigterm_before_thread_start_still_cancels(monkeypatch):
     handler from threading.Thread.start, right before the worker starts. At
     that point _loop_and_task_future cannot possibly be ready.
     """
-    import threading
-
     import anyio
-    import pytest
 
-    import lionagi.ln.concurrency.utils as concurrency_utils
     from lionagi.ln.concurrency import run_async
     from lionagi.ln.concurrency.utils import SigtermInterrupt
 

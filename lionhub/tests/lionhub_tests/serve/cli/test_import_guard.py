@@ -56,6 +56,14 @@ def test_every_probe_is_flagged_as_a_command_import(tmp_path: Path, probe: str) 
     assert all(name.split(".")[3] in {"status", "orchestrate"} for name in flagged)
 
 
+@pytest.mark.parametrize("line", ["from .status import _x", "from . import status"])
+def test_orchestration_relative_import_does_not_name_a_command(tmp_path: Path, line: str) -> None:
+    imported = resolved_imports(_write(tmp_path, line + "\n"), "lionhub.orchestration")
+
+    assert "lionhub.orchestration.status" in imported
+    assert command_module_imports(imported) == set()
+
+
 @pytest.mark.parametrize(
     "line",
     [

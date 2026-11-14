@@ -9,14 +9,13 @@ import argparse
 import asyncio
 import importlib
 import json
-import sys
-from io import StringIO
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from ._import_guard import (
+    ORCHESTRATION_COMMAND_IMPORT_PROBES,
     command_module_imports,
     resolved_imports,
     source_with_line,
@@ -1051,13 +1050,7 @@ def test_engine_definitions_live_in_a_private_module_without_command_imports() -
 
 @pytest.mark.parametrize(
     "probe",
-    [
-        "from lionhub.serve.cli.status import _x",
-        "from lionhub.serve.cli import status",
-        "import lionhub.serve.cli.status",
-        "from lionhub.serve.cli.orchestrate import _x",
-        "from lionhub.serve.cli import orchestrate",
-    ],
+    ORCHESTRATION_COMMAND_IMPORT_PROBES,
 )
 def test_engine_definitions_guard_rejects_a_command_import(
     probe: str, tmp_path: Any, monkeypatch: pytest.MonkeyPatch

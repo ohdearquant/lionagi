@@ -42,6 +42,7 @@ from tests._status_test_support import (
 )
 
 from ..serve.cli._import_guard import (
+    ORCHESTRATION_COMMAND_IMPORT_PROBES,
     command_module_imports,
     resolved_imports,
     source_with_line,
@@ -407,13 +408,7 @@ def test_inspection_imports_no_command_module() -> None:
 
 @pytest.mark.parametrize(
     "probe",
-    (
-        "from lionhub.serve.cli.status import _x",
-        "from lionhub.serve.cli import status",
-        "import lionhub.serve.cli.status",
-        "from lionhub.serve.cli.orchestrate import _x",
-        "from lionhub.serve.cli import orchestrate",
-    ),
+    ORCHESTRATION_COMMAND_IMPORT_PROBES,
 )
 def test_inspection_guard_rejects_a_command_import(
     probe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

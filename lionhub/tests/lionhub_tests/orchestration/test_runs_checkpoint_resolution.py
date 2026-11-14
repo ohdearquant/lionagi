@@ -98,3 +98,37 @@ def test_run_dir_lookup_still_resolves_an_exact_id(tmp_path: Path, monkeypatch: 
 
     assert run_dir is not None
     assert run_dir.state_root == exact
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    ["", ".", "..", "a/b", "a\\b", "a\0b", "a*b", "a?b", "a[b"],
+    ids=["empty", "dot", "dot-dot", "slash", "backslash", "nul", "star", "question", "bracket"],
+)
+def test_run_dir_lookup_rejects_invalid_components_before_access(
+    run_id: str, monkeypatch: pytest.MonkeyPatch
+):
+    from lionhub.orchestration.flow import checkpoint
+
+    class UnreadableRoot:
+        def __truediv__(self, _):
+            pytest.fail("invalid run id reached the filesystem lookup")
+
+    monkeypatch.setattr(checkpoint, "RUNS_ROOT", UnreadableRoot())
+
+    assert checkpoint._find_run_dir_by_id(run_id) is None
+
+
+def test_run_dir_lookup_still_resolves_an_unambiguous_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from lionhub.orchestration.flow import checkpoint
+
+    run_id = f"{SHARED}-aaaaaa"
+    run = tmp_path / run_id
+    run.mkdir()
+    monkeypatch.setattr(checkpoint, "RUNS_ROOT", tmp_path)
+
+    resolved = checkpoint._find_run_dir_by_id(SHARED)
+    assert resolved is not None
+    assert (resolved.run_id, resolved.state_root) == (run_id, run)

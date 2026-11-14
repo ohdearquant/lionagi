@@ -480,9 +480,9 @@ def runs_data(limit: int = _DEFAULT_RUNS_LIMIT) -> dict[str, Any]:
     Nothing here is status-bearing: it reports which runs exist on disk and what
     each one wrote, not whether any of them finished or succeeded.
     """
-    # Taken from `_runs` rather than from `lionagi._paths`, so this reads the
-    # same root `list_runs` below walks; two bindings of one constant is how a
-    # listing comes back describing a directory nobody wrote to.
+    # Read the runs module's root so the listing and `list_runs` below walk
+    # the same directory. Separate bindings of the root can point at
+    # different directories.
     from lionhub.orchestration.runs import RUNS_ROOT, list_runs
 
     listing = list_directory(RUNS_ROOT, missing_is_empty=True)

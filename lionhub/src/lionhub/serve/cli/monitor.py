@@ -24,7 +24,7 @@ from lionhub.orchestration.job import AmbiguousIdError, fetch_unique_row, resolv
 from lionhub.orchestration.job import pid_alive as _pid_alive_int
 from lionhub.orchestration.project import detect_project
 from lionhub.orchestration.runs import _resolved_run_state_dir
-from lionhub.orchestration.schedule.parsing import _chain_action_with_usable_selected_kind
+from lionhub.orchestration.schedule import parsing
 
 __all__ = (
     "add_monitor_subparser",
@@ -1303,8 +1303,6 @@ def _watch_loop(
 # into unbounded waiting explicitly.
 _DEFAULT_MAX_WAIT_SECONDS = 900.0
 _CHAIN_GRACE_TICKS = 2
-# Mirrors the scheduler engine's own chain-depth cap (engine.py _MAX_CHAIN_DEPTH).
-_MAX_CHAIN_DEPTH = 10
 
 
 def _split_watched_ids(raw: list[str]) -> list[str]:
@@ -1547,7 +1545,7 @@ async def _schedule_declares_chain_action(
     if schedule_id not in cache:
         cache[schedule_id] = await db.get_schedule(schedule_id)
     sched = cache[schedule_id] or {}
-    return _chain_action_with_usable_selected_kind(sched, exit_code == 0) is not None
+    return parsing._chain_action_with_usable_selected_kind(sched, exit_code == 0) is not None
 
 
 def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
@@ -1596,7 +1594,7 @@ async def _advance_chains(
         # skip the grace window rather than burn it waiting on nothing.
         if (
             chain
-            and row.get("chain_depth", 0) < _MAX_CHAIN_DEPTH
+            and row.get("chain_depth", 0) < parsing._MAX_CHAIN_DEPTH
             and row.get("status") not in ("cancelled", "skipped")
             and row.get("exit_code") is not None
             and await _schedule_declares_chain_action(

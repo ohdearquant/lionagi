@@ -7,8 +7,8 @@ prefix, a name substring, or ``"current"`` -- gated on the same durable
 human allow/deny proposal flow ``launch_playbook`` uses
 (`application_mcp.py::launch_playbook`). Real in-process cancellation only:
 the state-changing act reuses the exact primitives ``li kill`` uses
-(``lionagi.cli._util.fetch_unique_row`` for id/prefix resolution,
-``lionagi.cli._kill_service.kill_one`` for identity-checked termination), so a
+(``lionhub.orchestration.job.fetch_unique_row`` for id/prefix resolution,
+``lionhub.orchestration.kill.kill_one`` for identity-checked termination), so a
 cancellation through the Operator is indistinguishable from one run through
 ``li kill`` directly -- no subprocess is spawned. See
 docs/internals/studio.md ("Turn identity and the propose/poll/execute
@@ -174,7 +174,7 @@ async def _owned_rows(db: Any, ids: list[str], project: str) -> list[dict[str, A
 async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | None:
     """Resolve *ref* to exactly one `sessions` row (a Studio "run").
 
-    Mirrors `lionagi.cli._util.fetch_unique_row`'s exact-id-then-prefix
+    Mirrors `lionhub.orchestration.job.fetch_unique_row`'s exact-id-then-prefix
     discipline, narrowed to the `sessions` table. A prefix matching more
     than one session raises `AmbiguousRunReferenceError` rather than picking
     one -- never guess which process to signal. Every arm is scoped to
@@ -450,7 +450,7 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
     resolution `cancel_run` captured. `_persist_cancel` is a no-op once the
     row is no longer 'running', so a race here degrades to
     ``already_terminal`` -- never a double cancel, never a wrong-run cancel.
-    Reuses `lionagi.cli._kill_service`'s deepest-first child traversal
+    Reuses `lionhub.orchestration.kill`'s deepest-first child traversal
     (``list_running_children``/``kill_one``) so a still-running owning
     invocation is reaped exactly the way ``li kill --recursive`` does,
     rather than orphaned when the parent session goes terminal.
