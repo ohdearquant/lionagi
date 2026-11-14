@@ -183,7 +183,8 @@ cost one row for every module.
    requires for the specific rows.
 4. `serve` holds every front end through which lionagi is used from outside a Python program: the
    CLI, the daemon and the MCP server. D1 gave `lionhub.serve` a narrower, server-only meaning; that
-   meaning no longer applies, and `lionhub/src/lionhub/serve/__init__.py` states the wider one. D1
+   meaning no longer applies, and the change that moves the command catalog to `lionhub.serve.cli`
+   makes `lionhub/src/lionhub/serve/__init__.py` state the wider one. D1
    counted a shorter module invocation for `lionhub.cli`; that is given up. In "Alternatives
    considered", "Keep the draft's lionhub.serve.cli destination" is the chosen form from this
    amendment on.
@@ -291,7 +292,8 @@ Out of scope:
 
 Superseded in its location by Amendment 5: the CLI package is `lionhub.serve.cli`.
 
-Proposed, pending a project decision on where the CLI lives. Placing it in `lionhub` means
+Adopted, at the location Amendment 5 sets: `lionhub.serve.cli`. D5 and the 2.0 release date stay
+Proposed. Placing the CLI in `lionhub` means
 `pip install lionagi` alone no longer provides a CLI from 2.0 (D5), and every script that calls
 `li` then depends on the hub distribution. D2, D3, D4, D6 and D7 are this record's engineering
 decisions; where they name `lionhub.cli` paths, those paths follow D1.
