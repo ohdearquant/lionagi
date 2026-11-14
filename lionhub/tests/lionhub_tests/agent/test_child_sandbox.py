@@ -13,6 +13,7 @@ import json
 import os
 import stat
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,7 @@ from lionhub.agent.child_sandbox import (
     CHILD_SANDBOX_OPT_OUT,
     CLAUDE_CLI_FLOOR,
     DEFAULT_ALLOW_WRITE,
+    DEFAULT_DENY_EDIT,
     DEFAULT_DENY_READ,
     ChildSandboxPolicy,
     check_claude_cli_floor,
@@ -39,6 +41,12 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the policy name
 _REAL_GLOBAL_SETTINGS = child_sandbox._global_settings
 
 POLICY = ChildSandboxPolicy(True, ("~/.ssh", "/opt/keys"), ("~/.cache/uv",))
+
+#: What the file tools are denied when no layer adds anything: the configuration list, then the
+#: read list.
+DEFAULT_EDIT = tuple(dict.fromkeys([*DEFAULT_DENY_EDIT, *DEFAULT_DENY_READ]))
+
+DEFAULT_POLICY = ChildSandboxPolicy(True, DEFAULT_DENY_READ, DEFAULT_ALLOW_WRITE, DEFAULT_EDIT)
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +74,7 @@ def _write(path, text):
 
 def test_the_default_policy_is_on_with_the_generic_lists():
     policy = resolve_child_sandbox(None, {})
-    assert policy == ChildSandboxPolicy(True, DEFAULT_DENY_READ, DEFAULT_ALLOW_WRITE)
+    assert policy == DEFAULT_POLICY
 
 
 def test_the_default_lists_are_valid_policy_input():
@@ -263,11 +271,12 @@ def test_an_extends_entry_may_start_with_the_home_marker(isolated_home):
     assert policy.deny_read == (*DEFAULT_DENY_READ, "~/vault")
 
 
-def test_an_empty_extends_file_adds_nothing(tmp_path):
+def test_an_empty_extends_file_adds_only_itself_to_the_edit_denial(tmp_path):
     empty = _write(tmp_path / "empty.yaml", "")
-    assert resolve_child_sandbox(None, _settings(extends=[empty])) == resolve_child_sandbox(
-        None, {}
-    )
+    policy = resolve_child_sandbox(None, _settings(extends=[empty]))
+    base = resolve_child_sandbox(None, {})
+    assert (policy.deny_read, policy.allow_write) == (base.deny_read, base.allow_write)
+    assert set(policy.deny_edit) - set(base.deny_edit) == {empty, str(Path(empty).resolve())}
 
 
 def test_a_missing_extends_file_refuses(tmp_path):
@@ -321,9 +330,7 @@ def test_an_extends_file_cannot_turn_the_sandbox_off(tmp_path):
 
 def test_without_a_settings_file_the_default_policy_is_on(monkeypatch):
     monkeypatch.setattr(child_sandbox, "_global_settings", _REAL_GLOBAL_SETTINGS)
-    assert resolve_child_sandbox(None) == ChildSandboxPolicy(
-        True, DEFAULT_DENY_READ, DEFAULT_ALLOW_WRITE
-    )
+    assert resolve_child_sandbox(None) == DEFAULT_POLICY
 
 
 def test_the_policy_is_read_from_the_global_settings_file(isolated_home, monkeypatch):
@@ -396,6 +403,15 @@ def test_claude_settings_for_a_home_path_and_an_absolute_path():
                 "Read(~/.ssh/**)",
                 "Read(//opt/keys)",
                 "Read(//opt/keys/**)",
+                *[
+                    rule
+                    for path in DEFAULT_DENY_EDIT
+                    for rule in (f"Edit({path})", f"Edit({path}/**)")
+                ],
+                "Edit(~/.ssh)",
+                "Edit(~/.ssh/**)",
+                "Edit(//opt/keys)",
+                "Edit(//opt/keys/**)",
             ]
         },
     }
@@ -407,8 +423,82 @@ def test_a_disabled_policy_renders_no_settings():
 
 def test_every_default_path_gets_two_permission_rules():
     rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
-    assert len(rules) == 2 * len(DEFAULT_DENY_READ)
-    assert all(rule.startswith("Read(~/") for rule in rules)
+    reads = [rule for rule in rules if rule.startswith("Read(")]
+    edits = [rule for rule in rules if rule.startswith("Edit(")]
+    assert len(reads) == 2 * len(DEFAULT_DENY_READ)
+    assert len(edits) == 2 * len(DEFAULT_EDIT)
+    assert len(reads) + len(edits) == len(rules)
+    assert all(rule.startswith(("Read(~/", "Edit(~/")) for rule in rules)
+
+
+# --------------------------------------------------------------------------- edit denial
+
+
+def test_the_file_tools_are_denied_the_configuration_that_launches_the_next_child():
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    for path in (
+        "~/.lionagi/settings.yaml",
+        "~/.lionagi/agents",
+        "~/.claude/settings.json",
+        "~/.claude/hooks",
+        "~/.claude/plugins",
+        "~/.claude/projects/*/memory",
+    ):
+        assert f"Edit({path})" in rules
+        assert f"Edit({path}/**)" in rules
+
+
+def test_every_read_denial_is_also_an_edit_denial():
+    rules = claude_settings_for(POLICY)["permissions"]["deny"]
+    for path in ("~/.ssh", "//opt/keys"):
+        assert f"Read({path})" in rules
+        assert f"Edit({path})" in rules
+
+
+def test_deny_edit_in_the_block_and_in_an_extends_file_renders_edit_rules(tmp_path):
+    extra = _write(tmp_path / "extra.yaml", "deny_edit:\n  - /srv/prod/config\n")
+    policy = resolve_child_sandbox(None, _settings(deny_edit=["~/.tool/config"], extends=[extra]))
+    rules = claude_settings_for(policy)["permissions"]["deny"]
+    assert "Edit(~/.tool/config/**)" in rules
+    assert "Edit(//srv/prod/config/**)" in rules
+    # An edit denial does not become a read denial.
+    assert "Read(//srv/prod/config)" not in rules
+    assert "/srv/prod/config" not in policy.deny_read
+
+
+def test_an_extends_file_is_denied_by_its_written_path_and_by_the_file_it_resolves_to(tmp_path):
+    target = _write(tmp_path / "real.yaml", "deny_read: [/opt/shared]\n")
+    link = tmp_path / "link.yaml"
+    link.symlink_to(target)
+    rules = claude_settings_for(resolve_child_sandbox(None, _settings(extends=[str(link)])))[
+        "permissions"
+    ]["deny"]
+    assert f"Edit(/{link})" in rules
+    assert f"Edit(/{Path(target).resolve()})" in rules
+
+
+def test_a_read_exemption_keeps_the_edit_denial():
+    policy = resolve_child_sandbox(
+        "keeper",
+        _settings(deny_read=["/opt/vault"], profiles={"keeper": {"allow_read": ["/opt/vault"]}}),
+    )
+    rules = claude_settings_for(policy)["permissions"]["deny"]
+    assert "Read(//opt/vault)" not in rules
+    assert "Edit(//opt/vault)" in rules
+
+
+def test_a_policy_dict_without_deny_edit_still_renders_the_default_edit_rules():
+    data = POLICY.to_dict()
+    del data["deny_edit"]
+    rules = claude_settings_for(policy_from_dict(data))["permissions"]["deny"]
+    assert "Edit(~/.lionagi/settings.yaml)" in rules
+    assert "Edit(~/.ssh)" in rules
+
+
+@pytest.mark.parametrize("value", ["~/.x", [""], ["relative/path"], ["/a/../b"]])
+def test_a_malformed_deny_edit_refuses(value):
+    with pytest.raises(ConfigurationError, match="deny_edit"):
+        resolve_child_sandbox(None, _settings(deny_edit=value))
 
 
 # --------------------------------------------------------------------------- policy dicts
@@ -865,8 +955,6 @@ def test_resolving_warns_about_a_project_block_in_the_working_directory(
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
     # The project block is reported and not applied: the policy stays on.
-    assert resolve_child_sandbox(None) == ChildSandboxPolicy(
-        True, tuple(DEFAULT_DENY_READ), tuple(DEFAULT_ALLOW_WRITE)
-    )
+    assert resolve_child_sandbox(None) == DEFAULT_POLICY
     assert len(project_warnings) == 1
     assert str(settings_file.resolve()) in project_warnings[0]

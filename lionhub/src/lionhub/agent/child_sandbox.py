@@ -3,9 +3,9 @@
 
 """Sandbox policy for CLI children.
 
-One list names the credential locations a child must not read and the toolchain caches it may
-write. It is resolved from the global lionagi settings file only and rendered into the settings
-Claude Code understands. Any malformed value raises ``ConfigurationError`` so a child never
+One list names the credential locations a child must not read, the toolchain caches it may
+write, and the configuration a child must not edit. It is resolved from the global lionagi
+settings file only and rendered into the settings Claude Code understands. Any malformed value raises ``ConfigurationError`` so a child never
 starts unconfined because of a configuration mistake. Every refusal raised here ends with the
 same sentence naming the opt-out, ``CHILD_SANDBOX_OPT_OUT``.
 """
@@ -31,6 +31,7 @@ __all__ = (
     "CHILD_SANDBOX_OPT_OUT",
     "CLAUDE_CLI_FLOOR",
     "DEFAULT_ALLOW_WRITE",
+    "DEFAULT_DENY_EDIT",
     "DEFAULT_DENY_READ",
     "ChildSandboxPolicy",
     "check_claude_cli_floor",
@@ -103,11 +104,29 @@ DEFAULT_ALLOW_WRITE: tuple[str, ...] = (
     "~/Library/Caches/pip",
 )
 
+#: Configuration a child may not change with its file tools: the files that decide how the next
+#: child is launched and confined, and what Claude Code loads into every session. The sandbox's
+#: write limit covers Bash only, so these are denied to the Edit and Write tools by permission
+#: rules. Every ``deny_read`` entry and every ``extends`` file is denied the same way.
+DEFAULT_DENY_EDIT: tuple[str, ...] = (
+    "~/.lionagi/settings.yaml",
+    "~/.lionagi/agents",
+    "~/.claude/settings.json",
+    "~/.claude/settings.local.json",
+    "~/.claude/CLAUDE.md",
+    "~/.claude/hooks",
+    "~/.claude/plugins",
+    "~/.claude/agents",
+    "~/.claude/skills",
+    "~/.claude/commands",
+    "~/.claude/projects/*/memory",
+)
+
 #: Programs Claude Code's sandbox needs on Linux and WSL2.
 _LINUX_BACKEND_PROGRAMS: tuple[str, ...] = ("bwrap", "socat")
 
-_ROOT_KEYS = frozenset({"enabled", "deny_read", "allow_write", "profiles", "extends"})
-_LAYER_KEYS = frozenset({"deny_read", "allow_write", "profiles"})
+_ROOT_KEYS = frozenset({"enabled", "deny_read", "allow_write", "deny_edit", "profiles", "extends"})
+_LAYER_KEYS = frozenset({"deny_read", "allow_write", "deny_edit", "profiles"})
 
 #: Project settings files already warned about, so each is reported once per process.
 _warned_project_files: set[str] = set()
@@ -120,11 +139,17 @@ def _refusal(message: str) -> ConfigurationError:
 
 @dataclass(frozen=True)
 class ChildSandboxPolicy:
-    """Resolved sandbox policy: whether it applies, what stays unreadable, what stays writable."""
+    """Resolved sandbox policy: whether it applies, what stays unreadable, what stays writable,
+    and what the file tools may not change.
+
+    ``deny_edit`` adds to the rules every policy renders: ``DEFAULT_DENY_EDIT`` and the
+    ``deny_read`` entries are denied to the file tools whatever it holds.
+    """
 
     enabled: bool
     deny_read: tuple[str, ...]
     allow_write: tuple[str, ...]
+    deny_edit: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-dict form that survives endpoint kwargs, clones and resumes."""
@@ -132,6 +157,7 @@ class ChildSandboxPolicy:
             "enabled": self.enabled,
             "deny_read": list(self.deny_read),
             "allow_write": list(self.allow_write),
+            "deny_edit": list(self.deny_edit),
         }
 
 
@@ -173,11 +199,12 @@ def _reject_unknown(label: str, mapping: dict, allowed: frozenset[str] | set[str
         raise _refusal(f"child_sandbox: {label} has unknown keys {unknown}")
 
 
-def _layer(label: str, raw: dict) -> tuple[list[str], list[str], dict[str, list[str]]]:
-    """Validate one layer (the settings block or an extends file) into its three parts."""
+def _layer(label: str, raw: dict) -> tuple[list[str], list[str], list[str], dict[str, list[str]]]:
+    """Validate one layer (the settings block or an extends file) into its four parts."""
     _reject_unknown(label, raw, _LAYER_KEYS)
     deny = _path_list(f"{label}.deny_read", raw.get("deny_read", []))
     allow = _path_list(f"{label}.allow_write", raw.get("allow_write", []))
+    edit = _path_list(f"{label}.deny_edit", raw.get("deny_edit", []))
     profiles: dict[str, list[str]] = {}
     for name, entry in _mapping(f"{label}.profiles", raw.get("profiles", {})).items():
         if not isinstance(name, str) or not name:
@@ -187,10 +214,15 @@ def _layer(label: str, raw: dict) -> tuple[list[str], list[str], dict[str, list[
         profiles[name] = _path_list(
             f"{label}.profiles.{name}.allow_read", entry.get("allow_read", [])
         )
-    return deny, allow, profiles
+    return deny, allow, edit, profiles
 
 
-def _read_extends(raw: Any) -> list[dict]:
+def _read_extends(raw: Any) -> list[tuple[list[str], dict]]:
+    """Each extends file as (the paths that name it, its parsed layer).
+
+    The paths are the entry as written and, when it differs, the file it resolves to, so a
+    child cannot edit the file through a link target the entry does not spell.
+    """
     if not isinstance(raw, list) or not all(isinstance(p, str) and p.strip() for p in raw):
         raise _refusal("child_sandbox: extends must be a list of non-empty strings")
     layers = []
@@ -200,11 +232,14 @@ def _read_extends(raw: Any) -> list[dict]:
                 f"child_sandbox: extends entry {entry!r} must be an absolute path or start "
                 "with '~/'"
             )
+        path = Path(entry.strip()).expanduser()
         try:
-            data = yaml.safe_load(Path(entry.strip()).expanduser().read_text(encoding="utf-8"))
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            real = str(path.resolve(strict=True))
         except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
             raise _refusal(f"child_sandbox: cannot read extends file {entry!r}: {exc}") from exc
-        layers.append(_mapping(f"extends file {entry!r}", {} if data is None else data))
+        names = list(dict.fromkeys([re.sub(r"/{2,}", "/", entry.strip()).rstrip("/"), real]))
+        layers.append((names, _mapping(f"extends file {entry!r}", {} if data is None else data)))
     return layers
 
 
@@ -275,14 +310,17 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
         raise _refusal("child_sandbox: enabled must be true or false")
 
     layers = [("child_sandbox", {k: v for k, v in raw.items() if k in _LAYER_KEYS})]
-    layers += [(f"extends[{i}]", d) for i, d in enumerate(_read_extends(raw.get("extends", [])))]
+    extends = _read_extends(raw.get("extends", []))
+    layers += [(f"extends[{i}]", d) for i, (_, d) in enumerate(extends)]
     deny: list[str] = list(DEFAULT_DENY_READ)
     allow: list[str] = list(default_allow_write())
+    edit: list[str] = [name for names, _ in extends for name in names]
     profiles: dict[str, list[str]] = {}
     for label, layer in layers:
-        d, a, p = _layer(label, layer)
+        d, a, e, p = _layer(label, layer)
         deny += d
         allow += a
+        edit += e
         for name, paths in p.items():
             profiles.setdefault(name, []).extend(paths)
 
@@ -299,13 +337,15 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
         enabled=enabled,
         deny_read=tuple(p for p in deny if p not in exempt),
         allow_write=tuple(dict.fromkeys(allow)),
+        # A read exemption never lifts the edit denial, so the whole read list is kept here.
+        deny_edit=tuple(dict.fromkeys([*DEFAULT_DENY_EDIT, *edit, *deny])),
     )
 
 
 def policy_from_dict(data: dict) -> ChildSandboxPolicy:
     """Rebuild a policy from ``ChildSandboxPolicy.to_dict`` output, validating it again."""
     data = _mapping("policy", data)
-    _reject_unknown("policy", data, {"enabled", "deny_read", "allow_write"})
+    _reject_unknown("policy", data, {"enabled", "deny_read", "allow_write", "deny_edit"})
     enabled = data.get("enabled", True)
     if not isinstance(enabled, bool):
         raise _refusal("child_sandbox: enabled must be true or false")
@@ -313,6 +353,7 @@ def policy_from_dict(data: dict) -> ChildSandboxPolicy:
         enabled=enabled,
         deny_read=tuple(_path_list("deny_read", data.get("deny_read", []))),
         allow_write=tuple(_path_list("allow_write", data.get("allow_write", []))),
+        deny_edit=tuple(_path_list("deny_edit", data.get("deny_edit", []))),
     )
 
 
@@ -320,15 +361,23 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
     """Claude Code settings that confine a child to ``policy`` (``{}`` when disabled).
 
     ``sandbox.filesystem.denyRead`` stops Bash reads; the Read tool is stopped by the
-    ``permissions.deny`` rules. In permission rules an absolute ``/x`` is written ``//x``,
-    because a single leading slash is relative to the settings source.
+    ``permissions.deny`` rules. Bash writes are held to the working directory and
+    ``allowWrite`` by the sandbox, which does not cover the file tools, so ``Edit`` rules deny
+    them ``policy.deny_edit``, ``DEFAULT_DENY_EDIT`` and the read list. In permission rules an
+    absolute ``/x`` is written ``//x``, because a single leading slash is relative to the
+    settings source.
     """
     if not policy.enabled:
         return {}
+
+    def rule_path(path: str) -> str:
+        return "/" + path if path.startswith("/") else path
+
     rules: list[str] = []
     for path in policy.deny_read:
-        rule_path = "/" + path if path.startswith("/") else path
-        rules += [f"Read({rule_path})", f"Read({rule_path}/**)"]
+        rules += [f"Read({rule_path(path)})", f"Read({rule_path(path)}/**)"]
+    for path in dict.fromkeys([*DEFAULT_DENY_EDIT, *policy.deny_edit, *policy.deny_read]):
+        rules += [f"Edit({rule_path(path)})", f"Edit({rule_path(path)}/**)"]
     return {
         "sandbox": {
             "enabled": True,

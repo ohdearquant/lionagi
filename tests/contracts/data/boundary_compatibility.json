@@ -898,7 +898,7 @@
       "__all__ = (\"Profile\",)"
     ],
     "lionhub/src/lionhub/agent/child_sandbox.py": [
-      "__all__ = (\n    \"CHILD_SANDBOX_OPT_OUT\",\n    \"CLAUDE_CLI_FLOOR\",\n    \"DEFAULT_ALLOW_WRITE\",\n    \"DEFAULT_DENY_READ\",\n    \"ChildSandboxPolicy\",\n    \"check_claude_cli_floor\",\n    \"check_sandbox_backend\",\n    \"claude_settings_argument\",\n    \"claude_settings_for\",\n    \"default_allow_write\",\n    \"policy_from_dict\",\n    \"resolve_child_sandbox\",\n    \"warn_project_child_sandbox\",\n)"
+      "__all__ = (\n    \"CHILD_SANDBOX_OPT_OUT\",\n    \"CLAUDE_CLI_FLOOR\",\n    \"DEFAULT_ALLOW_WRITE\",\n    \"DEFAULT_DENY_EDIT\",\n    \"DEFAULT_DENY_READ\",\n    \"ChildSandboxPolicy\",\n    \"check_claude_cli_floor\",\n    \"check_sandbox_backend\",\n    \"claude_settings_argument\",\n    \"claude_settings_for\",\n    \"default_allow_write\",\n    \"policy_from_dict\",\n    \"resolve_child_sandbox\",\n    \"warn_project_child_sandbox\",\n)"
     ],
     "lionhub/src/lionhub/agent/context_fold.py": [
       "__all__ = (\"ContextFold\", \"estimate_next_request_tokens\", \"install_context_fold\")"
