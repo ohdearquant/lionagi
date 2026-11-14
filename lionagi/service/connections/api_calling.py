@@ -20,7 +20,6 @@ from .._api_telemetry import (
     mark_dispatch,
     observe_cache_source,
     record_cache_usage,
-    record_served_model,
 )
 from .._prompt_cache import PromptCacheCall, activate_call, note_attempt
 from .._prompt_cache import current_call as current_prompt_cache_call
@@ -306,9 +305,6 @@ class APICalling(HookedEvent):
         routed = getattr(self.endpoint, "_account_routing_enabled", None)
         if not (routed and routed()):
             note_attempt("direct")
-
-    def _record_served_model(self, model: str | None) -> None:
-        record_served_model(self._telemetry_frame, model)
 
     async def _invoke(self):
         response = await super()._invoke()
