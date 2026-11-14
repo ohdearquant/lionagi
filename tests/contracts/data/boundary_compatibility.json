@@ -2867,7 +2867,8 @@
       "QuarantineProbeError",
       "encode_identity",
       "is_current_quarantine",
-      "quarantine_identity"
+      "quarantine_identity",
+      "run_probe"
     ],
     "lionagi/state/artifact_verifier.py": [
       "ArtifactContract",
