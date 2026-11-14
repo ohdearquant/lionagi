@@ -13,6 +13,7 @@ API_ROOT = f"repos/{REPOSITORY}"
 LABEL = "dev-full-matrix-failure"
 TITLE = "The dev Python test matrix failed"
 PYTHON_VERSIONS = ("3.10", "3.11", "3.12", "3.13", "3.14")
+REPORTER_LOGIN = "github-actions[bot]"
 
 
 def github(*arguments: str, data: dict | None = None) -> str:
@@ -37,6 +38,16 @@ def read_rows(route: str, *, key: str | None = None) -> Iterator[dict]:
     for page in pages:
         rows = page if key is None else page[key]
         yield from rows
+
+
+def _has_report_marker(entry: dict, marker: str) -> bool:
+    author = entry.get("user")
+    return (
+        isinstance(author, dict)
+        and author.get("login") == REPORTER_LOGIN
+        and author.get("type") == "Bot"
+        and marker in (entry.get("body") or "")
+    )
 
 
 def report_failure(tested_sha: str, run_id: str, attempt: str) -> None:
@@ -86,8 +97,8 @@ def report_failure(tested_sha: str, run_id: str, attempt: str) -> None:
     if type(number) is not int or number <= 0:
         raise ValueError("GitHub returned an invalid issue number")
     comments_route = f"{API_ROOT}/issues/{number}/comments"
-    if marker in (existing.get("body") or "") or any(
-        marker in (comment.get("body") or "") for comment in read_rows(comments_route)
+    if _has_report_marker(existing, marker) or any(
+        _has_report_marker(comment, marker) for comment in read_rows(comments_route)
     ):
         return
     github("--method", "POST", comments_route, data={"body": body})

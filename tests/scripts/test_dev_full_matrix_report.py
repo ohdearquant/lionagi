@@ -21,6 +21,7 @@ RUN_ID = "123"
 ATTEMPT = "2"
 SHA = "b" * 40
 LABEL = "dev-full-matrix-failure"
+REPORTER = {"login": "github-actions[bot]", "type": "Bot"}
 JOBS = f"{PREFIX}/actions/runs/{RUN_ID}/attempts/{ATTEMPT}/jobs"
 OPEN_ISSUES = f"{PREFIX}/issues?state=open&labels={LABEL}"
 URL = f"https://github.com/ohdearquant/lionagi/actions/runs/{RUN_ID}/attempts/{ATTEMPT}"
@@ -102,12 +103,32 @@ def test_reports_infrastructure_failure_by_commenting_on_the_existing_issue(gith
 def test_reporting_the_same_attempt_again_does_not_write(github, already_in):
     responses, calls = github
     marker = f"<!-- dev-full-matrix: {RUN_ID}/{ATTEMPT} -->"
-    responses[OPEN_ISSUES] = [[{"number": 8, "body": marker if already_in == "issue" else ""}]]
-    responses[f"{PREFIX}/issues/8/comments"] = [[{"body": marker}]]
+    report_entry = {"user": REPORTER, "body": marker}
+    if already_in == "issue":
+        responses[OPEN_ISSUES] = [[{"number": 8, **report_entry}]]
+    else:
+        responses[OPEN_ISSUES] = [[{"number": 8, "body": ""}]]
+        responses[f"{PREFIX}/issues/8/comments"] = [[report_entry]]
 
     report.report_failure(SHA, RUN_ID, ATTEMPT)
 
     assert all(data is None for _, data in calls)
+
+
+@pytest.mark.parametrize("author", [{"login": "contributor", "type": "User"}, None])
+def test_only_workflow_reports_count_for_retry_deduplication(github, author):
+    responses, calls = github
+    marker = f"<!-- dev-full-matrix: {RUN_ID}/{ATTEMPT} -->"
+    entry = {"user": author, "body": marker}
+    responses[OPEN_ISSUES] = [[{"number": 8, **entry}]]
+    comments = f"{PREFIX}/issues/8/comments"
+    responses[comments] = [[entry]]
+
+    report.report_failure(SHA, RUN_ID, ATTEMPT)
+
+    args, body = calls[-1]
+    assert args == ("--method", "POST", comments)
+    assert URL in body["body"]
 
 
 def test_invalid_dispatch_values_fail_before_any_request(github):
