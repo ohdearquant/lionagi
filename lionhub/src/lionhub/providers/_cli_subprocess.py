@@ -748,6 +748,12 @@ async def end_child_group(
     return _group_cleanup_outcome(proc, spawned)
 
 
+def _consume_future_outcome(future: asyncio.Future) -> None:
+    """Retrieve a late outcome so an abandoned future is not logged as unretrieved."""
+    if not future.cancelled():
+        future.exception()
+
+
 @dataclass
 class _BoundedCleanupResult:
     witnesses: tuple[tuple[int, float], ...] = ()
@@ -771,24 +777,63 @@ async def _bounded_cli_cleanup(
 
     The deadline bounds asynchronous waits, not synchronous identity checks or
     an already-running signal syscall. Only spawn-bound witnesses authorize the
-    final synchronous backstop; no fresh scan is used on the cutoff path.
+    final synchronous backstop; no fresh scan is used on the cutoff path. The
+    spawn-bound witness capture walks the process table on a worker thread so
+    the event loop keeps running, and is bounded by one grace period.
     """
     result = _BoundedCleanupResult()
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 3 * grace + 1.0
     group_deadline = deadline - 1.0  # diagnostic and collective join reservations
     gate = SignalGate()
+    cancellations = 0
+
+    async def wait_until(tasks: set[asyncio.Future], until: float) -> None:
+        nonlocal cancellations
+        while tasks and cancellations < 2:
+            remaining = max(0.0, until - loop.time())
+            if not remaining:
+                return
+            try:
+                done, _ = await asyncio.wait(tasks, timeout=remaining)
+            except asyncio.CancelledError as exc:
+                cancellations += 1
+                if result.cancellation is None:
+                    result.cancellation = exc
+                continue
+            tasks.difference_update(done)
+            if not done:
+                return
+
     witness_error = None
+    witness_unconfirmed = False
+    witnesses: tuple[tuple[int, float], ...] = ()
+    capture: asyncio.Future | None = None
     try:
-        witnesses = _witnesses_for_spawn(proc, spawned)
+        # The process-table walk runs on a worker thread so the event loop keeps
+        # serving other work, and a shield keeps the inherited AnyIO deadline from
+        # abandoning it. A direct Task.cancel is still recorded by wait_until.
+        capture = loop.run_in_executor(None, _witnesses_for_spawn, proc, spawned)
+        with CancelScope(shield=True):
+            await wait_until({capture}, min(group_deadline, loop.time() + grace))
+        if capture.done():
+            witnesses = capture.result()
+        else:
+            # A walk that outlives its budget yields no group authority; its late
+            # result is discarded rather than trusted after the fact.
+            witness_unconfirmed = True
+            capture.add_done_callback(_consume_future_outcome)
+            log.warning("CLI cleanup witness capture exceeded its budget (pid %s)", proc.pid)
     except BaseException as exc:
         # No group authority can be derived after a failed observation, but the
         # direct child and helper tasks still need bounded, gated cleanup.
         witness_error = exc
         witnesses = ()
         result.error = exc
-        if isinstance(exc, asyncio.CancelledError):
+        if isinstance(exc, asyncio.CancelledError) and result.cancellation is None:
             result.cancellation = exc
+        if capture is not None and not capture.done():
+            capture.add_done_callback(_consume_future_outcome)
         log.warning("CLI cleanup witness capture failed (%s)", type(exc).__name__)
     result.witnesses = witnesses
     log.debug("CLI cleanup starting (pid %s, frozen witnesses: %s)", proc.pid, witnesses)
@@ -813,24 +858,7 @@ async def _bounded_cli_cleanup(
             result.cancellation = exc
         if group_coro is not None:
             group_coro.close()
-    cancellations = int(result.cancellation is not None)
-
-    async def wait_until(tasks: set[asyncio.Task], until: float) -> None:
-        nonlocal cancellations
-        while tasks and cancellations < 2:
-            remaining = max(0.0, until - loop.time())
-            if not remaining:
-                return
-            try:
-                done, _ = await asyncio.wait(tasks, timeout=remaining)
-            except asyncio.CancelledError as exc:
-                cancellations += 1
-                if result.cancellation is None:
-                    result.cancellation = exc
-                continue
-            tasks.difference_update(done)
-            if not done:
-                return
+    cancellations = max(cancellations, int(result.cancellation is not None))
 
     # A shield prevents the inherited AnyIO deadline from repeatedly cancelling
     # this cleanup. Direct Task.cancel still reaches wait_until and is recorded.
@@ -902,7 +930,7 @@ async def _bounded_cli_cleanup(
                 log.warning("CLI %s helper remains owned after cutoff (pid %s)", name, proc.pid)
             elif not task.cancelled():
                 task.exception()
-    if cancellations >= 2 or witness_error is not None:
+    if cancellations >= 2 or witness_error is not None or witness_unconfirmed:
         result.outcome = _ChildGroupCleanup.UNCONFIRMED
     if result.outcome is _ChildGroupCleanup.CONFIRMED_EMPTY:
         log.debug(
