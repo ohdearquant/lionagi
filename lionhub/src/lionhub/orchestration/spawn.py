@@ -1222,7 +1222,9 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     def read(block: str) -> tuple[bool, Any]:
         try:
             return True, yaml.safe_load(block)
-        except (yaml.YAMLError, RecursionError):
+        except (yaml.YAMLError, RecursionError, ValueError):
+            # ValueError: a scalar that resolves to a type it cannot build, such as the
+            # calendar-invalid date in `Deadline: 2026-02-30`.
             return False, None
 
     def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
@@ -1259,11 +1261,14 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             # not read and names it anywhere. A block runs from a line of three or more dashes
             # to the next such line or, unclosed, to the end.
             delimiters = []
-            # Fenced examples are prompt text, not misplaced frontmatter.
+            # Fenced examples are prompt text, not misplaced frontmatter: no fenced line is a
+            # delimiter, and none is part of the text a span is checked on.
             fence: str | None = None
+            fenced: set[int] = set()
             for i, line in enumerate(lines):
                 marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
                 if fence is not None:
+                    fenced.add(i)
                     if (
                         marker
                         and marker[1][0] == fence[0]
@@ -1274,6 +1279,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                     continue
                 if marker and (marker[1][0] == "~" or "`" not in marker[2]):
                     fence = marker[1]
+                    fenced.add(i)
                     continue
                 if _DASHES.fullmatch(line.rstrip()):
                     delimiters.append(i)
@@ -1281,7 +1287,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             # line opens a block depends on how many rules came before it, and a rule in the
             # prompt must not hide a declaration from this check.
             for opening, end in pairwise([*delimiters, len(lines)]):
-                block = "\n".join(lines[opening + 1 : end])
+                block = "\n".join("" if j in fenced else lines[j] for j in range(opening + 1, end))
                 reads, document = read(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)
                 if (

@@ -633,6 +633,46 @@ def test_profile_inline_fence_text_does_not_hide_a_real_block(prose):
         _parse_profile("example", prose + "\n---\ncontain_user_settings: true\n---\nBody.")
 
 
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+@pytest.mark.parametrize("example", ["mcp:\n  search: {}", "contain_user_settings: true"])
+def test_profile_fenced_example_between_two_rules_is_prompt_text(monkeypatch, fence, example):
+    from lionhub.orchestration.spawn import _parse_profile
+
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    text = f"Help.\n\n---\n\nExample:\n\n{fence}yaml\n{example}\n{fence}\n\n---\n\nMore text."
+
+    profile = _parse_profile("example", text)
+
+    assert profile.contain_user_settings is False
+    assert profile.raw_body == text
+    assert warnings == []
+
+
+def test_profile_fence_in_a_span_does_not_hide_a_flag_line_beside_it():
+    from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.spawn import _parse_profile
+
+    text = "Help.\n\n---\n```\nx\n```\ncontain_user_settings: true\n---\nBody."
+
+    with pytest.raises(ConfigurationError, match="block on line 3 .*move the block to the top"):
+        _parse_profile("example", text)
+
+
+def test_profile_span_with_a_calendar_invalid_date_loads_as_prompt(monkeypatch):
+    from lionhub.orchestration.spawn import _parse_profile
+
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    text = "Help.\n\n---\n\nDeadline: 2026-02-30\n\n---\n\nMore text."
+
+    profile = _parse_profile("example", text)
+
+    assert profile.contain_user_settings is False
+    assert profile.raw_body == text
+    assert warnings == []
+
+
 @pytest.mark.parametrize("value", [True, False])
 def test_profile_actual_frontmatter_keeps_its_containment_flag(monkeypatch, value):
     from lionhub.orchestration.spawn import _parse_profile
