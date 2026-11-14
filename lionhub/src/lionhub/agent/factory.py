@@ -302,6 +302,16 @@ async def create_agent(
     derived_effort_kwarg: str | None = None
 
     if chat_model is not None:
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
+
+        if isinstance(getattr(chat_model, "endpoint", None), ClaudeCodeCLIEndpoint):
+            from .child_sandbox import resolve_child_sandbox
+
+            # Resolved here as for a model this factory builds, so the profile's exemption is
+            # kept and a configuration error refuses before the agent exists.
+            chat_model.endpoint.config.kwargs["child_sandbox"] = resolve_child_sandbox(
+                sandbox_profile
+            ).to_dict()
         branch_kwargs["chat_model"] = chat_model
     elif spec.model:
         from lionagi.service.providers import (

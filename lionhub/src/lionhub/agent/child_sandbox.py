@@ -33,6 +33,7 @@ __all__ = (
     "DEFAULT_ALLOW_WRITE",
     "DEFAULT_DENY_EDIT",
     "DEFAULT_DENY_READ",
+    "PROJECT_CONFIG_NAMES",
     "ChildSandboxPolicy",
     "check_claude_cli_floor",
     "check_sandbox_backend",
@@ -41,6 +42,7 @@ __all__ = (
     "default_allow_write",
     "policy_from_dict",
     "resolve_child_sandbox",
+    "run_state_paths",
     "warn_project_child_sandbox",
 )
 
@@ -122,6 +124,22 @@ DEFAULT_DENY_EDIT: tuple[str, ...] = (
     "~/.claude/projects/*/memory",
 )
 
+#: Configuration Claude Code and lionagi load from a working directory, its parents or the git
+#: root: project settings, hooks, commands, agents and skills under ``.claude``, project MCP
+#: servers, memory files, and lionagi's project settings, agent profiles and playbooks, which
+#: are searched before the global ones. A child can write its own working directory and any
+#: project directory it is handed, so these names are denied to the file tools wherever they
+#: sit, and the next child launched there cannot be handed configuration this one wrote.
+PROJECT_CONFIG_NAMES: tuple[str, ...] = (
+    ".claude",
+    ".mcp.json",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    ".lionagi/settings.yaml",
+    ".lionagi/agents",
+    ".lionagi/playbooks",
+)
+
 #: Programs Claude Code's sandbox needs on Linux and WSL2.
 _LINUX_BACKEND_PROGRAMS: tuple[str, ...] = ("bwrap", "socat")
 
@@ -168,6 +186,26 @@ def default_allow_write() -> tuple[str, ...]:
     if uv_dir.startswith(("~/", "/")):
         extra.append(uv_dir)
     return tuple(dict.fromkeys([*extra, *DEFAULT_ALLOW_WRITE]))
+
+
+def run_state_paths() -> tuple[str, ...]:
+    """The run files a later process reads back to rebuild an agent, under ``LIONAGI_HOME``.
+
+    A resumed branch takes its model, and the sandbox policy stored with it, from these files,
+    so a child that rewrote them could hand a later run a policy of its choosing. A run's
+    ``artifacts`` directory, where flow and fanout workers run, is not among them.
+    """
+    from lionagi._paths import LIONAGI_HOME
+
+    home = str(LIONAGI_HOME)
+    return (
+        *(
+            f"{home}/runs/*/{name}"
+            for name in ("run.json", "checkpoint.json", "branches", "stream")
+        ),
+        f"{home}/logs/agents",
+        f"{home}/last_branch.json",
+    )
 
 
 def _path_list(label: str, value: Any) -> list[str]:
@@ -363,9 +401,11 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
     ``sandbox.filesystem.denyRead`` stops Bash reads; the Read tool is stopped by the
     ``permissions.deny`` rules. Bash writes are held to the working directory and
     ``allowWrite`` by the sandbox, which does not cover the file tools, so ``Edit`` rules deny
-    them ``policy.deny_edit``, ``DEFAULT_DENY_EDIT`` and the read list. In permission rules an
-    absolute ``/x`` is written ``//x``, because a single leading slash is relative to the
-    settings source.
+    them ``policy.deny_edit``, ``DEFAULT_DENY_EDIT``, the read list, the run files
+    (``run_state_paths``) and every ``PROJECT_CONFIG_NAMES`` entry at any depth. Claude Code
+    also applies ``Edit`` denials to the sandbox's write limit, so Bash is refused the same
+    paths inside the working directory. In permission rules an absolute ``/x`` is written
+    ``//x``, because a single leading slash is relative to the settings source.
     """
     if not policy.enabled:
         return {}
@@ -376,8 +416,11 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
     rules: list[str] = []
     for path in policy.deny_read:
         rules += [f"Read({rule_path(path)})", f"Read({rule_path(path)}/**)"]
-    for path in dict.fromkeys([*DEFAULT_DENY_EDIT, *policy.deny_edit, *policy.deny_read]):
+    edit = [*DEFAULT_DENY_EDIT, *policy.deny_edit, *policy.deny_read, *run_state_paths()]
+    for path in dict.fromkeys(edit):
         rules += [f"Edit({rule_path(path)})", f"Edit({rule_path(path)}/**)"]
+    for name in PROJECT_CONFIG_NAMES:
+        rules += [f"Edit(//**/{name})", f"Edit(//**/{name}/**)"]
     return {
         "sandbox": {
             "enabled": True,

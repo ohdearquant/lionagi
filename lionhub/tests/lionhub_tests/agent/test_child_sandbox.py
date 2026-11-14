@@ -25,6 +25,7 @@ from lionhub.agent.child_sandbox import (
     DEFAULT_ALLOW_WRITE,
     DEFAULT_DENY_EDIT,
     DEFAULT_DENY_READ,
+    PROJECT_CONFIG_NAMES,
     ChildSandboxPolicy,
     check_claude_cli_floor,
     check_sandbox_backend,
@@ -32,6 +33,7 @@ from lionhub.agent.child_sandbox import (
     claude_settings_for,
     policy_from_dict,
     resolve_child_sandbox,
+    run_state_paths,
     warn_project_child_sandbox,
 )
 
@@ -47,6 +49,18 @@ POLICY = ChildSandboxPolicy(True, ("~/.ssh", "/opt/keys"), ("~/.cache/uv",))
 DEFAULT_EDIT = tuple(dict.fromkeys([*DEFAULT_DENY_EDIT, *DEFAULT_DENY_READ]))
 
 DEFAULT_POLICY = ChildSandboxPolicy(True, DEFAULT_DENY_READ, DEFAULT_ALLOW_WRITE, DEFAULT_EDIT)
+
+
+def _fixed_edit_rules():
+    """The Edit rules every enabled policy ends with: the run files, then project configuration."""
+    return [
+        *[rule for path in run_state_paths() for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")],
+        *[
+            rule
+            for name in PROJECT_CONFIG_NAMES
+            for rule in (f"Edit(//**/{name})", f"Edit(//**/{name}/**)")
+        ],
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -412,6 +426,7 @@ def test_claude_settings_for_a_home_path_and_an_absolute_path():
                 "Edit(~/.ssh/**)",
                 "Edit(//opt/keys)",
                 "Edit(//opt/keys/**)",
+                *_fixed_edit_rules(),
             ]
         },
     }
@@ -425,10 +440,12 @@ def test_every_default_path_gets_two_permission_rules():
     rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
     reads = [rule for rule in rules if rule.startswith("Read(")]
     edits = [rule for rule in rules if rule.startswith("Edit(")]
+    fixed = _fixed_edit_rules()
     assert len(reads) == 2 * len(DEFAULT_DENY_READ)
-    assert len(edits) == 2 * len(DEFAULT_EDIT)
+    assert len(edits) == 2 * len(DEFAULT_EDIT) + len(fixed)
     assert len(reads) + len(edits) == len(rules)
-    assert all(rule.startswith(("Read(~/", "Edit(~/")) for rule in rules)
+    assert rules[-len(fixed) :] == fixed
+    assert all(rule.startswith(("Read(~/", "Edit(~/")) for rule in rules[: -len(fixed)])
 
 
 # --------------------------------------------------------------------------- edit denial
@@ -446,6 +463,46 @@ def test_the_file_tools_are_denied_the_configuration_that_launches_the_next_chil
     ):
         assert f"Edit({path})" in rules
         assert f"Edit({path}/**)" in rules
+
+
+def test_the_files_a_resume_reads_back_are_denied_and_the_artifacts_directory_is_not(
+    monkeypatch, tmp_path
+):
+    import lionagi._paths
+
+    home = tmp_path / "lionagi-home"
+    monkeypatch.setattr(lionagi._paths, "LIONAGI_HOME", home)
+    rules = claude_settings_for(POLICY)["permissions"]["deny"]
+    for path in (
+        "runs/*/run.json",
+        "runs/*/checkpoint.json",
+        "runs/*/branches",
+        "runs/*/stream",
+        "logs/agents",
+        "last_branch.json",
+    ):
+        assert f"Edit(/{home}/{path})" in rules
+        assert f"Edit(/{home}/{path}/**)" in rules
+    # Flow and fanout workers run in a run's artifacts directory and must keep writing there.
+    assert not [rule for rule in rules if "artifacts" in rule or rule.endswith("/runs/*/**)")]
+
+
+def test_project_configuration_is_denied_at_any_depth():
+    rules = claude_settings_for(POLICY)["permissions"]["deny"]
+    for name in (
+        ".claude",
+        ".mcp.json",
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        ".lionagi/settings.yaml",
+        ".lionagi/agents",
+        ".lionagi/playbooks",
+    ):
+        assert f"Edit(//**/{name})" in rules
+        assert f"Edit(//**/{name}/**)" in rules
+    # The rest of a project .lionagi directory stays writable.
+    assert "Edit(//**/.lionagi)" not in rules
+    assert "Edit(//**/.lionagi/**)" not in rules
 
 
 def test_every_read_denial_is_also_an_edit_denial():

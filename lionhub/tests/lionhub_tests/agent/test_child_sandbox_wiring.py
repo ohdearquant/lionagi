@@ -133,6 +133,40 @@ async def test_create_agent_never_matches_the_role_name(monkeypatch):
         assert policy["deny_read"] == list(child_sandbox.DEFAULT_DENY_READ)
 
 
+@pytest.mark.asyncio
+async def test_create_agent_confines_a_caller_supplied_claude_model_under_the_profile_name(
+    monkeypatch,
+):
+    from lionagi import iModel
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", _two_profile_settings)
+    model = iModel(provider="claude_code", model="sonnet")
+    assert "child_sandbox" not in model.endpoint.config.kwargs
+    spec = AgentSpec.compose("implementer")
+    branch = await create_agent(
+        spec, load_settings=False, chat_model=model, sandbox_profile="builder"
+    )
+    policy = branch.chat_model.endpoint.config.kwargs["child_sandbox"]
+    assert set(child_sandbox.DEFAULT_DENY_READ) - set(policy["deny_read"]) == {EXEMPT}
+
+
+@pytest.mark.asyncio
+async def test_create_agent_leaves_a_caller_supplied_model_that_is_not_claude_code_alone(
+    monkeypatch,
+):
+    from lionagi import iModel
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", _two_profile_settings)
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    branch = await create_agent(
+        AgentSpec.compose("implementer"),
+        load_settings=False,
+        chat_model=model,
+        sandbox_profile="builder",
+    )
+    assert "child_sandbox" not in branch.chat_model.endpoint.config.kwargs
+
+
 # --------------------------------------------------------------------------- the call sites
 
 # Each command path that builds an agent and the least number of create_agent calls it holds.

@@ -773,6 +773,17 @@ class ClaudeCodeRequest(BaseModel):
             policy = resolve_child_sandbox(None)
         else:
             policy = policy_from_dict(self.child_sandbox)
+            if not policy.enabled:
+                # A stored policy is read back from run files on resume, so it may turn the
+                # sandbox off only while the global settings still do. Otherwise the policy is
+                # resolved again, with no profile exemption.
+                current = resolve_child_sandbox(None)
+                if current.enabled:
+                    log.warning(
+                        "child_sandbox: the stored policy turns the sandbox off but the global "
+                        "settings do not; the child runs under the global policy"
+                    )
+                    policy = current
         if not policy.enabled:
             return None
         check_sandbox_backend()

@@ -182,6 +182,29 @@ def test_a_disabled_policy_leaves_the_callers_settings_as_they_were(tmp_path):
     assert _settings_values(args) == [own]
 
 
+def test_a_stored_disabled_policy_is_overruled_while_the_global_settings_keep_the_sandbox_on(
+    monkeypatch, tmp_path, caplog
+):
+    # A resumed branch carries the policy it was stored with; the run files it came from are
+    # not trusted to turn the sandbox off on their own.
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+    with caplog.at_level("WARNING"):
+        args = _request(repo=tmp_path, child_sandbox=OFF.to_dict()).as_cmd_args()
+    assert _settings_json(args) == claude_settings_for(
+        child_sandbox.resolve_child_sandbox(None, {})
+    )
+    assert "the stored policy turns the sandbox off" in caplog.text
+
+
+def test_a_stored_disabled_policy_holds_while_the_global_settings_turn_the_sandbox_off(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+    assert "--settings" not in _request(repo=tmp_path, child_sandbox=OFF.to_dict()).as_cmd_args()
+
+
 def test_a_disabled_policy_runs_no_version_probe(monkeypatch, tmp_path):
     def probe(binary):
         raise AssertionError("the version probe ran for a disabled policy")
