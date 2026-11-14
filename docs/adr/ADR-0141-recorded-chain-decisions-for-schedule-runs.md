@@ -176,7 +176,10 @@ For `schedule_run`, evaluate the applicable guards and policy in this order:
    nonterminal edge carrying a decision and a change between distinct terminal
    statuses, which have no outgoing legacy edges. Neither writes an audit row
    or takes the `no_override` refusal path.
-7. Check the decision on otherwise applicable writes.
+7. Reject an otherwise applicable change between distinct terminal statuses
+   without an override with `no_override`. That is also the refusal reason
+   when the write carries a conflicting decision.
+8. Check the decision on otherwise applicable writes.
 
 A lost guard on a guarded write returns a conflict and writes no rejection
 event. The scheduler's pre-launch running write, reason append after skipped
@@ -280,17 +283,23 @@ in the creation transaction. Seed the same evidence in the current row and the
 initial history entry in
 `lionagi/state/db.py::StateDB._initialize_managed_entity_in_tx`.
 The initializer takes a keyword-only `seed_chain_decision` flag, off by
-default. Only the two scheduler creation paths below set it. Direct SDK
-creation of a `skipped` or `failed` schedule run and any creation of a
-`queued` or `running` row keep the original evidence shape.
+default. Keep the public StateDB creation signatures. Each public method
+shares its transaction implementation with a private StateDB entry point
+and calls it with seeding disabled. The scheduler state service calls those
+private entry points with seeding enabled for the two paths below. The
+initializer applies the flag to a new `schedule_run` only if D5 enables
+recording and its initial status is `skipped` or `failed`. Direct SDK
+creation and all `queued` or `running` rows keep the original evidence shape.
 
 - `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::create_skipped_run`
-  inserts the skipped row through `lionagi/state/db.py::StateDB.create_schedule_run`.
+  inserts the skipped row through the private counterpart of
+  `lionagi/state/db.py::StateDB.create_schedule_run`.
 - Setup failure in `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`
   records a failed row through
   `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._write_occurrence`.
-  It reaches `lionagi/state/db.py::StateDB.create_schedule_run_and_advance` for a
-  normal occurrence or `lionagi/state/db.py::StateDB.tombstone_and_replace_schedule_run`
+  It uses the private counterpart of
+  `lionagi/state/db.py::StateDB.create_schedule_run_and_advance` for a normal
+  occurrence or of `lionagi/state/db.py::StateDB.tombstone_and_replace_schedule_run`
   when replacing an undispatched orphan. The latter seeds the new failed row only.
 - The later `update_status` appends its reason and schedule evidence as a
   same-status write and carries forward the seeded decision under the D1 lock.
@@ -344,9 +353,10 @@ writer admitted to a decision-enabled store must include preservation.
 An upgraded native writable open on SQLite or PostgreSQL migrates the store
 and stamps the binary's version
 (`lionagi/state/db.py::StateDB._open`, `lionagi/state/db.py::StateDB._apply_schema`).
-The D1 and D3 persistence paths enable decisions when the active transaction
-sees a stamped version of 7 or later. The stamp is available through
-`lionagi/state/db.py::StateDB.schema_version`. An older native binary is
+The D1 and D3 persistence paths read the stamp from `schema_meta` on the
+write transaction's own connection, under the same lock as the row read
+for the transition or creation. They enable decisions on a stamped version
+of 7 or later. An older native binary is
 refused on a fresh writable open by
 `lionagi/state/db.py::StateDB._raise_if_schema_too_new`; step 2 handles
 previously opened handles (Consequence 11).
@@ -364,13 +374,14 @@ The cutover procedure applies to both backends:
    deployment's client and job inventory. Read supervisor and job-runner
    process status, including scheduled jobs and active retries. Verify that
    each writer has stopped and cannot restart during the cutover.
-2. Confirm that every inventoried writer process has exited by PID, and
-   check the supervisors and job inventory for replacements. Drain and close
-   existing handles. As a second check, match the inventory against open handles
-   on the SQLite database and its sidecars, including handles on clients that
-   mount the file. On PostgreSQL, inspect live backends for the store and
-   writer roles. Proceed once the processes are gone and those reads show
-   no surviving writer handle.
+2. Drain and close existing handles during shutdown. Confirm that every
+   inventoried writer has exited by PID and check the supervisors and job
+   inventory for replacements. For SQLite, enumerate every open handle
+   on the database and its sidecar files across all hosts that can open them.
+   For PostgreSQL, use a separate maintenance connection to enumerate every
+   live backend attached to the store database, including idle sessions and
+   all roles. Proceed only once the writers have exited and the applicable
+   census shows zero surviving handles, including ones outside the inventory.
 3. Open once with the upgraded binary. Read the committed schema version with
    `StateDB.schema_version` and confirm it enables preservation. With admission
    still closed, exercise a fresh version-6 writable open and verify that it
@@ -402,10 +413,18 @@ The cutover procedure applies to both backends:
    interpreting production run history.
 
    Verify the written current and history records. Exercise a fresh monitor
-   open and observe the persisted selection and its child if one exists. Then
-   resolve surviving fixture references and delete the same acceptance schedule
-   with `lionagi/studio/services/schedules.py::delete_schedule`. The current
-   delete cascades to runs under that schedule, including parent and child when
+   open and observe the persisted selection and its child if one exists.
+   Keep ordinary admission closed while upgraded active consumers reconcile
+   the acceptance rows. Use fixtures that allow each consumer to acknowledge
+   its owed terminal transitions through normal processing. Before deleting,
+   verify that the cascade removes neither an owed child nor a last resolver
+   protected by the
+   [ADR-0095 schedule cascade refusal](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md#native-upgrade-and-maintenance).
+   Resolve surviving fixture references and delete the same acceptance
+   schedule with `lionagi/studio/services/schedules.py::delete_schedule`.
+   The delete rechecks debt and protected resolvers under the retention
+   fence. If it refuses, retain the fixture until those conditions clear.
+   The delete cascades to runs under that schedule, including parent and child when
    both belong to it. A surviving link such as a child in another schedule, an
    outbox reference or a worker lease can block deletion
    (`lionagi/state/schema.sql:624@45fd503ecf2af299d48b762cd895a2b8e650ced5`,
@@ -531,7 +550,7 @@ New tests (none exist at this checkout):
     and no rejection event.
     Both attempts leave the run row and its transition history unchanged.
 21. In `tests/state/lifecycle/test_service.py` and
-    `tests/state/lifecycle/test_schedule_adapter.py`, send a guarded
+    `tests/state/test_lifecycle_gate.py`, send a guarded
     `running`-to-terminal `update_status` on an enabled store
     with a decision and no `record_chain_decision` attribute set. Assert the
     rejected service outcome reports unchanged `running` and
@@ -550,9 +569,12 @@ New tests (none exist at this checkout):
 22. In `tests/state/test_lifecycle_gate.py`, check the exception reason and
     message for an ordinary terminal-to-terminal `update_status` without an
     override, a write refused by the terminal floor even with a valid override,
-    and a decision refusal. The no-override message must match its existing
-    text. On legacy `transition()`, check ordinary undeclared nonterminal and
-    terminal-to-terminal edges raise `LifecycleValidationError` with no audit.
+    and a decision refusal. Repeat the terminal-to-terminal write with a
+    conflicting decision and no override. Assert `no_override`, one committed
+    rejection audit, and unchanged run and history. The no-override message
+    must match its existing text. On legacy `transition()`, check that ordinary
+    undeclared nonterminal and terminal-to-terminal edges raise
+    `LifecycleValidationError` with no audit.
     In `tests/state/lifecycle/test_service.py`, retain the typed-route control
     for an undeclared nonterminal edge returning an audited rejection.
 

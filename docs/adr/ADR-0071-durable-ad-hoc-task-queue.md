@@ -261,8 +261,11 @@ The registered terminal set carries all five terminal statuses, including `timed
 `skipped`. An undeclared edge raises `ValueError`.
 
 [ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
-proposes that a schedule-run terminal-floor or decision refusal through `transitions.transition()`
-commits a rejection audit and raises `TransitionRejectedError`.
+proposes that a terminal-to-nonterminal schedule-run transition through
+`transitions.transition()` commits a rejection audit and raises
+`TransitionRejectedError` before the undeclared-edge `ValueError` check.
+That facade also commits a rejection audit and raises `TransitionRejectedError`
+when D1 refuses a decision change.
 
 Exact compare-and-swap semantics:
 

@@ -215,7 +215,8 @@ Code anchors: `lionagi/state/schema_meta.py`; `lionagi/state/reasons.py`;
   `system`; any other source raises `ValueError`.
 - `evidence_refs=None` is persisted as an empty list in both current row and history.
   [ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
-  proposes carrying forward a schedule run's stored decision in this case.
+  proposes carrying forward a schedule run's stored decision on any write
+  that omits the decision element.
 - `reason_summary` defaults to an empty string; `metadata` defaults to SQL/JSON null when omitted.
 - Current reason fields are denormalized for cheap reads. The transition row is the history record;
   there is no foreign key from a transition to its entity because the table covers several entity
