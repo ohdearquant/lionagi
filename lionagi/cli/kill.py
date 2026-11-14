@@ -14,8 +14,9 @@ from lionagi.ln._proc import (
 )
 from lionagi.state._quarantine_identity import (
     QuarantineProbeError,
-    _is_unreadable_quarantine,
+    _quarantine_status_label,
     is_current_quarantine,
+    quarantine_identity,
 )
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
@@ -41,8 +42,6 @@ from lionhub.orchestration.kill import (
     read_pid_from_entity,
     unaddressable_pid_reason,
 )
-
-from ._pid_quarantine import quarantine_identity
 
 
 def _same_process_scope(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -109,7 +108,7 @@ async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> 
             log_error("entity is not a running quarantined session or invocation")
             return 1
         try:
-            current_quarantine = is_current_quarantine(row, raise_on_scope_error=True)
+            current_quarantine = is_current_quarantine(row, raise_on_probe_error=True)
         except QuarantineProbeError:
             log_error("quarantine identity probe failed; no update made")
             return 1
@@ -405,8 +404,8 @@ async def _do_kill_all_stale(
 
             for row_dict in (db._row_to_dict(r) for r in rows):
                 entity_id = row_dict["id"]
-                if _is_unreadable_quarantine(row_dict):
-                    warn(f"{entity_type} {entity_id[:12]}: quarantine record unreadable")
+                if label := _quarantine_status_label(row_dict):
+                    warn(f"{entity_type} {entity_id[:12]}: {label}")
 
                 started = (
                     row_dict.get("started_at")

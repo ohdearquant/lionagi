@@ -2299,6 +2299,9 @@ async def _run_agent(
                     # The child sandbox exemption is keyed on the agent profile file
                     # named by -a, not on the role the spec casts the leg as.
                     sandbox_profile=agent_name or None,
+                    # The pre-turn khive client is given the actor the khive
+                    # servers handed to the child above are given.
+                    khive_actor=child_khive_actor(agent_name),
                 )
                 if api_launch is not None:
                     branch.metadata[_API_LAUNCH_KEY] = dict(api_launch)

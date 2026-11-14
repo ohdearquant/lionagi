@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from lionagi.ln import short_id
+from lionhub.agent.khive_actor import attribute_khive_servers
 
 if TYPE_CHECKING:
     from lionagi.protocols.messages.instruction import Instruction
@@ -361,9 +362,19 @@ def _extract_writeback_pairs(action_responses: list) -> list[dict]:
 
 class KhiveInjectionProvider:
     """Pre-turn ContextProvider (ADR-0008): recall + optional compose against khive.
-    See docs/internals/runtime.md for the provide()/writeback() contract and failure-swallowing behavior."""
+    See docs/internals/runtime.md for the provide()/writeback() contract and failure-swallowing behavior.
 
-    def __init__(self, policy: KhiveInjectionPolicy, mcp_config: dict | None = None):
+    ``actor`` names the khive actor the spawned server runs as (for example
+    ``agent:implementer``), so recall and writeback are attributed to it. When it is
+    None the server keeps the identity of the launching process."""
+
+    def __init__(
+        self,
+        policy: KhiveInjectionPolicy,
+        mcp_config: dict | None = None,
+        *,
+        actor: str | None = None,
+    ):
         if policy.snapshot_id is not None:
             raise ValueError(
                 "KhiveInjectionProvider cannot honor policy.snapshot_id yet — the khive "
@@ -373,7 +384,12 @@ class KhiveInjectionProvider:
             )
         self.policy = policy
         self.name = f"khive_injection:{policy.profile_id}"
-        self._mcp_config = dict(mcp_config or _DEFAULT_MCP_CONFIG)
+        server = dict(mcp_config or _DEFAULT_MCP_CONFIG)
+        if actor is not None:
+            # Same attribution the khive servers a child forwards receive; a
+            # config that does not launch khive is left as supplied.
+            server = attribute_khive_servers({"khive": server}, actor)["khive"]
+        self._mcp_config = server
         # One provider may serve concurrent branch turns. ContextVar keeps the
         # status paired with the gather task that observed it, so a successful
         # empty recall cannot erase another turn's degradation signal.

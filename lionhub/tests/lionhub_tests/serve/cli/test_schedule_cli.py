@@ -61,7 +61,7 @@ def test_schedule_action_kind_choices_match_store_vocabulary():
 
 
 def test_schedule_create_normalizes_action_kind_alias(monkeypatch):
-    import lionhub.cli.schedule as schedule_cli
+    import lionhub.serve.cli.schedule as schedule_cli
 
     captured = {}
 
@@ -92,7 +92,7 @@ def test_schedule_create_normalizes_action_kind_alias(monkeypatch):
 
 
 def test_schedule_disable_sends_its_reason_and_rejects_a_blank_one(monkeypatch, capsys):
-    import lionhub.cli.schedule as schedule_cli
+    import lionhub.serve.cli.schedule as schedule_cli
 
     captured: dict = {}
 
@@ -129,7 +129,7 @@ def test_schedule_disable_sends_its_reason_and_rejects_a_blank_one(monkeypatch, 
 def test_schedule_limits_dispatches_to_api_and_prints_values(monkeypatch, capsys):
     """run_schedule limits calls _api('/limits') and prints cap + inflight
     for both the scheduled and the ad-hoc lane."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(
         sched_mod,
@@ -142,8 +142,8 @@ def test_schedule_limits_dispatches_to_api_and_prints_values(monkeypatch, capsys
         },
     )
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -161,7 +161,7 @@ def test_schedule_limits_dispatches_to_api_and_prints_values(monkeypatch, capsys
 
 def test_schedule_limits_unlimited_display(monkeypatch, capsys):
     """A cap of 0 (unlimited) prints 'unlimited' rather than the digit 0."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(
         sched_mod,
@@ -169,8 +169,8 @@ def test_schedule_limits_unlimited_display(monkeypatch, capsys):
         lambda path, **kw: {"max_scheduled_concurrent": 0, "current_inflight": 2},
     )
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -185,12 +185,12 @@ def test_schedule_limits_unlimited_display(monkeypatch, capsys):
 
 def test_schedule_limits_api_error_returns_1(monkeypatch):
     """When _api returns None (network error), run_schedule returns 1."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: None)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -202,13 +202,13 @@ def test_schedule_limits_api_error_returns_1(monkeypatch):
 
 def test_schedule_runs_limit_out_of_range_rejected(monkeypatch, capsys):
     """--limit outside [1, 200] is rejected before any API call."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     api_called = []
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -223,7 +223,7 @@ def test_schedule_runs_limit_out_of_range_rejected(monkeypatch, capsys):
 
 def test_schedule_runs_dispatches_with_limit_and_status_query(monkeypatch):
     """run_schedule runs builds the query string from --limit/--status."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     captured = {}
 
@@ -233,8 +233,8 @@ def test_schedule_runs_dispatches_with_limit_and_status_query(monkeypatch):
 
     monkeypatch.setattr(sched_mod, "_api", _fake_api)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -249,12 +249,12 @@ def test_schedule_runs_dispatches_with_limit_and_status_query(monkeypatch):
 
 
 def test_schedule_runs_empty_prints_no_runs(monkeypatch, capsys):
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: {"runs": []})
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -269,7 +269,7 @@ def test_schedule_runs_empty_prints_no_runs(monkeypatch, capsys):
 def test_schedule_runs_human_table_uses_fired_at_not_started_at(monkeypatch, capsys):
     """Regression: the human table must render `fired_at` (the real schedule_runs
     column), not the nonexistent `started_at` that used to print as '?'."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     fake_run = {
         "id": "run1",
@@ -283,8 +283,8 @@ def test_schedule_runs_human_table_uses_fired_at_not_started_at(monkeypatch, cap
     }
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: {"runs": [fake_run]})
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -300,13 +300,13 @@ def test_schedule_runs_human_table_uses_fired_at_not_started_at(monkeypatch, cap
 
 
 def test_schedule_runs_json_emits_raw_api_response(monkeypatch, capsys):
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     api_response = {"runs": [{"id": "run1", "status": "completed"}], "limit": 20, "offset": 0}
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_response)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -321,7 +321,7 @@ def test_schedule_runs_json_emits_raw_api_response(monkeypatch, capsys):
 
 
 def test_schedule_run_singular_dispatches_and_prints_table(monkeypatch, capsys):
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     fake_run = {
         "id": "run1",
@@ -335,8 +335,8 @@ def test_schedule_run_singular_dispatches_and_prints_table(monkeypatch, capsys):
     }
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: fake_run)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -350,12 +350,12 @@ def test_schedule_run_singular_dispatches_and_prints_table(monkeypatch, capsys):
 
 
 def test_schedule_run_singular_not_found_returns_1(monkeypatch):
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: None)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -368,12 +368,12 @@ def test_schedule_run_singular_not_found_returns_1(monkeypatch):
 
 def test_schedule_status_human_output_includes_inspect_line(monkeypatch, capsys):
     """The status block must route to `li monitor <invocation>` for drill-in."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: _status_response())
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -392,13 +392,13 @@ def test_schedule_status_json_matches_human_fields(monkeypatch, capsys):
     """Human and JSON views must agree on the same underlying data."""
     import json as _json
 
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     response = _status_response()
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: response)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -412,14 +412,14 @@ def test_schedule_status_json_matches_human_fields(monkeypatch, capsys):
 
 
 def test_schedule_status_no_runs_yet(monkeypatch, capsys):
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(
         sched_mod, "_api", lambda *a, **kw: _status_response(latest_run=None, exit_code=2)
     )
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -433,12 +433,12 @@ def test_schedule_status_no_runs_yet(monkeypatch, capsys):
 
 
 def test_schedule_status_not_found_returns_1(monkeypatch):
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: None)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -451,7 +451,7 @@ def test_schedule_status_not_found_returns_1(monkeypatch):
 
 def test_schedule_status_wait_polls_until_terminal(monkeypatch):
     """--wait must keep polling while the latest run is still 'running'."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     responses = [
         _status_response(latest_run={"status": "running"}, exit_code=3),
@@ -467,8 +467,8 @@ def test_schedule_status_wait_polls_until_terminal(monkeypatch):
     monkeypatch.setattr(sched_mod, "_api", _fake_api)
     monkeypatch.setattr("time.sleep", lambda secs: None)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -482,12 +482,12 @@ def test_schedule_status_wait_polls_until_terminal(monkeypatch):
 
 def test_schedule_trigger_without_wait_unchanged(monkeypatch, capsys):
     """No --wait: trigger returns as soon as the run id comes back (existing behavior)."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: {"ok": True, "run_id": "run1"})
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -503,7 +503,7 @@ def test_schedule_trigger_without_wait_unchanged(monkeypatch, capsys):
 def test_schedule_trigger_wait_retries_through_the_creation_race(monkeypatch, capsys):
     """The occurrence lookup 404s (returns None) a couple of times right after
     trigger — --wait must retry through the grace period rather than failing."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     calls = []
 
@@ -521,8 +521,8 @@ def test_schedule_trigger_wait_retries_through_the_creation_race(monkeypatch, ca
     monkeypatch.setattr(sched_mod, "_api", _fake_api)
     monkeypatch.setattr("time.sleep", lambda secs: None)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -537,7 +537,7 @@ def test_schedule_trigger_wait_retries_through_the_creation_race(monkeypatch, ca
 
 def test_schedule_trigger_wait_never_appears_errors(monkeypatch, capsys):
     """The occurrence never shows up within the grace period: a clear error, not a hang."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     def _fake_api(path, method="GET", body=None):
         if path == "/sched-abc/trigger":
@@ -548,8 +548,8 @@ def test_schedule_trigger_wait_never_appears_errors(monkeypatch, capsys):
     monkeypatch.setattr("time.sleep", lambda secs: None)
     monkeypatch.setattr(sched_mod, "_TRIGGER_WAIT_GRACE_SECONDS", 0.01)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -564,7 +564,7 @@ def test_schedule_trigger_wait_never_appears_errors(monkeypatch, capsys):
 def test_schedule_trigger_wait_treats_timed_out_as_terminal(monkeypatch, capsys):
     """A timed-out occurrence must stop the poll loop like any other terminal
     status, not spin until the wait deadline."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     calls = []
 
@@ -578,8 +578,8 @@ def test_schedule_trigger_wait_treats_timed_out_as_terminal(monkeypatch, capsys)
     monkeypatch.setattr("time.sleep", lambda secs: None)
     monkeypatch.setattr(sched_mod, "_TRIGGER_WAIT_MAX_SECONDS", 0.05)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -596,7 +596,7 @@ def test_schedule_trigger_wait_treats_timed_out_as_terminal(monkeypatch, capsys)
 def test_schedule_status_wait_treats_timed_out_as_terminal(monkeypatch):
     """--wait must stop polling once the latest run reaches 'timed_out', not
     just the completed/failed/cancelled/skipped subset it used to check."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     calls = []
 
@@ -608,8 +608,8 @@ def test_schedule_status_wait_treats_timed_out_as_terminal(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda secs: None)
     monkeypatch.setattr(sched_mod, "_TRIGGER_WAIT_MAX_SECONDS", 0.05)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -624,12 +624,12 @@ def test_schedule_status_wait_treats_timed_out_as_terminal(monkeypatch):
 def test_schedule_trigger_no_run_id_skips_wait(monkeypatch, capsys):
     """A trigger response without a run_id (shouldn't normally happen) must not
     crash --wait — it just returns after printing 'Triggered'."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: {"ok": True})
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -642,13 +642,13 @@ def test_schedule_trigger_no_run_id_skips_wait(monkeypatch, capsys):
 
 def test_schedule_list_dispatches_to_api(monkeypatch):
     """run_schedule list calls _api('/') and prints schedules."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     fake_schedules = [{"id": "s1", "name": "daily", "enabled": True, "trigger_type": "cron"}]
     monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: {"schedules": fake_schedules})
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -660,12 +660,12 @@ def test_schedule_list_dispatches_to_api(monkeypatch):
 
 def test_schedule_list_api_error_returns_1(monkeypatch):
     """When _api returns None (network error), run_schedule returns 1."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: None)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")

@@ -44,6 +44,26 @@ if TYPE_CHECKING:
 _CALIBRATION_FLOOR = 4_000
 
 
+def _reaches_a_frame(error: BaseException) -> bool:
+    """Whether ``error`` or any exception it links to carries a traceback (and so frame locals)."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if BaseException.__traceback__.__get__(current, type(current)) is not None:
+            return True
+        for descriptor in (BaseException.__cause__, BaseException.__context__):
+            linked = descriptor.__get__(current, type(current))
+            if linked is not None:
+                pending.append(linked)
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+    return False
+
+
 def _derive_safe_exception_group(
     source: BaseExceptionGroup, members: list[BaseException]
 ) -> BaseExceptionGroup:
@@ -68,13 +88,17 @@ def _derive_safe_exception_group(
                 ExceptionGroup if isinstance(source, ExceptionGroup) else BaseExceptionGroup
             )
             replacement = group_type(source.message, members)
-    for descriptor in (
-        BaseException.__cause__,
-        BaseException.__context__,
-        BaseException.__traceback__,
-        BaseException.__suppress_context__,
-    ):
-        descriptor.__set__(replacement, descriptor.__get__(source, type(source)))
+    # A traceback retains frame locals. Keep a linked exception only when nothing it reaches,
+    # through its own causes, contexts and group members, carries a frame.
+    for descriptor in (BaseException.__cause__, BaseException.__context__):
+        linked = descriptor.__get__(source, type(source))
+        if linked is not None and _reaches_a_frame(linked):
+            linked = None
+        descriptor.__set__(replacement, linked)
+    BaseException.__traceback__.__set__(replacement, None)
+    BaseException.__suppress_context__.__set__(
+        replacement, BaseException.__suppress_context__.__get__(source, type(source))
+    )
     if hasattr(source, "__notes__"):
         replacement.__notes__ = list(source.__notes__)
     return replacement

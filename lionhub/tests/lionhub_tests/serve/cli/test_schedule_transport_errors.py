@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi.ln import _ssrf
-from lionhub.cli import schedule as schedule_cli
+from lionhub.serve.cli import schedule as schedule_cli
 
 
 class _FailingUrlopen:

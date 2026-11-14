@@ -161,6 +161,7 @@ def _build_worker(
 
     async def _fake_create_agent(spec, **kw):
         built["spec"] = spec
+        built["create_agent_kwargs"] = kw
         return _Branch(system=spec.extra_prompt, name=None)
 
     def _fake_build_imodel(*a, **kw):
@@ -1544,3 +1545,23 @@ async def test_a_spawned_light_codex_team_worker_is_refused_before_it_starts(tmp
     assert kwargs["add_dir"] == [str(teams_dir.resolve())]
     with pytest.raises(CLIInputRefusedError, match="add_dir"):
         CodexCodeRequest(prompt="work", **kwargs)
+
+
+def test_a_cast_worker_runs_its_pre_turn_khive_client_as_its_profile_actor(tmp_path):
+    """A profile with no authored body is built by the factory; the khive client its
+    recall opt-in registers acts as the actor its forwarded khive servers get."""
+    profile = SimpleNamespace(
+        name="researcher",
+        raw_body=False,
+        system_prompt="",
+        effort=None,
+        yolo=False,
+        fast_mode=False,
+        khive_injection=True,
+    )
+    _env, _imodel, built = _build_worker(
+        tmp_path, agent_id="researcher", role="researcher", bare=False, profile=profile
+    )
+
+    assert built["spec"].khive_injection is True
+    assert built["create_agent_kwargs"]["khive_actor"] == "agent:researcher"

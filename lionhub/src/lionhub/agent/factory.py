@@ -131,6 +131,7 @@ async def create_agent(
     resolved_mcp_explicit: bool = False,
     agent_env: Mapping[str, str] | None = None,
     sandbox_profile: str | None = None,
+    khive_actor: str | None = None,
     _command_env_names_out: Callable[[frozenset[str]], None] | None = None,
 ) -> Branch:
     """Create a fully wired Branch from AgentSpec: settings → hooks → prompt → model → tools.
@@ -165,6 +166,14 @@ async def create_agent(
     Code child's sandbox policy is resolved. ``None`` (a launch without a profile) gets no
     exemption. The role the spec was cast from is never used: a role name that happens to equal
     a ``profiles`` key does not earn its exemption.
+
+    ``khive_actor`` is the khive actor the pre-turn recall and writeback
+    client registered for ``spec.khive_injection`` acts as: its khive server is
+    spawned with ``KHIVE_ACTOR`` set to it. A caller that hands the child khive
+    servers attributed to a profile passes the same actor here, so both are
+    given the child's actor; an actor config in either server's working
+    directory still takes precedence over it. ``None`` leaves that server as
+    configured.
 
     ``spec.contain_account_integrations`` turns a codex agent's account
     ``apps`` and ``plugins`` features off by default. It is applied to the
@@ -526,7 +535,7 @@ async def create_agent(
         command_env_names=command_names,
         _command_env_supplier=command_env_supplier,
     )
-    _register_providers(branch, spec)
+    _register_providers(branch, spec, actor=khive_actor)
     native_mcp_servers: frozenset[str] = frozenset()
     if resolved_mcp_servers is Unset:
         native_mcp_servers = await _load_mcp(
@@ -826,7 +835,7 @@ def _register_tools(
             branch.register_tools(tool)
 
 
-def _register_providers(branch: Branch, spec: AgentSpec) -> None:
+def _register_providers(branch: Branch, spec: AgentSpec, *, actor: str | None = None) -> None:
     # LIONAGI_KHIVE_INJECTION is the fleet-wide injection kill-switch.
     env_setting = os.getenv("LIONAGI_KHIVE_INJECTION")
     if env_setting is not None and env_setting.strip().lower() in {
@@ -884,7 +893,7 @@ def _register_providers(branch: Branch, spec: AgentSpec) -> None:
             raise TypeError(
                 "khive_injection must be None, a bool, a mapping, or a KhiveInjectionPolicy"
             )
-        provider = KhiveInjectionProvider(policy)
+        provider = KhiveInjectionProvider(policy, actor=actor)
     except Exception as exc:
         import logging
 
@@ -907,7 +916,8 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
     injection is a context-provider concern, orthogonal to CodingToolkit/path-guards.
     The provider is keyed on ``{role_name}-recall-v1`` (role_name is the invoked
     profile name). None/False disables; the env kill-switch is honored by
-    ``_register_providers``.
+    ``_register_providers``. The provider's khive server runs as the profile's own
+    actor (the one its forwarded khive servers get), not as the launching process.
     """
     configured = getattr(profile, "khive_injection", None)
     # Only None/False disable — an empty mapping is a valid opt-in (see _register_providers).
@@ -916,10 +926,15 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
 
     from lionhub.agent.casts.pattern import Role
     from lionhub.agent.casts.profile import Profile
+    from lionhub.agent.khive_actor import child_khive_actor
 
     identity = Profile(name=role_name, role=Role(name=role_name, description="", body=""))
     provider_spec = AgentSpec(profile=identity, pack=None, khive_injection=configured)
-    _register_providers(branch, provider_spec)
+    _register_providers(
+        branch,
+        provider_spec,
+        actor=child_khive_actor(getattr(profile, "name", None)),
+    )
 
 
 def _register_coding_tools(

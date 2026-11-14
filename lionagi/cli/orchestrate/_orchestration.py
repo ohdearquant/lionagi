@@ -1637,6 +1637,7 @@ async def build_worker_branch(
             log_config=log_config,
             resolved_mcp_servers=run_servers,
             sandbox_profile=None if env.bare else getattr(w_profile, "name", None),
+            khive_actor=worker_khive_actor,
         )
         wb.name = wname
     else:

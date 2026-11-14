@@ -22,7 +22,7 @@ import pytest
 
 # Real Vite fixture, so the binding tests read actual startup output rather
 # than a hand-built one that could hide a parsing defect.
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 _FRONTEND_DIR = _REPOSITORY_ROOT / "apps" / "studio" / "frontend"
 _VITE_BIN = _FRONTEND_DIR / "node_modules" / ".bin" / "vite"
 requires_real_vite = pytest.mark.skipif(
@@ -55,7 +55,7 @@ def daemon_probe(monkeypatch):
 
     The fixture's value is the real probe, for the tests that aim it at a server of their own.
     """
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     real = studio_cli._code_from_running_daemon
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", lambda port: None)
@@ -70,7 +70,7 @@ def _stubbed_serve():
     try:
         with (
             patch("uvicorn.run") as mock_run,
-            patch("lionhub.cli.studio._ensure_frontend_built", return_value=False),
+            patch("lionhub.serve.cli.studio._ensure_frontend_built", return_value=False),
         ):
             yield mock_run
     finally:
@@ -87,7 +87,7 @@ def test_the_daemon_serves_with_sigpipe_ignored(mode, tmp_path, monkeypatch):
     """`li` sets SIGPIPE to its default action for piped output; a daemon serving in that process
     would be killed by the first client that closes before a write reaches it. Both places that
     serve check it: the backend every hosted or `--no-frontend` start ends in, and `--dev`."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     seen = []
     saved = signal.getsignal(signal.SIGPIPE)
@@ -192,7 +192,7 @@ def test_studio_web_does_not_build_local_frontend():
     """--web must never call the local frontend builder."""
     with (
         patch("uvicorn.run"),
-        patch("lionhub.cli.studio._ensure_frontend_built") as mock_build,
+        patch("lionhub.serve.cli.studio._ensure_frontend_built") as mock_build,
     ):
         from lionagi.cli.main import main
 
@@ -204,7 +204,7 @@ def test_studio_web_does_not_build_local_frontend():
 
 def test_studio_web_opens_browser_when_interactive(monkeypatch):
     """A TTY session opens the hosted URL unless --no-open is set."""
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
@@ -220,7 +220,7 @@ def test_studio_web_opens_browser_when_interactive(monkeypatch):
 
 def test_studio_web_no_open_flag_suppresses_browser(monkeypatch):
     """--no-open skips opening a browser even in an interactive session."""
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
@@ -248,8 +248,8 @@ def test_studio_no_frontend_flag_skips_hosted_messaging(capsys):
 def test_studio_docker_flag_invokes_docker_path():
     """--docker dispatches to the Docker launch path, not the hosted or local one."""
     with (
-        patch("lionhub.cli.studio._has_docker", return_value=True),
-        patch("lionhub.cli.studio._start_docker", return_value=0) as mock_docker,
+        patch("lionhub.serve.cli.studio._has_docker", return_value=True),
+        patch("lionhub.serve.cli.studio._start_docker", return_value=0) as mock_docker,
         patch("uvicorn.run"),
     ):
         from lionagi.cli.main import main
@@ -262,7 +262,7 @@ def test_studio_docker_flag_invokes_docker_path():
 
 def test_studio_docker_flag_without_docker_installed_errors(capsys):
     """--docker without the docker binary available fails loudly instead of falling back."""
-    with patch("lionhub.cli.studio._has_docker", return_value=False), patch("uvicorn.run"):
+    with patch("lionhub.serve.cli.studio._has_docker", return_value=False), patch("uvicorn.run"):
         from lionagi.cli.main import main
 
         result = main(["studio", "--docker"])
@@ -285,8 +285,8 @@ def test_studio_mode_flags_are_mutually_exclusive():
 def test_studio_mode_flag_before_start_is_preserved():
     """`li studio --docker start` must take the Docker path (subparser defaults must not clobber parent flags)."""
     with (
-        patch("lionhub.cli.studio._has_docker", return_value=True),
-        patch("lionhub.cli.studio._start_docker", return_value=0) as mock_docker,
+        patch("lionhub.serve.cli.studio._has_docker", return_value=True),
+        patch("lionhub.serve.cli.studio._start_docker", return_value=0) as mock_docker,
         patch("uvicorn.run"),
     ):
         from lionagi.cli.main import main
@@ -356,8 +356,8 @@ def test_studio_no_docker_combines_with_a_real_mode_flag(capsys):
     warns-and-ignores and still dispatches to the Docker path (a regression that moved the flag
     into the exclusion group would make this a usage error instead)."""
     with (
-        patch("lionhub.cli.studio._has_docker", return_value=True),
-        patch("lionhub.cli.studio._start_docker", return_value=0) as mock_docker,
+        patch("lionhub.serve.cli.studio._has_docker", return_value=True),
+        patch("lionhub.serve.cli.studio._start_docker", return_value=0) as mock_docker,
         patch("uvicorn.run"),
     ):
         from lionagi.cli.main import main
@@ -390,7 +390,7 @@ def test_studio_cross_level_mode_flags_are_mutually_exclusive():
 
 def test_find_repo_root_returns_path_from_source_checkout():
     """_find_repo_root returns a path when run from the source tree."""
-    from lionhub.cli.studio import _find_repo_root
+    from lionhub.serve.cli.studio import _find_repo_root
 
     root = _find_repo_root()
     # In CI / source checkout the apps/studio dir exists → root is not None.
@@ -401,7 +401,7 @@ def test_find_repo_root_returns_path_from_source_checkout():
 
 def test_find_repo_root_characterization(monkeypatch, tmp_path):
     import lionagi
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     assert studio_cli._find_repo_root() == _REPOSITORY_ROOT
     package_dir = tmp_path / "site-packages" / "lionagi"
@@ -412,7 +412,7 @@ def test_find_repo_root_characterization(monkeypatch, tmp_path):
 
 def test_ensure_apps_importable_from_non_repo_cwd(tmp_path, monkeypatch):
     """_ensure_apps_importable returns False when outside the repo (no apps/ dir)."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     # Fake _find_repo_root to return None (simulating installed wheel).
     monkeypatch.setattr(studio_mod, "_find_repo_root", lambda: None)
@@ -424,7 +424,7 @@ def test_ensure_apps_importable_adds_repo_root_to_sys_path(monkeypatch):
     """_ensure_apps_importable adds repo root to sys.path when in source tree."""
     import sys
 
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     fake_root = monkeypatch.getfixturevalue("tmp_path") if False else None
     # Use a real Path-like object to avoid monkeypatching Path.
@@ -458,7 +458,7 @@ def _write_marker(frontend_dir):
 
 def test_is_build_stale_returns_true_when_dist_absent(tmp_path):
     """dist/index.html absent → stale (no prior build)."""
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     assert _is_build_stale(tmp_path) is True
 
@@ -467,7 +467,7 @@ def test_is_build_stale_returns_false_when_no_source_newer_than_marker(tmp_path)
     """All source files older than dist/index.html → not stale."""
     import time
 
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     # Create source files first (older).
     (tmp_path / "package.json").write_text("{}")
@@ -485,7 +485,7 @@ def test_is_build_stale_returns_true_when_source_file_newer_than_marker(tmp_path
     """A source file newer than dist/index.html → stale."""
     import time
 
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     _write_marker(tmp_path)
 
@@ -501,7 +501,7 @@ def test_is_build_stale_detects_nested_source_change(tmp_path):
     """A file nested under src/ that is newer than dist/index.html → stale."""
     import time
 
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     _write_marker(tmp_path)
 
@@ -519,7 +519,7 @@ def test_is_build_stale_ignores_unrelated_directories(tmp_path):
     """Files outside tracked source trees don't trigger a rebuild."""
     import time
 
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     _write_marker(tmp_path)
 
@@ -537,7 +537,7 @@ def test_is_build_stale_vite_config_change_triggers_rebuild(tmp_path):
     """vite.config.mts newer than the marker → stale."""
     import time
 
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     _write_marker(tmp_path)
 
@@ -552,7 +552,7 @@ def test_is_build_stale_package_lock_change_triggers_rebuild(tmp_path):
     """package-lock.json newer than the marker → stale."""
     import time
 
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     _write_marker(tmp_path)
     time.sleep(0.02)
@@ -565,7 +565,7 @@ def test_is_build_stale_tsconfig_change_triggers_rebuild(tmp_path):
     """tsconfig.json newer than the marker → stale."""
     import time
 
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     _write_marker(tmp_path)
     time.sleep(0.02)
@@ -578,7 +578,7 @@ def test_is_build_stale_tailwind_config_triggers_rebuild(tmp_path):
     """tailwind.config.ts newer than the marker → stale."""
     import time
 
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     _write_marker(tmp_path)
     time.sleep(0.02)
@@ -591,7 +591,7 @@ def test_is_build_stale_postcss_config_triggers_rebuild(tmp_path):
     """postcss.config.cjs newer than the marker → stale."""
     import time
 
-    from lionhub.cli.studio import _is_build_stale
+    from lionhub.serve.cli.studio import _is_build_stale
 
     _write_marker(tmp_path)
     time.sleep(0.02)
@@ -605,14 +605,14 @@ def test_is_build_stale_postcss_config_triggers_rebuild(tmp_path):
 
 def test_needs_npm_install_when_node_modules_absent(tmp_path):
     """node_modules/ absent → install required."""
-    from lionhub.cli.studio import _needs_npm_install
+    from lionhub.serve.cli.studio import _needs_npm_install
 
     assert _needs_npm_install(tmp_path) is True
 
 
 def test_needs_npm_install_when_vite_bin_absent(tmp_path):
     """node_modules/ present but .bin/vite absent → install required."""
-    from lionhub.cli.studio import _needs_npm_install
+    from lionhub.serve.cli.studio import _needs_npm_install
 
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "node_modules" / ".bin").mkdir()
@@ -625,7 +625,7 @@ def test_needs_npm_install_false_when_up_to_date(tmp_path):
     """node_modules/ with vite + package.json older than install marker → no install."""
     import time
 
-    from lionhub.cli.studio import _needs_npm_install
+    from lionhub.serve.cli.studio import _needs_npm_install
 
     # Create package.json first (older)
     (tmp_path / "package.json").write_text("{}")
@@ -646,7 +646,7 @@ def test_needs_npm_install_when_package_json_newer(tmp_path):
     """package.json newer than install marker → install required."""
     import time
 
-    from lionhub.cli.studio import _needs_npm_install
+    from lionhub.serve.cli.studio import _needs_npm_install
 
     # Create install marker first (older)
     nm = tmp_path / "node_modules"
@@ -668,7 +668,7 @@ def test_needs_npm_install_when_package_lock_newer(tmp_path):
     """package-lock.json newer than install marker → install required."""
     import time
 
-    from lionhub.cli.studio import _needs_npm_install
+    from lionhub.serve.cli.studio import _needs_npm_install
 
     nm = tmp_path / "node_modules"
     nm.mkdir()
@@ -688,7 +688,7 @@ def test_ensure_frontend_built_installs_when_vite_missing(tmp_path, monkeypatch)
     """_ensure_frontend_built triggers npm install when .bin/vite is absent."""
     from unittest.mock import MagicMock, patch
 
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     # Set up a node_modules without vite (triggers _needs_npm_install)
     nm = tmp_path / "node_modules"
@@ -725,7 +725,7 @@ def test_ensure_frontend_built_installs_when_vite_missing(tmp_path, monkeypatch)
 
 def test_vite_dev_argv_binds_the_same_host_used_for_the_printed_url():
     """The spawn argv and the printed URL must come from one host/port source of truth."""
-    from lionhub.cli.studio import _vite_dev_argv
+    from lionhub.serve.cli.studio import _vite_dev_argv
 
     argv = _vite_dev_argv(5174, "127.0.0.1")
 
@@ -733,7 +733,7 @@ def test_vite_dev_argv_binds_the_same_host_used_for_the_printed_url():
 
 
 def test_vite_dev_argv_uses_the_given_host_not_a_hardcoded_default():
-    from lionhub.cli.studio import _vite_dev_argv
+    from lionhub.serve.cli.studio import _vite_dev_argv
 
     argv = _vite_dev_argv(3000, "0.0.0.0")
 
@@ -742,7 +742,7 @@ def test_vite_dev_argv_uses_the_given_host_not_a_hardcoded_default():
 
 
 def test_parse_vite_local_url_extracts_bound_address():
-    from lionhub.cli.studio import _parse_vite_local_url
+    from lionhub.serve.cli.studio import _parse_vite_local_url
 
     line = "  ➜  Local:   http://127.0.0.1:5174/\n"
 
@@ -752,7 +752,7 @@ def test_parse_vite_local_url_extracts_bound_address():
 def test_parse_vite_local_url_reflects_an_auto_incremented_port():
     """Vite bumps to the next free port when the requested one is taken; the
     parsed URL must reflect that real port, not the one that was requested."""
-    from lionhub.cli.studio import _parse_vite_local_url
+    from lionhub.serve.cli.studio import _parse_vite_local_url
 
     line = "  ➜  Local:   http://127.0.0.1:5175/\n"
 
@@ -760,7 +760,7 @@ def test_parse_vite_local_url_reflects_an_auto_incremented_port():
 
 
 def test_parse_vite_local_url_ignores_unrelated_lines():
-    from lionhub.cli.studio import _parse_vite_local_url
+    from lionhub.serve.cli.studio import _parse_vite_local_url
 
     assert _parse_vite_local_url("  VITE v5.4.10  ready in 328 ms\n") is None
     assert _parse_vite_local_url("  ➜  Network: use --host to expose\n") is None
@@ -771,7 +771,7 @@ def test_parse_vite_local_url_strips_ansi_color_codes():
     """npx/Vite can color this line even with a piped (non-TTY) stdout; the
     escape codes sit right around `Local:` and the URL and must not defeat
     the match, or every colored run silently falls back to a guessed URL."""
-    from lionhub.cli.studio import _parse_vite_local_url
+    from lionhub.serve.cli.studio import _parse_vite_local_url
 
     line = "  \x1b[32m➜\x1b[39m  \x1b[1mLocal\x1b[22m:   \x1b[36mhttp://127.0.0.1:5174/\x1b[39m\n"
 
@@ -781,7 +781,7 @@ def test_parse_vite_local_url_strips_ansi_color_codes():
 def test_await_vite_ready_url_returns_the_parsed_startup_address():
     from unittest.mock import MagicMock
 
-    from lionhub.cli.studio import _await_vite_ready_url
+    from lionhub.serve.cli.studio import _await_vite_ready_url
 
     proc = MagicMock()
     proc.stdout = iter(
@@ -802,7 +802,7 @@ def test_await_vite_ready_url_returns_none_when_nothing_matches():
     may be listening on."""
     from unittest.mock import MagicMock
 
-    from lionhub.cli.studio import _await_vite_ready_url
+    from lionhub.serve.cli.studio import _await_vite_ready_url
 
     proc = MagicMock()
     proc.stdout = iter(["  some unrelated output\n"])
@@ -818,7 +818,7 @@ def test_await_vite_ready_url_uses_the_first_of_multiple_network_lines(caplog):
     told a choice was made rather than silently picking one."""
     from unittest.mock import MagicMock
 
-    from lionhub.cli.studio import _await_vite_ready_url
+    from lionhub.serve.cli.studio import _await_vite_ready_url
 
     proc = MagicMock()
     proc.stdout = iter(
@@ -838,8 +838,8 @@ def test_await_vite_ready_url_uses_the_first_of_multiple_network_lines(caplog):
 
 def test_studio_cli_uses_core_log_channel_emitters():
     from lionagi import _log_channels
-    from lionhub.cli import studio as studio_cli
     from lionhub.orchestration import console
+    from lionhub.serve.cli import studio as studio_cli
 
     assert studio_cli.log_error is _log_channels.log_error
     assert studio_cli.warn is _log_channels.warn
@@ -856,7 +856,7 @@ def test_launch_vite_dev_passes_host_through_to_argv_and_returns_the_bound_url(
     Wiring only — a non-loopback host selects `Network:`, not `Local:` (see
     the real-Vite tests for that host-selection claim proved against actual
     Vite output rather than a hand-built fixture)."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     captured_argv = {}
 
@@ -886,7 +886,7 @@ def test_launch_vite_dev_passes_host_through_to_argv_and_returns_the_bound_url(
 
 def test_start_local_propagates_selected_backend_to_vite(tmp_path, monkeypatch):
     """The ``--port`` value in scope at the CLI call site must reach the launcher."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     monkeypatch.setattr(studio_mod.shutil, "which", lambda name: "/usr/bin/node")
     monkeypatch.setattr(studio_mod, "_ensure_apps_importable", lambda: True)
@@ -917,7 +917,7 @@ class _ViteProc:
 def _dev_launch(
     tmp_path, monkeypatch, frontend_url, *, host="127.0.0.1", health=None, probe=None, served=None
 ):
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     monkeypatch.setattr(studio_mod.shutil, "which", lambda name: "/usr/bin/node")
     monkeypatch.setattr(studio_mod, "_ensure_apps_importable", lambda: True)
@@ -1024,7 +1024,7 @@ def test_a_dev_launch_looks_for_a_running_daemon_on_the_host_it_binds(
     ],
 )
 def test_the_health_probe_asks_where_a_client_reaches_the_bind_host(monkeypatch, host, url):
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
     from lionagi.ln import _ssrf
 
     asked = []
@@ -1159,7 +1159,7 @@ def test_a_dev_link_opens_its_page_at_a_host_the_daemon_answers(
 def test_the_health_probe_gives_up_on_a_daemon_that_trickles_its_answer():
     import threading
 
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     stop = threading.Event()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1195,7 +1195,7 @@ def test_the_health_probe_gives_up_on_a_daemon_that_trickles_its_answer():
 def test_the_health_probe_reads_a_malformed_http_answer_as_no_daemon(monkeypatch):
     import http.client
 
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
     from lionagi.ln import _ssrf
 
     def malformed(target, timeout=None):
@@ -1207,7 +1207,7 @@ def test_the_health_probe_reads_a_malformed_http_answer_as_no_daemon(monkeypatch
 
 
 def test_the_health_probe_still_raises_an_error_it_does_not_expect(monkeypatch):
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
     from lionagi.ln import _ssrf
 
     def broken(target, timeout=None):
@@ -1221,7 +1221,7 @@ def test_the_health_probe_still_raises_an_error_it_does_not_expect(monkeypatch):
 
 def test_launch_vite_dev_passes_selected_backend_to_proxy_env(tmp_path, monkeypatch):
     """The backend selected by ``li studio --dev`` must become Vite's proxy target."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     captured_env = {}
 
@@ -1249,7 +1249,7 @@ def test_launch_vite_dev_passes_selected_backend_to_proxy_env(tmp_path, monkeypa
 
 def test_launch_vite_dev_preserves_operator_proxy_override(tmp_path, monkeypatch):
     """An explicit operator target wins over the CLI-selected host and port."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     captured_env = {}
 
@@ -1277,7 +1277,7 @@ def test_launch_vite_dev_preserves_operator_proxy_override(tmp_path, monkeypatch
 
 
 def test_launch_vite_dev_warns_and_returns_none_when_npx_missing(tmp_path, monkeypatch, capsys):
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     def fake_popen(argv, **kwargs):
         raise FileNotFoundError("npx not found")
@@ -1300,7 +1300,7 @@ def test_vite_proxy_reaches_marker_on_cli_selected_non_default_port(monkeypatch)
     import urllib.request
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     marker = "studio-dev-port-3136"
 
@@ -1352,7 +1352,7 @@ def test_launch_vite_dev_resolves_the_incremented_port_on_a_real_collision():
     the next free one; the returned URL must carry that real port, not the
     one that was requested (a hand-built fixture can't prove auto-increment
     actually happens — this starts a real process against an occupied port)."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     requested_port = _free_port()
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1378,7 +1378,7 @@ def test_launch_vite_dev_resolves_the_incremented_port_on_a_real_collision():
 def test_launch_vite_dev_selects_the_local_url_for_a_loopback_host():
     """Real Vite launched with --host 127.0.0.1 only ever prints a Local:
     line; the loopback URL must be selected."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     proc = None
     try:
@@ -1400,7 +1400,7 @@ def test_launch_vite_dev_selects_a_lan_url_for_the_wildcard_host():
     line and one or more LAN Network: lines; the selected URL must be a
     Network: address, not the loopback Local: line (r1 finding: LAN binding
     was silently reduced to loopback because only Local: was ever parsed)."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     proc = None
     try:
@@ -1420,7 +1420,7 @@ def test_await_vite_ready_url_returns_fast_and_reports_exit_code_on_early_exit(c
     thread learns about EOF promptly, and the caller reports the exit code
     plus captured output instead of a generic "check the output" message
     with nothing to check."""
-    from lionhub.cli.studio import _await_vite_ready_url
+    from lionhub.serve.cli.studio import _await_vite_ready_url
 
     proc = subprocess.Popen(  # noqa: S603
         [sys.executable, "-c", "print('starting up'); import sys; sys.exit(3)"],
@@ -1445,7 +1445,7 @@ def test_host_is_loopback_classifies_numeric_and_named_loopback_hosts():
     """The whole 127.0.0.0/8 block is loopback, not just 127.0.0.1, and so
     is any ::1 form — classification must be semantic (via `ipaddress`),
     not an exact-string allowlist."""
-    from lionhub.cli.studio import _host_is_loopback
+    from lionhub.serve.cli.studio import _host_is_loopback
 
     assert _host_is_loopback("127.0.0.1") is True
     assert _host_is_loopback("127.0.0.2") is True
@@ -1456,7 +1456,7 @@ def test_host_is_loopback_classifies_numeric_and_named_loopback_hosts():
 
 
 def test_host_is_loopback_rejects_wildcard_lan_and_hostname():
-    from lionhub.cli.studio import _host_is_loopback
+    from lionhub.serve.cli.studio import _host_is_loopback
 
     assert _host_is_loopback("0.0.0.0") is False
     assert _host_is_loopback("::") is False
@@ -1470,7 +1470,7 @@ def test_launch_vite_dev_selects_the_local_url_for_a_non_default_loopback_host(
     """127.0.0.2 is a valid loopback address but not the exact string
     "127.0.0.1"; it must still route to the Local: parser and resolve to
     the address Vite actually printed."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     class FakeProc:
         def __init__(self):
@@ -1489,7 +1489,7 @@ def test_backend_starts_from_a_pip_install_without_apps_tree(monkeypatch, capsys
     """A wheel install has no apps/ tree next to the package. The backend app
     lives inside the package itself, so backend-only startup (the default
     hosted mode and --no-frontend) must not be gated on finding the repo."""
-    import lionhub.cli.studio as studio_mod
+    import lionhub.serve.cli.studio as studio_mod
 
     monkeypatch.setattr(studio_mod, "_find_repo_root", lambda: None)
     with _stubbed_serve() as mock_run:
@@ -1516,7 +1516,7 @@ def fresh_launch(monkeypatch):
 
 
 def _interactive(monkeypatch):
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
@@ -1563,7 +1563,7 @@ def test_studio_prints_the_paired_link_when_it_opens_no_browser(capsys, fresh_la
 
 
 def test_studio_pairs_with_a_daemon_already_running_instead_of_starting_one(monkeypatch, capsys):
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     _interactive(monkeypatch)
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", lambda port: "code-from-daemon")
@@ -1578,7 +1578,7 @@ def test_studio_pairs_with_a_daemon_already_running_instead_of_starting_one(monk
 
 
 def test_studio_stops_when_a_running_daemon_will_not_pair(monkeypatch, capsys):
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     def _refuse(port):
         raise studio_cli._PairingRefusedError("HTTP 404")
@@ -1706,7 +1706,7 @@ def test_a_daemon_on_the_port_that_does_not_hold_the_sockets_key_gets_no_code(
     import secrets
 
     import lionagi.studio.reconnect as reconnect
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     other_key = secrets.token_bytes(32)
     routes = {("GET", "/health"): (200, {"status": "ok"})}
@@ -1728,7 +1728,7 @@ def test_a_listener_relaying_the_sockets_daemon_from_another_port_gets_no_code(
     """A listener that forwards the challenge to the real daemon gets back a proof
     for the real daemon's own port, which is not the port the launcher asked."""
     import lionagi.studio.reconnect as reconnect
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     routes = {("GET", "/health"): (200, {"status": "ok"})}
     with _socket_daemon(monkeypatch) as channel:
@@ -1743,7 +1743,7 @@ def test_a_listener_relaying_the_sockets_daemon_from_another_port_gets_no_code(
 
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
 def test_a_daemon_that_answers_no_proof_gets_no_code(daemon_probe, monkeypatch):
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     with _socket_daemon(monkeypatch):
         with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
@@ -1755,7 +1755,7 @@ def test_a_daemon_that_answers_no_proof_gets_no_code(daemon_probe, monkeypatch):
 def test_a_proof_that_is_not_ascii_is_refused_like_a_wrong_one(daemon_probe, monkeypatch):
     """compare_digest raises on a non-ASCII string, which would end the launch with a traceback
     rather than the refusal."""
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     routes = {("GET", "/health"): (200, {"status": "ok"})}
     with _socket_daemon(monkeypatch):
@@ -1767,7 +1767,7 @@ def test_a_proof_that_is_not_ascii_is_refused_like_a_wrong_one(daemon_probe, mon
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
 def test_a_reconnect_socket_another_user_serves_gets_no_code(daemon_probe, monkeypatch):
     import lionagi.studio.reconnect as reconnect
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     other_uid = 0 if os.getuid() != 0 else 1
     routes = {("GET", "/health"): (200, {"status": "ok"})}
@@ -1789,7 +1789,7 @@ def test_li_studio_on_a_port_whose_daemon_does_not_own_the_socket_exits_1_withou
     import secrets
 
     import lionagi.studio.reconnect as reconnect
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", daemon_probe)
     routes = {("GET", "/health"): (200, {"status": "ok"})}
@@ -1809,7 +1809,7 @@ def test_li_studio_on_a_port_whose_daemon_does_not_own_the_socket_exits_1_withou
 
 def test_a_running_daemon_without_a_reconnect_socket_refuses(daemon_probe, monkeypatch, tmp_path):
     import lionagi.studio.reconnect as reconnect
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     monkeypatch.setattr(reconnect, "default_socket_path", lambda *args: tmp_path / "absent.sock")
     with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
@@ -1819,7 +1819,7 @@ def test_a_running_daemon_without_a_reconnect_socket_refuses(daemon_probe, monke
 
 def test_a_platform_without_unix_sockets_says_to_restart_the_daemon(daemon_probe, monkeypatch):
     import lionagi.studio.reconnect as reconnect
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     monkeypatch.setattr(reconnect, "unix_sockets_supported", lambda: False)
     with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
@@ -1844,7 +1844,7 @@ def test_nothing_listening_is_not_a_daemon(daemon_probe):
 
 def test_an_older_daemon_without_a_reconnect_socket_refuses(daemon_probe, monkeypatch, tmp_path):
     import lionagi.studio.reconnect as reconnect
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
 
     monkeypatch.setattr(reconnect, "default_socket_path", lambda *args: tmp_path / "absent.sock")
     with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
