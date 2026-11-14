@@ -13,7 +13,15 @@ package, so ``from lionhub.serve.cli.status import x`` and ``from .status import
 from __future__ import annotations
 
 import ast
+from importlib.util import resolve_name
 from pathlib import Path
+
+_DYNAMIC_COMMAND_IMPORT_PROBES = (
+    "import importlib; importlib.import_module('lionhub.serve.cli.status')",
+    "from importlib import import_module; import_module('lionhub.serve.cli.status')",
+    "__import__('lionhub.serve.cli.orchestrate')",
+    "from importlib import import_module as load; load('.status', 'lionhub.serve.cli')",
+)
 
 #: One-line imports of a command module or of the orchestrate package, as they can be written
 #: from a module that lives directly in ``lionhub/src/lionhub/serve/cli``.
@@ -26,6 +34,7 @@ COMMAND_IMPORT_PROBES = (
     "from lionhub.serve.cli.orchestrate import _x",
     "from .orchestrate import _x",
     "from . import orchestrate",
+    *_DYNAMIC_COMMAND_IMPORT_PROBES,
 )
 
 
@@ -36,7 +45,65 @@ ORCHESTRATION_COMMAND_IMPORT_PROBES = (
     "import lionhub.serve.cli.status",
     "from lionhub.serve.cli.orchestrate import _x",
     "from lionhub.serve.cli import orchestrate",
+    *_DYNAMIC_COMMAND_IMPORT_PROBES,
 )
+
+
+def _call_argument(call: ast.Call, index: int, name: str) -> ast.expr | None:
+    if index < len(call.args):
+        return call.args[index]
+    return next((argument.value for argument in call.keywords if argument.arg == name), None)
+
+
+def _dynamic_imports(nodes: list[ast.AST], package: str) -> set[str]:
+    importlib_names: set[str] = set()
+    import_module_names: set[str] = set()
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            importlib_names.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "importlib"
+            )
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "importlib":
+            import_module_names.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "import_module"
+            )
+
+    imported: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        builtin = isinstance(function, ast.Name) and function.id == "__import__"
+        by_name = isinstance(function, ast.Name) and function.id in import_module_names
+        qualified = (
+            isinstance(function, ast.Attribute)
+            and function.attr == "import_module"
+            and isinstance(function.value, ast.Name)
+            and function.value.id in importlib_names
+        )
+        if not (builtin or by_name or qualified):
+            continue
+        name = _call_argument(node, 0, "name")
+        if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
+            continue
+        if not name.value.startswith("."):
+            if name.value:
+                imported.add(name.value)
+            continue
+        if builtin:
+            continue
+        anchor = _call_argument(node, 1, "package")
+        if anchor is None or isinstance(anchor, ast.Name) and anchor.id == "__package__":
+            package_name = package
+        elif isinstance(anchor, ast.Constant) and isinstance(anchor.value, str):
+            package_name = anchor.value
+        else:
+            continue
+        try:
+            imported.add(resolve_name(name.value, package_name))
+        except ImportError:
+            continue
+    return imported
 
 
 def resolved_imports(source: str | Path, package: str) -> set[str]:
@@ -45,10 +112,14 @@ def resolved_imports(source: str | Path, package: str) -> set[str]:
     Relative imports are resolved against ``package``, the package that holds the module.
     ``from a.b import c`` yields both ``a.b`` and ``a.b.c``, so a command module imported by
     name is visible as well as one imported by path.
+    Literal dynamic imports are also included. Relative ``import_module`` calls use a
+    literal package or the source package. Computed arguments and names that cannot be
+    resolved statically, including rebinding imported names, are outside this check.
     """
     parts = package.split(".")
     imported: set[str] = set()
-    for node in ast.walk(ast.parse(Path(source).read_text())):
+    nodes = list(ast.walk(ast.parse(Path(source).read_text())))
+    for node in nodes:
         if isinstance(node, ast.ImportFrom):
             if node.level:
                 anchor = parts[: len(parts) - (node.level - 1)]
@@ -59,7 +130,7 @@ def resolved_imports(source: str | Path, package: str) -> set[str]:
             imported.update(f"{base}.{alias.name}" for alias in node.names)
         elif isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
-    return imported
+    return imported | _dynamic_imports(nodes, package)
 
 
 def command_module_imports(imported: set[str]) -> set[str]:

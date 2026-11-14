@@ -64,6 +64,57 @@ def test_orchestration_relative_import_does_not_name_a_command(tmp_path: Path, l
     assert command_module_imports(imported) == set()
 
 
+@pytest.mark.parametrize("package", ["lionhub.serve.cli", "lionhub.orchestration"])
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "import importlib; importlib.import_module('lionhub.serve.cli.status')",
+            "lionhub.serve.cli.status",
+        ),
+        (
+            "from importlib import import_module; import_module('lionhub.serve.cli.status')",
+            "lionhub.serve.cli.status",
+        ),
+        ("__import__('lionhub.serve.cli.orchestrate')", "lionhub.serve.cli.orchestrate"),
+        (
+            "from importlib import import_module as load; load('lionhub.serve.cli.status')",
+            "lionhub.serve.cli.status",
+        ),
+        (
+            "import importlib as il; il.import_module('.status', 'lionhub.serve.cli')",
+            "lionhub.serve.cli.status",
+        ),
+        (
+            "from importlib import import_module; import_module('.status', package=__package__)",
+            "{package}.status",
+        ),
+        (
+            "from importlib import import_module; import_module(name='.status')",
+            "{package}.status",
+        ),
+    ],
+)
+def test_literal_dynamic_imports_resolve(tmp_path: Path, package: str, line: str, expected: str):
+    imported = resolved_imports(_write(tmp_path, line + "\n"), package)
+    assert expected.format(package=package) in imported
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "import importlib; importlib.import_module(target)",
+        "from importlib import import_module; import_module('.status', custom_package)",
+        "import loader; loader.import_module('lionhub.serve.cli.status')",
+        "def import_module(name): pass\nimport_module('lionhub.serve.cli.status')",
+        "import importlib; importlib.import_module('....status', 'lionhub.serve.cli')",
+    ],
+)
+def test_unresolved_calls_do_not_report_command_imports(tmp_path: Path, line: str):
+    imported = resolved_imports(_write(tmp_path, line + "\n"), "lionhub.serve.cli")
+    assert command_module_imports(imported) == set()
+
+
 @pytest.mark.parametrize(
     "line",
     [

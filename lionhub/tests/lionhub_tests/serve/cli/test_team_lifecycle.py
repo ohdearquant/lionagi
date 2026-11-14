@@ -16,7 +16,7 @@ import pytest
 
 from lionhub.serve.cli import team
 
-from ._import_guard import COMMAND_IMPORT_PROBES, source_with_line
+from ._import_guard import COMMAND_IMPORT_PROBES, resolved_imports, source_with_line
 
 
 @pytest.fixture(autouse=True)
@@ -396,14 +396,12 @@ class TestReadTeamJson:
 
         assert team.read_team_json is _team_service.read_team_json
 
-        tree = ast.parse(Path(_team_service.__file__).read_text())
-        imported: set[str] = set()
+        source = Path(_team_service.__file__)
+        tree = ast.parse(source.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 assert node.level == 0, "relative import in the team-service module"
-                imported.add(node.module or "")
-            elif isinstance(node, ast.Import):
-                imported.update(alias.name for alias in node.names)
+        imported = resolved_imports(source, _team_service.__package__)
         assert imported, "expected the module to import something"
         cli = "lionhub.serve.cli"
         assert not any(
