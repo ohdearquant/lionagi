@@ -20,7 +20,7 @@ except ModuleNotFoundError as exc:
 else:
     _catalog_import_error = None
 
-from lionagi._log_channels import log_error
+from lionagi._log_channels import log_error, mask_credentials
 
 # The canonical exit constant lives in the module whose absence this startup path reports.
 _STARTUP_ENVIRONMENT_EXIT = 78
@@ -531,8 +531,6 @@ def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int, argv: 
     )
     log_error(message)
     if "--machine" in _args_before_sentinel(argv):
-        from lionagi.state.engine import mask_credentials
-
         from ._machine_envelope import _encode_envelope, _failure
 
         envelope = _failure("unavailable", mask_credentials(message), {"exit_code": exit_code})

@@ -7,10 +7,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-# Incremented only by a change that could break a conforming consumer.
+# The one place the current contract version lives. Incremented only by a change
+# that could break a conforming consumer — which includes any field that changes
+# what an existing field means to a reader that ignores it.
 _CONTRACT_VERSION = 1
 
-# Run status has its own vocabulary and does not belong in this closed set.
+# Closed, on purpose: this vocabulary describes our own refusal to answer, which
+# we control, so a consumer may branch on it and a new kind costs a version
+# increment. Run status is the opposite case and is not modelled here.
 _ERROR_KINDS = ("not_found", "invalid_input", "conflict", "unavailable", "internal")
 
 

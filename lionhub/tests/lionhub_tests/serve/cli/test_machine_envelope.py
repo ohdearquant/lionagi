@@ -11,6 +11,7 @@ decides which of the exit status and the envelope answers.
 
 from __future__ import annotations
 
+import builtins
 import errno
 import importlib
 import json
@@ -390,7 +391,10 @@ def test_an_unusable_environment_exits_78_with_the_normal_failure_shape(capfd, m
     assert _one_object(capfd.readouterr().out) == startup_envelope
 
 
-def test_startup_envelope_matches_the_masked_stderr_summary(capfd, monkeypatch):
+@pytest.mark.parametrize("block_masker_reimport", [False, True])
+def test_startup_envelope_matches_the_masked_stderr_summary(
+    capfd, monkeypatch, block_masker_reimport
+):
     def _missing_machine():
         raise MissingFeatureError(
             feature="machine",
@@ -400,7 +404,17 @@ def test_startup_envelope_matches_the_masked_stderr_summary(capfd, monkeypatch):
 
     monkeypatch.setattr(cli_main, "_load_machine", _missing_machine)
 
-    assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
+    original_import = builtins.__import__
+
+    def _import_without_masker(name, *args, **kwargs):
+        if name == "lionagi.state.engine":
+            raise ModuleNotFoundError(name, name=name)
+        return original_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as imports:
+        if block_masker_reimport:
+            imports.setattr(builtins, "__import__", _import_without_masker)
+        assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
     captured = capfd.readouterr()
     summary = captured.err.splitlines()[-1].removeprefix("error: ")
     assert "password=***" in summary
