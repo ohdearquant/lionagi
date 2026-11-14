@@ -213,19 +213,26 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
 # here only while the head holds no such code; once it exists the entry fails and must go.
 PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {
     "ADR-0141-recorded-chain-decisions-for-schedule-runs.md": (
-        "tests/studio/test_scheduler_engine.py::"
+        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
         "test_normal_path_terminal_write_records_chain_decision",
-        "tests/studio/test_scheduler_engine.py::"
+        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
         "test_recovery_terminal_write_records_chain_decision",
-        "tests/studio/test_scheduler_engine.py::test_selection_is_none_at_depth_cap",
+        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
+        "test_selection_is_none_at_depth_cap",
         "tests/state/lifecycle/test_schedule_adapter.py::"
         "test_schedule_run_status_write_keeps_reason_columns",
-        "tests/studio/test_scheduler_engine.py::test_lost_terminal_cas_does_not_chain_normal_path",
-        "tests/cli/test_monitor_run.py::test_chain_decision_none_returns_without_sleep",
-        "tests/cli/test_monitor_run.py::test_chain_decision_branch_follows_child",
-        "tests/cli/test_monitor_run.py::test_chain_decision_survives_schedule_edit",
-        "tests/cli/test_monitor_run.py::"
-        "test_chain_decision_unknown_version_is_legacy_with_one_warning",
+        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
+        "test_lost_terminal_cas_does_not_chain_normal_path",
+        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
+        "test_lost_terminal_cas_does_not_chain_recovery",
+        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
+        "test_chain_decision_none_returns_without_sleep",
+        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
+        "test_chain_decision_branch_follows_child",
+        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
+        "test_chain_decision_branch_with_no_chain_returns_without_sleep",
+        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
+        "test_chain_decision_survives_schedule_edit",
     ),
 }
 

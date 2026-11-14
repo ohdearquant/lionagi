@@ -435,6 +435,10 @@ Exact outcome semantics:
   reconciliation may classify stale records, but does not recreate the missed subprocess from that
   row.
 
+[ADR-0141 D2](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d2-a-lost-terminal-compare-and-set-never-chains)
+proposes continuing bookkeeping and skipping the chained follow-up when a schedule run loses the
+terminal compare-and-set.
+
 Why this way: subprocess isolation keeps a scheduled action out of Studio's Python runtime and lets
 the existing CLI remain the action adapter. It gives up durable lease recovery and makes stable cwd
 and executable resolution load-bearing.
@@ -449,6 +453,12 @@ exit_code == 0 and on_success present → on_success
 exit_code != 0 and on_fail present    → on_fail
 otherwise                             → no continuation
 ```
+
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write) proposes selecting the branch from the resolved invocation status.
+Its terminal write also keeps a recorded decision with the run. A decided row stays terminal.
+On the next fire, `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._evaluate_due_fire`
+allocates a new run ID and `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._write_occurrence`
+inserts that fire's row.
 
 The selected object overlays the parent schedule. Its `kind` or `action_kind` replaces
 `action_kind`; `model`, `prompt`, `agent`, and `playbook` map to their corresponding action fields.
