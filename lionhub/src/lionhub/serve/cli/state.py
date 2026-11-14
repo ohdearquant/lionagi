@@ -1050,17 +1050,23 @@ async def _prune(
 
     from sqlalchemy import text
 
+    from lionhub.orchestration.scheduler.db_maintenance import (
+        _non_array_progression_sql,
+        _progression_members,
+        _prune_temp_table,
+        _retained_message_ids_sql,
+    )
+
     counts: dict[str, Any] = {"sessions": 0, "branches": 0, "messages": 0}
 
     async with StateDB() as db:
-        if db.dialect == "sqlite":
-            temp_schema = "temp"
-            members = "json_each(p.collection) AS members"
-        elif db.dialect == "postgresql":
-            temp_schema = "pg_temp"
-            members = "jsonb_array_elements_text(p.collection::jsonb) AS members(value)"
-        else:
+        if db.dialect not in ("sqlite", "postgresql"):
             raise ValueError(f"State prune does not support {db.dialect!r}")
+        victims = _prune_temp_table(db.dialect, "prune_victims")
+        orphans = _prune_temp_table(db.dialect, "prune_orphan_progressions")
+        direct = _prune_temp_table(db.dialect, "prune_direct_messages")
+        members = _progression_members(db.dialect)
+        non_array = _non_array_progression_sql(db.dialect)
 
         try:
             async with db._tx() as conn:
@@ -1083,13 +1089,16 @@ async def _prune(
                 # Keep one globally deduplicated set for all subsequent steps:
                 # collecting and deleting one chunk at a time can misclassify
                 # progressions or messages shared by multiple victim sessions.
-                await conn.execute(text(f"DROP TABLE IF EXISTS {temp_schema}.prune_victims"))
+                await conn.execute(text(f"DROP TABLE IF EXISTS {victims}"))
                 await conn.execute(
-                    text("CREATE TEMPORARY TABLE prune_victims (id TEXT PRIMARY KEY)")
+                    text(
+                        f"CREATE TEMPORARY TABLE {victims} "
+                        "(id TEXT PRIMARY KEY, deferred INTEGER NOT NULL DEFAULT 0)"
+                    )
                 )
                 for start in range(0, len(victim_ids), _PRUNE_VICTIM_INSERT_BATCH_SIZE):
                     await conn.execute(
-                        text("INSERT INTO prune_victims (id) VALUES (:id)"),
+                        text(f"INSERT INTO {victims} (id) VALUES (:id)"),  # noqa: S608
                         [
                             {"id": value}
                             for value in victim_ids[start : start + _PRUNE_VICTIM_INSERT_BATCH_SIZE]
@@ -1099,7 +1108,7 @@ async def _prune(
                 # that exact set before examining or deleting any dependents.
                 await conn.execute(
                     text(
-                        f"DELETE FROM prune_victims WHERE id NOT IN (SELECT id {_PRUNE_VICTIMS})"  # noqa: S608
+                        f"DELETE FROM {victims} WHERE id NOT IN (SELECT id {_PRUNE_VICTIMS})"  # noqa: S608
                     ),
                     {"keep_n": keep_n, "cutoff": cutoff},
                 )
@@ -1117,7 +1126,7 @@ async def _prune(
                         await conn.execute(
                             text(
                                 f"SELECT COUNT(DISTINCT session_id) FROM {table} "  # noqa: S608
-                                "WHERE session_id IN (SELECT id FROM prune_victims)"
+                                f"WHERE session_id IN (SELECT id FROM {victims})"
                             )
                         )
                     ).scalar_one()
@@ -1125,23 +1134,23 @@ async def _prune(
                         by_reference[table] = count
                 if by_reference:
                     referenced = " OR ".join(
-                        f"prune_victims.id IN (SELECT session_id FROM {table} "  # noqa: S608
+                        f"id IN (SELECT session_id FROM {table} "  # noqa: S608
                         "WHERE session_id IS NOT NULL)"
                         for table in retained_tables
                     )
                     skipped = (
                         await conn.execute(
-                            text(f"SELECT COUNT(*) FROM prune_victims WHERE {referenced}")  # noqa: S608
+                            text(f"SELECT COUNT(*) FROM {victims} WHERE {referenced}")  # noqa: S608
                         )
                     ).scalar_one()
                     counts["skipped_sessions"] = skipped
                     counts["skipped_by_reference"] = by_reference
                     await conn.execute(
-                        text(f"DELETE FROM prune_victims WHERE {referenced}")  # noqa: S608
+                        text(f"DELETE FROM {victims} WHERE {referenced}")  # noqa: S608
                     )
 
                 victim_count = (
-                    await conn.execute(text("SELECT COUNT(*) FROM prune_victims"))
+                    await conn.execute(text(f"SELECT COUNT(*) FROM {victims}"))  # noqa: S608
                 ).scalar_one()
                 if not victim_count:
                     raise _PreviewOnlyError(counts)
@@ -1150,8 +1159,8 @@ async def _prune(
                     (
                         await conn.execute(
                             text(
-                                "SELECT COUNT(*) AS n FROM branches "
-                                "WHERE session_id IN (SELECT id FROM prune_victims)"
+                                "SELECT COUNT(*) AS n FROM branches "  # noqa: S608
+                                f"WHERE session_id IN (SELECT id FROM {victims})"
                             )
                         )
                     )
@@ -1159,52 +1168,62 @@ async def _prune(
                     .first()["n"]
                 )
 
-                # progressions carry no ownership edge back to their session/
-                # branch, so they're collected here (while owners are still
-                # readable) into a scratch table rather than a parameter list,
-                # to avoid the bound-parameter ceiling on a large prune.
-                await conn.execute(
-                    text(f"DROP TABLE IF EXISTS {temp_schema}.prune_orphan_progressions")
-                )
-                await conn.execute(
-                    text("CREATE TEMPORARY TABLE prune_orphan_progressions (id TEXT PRIMARY KEY)")
+                # Retain the messages of any victim with a non-array progression.
+                # Record those owners and their references before the session cascade.
+                owner_progressions = (
+                    "SELECT v.id AS owner_id, s.progression_id, v.deferred"  # noqa: S608
+                    f" FROM sessions s JOIN {victims} v ON v.id = s.id"
+                    " UNION ALL SELECT v.id, b.progression_id, v.deferred"
+                    f" FROM branches b JOIN {victims} v ON v.id = b.session_id"
                 )
                 await conn.execute(
                     text(
-                        "INSERT INTO prune_orphan_progressions (id) "
-                        "SELECT progression_id FROM sessions WHERE id IN (SELECT id FROM prune_victims) "
-                        "  AND progression_id IS NOT NULL "
-                        "UNION "
-                        "SELECT progression_id FROM branches WHERE session_id IN (SELECT id FROM prune_victims)"
-                        "  AND progression_id IS NOT NULL"
+                        f"UPDATE {victims} SET deferred = 1 WHERE id IN ("  # noqa: S608
+                        f" SELECT owner_id FROM ({owner_progressions}) AS owner"
+                        " JOIN progressions p ON p.id = owner.progression_id"
+                        f" WHERE {non_array})"
+                    )
+                )
+                await conn.execute(text(f"DROP TABLE IF EXISTS {orphans}"))
+                await conn.execute(
+                    text(
+                        f"CREATE TEMPORARY TABLE {orphans} "
+                        "(id TEXT PRIMARY KEY, deferred INTEGER NOT NULL)"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        f"INSERT INTO {orphans} (id, deferred) "  # noqa: S608
+                        "SELECT owner.progression_id, MAX(owner.deferred)"
+                        f" FROM ({owner_progressions}) AS owner"
+                        " WHERE owner.progression_id IS NOT NULL GROUP BY owner.progression_id"
                     )
                 )
 
                 # Direct message references disappear with their owner and may
-                # not also occur in a progression. Keep them as candidates
-                # until survivor references can be checked after the cascade.
+                # not occur in a progression. An ID can be both a candidate and
+                # protected if its owners have different progression shapes.
+                await conn.execute(text(f"DROP TABLE IF EXISTS {direct}"))
                 await conn.execute(
-                    text(f"DROP TABLE IF EXISTS {temp_schema}.prune_direct_messages")
-                )
-                await conn.execute(
-                    text("CREATE TEMPORARY TABLE prune_direct_messages (id TEXT PRIMARY KEY)")
+                    text(
+                        f"CREATE TEMPORARY TABLE {direct} "
+                        "(id TEXT NOT NULL, deferred INTEGER NOT NULL, PRIMARY KEY (id, deferred))"
+                    )
                 )
                 await conn.execute(
                     text(
-                        "INSERT INTO prune_direct_messages (id) "
-                        "SELECT first_msg_id FROM sessions WHERE id IN (SELECT id FROM prune_victims) "
-                        "  AND first_msg_id IS NOT NULL "
-                        "UNION "
-                        "SELECT last_msg_id FROM sessions WHERE id IN (SELECT id FROM prune_victims) "
-                        "  AND last_msg_id IS NOT NULL "
-                        "UNION "
-                        "SELECT system_msg_id FROM branches WHERE session_id IN (SELECT id FROM prune_victims) "
-                        "  AND system_msg_id IS NOT NULL"
+                        f"INSERT INTO {direct} (id, deferred) "  # noqa: S608
+                        f"SELECT s.first_msg_id, v.deferred FROM sessions s JOIN {victims} v"
+                        " ON v.id = s.id WHERE s.first_msg_id IS NOT NULL"
+                        f" UNION SELECT s.last_msg_id, v.deferred FROM sessions s JOIN {victims} v"
+                        " ON v.id = s.id WHERE s.last_msg_id IS NOT NULL"
+                        f" UNION SELECT b.system_msg_id, v.deferred FROM branches b JOIN {victims} v"
+                        " ON v.id = b.session_id WHERE b.system_msg_id IS NOT NULL"
                     )
                 )
 
                 await conn.execute(
-                    text("DELETE FROM sessions WHERE id IN (SELECT id FROM prune_victims)")
+                    text(f"DELETE FROM sessions WHERE id IN (SELECT id FROM {victims})")  # noqa: S608
                 )
 
                 # Branches cascade with their session, so what is still
@@ -1213,7 +1232,7 @@ async def _prune(
                 # pointed at it.
                 await conn.execute(
                     text(
-                        "DELETE FROM prune_orphan_progressions WHERE id IN ("
+                        f"DELETE FROM {orphans} WHERE id IN ("  # noqa: S608
                         "  SELECT progression_id FROM sessions WHERE progression_id IS NOT NULL"
                         "  UNION"
                         "  SELECT progression_id FROM branches WHERE progression_id IS NOT NULL"
@@ -1221,33 +1240,41 @@ async def _prune(
                     )
                 )
 
+                # Count the two non-array cohorts separately. Only rows without
+                # surviving owners can have been deferred by this prune.
+                deferred_count, survivor_count = (
+                    await conn.execute(
+                        text(
+                            "SELECT COUNT(o.id), COUNT(*) - COUNT(o.id)"  # noqa: S608
+                            f" FROM progressions p LEFT JOIN {orphans} o ON o.id = p.id"
+                            f" WHERE {non_array}"
+                        )
+                    )
+                ).one()
+                if deferred_count:
+                    counts["deferred_victim_progressions"] = deferred_count
+                if survivor_count:
+                    counts["non_array_survivor_progressions"] = survivor_count
+
                 # Subtract retained IDs as a set, in the same snapshot as the
                 # DELETE. PostgreSQL can hash or sort the set without rescanning
-                # surviving collections for each candidate. Cast expanded IDs
-                # to the message key's type before SQLite's compound comparison.
+                # surviving collections for each candidate.
+                retained = _retained_message_ids_sql(
+                    db.dialect,
+                    excluded_progressions_sql=f"SELECT id FROM {orphans} WHERE deferred = 0",  # noqa: S608
+                    deferred_direct_sql=f"SELECT id FROM {direct} WHERE deferred = 1",  # noqa: S608
+                )
                 deleted_messages = (
                     await conn.execute(
                         text(
                             "DELETE FROM messages WHERE id IN ("  # noqa: S608 -- fixed dialect fragments
                             "WITH candidate_messages(id) AS ("
-                            "  SELECT CAST(members.value AS TEXT) FROM prune_orphan_progressions o"
+                            f"  SELECT CAST(members.value AS TEXT) FROM {orphans} o"
                             "  JOIN progressions p ON p.id = o.id"
-                            f"  CROSS JOIN {members} WHERE members.value IS NOT NULL"
+                            f"  CROSS JOIN {members} WHERE o.deferred = 0 AND members.value IS NOT NULL"
                             "  UNION ALL"
-                            "  SELECT id FROM prune_direct_messages"
-                            "), retained_messages(id) AS ("
-                            f"  SELECT CAST(members.value AS TEXT) FROM progressions p CROSS JOIN {members}"
-                            "  WHERE NOT EXISTS ("
-                            "    SELECT 1 FROM prune_orphan_progressions o WHERE o.id = p.id"
-                            "  )"
-                            "    AND members.value IS NOT NULL"
-                            "  UNION ALL"
-                            "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
-                            "  UNION ALL"
-                            "  SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
-                            "  UNION ALL"
-                            "  SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
-                            ")"
+                            f"  SELECT id FROM {direct} WHERE deferred = 0"
+                            f"), retained_messages(id) AS ({retained})"
                             "  SELECT id FROM candidate_messages EXCEPT SELECT id FROM retained_messages"
                             ")"
                         )
@@ -1256,13 +1283,13 @@ async def _prune(
 
                 await conn.execute(
                     text(
-                        "DELETE FROM progressions "
-                        "WHERE id IN (SELECT id FROM prune_orphan_progressions)"
+                        "DELETE FROM progressions "  # noqa: S608
+                        f"WHERE id IN (SELECT id FROM {orphans} WHERE deferred = 0)"
                     )
                 )
-                await conn.execute(text(f"DROP TABLE {temp_schema}.prune_orphan_progressions"))
-                await conn.execute(text(f"DROP TABLE {temp_schema}.prune_direct_messages"))
-                await conn.execute(text(f"DROP TABLE {temp_schema}.prune_victims"))
+                await conn.execute(text(f"DROP TABLE {orphans}"))
+                await conn.execute(text(f"DROP TABLE {direct}"))
+                await conn.execute(text(f"DROP TABLE {victims}"))
 
                 counts.update(
                     {
@@ -2088,6 +2115,10 @@ def run_state(args: argparse.Namespace) -> int:
             print(f"  skipped {result['skipped_sessions']} session(s) referenced by retained rows:")
             for table, count in result["skipped_by_reference"].items():
                 print(f"    {table}: {count}")
+        if deferred := result.get("deferred_victim_progressions"):
+            print(f"  deferred message cleanup for {deferred} non-array victim progression(s)")
+        if retained := result.get("non_array_survivor_progressions"):
+            print(f"  retained {retained} other non-array progression(s)")
         # Recomputed after the fact, never carried out of the prune's own
         # transaction: a count the prune produced cannot contradict the prune.
         check = run_async(_prune_candidates(keep_days=args.keep_days, keep_n=args.keep_n))
