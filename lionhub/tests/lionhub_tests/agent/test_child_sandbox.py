@@ -546,6 +546,9 @@ def test_project_configuration_is_denied_at_any_depth():
         ".lionagi/settings.yaml",
         ".lionagi/agents",
         ".lionagi/playbooks",
+        ".env",
+        ".env.local",
+        ".secrets.env",
     ):
         assert f"Edit(//**/{name})" in rules
         assert f"Edit(//**/{name}/**)" in rules

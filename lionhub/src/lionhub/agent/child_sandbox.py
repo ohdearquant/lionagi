@@ -130,8 +130,9 @@ DEFAULT_DENY_EDIT: tuple[str, ...] = (
 
 #: Configuration Claude Code and lionagi load from a working directory, its parents or the git
 #: root: project settings, hooks, commands, agents and skills under ``.claude``, project MCP
-#: servers, memory files, and lionagi's project settings, agent profiles and playbooks, which
-#: are searched before the global ones. A child can write its own working directory and any
+#: servers, memory files, lionagi's project settings, agent profiles and playbooks, which
+#: are searched before the global ones, and the dotenv files lionagi's settings load from the
+#: working directory over the user-wide one (``lionagi.config.AppSettings``). A child can write its own working directory and any
 #: project directory it is handed, so these names are denied to the file tools wherever they
 #: sit, and the next child launched there cannot be handed configuration this one wrote.
 PROJECT_CONFIG_NAMES: tuple[str, ...] = (
@@ -142,6 +143,9 @@ PROJECT_CONFIG_NAMES: tuple[str, ...] = (
     ".lionagi/settings.yaml",
     ".lionagi/agents",
     ".lionagi/playbooks",
+    ".env",
+    ".env.local",
+    ".secrets.env",
 )
 
 #: Programs Claude Code's sandbox needs on Linux and WSL2.
