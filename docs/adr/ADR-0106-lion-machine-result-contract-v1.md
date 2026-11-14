@@ -525,8 +525,8 @@ rather than left to the reader:
   encoding the refusal a second time in the exit status creates two answers to one
   question, which is the ambiguity D3 exists to remove. The sole exception is the
   machine-mode environment envelope, which keeps exit 78.
-- **78 (`EX_CONFIG`)** is returned when a required module cannot be imported and no run
-  has been allocated — that is, when nothing was executed. It is never returned once a
+- **78 (`EX_CONFIG`)** is returned when a required module or feature is unavailable and
+  no run has been allocated — that is, when nothing was executed. It is never returned once a
   run exists, because a run that started and then failed is a failed run, and reporting
   it as an environment fault sends the consumer away from durable state it should read.
   In machine mode the entry point emits an `unavailable` envelope on a best-effort
