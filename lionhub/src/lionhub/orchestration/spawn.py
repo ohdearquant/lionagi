@@ -1077,7 +1077,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
 
     import yaml
 
-    from lionagi.libs.frontmatter import _FM_SPLIT
+    from lionagi.libs.frontmatter import _FM_SPLIT, _load_frontmatter_yaml
 
     def unreadable_yaml_has_sensitive_text(block: str) -> bool:
         # In unreadable YAML, no fragment can be reliably identified as a key
@@ -1123,7 +1123,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     if len(parts) < 3:
         block = text[3:]
         try:
-            yaml.safe_load(block)
+            _load_frontmatter_yaml(block)
         except (yaml.YAMLError, RecursionError):
             sensitive = unreadable_yaml_has_sensitive_text(block)
         else:
@@ -1138,7 +1138,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     try:
         # Check construction as well as syntax: an unsupported YAML tag can
         # otherwise make the ordinary frontmatter reader discard the block.
-        yaml.safe_load(block)
+        _load_frontmatter_yaml(block)
         root = yaml.compose(block, Loader=yaml.SafeLoader)
         too_deep = _node_depth(root) > _MAX_FRONTMATTER_DEPTH
     except RecursionError:
@@ -1302,15 +1302,13 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
 
     import yaml
 
-    from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
+    from lionagi.libs.frontmatter import _FM_SPLIT, _load_frontmatter_yaml, parse_frontmatter_strict
     from lionhub.orchestration.console import warn
 
     def read(block: str) -> tuple[bool, Any]:
         try:
-            return True, yaml.safe_load(block)
-        except (yaml.YAMLError, RecursionError, ValueError):
-            # ValueError: a scalar that resolves to a type it cannot build, such as the
-            # calendar-invalid date in `Deadline: 2026-02-30`.
+            return True, _load_frontmatter_yaml(block)
+        except (yaml.YAMLError, RecursionError):
             return False, None
 
     def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:

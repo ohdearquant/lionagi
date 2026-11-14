@@ -8,6 +8,14 @@ import yaml
 _FM_SPLIT = re.compile(r"^---\s*$", re.MULTILINE)
 
 
+def _load_frontmatter_yaml(document: str) -> Any:
+    try:
+        return yaml.safe_load(document)
+    except ValueError as exc:
+        # A YAML scalar constructor can reject a value such as an invalid calendar date.
+        raise yaml.YAMLError("frontmatter contains an invalid YAML scalar") from exc
+
+
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     text = text.strip()
     if not text.startswith("---"):
@@ -16,7 +24,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if len(parts) < 3:
         return {}, text
     try:
-        fm = yaml.safe_load(parts[1]) or {}
+        fm = _load_frontmatter_yaml(parts[1]) or {}
     except yaml.YAMLError:
         fm = {}
     return fm if isinstance(fm, dict) else {}, parts[2].strip()
@@ -39,7 +47,7 @@ def parse_frontmatter_strict(text: str) -> tuple[dict[str, Any], str]:
     parts = _FM_SPLIT.split(text, maxsplit=2)
     if len(parts) < 3:
         raise yaml.YAMLError("frontmatter opening delimiter has no matching closing delimiter")
-    fm = yaml.safe_load(parts[1])
+    fm = _load_frontmatter_yaml(parts[1])
     if not isinstance(fm, dict):
         raise yaml.YAMLError("frontmatter must be a YAML mapping, not a list or scalar")
     return fm, parts[2].strip()

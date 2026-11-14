@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 
 import pytest
 
@@ -223,6 +224,37 @@ def test_mcp_examples_after_preface_do_not_warn(monkeypatch, text):
 def test_unrelated_unreadable_frontmatter_keeps_existing_leniency():
     profile = _parse_profile("reviewer", "---\nmodel: [unterminated\n---\nReview.")
     assert profile.mcp is None
+
+
+def test_profile_loads_with_an_unreadable_date(monkeypatch):
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    profile = _parse_profile("p", "---\nDeadline: 2026-02-30\n---\nBody.\n")
+    assert profile.raw_body == "Body."
+    assert "Deadline" not in profile.extra
+    assert any("frontmatter" in warning and "ignored" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("2026-02-28", date(2026, 2, 28)), ('"2026-02-30"', "2026-02-30")],
+    ids=["valid-date", "quoted-date"],
+)
+def test_profile_preserves_valid_date_values(value, expected):
+    profile = _parse_profile("p", f"---\nDeadline: {value}\n---\nBody.\n")
+    assert profile.raw_body == "Body."
+    assert profile.extra["Deadline"] == expected
+
+
+@pytest.mark.parametrize(
+    ("ending", "message"),
+    [("---\nBody.\n", "invalid YAML"), ("", "no closing ---")],
+    ids=["closed", "unclosed"],
+)
+def test_profile_refuses_mcp_mentioned_with_an_unreadable_date(ending, message):
+    text = f"---\nDeadline: 2026-02-30\n# mcp\n{ending}"
+    with pytest.raises(ConfigurationError, match=message):
+        _parse_profile("p", text)
 
 
 @pytest.mark.parametrize(
