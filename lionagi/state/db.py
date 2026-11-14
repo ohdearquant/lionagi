@@ -3549,14 +3549,15 @@ class StateDB:
         per message. Ids are appended in batch order and
         skipped when already present, so re-running a batch leaves a string-id progression
         unchanged. That single rewrite covers a stored array of string ids given string ids,
-        the ordinary string-ID shape; any other stored value or id goes through the
-        legacy internal append statement one id at a time. The public
-        ``append_to_progression`` validates new IDs; this batch path retains its own
-        existing input contract. ``session_id`` moves that session's activity clock in
-        the same transaction.
+        the ordinary string-ID shape; any other stored value goes through the internal append
+        statement one id at a time. New message IDs are validated before opening the
+        transaction. ``session_id`` moves that session's activity clock in the same transaction.
         """
         for msg in msgs:
             self._validate_message(msg)
+            if progression_ids:
+                for progression_id in progression_ids:
+                    self._validate_progression_message_id(progression_id, msg["id"])
         if not msgs:
             return
         message_ids = [msg["id"] for msg in msgs]
@@ -4511,6 +4512,9 @@ class StateDB:
     ) -> None:
         """Atomically persist one live message and its immediate bookkeeping."""
         self._validate_message(msg)
+        for progression_id in (branch_progression_id, session_progression_id):
+            if progression_id is not None:
+                self._validate_progression_message_id(progression_id, msg["id"])
         if self._compat is not None:
             # A live message joins only the session, progressions and branch this run
             # created.

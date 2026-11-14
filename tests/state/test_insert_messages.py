@@ -182,24 +182,12 @@ async def test_any_other_stored_shape_ends_as_appending_one_at_a_time(db: StateD
         assert all([await db.get_message(m) is not None for m in ids])
 
 
-@pytest.mark.parametrize("seed", [[], ["5"]], ids=["empty", "string-spelled-alike"])
-async def test_a_non_string_id_ends_as_appending_one_at_a_time(db: StateDB, seed: list):
-    one, batched = uid(), uid()
-    await db.create_progression(one, seed)
-    await db.create_progression(batched, seed)
-
-    with pytest.raises(ValueError, match=one):
-        await db.append_to_progression(one, 5)
-    assert await db.get_progression(one) == seed
-
-    # Batch inserts retain the legacy SQL append behavior for non-string IDs;
-    # the public single-ID append now rejects such input before writing.
-    for _ in range(2):
-        async with db._tx() as conn:
-            await conn.execute(text(db._progression_append_sql(db.dialect)), {"v": 5, "id": one})
-        await db.insert_messages([_msg(5)], progression_ids=(batched,))
-
-    assert await _stored(db, batched) == await _stored(db, one)
+async def test_a_non_string_id_is_rejected_for_batch_append(db: StateDB):
+    progression = uid()
+    await db.create_progression(progression)
+    with pytest.raises(ValueError, match=progression):
+        await db.insert_messages([_msg(5)], progression_ids=(progression,))
+    assert await db.get_progression(progression) == []
 
 
 async def test_a_rejected_message_writes_nothing(db: StateDB):
@@ -213,6 +201,16 @@ async def test_a_rejected_message_writes_nothing(db: StateDB):
 
     assert await db.get_progression(p) == []
     assert await db.get_message(good["id"]) is None
+
+
+@pytest.mark.parametrize("message_id", [12, "", None])
+async def test_invalid_ids_are_rejected_before_batched_progression_writes(db, message_id):
+    progression = uid()
+    await db.create_progression(progression)
+    with pytest.raises(ValueError, match="non-empty string message IDs"):
+        await db.insert_messages([_msg(message_id)], progression_ids=(progression,))
+    assert await db.get_progression(progression) == []
+    assert await db.get_message(str(message_id)) is None
 
 
 async def test_a_failure_inside_the_transaction_commits_no_message(db: StateDB):

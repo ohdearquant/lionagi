@@ -1441,6 +1441,22 @@ async def test_persist_live_message_rolls_back_when_last_statement_fails(db: Sta
     assert session["updated_at"] == 100.0
 
 
+@pytest.mark.parametrize("message_id", [12, "", None])
+async def test_live_message_rejects_invalid_progression_ids_before_transaction(db, message_id):
+    session_id, session_prog_id, _branch_id, branch_prog_id = await _make_live_persist_fixture(db)
+    msg = make_message(role="assistant")
+    msg["id"] = message_id
+    with pytest.raises(ValueError, match="non-empty string message IDs"):
+        await db._persist_live_message(
+            msg,
+            session_id=session_id,
+            branch_progression_id=branch_prog_id,
+            session_progression_id=session_prog_id,
+        )
+    assert await db.get_progression(branch_prog_id) == []
+    assert await db.get_progression(session_prog_id) == []
+
+
 async def test_resolve_lion_class_known(db: StateDB):
     """A known lion_class string returns the correct seeded type_id."""
     from sqlalchemy import text

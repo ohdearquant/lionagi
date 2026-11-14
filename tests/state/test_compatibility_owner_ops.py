@@ -2047,6 +2047,19 @@ async def test_a_live_message_joins_the_runs_session_branch_and_progressions(db,
     assert _rows(store, "SELECT last_message_at FROM sessions WHERE id = 's1'") == [(started + 10,)]
 
 
+@pytest.mark.parametrize("message_id", [12, "", None])
+async def test_live_message_rejects_invalid_progression_ids_in_compatibility_mode(
+    db, store, message_id
+):
+    await _setup_run(db)
+    msg = _live_message()
+    msg["id"] = message_id
+    with pytest.raises(ValueError, match="non-empty string message IDs"):
+        await db._persist_live_message(msg, session_id="s1", branch_progression_id="bp")
+    assert _rows(store, "SELECT id FROM messages WHERE id = ?", (str(message_id),)) == []
+    assert _rows(store, "SELECT collection FROM progressions WHERE id = 'bp'") == [("[]",)]
+
+
 async def test_a_live_message_written_again_is_rewritten_and_listed_once(db, store):
     await _setup_run(db)
     for content in ("first", "second"):
