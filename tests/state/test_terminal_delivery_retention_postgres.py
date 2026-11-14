@@ -14,7 +14,7 @@ import json
 import logging
 import time
 import uuid
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +43,63 @@ _WAITING_LOCK = (
     "AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
     "AND $3 = ANY(pg_blocking_pids(l.pid))"
 )
+
+
+@contextmanager
+def _capture_prune_delete_plans(monkeypatch, table, *, work_mem, anchor=""):
+    plans = []
+
+    def capture(conn, _cursor, statement, parameters, _context, _executemany):
+        if not statement.startswith(f"DELETE FROM {table} ") or anchor not in statement:
+            return
+        conn.exec_driver_sql(f"SET LOCAL work_mem = '{work_mem}'")
+        # ANALYZE executes the DELETE. Roll the rehearsal back before executing the original
+        # statement so the temporary tables and the actual prune result are both available.
+        rehearsal = conn.begin_nested()
+        try:
+            raw = conn.exec_driver_sql(
+                "EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF) " + statement, parameters
+            ).scalar_one()
+        finally:
+            rehearsal.rollback()
+        plan = json.loads(raw) if isinstance(raw, str) else raw
+        plans.append(plan[0]["Plan"])
+
+    class ObservedStore(state_db.StateDB):
+        async def __aenter__(self):
+            await super().__aenter__()
+            event.listen(self._engine.sync_engine, "before_cursor_execute", capture)
+            return self
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db_maintenance, "StateDB", ObservedStore)
+        yield plans
+
+
+def _plan_nodes(node):
+    yield node
+    for child in node.get("Plans", ()):
+        yield from _plan_nodes(child)
+
+
+def _assert_no_repeated_survivor_scans(plan, relations):
+    for node in _plan_nodes(plan):
+        loops = node["Actual Loops"]
+        if loops <= 1:
+            continue
+        node_type = node["Node Type"]
+        if node.get("Relation Name") in relations and (
+            node_type == "Seq Scan"
+            or (node_type in {"Index Scan", "Index Only Scan"} and "Index Cond" not in node)
+        ):
+            pytest.fail(f"repeated full survivor scan ({loops} loops): {node}")
+        # A nested loop can reread a cached survivor relation while its base scan still
+        # reports one loop. A selective index probe is fine. Reading a large set again is not.
+        if node_type == "Materialize" and node["Actual Rows"] >= 100:
+            if any(child.get("Relation Name") in relations for child in _plan_nodes(node)):
+                pytest.fail(f"repeated materialized survivor scan ({loops} loops): {node}")
+        if node_type == "CTE Scan" and node["Actual Rows"] >= 100:
+            pytest.fail(f"repeated CTE survivor scan ({loops} loops): {node}")
 
 
 @asynccontextmanager
@@ -374,36 +431,20 @@ async def test_postgresql_shared_prune_plan_avoids_rescanning_retained_members(p
                 await conn.execute(text("ANALYZE messages"))
                 await conn.execute(text("ANALYZE progressions"))
 
-        plans = []
-
-        def capture_plan(conn, _cursor, statement, parameters, _context, _executemany):
-            if not statement.startswith("DELETE FROM messages WHERE id IN ("):
-                return
-            conn.exec_driver_sql("SET LOCAL work_mem = '4MB'")
-            raw = conn.exec_driver_sql(
-                "EXPLAIN (FORMAT JSON) " + statement, parameters
-            ).scalar_one()
-            plan = json.loads(raw) if isinstance(raw, str) else raw
-            plans.append(plan)
-            print(json.dumps(plan, indent=2))
-            pending = [plan[0]["Plan"]]
-            while pending:
-                node = pending.pop()
-                for child in node.get("Plans", ()):
-                    if child.get("Parent Relationship") == "SubPlan":
-                        assert f"hashed {child['Subplan Name']}" in node.get("Filter", ""), plan
-                    pending.append(child)
-
-        class ObservedStore(state_db.StateDB):
-            async def __aenter__(self):
-                await super().__aenter__()
-                event.listen(self._engine.sync_engine, "before_cursor_execute", capture_plan)
-                return self
-
-        with monkeypatch.context() as patch:
-            patch.setattr(db_maintenance, "StateDB", ObservedStore)
+        with _capture_prune_delete_plans(
+            monkeypatch, "messages", work_mem="4MB", anchor="retained_messages"
+        ) as plans:
             assert await db_maintenance.prune_terminal_sessions_by_id(["victim"]) == 1
         assert len(plans) == 1
+        plan = plans[0]
+        _assert_no_repeated_survivor_scans(plan, {"progressions"})
+        progression_scans = [
+            node
+            for node in _plan_nodes(plan)
+            if node.get("Relation Name") == "progressions" and node["Actual Loops"]
+        ]
+        assert sum(node["Actual Loops"] for node in progression_scans) == 1, plan
+        assert sum(node["Actual Rows"] for node in progression_scans) == retained, plan
         async with state_db.StateDB(url=store_url) as db:
             rows = await db.fetch_all("SELECT id FROM messages")
             assert {row["id"] for row in rows} == {f"m-{n}" for n in range(1, retained + 1)}
@@ -413,12 +454,13 @@ async def test_postgresql_shared_prune_plan_avoids_rescanning_retained_members(p
 async def test_postgresql_orphan_progression_delete_probes_instead_of_rescanning(
     pg_url, monkeypatch
 ):
-    branches = 3_000
+    survivors, victims = 3_000, 200
     now = time.time()
     async with _fresh_store(pg_url, monkeypatch) as (store_url, _raw):
         async with state_db.StateDB(url=store_url) as db:
             await _terminal(db, "victim")
-            await _terminal(db, "victim-shared")
+            await _terminal(db, "victim-shared-branch")
+            await _terminal(db, "victim-shared-session")
             await db.create_progression("keeper")
             await db.create_session(
                 {"id": "keeper", "progression_id": "keeper", "status": "running"}
@@ -430,7 +472,15 @@ async def test_postgresql_orphan_progression_delete_probes_instead_of_rescanning
                         "SELECT 'kp-' || n, :now, '[]' "
                         "FROM generate_series(1, CAST(:total AS integer)) AS g(n)"
                     ),
-                    {"now": now, "total": branches},
+                    {"now": now, "total": survivors},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO progressions (id, created_at, collection) "
+                        "SELECT 'vp-' || n, :now, '[]' "
+                        "FROM generate_series(1, CAST(:total AS integer)) AS g(n)"
+                    ),
+                    {"now": now, "total": victims},
                 )
                 await conn.execute(
                     text(
@@ -438,12 +488,35 @@ async def test_postgresql_orphan_progression_delete_probes_instead_of_rescanning
                         "SELECT 'kb-' || n, :now, 'keeper', 'kp-' || n "
                         "FROM generate_series(1, CAST(:total AS integer)) AS g(n)"
                     ),
-                    {"now": now, "total": branches},
+                    {"now": now, "total": survivors},
                 )
                 await conn.execute(
                     text(
                         "INSERT INTO branches (id, created_at, session_id, progression_id) "
-                        "VALUES ('kb-shared', :now, 'keeper', 'victim-shared')"
+                        "SELECT 'vb-' || n, :now, 'victim', 'vp-' || n "
+                        "FROM generate_series(1, CAST(:total AS integer)) AS g(n)"
+                    ),
+                    {"now": now, "total": victims},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO sessions (id, created_at, updated_at, progression_id, status) "
+                        "SELECT 'ks-' || n, :now, :now, 'kp-' || n, 'running' "
+                        "FROM generate_series(1, CAST(:total AS integer)) AS g(n)"
+                    ),
+                    {"now": now, "total": survivors},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO branches (id, created_at, session_id, progression_id) "
+                        "VALUES ('kb-shared', :now, 'keeper', 'victim-shared-branch')"
+                    ),
+                    {"now": now},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO sessions (id, created_at, updated_at, progression_id, status) "
+                        "VALUES ('ks-shared', :now, :now, 'victim-shared-session', 'running')"
                     ),
                     {"now": now},
                 )
@@ -451,40 +524,129 @@ async def test_postgresql_orphan_progression_delete_probes_instead_of_rescanning
                 await conn.execute(text("ANALYZE branches"))
                 await conn.execute(text("ANALYZE progressions"))
 
-        plans = []
-
-        def capture_plan(conn, _cursor, statement, parameters, _context, _executemany):
-            if not statement.startswith("DELETE FROM progressions WHERE id IN ("):
-                return
-            conn.exec_driver_sql("SET LOCAL work_mem = '64kB'")
-            raw = conn.exec_driver_sql(
-                "EXPLAIN (FORMAT JSON) " + statement, parameters
-            ).scalar_one()
-            plan = json.loads(raw) if isinstance(raw, str) else raw
-            plans.append(plan)
-            pending = [plan[0]["Plan"]]
-            while pending:
-                node = pending.pop()
-                for child in node.get("Plans", ()):
-                    if child.get("Parent Relationship") == "SubPlan":
-                        assert f"hashed {child['Subplan Name']}" in node.get("Filter", ""), plan
-                    pending.append(child)
-
-        class ObservedStore(state_db.StateDB):
-            async def __aenter__(self):
-                await super().__aenter__()
-                event.listen(self._engine.sync_engine, "before_cursor_execute", capture_plan)
-                return self
-
-        with monkeypatch.context() as patch:
-            patch.setattr(db_maintenance, "StateDB", ObservedStore)
+        with _capture_prune_delete_plans(monkeypatch, "progressions", work_mem="64kB") as plans:
             assert (
-                await db_maintenance.prune_terminal_sessions_by_id(["victim", "victim-shared"]) == 2
+                await db_maintenance.prune_terminal_sessions_by_id(
+                    ["victim", "victim-shared-branch", "victim-shared-session"]
+                )
+                == 3
             )
         assert len(plans) == 1
+        _assert_no_repeated_survivor_scans(plans[0], {"sessions", "branches"})
         async with state_db.StateDB(url=store_url) as db:
             rows = await db.fetch_all("SELECT id FROM progressions")
             remaining = {row["id"] for row in rows}
-            assert "victim" not in remaining
-            assert "victim-shared" in remaining
-            assert {"keeper"} | {f"kp-{n}" for n in range(1, branches + 1)} <= remaining
+            assert remaining == {
+                "keeper",
+                "victim-shared-branch",
+                "victim-shared-session",
+                *(f"kp-{n}" for n in range(1, survivors + 1)),
+            }
+
+
+@pytest.mark.parametrize("entry", ["explicit", "age"])
+async def test_postgresql_shared_prune_preserves_non_array_references_across_chunks(
+    pg_url, monkeypatch, entry, caplog
+):
+    async with _fresh_store(pg_url, monkeypatch):
+        monkeypatch.setattr(settings, "PRUNE_CHUNK_ROWS", 1)
+        async with state_db.StateDB() as db:
+            await _terminal(db, "deferred")
+            await _terminal(db, "ordinary")
+            ordinary_members = {"deferred-member", "direct", "object", "string", "1", "gone"}
+            kept = (ordinary_members - {"gone"}) | {"shared-branch-only"}
+            for id_ in sorted(kept | {"gone"}):
+                await db.insert_message(
+                    {"id": id_, "created_at": time.time(), "role": "user", "content": {}}
+                )
+            await db.set_progression("ordinary", sorted(ordinary_members))
+            await db.create_progression("deferred-branch", ["shared-branch-only"])
+            await db.create_branch(
+                {
+                    "id": "deferred-branch",
+                    "session_id": "deferred",
+                    "progression_id": "deferred-branch",
+                    "system_msg_id": "direct",
+                }
+            )
+            await db.create_branch(
+                {
+                    "id": "ordinary-branch",
+                    "session_id": "ordinary",
+                    "progression_id": "deferred-branch",
+                }
+            )
+            for id_, collection in {
+                "deferred": '{"ref":"deferred-member"}',
+                "object-survivor": '{"ref":"object","number":1}',
+                "string-survivor": '"string"',
+                "null-survivor": "null",
+            }.items():
+                await db.create_progression(id_)
+                await db.execute(
+                    "UPDATE progressions SET collection = ? WHERE id = ?", (collection, id_)
+                )
+
+        with caplog.at_level(logging.INFO, logger="lionagi.studio.services.db_maintenance"):
+            assert await _prune_sessions(entry, ["ordinary", "deferred"]) == 2
+
+        async with state_db.StateDB() as db:
+            assert await db.fetch_all("SELECT id FROM sessions") == []
+            assert await db.fetch_all("SELECT id FROM branches") == []
+            assert {row["id"] for row in await db.fetch_all("SELECT id FROM messages")} == kept
+            assert await db.get_progression("deferred-branch") == ["shared-branch-only"]
+            assert {row["id"] for row in await db.fetch_all("SELECT id FROM progressions")} == {
+                "deferred",
+                "deferred-branch",
+                "object-survivor",
+                "string-survivor",
+                "null-survivor",
+            }
+        assert "deferred_victim_progressions=1 non_array_survivor_progressions=3" in caplog.text
+
+
+@pytest.mark.parametrize("entry", ["explicit", "age"])
+@pytest.mark.parametrize("invalid_progression", ["victim", "survivor"])
+@pytest.mark.parametrize(
+    ("collection", "error"),
+    [
+        ("[malformed", "invalid input syntax for type json"),
+        (r'"\u0000"', "unsupported Unicode escape sequence"),
+    ],
+    ids=["malformed", "unrepresentable"],
+)
+async def test_postgresql_shared_prune_invalid_progression_rolls_back(
+    pg_url, monkeypatch, entry, invalid_progression, collection, error
+):
+    from sqlalchemy.exc import DBAPIError
+
+    async with _fresh_store(pg_url, monkeypatch):
+        async with state_db.StateDB() as db:
+            await _terminal(db, "victim")
+            await db.create_progression("survivor")
+            await db.insert_message(
+                {"id": "victim-message", "created_at": time.time(), "role": "user", "content": {}}
+            )
+            await db.set_progression("victim", ["victim-message"])
+            await db.execute(
+                "UPDATE progressions SET collection = ? WHERE id = ?",
+                (collection, invalid_progression),
+            )
+            await db.create_branch(
+                {"id": "victim-branch", "session_id": "victim", "progression_id": "victim"}
+            )
+
+        async def snapshot():
+            async with state_db.StateDB() as db:
+                return (
+                    await db.fetch_all("SELECT * FROM sessions ORDER BY id"),
+                    await db.fetch_all("SELECT * FROM branches ORDER BY id"),
+                    await db.fetch_all("SELECT * FROM progressions ORDER BY id"),
+                    await db.fetch_all("SELECT * FROM messages ORDER BY id"),
+                    await db.fetch_all("SELECT * FROM status_transitions ORDER BY id"),
+                )
+
+        before = await snapshot()
+        with pytest.raises(DBAPIError, match=error):
+            await _prune_sessions(entry, ["victim"])
+        assert await snapshot() == before
