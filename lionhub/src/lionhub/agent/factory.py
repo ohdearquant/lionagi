@@ -67,9 +67,9 @@ def _api_effort_kwargs(provider: str, model: str, effort: str, *, origin: str = 
     if provider == "anthropic":
         return {"output_config": {"effort": effort}}
     if provider == "openai":
-        from lionagi.service.connections._chat_schemas import CHAT_MODELS, REASONING_MODELS
+        from lionagi.service.connections._chat_schemas import classify_openai_chat_model
 
-        if model not in CHAT_MODELS or model in REASONING_MODELS:
+        if classify_openai_chat_model(model) != "non_reasoning":
             return {"reasoning_effort": effort}
     if origin in ("profile", "stored"):
         if origin == "profile":

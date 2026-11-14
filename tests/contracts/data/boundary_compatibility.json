@@ -2723,6 +2723,7 @@
       "ToolChoiceFunction",
       "ToolMessage",
       "UserMessage",
+      "classify_openai_chat_model",
       "uses_developer_messages"
     ],
     "lionagi/service/connections/_provider_compat.py": [
