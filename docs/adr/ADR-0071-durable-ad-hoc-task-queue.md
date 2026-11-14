@@ -260,6 +260,10 @@ completed, failed, timed_out, skipped, cancelled ──► no outgoing edges
 The registered terminal set carries all five terminal statuses, including `timed_out` and
 `skipped`. An undeclared edge raises `ValueError`.
 
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+proposes that a schedule-run terminal-floor or decision refusal through `transitions.transition()`
+commits a rejection audit and raises `TransitionRejectedError`.
+
 Exact compare-and-swap semantics:
 
 - Unsupported entity type, invalid reason code, or guard/patch column outside the per-entity

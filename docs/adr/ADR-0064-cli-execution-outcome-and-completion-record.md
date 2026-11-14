@@ -526,6 +526,9 @@ changing it changes which reason scripts and operators see.
 
 ### D5 — Status writes are atomic, guarded, and auditable
 
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+proposes schedule-run rules for terminal changes and carrying forward a stored decision.
+
 The universal write contract is:
 
 ```python

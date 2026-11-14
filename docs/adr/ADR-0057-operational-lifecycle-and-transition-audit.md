@@ -214,6 +214,8 @@ Code anchors: `lionagi/state/schema_meta.py`; `lionagi/state/reasons.py`;
 - Valid `source` values for `StateDB.update_status()` are exactly `executor`, `agent`, `admin`, and
   `system`; any other source raises `ValueError`.
 - `evidence_refs=None` is persisted as an empty list in both current row and history.
+  [ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+  proposes carrying forward a schedule run's stored decision in this case.
 - `reason_summary` defaults to an empty string; `metadata` defaults to SQL/JSON null when omitted.
 - Current reason fields are denormalized for cheap reads. The transition row is the history record;
   there is no foreign key from a transition to its entity because the table covers several entity
@@ -311,11 +313,7 @@ status in SQL closes the read-to-write gap even if code bypasses in-process seri
 ### D4 — Terminal changes require an audited override
 
 [ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
-proposes three audited refusals for schedule runs: a terminal-to-nonterminal
-move even with an override, a same-status or terminal-to-terminal write with a
-different recorded decision, and a decision insertion outside the guarded
-scheduler write. An otherwise applicable decision refusal can leave a
-nonterminal status unchanged.
+defines the proposed schedule-run terminal floor and decision refusals.
 
 Once an entity reaches the terminal set in D1, a write that changes the value is rejected unless the
 caller supplies an explicit override actor and justification. Same-status writes are not terminal

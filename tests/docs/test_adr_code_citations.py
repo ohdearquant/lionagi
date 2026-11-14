@@ -223,10 +223,14 @@ PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {
         "test_schedule_run_status_write_keeps_reason_columns",
         "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
         "test_lost_terminal_cas_does_not_chain_normal_path",
+        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
+        "test_lost_terminal_cas_does_not_chain_recovery",
         "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
         "test_chain_decision_none_returns_without_sleep",
         "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
         "test_chain_decision_branch_follows_child",
+        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
+        "test_chain_decision_branch_with_no_chain_returns_without_sleep",
         "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
         "test_chain_decision_survives_schedule_edit",
     ),
