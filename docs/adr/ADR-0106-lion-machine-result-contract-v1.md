@@ -242,7 +242,8 @@ another copy of our rules living in code we do not control.
   mode it builds a best-effort envelope using a standard-library-only helper at
   `lionhub/src/lionhub/serve/cli/_machine_envelope.py`, which holds the contract version.
   This keeps the version available even when the dispatcher cannot load. D8 defines how
-  the consumer handles this diagnostic and how to interpret exit 78 with empty stdout.
+  the consumer handles this diagnostic and how to interpret exit 78 when stdout holds no
+  valid envelope.
 
 ### D4 — `status` is opaque; `terminal` and `outcome` are the producer's derivations
 
@@ -530,9 +531,10 @@ rather than left to the reader:
   run exists, because a run that started and then failed is a failed run, and reporting
   it as an environment fault sends the consumer away from durable state it should read.
   In machine mode the entry point emits an `unavailable` envelope on a best-effort
-  basis. If it cannot write the envelope, stdout is empty and the exit status is still
-  78. Without `--machine`, stdout stays empty. The diagnostic goes to stderr in
-  both modes.
+  basis. If the write fails, the exit status is still 78 and stdout holds nothing, a
+  complete envelope when only the trailing newline was lost, or bytes that do not
+  parse when the write stopped earlier. Without `--machine`, stdout stays empty. The
+  diagnostic goes to stderr in both modes.
 - **Any other exit without a parseable envelope is a transport fault**: the process
   could not be launched at all, it was killed by a signal, it timed out under the
   consumer's own bound, or stdout did not parse. These are distinct from both of the
@@ -802,8 +804,9 @@ being asked of them in one place.
 6. **Check the exit status before parsing stdout, and never read stdout on 78 as a
    result of the submitted work** (D8). Attributing an environment fault to the
    submitted work is the misattribution this contract was written to remove. On 78,
-   stdout holds either nothing or a valid `unavailable` envelope. A consumer may read
-   that envelope as a diagnostic, and never treats empty stdout there as malformed.
+   stdout holds nothing, a valid `unavailable` envelope, or bytes that do not parse,
+   which the consumer ignores on 78. A consumer may read the envelope as a diagnostic,
+   and never treats empty or unparseable stdout there as malformed.
 7. **Never treat a terminal notice as proof, or as the only discovery path** (D9).
    Delivery can fail, and the record of that failure lives in state a non-polling
    consumer is not reading.
