@@ -67,6 +67,8 @@ _WARM_PURGE_MARGIN = timedelta(hours=25)
 # call a ledger has settled took under ten minutes, so two hours is far past any live call.
 _OPEN_LEASE = timedelta(hours=2)
 _LEASE_NAMESPACE = UUID("5f0d3c0e-8a54-5c52-9d63-3b0b6c3f2a11")
+_LEASE_EXPIRY_KIND = "lease-expiry"
+_LEASE_LATE_KIND = "lease-late"
 
 
 def _lease_adjustment_id(kind: str, attempt_id: object) -> UUID:
@@ -76,7 +78,7 @@ def _lease_adjustment_id(kind: str, attempt_id: object) -> UUID:
 
 def _late_correction_id(attempt_id: UUID, ordinal: int) -> UUID:
     """Id of the ordinal-th late correction on a lease-closed attempt, counting from 1."""
-    kind = "lease-late" if ordinal == 1 else f"lease-late-{ordinal}"
+    kind = _LEASE_LATE_KIND if ordinal == 1 else f"{_LEASE_LATE_KIND}-{ordinal}"
     return _lease_adjustment_id(kind, attempt_id)
 
 
@@ -1044,7 +1046,44 @@ class CredentialLedger:
             return -1 if left_spec.name < right_spec.name else 1
         return 0
 
-    def _void_expired_leases(
+    def _reconcile_open_attempt(
+        self,
+        connection: sqlite3.Connection,
+        attempt_id: UUID,
+        provider: str,
+        account: str,
+        month_utc: str,
+        cost_nusd: int,
+        adjustment_id: UUID,
+        source_ref: str,
+        settled_at: str,
+    ) -> bool:
+        """Close an open attempt and record its reconciliation adjustment atomically."""
+        changed = connection.execute(
+            """
+            UPDATE attempt SET state = 'settled', cost_nusd = ?, usage_json = NULL,
+                request_id = NULL, outcome = 'reconciled', settled_at = ?
+            WHERE id = ? AND state = 'open'
+            """,
+            (cost_nusd, settled_at, str(attempt_id)),
+        ).rowcount
+        if not changed:
+            return False
+        self._insert_adjustment(
+            connection,
+            adjustment_id,
+            "reconciliation",
+            attempt_id,
+            provider,
+            account,
+            month_utc,
+            0,
+            source_ref,
+            settled_at,
+        )
+        return True
+
+    def _close_and_record_expired_leases(
         self,
         connection: sqlite3.Connection,
         provider: str,
@@ -1062,7 +1101,7 @@ class CredentialLedger:
         """
         now = _aware_instant(now_iso)
         if now is None:
-            return
+            raise ValueError("admission timestamp must be an ISO datetime with a timezone")
         cutoff = now - self.open_lease
         for name in names:
             rows = connection.execute(
@@ -1091,27 +1130,17 @@ class CredentialLedger:
                     f"later settled attempt on this scope: {'yes' if later else 'no'}; "
                     "no provider usage seen by the ledger"
                 )
-                changed = connection.execute(
-                    """
-                    UPDATE attempt SET state = 'settled', cost_nusd = 0, usage_json = NULL,
-                        request_id = NULL, outcome = 'reconciled', settled_at = ?
-                    WHERE id = ? AND state = 'open'
-                    """,
-                    (now_iso, attempt_id),
-                ).rowcount
-                if changed:
-                    self._insert_adjustment(
-                        connection,
-                        _lease_adjustment_id("lease-expiry", attempt_id),
-                        "reconciliation",
-                        UUID(attempt_id),
-                        provider,
-                        name,
-                        month_utc,
-                        0,
-                        _validate_source(source_ref),
-                        now_iso,
-                    )
+                self._reconcile_open_attempt(
+                    connection,
+                    UUID(attempt_id),
+                    provider,
+                    name,
+                    month_utc,
+                    0,
+                    _lease_adjustment_id(_LEASE_EXPIRY_KIND, attempt_id),
+                    _validate_source(source_ref),
+                    now_iso,
+                )
 
     def _reserve_sync(
         self,
@@ -1226,7 +1255,9 @@ class CredentialLedger:
                         (provider, spec.name, spec.key_env),
                     )
 
-                self._void_expired_leases(connection, provider, list(specs), month_utc, created_at)
+                self._close_and_record_expired_leases(
+                    connection, provider, list(specs), month_utc, created_at
+                )
                 binding = connection.execute(
                     """
                     SELECT account FROM binding
@@ -1450,7 +1481,7 @@ class CredentialLedger:
         provider, account, month_utc = row
         closure = connection.execute(
             "SELECT id FROM adjustment WHERE id = ? AND kind = 'reconciliation' AND attempt_id = ?",
-            (str(_lease_adjustment_id("lease-expiry", attempt_id)), str(attempt_id)),
+            (str(_lease_adjustment_id(_LEASE_EXPIRY_KIND, attempt_id)), str(attempt_id)),
         ).fetchone()
         if closure is None:
             return None
@@ -2161,23 +2192,14 @@ class CredentialLedger:
                         attempt_id=attempt_id,
                     )
                 _, settled_at = _month_and_iso(self._clock)
-                connection.execute(
-                    """
-                    UPDATE attempt SET state = 'settled', cost_nusd = ?, usage_json = NULL,
-                        request_id = NULL, outcome = 'reconciled', settled_at = ?
-                    WHERE id = ? AND state = 'open'
-                    """,
-                    (cost_nusd, settled_at, str(attempt_id)),
-                )
-                self._insert_adjustment(
+                self._reconcile_open_attempt(
                     connection,
-                    adjustment_id,
-                    "reconciliation",
                     attempt_id,
                     provider,
                     account,
                     month_utc,
-                    0,
+                    cost_nusd,
+                    adjustment_id,
                     source_ref,
                     settled_at,
                 )
