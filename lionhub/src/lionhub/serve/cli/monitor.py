@@ -20,7 +20,12 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import parse_duration
 from lionagi.ln.concurrency import sleep
 from lionagi.state.engine import mask_credentials
-from lionhub.orchestration.job import AmbiguousIdError, fetch_unique_row, resolve_entity
+from lionhub.orchestration.job import (
+    EXIT_CODE_BY_STATUS,
+    AmbiguousIdError,
+    fetch_unique_row,
+    resolve_entity,
+)
 from lionhub.orchestration.job import pid_alive as _pid_alive_int
 from lionhub.orchestration.project import detect_project
 from lionhub.orchestration.runs import _resolved_run_state_dir
@@ -1499,7 +1504,12 @@ async def _poll_pending_once(
         if row is None:
             # Gone now (e.g. parent schedule deleted, cascading the run) —
             # resolve as failure so the wait can't hang on state that never returns.
-            row = {**pending[run_id], "status": "failed", "exit_code": None}
+            row = {
+                **pending[run_id],
+                "status": "failed",
+                "exit_code": None,
+                "_monitor_missing": True,
+            }
             log_error(f"schedule_run {run_id!r} disappeared from state.db while waiting")
         elif row["status"] not in SCHEDULE_RUN_TERMINAL_STATUSES:
             continue
@@ -1530,10 +1540,14 @@ async def _find_chain_children(db: Any, parent_run_id: str) -> list[dict[str, An
     )
 
 
+def _run_succeeded(status: str | None) -> bool:
+    return EXIT_CODE_BY_STATUS.get(status or "", 1) == 0
+
+
 async def _schedule_declares_chain_action(
     db: Any,
     schedule_id: str,
-    exit_code: int | None,
+    status: str,
     *,
     cache: dict[str, dict[str, Any] | None],
 ) -> bool:
@@ -1545,7 +1559,9 @@ async def _schedule_declares_chain_action(
     if schedule_id not in cache:
         cache[schedule_id] = await db.get_schedule(schedule_id)
     sched = cache[schedule_id] or {}
-    return parsing._chain_action_with_usable_selected_kind(sched, exit_code == 0) is not None
+    return (
+        parsing._chain_action_with_usable_selected_kind(sched, _run_succeeded(status)) is not None
+    )
 
 
 def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
@@ -1558,7 +1574,6 @@ def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict
         "resolved_roots": set(),
         "schedule_cache": {},
         "chain": chain,
-        "done_ids": set(),
         "status_of": {},
         "handoff": {},
     }
@@ -1580,26 +1595,24 @@ async def _advance_chains(
     resolved_roots = chain_state["resolved_roots"]
     schedule_cache = chain_state["schedule_cache"]
     chain = chain_state["chain"]
-    done_ids = chain_state["done_ids"]
     status_of = chain_state["status_of"]
     handoff = chain_state["handoff"]
 
     for row in done[processed:]:
-        done_ids.add(row["id"])
         status = row["status"]
         status_of[row["id"]] = status
         roots = root_of.get(row["id"]) or {row["id"]}
         for root in roots:
             chain_tail_status[root] = status
-        # A cancelled/skipped/no-exit-code run can never get a chain child —
-        # skip the grace window rather than burn it waiting on nothing.
+        # A skipped run never fired. Other terminal outcomes can have a child
+        # even when the subprocess exit code is missing or disagrees.
         if (
             chain
+            and not row.get("_monitor_missing")
             and row.get("chain_depth", 0) < parsing._MAX_CHAIN_DEPTH
-            and status not in ("cancelled", "skipped")
-            and row.get("exit_code") is not None
+            and status in ("completed", "failed", "timed_out", "cancelled")
             and await _schedule_declares_chain_action(
-                db, row["schedule_id"], row.get("exit_code"), cache=schedule_cache
+                db, row["schedule_id"], status, cache=schedule_cache
             )
         ):
             awaiting_grace[row["id"]] = {"roots": set(roots), "ticks_left": _CHAIN_GRACE_TICKS}
@@ -1618,7 +1631,7 @@ async def _advance_chains(
                     # a root if it's also a directly-watched id.
                     root_of.setdefault(child_id, set()).update(info["roots"])
                     handoff[parent_id] = child_id
-                    if child_id in done_ids:
+                    if child_id in status_of:
                         # Already printed once — never re-add to `pending`.
                         # Follow the handoff trail to resolve on the final link.
                         carrier = child_id
@@ -1626,7 +1639,7 @@ async def _advance_chains(
                         while carrier in handoff and handoff[carrier] not in seen:
                             carrier = handoff[carrier]
                             seen.add(carrier)
-                        if carrier not in done_ids:
+                        if carrier not in status_of:
                             # Still-live descendant in `pending` — ride on it.
                             root_of.setdefault(carrier, set()).update(info["roots"])
                         else:
@@ -1781,19 +1794,16 @@ def _dispatch_wait(
 
         resolved_roots = chain_state["resolved_roots"]
         chain_tail_status = chain_state["chain_tail_status"]
-        from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
-
-        session_ok = all(EXIT_CODE_BY_STATUS.get(r["status"], 1) == 0 for r in session_done)
+        session_ok = all(_run_succeeded(row["status"]) for row in session_done)
         if unresolved:
             exit_code = EXIT_UNKNOWN
         elif len(resolved_roots) < total_watched or len(session_done) < total_sessions:
             # Some watched chain (or session) never concluded before we stopped.
             exit_code = EXIT_RUNNING
-        elif (
-            all(chain_tail_status.get(root) == "completed" for root in resolved_roots)
-            and session_ok
+        elif session_ok and all(
+            _run_succeeded(chain_tail_status.get(root)) for root in resolved_roots
         ):
-            # Final-link-wins: a chain succeeds if its final run is stored as completed.
+            # Final-link-wins: a chain succeeds if its final run has a successful stored status.
             exit_code = 0
         else:
             exit_code = 1

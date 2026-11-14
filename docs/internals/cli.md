@@ -1805,8 +1805,10 @@ chain action for the outcome but whose child hasn't fired yet gets a bounded gra
 A schedule with no matching chain action needs no grace wait. The aggregate exit code
 follows the final link of each chain. A chain succeeds only when its final run has stored
 status `completed`, including an `on_fail` recovery child that succeeds. The printed
-`exit_code` remains the subprocess diagnostic, and chain discovery still uses it to
-decide whether to wait for a child.
+`exit_code` remains the subprocess diagnostic. Chain discovery selects the branch
+from the parent's stored status. `completed` selects `on_success`. The statuses
+`failed`, `timed_out`, and `cancelled` select `on_fail`. Skipped and missing
+runs resolve without grace.
 
 **`_MAX_CHAIN_DEPTH`** — mirrors the scheduler engine's own chain-depth cap
 (`lionhub/src/lionhub/orchestration/scheduler/engine.py` `_MAX_CHAIN_DEPTH`) — the engine never fires a chain
@@ -1848,19 +1850,14 @@ chain action immediately, and starts/advances a grace countdown for roots awaiti
 `root_of` (run_id -> watched roots it accounts for), `chain_tail_status` (root id -> most recent
 terminal status), `awaiting_grace` (run_id -> `{roots, ticks_left}`), `resolved_roots`
 (roots whose chain concluded), `schedule_cache` (memoized schedule lookups), `chain` (bool,
-chain-following on/off), `done_ids` (already-folded run ids — lets discovery tell an
-already-processed child apart from one still in `pending`), `status_of` (run id -> stored
-terminal status of that folded run), `handoff` (parent run id -> the chain child its grace
+chain-following on/off), `status_of` (folded run id -> stored terminal status), `handoff` (parent run id -> the chain child its grace
 window handed off to, so an ancestor that discovers the child later can find the current
 tail of the chain).
 
-Only terminal runs that actually reached the engine's fire path can ever get a chain child: the
-engine only fires one when `chain_depth` is still under its cap AND the chain block (which sits
-after the subprocess returns a real exit code) actually ran — a cancelled run
-(`CancelledError` -> `status="cancelled"`), a skipped run (created terminal by
-`create_skipped_run`, never fired), and a run that failed before spawning (argv build error or
-internal exception; `status="failed"` with `exit_code=None`) all bypass it entirely. Opening a
-grace window for one of these would just burn the full window before falling back.
+A matching action and an eligible terminal status permit a grace window. The scheduler may
+finish a run without firing a child, such as when preparation fails or the scheduler cancels
+its fire task. In that case the bounded grace window expires and the parent's stored
+status determines the result.
 
 Child-discovery/handoff algorithm: a discovered child can itself already own a root (e.g. it's
 a directly-watched id in an overlapping watch set) — the parent's root(s) are unioned into
