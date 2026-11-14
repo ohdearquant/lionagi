@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import Callable, Mapping
@@ -791,8 +792,11 @@ class Endpoint:
 
             from lionagi.config import settings
 
+            # aiocache builds its key from the arguments, so the function is handed the
+            # headers with each credential value replaced by its digest; the request is
+            # sent with the real headers, read from this scope.
             @cached(**settings.aiocache_config.as_kwargs())
-            async def _cached_call(payload: dict, headers: dict, **kwargs):
+            async def _cached_call(payload: dict, cache_headers: dict, **kwargs):
                 mark_uncached_response(cache_source)
                 if self.circuit_breaker and self.retry_config:
                     return await self.circuit_breaker.execute(call_func, payload, headers, **kwargs)
@@ -805,7 +809,7 @@ class Endpoint:
 
                 return await self._call(payload, headers, **kwargs)
 
-            return await _cached_call(payload, headers, **kwargs)
+            return await _cached_call(payload, _cache_key_headers(headers), **kwargs)
 
         if self.retry_config:
             return await call_func(
@@ -1526,31 +1530,68 @@ def _without_credential_headers(headers: Any) -> Any:
     is not a pair is dropped. Any other value, such as a string of header lines, cannot be
     read for its names and is returned as ``None``, so no header from it is restored.
     """
-    from lionagi.libs.credential_fields import fold_field_name
-
-    def names_credential(name: Any) -> bool:
-        if isinstance(name, (bytes, bytearray)):
-            name = bytes(name).decode("latin-1")
-        if not isinstance(name, str):
-            return False
-        folded = fold_field_name(name).strip("_")
-        compact = folded.replace("_", "")
-        return (
-            _names_credential_setting(name)
-            or compact == "host"
-            or "token" in compact
-            or folded.endswith("_key")
-        )
-
     if isinstance(headers, Mapping):
-        return {name: value for name, value in headers.items() if not names_credential(name)}
+        return {
+            name: value for name, value in headers.items() if not _names_credential_header(name)
+        }
     if isinstance(headers, (list, tuple)):
         return [
             pair
             for pair in headers
-            if isinstance(pair, (list, tuple)) and len(pair) == 2 and not names_credential(pair[0])
+            if isinstance(pair, (list, tuple))
+            and len(pair) == 2
+            and not _names_credential_header(pair[0])
         ]
     return None
+
+
+def _names_credential_header(name: Any) -> bool:
+    """Whether a header's name reads as one that carries a credential or picks the server.
+
+    The rule ``_without_credential_headers`` describes: a name that reads as a credential
+    setting, ``Host``, any name holding ``token``, and any whose last word is ``key``.
+    """
+    from lionagi.libs.credential_fields import fold_field_name
+
+    if isinstance(name, (bytes, bytearray)):
+        name = bytes(name).decode("latin-1")
+    if not isinstance(name, str):
+        return False
+    folded = fold_field_name(name).strip("_")
+    compact = folded.replace("_", "")
+    return (
+        _names_credential_setting(name)
+        or compact == "host"
+        or "token" in compact
+        or folded.endswith("_key")
+    )
+
+
+def _cache_key_headers(headers: Any) -> Any:
+    """``headers`` as the response cache keys them: each credential value as its digest.
+
+    A header named as ``_names_credential_header`` reads it keeps its name, and its value
+    becomes ``sha256:`` and the first 16 hex digits of the SHA-256 of its text, so requests
+    made with different keys still get different cache entries and no key's text is part of
+    a cache key. Every other header is kept as it is. A value that is not a mapping is
+    returned as it is.
+    """
+    if not isinstance(headers, Mapping):
+        return headers
+
+    def digest(value: Any) -> str:
+        if isinstance(value, SecretStr):
+            value = value.get_secret_value()
+        if isinstance(value, (bytes, bytearray)):
+            data = bytes(value)
+        else:
+            data = str(value).encode("utf-8", "surrogatepass")
+        return "sha256:" + hashlib.sha256(data).hexdigest()[:16]
+
+    return {
+        name: digest(value) if _names_credential_header(name) else value
+        for name, value in headers.items()
+    }
 
 
 _STORED_URL_REMEDY = (

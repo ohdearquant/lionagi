@@ -332,3 +332,47 @@ async def test_streamed_usage_is_not_reported_as_a_final_response(monkeypatch):
     assert [item async for item in call.stream()]
     row = collector.snapshot()["requests"][0]
     assert (row["cache_read_tokens"], row["cache_write_tokens"]) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_the_response_cache_key_holds_no_credential(monkeypatch):
+    from aiocache import SimpleMemoryCache, caches
+    from aiocache.serializers import JsonSerializer
+
+    from lionagi.config import settings
+
+    monkeypatch.setattr(settings.aiocache_config, "alias", "default")
+    cache = SimpleMemoryCache(serializer=JsonSerializer())
+    monkeypatch.setattr(caches, "get", lambda alias: cache)
+    secret = "sk-test-" + uuid.uuid4().hex
+    other = "sk-test-" + uuid.uuid4().hex
+    sent = []
+
+    async def transport(payload, headers, **kwargs):
+        sent.append(dict(headers))
+        return {"ok": len(sent)}
+
+    endpoints = []
+    for key in (secret, other):
+        endpoint = Endpoint(
+            config=EndpointConfig(
+                name="test", endpoint="chat/completions", provider="openai", api_key=key
+            )
+        )
+        monkeypatch.setattr(endpoint, "_call", transport)
+        endpoints.append(endpoint)
+    request = {"model": "gpt-4.1-mini", "messages": [{"role": "user", "content": uuid.uuid4().hex}]}
+
+    first = await endpoints[0].call(request, cache_control=True)
+    again = await endpoints[0].call(request, cache_control=True)
+    second_key = await endpoints[1].call(request, cache_control=True)
+
+    # The request itself still carries the real credential.
+    assert any(secret in str(value) for value in sent[0].values())
+    # One entry per key, and a repeat with the same key is a hit.
+    assert first == again == {"ok": 1}
+    assert second_key == {"ok": 2}
+    keys = list(cache._cache)
+    assert len(keys) == 2
+    assert all(secret not in str(k) and other not in str(k) for k in keys)
+    assert all("sha256:" in str(k) for k in keys)
