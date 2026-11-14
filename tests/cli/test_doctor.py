@@ -278,6 +278,19 @@ def test_check_lionagi_home_ok_when_writable(tmp_path: Path) -> None:
     assert (home / "runs").is_dir()
 
 
+def test_check_default_lionagi_home_does_not_create_missing_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionagi._paths
+
+    home = tmp_path / "missing-home"
+    monkeypatch.setattr(lionagi._paths, "LIONAGI_HOME", home)
+    result = _check_lionagi_home()
+    assert result["status"] == "warn"
+    assert "did not create it" in result["detail"]
+    assert not home.exists()
+
+
 def test_check_lionagi_home_fail_when_not_writable(tmp_path: Path) -> None:
     home = tmp_path / "readonly-home"
     home.mkdir()
