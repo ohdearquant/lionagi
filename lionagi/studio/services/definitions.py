@@ -19,7 +19,7 @@ from lionagi.state.engine import mask_credentials
 
 from ..registry import studio_route
 from ._path_safety import safe_path_join, validate_name_component
-from .agents import _canonicalize_casts, _is_protected_system
+from .agents import _canonicalize_casts, _read_agent_for_write
 from .redaction import (
     RedactedPayloadError,
     abbreviate_path,
@@ -461,9 +461,9 @@ async def save_definition(
             # calling into agents.py, since that module resolves its own _AGENTS_ROOT
             # independently of this module's (test-patchable) AGENTS_DIR/KIND_DIRS.
             existing_text = await run_sync(disk_file.read_text)
-            existing_fm, _ = _parse_fm(existing_text)
-            if _is_protected_system(existing_fm):
-                raise PermissionError(f"Agent '{name}' is a system agent and cannot be edited")
+            _, _, protection = _read_agent_for_write(existing_text)
+            if protection:
+                raise PermissionError(f"Agent '{name}' {protection} and cannot be edited")
 
         return await _write_version(kind, name, disk_file, content, message)
 

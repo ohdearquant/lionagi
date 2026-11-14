@@ -511,6 +511,71 @@ def _make_definitions_client(tmp_path, monkeypatch):
     return TestClient(app, base_url="http://127.0.0.1:8765"), agents_dir
 
 
+@pytest.mark.parametrize(
+    "method, url, body",
+    [
+        pytest.param("PUT", "/api/agents/sample", {"system_prompt": "New prompt."}, id="update"),
+        pytest.param("DELETE", "/api/agents/sample", None, id="delete"),
+        pytest.param(
+            "POST", "/api/definitions/agent/sample", {"content": "New prompt."}, id="definition"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "text, protected",
+    [
+        pytest.param(
+            "---\nlion_system: true\nDeadline: 2026-02-30\n---\nOriginal prompt.\n",
+            True,
+            id="invalid-date",
+        ),
+        pytest.param(
+            "---\nlion_system: true\nNotes: [unfinished\n---\nOriginal prompt.\n",
+            True,
+            id="invalid-yaml",
+        ),
+        pytest.param(
+            "---\nlion_system: true\nOriginal prompt.\n",
+            True,
+            id="unclosed",
+        ),
+        pytest.param(
+            "---\nNotes: [unfinished\n---\nOriginal prompt mentions lion_system.\n",
+            False,
+            id="marker-only-in-body",
+        ),
+        pytest.param(
+            "---\nlion_system: false\n---\nOriginal prompt.\n",
+            False,
+            id="readable-false",
+        ),
+    ],
+)
+def test_agent_writes_protect_system_frontmatter(
+    tmp_path, monkeypatch, method, url, body, text, protected
+):
+    client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
+    path = agents_dir / "sample.md"
+    original = text.encode()
+    path.write_bytes(original)
+
+    response = client.request(method, url, json=body, headers={"Content-Type": "application/json"})
+
+    if protected:
+        assert response.status_code == 403, response.text
+        assert "frontmatter could not be read" in response.json()["detail"]
+        assert path.read_bytes() == original
+    else:
+        assert response.status_code == 200, response.text
+        if method == "DELETE":
+            assert not path.exists()
+        else:
+            assert path.read_bytes() != original
+            assert "New prompt." in path.read_text()
+            if method == "PUT" and "lion_system: false" in text:
+                assert "lion_system: false" in path.read_text()
+
+
 def test_definitions_save_route_refuses_system_agent(tmp_path, monkeypatch):
     client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
     _write_agent_md(

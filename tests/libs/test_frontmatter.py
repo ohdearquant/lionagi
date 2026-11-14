@@ -36,6 +36,7 @@ def test_parse_frontmatter_strict_chains_invalid_date_error():
         parse_frontmatter_strict(INVALID_DATE)
 
     assert isinstance(caught.value.__cause__, ValueError)
+    assert str(caught.value.__cause__) in str(caught.value)
 
 
 @pytest.mark.parametrize(

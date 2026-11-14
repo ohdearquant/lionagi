@@ -13,7 +13,7 @@ def _load_frontmatter_yaml(document: str) -> Any:
         return yaml.safe_load(document)
     except ValueError as exc:
         # A YAML scalar constructor can reject a value such as an invalid calendar date.
-        raise yaml.YAMLError("frontmatter contains an invalid YAML scalar") from exc
+        raise yaml.YAMLError(f"frontmatter contains an invalid YAML scalar: {exc}") from exc
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:

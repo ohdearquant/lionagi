@@ -8,6 +8,7 @@ import yaml
 from fastapi import Body, HTTPException
 
 from lionagi._paths import LIONAGI_HOME
+from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.ln.concurrency import run_sync
 from lionhub.agent.casts.pattern import list_modes as _list_modes
@@ -50,20 +51,24 @@ def _is_protected_system(fm: dict[str, Any]) -> bool:
       ``lion_system: false`` explicitly, so they are unambiguously
       editable/deletable by their owner.
 
-    This is the single place both write-protection call sites (this module and
-    ``definitions.py``'s agent save path) resolve the predicate, so they cannot
-    drift apart from each other or from the runtime again.
+    Write paths also check for the flag when the frontmatter cannot be read.
     """
     return "lion_system" in fm and bool(fm["lion_system"])
 
 
-def _read_frontmatter(path) -> dict[str, Any]:
+def _read_agent_for_write(text: str) -> tuple[dict[str, Any], str, str | None]:
+    """Return frontmatter, prompt body, and any reason the agent is protected."""
     try:
-        text = path.read_text()
-    except OSError:
-        return {}
-    fm, _ = _parse_frontmatter(text)
-    return _normalize_frontmatter(fm)
+        fm, body = parse_frontmatter_strict(text)
+    except (yaml.YAMLError, RecursionError):
+        stripped = text.strip()
+        if _FM_SPLIT.match(stripped):
+            _, block, *_ = _FM_SPLIT.split(stripped, maxsplit=2)
+            if "lion_system" in block:
+                return {}, "", "may be a system agent because its frontmatter could not be read"
+        fm, body = _parse_frontmatter(text)
+    reason = "is a system agent" if _is_protected_system(fm) else None
+    return fm, body, reason
 
 
 def _normalize_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
@@ -310,9 +315,13 @@ def delete_agent(name: str) -> bool:
     if stem == DEFAULT_AGENT_NAME:
         raise AgentProtectedError(f"Agent '{stem}' is the default agent and cannot be deleted")
 
-    fm = _read_frontmatter(path)
-    if _is_protected_system(fm):
-        raise AgentProtectedError(f"Agent '{stem}' is a system agent and cannot be deleted")
+    try:
+        existing_text = path.read_text()
+    except OSError:
+        existing_text = ""
+    _, _, protection = _read_agent_for_write(existing_text)
+    if protection:
+        raise AgentProtectedError(f"Agent '{stem}' {protection} and cannot be deleted")
 
     path.unlink()
     return True
@@ -330,11 +339,10 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
         existing_text = path.read_text()
     except OSError:
         existing_text = ""
-    existing_fm, existing_body = _parse_frontmatter(existing_text)
+    existing_fm, existing_body, protection = _read_agent_for_write(existing_text)
+    if protection:
+        raise AgentProtectedError(f"Agent '{stem}' {protection} and cannot be edited")
     existing_fm = _normalize_frontmatter(existing_fm)
-
-    if _is_protected_system(existing_fm):
-        raise AgentProtectedError(f"Agent '{stem}' is a system agent and cannot be edited")
 
     # While demo mode is on, a client that fetched the redacted view and posted
     # it back unmodified must not be able to overwrite the real file with the
