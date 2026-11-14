@@ -263,6 +263,11 @@ lionagi/state/lifecycle/
   with `transition_id=None` because no history row was written.
 - `rejected` returns the unchanged terminal status and `transition_id=None` after the rejection
   audit commits.
+  [ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+  proposes a schedule-run exception: an otherwise applicable decision refusal on a nonterminal
+  row returns `rejected` with its unchanged current status and `transition_id=None` after the
+  same audit. For example, a guarded `running`-to-terminal write carrying a decision without the
+  scheduler's marker returns `running`. Other rejection outcomes retain the rule above.
 - Validation errors and not-found errors are exceptions, not `rejected`. Storage errors propagate
   after rollback; they are not converted into conflicts.
 
@@ -274,7 +279,11 @@ inside a generic false result.
 ### D2 — One complete policy per managed entity
 
 [ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
-proposes refusing terminal-to-nonterminal overrides for schedule runs.
+proposes three audited refusals for schedule runs: a terminal-to-nonterminal
+move even with an override, a same-status or terminal-to-terminal write with a
+different recorded decision, and a decision insertion outside the guarded
+scheduler write. An otherwise applicable decision refusal can leave a
+nonterminal status unchanged.
 
 One registry maps each entity type to its table, vocabulary, initial states, terminal set, allowed
 edges, same-status rule, allowed same-row patch fields, and reason-code namespace.
@@ -540,6 +549,11 @@ callers use the service. They do not retain independent policy.
 | `transitions.transition()` | `applied` | `TransitionResult(applied=True, conflict=False, ...)` |
 | `transitions.transition()` | `conflict` | `TransitionResult(applied=False, conflict=True, ...)` |
 | adapter validation/not found | exception | preserve current `ValueError`/`LookupError` class at wrapper boundary |
+
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+proposes one additional mapping: for `schedule_run`, `transitions.transition()` raises
+`TransitionRejectedError` on `rejected` after the audit commits. Other legacy mappings remain
+as above.
 
 Migration phases and gates are:
 

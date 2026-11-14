@@ -5,7 +5,7 @@
 - **Implementation-status**: not-started
 - **Area**: scheduling-control-plane
 - **Date**: 2026-11-04
-- **Relations**: extends ADR-0070; amends ADR-0070 D4's selection input
+- **Relations**: extends ADR-0070; amends ADR-0035 D5, ADR-0057 D4, ADR-0058 D1/D2/D5, and ADR-0070 D4
 
 ## Context
 
@@ -130,7 +130,7 @@ Gate: the element is written in the same `UPDATE` as `status`, under the same co
 - Path: `_guarded_terminal_status` (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._guarded_terminal_status`), then `SchedulerStateService.update_status` (`lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::_DBSchedulerStateService.update_status`), then `StateDB.update_status` (`lionagi/state/db.py::StateDB.update_status`, delegating at `lionagi/state/db.py` `return await _lifecycle_adapters.run_update_status(`), then `run_update_status` (`lionagi/state/lifecycle/adapters.py::run_update_status`). That function calls `service._transition(...)` without the reason-column flag (`lionagi/state/lifecycle/adapters.py::run_update_status`).
 - `_transition` defaults `write_reason_columns` to `True` (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`). With the flag set, `_write` puts `status_evidence_refs = :evidence_refs` in the same `UPDATE` as `status` (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`). That statement is guarded by `status = :previous_status` (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`). The status change and the ref are one statement.
 - The policy's `reason_columns` defaults to `True` (`lionagi/state/lifecycle/models.py::LifecyclePolicy`). The schedule_run registration does not override it (`lionagi/state/lifecycle/policy.py::build_default_registry`). That flag is read only by `LifecycleService.transition` (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.transition`), which the scheduler does not call.
-- Result: the flag is true for schedule_run terminal writes on the normal path and on dispatched recovery. Two other writers differ. The lifecycle reaper also goes through `db.update_status` and keeps the flag (`lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`), but it is not one of the two paths named here, and it records no selection. The queued-task worker's exhausted-lease and execution terminal writes call `transition()`, whose legacy route forces `write_reason_columns=False` (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionagi/state/transitions.py::transition`; `lionagi/state/lifecycle/adapters.py::run_legacy_transition`). Refs written through that route are not stored. Terminal admission rejection instead writes `skipped` and reason columns through `StateDB.update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). Consequence 9 covers this.
+- Result: the flag is true for all three D1 writers. The lifecycle reaper also goes through `db.update_status` and keeps the flag (`lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`), and records no selection. The queued-task worker's exhausted-lease and execution terminal writes call `transition()`, whose legacy route forces `write_reason_columns=False` (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionagi/state/transitions.py::transition`; `lionagi/state/lifecycle/adapters.py::run_legacy_transition`). That route appends evidence to history without writing the current reason columns. Terminal admission rejection instead writes `skipped` and reason columns through `StateDB.update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). Consequence 9 covers this.
 
 Why this way:
 
@@ -138,8 +138,9 @@ Why this way:
 - The choice is computed before the write. A crash before the write leaves no record, and the row stays `running` for startup reconciliation (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._reconcile_dispatched_orphans`, `lionagi/state/db.py::StateDB.list_dispatched_running_schedule_runs`).
 - A usable recorded branch stays authoritative for chain following after a schedule edit, even if the run's status and exit code disagree.
 
-The new terminal floor narrows the audited override contract in
-[ADR-0057 D4](ADR-0057-operational-lifecycle-and-transition-audit.md#d4--terminal-changes-require-an-audited-override)
+The new terminal floor narrows the audited override contracts in
+[ADR-0035 D5](ADR-0035-persisted-run-completion-contract.md#d5--transactional-status-vocabulary-terminal-protection-and-cas)
+and [ADR-0057 D4](ADR-0057-operational-lifecycle-and-transition-audit.md#d4--terminal-changes-require-an-audited-override)
 and the generic terminal override in
 [ADR-0058 D2](ADR-0058-unified-lifecycle-transition-service.md#d2--one-complete-policy-per-managed-entity)
 for schedule runs. A terminal `schedule_run` cannot move to a nonterminal status,
@@ -149,31 +150,66 @@ schedule run again creates a new run row. The existing operational override call
 target sessions (`lionhub/src/lionhub/orchestration/runs.py::_reopen_session_for_resume`,
 `lionagi/state/_mirror_common.py::reconcile_status`).
 
-Implement the terminal floor in
+Apply the terminal floor and decision rules in
 `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`,
 using the schedule-run terminal set in
-`lionagi/state/lifecycle/policy.py::build_default_registry`. An otherwise applicable
-attempt to move a terminal schedule run to a nonterminal status takes the rejected
-path even with an override. It records `status_transition_rejected`, leaves the
-current row and its transition history unchanged, and surfaces
-`TransitionRejectedError` through `lionagi/state/lifecycle/adapters.py::run_update_status`
-after the audit commits. Typed calls retain their rejected outcome. A lost
-expected-status compare-and-set remains a conflict as specified in D2.
+`lionagi/state/lifecycle/policy.py::build_default_registry`. Read
+`status_evidence_refs` with the locked row (`SELECT ... FOR UPDATE` on PostgreSQL
+and the `BEGIN IMMEDIATE` write transaction from
+`lionagi/state/db.py::_install_begin_immediate` on SQLite).
 
-D3 seeds a decision for a row created `skipped` or `failed`. After creation, only
-the scheduler's guarded D1 write from `running` to terminal can add a decision.
-Read `status_evidence_refs` in the locked read already taken by
-`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`
-(`SELECT ... FOR UPDATE` on PostgreSQL and the `BEGIN IMMEDIATE` write transaction
-from `lionagi/state/db.py::_install_begin_immediate` on SQLite).
-Check the expected-state and other compare-and-set guards before validating a
-proposed selection. On an otherwise applicable write, carry a stored decision into
-the command before
-`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`. Preserve
-the element by kind across versions, same-status appends and terminal-to-terminal
-overrides. An identical element is accepted. A different element or an attempted
-insertion outside D1 takes the same audited rejected path. Only a genuine lost guard
-can return a compare-and-set conflict.
+For `schedule_run`, evaluate the applicable guards and policy in this order:
+
+1. Check the expected status.
+2. Check the runner identity and quarantine guards when applicable.
+3. Check `expected_version`, exposed as `expected_updated_at` by
+   `StateDB.update_status`.
+4. Check `extra_guard`, supplied as `guard` by the legacy route.
+5. Check the terminal floor and the decision. Evaluate the terminal floor
+   before handling an undeclared edge on the legacy route.
+
+Any lost guard returns a conflict and writes no rejection event. Other
+entities keep their existing check order.
+
+D3 seeds a decision for a row created `skipped` or `failed`. After creation,
+`lionagi/state/lifecycle/models.py::TransitionCommand` has a keyword-only
+`record_chain_decision` attribute that defaults to `False`. Only the D1
+writers in the table set it for their schedule-run writes, passing it through
+`SchedulerStateService.update_status`, `StateDB.update_status` and
+`run_update_status`. The service admits an insertion only when the attribute
+is true, the locked row is `running`, the target status is terminal, and the
+request requires `expected_statuses={"running"}`. The attribute prevents
+accidental insertion by in-process callers. It is not a security boundary.
+
+On an otherwise applicable write, carry a stored decision into the command
+before `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`.
+Preserve it by kind across versions, same-status appends and
+terminal-to-terminal overrides. An identical element is accepted. A different
+element or an insertion outside D1 takes the audited rejected path, including
+an insertion without the marker. A terminal-to-nonterminal write takes that
+path even with a valid override.
+
+Each refusal commits one `status_transition_rejected` event in `admin_events`
+and leaves the current row and transition history unchanged.
+[ADR-0058 D1](ADR-0058-unified-lifecycle-transition-service.md#d1--immutable-typed-command-and-result-records)
+has a schedule-run exception: a decision refusal on a nonterminal row returns
+`rejected` with the unchanged current status and `transition_id=None`. For
+example, a guarded `running`-to-terminal write carrying a decision without the
+marker returns `running`. The same rule covers a `queued`-to-`running` write
+carrying a decision and a marked `running`-to-terminal write without the running
+guard. The existing result rule applies to other rejections.
+
+`lionagi/state/lifecycle/adapters.py::run_update_status` and
+`lionagi/state/transitions.py::transition` raise `TransitionRejectedError` for
+these rejected outcomes after the audit commits. This adds a schedule-run
+mapping to [ADR-0058 D5](ADR-0058-unified-lifecycle-transition-service.md#d5--facade-preserving-staged-migration).
+Other entities keep their existing legacy behavior. The exception carries a
+reason from the service outcome, one of `no_override`, `terminal_floor`, or
+`decision_conflict`, and its message names the reason. The `no_override`
+case keeps the existing message text. The `terminal_floor` reason applies
+when the floor rejects the write, including if the request provided an
+override. The `decision_conflict` reason covers replacement and unauthorized
+insertion.
 
 A reason-bearing update writes the resulting evidence list to the row and its
 new history entry. The legacy status-only route keeps its existing current reason
@@ -298,25 +334,35 @@ The cutover procedure applies to both backends:
    still closed, exercise a fresh version-6 writable open and verify that it
    fails with the version error
    (`lionagi/state/db.py::StateDB._raise_if_schema_too_new`).
-4. Restart only the upgraded clients for acceptance. Check a fresh open and a representative store
-   write through the scheduler's normal fire and recovery
-   (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine`),
-   the queued-task worker and stale-run reaper
-   (`lionhub/src/lionhub/orchestration/scheduler/worker.py::worker_tick`,
-   `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`),
+4. Restart only the upgraded clients for acceptance. Check a fresh store open
+   and representative writes through each client path listed in this step.
+   Record one acceptance schedule and use it for the scheduler's normal fire
+   and recovery (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine`),
+   the stale-run reaper
+   (`lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`),
    Studio schedule creation, update and deletion
    (`lionagi/studio/services/schedules.py::create_schedule`,
    `lionagi/studio/services/schedules.py::update_schedule`,
-   `lionagi/studio/services/schedules.py::delete_schedule`), Studio task submission and cancellation
-   (`lionagi/studio/services/task_applications.py::submit_task`,
-   `lionagi/studio/services/task_applications.py::cancel_task`), and direct SDK
+   `lionagi/studio/services/schedules.py::delete_schedule`), and direct SDK
    schedule-run create, update and override
    (`lionagi/state/db.py::StateDB.create_schedule_run`,
    `lionagi/state/db.py::StateDB.update_schedule_run`,
-   `lionagi/state/db.py::StateDB.update_status`). Include the CLI resume and
-   mirror session override controls from D1. Verify the written current and
-   history records. Exercise a fresh monitor open and observe the persisted
-   selection and its child if one exists before restoring ordinary admission.
+   `lionagi/state/db.py::StateDB.update_status`). Record every run ID those
+   writes produce, including recovery replacements and chain children.
+
+   Exercise standalone Studio task submission and cancellation
+   (`lionagi/studio/services/task_applications.py::submit_task`,
+   `lionagi/studio/services/task_applications.py::cancel_task`) and the
+   queued-task worker (`lionhub/src/lionhub/orchestration/scheduler/worker.py::worker_tick`)
+   on those tasks. Their `schedule_id` is NULL. Include the standalone CLI
+   resume and mirror session override controls from D1. Record every task,
+   run and session ID written by the standalone checks in the same cutover
+   record. Treat all listed rows as acceptance data and exclude them when
+   interpreting production run history.
+
+   Verify the written current and history records. Exercise a fresh monitor
+   open and observe the persisted selection and its child if one exists before
+   restoring ordinary admission.
 
 ## Consequences
 
@@ -328,8 +374,8 @@ The cutover procedure applies to both backends:
 6. **`li wait` does not follow chains.** It returns when the waited row is terminal (`lionhub/src/lionhub/serve/cli/wait.py::wait_for_terminal`). A caller who needs a follow-up's result must use `li monitor run`. This ADR does not change `li wait`.
 7. **Rows written before this change keep the old rule.** That includes rows written by the queued-task worker and by any other finalizer. The old disagreement with the scheduler remains for those rows. The change does not repair history.
 8. **Recording a selection adds one element to the current row and the corresponding history entry.** The status history row copies the decision-bearing write's list (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`, `lionagi/state/schema.sql:787-796@45fd503ecf2af299d48b762cd895a2b8e650ced5`). Of the readers of `status_transitions`, only `get_schedule_history` returns its `evidence_refs`, and only for schedule definitions (`lionagi/state/db.py::StateDB.get_schedule_history`). The others select counts, identifiers or reason columns, or delete rows.
-9. **The queued-task worker lane keeps the existing rule.** Exhausted-lease and execution terminal writes use legacy `transition()` with reason columns off (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionagi/state/lifecycle/adapters.py::run_legacy_transition`), so refs written through that route are not stored. Terminal admission rejection instead writes `skipped` and reason columns through `StateDB.update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). The worker has no chain logic. Its own terminal writes leave an absent stored `exit_code` absent; under the existing no-ref rule such a row resolves without grace (`lionhub/src/lionhub/serve/cli/monitor.py::_advance_chains`). Moving the remaining legacy worker writes to the reason-column route is a separate change; this ADR neither requires nor blocks it.
-10. **Maintenance.** A contributor who adds a reader of `status_evidence_refs` must ignore unknown kinds, and the table above is the list to keep current. A contributor who routes schedule-run terminal writes through `transition()` silently drops the element (`lionagi/state/lifecycle/adapters.py::run_legacy_transition`). The gate test in the Tests section guards against that.
+9. **The queued-task worker lane keeps the existing rule.** Exhausted-lease and execution terminal writes use legacy `transition()` with reason columns off (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionagi/state/lifecycle/adapters.py::run_legacy_transition`), so that route writes its evidence to history only. Terminal admission rejection instead writes `skipped` and reason columns through `StateDB.update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). The worker has no chain logic. Its own terminal writes leave an absent stored `exit_code` absent; under the existing no-ref rule such a row resolves without grace (`lionhub/src/lionhub/serve/cli/monitor.py::_advance_chains`). Moving the remaining legacy worker writes to the reason-column route is a separate change; this ADR neither requires nor blocks it.
+10. **Maintenance.** A contributor who adds a reader of `status_evidence_refs` must ignore unknown kinds, and the table above is the list to keep current. The legacy `transition()` route rejects a decision insertion and keeps the current reason columns unchanged on applied writes (`lionagi/state/lifecycle/adapters.py::run_legacy_transition`). The D1 gate test guards the distinction.
 11. **Open handles require the offline cutover.** A version-6 binary cannot make a fresh
     native writable open of the stamped store
     (`lionagi/state/db.py::StateDB._refuse_newer_schema`,
@@ -354,7 +400,7 @@ New tests (none exist at this checkout):
 1. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_normal_path_terminal_write_records_chain_decision`: an exit-0 child with an `on_fail` branch and a `completed_empty` invocation. The row's `status_evidence_refs` contains `{"kind": "chain_decision", "v": 1, "ref": "on_fail"}` and the invocation ref.
 2. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_recovery_terminal_write_records_chain_decision`: a dispatched orphan with a stored branch. The row carries the same element, and the definition is read before the compare-and-set.
 3. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_selection_is_none_at_depth_cap`: a run at `_MAX_CHAIN_DEPTH` records `none` and launches nothing.
-4. `tests/state/lifecycle/test_schedule_adapter.py::test_schedule_run_status_write_keeps_reason_columns`: a `db.update_status` write for a schedule_run persists `status_evidence_refs`. A companion case shows that the `transition()` route drops them. This is the reason-column gate test (D1).
+4. `tests/state/lifecycle/test_schedule_adapter.py::test_schedule_run_status_write_keeps_reason_columns`: a `db.update_status` write for a schedule run persists ordinary `status_evidence_refs`. The legacy `transition()` route records ordinary refs in history only. This is the reason-column gate test (D1).
 5. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_lost_terminal_cas_does_not_chain_normal_path` and `::test_lost_terminal_cas_does_not_chain_recovery`: a lost compare-and-set on each path launches no child and writes no selection.
 6. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_none_returns_without_sleep`: a `none` row resolves with no sleep, whatever its exit code. `::test_chain_decision_branch_with_no_chain_returns_without_sleep`: with `--no-chain`, an `on_success` row resolves with no sleep and the wait returns the row's own result.
 7. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_branch_follows_child`: an `on_fail` selection on an exit-0 parent opens grace and prints a child that appears within it.
@@ -388,7 +434,9 @@ New tests (none exist at this checkout):
 17. On SQLite and PostgreSQL, issue a justified terminal-to-nonterminal schedule-run
     override. It raises `TransitionRejectedError`, records one
     `status_transition_rejected` event and changes neither the run row nor its
-    transition history. A terminal-to-terminal override remains an accepted control.
+    transition history. Repeat through legacy `transition()` without an
+    override and assert the exception and one committed rejection audit.
+    A terminal-to-terminal override remains an accepted control.
 18. Exercise direct tombstoning against a terminal row using both its terminal
     status and a stale running expectation. It inserts no replacement and changes
     neither the row nor history. A running orphan with incoming reserved evidence
@@ -398,6 +446,28 @@ New tests (none exist at this checkout):
     terminal-creation path. Neither writes the decision to the current row
     or history. Repeat at an enabled version on SQLite and PostgreSQL and verify
     the new element is present in both.
+20. Attempt to change a stored decision using a stale `expected_updated_at`.
+    Assert that `update_status` returns `False` and writes no rejection event.
+    Repeat through legacy `transition()` with a stale non-null `lease_attempts`
+    guard, and assert `applied=False`, `conflict=True` and no rejection event.
+    Both attempts leave the run row and its transition history unchanged.
+21. On an enabled store, send a guarded `running`-to-terminal `update_status`
+    with a decision and no `record_chain_decision` attribute set. Assert the
+    rejected service outcome reports unchanged `running` and
+    `transition_id=None`, and the facade raises `TransitionRejectedError`.
+    Each invocation writes one rejection audit and leaves the run row and
+    history unchanged. The same write with the attribute enabled records
+    the decision in both current and history records. Verify rejection with
+    unchanged `running` when the attribute is enabled but the running guard
+    is omitted. A `queued`-to-`running` write carrying a decision must be
+    rejected with unchanged `queued`. For each of these two refusals, assert
+    `transition_id=None` in the service outcome, `TransitionRejectedError`
+    at the facade, one committed `status_transition_rejected` event, and an
+    unchanged run row and history.
+22. Check the exception reason and message for an ordinary terminal-to-terminal
+    write without an override, a write refused by the terminal floor even
+    with a valid override, and a decision refusal. The no-override message
+    must match its existing text.
 
 Existing tests that must stay unchanged, because their fixtures carry no ref and so exercise the existing rule:
 

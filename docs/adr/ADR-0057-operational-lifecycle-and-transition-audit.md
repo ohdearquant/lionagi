@@ -311,7 +311,11 @@ status in SQL closes the read-to-write gap even if code bypasses in-process seri
 ### D4 — Terminal changes require an audited override
 
 [ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
-proposes refusing terminal-to-nonterminal overrides for schedule runs.
+proposes three audited refusals for schedule runs: a terminal-to-nonterminal
+move even with an override, a same-status or terminal-to-terminal write with a
+different recorded decision, and a decision insertion outside the guarded
+scheduler write. An otherwise applicable decision refusal can leave a
+nonterminal status unchanged.
 
 Once an entity reaches the terminal set in D1, a write that changes the value is rejected unless the
 caller supplies an explicit override actor and justification. Same-status writes are not terminal
