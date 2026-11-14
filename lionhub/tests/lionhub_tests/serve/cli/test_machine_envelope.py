@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from lionagi._feature_errors import MissingFeatureError
 from lionhub.orchestration.job import (
     EXIT_CODE_ENVIRONMENT_ERROR,
     clear_run_allocation,
@@ -389,6 +390,25 @@ def test_an_unusable_environment_exits_78_with_the_normal_failure_shape(capfd, m
     assert _one_object(capfd.readouterr().out) == startup_envelope
 
 
+def test_startup_envelope_matches_the_masked_stderr_summary(capfd, monkeypatch):
+    def _missing_machine():
+        raise MissingFeatureError(
+            feature="machine",
+            missing_distribution="example-dependency",
+            install_hint="See the example setting password=placeholder",
+        )
+
+    monkeypatch.setattr(cli_main, "_load_machine", _missing_machine)
+
+    assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
+    captured = capfd.readouterr()
+    summary = captured.err.splitlines()[-1].removeprefix("error: ")
+    assert "password=***" in summary
+    assert "placeholder" not in summary
+    envelope = _one_object(captured.out)
+    assert envelope["error"]["message"] == summary
+
+
 def test_a_missing_import_after_a_run_exists_is_an_envelope(capfd, monkeypatch):
     """78 claims nothing ran, and once a run directory exists that is false.
 
@@ -408,25 +428,27 @@ def test_a_missing_import_after_a_run_exists_is_an_envelope(capfd, monkeypatch):
 
 
 def test_78_survives_end_to_end_under_the_machine_flag():
-    """The public adapter can emit the envelope with the dispatcher missing."""
+    """The adapter writes UTF-8 with the dispatcher missing and ASCII stdout."""
     script = textwrap.dedent(
         """
         import runpy
         import sys
 
         BLOCKED = "lionhub.serve.cli.machine"
+        MISSING = BLOCKED + ".caf" + chr(233)
 
         class _RefuseOne:
             def find_spec(self, fullname, path=None, target=None):
                 if fullname == BLOCKED:
                     raise ModuleNotFoundError(
-                        f"No module named {fullname!r}", name=fullname
+                        f"No module named {MISSING!r}", name=MISSING
                     )
                 return None
 
         sys.modules.pop(BLOCKED, None)
         sys.meta_path.insert(0, _RefuseOne())
 
+        assert sys.stdout.encoding == "ascii", sys.stdout.encoding
         sys.argv = ["li", "handshake", "--machine"]
         runpy.run_module("lionhub.serve.cli", run_name="__main__")
         """
@@ -434,17 +456,18 @@ def test_78_survives_end_to_end_under_the_machine_flag():
     proc = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True,
-        text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH, "PYTHONIOENCODING": "ascii"},
         timeout=120,
     )
 
     assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
-    message = proc.stderr.splitlines()[-1].removeprefix("error: ")
-    assert "lionhub.serve.cli.machine" in message
+    summary = proc.stderr.splitlines()[-1].decode("ascii").removeprefix("error: ")
+    message = summary.replace(r"\xe9", "é")
+    assert "lionhub.serve.cli.machine.café" in message
     assert "No run was started" in message
-    assert _one_object(proc.stdout) == machine.failure(
+    assert b"caf\xc3\xa9" in proc.stdout
+    assert _one_object(proc.stdout.decode("utf-8")) == machine.failure(
         "unavailable", message, {"exit_code": EXIT_CODE_ENVIRONMENT_ERROR}
     )
 

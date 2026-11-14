@@ -531,11 +531,20 @@ def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int, argv: 
     )
     log_error(message)
     if "--machine" in _args_before_sentinel(argv):
+        from lionagi.state.engine import mask_credentials
+
         from ._machine_envelope import _encode_envelope, _failure
 
-        envelope = _failure("unavailable", message, {"exit_code": exit_code})
-        sys.stdout.write(_encode_envelope(envelope))
-        sys.stdout.flush()
+        envelope = _failure("unavailable", mask_credentials(message), {"exit_code": exit_code})
+        encoded = _encode_envelope(envelope)
+        stdout = sys.stdout
+        binary_stdout = getattr(stdout, "buffer", None)
+        if binary_stdout is None:
+            stdout.write(encoded)
+            stdout.flush()
+        else:
+            binary_stdout.write(encoded.encode("utf-8"))
+            binary_stdout.flush()
     return exit_code
 
 
