@@ -246,8 +246,9 @@ jobs:
       fail-fast: false
       matrix:
         # Which Python versions run depends on where the change is headed:
-        #   - a pull request whose changes are all documentation (docs/,
-        #     changelog.d/, top-level *.md) runs one leg, 3.10. Not zero: the
+        #   - a pull request into dev/lionagi whose changes are all
+        #     documentation (docs/, changelog.d/, top-level *.md) runs one leg,
+        #     3.10. Not zero: the
         #     suite reads documentation (ADR citation pins, numbering, status
         #     sets, API-doc drift), so a docs-only change can still fail it.
         #   - any other pull request into dev/lionagi runs the two ends, 3.10
@@ -265,7 +266,7 @@ jobs:
         # night the full set on each fix PR held the whole queue for hours. If
         # `changes` fails or is skipped its outputs are empty, which selects the
         # two ends on a dev/lionagi pull request and the full set otherwise.
-        python-version: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '["3.10","3.14"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false') && '["3.10"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
+        python-version: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '["3.10","3.14"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '["3.10"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
     # Force every `uv` call (venv, sync, run) onto the matrix interpreter; the
     # repo's .python-version (3.10) otherwise pins all legs to 3.10.
     env:

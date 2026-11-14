@@ -17,6 +17,7 @@ bytes in a multibyte encoding can stay silent.
 from __future__ import annotations
 
 import ast
+import copy
 import functools
 import importlib.metadata
 import json
@@ -709,7 +710,24 @@ def _pull_request_branch_filter(parsed: object) -> bool:
 # still runs every version before main moves. It is matched as this exact text
 # and removed before the scan, so any edit to it is refused here and has to be
 # argued again; its selections are pinned by the matrix tests below.
-SANCTIONED_TEST_MATRIX = "${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '[\"3.10\",\"3.14\"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false') && '[\"3.10\"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '[\"3.10\",\"3.14\"]' || '[\"3.10\",\"3.11\",\"3.12\",\"3.13\",\"3.14\"]') }}"
+SANCTIONED_TEST_MATRIX = "${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '[\"3.10\",\"3.14\"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '[\"3.10\"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '[\"3.10\",\"3.14\"]' || '[\"3.10\",\"3.11\",\"3.12\",\"3.13\",\"3.14\"]') }}"
+
+
+def _sanctioned_matrix_removed(parsed: object) -> object:
+    """The parsed workflow with the test job's sanctioned matrix value blanked.
+
+    Only that one location is exempt: the same text anywhere else, a job's
+    `if:` or another job's matrix, stays in the scan and is refused.
+    """
+    try:
+        matrix = parsed["jobs"]["test"]["strategy"]["matrix"]  # type: ignore[index]
+    except (KeyError, TypeError):
+        return parsed
+    if not isinstance(matrix, dict) or matrix.get("python-version") != SANCTIONED_TEST_MATRIX:
+        return parsed
+    parsed = copy.deepcopy(parsed)
+    parsed["jobs"]["test"]["strategy"]["matrix"]["python-version"] = ""  # type: ignore[index]
+    return parsed
 
 
 def _other_switches(text: str) -> list[str]:
@@ -728,17 +746,24 @@ def _other_switches(text: str) -> list[str]:
     `secrets: inherit` does. A `pull_request` or `pull_request_target` trigger
     with a branch or path filter is refused outright, because it starts no run
     for the pull requests it excludes.
+
+    One event detail is exempt: `SANCTIONED_TEST_MATRIX` as the test job's
+    `strategy.matrix.python-version`, and only there. The parsed scan blanks that
+    one value; the raw-text scan drops the expression only where it follows a
+    `python-version:` key, and a copy under another job's matrix is still found
+    by the parsed scan.
     """
     try:
         parsed = _parse(text)
     except _DuplicateKeyError:
         return ["duplicate mapping key"]
-    raw = _uncommented(text).replace(SANCTIONED_TEST_MATRIX, "")
+    raw = _uncommented(text).replace(
+        f"python-version: {SANCTIONED_TEST_MATRIX}", "python-version: "
+    )
     found = [
         match.group(0)
         for pattern in (LABEL, EVENT_DETAIL, ENV_DETAIL)
-        for string in (raw, *_strings(parsed))
-        if string != SANCTIONED_TEST_MATRIX
+        for string in (raw, *_strings(_sanctioned_matrix_removed(parsed)))
         for match in pattern.finditer(string)
     ]
     if [s for s in _strings(parsed, "with", reusable_secrets=True) if SECRET.search(s)]:
@@ -858,7 +883,8 @@ def test_the_test_matrix_reads_the_sanctioned_expression() -> None:
         ("pull_request", "main", "true", "", FULL_SET),
         ("pull_request", "release/x", "true", "", FULL_SET),
         ("pull_request", "dev/lionagi", "false", "", ["3.10"]),
-        ("pull_request", "main", "false", "", ["3.10"]),
+        ("pull_request", "main", "false", "", FULL_SET),
+        ("pull_request", "release/x", "false", "", FULL_SET),
         # `changes` failed or was skipped: its output is empty.
         ("pull_request", "dev/lionagi", "", "", ["3.10", "3.14"]),
         ("pull_request", "main", "", "", FULL_SET),
@@ -878,12 +904,30 @@ def test_the_test_matrix_selection(event, base, code, matrix, expected) -> None:
 def test_a_base_ref_read_beside_the_sanctioned_matrix_is_still_refused() -> None:
     text = _ci_gate_text()
     assert _other_switches(text) == []
-    condition = "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-latest\n    # Every job in this workflow"
-    assert text.count(condition) == 1
+    condition = (
+        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-latest\n    # Every job in this workflow"
+    )
+    assert text.count(condition) == 1, "the test job header in ci.yml changed; update this fixture"
     edited = text.replace(
         condition, condition.replace("!cancelled()", "!cancelled() && github.base_ref != ''"), 1
     )
     assert "github.base_ref" in _other_switches(edited)
+
+
+def test_the_sanctioned_matrix_text_is_refused_anywhere_but_the_test_matrix() -> None:
+    text = _ci_gate_text()
+    condition = (
+        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-latest\n    # Every job in this workflow"
+    )
+    assert text.count(condition) == 1, "the test job header in ci.yml changed; update this fixture"
+    as_condition = text.replace(
+        condition, condition.replace("${{ !cancelled() }}", SANCTIONED_TEST_MATRIX), 1
+    )
+    assert "github.base_ref" in _other_switches(as_condition)
+    as_flag = text.replace(
+        condition, condition + f"\n    continue-on-error: {SANCTIONED_TEST_MATRIX}", 1
+    )
+    assert "github.base_ref" in _other_switches(as_flag)
 
 
 def test_an_edited_matrix_expression_is_refused() -> None:
