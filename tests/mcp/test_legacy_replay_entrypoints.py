@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionhub.orchestration import mcp_config as _mcp_resolve
+from lionhub.orchestration import mcp_config
 from lionhub.serve.cli import orchestrate
 from lionhub.serve.cli.orchestrate import flow
 from lionhub.serve.mcp import jobs
@@ -37,16 +37,16 @@ def test_submit_resume_reaches_legacy_refusal(submission, monkeypatch, op):  # n
     errors = []
     monkeypatch.setattr(orchestrate, "log_error", errors.append)
     monkeypatch.setattr(
-        _mcp_resolve, "discover_mcp_config", lambda _: pytest.fail("ambient discovery")
+        mcp_config, "discover_mcp_config", lambda _: pytest.fail("ambient discovery")
     )
     reads = []
-    real_read = _mcp_resolve._read_config
+    real_read = mcp_config._read_config
 
     def tracked(path):
         reads.append(Path(path))
         return real_read(path)
 
-    monkeypatch.setattr(_mcp_resolve, "_read_config", tracked)
+    monkeypatch.setattr(mcp_config, "_read_config", tracked)
     args = {"resume": "old-run", "cwd": str(cwd)}
     if op == "flow.submit":
         args["prompt"] = "work"

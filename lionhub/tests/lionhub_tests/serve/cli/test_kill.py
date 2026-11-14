@@ -33,7 +33,6 @@ from lionhub.serve.cli.kill import (
     _do_kill_all_stale,
     _persist_cancel,
     _pid_alive,
-    _resolve_entity,
     check_pid_identity,
     list_running_children,
 )
@@ -45,6 +44,7 @@ from tests._kill_test_support import _script_create_time as _script_create_time
 from tests._kill_test_support import _seed_invocation as _seed_invocation
 from tests._kill_test_support import _seed_play as _seed_play
 from tests._kill_test_support import _seed_session as _seed_session
+from tests._kill_test_support import _seed_session_with_id as _seed_session_with_id
 from tests._kill_test_support import _seed_show as _seed_show
 from tests._kill_test_support import _spawn_marked_child as _spawn_marked_child
 from tests._kill_test_support import temp_db_path as temp_db_path
@@ -61,31 +61,6 @@ def _mock_runner_probe(monkeypatch: pytest.MonkeyPatch, pid: int, state: str) ->
 
 
 # Fixtures
-
-
-# _pid_alive
-
-
-def test_pid_alive_returns_false_for_nonexistent_pid():
-    # PID 999999999 is virtually guaranteed not to exist.
-    assert _pid_alive(999999999) is False
-
-
-def test_pid_alive_returns_false_for_non_positive():
-    assert _pid_alive(0) is False
-    assert _pid_alive(-1) is False
-
-
-def test_pid_alive_returns_true_for_own_process():
-    import os
-
-    assert _pid_alive(os.getpid()) is True
-
-
-def test_pid_alive_treats_permission_error_as_alive():
-    """PermissionError means the process exists (not ours); must return True."""
-    with patch("os.kill", side_effect=PermissionError):
-        assert _pid_alive(1234) is True
 
 
 # _terminate_pid
@@ -292,55 +267,6 @@ def test_current_pid_markers_is_the_process_module_function():
 
 # Records its own launch markers the way a launching process does, under a
 # boot-time value moved by five seconds, then stays alive to be checked.
-
-
-# _resolve_entity
-
-
-async def test_resolve_entity_by_full_uuid(temp_db_path: Path):
-    async with StateDB() as db:
-        sid = await _seed_session(db)
-        result = await _resolve_entity(db, sid)
-        assert result is not None
-        table, entity_type, row = result
-        assert table == "sessions"
-        assert entity_type == "session"
-        assert row["id"] == sid
-
-
-async def test_resolve_entity_by_short_prefix(temp_db_path: Path):
-    async with StateDB() as db:
-        sid = await _seed_session(db)
-        short = sid[:8]
-        result = await _resolve_entity(db, short)
-        assert result is not None
-        _, _, row = result
-        assert row["id"] == sid
-
-
-async def test_resolve_entity_returns_none_for_unknown(temp_db_path: Path):
-    async with StateDB() as db:
-        result = await _resolve_entity(db, "deadbeef00000000")
-        assert result is None
-
-
-async def test_resolve_entity_finds_invocation(temp_db_path: Path):
-    async with StateDB() as db:
-        inv_id = await _seed_invocation(db)
-        result = await _resolve_entity(db, inv_id)
-        assert result is not None
-        table, entity_type, _ = result
-        assert table == "invocations"
-        assert entity_type == "invocation"
-
-
-async def test_resolve_entity_finds_show(temp_db_path: Path):
-    async with StateDB() as db:
-        show_id = await _seed_show(db)
-        result = await _resolve_entity(db, show_id)
-        assert result is not None
-        _, entity_type, _ = result
-        assert entity_type == "show"
 
 
 # _persist_cancel
@@ -1639,35 +1565,6 @@ async def test_do_kill_all_stale_sweeps_play_whose_worker_session_is_terminal(
 #
 # A prefix that matches two rows must never resolve to "whichever came first":
 # `li kill` would then signal a process the caller never named.
-
-
-async def _seed_session_with_id(db: StateDB, sid: str, *, pid: int | None = None) -> str:
-    prog_id = str(uuid.uuid4())
-    await db.create_progression(prog_id)
-    await db.create_session(
-        {
-            "id": sid,
-            "progression_id": prog_id,
-            "status": "running",
-            "started_at": time.time(),
-            "node_metadata": {"pid": pid} if pid is not None else {},
-        }
-    )
-    return sid
-
-
-async def test_resolve_entity_rejects_ambiguous_prefix(temp_db_path: Path):
-    from lionhub.orchestration.job import AmbiguousIdError
-
-    async with StateDB() as db:
-        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001")
-        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002")
-
-        with pytest.raises(AmbiguousIdError) as excinfo:
-            await _resolve_entity(db, "abcde")
-
-    assert set(excinfo.value.candidates) == {first, second}
-    assert "abcde" in str(excinfo.value)
 
 
 async def test_do_kill_ambiguous_prefix_signals_nothing_and_fails(

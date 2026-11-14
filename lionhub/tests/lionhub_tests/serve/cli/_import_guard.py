@@ -29,6 +29,16 @@ COMMAND_IMPORT_PROBES = (
 )
 
 
+# Relative command names resolve under orchestration when used by these modules.
+ORCHESTRATION_COMMAND_IMPORT_PROBES = (
+    "from lionhub.serve.cli.status import _x",
+    "from lionhub.serve.cli import status",
+    "import lionhub.serve.cli.status",
+    "from lionhub.serve.cli.orchestrate import _x",
+    "from lionhub.serve.cli import orchestrate",
+)
+
+
 def resolved_imports(source: str | Path, package: str) -> set[str]:
     """Every dotted name the module at ``source`` imports.
 

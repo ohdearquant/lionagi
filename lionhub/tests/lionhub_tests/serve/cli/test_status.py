@@ -12,17 +12,11 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
-from lionhub.orchestration.inspection import (
-    resolve_agent_target,
-    resolve_any_target,
-    resolve_play_target,
-)
 from lionhub.serve.cli.status import (
     EXIT_RUNNING,
     EXIT_UNKNOWN,
@@ -47,13 +41,6 @@ from tests._status_test_support import (
 )
 from tests._status_test_support import (
     temp_db_path as temp_db_path,  # noqa: F401
-)
-
-from ._import_guard import (
-    COMMAND_IMPORT_PROBES,
-    command_module_imports,
-    resolved_imports,
-    source_with_line,
 )
 
 # Fixtures

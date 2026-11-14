@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionhub.orchestration import mcp_config as _mcp_resolve
+from lionhub.orchestration import mcp_config
 from lionhub.orchestration.flow.checkpoint import FlowResumeError
 from lionhub.serve.cli.orchestrate import flow
 
@@ -39,16 +39,16 @@ async def test_legacy_replay_reads_only_recorded_file(tmp_run, monkeypatch, patt
     )
     monkeypatch.setattr(flow, "stamp_worker_depth", lambda: None)
     monkeypatch.setattr(
-        _mcp_resolve, "discover_mcp_config", lambda _: pytest.fail("ambient discovery")
+        mcp_config, "discover_mcp_config", lambda _: pytest.fail("ambient discovery")
     )
     seen = []
-    read = _mcp_resolve._read_config
+    read = mcp_config._read_config
 
     def tracked(path):
         seen.append(Path(path))
         return read(path)
 
-    monkeypatch.setattr(_mcp_resolve, "_read_config", tracked)
+    monkeypatch.setattr(mcp_config, "_read_config", tracked)
     setup = flow.setup_orchestration
 
     class Captured(Exception):
@@ -214,7 +214,7 @@ async def test_named_marked_config_survives_flow_start_and_resume(tmp_run, monke
     monkeypatch.setattr(flow, "start_live_persist", AsyncMock())
     monkeypatch.setattr(flow, "stop_live_persist", AsyncMock(return_value="completed"))
     monkeypatch.setattr(
-        _mcp_resolve, "discover_mcp_config", lambda _: pytest.fail("ambient discovery")
+        mcp_config, "discover_mcp_config", lambda _: pytest.fail("ambient discovery")
     )
     seen = []
     checkpoint_path = tmp_run / "checkpoint.json"

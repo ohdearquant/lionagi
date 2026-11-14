@@ -173,8 +173,6 @@ def test_mcp_config_read_refuses_non_standard_json_constants(tmp_path, token):
     be re-emitted into the snapshot the child is handed. The refusal names the
     file an operator wrote, and happens before anything is spawned.
     """
-    from lionhub.orchestration.mcp_config import McpConfigError, resolve_spawn_mcp_servers
-
     (tmp_path / ".mcp.json").write_text(
         f'{{"mcpServers": {{"x": {{"command": "y", "timeout": {token}}}}}}}'
     )

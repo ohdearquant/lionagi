@@ -71,6 +71,21 @@ async def _seed_session(
     return sid
 
 
+async def _seed_session_with_id(db: StateDB, sid: str, *, pid: int | None = None) -> str:
+    prog_id = str(uuid.uuid4())
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "status": "running",
+            "started_at": time.time(),
+            "node_metadata": {"pid": pid} if pid is not None else {},
+        }
+    )
+    return sid
+
+
 async def _seed_invocation(
     db: StateDB,
     *,
