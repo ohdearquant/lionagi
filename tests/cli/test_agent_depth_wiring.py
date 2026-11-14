@@ -279,7 +279,7 @@ def test_a_machine_schedule_disable_inside_an_agent_still_reaches_the_daemon(mon
 
 @pytest.mark.parametrize("action", ["apply", "create", "enable", "trigger"])
 def test_li_schedule_that_can_start_a_run_exits_1_inside_an_agent(monkeypatch, capsys, action):
-    import lionhub.cli.schedule as studio_cli
+    import lionhub.serve.cli.schedule as studio_cli
     from lionagi.cli.main import main
 
     monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
@@ -295,7 +295,7 @@ def test_li_schedule_that_can_start_a_run_exits_1_inside_an_agent(monkeypatch, c
 
 
 def test_li_schedule_quick_create_exits_1_inside_an_agent(monkeypatch, capsys):
-    import lionhub.cli.schedule as studio_cli
+    import lionhub.serve.cli.schedule as studio_cli
     from lionagi.cli.main import main
 
     monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
@@ -311,7 +311,7 @@ def test_li_schedule_quick_create_exits_1_inside_an_agent(monkeypatch, capsys):
 
 
 def test_li_schedule_disable_inside_an_agent_still_runs(monkeypatch):
-    import lionhub.cli.schedule as studio_cli
+    import lionhub.serve.cli.schedule as studio_cli
     from lionagi.cli.main import main
 
     monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
@@ -323,7 +323,7 @@ def test_li_schedule_disable_inside_an_agent_still_runs(monkeypatch):
 
 
 def test_li_studio_inside_an_agent_exits_1_before_a_daemon_starts(monkeypatch, capsys):
-    import lionhub.cli.studio as studio_cli
+    import lionhub.serve.cli.studio as studio_cli
     from lionagi.cli.main import main
 
     monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)

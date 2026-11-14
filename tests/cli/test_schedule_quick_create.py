@@ -11,7 +11,7 @@ from __future__ import annotations
 def test_legacy_create_dispatch_unaffected_by_quick_create_kinds(monkeypatch):
     """`li schedule create NAME ...` (NAME not a reserved kind token) must
     still be routed to the legacy HTTP-backed _cmd_create, not quick-create."""
-    import lionhub.cli.schedule as schedule_cli
+    import lionhub.serve.cli.schedule as schedule_cli
     from lionagi.cli.main import main
 
     captured = {}
@@ -31,7 +31,7 @@ def test_quick_create_kind_tokens_reserved_from_legacy_positional(monkeypatch):
     """A quick-create kind token as the first arg after 'create' is always
     routed to typed quick-create, even without further matching flags --
     this is the documented additive-compatibility tradeoff."""
-    import lionhub.cli.schedule as schedule_cli
+    import lionhub.serve.cli.schedule as schedule_cli
 
     called = {}
     monkeypatch.setattr(

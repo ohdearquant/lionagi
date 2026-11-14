@@ -30,7 +30,7 @@ def fixture_project(tmp_path: Path):
     adr = root / "docs/adr"
     adr.mkdir(parents=True)
     (adr / "ADR-0138-fixture.md").write_text("lionhub.serve\n", encoding="utf-8")
-    (adr / "ADR-0139-fixture.md").write_text("lionhub.cli\n", encoding="utf-8")
+    (adr / "ADR-0139-fixture.md").write_text("lionhub.serve.cli\nlionhub.cli\n", encoding="utf-8")
     (root / "pyproject.toml").write_text(
         """\n[project]\ndependencies = ["Example_Package>=1"]\n[project.optional-dependencies]\nextra = ["Some.Extra>=2", "lionagi[extra]"]\n[dependency-groups]\ndev = ["pytest"]\n[build-system]\nrequires = ["hatchling"]\n[tool.uv]\nconstraint-dependencies = ["Safety-Pkg"]\n""",
         encoding="utf-8",
@@ -263,9 +263,8 @@ def test_secondary_users_and_module_coverage_fail_closed(tmp_path):
 
 def test_target_notes_use_recorded_destinations_only():
     fallback = "lionhub (destination not yet recorded)"
-    assert builder.match(builder.TARGET_RULES, "lionagi.cli.agent") == (
-        "pending the CLI location decision (ADR-0139 D1)"
-    )
+    assert builder.match(builder.TARGET_RULES, "lionagi.cli.agent") == "lionhub.serve.cli"
+    assert builder.match(builder.TARGET_RULES, "lionagi.studio.cli") == "lionhub.serve.cli"
     assert builder.match(builder.TARGET_RULES, "lionhub.orchestration.scheduler") == (
         "lionhub.orchestration.scheduler"
     )
@@ -329,8 +328,23 @@ def test_target_notes_require_public_evidence(tmp_path):
     data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.serve.unrecorded"
     with pytest.raises(checker.ManifestError, match="unrecorded destination"):
         checker.validate_target_notes(root, data, checker.lionhub_targets(root))
-    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.cli"
-    with pytest.raises(checker.ManifestError, match="pending CLI destination"):
+    # The adopted CLI destination is recorded; the one it superseded is refused even
+    # though the record still names it.
+    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.serve.cli"
+    checker.validate_target_notes(root, data, checker.lionhub_targets(root))
+    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.cli.catalog"
+    with pytest.raises(checker.ManifestError, match="superseded CLI destination"):
+        checker.validate_target_notes(root, data, checker.lionhub_targets(root))
+    # A superseded name is refused even when a package of that name still exists.
+    with pytest.raises(checker.ManifestError, match="superseded CLI destination"):
+        checker.validate_target_notes(
+            root, data, checker.lionhub_targets(root) | {"lionhub.cli.catalog"}
+        )
+    # The placeholder used before the decision is no longer accepted.
+    data["modules"]["lionagi.foundation"]["target_owner"] = (
+        "pending the CLI location decision (ADR-0139 D1)"
+    )
+    with pytest.raises(checker.ManifestError, match="unrecorded destination"):
         checker.validate_target_notes(root, data, checker.lionhub_targets(root))
 
 

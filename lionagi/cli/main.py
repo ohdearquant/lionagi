@@ -14,7 +14,7 @@ from lionagi._feature_errors import MissingFeatureError
 from lionagi.ln import import_module
 
 try:
-    from lionhub.cli.catalog import build_cli_parser, seed_for
+    from lionhub.serve.cli.catalog import build_cli_parser, seed_for
 except ModuleNotFoundError as exc:
     _catalog_import_error: ModuleNotFoundError | None = exc
 else:
@@ -471,7 +471,7 @@ def _run(argv: list[str] | None = None) -> int:
         # before argparse ever sees it, so the legacy positional NAME keeps
         # working unchanged for any other value.
         if len(_argv) > 2 and _argv[1] == "create" and _argv[2] in QUICK_CREATE_KINDS:
-            from lionhub.cli.schedule import run_schedule_quick_create
+            from lionhub.serve.cli.schedule import run_schedule_quick_create
 
             return run_schedule_quick_create(_argv[2], _argv[3:])
         ns, extras = schedule_parser.parse_known_args(_argv[1:])

@@ -50,7 +50,7 @@ def test_specific_synthetic_move_beats_parent_in_either_order(monkeypatch, speci
 
 _FLOW = "lionhub.orchestration.flow"
 _SCHEDULE_PACKAGE = "lionhub.orchestration.schedule"
-_FORBIDDEN_ROOTS = ("lionagi.cli", "lionagi.studio", "lionhub.cli")
+_FORBIDDEN_ROOTS = ("lionagi.cli", "lionagi.studio", "lionhub.serve.cli")
 
 
 def _under(name: str, prefix: str) -> bool:
@@ -185,7 +185,7 @@ def _forbidden_imports(source: str) -> list[tuple[int, str]]:
         "import importlib as il\nil.import_module('..flow.parsing', package=__package__)\n",
         "from importlib import import_module as load\nload('lionhub.orchestration.flow.parsing')\n",
         "__import__('flow', globals(), None, ['parsing'], 2)\n",
-        "import json\n# import lionagi.studio.cli\ntext = 'lionhub.cli.bad'\n",
+        "import json\n# import lionagi.studio.cli\ntext = 'lionhub.serve.cli.bad'\n",
     ],
 )
 def test_schedule_boundary_accepts_only_the_permitted_flow_edge(source):
@@ -200,7 +200,7 @@ def test_schedule_boundary_accepts_only_the_permitted_flow_edge(source):
         "import lionagi.cli.orchestrate\n",
         "from lionagi import studio\n",
         "from lionagi.studio import cli\n",
-        "from lionhub.cli import main\n",
+        "from lionhub.serve.cli import main\n",
         "from ..flow import checkpoint\n",
         "import lionhub.orchestration.flow\n",
         "from ..flow.execution import run\n",
@@ -209,10 +209,10 @@ def test_schedule_boundary_accepts_only_the_permitted_flow_edge(source):
         "def f():\n    import lionagi.cli._runs\n",
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import lionagi.studio.app\n",
         "import importlib\nimportlib.import_module('..flow.execution', package=__package__)\n",
-        "from importlib import import_module as load\nload('lionhub.cli.main')\n",
+        "from importlib import import_module as load\nload('lionhub.serve.cli.main')\n",
         "__import__('lionagi.studio.cli')\n",
         "builtins.__import__('lionagi.studio.cli')\n",
-        "importlib.__import__('lionhub.cli.main')\n",
+        "importlib.__import__('lionhub.serve.cli.main')\n",
         "__import__('lionagi', fromlist=['studio'])\n",
         "__import__('flow', globals(), None, ['checkpoint'], 2)\n",
     ],

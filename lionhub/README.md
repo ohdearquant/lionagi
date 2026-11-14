@@ -11,7 +11,7 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/agent/` | Agent profiles, permissions, hooks, and construction. |
 | `lionhub/src/lionhub/agent/casts/` | Cast patterns, roles, modes, profiles, packs, and emission contracts. |
 | `lionhub/src/lionhub/tools/` | Built-in tool interfaces and implementations. |
-| `lionhub/src/lionhub/cli/` | Built-in CLI command catalog, lazy command discovery, and the `li studio` and `li schedule` command adapters. |
+| `lionhub/src/lionhub/serve/cli/` | Built-in CLI command catalog, lazy command discovery, and the `li studio` and `li schedule` command adapters. |
 | `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, work forms, and scheduler services and helpers. |
 | `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |

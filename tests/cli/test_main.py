@@ -460,7 +460,7 @@ def test_play_flag_before_name_includes_usage(caplog):
 
 def test_cli_package_init_is_lazy():
     """Importing lionagi.cli (or any submodule of it, e.g. via
-    lionhub.cli.studio) must not pull in lionagi.cli.main through the lazy
+    lionhub.serve.cli.studio) must not pull in lionagi.cli.main through the lazy
     package export. `from lionagi.cli import main` still resolves to the callable
     via the package's lazy __getattr__ re-export."""
     import subprocess
@@ -469,7 +469,7 @@ def test_cli_package_init_is_lazy():
     code = (
         "import sys; import lionagi.cli; "
         "assert 'lionagi.cli.main' not in sys.modules, 'eager main import'; "
-        "import lionhub.cli.studio; "
+        "import lionhub.serve.cli.studio; "
         "assert 'lionagi.cli.main' not in sys.modules, 'studio pulled main'; "
         "from lionagi.cli import main; assert callable(main), type(main); "
         "import types; "
@@ -504,7 +504,7 @@ def test_cli_package_getattr_raises_for_unknown_attr():
 
 def test_command_registry_loaders_expose_parser_and_handler():
     """Every registry entry resolves before a command-specific parse needs it."""
-    from lionhub.cli.catalog import build_cli_parser, iter_cli_seeds
+    from lionhub.serve.cli.catalog import build_cli_parser, iter_cli_seeds
 
     for seed in iter_cli_seeds():
         build = build_cli_parser(seed)

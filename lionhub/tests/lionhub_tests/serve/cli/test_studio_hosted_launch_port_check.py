@@ -16,7 +16,7 @@ import socket
 
 import pytest
 
-import lionhub.cli.studio as studio_cli
+import lionhub.serve.cli.studio as studio_cli
 
 
 @pytest.fixture

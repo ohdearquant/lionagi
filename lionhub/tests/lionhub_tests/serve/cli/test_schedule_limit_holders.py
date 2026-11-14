@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi.ln import _ssrf
-from lionhub.cli import schedule as schedule_cli
+from lionhub.serve.cli import schedule as schedule_cli
 
 _HOLDERS = [
     {"schedule_id": "poll-project", "path": "github_event", "acquired_at": 1700000000.0},

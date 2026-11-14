@@ -201,6 +201,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/scheduler/subprocess.py:251@2ced5e58",
         "lionagi/studio/scheduler/subprocess.py:279@1717674a",
         "lionagi/studio/scheduler/subprocess.py:279@2a49c9fe",
+        "lionhub/src/lionhub/serve/__init__.py:4@ad5c45eb",
     ),
 }
 

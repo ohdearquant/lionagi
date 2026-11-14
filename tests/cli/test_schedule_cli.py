@@ -176,7 +176,7 @@ def test_base_url_maps_an_unspecified_host_and_brackets_ipv6(monkeypatch, host, 
     monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
     monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
 
-    from lionhub.cli.schedule import _base_url
+    from lionhub.serve.cli.schedule import _base_url
 
     url = _base_url()
     assert url == expected
@@ -224,7 +224,7 @@ def test_base_url_builds_a_parsable_url_the_host_guard_admits(monkeypatch, host,
     monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
     monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
 
-    from lionhub.cli.schedule import _base_url
+    from lionhub.serve.cli.schedule import _base_url
 
     url = _base_url()
     assert url == expected
@@ -319,7 +319,7 @@ def test_base_url_agrees_with_the_host_guard_for_every_spelling(monkeypatch, hos
     monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
     monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
 
-    from lionhub.cli.schedule import _base_url
+    from lionhub.serve.cli.schedule import _base_url
 
     url = _base_url()
     authority = _authority_of(url)
@@ -372,7 +372,7 @@ def test_base_url_strips_trailing_api_suffix(monkeypatch, caplog, env_url):
     and warns (once) so intentional reverse-proxy layouts can diagnose it."""
     import logging
 
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setenv("LIONAGI_STUDIO_URL", env_url)
     from lionhub.orchestration.schedule import parsing as _schedule_parsing
@@ -394,7 +394,7 @@ def test_base_url_no_warning_without_api_suffix(monkeypatch, caplog):
     """A clean root URL is returned untouched with no warning."""
     import logging
 
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setenv("LIONAGI_STUDIO_URL", "https://studio.example.com")
     from lionhub.orchestration.schedule import parsing as _schedule_parsing
@@ -412,7 +412,7 @@ def test_base_url_no_warning_without_api_suffix(monkeypatch, caplog):
 
 def _run_create(monkeypatch, extra_args: list[str], api_response: dict | None = None) -> dict:
     """Run `li schedule create ...`, capturing the JSON body posted to _api."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     captured_body: dict = {}
 
@@ -422,8 +422,8 @@ def _run_create(monkeypatch, extra_args: list[str], api_response: dict | None = 
 
     monkeypatch.setattr(sched_mod, "_api", _fake_api)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -565,7 +565,7 @@ def test_schedule_create_with_resolved_project_omits_cwd_fallback(monkeypatch):
 
 
 def test_schedule_create_main_refuses_invalid_chain_before_api(monkeypatch, capsys):
-    import lionhub.cli.schedule as schedule_cli
+    import lionhub.serve.cli.schedule as schedule_cli
     from lionagi.cli.main import main
 
     api_calls = []
@@ -606,7 +606,7 @@ def test_schedule_create_parent_kind_is_used_for_chain(monkeypatch):
 
 
 def test_schedule_create_refuses_incompatible_inherited_sibling_before_api(monkeypatch, capsys):
-    import lionhub.cli.schedule as schedule_cli
+    import lionhub.serve.cli.schedule as schedule_cli
     from lionagi.cli.main import main
 
     api_calls = []
@@ -673,12 +673,12 @@ def test_schedule_create_on_success_and_on_fail_together(monkeypatch):
 def test_schedule_create_on_success_malformed_json_errors_cleanly(monkeypatch, capsys):
     """Malformed --on-success JSON returns 1 with a clear stderr message, no API call."""
     api_called = []
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -698,12 +698,12 @@ def test_schedule_create_on_success_malformed_json_errors_cleanly(monkeypatch, c
 def test_schedule_create_on_fail_malformed_json_errors_cleanly(monkeypatch, capsys):
     """Malformed --on-fail JSON returns 1 with a clear stderr message, no API call."""
     api_called = []
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -722,12 +722,12 @@ def test_schedule_create_on_fail_malformed_json_errors_cleanly(monkeypatch, caps
 
 def test_schedule_create_on_success_non_object_json_rejected(monkeypatch, capsys):
     """--on-success must be a JSON object, not e.g. a bare list or string."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -746,12 +746,12 @@ def test_schedule_create_on_success_unknown_key_rejected(monkeypatch, capsys):
     """A chain_action key the engine's merge doesn't understand is rejected up front,
     since it would otherwise silently clobber an unrelated schedule column via the
     shallow merge in scheduler/engine.py."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -845,12 +845,12 @@ def test_schedule_create_nested_on_success_unknown_key_rejected(monkeypatch, cap
     rejected, even though the top-level chain_action is clean — an unknown
     key at any depth would otherwise clobber an unrelated schedule column
     (e.g. trigger_type) via the engine's shallow merge one level down."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -880,12 +880,12 @@ def test_schedule_create_nested_on_success_non_dict_rejected(monkeypatch, capsys
     rejected up front — left unchecked, the engine would treat it as a truthy
     chain_action on the child's successful run and blow up on
     `{**schedule, **chain_action}` after that child action already ran."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -983,12 +983,12 @@ def test_schedule_create_without_max_runs_or_once_omits_field(monkeypatch):
 def test_schedule_create_once_and_max_runs_together_rejected(monkeypatch, capsys):
     """--once and --max-runs are mutually exclusive."""
     api_called = []
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -1007,12 +1007,12 @@ def test_schedule_create_once_and_max_runs_together_rejected(monkeypatch, capsys
 def test_schedule_create_max_runs_rejects_non_positive(monkeypatch, capsys, bad_value):
     """--max-runs 0 or a negative integer is rejected before hitting the API."""
     api_called = []
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -1029,7 +1029,7 @@ def test_schedule_create_max_runs_rejects_non_positive(monkeypatch, capsys, bad_
 
 def test_schedule_list_shows_remaining_runs(monkeypatch, capsys):
     """`li schedule list` prints remaining-runs info when max_runs is set."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     fake_schedules = [
         {
@@ -1049,8 +1049,8 @@ def test_schedule_list_shows_remaining_runs(monkeypatch, capsys):
     ]
     monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: {"schedules": fake_schedules})
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -1118,7 +1118,7 @@ def test_li_schedule_unrecognized_flag_with_no_suggestion(monkeypatch, capsys):
 
 def test_li_schedule_recognized_flags_still_dispatch(monkeypatch):
     """Sanity check: the new interception path does not break normal dispatch."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
     from lionagi.cli.main import main
 
     monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: {"schedules": []})
@@ -1160,7 +1160,7 @@ def test_schedule_create_help_repeats_shallow_merge_caveat(capsys):
 def test_li_schedule_surplus_non_flag_argument_errors(monkeypatch, capsys):
     """`li schedule list unexpected-extra` must not silently exit 0 and drop
     the extra token — argparse would reject the equivalent direct parse."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
     from lionagi.cli.main import main
 
     api_called = []
@@ -1178,7 +1178,7 @@ def test_li_schedule_surplus_non_flag_argument_errors(monkeypatch, capsys):
 def test_li_schedule_surplus_extra_after_required_positional_errors(monkeypatch, capsys):
     """A surplus positional after a subcommand's own required id (e.g.
     `delete <id> <extra>`) must also error rather than silently execute."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
     from lionagi.cli.main import main
 
     api_called = []
@@ -1213,7 +1213,7 @@ def test_li_schedule_mixed_dash_and_bare_extras_both_reported(monkeypatch, capsy
 def _run_create_argv(monkeypatch, argv_tail: list[str], api_response: dict | None = None) -> dict:
     """Run `li schedule create my-sched <argv_tail>` with NO forced --cron, capturing
     the JSON body posted to _api (returns {} when _api is never called)."""
-    import lionhub.cli.schedule as sched_mod
+    import lionhub.serve.cli.schedule as sched_mod
 
     captured: dict = {"called": False, "body": {}}
 
@@ -1224,8 +1224,8 @@ def _run_create_argv(monkeypatch, argv_tail: list[str], api_response: dict | Non
 
     monkeypatch.setattr(sched_mod, "_api", _fake_api)
 
-    from lionhub.cli.schedule import run_schedule
     from lionhub.orchestration.schedule.parsing import add_schedule_subparser
+    from lionhub.serve.cli.schedule import run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -1513,7 +1513,7 @@ schedules:
 
 
 def test_schedule_validate_valid_file_exits_zero(agent_profile_cwd, capsys):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     args = _parse_schedule_args(["validate", str(manifest)])
@@ -1523,7 +1523,7 @@ def test_schedule_validate_valid_file_exits_zero(agent_profile_cwd, capsys):
 
 
 def test_schedule_validate_invalid_file_exits_nonzero(agent_profile_cwd):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     manifest.write_text(manifest.read_text().replace("reviewer", "ghost-profile"))
@@ -1535,7 +1535,7 @@ def test_schedule_validate_invalid_file_exits_nonzero(agent_profile_cwd):
 
 
 def test_schedule_validate_missing_file_exits_nonzero(capsys):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     args = _parse_schedule_args(["validate", "/no/such/schedules.yaml"])
     result = run_schedule(args)
@@ -1547,7 +1547,7 @@ def test_schedule_apply_dry_run_never_writes(agent_profile_cwd, temp_state_db, c
     import asyncio
 
     from lionagi.state.db import StateDB
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     args = _parse_schedule_args(["apply", str(manifest), "--dry-run"])
@@ -1565,7 +1565,7 @@ def test_schedule_apply_dry_run_never_writes(agent_profile_cwd, temp_state_db, c
 
 
 def test_schedule_apply_then_idempotent_reapply(agent_profile_cwd, temp_state_db, capsys):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     args = _parse_schedule_args(["apply", str(manifest)])
@@ -1585,7 +1585,7 @@ def test_schedule_apply_then_idempotent_reapply(agent_profile_cwd, temp_state_db
 def test_schedule_apply_reports_a_model_change_and_only_a_model_change(
     agent_profile_cwd, temp_state_db, capsys
 ):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     profile = agent_profile_cwd / ".lionagi" / "agents" / "reviewer.md"
     manifest = _write_manifest(agent_profile_cwd)
@@ -1650,7 +1650,7 @@ schedules:
 def test_a_global_set_labels_a_member_error_with_its_own_prefix(
     agent_profile_cwd, temp_state_db, verb
 ):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     manifest = _write_global_manifest(agent_profile_cwd, with_cwd=False)
     with _cli_warnings() as warnings:
@@ -1660,7 +1660,7 @@ def test_a_global_set_labels_a_member_error_with_its_own_prefix(
 
 
 def test_a_global_set_labels_a_plan_error_with_its_prefix_once(agent_profile_cwd, temp_state_db):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     first = _write_global_manifest(agent_profile_cwd, name="first")
     assert run_schedule(_parse_schedule_args(["apply", str(first)])) == 0
@@ -1712,7 +1712,7 @@ def _create_unowned_schedule(cwd, *, name="nightly-review", **overrides):
 def test_schedule_apply_adopt_dry_run_reports_existing_row(
     agent_profile_cwd, temp_state_db, capsys, monkeypatch
 ):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     manifest = _write_manifest(agent_profile_cwd)
@@ -1745,7 +1745,7 @@ def test_schedule_apply_adopt_dry_run_reports_existing_row(
 
 
 def test_schedule_apply_without_adopt_names_the_required_flag(agent_profile_cwd, temp_state_db):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     _create_unowned_schedule(agent_profile_cwd, name="demo/nightly-review")
@@ -1759,7 +1759,7 @@ def test_schedule_apply_without_adopt_names_the_required_flag(agent_profile_cwd,
 def test_schedule_apply_adopt_refusal_reports_the_changed_column(
     agent_profile_cwd, temp_state_db, monkeypatch
 ):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     manifest = _write_manifest(agent_profile_cwd)
@@ -1783,7 +1783,7 @@ def test_schedule_validate_json_names_a_resolution_error_qualified_once(
     for one kind and a qualified one for the other. Both forms are the qualified
     name now, so a caller reading `errors[].name` sees one naming scheme.
     """
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     manifest.write_text(manifest.read_text().replace("reviewer", "ghost-profile"))
@@ -1800,7 +1800,7 @@ def test_schedule_json_names_a_resolution_error_with_no_project_twice(
     agent_profile_cwd, temp_state_db, capsys, verb
 ):
     """A refusal is labeled with its own prefix once, in both channels."""
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     manifest.write_text(manifest.read_text().replace("reviewer", "ghost-profile"))
@@ -1813,7 +1813,7 @@ def test_schedule_json_names_a_resolution_error_with_no_project_twice(
 
 
 def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, capsys):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     args = _parse_schedule_args(["apply", str(manifest), "--dry-run", "--json"])
@@ -1831,7 +1831,7 @@ def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, caps
 
 
 def test_schedule_apply_refusal_names_each_row_once(agent_profile_cwd, temp_state_db, monkeypatch):
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     manifest = _write_manifest(agent_profile_cwd)
@@ -1853,7 +1853,7 @@ def test_schedule_apply_dry_run_prints_a_refused_row_through_the_warning_channel
 ):
     """A plan's refused rows are emitted like every other refusal this CLI reports,
     through the warning channel, while the rest of the plan stays ordinary output."""
-    from lionhub.cli.schedule import run_schedule
+    from lionhub.serve.cli.schedule import run_schedule
 
     monkeypatch.setattr("lionhub.orchestration.schedule.timing.SCHEDULER_TZ", "America/New_York")
     manifest = _write_manifest(agent_profile_cwd)

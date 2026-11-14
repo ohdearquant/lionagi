@@ -1200,7 +1200,7 @@ def _deprecated_catalog_target_nodes(path: Path, tree: ast.Module) -> set[int]:
     if path != ROOT / "lionagi" / "_auto.py":
         return set()
     expected = {
-        name: f"lionhub.cli.catalog.{name}"
+        name: f"lionhub.serve.cli.catalog.{name}"
         for name in (
             "build_cli_parser",
             "command_exists",
@@ -1288,16 +1288,16 @@ def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
         "load_cli_command",
         "seed_for",
     )
-    aliases = {name: (f"lionhub.cli.catalog.{name}", "2.0.0") for name in names}
+    aliases = {name: (f"lionhub.serve.cli.catalog.{name}", "2.0.0") for name in names}
     source = f"_DEPRECATED_ALIASES = {aliases!r}\n"
     assert _lionhub_names(path, source) == []
-    additional = "import lionhub.cli.catalog\nEXTRA = 'lionhub.cli.catalog.seed_for'\n"
+    additional = "import lionhub.serve.cli.catalog\nEXTRA = 'lionhub.serve.cli.catalog.seed_for'\n"
     assert [hit.rsplit(": ", 1)[1] for hit in _lionhub_names(path, source + additional)] == [
-        "lionhub.cli.catalog",
-        "lionhub.cli.catalog.seed_for",
+        "lionhub.serve.cli.catalog",
+        "lionhub.serve.cli.catalog.seed_for",
     ]
     assert len(_lionhub_names(ROOT / "lionagi" / "_other.py", source)) == len(names)
-    aliases["other"] = ("lionhub.cli.catalog.other", "2.0.0")
+    aliases["other"] = ("lionhub.serve.cli.catalog.other", "2.0.0")
     assert len(_lionhub_names(path, f"_DEPRECATED_ALIASES = {aliases!r}\n")) == len(aliases)
 
 

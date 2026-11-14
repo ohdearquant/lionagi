@@ -42,7 +42,7 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _run(kind: str, argv: list[str]) -> int:
-    from lionhub.cli.schedule import run_schedule_quick_create
+    from lionhub.serve.cli.schedule import run_schedule_quick_create
 
     return run_schedule_quick_create(kind, argv)
 

@@ -54,7 +54,7 @@ def _command_parser(command: str, *subs: str) -> argparse.ArgumentParser:
     ``option_strings``/``_actions`` off the live parser is immune to
     argparse's rendered-help formatting changing across Python versions.
     """
-    from lionhub.cli.catalog import build_cli_parser, seed_for
+    from lionhub.serve.cli.catalog import build_cli_parser, seed_for
 
     seed = seed_for(command)
     parser = build_cli_parser(seed).parser
@@ -82,7 +82,7 @@ def _positional_dests(command: str, *subs: str) -> list[str]:
 
 
 def _top_level_subcommand_set() -> list[str]:
-    from lionhub.cli.catalog import build_cli_parser
+    from lionhub.serve.cli.catalog import build_cli_parser
 
     parser = build_cli_parser(None).parser
     sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
