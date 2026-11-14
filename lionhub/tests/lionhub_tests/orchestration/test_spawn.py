@@ -592,21 +592,17 @@ def test_profile_frontmatter_examples_in_fences_are_silent(monkeypatch, fence):
 
 
 @pytest.mark.parametrize("fence", ["```", "~~~"])
-def test_profile_real_block_after_a_longer_matching_fence_warns_once(monkeypatch, fence):
+def test_profile_real_block_after_a_longer_matching_fence_is_refused(fence):
+    from lionagi._errors import ConfigurationError
     from lionhub.orchestration.spawn import _parse_profile
 
-    warnings = []
-    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
     text = (
         f"Example profile:\n{fence}yaml\n---\ncontain_user_settings: true\n---\n"
         f"{fence}{fence[0]}\n---\ncontain_user_settings: true\n---\nBody."
     )
 
-    profile = _parse_profile("example", text)
-
-    assert profile.contain_user_settings is False
-    assert len(warnings) == 1
-    assert "its worker is not contained" in warnings[0]
+    with pytest.raises(ConfigurationError, match="block on line 7 .*move the block to the top"):
+        _parse_profile("example", text)
 
 
 @pytest.mark.parametrize("opening,closing", [("```", ""), ("````", "```"), ("~~~", "```")])
@@ -629,17 +625,12 @@ def test_profile_unclosed_or_mismatched_fence_keeps_examples_silent(monkeypatch,
 @pytest.mark.parametrize(
     "prose", ["Use ```yaml inline.", "Use ~~~yaml inline.", "```yaml``` is inline."]
 )
-def test_profile_inline_fence_text_does_not_hide_a_real_block(monkeypatch, prose):
+def test_profile_inline_fence_text_does_not_hide_a_real_block(prose):
+    from lionagi._errors import ConfigurationError
     from lionhub.orchestration.spawn import _parse_profile
 
-    warnings = []
-    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
-
-    profile = _parse_profile("example", prose + "\n---\ncontain_user_settings: true\n---\nBody.")
-
-    assert profile.contain_user_settings is False
-    assert len(warnings) == 1
-    assert "its worker is not contained" in warnings[0]
+    with pytest.raises(ConfigurationError, match="block on line 2 .*move the block to the top"):
+        _parse_profile("example", prose + "\n---\ncontain_user_settings: true\n---\nBody.")
 
 
 @pytest.mark.parametrize("value", [True, False])

@@ -1207,10 +1207,8 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     block that is empty or comments only has none to lose. Text on lines of its own ahead of
     the first ``---`` line leaves the profile all prompt, as before, and contains nothing: any
     block after it, closed or not, that sets the flag as a key or does not read and names it
-    warns that its worker is not contained. A profile with no line of dashes has no block, and
+    is refused with the opening line. A profile with no line of dashes has no block, and
     all of it is the prompt."""
-    from itertools import pairwise
-
     import yaml
 
     from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
@@ -1274,23 +1272,22 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                     continue
                 if _DASHES.fullmatch(line.rstrip()):
                     delimiters.append(i)
-            warned_containment = False
-            for opening, end in pairwise([*delimiters, len(lines)]):
+            for index in range(0, len(delimiters), 2):
+                opening = delimiters[index]
+                end = delimiters[index + 1] if index + 1 < len(delimiters) else len(lines)
                 block = "\n".join(lines[opening + 1 : end])
                 reads, document = read(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)
-                if not warned_containment and (
+                if (
                     _FLAG_KEY_LINE.search(block)
                     or (reads and isinstance(document, dict) and _contain_flag_values(block))
                     or (not reads and _CONTAIN_KEY in block)
                 ):
-                    warn(
+                    raise ConfigurationError(
                         f"agent profile {name!r}: the --- block on line {opening + 1} follows "
-                        "text on lines of its own, so the profile is all prompt and no setting "
-                        "in the block applies; its worker is not contained, though the block "
-                        "names contain_user_settings"
+                        "text on lines of its own, so its contain_user_settings declaration "
+                        "would be ignored; move the block to the top of the file"
                     )
-                    warned_containment = True
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
         # the next ``---`` line or, unclosed, to the end.
