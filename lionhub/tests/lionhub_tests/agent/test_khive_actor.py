@@ -250,3 +250,31 @@ def test_another_servers_khive_actor_is_still_a_secret_field(codex_env):
 
     with pytest.raises(ConfigurationError, match="ignores the user config"):
         apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (["mcp", "--namespace", "other"], ["mcp", "--actor", "agent:reviewer"]),
+        (
+            ["mcp", "--namespace=other", "--pack", "kg"],
+            ["mcp", "--pack", "kg", "--actor", "agent:reviewer"],
+        ),
+        (["mcp", "--actor", "a", "--namespace", "b"], ["mcp", "--actor", "agent:reviewer"]),
+    ],
+)
+def test_a_configured_namespace_is_replaced_by_the_childs_own(args, expected):
+    # `--actor` is the server's default namespace and `--namespace` its older alias,
+    # so the child's actor is the only one left on the command line.
+    result = attribute_khive_servers(
+        {"khive": {"command": "kkernel", "args": args}}, "agent:reviewer"
+    )
+    assert result["khive"]["args"] == expected
+
+
+@pytest.mark.parametrize("args", [[], ["doctor"], ["--pack", "kg"]])
+def test_an_entry_that_does_not_run_mcp_gets_only_the_variable(args):
+    # Only the `mcp` subcommand's parser accepts `--actor`; the top-level one refuses it.
+    result = attribute_khive_servers({"khive": {"command": "kkernel", "args": args}}, "agent:x")
+    assert result["khive"]["args"] == args
+    assert result["khive"]["env"]["KHIVE_ACTOR"] == "agent:x"
