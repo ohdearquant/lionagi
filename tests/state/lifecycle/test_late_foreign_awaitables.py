@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import socket
 import subprocess
@@ -25,6 +26,47 @@ from tests.state.lifecycle.test_exact_terminal_attempt import (
 
 def _forbid(*_args, **_kwargs):
     raise AssertionError("offline test forbids processes, signals and network")
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["non_strict", "strict"])
+def test_late_cancelled_awaitable_releases_only_strict_reservation(monkeypatch, caplog, strict):
+    loop = asyncio.new_event_loop()
+    key = ("late-cancelled", "consumer", "transition")
+
+    async def deliver():
+        raise asyncio.CancelledError
+
+    worker = reconciliation._Worker(
+        key,
+        None,
+        loop,
+        concurrent.futures.Future(),
+        1,
+        None,
+        strict_outcomes=strict,
+    )
+    if strict:
+        worker.future.set_result(deliver())
+    else:
+        worker.future.set_exception(asyncio.CancelledError())
+    with reconciliation._workers_lock:
+        reconciliation._workers[key] = worker
+    try:
+        if strict:
+            with caplog.at_level("WARNING", logger=reconciliation.__name__):
+                reconciliation._finish_strict_late(worker)
+            assert key not in reconciliation._workers
+            assert "Late terminal delivery failed for transition" in caplog.text
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                reconciliation._finish_strict_late(worker)
+            assert reconciliation._workers.get(key) is worker
+    finally:
+        with reconciliation._workers_lock:
+            still_reserved = reconciliation._workers.get(key) is worker
+        if still_reserved:
+            reconciliation._release_worker(worker)
+        loop.close()
 
 
 @pytest.fixture(autouse=True)

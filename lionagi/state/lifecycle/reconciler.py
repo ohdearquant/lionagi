@@ -792,7 +792,11 @@ async def _acknowledge_late(target: _Worker | _AttemptAdmission) -> None:
 
 
 async def _settle_strict_late_awaitable(awaitable: Awaitable[Any], transition_id: str) -> Any:
-    """Cancel once at the budget, retaining ownership until actual settlement."""
+    """Cancel once at the budget, then wait for settlement before releasing ownership.
+
+    The reservation remains held while the effect is running so another attempt
+    cannot overlap work whose outcome is not yet known.
+    """
 
     async def run_effect() -> Any:
         try:
@@ -923,8 +927,7 @@ def _finish_strict_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) 
         except _MemoryStoreChangedError:
             logger.warning("Private memory store closed before late ACK for %s", worker.key[2])
         except BaseException as exc:
-            if not worker.strict_outcomes and not isinstance(exc, Exception):
-                raise
+            _reraise_unexpected_late_base_exception(worker, exc)
             if worker.key[0].startswith("sqlite-memory:"):
                 if worker.strict_outcomes:
                     logger.warning(
@@ -937,8 +940,7 @@ def _finish_strict_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) 
                 return
             raise
     except BaseException as exc:
-        if not worker.strict_outcomes and not isinstance(exc, Exception):
-            raise
+        _reraise_unexpected_late_base_exception(worker, exc)
         if worker.strict_outcomes:
             logger.warning("Late delivery failed for %s: %s", worker.key[2], type(exc).__name__)
         else:
@@ -946,6 +948,17 @@ def _finish_strict_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) 
                 "Late terminal delivery or acknowledgement failed for %s", worker.key[2]
             )
     _release_worker(worker)
+
+
+def _reraise_unexpected_late_base_exception(worker: _Worker, exc: BaseException) -> None:
+    """Preserve non-strict process-control exceptions while strict workers settle.
+
+    Late settlement runs on a background thread, where a process-control
+    exception cannot stop the main thread. Re-raising it would skip reservation
+    release, so strict workers record the failure and release their capacity.
+    """
+    if not worker.strict_outcomes and not isinstance(exc, Exception):
+        raise exc
 
 
 def _finish_late_result(worker: _Worker, result: Any) -> None:
@@ -1660,6 +1673,8 @@ class TerminalReconciler:
             if foreign:
                 # Transfer ownership without driving or cancelling the foreign Future.
                 _detach_worker(worker)
+                # Strict outcomes run only inside _attempt_one, whose outer
+                # wait_for bounds this local waiter by the attempt timeout.
                 await asyncio.Future()
                 raise AssertionError("unreachable local waiter")
         if inspect.isawaitable(result):
