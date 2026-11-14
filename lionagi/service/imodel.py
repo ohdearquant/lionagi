@@ -843,6 +843,7 @@ class iModel:  # noqa: N801
             api_call.metadata.pop("served_model", None)
             if served_model is not None:
                 api_call.metadata["served_model"] = served_model
+            api_call._record_served_model(served_model)
         if served_model is None:
             self.provider_metadata.pop("served_model", None)
         else:

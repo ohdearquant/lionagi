@@ -83,6 +83,47 @@ async def test_openai_cache_counts_reach_real_run_manifest(leg, monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "served_model",
+    [
+        pytest.param("gpt-5", id="matching"),
+        pytest.param("gpt-5.1", id="substituted"),
+        pytest.param(None, id="missing"),
+    ],
+)
+async def test_openai_served_models_reach_real_run_manifest(
+    leg, monkeypatch, tmp_path, served_model
+):
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    replies = []
+    for body, response_model in (
+        (provider._last_round(), "gpt-5"),
+        (provider._answer("done"), served_model),
+    ):
+        reply = {
+            "choices": [{"message": {"role": "assistant", "content": body["content"][0]["text"]}}],
+        }
+        if response_model is not None:
+            reply["model"] = response_model
+        replies.append(reply)
+
+    async def call(self, request, headers, **kwargs):
+        return replies.pop(0)
+
+    monkeypatch.setattr(OpenaiChatEndpoint, "_call", call)
+    result = await leg.run(provider._profile(api_tools="read"), model="openai/gpt-5")
+    _, manifest = _only_record(tmp_path)
+
+    assert result[3] == manifest["status"] == "completed"
+    assert [
+        (row["model"], row["model_semantics"], row["served_model"])
+        for row in manifest["api_usage"]["requests"]
+    ] == [("gpt-5", "requested", "gpt-5"), ("gpt-5", "requested", served_model)]
+
+
+@pytest.mark.asyncio
 async def test_real_manifest_retains_all_usage_fields_and_actual_selected_account(
     leg, monkeypatch, tmp_path
 ):

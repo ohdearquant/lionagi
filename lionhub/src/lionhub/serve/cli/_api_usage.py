@@ -50,6 +50,7 @@ class APIUsageCollector:
                 "provider": _identifier(decision.provider),
                 "model": _identifier(decision.model),
                 "model_semantics": "requested",
+                "served_model": None,
                 "prompt_chars": _count(decision.prompt_chars),
                 "input_decision": {
                     "kind": decision.kind,
@@ -81,6 +82,10 @@ class APIUsageCollector:
         if row := self._row(request_index):
             row["cache_read_tokens"] = read
             row["cache_write_tokens"] = write
+
+    def record_served_model(self, request_index: int, model: str | None) -> None:
+        if row := self._row(request_index):
+            row["served_model"] = _identifier(model)
 
     def record_selected_attempt(
         self,
