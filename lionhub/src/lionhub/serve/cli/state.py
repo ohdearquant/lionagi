@@ -1053,6 +1053,15 @@ async def _prune(
     counts: dict[str, Any] = {"sessions": 0, "branches": 0, "messages": 0}
 
     async with StateDB() as db:
+        if db.dialect == "sqlite":
+            temp_schema = "temp"
+            members = "json_each(p.collection) AS members"
+        elif db.dialect == "postgresql":
+            temp_schema = "pg_temp"
+            members = "jsonb_array_elements_text(p.collection::jsonb) AS members(value)"
+        else:
+            raise ValueError(f"State prune does not support {db.dialect!r}")
+
         try:
             async with db._tx() as conn:
                 rows = (
@@ -1074,7 +1083,6 @@ async def _prune(
                 # Keep one globally deduplicated set for all subsequent steps:
                 # collecting and deleting one chunk at a time can misclassify
                 # progressions or messages shared by multiple victim sessions.
-                temp_schema = "temp" if db.dialect == "sqlite" else "pg_temp"
                 await conn.execute(text(f"DROP TABLE IF EXISTS {temp_schema}.prune_victims"))
                 await conn.execute(
                     text("CREATE TEMPORARY TABLE prune_victims (id TEXT PRIMARY KEY)")
@@ -1213,35 +1221,34 @@ async def _prune(
                     )
                 )
 
-                # Messages are addressed only through a progression's collection
-                # or through one of the three id columns that name one directly,
-                # so a message no surviving referent mentions is unreachable.
-                # This runs while the orphaned progressions still exist, since
-                # their collections are what says which messages are in play.
-                members = (
-                    "json_each(p.collection) AS members"
-                    if db.dialect == "sqlite"
-                    else "jsonb_array_elements_text(p.collection::jsonb) AS members(value)"
-                )
+                # Subtract retained IDs as a set, in the same snapshot as the
+                # DELETE. PostgreSQL can hash or sort the set without rescanning
+                # surviving collections for each candidate. Cast expanded IDs
+                # to the message key's type before SQLite's compound comparison.
                 deleted_messages = (
                     await conn.execute(
                         text(
                             "DELETE FROM messages WHERE id IN ("  # noqa: S608 -- fixed dialect fragments
-                            f"  SELECT members.value FROM progressions p CROSS JOIN {members}"
-                            "  WHERE p.id IN (SELECT id FROM prune_orphan_progressions)"
-                            "  UNION"
+                            "WITH candidate_messages(id) AS ("
+                            "  SELECT CAST(members.value AS TEXT) FROM prune_orphan_progressions o"
+                            "  JOIN progressions p ON p.id = o.id"
+                            f"  CROSS JOIN {members} WHERE members.value IS NOT NULL"
+                            "  UNION ALL"
                             "  SELECT id FROM prune_direct_messages"
-                            ") AND id NOT IN ("
-                            f"  SELECT members.value FROM progressions p CROSS JOIN {members}"
-                            "  WHERE p.id NOT IN"
-                            "    (SELECT id FROM prune_orphan_progressions)"
+                            "), retained_messages(id) AS ("
+                            f"  SELECT CAST(members.value AS TEXT) FROM progressions p CROSS JOIN {members}"
+                            "  WHERE NOT EXISTS ("
+                            "    SELECT 1 FROM prune_orphan_progressions o WHERE o.id = p.id"
+                            "  )"
                             "    AND members.value IS NOT NULL"
-                            ") AND id NOT IN ("
+                            "  UNION ALL"
                             "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
-                            "  UNION"
+                            "  UNION ALL"
                             "  SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
-                            "  UNION"
+                            "  UNION ALL"
                             "  SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
+                            ")"
+                            "  SELECT id FROM candidate_messages EXCEPT SELECT id FROM retained_messages"
                             ")"
                         )
                     )
