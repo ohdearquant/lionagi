@@ -28,12 +28,16 @@ import sys
 import {module}
 print(json.dumps(sorted(name for name in sys.modules if name == 'lionhub.serve' or name.startswith('lionhub.serve.'))))
 """
+    # The child imports the same lionhub this process imported, installed or not.
+    env = os.environ.copy()
+    source_root = str(Path(lionhub.__file__).resolve().parents[1])
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [source_root, env.get("PYTHONPATH", "")]))
     result = subprocess.run(
         [sys.executable, "-c", script],
         check=True,
         capture_output=True,
         text=True,
-        env=os.environ.copy(),
+        env=env,
     )
     loaded = json.loads(result.stdout)
     assert module in loaded

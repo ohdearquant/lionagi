@@ -263,20 +263,14 @@ def validate_target_notes(root: Path, manifest: dict[str, Any], targets: set[str
             "additional_targets", []
         )
         for target in notes:
-            if (
-                target
-                in {
-                    "lionhub (destination not yet recorded)",
-                    "pending the CLI location decision (ADR-0139 D1)",
-                }
-                or target in targets
-            ):
-                continue
             if target == "lionhub.cli" or target.startswith("lionhub.cli."):
-                # ADR-0139 Amendment 5 moved the CLI destination to lionhub.serve.cli.
+                # ADR-0139 Amendment 5 moved the CLI destination to lionhub.serve.cli;
+                # refused before the existence check, so a leftover package cannot pass it.
                 raise ManifestError(
                     f"superseded CLI destination for {name}: {target}; use lionhub.serve.cli"
                 )
+            if target == "lionhub (destination not yet recorded)" or target in targets:
+                continue
             if not NAME.fullmatch(target) or not re.search(
                 rf"(?<![\w.]){re.escape(target)}(?![\w.])", allocations
             ):
