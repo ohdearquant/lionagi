@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from functools import partial
+from pathlib import Path
 from typing import Annotated, Any
 
 import yaml
@@ -69,6 +70,14 @@ def _read_agent_for_write(text: str) -> tuple[dict[str, Any], str, str | None]:
         fm, body = _parse_frontmatter(text)
     reason = "is a system agent" if _is_protected_system(fm) else None
     return fm, body, reason
+
+
+def _read_agent_file_for_write(path: Path, name: str) -> tuple[dict[str, Any], str, str | None]:
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        raise AgentProtectedError(f"Agent '{name}' file could not be read") from exc
+    return _read_agent_for_write(text)
 
 
 def _normalize_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
@@ -315,11 +324,7 @@ def delete_agent(name: str) -> bool:
     if stem == DEFAULT_AGENT_NAME:
         raise AgentProtectedError(f"Agent '{stem}' is the default agent and cannot be deleted")
 
-    try:
-        existing_text = path.read_text()
-    except OSError:
-        existing_text = ""
-    _, _, protection = _read_agent_for_write(existing_text)
+    _, _, protection = _read_agent_file_for_write(path, stem)
     if protection:
         raise AgentProtectedError(f"Agent '{stem}' {protection} and cannot be deleted")
 
@@ -335,11 +340,7 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if not path.exists():
         return None
 
-    try:
-        existing_text = path.read_text()
-    except OSError:
-        existing_text = ""
-    existing_fm, existing_body, protection = _read_agent_for_write(existing_text)
+    existing_fm, existing_body, protection = _read_agent_file_for_write(path, stem)
     if protection:
         raise AgentProtectedError(f"Agent '{stem}' {protection} and cannot be edited")
     existing_fm = _normalize_frontmatter(existing_fm)

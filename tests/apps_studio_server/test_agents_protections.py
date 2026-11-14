@@ -313,6 +313,43 @@ def test_delete_default_agent_refused_even_when_user_owned(tmp_path, monkeypatch
 # update_agent() protections
 
 
+@pytest.mark.parametrize("operation", ["update", "delete"])
+def test_agent_writes_refuse_when_existing_file_cannot_be_read(tmp_path, monkeypatch, operation):
+    from lionagi.studio.services.agents import AgentProtectedError, delete_agent, update_agent
+
+    name = "unreadable"
+    path = _make_agents_root(tmp_path, monkeypatch) / f"{name}.md"
+    original = b"---\nlion_system: true\n---\nOriginal prompt.\n"
+    path.write_bytes(original)
+    read_text = type(path).read_text
+
+    def fail_on_agent_read(candidate, *args, **kwargs):
+        if candidate == path:
+            raise OSError("fixture could not read the agent file")
+        return read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), "read_text", fail_on_agent_read)
+
+    with pytest.raises(AgentProtectedError) as refused:
+        if operation == "update":
+            update_agent(name, {"system_prompt": "New prompt."})
+        else:
+            delete_agent(name)
+
+    assert name in str(refused.value)
+    assert "could not be read" in str(refused.value)
+    assert path.read_bytes() == original
+
+
+def test_update_missing_agent_returns_none(tmp_path, monkeypatch):
+    from lionagi.studio.services.agents import update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+
+    assert update_agent("never-existed", {"system_prompt": "New prompt."}) is None
+    assert not (root / "never-existed.md").exists()
+
+
 def test_edit_system_agent_refused(tmp_path, monkeypatch):
     from lionagi.studio.services.agents import AgentProtectedError, update_agent
 
