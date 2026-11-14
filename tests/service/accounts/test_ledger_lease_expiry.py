@@ -401,6 +401,46 @@ async def test_a_replayed_mismatched_late_estimate_is_validated_before_the_noop(
 
 
 @pytest.mark.anyio
+async def test_a_mismatched_late_estimate_below_the_recorded_cost_raises_and_writes_nothing(
+    tmp_path,
+):
+    # The check order the closure rule promises: validation runs before the cost
+    # comparison, so an estimate whose cost alone would make it a no-op still raises.
+    import dataclasses
+
+    from lionagi.service.accounts._pricing import quote_ceiling
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
+
+    revision = priced_revision()
+    priced = quote_ceiling(
+        revision,
+        b'{"model":"model-a","messages":[{"role":"user","content":"x"}],"max_tokens":1024,"service_tier":"standard_only"}',
+    )
+    clock = Clock(T0)
+    ledger = make_ledger(tmp_path, clock, price_revisions={revision.id: revision})
+    held = await ledger.reserve(
+        scope(), uuid4(), priced, (AccountSpec("alpha", "ALPHA_KEY", 100_000),)
+    )
+    ledger.open_lease = timedelta(0)
+    clock.now += timedelta(seconds=1)
+    await ledger.reserve(scope(), uuid4(), quote(1), (AccountSpec("alpha", "ALPHA_KEY", 100_000),))
+    larger = estimate(priced, revision, "stream_error", output_tokens=40_000)
+    assert await ledger.settle(held.attempt_id, larger) == "settled"
+    before = corrections(ledger.path)
+    smaller = estimate(priced, revision, "stream_error", output_tokens=40)
+    assert smaller.cost_nusd < larger.cost_nusd
+    mismatched = dataclasses.replace(smaller, served_model="model-b")
+
+    with pytest.raises(ValueError):
+        await ledger.settle(held.attempt_id, mismatched)
+
+    assert corrections(ledger.path) == before
+    # Control: the same smaller estimate with the stored model is the no-op the cost makes it.
+    assert await ledger.settle(held.attempt_id, smaller) == "already_settled"
+    assert corrections(ledger.path) == before
+
+
+@pytest.mark.anyio
 async def test_late_reason_only_evidence_stays_already_settled(tmp_path):
     from lionagi.service.accounts._types import UnknownOutcome
 
