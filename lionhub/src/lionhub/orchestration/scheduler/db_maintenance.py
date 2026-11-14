@@ -342,6 +342,16 @@ async def _prune_session_chunk(
     archived before any DELETE runs; a failed archive write raises and the
     caller's transaction rolls back, so this chunk's rows are refused
     rather than lost. Returns the counts deleted and retained for consumer debt."""
+    dialect = conn.dialect.name
+    if dialect == "sqlite":
+        temp_schema = "temp"
+        members = "json_each(p.collection) AS members"
+    elif dialect == "postgresql":
+        temp_schema = "pg_temp"
+        members = "jsonb_array_elements_text(p.collection::jsonb) AS members(value)"
+    else:
+        raise ValueError(f"Session prune does not support {dialect!r}")
+
     if not session_ids:
         return 0, 0
 
@@ -357,9 +367,7 @@ async def _prune_session_chunk(
         session_ids,
     )
 
-    session_ids = await _locked_cli_worker_prune_candidates(
-        conn, session_ids, dialect=conn.dialect.name
-    )
+    session_ids = await _locked_cli_worker_prune_candidates(conn, session_ids, dialect=dialect)
     if not session_ids:
         return 0, 0
 
@@ -377,7 +385,7 @@ async def _prune_session_chunk(
     # SQLite's writer reservation already serializes enrollment, ACKs and pruning.
     # PostgreSQL must also exclude new consumer registrations, which row locks
     # cannot protect. Keep the consumer lock ahead of the ACK ledger lock.
-    if conn.dialect.name == "postgresql":
+    if dialect == "postgresql":
         await conn.execute(text("LOCK TABLE terminal_consumers IN SHARE MODE"))
         await conn.execute(text("LOCK TABLE terminal_deliveries IN SHARE ROW EXCLUSIVE MODE"))
     owed_rows = await _fetch_chunked(
@@ -410,8 +418,8 @@ async def _prune_session_chunk(
     if candidate_prog_ids:
         rows = await _fetch_chunked(
             conn,
-            "SELECT value FROM progressions, json_each(progressions.collection)"
-            " WHERE value IS NOT NULL AND progressions.id",
+            f"SELECT members.value FROM progressions p CROSS JOIN {members}"  # noqa: S608
+            " WHERE members.value IS NOT NULL AND p.id",
             candidate_prog_ids,
         )
         coll_msg_ids = [r[0] for r in rows]
@@ -566,7 +574,7 @@ async def _prune_session_chunk(
         # One DELETE for the whole chunk. Its survivor check reads every progression's collection
         # in the store, and a DELETE per batch of ids repeated that read inside the write
         # transaction; the candidates go into a scratch table so the check runs once.
-        await conn.execute(text("DROP TABLE IF EXISTS prune_candidate_messages"))
+        await conn.execute(text(f"DROP TABLE IF EXISTS {temp_schema}.prune_candidate_messages"))
         await conn.execute(
             text("CREATE TEMPORARY TABLE prune_candidate_messages (id TEXT PRIMARY KEY)")
         )
@@ -576,22 +584,26 @@ async def _prune_session_chunk(
             await conn.execute(
                 *_q(f"INSERT INTO prune_candidate_messages (id) VALUES {ph}", chunk)  # noqa: S608
             )
+        # Set subtraction visits the surviving collections as a set and keeps
+        # the reference check in the DELETE's statement snapshot.
         await conn.execute(
             text(
-                "DELETE FROM messages WHERE id IN (SELECT id FROM prune_candidate_messages)"
-                " AND id NOT IN ("
-                "  SELECT value FROM progressions, json_each(progressions.collection)"
-                "  WHERE value IS NOT NULL"
-                "  UNION"
+                "DELETE FROM messages WHERE id IN ("  # noqa: S608 -- fixed dialect fragment
+                "WITH retained_messages(id) AS ("
+                f"  SELECT members.value FROM progressions p CROSS JOIN {members}"
+                "  WHERE members.value IS NOT NULL"
+                "  UNION ALL"
                 "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
-                "  UNION"
+                "  UNION ALL"
                 "  SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
-                "  UNION"
+                "  UNION ALL"
                 "  SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
+                ")"
+                "  SELECT id FROM prune_candidate_messages EXCEPT SELECT id FROM retained_messages"
                 ")"
             )
         )
-        await conn.execute(text("DROP TABLE prune_candidate_messages"))
+        await conn.execute(text(f"DROP TABLE {temp_schema}.prune_candidate_messages"))
 
     return sessions_pruned, len(retained)
 

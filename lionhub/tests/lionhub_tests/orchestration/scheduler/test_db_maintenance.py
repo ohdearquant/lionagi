@@ -1276,7 +1276,7 @@ def test_the_survivor_check_runs_as_one_statement_per_chunk(tmp_path, monkeypatc
 
     async def recording(self, statement, *args, **kwargs):
         sql = str(statement)
-        if "json_each(progressions.collection)" in sql and "progressions.id" not in sql:
+        if sql.startswith("DELETE FROM messages") and "json_each(" in sql:
             survivor_checks.append(sql)
         return await execute(self, statement, *args, **kwargs)
 
