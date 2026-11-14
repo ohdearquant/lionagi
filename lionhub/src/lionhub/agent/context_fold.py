@@ -23,7 +23,7 @@ import math
 import time
 from collections.abc import Callable
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from lionagi.ln import copy
 
@@ -31,6 +31,13 @@ if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 __all__ = ("ContextFold", "estimate_next_request_tokens", "install_context_fold")
+
+
+class CacheBounds(NamedTuple):
+    protected_members: set
+    round_end_index: int
+    note_index: int
+
 
 logger = logging.getLogger("lionagi.agent.context_fold")
 
@@ -358,13 +365,13 @@ class ContextFold:
             decided_by="context_fold",
         )
 
-    def _cache_bounds(self, active: list[Any]) -> tuple[set, int, int]:
+    def _cache_bounds(self, active: list[Any]) -> CacheBounds:
         """With the prompt cache placed (ADR-0130 Amendment 4): the protected first round's
         messages, the index in ``active`` of its last one, and of the newest compaction note
         (-1 for none). A round still pending, answered and not yet decided, is protected; an
         excluded one is not."""
         if not self._places_cache():
-            return set(), -1, -1
+            return CacheBounds(set(), -1, -1)
         from lionagi.operations.chat._prepare import first_round, is_note
         from lionagi.service._prompt_cache import protection
 
@@ -375,9 +382,9 @@ class ContextFold:
             members = set(record["members"]) if record["included"] else set()
         pile = self.branch.msgs.messages
         protected = {uid for uid in active if str(uid) in members}
-        frontier = max((i for i, uid in enumerate(active) if uid in protected), default=-1)
+        round_end = max((i for i, uid in enumerate(active) if uid in protected), default=-1)
         note = max((i for i, uid in enumerate(active) if is_note(pile[uid])), default=-1)
-        return protected, frontier, note
+        return CacheBounds(protected, round_end, note)
 
     def _note_tokens(self, active: list[Any]) -> int:
         """The compaction notes in the view, counted as the cap counts."""
@@ -466,7 +473,11 @@ class ContextFold:
 
             active = list(self.branch.progression)
             pile = self.branch.msgs.messages
-            keep = self._delivery_keep() | set(active[-2:]) | self._cache_bounds(active)[0]
+            keep = (
+                self._delivery_keep()
+                | set(active[-2:])
+                | self._cache_bounds(active).protected_members
+            )
             if active:
                 keep.add(active[0])
             anchor = next((uid for uid in active if isinstance(pile[uid], Instruction)), None)
@@ -518,7 +529,8 @@ class ContextFold:
         full = self.branch.msgs.progression
         # With the cache placed a clip takes only what follows the first round and the newest
         # note, so the prefix through both keeps its bytes, clips standing for them included.
-        start = max(self._cache_bounds(list(self.branch.progression))[1:]) + 1
+        bounds = self._cache_bounds(list(self.branch.progression))
+        start = max(bounds.round_end_index, bounds.note_index) + 1
         for slot, message in enumerate(view):
             if slot < start or not isinstance(message, ActionResponse):
                 continue
@@ -748,7 +760,8 @@ class ContextFold:
         candidates = []
         restored = set(self.branch.metadata.get("context_restored_results", []))
         read_ranges = self.branch.metadata.get("context_read_results", {})
-        start = max(self._cache_bounds(active)[1:]) + 1
+        bounds = self._cache_bounds(active)
+        start = max(bounds.round_end_index, bounds.note_index) + 1
         for slot, message in enumerate(view):
             if slot < start or not isinstance(message, ActionResponse):
                 continue
@@ -952,7 +965,8 @@ class ContextFold:
         view = [pile[uid] for uid in active]
         before = self.estimate()
         target = self.target * self.cap
-        start = max(self._cache_bounds(active)[1:]) + 1
+        bounds = self._cache_bounds(active)
+        start = max(bounds.round_end_index, bounds.note_index) + 1
         runaway = {}
         for slot, message in enumerate(view):
             if slot < start or not isinstance(message, AssistantResponse):
@@ -1057,13 +1071,17 @@ class ContextFold:
         mode = "all" if stage == "reset" else stage
         active = list(self.branch.progression)
         end = len(active) - keep_tail
-        protected, frontier, note = self._cache_bounds(active)
-        start = frontier + 1 if stage == "reset" else max(frontier, note) + 1
+        bounds = self._cache_bounds(active)
+        start = (
+            bounds.round_end_index + 1
+            if stage == "reset"
+            else max(bounds.round_end_index, bounds.note_index) + 1
+        )
         if end <= start:
             return False
         pile = self.branch.msgs.messages
         span = [pile[uid] for uid in active[start:end] if uid in pile]
-        keep = self._delivery_keep() | protected
+        keep = self._delivery_keep() | bounds.protected_members
         tool_msgs = [
             m for m in span if isinstance(m, ActionRequest | ActionResponse) and m.id not in keep
         ]
