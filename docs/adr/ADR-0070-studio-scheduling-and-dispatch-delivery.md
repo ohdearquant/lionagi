@@ -450,6 +450,8 @@ exit_code != 0 and on_fail present    → on_fail
 otherwise                             → no continuation
 ```
 
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write) proposes selecting the branch from the resolved invocation status.
+
 The selected object overlays the parent schedule. Its `kind` or `action_kind` replaces
 `action_kind`; `model`, `prompt`, `agent`, and `playbook` map to their corresponding action fields.
 The child receives a trigger context containing the original context plus `chain_from`,
