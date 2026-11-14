@@ -92,7 +92,7 @@ async def test_real_exec_adapter_reports_process_exit(monkeypatch, returncode):
         return Process()
 
     monkeypatch.setattr(notify_settings.asyncio, "create_subprocess_exec", spawn)
-    monkeypatch.setattr(notify_settings, "observe_process_group_leader", lambda *a, **k: None)
+    monkeypatch.setattr("lionagi.ln._proc.observe_process_group_leader", lambda *a, **k: None)
     prepared = prepare_resolved_delivery(ResolvedNotifyHandler(argv=("notify-hook",)), _event())
     assert isinstance(prepared, PreparedDelivery)
     expected = DeliveryOutcome.SUCCESS if returncode == 0 else DeliveryOutcome.FAILURE
@@ -145,7 +145,7 @@ async def test_real_exec_adapter_timeout_is_failure(monkeypatch):
         return None
 
     monkeypatch.setattr(notify_settings.asyncio, "create_subprocess_exec", spawn)
-    monkeypatch.setattr(notify_settings, "observe_process_group_leader", lambda *a, **k: None)
+    monkeypatch.setattr("lionagi.ln._proc.observe_process_group_leader", lambda *a, **k: None)
     monkeypatch.setattr(notify_settings, "aterminate_process_group", finished)
     monkeypatch.setattr(notify_settings, "_await_proc_dead", finished)
     prepared = prepare_resolved_delivery(ResolvedNotifyHandler(argv=("notify-hook",)), _event())

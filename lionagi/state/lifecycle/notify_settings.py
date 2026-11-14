@@ -15,6 +15,7 @@ import re
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -23,11 +24,11 @@ from lionagi.ln import (
     aterminate_process_group,
     capture_group_witnesses,
     import_module,
-    observe_process_group_leader,
     prepare_process_group_env,
 )
-from lionagi.ln._proc import env_without_state_db_url
+from lionagi.ln._proc import _end_abandoned_spawn, _spawn_in_group, env_without_state_db_url
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
+from lionagi.ln.concurrency.errors import shield_quietly
 
 from .callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
@@ -608,6 +609,10 @@ def _noop_outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None
     return None
 
 
+# The event loop keeps only weak references to its scheduled tasks.
+_pending_exec_spawns: set[asyncio.Task[tuple[asyncio.subprocess.Process, float | None]]] = set()
+
+
 def _make_exec_handler(
     argv: Sequence[str],
     *,
@@ -619,6 +624,9 @@ def _make_exec_handler(
     on_timeout: Callable[[], None] | None = None,
     on_exec_failure: Callable[[str], None] | None = None,
 ) -> TerminalCallbackHandler:
+    """Build an exec adapter whose late spawn cleanup requires a running loop, as in
+    ``communicate_in_process_group``.
+    """
     static_argv = tuple(argv)
 
     async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
@@ -633,17 +641,14 @@ def _make_exec_handler(
         primary: BaseException | None = None
         stderr_bytes = b""
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *launch_argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-                start_new_session=True,
-            )
-            leader_created = observe_process_group_leader(
-                getattr(proc, "pid", None), expected_marker=group_marker
-            )
+            spawn = asyncio.create_task(_spawn_in_group(launch_argv, env, group_marker))
+            _pending_exec_spawns.add(spawn)
+            spawn.add_done_callback(_pending_exec_spawns.discard)
+            try:
+                proc, leader_created = await shield_quietly(spawn)
+            except get_cancelled_exc_class():
+                spawn.add_done_callback(partial(_end_abandoned_spawn, group_marker))
+                raise
             _, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(payload), timeout=HANDLER_BUDGET_SECONDS
             )
