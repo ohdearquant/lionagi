@@ -455,8 +455,8 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
     if quarantined:
         lines.append("identity unverified, quarantined: " + ", ".join(quarantined))
     for row in rows:
-        if row.get("_quarantine_record_unreadable") is True:
-            lines.append(f"quarantine record unreadable: {row['_quarantine_kind']} {row['id']}")
+        if label := row.get("_quarantine_label"):
+            lines.append(f"{label}: {row['_quarantine_kind']} {row['id']}")
 
     return "\n".join(lines)
 
@@ -471,10 +471,10 @@ def _is_unverifiable_quarantined(row: dict[str, Any]) -> bool:
     return is_current_quarantine(row)
 
 
-def _has_unreadable_quarantine(row: dict[str, Any]) -> bool:
-    from lionagi.state._quarantine_identity import _is_unreadable_quarantine
+def _quarantine_label(row: dict[str, Any]) -> str | None:
+    from lionagi.state._quarantine_identity import _quarantine_status_label
 
-    return _is_unreadable_quarantine(row)
+    return _quarantine_status_label(row)
 
 
 def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
@@ -486,7 +486,7 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "project": sess.get("project") or "-",
         "status": sess.get("status") or "?",
         "unverifiable_quarantined": _is_unverifiable_quarantined(sess),
-        "_quarantine_record_unreadable": _has_unreadable_quarantine(sess),
+        "_quarantine_label": _quarantine_label(sess),
         "_quarantine_kind": "session",
         # Older terminal records can retain a phase from their live execution.
         "phase": (
@@ -533,7 +533,7 @@ def _invocation_to_row(inv: dict[str, Any]) -> dict[str, Any]:
         "project": "-",
         "status": inv.get("status") or "?",
         "unverifiable_quarantined": _is_unverifiable_quarantined(inv),
-        "_quarantine_record_unreadable": _has_unreadable_quarantine(inv),
+        "_quarantine_label": _quarantine_label(inv),
         "_quarantine_kind": "invocation",
         "phase": inv.get("skill") or "-",
         "elapsed": _elapsed(
@@ -608,8 +608,8 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     lines.append(f"  status:    {_colour_status(sess.get('status') or '?')}")
     if _is_unverifiable_quarantined(sess):
         lines.append("  quarantine: process identity unverified")
-    elif _has_unreadable_quarantine(sess):
-        lines.append(f"  quarantine record unreadable: session {sess['id']}")
+    elif label := _quarantine_label(sess):
+        lines.append(f"  {label}: session {sess['id']}")
     lines.append(f"  kind:      {sess.get('invocation_kind') or '-'}")
     if sess.get("playbook_name"):
         lines.append(f"  playbook:  {sess['playbook_name']}")
@@ -770,8 +770,8 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
     lines.append(f"  status:        {_colour_status(inv.get('status') or '?')}")
     if _is_unverifiable_quarantined(inv):
         lines.append("  quarantine:    process identity unverified")
-    elif _has_unreadable_quarantine(inv):
-        lines.append(f"  quarantine record unreadable: invocation {inv['id']}")
+    elif label := _quarantine_label(inv):
+        lines.append(f"  {label}: invocation {inv['id']}")
     lines.append(f"  kind:          {_invocation_kind(inv)}")
     lines.append(f"  skill:         {inv.get('skill') or '-'}")
     lines.append(f"  plugin:        {inv.get('plugin') or '-'}")
@@ -1044,7 +1044,7 @@ async def _gather_entities(
             for s in sessions
             if s["id"] not in play_session_ids
             or _is_unverifiable_quarantined(s)
-            or _has_unreadable_quarantine(s)
+            or _quarantine_label(s) is not None
         ]
 
     rows.extend(("session", s) for s in sessions)
