@@ -56,6 +56,7 @@ def test_schema_only_modules_have_no_registration_decorators() -> None:
         "lionhub/src/lionhub/providers/openai/_audio_schemas.py",
         "lionhub/src/lionhub/providers/exa/_schemas.py",
         "lionhub/src/lionhub/providers/firecrawl/_schemas.py",
+        "lionhub/src/lionhub/providers/outcrawl/_schemas.py",
     }
     assert expected <= observed
 

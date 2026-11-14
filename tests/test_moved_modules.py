@@ -1461,6 +1461,7 @@ PROVIDER_KEYS = (
     "openai",
     "openai-codex",
     "openrouter",
+    "outcrawl",
     "perplexity",
     "pi",
     "pi-code",
@@ -1496,9 +1497,9 @@ def test_the_provider_keys_are_the_keys_the_registry_accepts(tmp_path):
 
 
 # A key builds its endpoint from the hub, or is the core scripted provider. The model name
-# and key are placeholders: nothing is called, the iModel is only constructed. exa, firecrawl
-# and tavily offer several endpoints, so each key is built with the first one registered for
-# its provider; without one they build the generic core endpoint.
+# and key are placeholders: nothing is called, the iModel is only constructed. exa, firecrawl,
+# outcrawl and tavily offer several endpoints, so each key is built with the first one registered
+# for its provider; without one they build the generic core endpoint.
 _PROVIDER_PROBE = (
     "import sys\n"
     "import lionagi\n"
