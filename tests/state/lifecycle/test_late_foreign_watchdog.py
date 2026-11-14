@@ -25,6 +25,14 @@ def _forbid(*_args, **_kwargs):
     raise AssertionError("offline test forbids processes, signals, and network")
 
 
+class _ThreadingProxy:
+    def __init__(self, **overrides):
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        return self._overrides.get(name, getattr(threading, name))
+
+
 @pytest.fixture(autouse=True)
 def no_external_effects(monkeypatch):
     for name in ("Popen", "run", "call", "check_call", "check_output"):
@@ -58,7 +66,7 @@ async def test_foreign_watchdog_start_failure_reports_stuck_without_releasing(
         def cancel(self):
             pass
 
-    monkeypatch.setattr(reconciliation.threading, "Timer", FailingTimer)
+    monkeypatch.setattr(reconciliation, "threading", _ThreadingProxy(Timer=FailingTimer))
     monkeypatch.setattr(reconciliation, "HANDLER_BUDGET_SECONDS", 0.05)
     foreign_loop = asyncio.new_event_loop()
     future = foreign_loop.create_future()  # the loop is deliberately never running
@@ -146,8 +154,11 @@ async def test_foreign_watchdog_ignores_deferred_ack_drained_before_timer_fires(
         return original_thread(*args, **kwargs)
 
     owner = _ForeignOwner("future")
-    monkeypatch.setattr(reconciliation.threading, "Timer", CapturedTimer)
-    monkeypatch.setattr(reconciliation.threading, "Thread", instrument_thread)
+    monkeypatch.setattr(
+        reconciliation,
+        "threading",
+        _ThreadingProxy(Timer=CapturedTimer, Thread=instrument_thread),
+    )
 
     async def fail_ack(_target):
         raise reconciliation._LateAckDeferredError("private-deferred-message")
