@@ -90,9 +90,13 @@ profile, with these differences and requirements:
   sandbox instance.
 - **Files.** Reads of the configured credential locations are denied (the list the `child_sandbox`
   key resolves today: built-in defaults plus global additions, minus a profile's named exemptions).
-  Writes are limited to the working directory and the configured caches, minus the files git or a
-  shell later executes or obeys there (the repository's `.git/config` and `.git/hooks`); the profile
-  and the launcher that applies it are never writable from inside. The rules must hold on the
+  Writes are limited to the working directory and the configured caches, minus the files git, a
+  shell or the provider later executes or obeys there: the repository's `.git/config` and
+  `.git/hooks`, and the provider's own configuration and instruction files in the working directory
+  (for Claude Code, `.claude/`, `.mcp.json`, `CLAUDE.md` and `CLAUDE.local.md`), so that a command
+  cannot plant what the provider loads on a later turn. The profile, the launchers that apply it, and
+  the provider CLI's installed files are never writable from inside, wherever they live, the
+  configured caches included. The rules must hold on the
   resolved path, so that a symlink in the working directory does not widen them.
 - **Network.** No wider than under file containment. `sandbox-exec` filters by local port, not by
   domain, and turning the provider's sandbox off also turns off the local proxy it filters through;
@@ -123,18 +127,24 @@ A provider integration qualifies for credential isolation only if each of the fo
 - every command the provider starts on its own behalf outside the router (status lines, credential
   helpers, environment set-up) is turned off or runs with nothing from the user's or the working
   directory's configuration, and its output carries no credential into the tools;
-- every instruction, memory or extension file the provider loads from the user's or the working
-  directory's configuration is accounted for: the instruction files it reads into context and the
-  files they import by path (for Claude Code, `CLAUDE.md` files and their `@path` import lines,
-  which can name a file outside the working directory), and the project skills, commands and agent
-  definitions it loads (for Claude Code, under the working directory's `.claude/`). Each is either
-  not loaded, or loaded only through a read that D2's file rules hold, and none of them can start a
-  command outside the D2 boundary or name a tool the launch turned off;
-- every MCP server the launch starts runs through the D2 boundary: the provider starts a server by
-  running the command in its configuration, so lionagi writes each server's command as the launcher
-  with the original command and arguments after it, and the server runs in its own profile instance.
-  A server whose configuration lionagi cannot rewrite this way (one the provider adds from a source
-  lionagi does not pass) is not started.
+- every instruction, memory or extension file the provider loads is accounted for, from the working
+  directory, every directory above it, and the user's own configuration: the instruction files it
+  reads into context and the files they import by path, in any path form (for Claude Code,
+  `CLAUDE.md` and `CLAUDE.local.md` files, rules and memory files, and `@path` imports, which can be
+  absolute, home-relative or reached through a symlink, inside any of these or inside a skill or
+  command), and the skills, commands and agent definitions it loads together with what their
+  headers declare (for Claude Code, under `.claude/` and the user's `~/.claude/`: inline commands a
+  skill or command runs while it is expanded, tool lists, and hooks). Each is either not loaded, or
+  loaded only through a read that D2's file rules hold; none of them can start a command outside the
+  D2 boundary, and none can enable a tool the launch turned off. A request in a file's prose that
+  the model run a command is not a bypass: the command it leads to is routed like any other;
+- every MCP server the launch starts runs inside a D2 profile instance of its own: the provider starts
+  a local (stdio) server by running the command in its configuration, so lionagi writes each such
+  server's command as a server launcher, which applies the profile and runs the original command
+  with its arguments unchanged (not through a shell), under a profile that also denies writes to the
+  working directory. A server reached by URL (HTTP or SSE) has no command to wrap, and the provider
+  process would connect to it unconfined, so it is not started in this mode; nor is any server the
+  provider would add from a source lionagi does not pass.
 
 A provider that cannot meet this is unavailable in this mode. lionagi does not approximate it with a
 wrapper around the whole CLI (P3) or with a settings file the working directory can affect.
@@ -160,8 +170,13 @@ and starts the child with Claude Code's own sandbox off (`{"sandbox": {"enabled"
 - Settings. The child loads no settings source but lionagi's own `--settings` value (no user,
   project or local settings), so no user- or project-defined status line, credential helper or hook
   runs outside the prefix; hooks the launch needs are passed in that value and routed. MCP servers
-  are limited to those lionagi passes (`--strict-mcp-config`), each started through the launcher in
-  its own profile instance with no write access to the working directory.
+  are limited to the local servers lionagi passes (`--strict-mcp-config`), each started through the
+  server launcher of D3; a URL server in what lionagi would pass refuses the launch.
+- Instruction and extension files. Limiting settings sources does not stop Claude Code reading
+  `CLAUDE.md` files, their imports, memory, skills, commands and agent definitions, which it does in
+  its own process, outside the prefix. lionagi has not yet measured a launch configuration that
+  turns these loads off or holds them to D2's file rules, so this is the open part of D3 for Claude
+  Code: until acceptance row 13 passes for a named configuration, Claude Code does not qualify.
 - Shell set-up. Every routed Bash command sources an environment snapshot that Claude Code made by
   running the user's shell start-up files once, outside the prefix (that command never reached the
   prefix in the measured run). lionagi starts the child with the shell's start-up directory pointed at
@@ -171,7 +186,8 @@ and starts the child with Claude Code's own sandbox off (`{"sandbox": {"enabled"
 Measured on macOS with Claude Code 2.1.323 in one single-turn run, with a test keychain item and a
 test file. The probe profile was `(allow default)` with only the four credential-store Mach services
 and one test directory denied; it carried no write, network or process rules, and the child had no
-permission rules. It shows that prefix routing applies a profile to every Bash and hook command and
+permission rules. The run loaded the user's own settings, whose hooks account for the hook commands
+in the routing row. It shows that prefix routing applies a profile to every Bash and hook command and
 that the store and file denials hold there; it does not show the D2 profile.
 
 | Probe | Result | Control |
@@ -189,7 +205,8 @@ distinguishes it from a missing item, so every probe of this boundary needs the 
 
 Credential isolation is its own capability, requested per launch or per profile and qualified per
 provider, provider version and platform. A launch that requests it on an unqualified combination
-refuses before any tool runs, naming the combination. It never falls back to file containment while
+refuses before the provider starts (so before any turn, hook, tool or MCP server), naming the
+combination. It never falls back to file containment while
 keeping the claim. File containment stays the default for Claude Code children and keeps its stated
 limits.
 
@@ -216,8 +233,10 @@ everything the child wrote as untrusted data:
 - **Applying and publishing.** The change is applied in a tree of the launching process's own, and
   the commit and push there run with hooks disabled, with no hook manager, filter driver or build
   step from the change executed, and with the launching process's own configuration.
-- **What remains the user's call.** A change that edits a build script, hook manager configuration or
-  dependency manifest is published as data; any later build or install of it runs under the same
+- **What remains the user's call.** A change that edits a build script, hook manager configuration,
+  dependency manifest, or a provider's configuration or instruction files (for Claude Code,
+  `.claude/`, `.mcp.json`, `CLAUDE.md`), which D2 does not let the child write and which reach the
+  change only through a path D2 does not cover, is published as data; any later build or install of it runs under the same
   isolation as the child, never with the withheld credentials.
 
 Otherwise the child plants a git hook, a `core.fsmonitor`, filter or `credential.helper` setting, a
@@ -248,27 +267,40 @@ broken probe cannot read as a denial.
    inherited descriptors; process inspection of and signals to the provider process and to MCP
    servers lionagi started are refused.
 7. Every path is accounted for: Bash, background commands and hooks reach the prefix, shown by a
-   marker each path writes only when it runs inside the profile; each MCP server lionagi passes
-   writes such a marker from its own process at start-up, and the provider's MCP tool call to it
-   succeeds; every in-process tool the launch leaves on passes its own qualification row, symlinks
-   included; every other path is shown to be off.
+   marker each path writes only when it runs inside the profile; a test local MCP server lionagi
+   passes checks from its own process that the test store item, a denied test file and a write to
+   the working directory are each refused, with the same checks succeeding from the same server
+   started outside the profile, and the provider's MCP tool call to it succeeds; a `.mcp.json` in the
+   working directory, a server in the user's provider configuration and a URL server are each
+   planted and none is started; every in-process tool the launch leaves on passes its own
+   qualification row, symlinks included; every other path is shown to be off.
 8. No settings source but lionagi's own loads: a user settings file and a project settings file that
    each define a status line, a credential helper and a hook produce no command outside the prefix
    and cannot turn the prefix off or widen the profile.
-9. The profile is no weaker than file containment: the file containment acceptance (file reads,
-   writes, network) passes unchanged under it, from a nested shell and a background descendant, and
-   writes to the repository's git configuration and hooks are refused.
+9. The profile is no weaker than file containment: the file containment acceptance for file reads
+   and writes, and its network refusal checks, pass unchanged under it, from a nested shell and a
+   background descendant; writes to the repository's git configuration and hooks, and to the
+   provider's configuration and instruction files in the working directory, are refused. While
+   outbound network is denied, reaching the allowed domains is a stated loss, not a check; turning on
+   the filtering proxy requires the whole file containment network acceptance to pass through it.
 10. A nested provider CLI started from a tool fails to start a turn.
 11. D6 holds against a child that plants each of: a git hook, repository configuration, an attributes
     filter, a tracked hook manager configuration, a symlink to a test key, a submodule change and a
     build script. None runs in the launching process, and the symlink and submodule are refused.
 12. A missing or failing backend refuses the launch; nothing runs outside the profile on a retry.
-13. Instruction and extension files are accounted for (D3): a working directory that plants each of
-    a `CLAUDE.md` with an `@path` import of a denied test file, a project skill, a project command and
-    a project agent definition, each of which asks for that file and for a command, produces no read
-    of a denied file and no command outside the prefix.
+13. Instruction and extension files are accounted for (D3). Planted in the working directory, in a
+    directory above it, and in the user's provider configuration: an instruction file with `@path`
+    imports of a denied test file in relative, absolute, home-relative and symlinked form; a skill
+    and a command, each carrying the same imports, an inline command run at expansion, a hook in its
+    header and a tool list naming a tool the launch turned off; and an agent definition with that
+    tool list and hook. Each item is invoked. The run shows no read of a denied file, no write outside
+    the D2 set, no fetch, no command outside the prefix, and no call of the tool the launch turned off;
+    a control run outside the mode shows each planted item does load.
 14. A provider version outside the qualified set refuses the launch with a message naming the version
-    found and the qualified ones (see Consequences).
+    found and the qualified ones (see Consequences), tested with one version lower and one higher than
+    every qualified version, so that a minimum check fails the row; the refusal comes before any turn,
+    hook or MCP server starts. A write from inside a child to the provider CLI's installed files is
+    refused.
 
 ## Consequences
 
@@ -285,7 +317,11 @@ broken probe cannot read as a denial.
 - Qualification is per provider version, and provider CLIs update themselves. lionagi probes rather
   than pins: it does not install or hold back the provider CLI, it reads the version at every launch
   that requests this mode, and it refuses any version that is not in the qualified set, which is a
-  list of exact versions, never a minimum. After an update the mode therefore refuses until the new
+  list of exact versions, never a minimum. At each launch lionagi resolves the provider command to its
+  real path (through any symlink), reads the version from that path and starts that same path, and
+  sets the provider's own switch that turns off its self-update for the child (for Claude Code,
+  `DISABLE_AUTOUPDATER=1`); D2 keeps the installed files out of the child's write set, so a child
+  cannot change what a later launch probes. After an update the mode therefore refuses until the new
   version passes the acceptance list and is added to the set; file containment, which states its
   own minimum version, keeps working meanwhile. The cost is a requalification run per provider
   update, and an operator who wants the mode without interruption holds the CLI's own updates back.
