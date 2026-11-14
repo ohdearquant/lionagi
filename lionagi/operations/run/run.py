@@ -48,7 +48,7 @@ from lionagi.operations._observe import (
 from lionagi.operations._observe import (
     check_control as _check_control,
 )
-from lionagi.operations.run.stream_buffer import STREAM_CHUNK_MARKER, legacy_stream_text
+from lionagi.operations.run.stream_buffer import STREAM_CHUNK_MARKER, legacy_fallback_text
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ async def _append_chunk(buffer_path, chunk) -> None:
                         value = None
                     if (value := _buffer_text(value)) is not None:
                         data[name] = value
-            text = legacy_stream_text(data)
+            text = legacy_fallback_text(data)
             text = text or ""
             fallback = {"text": text, "serialization_error": failure}
         line = json.dumps(fallback, ensure_ascii=True, separators=(",", ":"))

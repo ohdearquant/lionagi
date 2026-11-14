@@ -91,6 +91,24 @@ def test_stream_tail_keeps_old_reader_behavior_for_legacy_type_names(tmp_path):
     assert monitor._stream_tail(tmp_path / "run", "branch", n_lines=20) == old_reader_output
 
 
+def test_stream_tail_reads_legacy_text_like_the_old_reader_and_never_shows_content(tmp_path):
+    rows = [
+        {"delta": {"text": ""}, "text": "empty delta falls through"},
+        {"delta": {"text": 7}, "text": "non-string delta falls through"},
+        {"type": "thinking", "content": "legacy content stays hidden"},
+        {"text": "", "content": "metadata stays hidden"},
+        {"text": "shown"},
+    ]
+    _write_live_buffer(tmp_path / "run", "branch", rows)
+    stream = tmp_path / "run" / "stream" / "branch.buffer.jsonl"
+    stream.write_text(stream.read_text() + '42\n["list"]\nnull\n')
+    assert monitor._stream_tail(tmp_path / "run", "branch", n_lines=20) == [
+        "empty delta falls through",
+        "non-string delta falls through",
+        "shown",
+    ]
+
+
 def test_stream_tail_waits_for_a_newline_and_keeps_terminated_malformed_fallback(tmp_path):
     stream = tmp_path / "stream"
     stream.mkdir()
