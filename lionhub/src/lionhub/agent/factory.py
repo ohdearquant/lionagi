@@ -163,8 +163,10 @@ async def create_agent(
     ``khive_actor`` is the khive actor the pre-turn recall and writeback
     client registered for ``spec.khive_injection`` acts as: its khive server is
     spawned with ``KHIVE_ACTOR`` set to it. A caller that hands the child khive
-    servers attributed to a profile passes the same actor here, so both act as
-    the child. ``None`` leaves that server as configured.
+    servers attributed to a profile passes the same actor here, so both are
+    given the child's actor; an actor config in either server's working
+    directory still takes precedence over it. ``None`` leaves that server as
+    configured.
 
     ``spec.contain_account_integrations`` turns a codex agent's account
     ``apps`` and ``plugins`` features off by default. It is applied to the
