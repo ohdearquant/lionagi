@@ -296,9 +296,9 @@ def _session_run_dir(session_id: str, run_id: Any) -> Path | None:
 def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
     """Return the last N lines from a stream buffer file.
 
-    Lines are read from the end and parsing stops once N text records are found, so the
-    cost of a render does not grow with the length of the buffer and a line before the
-    window is never parsed.
+    The whole file is still read, but its lines are parsed from the end and parsing stops
+    once N text records are found, so a line before the window is never parsed. Non-text
+    records take no slot, so a run of them at the end is parsed through.
     """
     buf_path = run_dir / "stream" / f"{branch_id}.buffer.jsonl"
     if not buf_path.exists():
@@ -333,14 +333,14 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
                 # RecursionError: JSON nested deeper than the parser's recursion limit.
                 texts.append(line[:120])
         texts.reverse()
+        # Zero-width non-joiner, zero-width joiner and soft hyphen are format characters (Cf)
+        # that shape the visible text: joined emoji, Indic and Arabic script, hyphenation
+        # points. They do not move the cursor or change terminal state, so they stay; every
+        # other Cf character goes.
         return [
             "".join(
                 char
                 for char in text
-                # Zero-width non-joiner, zero-width joiner and soft hyphen are format
-                # characters (Cf) that shape the visible text: joined emoji, Indic and
-                # Arabic script, hyphenation points. They do not move the cursor or
-                # change terminal state, so they stay; every other Cf character goes.
                 if char in {"\t", "\u200c", "\u200d", "\u00ad"}
                 or category(char) not in {"Cc", "Cf", "Zl", "Zp"}
             )
