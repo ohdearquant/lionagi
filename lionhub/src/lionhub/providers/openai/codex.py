@@ -955,7 +955,9 @@ def _refuse_oversized_cli_inputs(
     failure: ValueError | TypeError | None = None
     measured: list[tuple[str, bytes]] = []
     if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
-        raise ValueError(
+        # Not a ValueError, so a request copied after construction is refused with the same
+        # type as one refused at construction.
+        raise CLIInputRefusedError(
             f"the Codex turn input is {len(prompt):,} characters, past the CLI's limit of "
             f"{CODEX_MAX_TURN_INPUT_CHARS:,}. A long branch sends its rendered history as "
             "the input: start a new session and hand it the earlier result as a file."
