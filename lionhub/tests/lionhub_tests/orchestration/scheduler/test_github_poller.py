@@ -91,7 +91,7 @@ class _FakeClient:
         self.requests: list[dict] = []
 
     async def get(self, url, headers=None, params=None):
-        self.requests.append({"url": url, "params": params})
+        self.requests.append({"url": url, "headers": dict(headers or {}), "params": params})
         return _FakeResp(self._prs)
 
 
@@ -199,6 +199,20 @@ def test_github_poll_emits_head_sha_and_draft(monkeypatch):
     assert isinstance(ev["head_repo_is_fork"], bool)
     assert ev["is_same_repo"] is True
     assert isinstance(ev["is_same_repo"], bool)
+
+
+@pytest.mark.parametrize("event", ["pr_merged", "pr_opened"])
+def test_github_poll_does_not_send_unstored_etag(monkeypatch, event):
+    client = _install(monkeypatch, [])
+    schedule = {
+        "id": "s1",
+        "github_repo": "owner/name",
+        "github_filter": {"event": event},
+        "node_metadata": {"github_etag": '"tag"'},
+    }
+
+    assert _poll_result(schedule).scan_complete is True
+    assert "If-None-Match" not in client.requests[0]["headers"]
 
 
 def test_github_poll_draft_filter_true_keeps_only_drafts_dispatchable(monkeypatch):
