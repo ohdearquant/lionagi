@@ -587,6 +587,16 @@ def _make_definitions_client(tmp_path, monkeypatch):
             id="ordinary-invalid-yaml-marker-only-in-body",
         ),
         pytest.param(
+            "---\nname: sample\ntools: [Read]\nOriginal prompt.\n",
+            ("PUT",),
+            id="ordinary-unclosed",
+        ),
+        pytest.param(
+            "---name: sample\ntools: [Read]\nOriginal prompt.\n",
+            ("PUT",),
+            id="ordinary-opening-not-on-its-own-line",
+        ),
+        pytest.param(
             "---\nlion_system: false\ncustom: kept\n---\nOriginal prompt.\n",
             (),
             id="readable-false",

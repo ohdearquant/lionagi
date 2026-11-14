@@ -68,27 +68,27 @@ def _read_agent_for_write(text: str) -> _AgentWriteRead:
     """Classify frontmatter for agent writes.
 
     Readable settings supply the parsed mapping and its system-agent protection.
-    An unreadable block that mentions ``lion_system`` is protected for every write.
-    A closed unreadable block without that mention refuses partial updates, since
-    merging would discard existing settings. Deleting or replacing the whole
-    file only uses the system-agent protection.
+    An unreadable block, closed or not, that mentions ``lion_system`` is
+    protected for every write. Any other unreadable block refuses partial
+    updates, since merging would discard existing settings. Deleting or
+    replacing the whole file only uses the system-agent protection.
     """
     try:
         fm, body = parse_frontmatter_strict(text)
     except (yaml.YAMLError, RecursionError):
-        stripped = text.strip()
-        if _FM_SPLIT.match(stripped):
-            _, block, *body = _FM_SPLIT.split(stripped, maxsplit=2)
-            if "lion_system" in block:
-                return _AgentWriteRead(
-                    {},
-                    "",
-                    "may be a system agent because its frontmatter could not be read",
-                    unreadable_block=True,
-                )
-            if body:
-                return _AgentWriteRead({}, body[0].strip(), unreadable_block=True)
-        fm, body = _parse_frontmatter(text)
+        # The strict parser only raises once the text opens a frontmatter block.
+        # Without a closing delimiter the block runs to the end of the file.
+        parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
+        block = parts[1] if len(parts) > 1 else text
+        if "lion_system" in block:
+            return _AgentWriteRead(
+                {},
+                "",
+                "may be a system agent because its frontmatter could not be read",
+                unreadable_block=True,
+            )
+        rest = parts[2].strip() if len(parts) > 2 else ""
+        return _AgentWriteRead({}, rest, unreadable_block=True)
     reason = "is a system agent" if _is_protected_system(fm) else None
     return _AgentWriteRead(fm, body, reason)
 
