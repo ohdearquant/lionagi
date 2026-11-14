@@ -1293,7 +1293,10 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     block that is empty or comments only has none to lose. Text on lines of its own ahead of
     the first ``---`` line leaves the profile all prompt, as before, and contains nothing: any
     block after it, closed or not, that sets the flag as a key or does not read and names it
-    warns that its worker is not contained. A profile with no line of dashes has no block, and
+    is refused with the opening line. Every span between two ``---`` lines counts as a
+    block, the one after a closing line included, so a rule in the prompt cannot hide a
+    declaration and a flag line after a closed block is refused rather than ignored. A
+    profile with no line of dashes has no block, and
     all of it is the prompt."""
     from itertools import pairwise
 
@@ -1305,7 +1308,9 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     def read(block: str) -> tuple[bool, Any]:
         try:
             return True, yaml.safe_load(block)
-        except (yaml.YAMLError, RecursionError):
+        except (yaml.YAMLError, RecursionError, ValueError):
+            # ValueError: a scalar that resolves to a type it cannot build, such as the
+            # calendar-invalid date in `Deadline: 2026-02-30`.
             return False, None
 
     def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
@@ -1342,11 +1347,14 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             # not read and names it anywhere. A block runs from a line of three or more dashes
             # to the next such line or, unclosed, to the end.
             delimiters = []
-            # Fenced examples are prompt text, not misplaced frontmatter.
+            # Fenced examples are prompt text, not misplaced frontmatter: no fenced line is a
+            # delimiter, and none is part of the text a span is checked on.
             fence: str | None = None
+            fenced: set[int] = set()
             for i, line in enumerate(lines):
                 marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
                 if fence is not None:
+                    fenced.add(i)
                     if (
                         marker
                         and marker[1][0] == fence[0]
@@ -1357,26 +1365,27 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                     continue
                 if marker and (marker[1][0] == "~" or "`" not in marker[2]):
                     fence = marker[1]
+                    fenced.add(i)
                     continue
                 if _DASHES.fullmatch(line.rstrip()):
                     delimiters.append(i)
-            warned_containment = False
+            # Every span between consecutive ``---`` lines is read, not only alternate ones: which
+            # line opens a block depends on how many rules came before it, and a rule in the
+            # prompt must not hide a declaration from this check.
             for opening, end in pairwise([*delimiters, len(lines)]):
-                block = "\n".join(lines[opening + 1 : end])
+                block = "\n".join("" if j in fenced else lines[j] for j in range(opening + 1, end))
                 reads, document = read(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)
-                if not warned_containment and (
+                if (
                     _FLAG_KEY_LINE.search(block)
                     or (reads and isinstance(document, dict) and _contain_flag_values(block))
                     or (not reads and _CONTAIN_KEY in block)
                 ):
-                    warn(
+                    raise ConfigurationError(
                         f"agent profile {name!r}: the --- block on line {opening + 1} follows "
-                        "text on lines of its own, so the profile is all prompt and no setting "
-                        "in the block applies; its worker is not contained, though the block "
-                        "names contain_user_settings"
+                        "text on lines of its own, so its contain_user_settings declaration "
+                        "would be ignored; move the block to the top of the file"
                     )
-                    warned_containment = True
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
         # the next ``---`` line or, unclosed, to the end.
