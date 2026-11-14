@@ -1626,6 +1626,7 @@ async def build_worker_branch(
             chat_model=w_imodel,
             log_config=log_config,
             resolved_mcp_servers=run_servers,
+            khive_actor=worker_khive_actor,
         )
         wb.name = wname
     else:

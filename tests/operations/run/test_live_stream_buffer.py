@@ -248,6 +248,37 @@ async def test_reader_displays_the_actual_nonfinite_fallback(tmp_path):
     assert _stream_tail(tmp_path, "branch") == ["visible fallback"]
 
 
+def test_reader_windows_after_filtering_and_ignores_non_string_legacy_text(tmp_path):
+    from lionagi.cli.monitor import _stream_tail
+
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    (stream / "branch.buffer.jsonl").write_text(
+        "\n".join(
+            [
+                '{"text":"older visible"}',
+                '{"_lionagi_stream_chunk":true,"type":"thinking","content":"hidden"}',
+                '{"delta":{"text":42},"text":false}',
+                '{"text":"newer visible"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert _stream_tail(tmp_path, "branch", n_lines=2) == ["older visible", "newer visible"]
+
+
+def test_reader_preserves_joiners_and_soft_hyphen(tmp_path):
+    from lionagi.cli.monitor import _stream_tail
+
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    (stream / "branch.buffer.jsonl").write_text(
+        json.dumps({"text": "a\u200cb\u200dc\u00add"}) + "\n", encoding="utf-8"
+    )
+    assert _stream_tail(tmp_path, "branch") == ["a\u200cb\u200dc\u00add"]
+
+
 @pytest.mark.asyncio
 async def test_append_keeps_legacy_to_dict_serialization(tmp_path):
     path = tmp_path / "buffer.jsonl"

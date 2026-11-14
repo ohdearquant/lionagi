@@ -2296,6 +2296,9 @@ async def _run_agent(
                         else mcp_resolution.servers
                     ),
                     resolved_mcp_explicit=mcp_resolution.explicit,
+                    # The pre-turn khive client is given the actor the khive
+                    # servers handed to the child above are given.
+                    khive_actor=child_khive_actor(agent_name),
                 )
                 if api_launch is not None:
                     branch.metadata[_API_LAUNCH_KEY] = dict(api_launch)

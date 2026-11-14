@@ -729,3 +729,38 @@ async def test_named_mcp_config_that_does_not_parse_still_refuses_the_spawn(spaw
             yolo=True,
             mcp_config=str(broken),
         )
+
+
+@pytest.mark.asyncio
+async def test_a_role_profile_leg_runs_its_pre_turn_khive_client_as_the_same_actor(
+    spawn, monkeypatch
+):
+    """A profile with a role builds its branch through create_agent; the khive client
+    its recall opt-in registers acts as the same actor as the khive server it is handed."""
+    import lionagi.cli.agent as agent_mod
+    from lionhub.orchestration.spawn import _parse_profile
+    from lionhub.tools.khive_injection import KhiveInjectionProvider
+
+    profile = _parse_profile(
+        "reviewer", "---\nrole: reviewer\nkhive_injection: true\n---\nReview.\n"
+    )
+    monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: profile)
+    monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
+
+    await agent_mod._run_agent(
+        "claude_code/sonnet",
+        "go",
+        agent_name="reviewer",
+        cwd=str(spawn.target_dir),
+        yolo=True,
+    )
+
+    branch = spawn.branches[-1]
+    providers = [
+        entry.provider
+        for entry in branch.providers._entries
+        if isinstance(entry.provider, KhiveInjectionProvider)
+    ]
+    assert len(providers) == 1
+    assert providers[0]._mcp_config["env"]["KHIVE_ACTOR"] == "agent:reviewer"
+    assert _forwarded_servers(branch)["khive"]["env"]["KHIVE_ACTOR"] == "agent:reviewer"
