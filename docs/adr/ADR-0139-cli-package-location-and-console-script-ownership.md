@@ -1,11 +1,11 @@
 # ADR-0139: CLI package location and console-script ownership
 
-- **Status**: Proposed; D1 is adopted with the CLI at `lionhub.cli`; D5 and the 2.0 release date stay Proposed
+- **Status**: Proposed; D1 is adopted with the CLI at `lionhub.serve.cli` (Amendment 5); D5 and the 2.0 release date stay Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: partial — the command catalog has moved to `lionhub.cli.catalog`, with five lazy forwards in `lionagi._auto`; argument types and diagnostics have moved to `lionhub.orchestration.arguments` and `lionhub.serve.diagnostics`, with their old import paths in `lionagi._moved`; console logging and mirror settings have moved to `lionhub.orchestration.console` and `lionhub.serve.mirror_settings`, with their old import paths in `lionagi._moved`; project detection, MCP configuration, the team reader, and engine definitions have moved to `lionhub.orchestration.project`, `lionhub.orchestration.mcp_config`, `lionhub.orchestration.team`, and `lionhub.orchestration.engine_definitions`, with their old import paths in `lionagi._moved`; invocation state and shared inspection helpers have moved to `lionhub.orchestration.job` and `lionhub.orchestration.inspection`, with their old import paths in `lionagi._moved`; model construction, profiles and common arguments, orchestration parsing, schedule parsing, and the mirror service have moved to `lionhub.orchestration.spawn`, `lionhub.orchestration.flow.parsing`, `lionhub.orchestration.schedule.parsing`, and `lionhub.serve.mirror`, with their old import paths in `lionagi._moved`; run allocation and persistence, process cancellation, and checkpoint services have moved to `lionhub.orchestration.runs`, `lionhub.orchestration.kill`, and `lionhub.orchestration.flow.checkpoint`, with their old import paths in `lionagi._moved`; the D2 step-3 module table is complete; later steps, D5, the console-script move, and the 2.0 date remain open
 - **Area**: cli-surface
 - **Date**: 2026-10-26
-- **Relations**: resolves the CLI decisions deferred by ADR-0136 D7; amends its A4 item 6, B2 step 6 and D7 layout; amends the location references in ADR-0062 D1–D5; specializes the optional base-launcher choice in ADR-0122 D8; complements ADR-0138.
+- **Relations**: resolves the CLI decisions deferred by ADR-0136 D7; amends its A4 item 6, B2 step 6 and D7 layout; amends the location references in ADR-0062 D1–D5; specializes the optional base-launcher choice in ADR-0122 D8; complements ADR-0138; Amendment 5 places the CLI at `lionhub.serve.cli`, withdrawing D1's amendment of ADR-0136's `serve/cli` spellings.
 
 **Source HEAD**: `1717674a2140d3571fcb90e3f68204845048ef80`.
 
@@ -142,6 +142,64 @@ That allocation conflates two parsers. At `4af5b0a9`, the scheduler derives rese
 - Mirror: check settings-only import does not load mirror or Studio, current default/zero/negative configuration behavior, the one shared preview setting, service state and logger name, CLI reexports, Studio lazy startup, and mocked transcript/database integration. Resolve the service's lazy project edge to the canonical owner. Update test source-location and defining-module assertions to reflect the move while retaining identity assertions.
 - Establish focused test collection and moved-test parity, run the applicable predecessor stack and gates, and account for all changed call sites, persisted-name references and generated records in the move report. These are requirements, not claims that the future move has passed them.
 
+## Amendment 5 (2026-11-13) — the CLI package is lionhub.serve.cli
+
+**Status**: Accepted.
+
+**Context.** The repository's layout draft (commit `bbd0e89a8`) puts the CLI in the hub's `serve`
+package, at `lionhub/src/serve/cli.py`, alongside `serve/daemon.py`, `serve/mcp.py` and
+`serve/server.py`. That draft is the layout of record for the hub. D1 moved the CLI to `lionhub.cli`
+instead, and no project decision approved that change. This amendment returns the CLI to the draft's
+place, as a package.
+
+Changing the path now costs nothing. At `ad5c45eb4` no part of the CLI body has moved: `lionagi/cli/`
+still holds the command modules, and `li` still targets `lionagi.cli.main:main`. `lionhub.cli` holds
+only the command catalog and the `studio` and `schedule` command adapters
+(`lionhub/src/lionhub/cli/catalog.py`, `lionhub/src/lionhub/cli/schedule.py`,
+`lionhub/src/lionhub/cli/studio.py`). No release contains them, because 0.37.0 was cut before the
+catalog moved. Under ADR-0136 D6, a `lionhub` path becomes public with the first release that ships
+it. Until that release the path can change with no compatibility row. After it, the same change would
+cost one row for every module.
+
+**Decision.**
+
+1. The CLI's canonical package is `lionhub.serve.cli`, a package. The console target is
+   `lionhub.serve.cli.main:main`, and the module command is `python -m lionhub.serve.cli`. Every
+   canonical `lionhub.cli` path in this record is read as the same path under `lionhub.serve.cli`.
+   This covers D1 to D7, the Tests section, Amendments 1 to 4 and the concern table, including the
+   parent row and the two command adapters in D2, the D5 ownership table and the D7 citations. D1's
+   text and code blocks remain as the record of the earlier choice.
+2. The files under `lionhub/src/lionhub/cli/` move to `lionhub/src/lionhub/serve/cli/` in a change
+   that lands before any release that contains them. That change rewrites every repository reference
+   to the new path, including the five lazy forwards in `lionagi._auto`. They get no compatibility
+   row, because no release will have shipped them. The same change adds a test that fails while
+   `lionhub/src/lionhub/cli` exists. The release workflow runs the test suite before it builds or
+   publishes (`.github/workflows/release.yml:101-107`, and the publish job's `needs: [source, test]`
+   at line 112), so a release that would ship the old path fails. This change may land before step 6.
+3. The step-6 change moves the CLI body into `lionhub.serve.cli` and adds one row, `lionagi.cli` to
+   `lionhub.serve.cli`, with its first release as `deprecated_in` and `2.0.0` as `removed_in`. The
+   existing rows for named `lionagi.cli` modules keep their own destinations. The step-6 change tests
+   each of them against the broad row in both import orders, as Amendment 4's verification list
+   requires for the specific rows.
+4. `serve` holds every front end through which lionagi is used from outside a Python program: the
+   CLI, the daemon and the MCP server. D1 gave `lionhub.serve` a narrower, server-only meaning; that
+   meaning no longer applies, and the change that moves the command catalog to `lionhub.serve.cli`
+   makes `lionhub/src/lionhub/serve/__init__.py` state the wider one. D1
+   counted a shorter module invocation for `lionhub.cli`; that is given up. In "Alternatives
+   considered", "Keep the draft's lionhub.serve.cli destination" is the chosen form from this
+   amendment on.
+5. Every `li` start imports `lionhub/src/lionhub/serve/__init__.py`, so the serve package initializer
+   imports nothing: no MCP server, no daemon and no other `serve` subpackage. A fresh-process test
+   imports `lionhub.serve.cli.main` and asserts that no module under `lionhub.serve.mcp` and no daemon
+   module is in `sys.modules` afterward. The change in item 2 adds this test for
+   `lionhub.serve.cli.catalog`; the step-6 change extends it to `lionhub.serve.cli.main`.
+6. ADR-0136 A4 item 6, B2 step 6 and D7 spell the destination `serve/cli`. Those spellings stand as
+   written, and D1's amendment of them is withdrawn. Apart from the path, D2 to D7 and Amendments 1 to
+   4 are unchanged, and D5 and the 2.0 date remain open.
+
+**Failure tests:** `test_no_lionhub_cli_package_directory` (item 2) and
+`test_serve_cli_import_loads_no_server` (item 5).
+
 ## Context
 
 **P1. Code location and executable ownership are different contracts.**
@@ -204,7 +262,7 @@ behavior changes.
 
 | Concern | Decision |
 | --- | --- |
-| Public CLI location | D1, Proposed pending a project decision: `lionhub.cli`, with `lionhub.cli.main:main` as composition root. |
+| Public CLI location | D1 as amended by Amendment 5: `lionhub.serve.cli`, with `lionhub.serve.cli.main:main` as composition root. |
 | Shared code and move form | D2: seventeen whole-module moves plus shared-function extraction in step 3; one residual CLI-package row in step 6. |
 | Fresh command discovery | D3: `lionhub.cli.catalog` owns the populated catalog and loading APIs. |
 | 1.x executable and aliases | D4: `lionagi` remains script owner; its target changes at step 6; old imports survive through 1.x. |
@@ -232,7 +290,10 @@ Out of scope:
 
 ### D1 — The public CLI package is lionhub.cli
 
-Proposed, pending a project decision on where the CLI lives. Placing it in `lionhub` means
+Superseded in its location by Amendment 5: the CLI package is `lionhub.serve.cli`.
+
+Adopted, at the location Amendment 5 sets: `lionhub.serve.cli`. D5 and the 2.0 release date stay
+Proposed. Placing the CLI in `lionhub` means
 `pip install lionagi` alone no longer provides a CLI from 2.0 (D5), and every script that calls
 `li` then depends on the hub distribution. D2, D3, D4, D6 and D7 are this record's engineering
 decisions; where they name `lionhub.cli` paths, those paths follow D1.
