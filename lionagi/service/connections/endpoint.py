@@ -793,10 +793,11 @@ class Endpoint:
             from lionagi.config import settings
 
             # aiocache builds its key from the arguments, so the function is handed the
-            # headers with each credential value replaced by its digest; the request is
-            # sent with the real headers, read from this scope.
+            # headers with each credential value replaced by its digest and the keyword
+            # arguments as digests; the request is sent with the real headers and keyword
+            # arguments, read from this scope.
             @cached(**settings.aiocache_config.as_kwargs())
-            async def _cached_call(payload: dict, cache_headers: dict, **kwargs):
+            async def _cached_call(payload: dict, cache_headers: Any, cache_kwargs: dict):
                 mark_uncached_response(cache_source)
                 if self.circuit_breaker and self.retry_config:
                     return await self.circuit_breaker.execute(call_func, payload, headers, **kwargs)
@@ -809,7 +810,9 @@ class Endpoint:
 
                 return await self._call(payload, headers, **kwargs)
 
-            return await _cached_call(payload, _cache_key_headers(headers), **kwargs)
+            return await _cached_call(
+                payload, _cache_key_headers(headers), _cache_key_kwargs(kwargs)
+            )
 
         if self.retry_config:
             return await call_func(
@@ -1567,31 +1570,52 @@ def _names_credential_header(name: Any) -> bool:
     )
 
 
+def _cache_key_digest(value: Any) -> str:
+    """``sha256:`` and the first 16 hex digits of the SHA-256 of *value*'s text."""
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    if isinstance(value, (bytes, bytearray)):
+        data = bytes(value)
+    else:
+        data = str(value).encode("utf-8", "surrogatepass")
+    return "sha256:" + hashlib.sha256(data).hexdigest()[:16]
+
+
 def _cache_key_headers(headers: Any) -> Any:
     """``headers`` as the response cache keys them: each credential value as its digest.
 
     A header named as ``_names_credential_header`` reads it keeps its name, and its value
-    becomes ``sha256:`` and the first 16 hex digits of the SHA-256 of its text, so requests
-    made with different keys still get different cache entries and no key's text is part of
-    a cache key. Every other header is kept as it is. A value that is not a mapping is
-    returned as it is.
+    becomes its ``_cache_key_digest``, so requests made with different keys still get
+    different cache entries and no key's text is part of a cache key. Every other header is
+    kept as it is. A mapping and a list of name-value pairs are read the same way; any other
+    form, whose credentials no name can pick out, is keyed as one digest of its whole text.
     """
-    if not isinstance(headers, Mapping):
-        return headers
+    if headers is None:
+        return None
+    if isinstance(headers, Mapping):
+        return {
+            name: _cache_key_digest(value) if _names_credential_header(name) else value
+            for name, value in headers.items()
+        }
+    if isinstance(headers, (list, tuple)) and all(
+        isinstance(pair, (list, tuple)) and len(pair) == 2 for pair in headers
+    ):
+        return [
+            (name, _cache_key_digest(value) if _names_credential_header(name) else value)
+            for name, value in headers
+        ]
+    return _cache_key_digest(headers)
 
-    def digest(value: Any) -> str:
-        if isinstance(value, SecretStr):
-            value = value.get_secret_value()
-        if isinstance(value, (bytes, bytearray)):
-            data = bytes(value)
-        else:
-            data = str(value).encode("utf-8", "surrogatepass")
-        return "sha256:" + hashlib.sha256(data).hexdigest()[:16]
 
-    return {
-        name: digest(value) if _names_credential_header(name) else value
-        for name, value in headers.items()
-    }
+def _cache_key_kwargs(kwargs: Mapping[str, Any]) -> dict[str, str]:
+    """A call's keyword arguments as the response cache keys them: each value as its digest.
+
+    They are whatever the endpoint's ``_call`` accepts: request options such as a ``proxy``
+    URL, which can carry a user and password, and any keyword a subclass's ``_call`` takes.
+    No name rule can say which of those hold a credential, so every value is keyed by its
+    digest; two calls still share an entry exactly when their values read the same.
+    """
+    return {name: _cache_key_digest(value) for name, value in kwargs.items()}
 
 
 _STORED_URL_REMEDY = (

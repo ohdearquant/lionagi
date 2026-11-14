@@ -376,3 +376,48 @@ async def test_the_response_cache_key_holds_no_credential(monkeypatch):
     assert len(keys) == 2
     assert all(secret not in str(k) and other not in str(k) for k in keys)
     assert all("sha256:" in str(k) for k in keys)
+
+
+@pytest.mark.asyncio
+async def test_pair_list_headers_and_keyword_arguments_stay_out_of_the_cache_key(monkeypatch):
+    from aiocache import SimpleMemoryCache, caches
+    from aiocache.serializers import JsonSerializer
+
+    from lionagi.config import settings
+
+    monkeypatch.setattr(settings.aiocache_config, "alias", "default")
+    cache = SimpleMemoryCache(serializer=JsonSerializer())
+    monkeypatch.setattr(caches, "get", lambda alias: cache)
+    token = "sk-test-" + uuid.uuid4().hex
+    password = uuid.uuid4().hex
+    proxy = f"http://user:{password}@proxy.invalid:8080"
+    sent = []
+
+    async def transport(payload, headers, **kwargs):
+        sent.append((list(headers), kwargs))
+        return {"ok": len(sent)}
+
+    # An endpoint with no stored key leaves a caller's header list as given.
+    endpoint = Endpoint(
+        config=EndpointConfig(
+            name="test", endpoint="chat/completions", provider="openai", auth_type="none"
+        )
+    )
+    monkeypatch.setattr(endpoint, "_call", transport)
+    payload = {"model": str(uuid.uuid4())}
+    pairs = [("Authorization", f"Bearer {token}"), ("X-Trace", "t1")]
+
+    first = await endpoint.call(
+        payload, cache_control=True, skip_payload_creation=True, extra_headers=pairs, proxy=proxy
+    )
+    again = await endpoint.call(
+        payload, cache_control=True, skip_payload_creation=True, extra_headers=pairs, proxy=proxy
+    )
+
+    # The request still carries the real header and keyword argument.
+    assert sent[0] == (pairs, {"proxy": proxy})
+    assert first == again == {"ok": 1}
+    keys = [str(k) for k in cache._cache]
+    assert len(keys) == 1
+    assert token not in keys[0] and password not in keys[0]
+    assert "X-Trace" in keys[0]
