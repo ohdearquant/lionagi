@@ -38,6 +38,25 @@ from .artifact_verification import resolve_artifact_verification
 SESSION_DONE_STABLE_SECS = 60.0
 
 
+def _reusable_collection_json(raw: Any, ids: Any) -> str | None:
+    """Return captured JSON only when json_each preserves decoded string IDs exactly.
+
+    ASCII strings avoid SQLite JSON escape decoding differences, no backslash ensures
+    the raw values need no escape processing, and the size bound prevents whitespace
+    from making the reused SQL bind larger than default json.dumps output.
+    """
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or not all(isinstance(mid, str) and mid.isascii() for mid in ids)
+        or not isinstance(raw, str)
+        or "\\" in raw
+        or len(raw) > sum(len(mid) + 4 for mid in ids)
+    ):
+        return None
+    return raw
+
+
 def _session_tail_registry(request: Request | None) -> SessionTailRegistry:
     if request is None:
         raise HTTPException(status_code=503, detail="Live streams require an application context")
@@ -1477,16 +1496,8 @@ async def get_session(
             progression_ids[br["id"]] = ids
             # The single row is already retained here. Reuse its captured JSON only when
             # decoding cannot change member values, and whitespace cannot inflate the bind.
-            if (
-                len(branch_rows) == 1
-                and isinstance(ids, list)
-                and ids
-                and all(isinstance(mid, str) and mid.isascii() for mid in ids)
-                and isinstance(prog_row["collection"], str)
-                and "\\" not in prog_row["collection"]
-                and len(prog_row["collection"]) <= sum(len(mid) + 4 for mid in ids)
-            ):
-                stats_collection_json = prog_row["collection"]
+            if len(branch_rows) == 1 and prog_id and prog_row:
+                stats_collection_json = _reusable_collection_json(prog_row["collection"], ids)
 
         # One budget for the whole read, so it isn't multiplied by branch count;
         # display windows spend first and the action aggregate takes what's left.

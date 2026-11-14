@@ -18,6 +18,30 @@ from lionagi.state.db import StateDB  # noqa: E402
 from lionagi.studio.services import sessions as svc  # noqa: E402
 
 
+@pytest.mark.parametrize(
+    "ids, raw, reusable",
+    [
+        (["a", "bc"], '["a","bc"]', True),
+        (["a", "bc"], '["a", "bc"]', True),
+        # Whitespace beyond the default encoding's size would inflate the bind.
+        (["a", "bc"], '[ "a", "bc" ]', False),
+        # Non-ASCII and escaped members can decode differently, so they are never reused.
+        (["é"], '["é"]', False),
+        (["é"], '["\\u00e9"]', False),
+        (["a\\b"], '["a\\\\b"]', False),
+        ([], "[]", False),
+        (["a"], None, False),
+    ],
+)
+def test_reusable_collection_json_only_accepts_exact_sqlite_membership(ids, raw, reusable):
+    result = svc._reusable_collection_json(raw, ids)
+    assert (result is not None) is reusable
+    if result is not None:
+        with sqlite3.connect(":memory:") as conn:
+            members = [row[0] for row in conn.execute("SELECT value FROM json_each(?)", (result,))]
+        assert members == ids
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
