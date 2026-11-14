@@ -1239,7 +1239,8 @@ async def test_cancelled_reconciliation_reaps_notify_group_without_ack(tmp_path,
             "session", session_id, new_status="failed", reason_code="session.stale.no_heartbeat"
         )
         transition = await db.fetch_one(
-            "SELECT id FROM status_transitions WHERE entity_type = ? AND entity_id = ? AND status = ?",
+            "SELECT id FROM status_transitions "
+            "WHERE entity_type = ? AND entity_id = ? AND status = ?",
             ("session", session_id, "failed"),
         )
         assert transition is not None
