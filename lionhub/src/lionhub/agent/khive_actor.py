@@ -4,11 +4,10 @@
 
 khive resolves its actor as: the ``--actor`` flag, then ``[actor] id`` in
 ``<cwd>/.khive/config.toml``, then the ``KHIVE_ACTOR`` environment variable,
-then anonymous. Setting ``KHIVE_ACTOR`` in a server's environment is therefore
-a fallback: a child whose directory holds an actor config acts as that actor,
-and every other child acts as ``agent:<profile>`` instead of anonymously or as
-whoever launched it. The server's packs are left as configured, so a child keeps
-every verb its server loads, ``comm`` included, under its own actor.
+then anonymous. Child servers receive the actor flag so their working-directory
+config cannot override their attribution; the environment variable remains a
+fallback. The server's packs are left as configured, so a child keeps every
+verb its server loads, ``comm`` included, under its own actor.
 """
 
 from __future__ import annotations
@@ -53,24 +52,48 @@ def is_khive_server(spec: Any) -> bool:
     return isinstance(command, str) and os.path.basename(command) == _KHIVE_COMMAND
 
 
+def _without_actor_flags(args: list[Any]) -> list[Any]:
+    """``args`` without any ``--actor`` flag: ``--actor=<id>``, ``--actor <id>``, or a bare one."""
+    kept: list[Any] = []
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value == "--actor":
+            following = args[index + 1] if index + 1 < len(args) else None
+            has_value = isinstance(following, str) and not following.startswith("-")
+            index += 2 if has_value else 1
+            continue
+        if isinstance(value, str) and value.startswith("--actor="):
+            index += 1
+            continue
+        kept.append(value)
+        index += 1
+    return kept
+
+
 def _attributed(spec: Mapping[str, Any], actor: str) -> dict[str, Any]:
-    """A shallow copy of a khive server entry whose env names ``actor``."""
+    """A shallow copy of a khive server entry whose arguments and env name ``actor``."""
+    args = spec.get("args")
+    if isinstance(args, (list, tuple)):
+        args = [*_without_actor_flags(list(args)), "--actor", actor]
     existing = spec.get("env")
     env: dict[str, Any] = dict(existing) if isinstance(existing, Mapping) else {}
     env[KHIVE_ACTOR_ENV] = actor
     server = dict(spec)
+    if args is not None:
+        server["args"] = args
     server["env"] = env
     return server
 
 
 def attribute_khive_servers(servers: Mapping[str, Any] | None, actor: str) -> dict[str, Any] | None:
-    """Copy ``servers`` with each khive server's ``KHIVE_ACTOR`` set to ``actor``.
+    """Copy ``servers`` with each khive server's actor flag and environment set.
 
     Returns None for None. Otherwise returns a new mapping in which every server
-    whose ``command`` basename is ``kkernel`` is a shallow copy with a new ``env``
-    whose ``KHIVE_ACTOR`` is ``actor``, replacing any value there. Every other
-    server, and every other key, is passed through unchanged. The input is never
-    mutated.
+    whose ``command`` basename is ``kkernel`` is a shallow copy with ``--actor``
+    set to ``actor`` and a new ``env`` whose ``KHIVE_ACTOR`` is ``actor``, replacing
+    any values there. Every other server, and every other key, is passed through
+    unchanged. The input is never mutated.
     """
     if servers is None:
         return None

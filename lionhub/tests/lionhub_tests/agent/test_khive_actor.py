@@ -67,7 +67,35 @@ def test_pack_flags_in_the_arguments_are_kept():
     args = ["mcp", "--pack", "kg", "--pack", "comm", "--pack=comm"]
     servers = {"khive": _khive({"KHIVE_PACKS": "kg"}, args=args)}
     result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["args"] == args
+    assert result["khive"]["args"] == [*args, "--actor", "agent:x"]
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (["mcp"], ["mcp", "--actor", "agent:reviewer"]),
+        (["mcp", "--actor", "other"], ["mcp", "--actor", "agent:reviewer"]),
+        (["mcp", "--actor=other"], ["mcp", "--actor", "agent:reviewer"]),
+        (["mcp", "--actor"], ["mcp", "--actor", "agent:reviewer"]),
+        (
+            ["mcp", "--actor=other", "--pack", "kg"],
+            ["mcp", "--pack", "kg", "--actor", "agent:reviewer"],
+        ),
+        (
+            ["mcp", "--actor", "--pack", "kg"],
+            ["mcp", "--pack", "kg", "--actor", "agent:reviewer"],
+        ),
+        (
+            ["mcp", "--actor", "a", "--pack", "kg", "--actor=b"],
+            ["mcp", "--pack", "kg", "--actor", "agent:reviewer"],
+        ),
+    ],
+)
+def test_actor_argument_overrides_directory_and_server_actor(args, expected):
+    server = _khive({"KHIVE_ACTOR": "other"}, args=args)
+    result = attribute_khive_servers({"khive": server}, "agent:reviewer")
+    assert result["khive"]["args"] == expected
+    assert result["khive"]["env"]["KHIVE_ACTOR"] == "agent:reviewer"
 
 
 def test_an_existing_actor_is_replaced():
@@ -101,7 +129,7 @@ def test_other_keys_of_the_server_pass_through():
     result = attribute_khive_servers(servers, "agent:x")
     server = result["khive"]
     assert server["command"] == "/usr/local/bin/kkernel"
-    assert server["args"] == ["mcp"]
+    assert server["args"] == ["mcp", "--actor", "agent:x"]
     assert server["cwd"] == "/work"
     assert server["timeout"] == 30
 
