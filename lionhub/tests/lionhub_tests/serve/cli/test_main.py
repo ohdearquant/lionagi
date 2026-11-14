@@ -691,3 +691,45 @@ def test_skill_handler_import_error_is_outside_the_module_load(lazy_main_import)
         main_module.run_skill(["chosen-skill"])
     assert caught.value is errors.broken
     assert caught.value.__cause__ is None
+
+
+def test_a_machine_envelope_write_that_stops_partway_still_exits_78(monkeypatch):
+    """A short write followed by an error leaves bytes that do not parse; the exit stays 78."""
+    import json
+    import os
+
+    from lionhub.serve.cli import main as cli_main
+
+    read_fd, write_fd = os.pipe()
+    real_write = os.write
+    calls = []
+
+    def short_then_fail(fd, data):
+        calls.append(len(data))
+        if len(calls) == 1:
+            return real_write(fd, bytes(data[:10]))
+        raise OSError("device full")
+
+    class _Stdout:
+        def fileno(self):
+            return write_fd
+
+    monkeypatch.setattr(cli_main.os, "write", short_then_fail)
+    monkeypatch.setattr(cli_main.sys, "stdout", _Stdout())
+    try:
+        code = cli_main._report_broken_environment(
+            ModuleNotFoundError("No module named 'absent_pkg'", name="absent_pkg"),
+            exit_code=EXIT_CODE_ENVIRONMENT_ERROR,
+            argv=["doctor", "--machine"],
+        )
+    finally:
+        monkeypatch.undo()
+        os.close(write_fd)
+    with os.fdopen(read_fd, "rb") as stream:
+        written = stream.read()
+
+    assert code == EXIT_CODE_ENVIRONMENT_ERROR
+    assert len(calls) == 2
+    assert written and len(written) == 10
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(written)
