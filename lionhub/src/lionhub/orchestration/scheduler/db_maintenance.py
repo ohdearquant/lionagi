@@ -48,8 +48,12 @@ def _progression_members(dialect: str, collection: str = "p.collection") -> str:
     if dialect == "sqlite":
         return f"json_each({collection}) AS members"
     if dialect == "postgresql":
-        # Validate with jsonb, but expand the original JSON object so duplicate
-        # keys contribute every immediate value, as with SQLite json_each.
+        # Match the SQLite json_each values used for TEXT ID comparisons:
+        # booleans become 1/0, JSON null becomes SQL NULL, and strings are unquoted.
+        # Numbers use jsonb's numeric text. Decimal and exponent forms can differ.
+        # For arrays and objects, strip whitespace outside quoted strings to match
+        # SQLite's compact JSON. Validate with jsonb and expand the original json
+        # so every immediate value from a duplicate object key contributes.
         return (
             "LATERAL ("  # noqa: S608 -- collection is an internal SQL column
             " SELECT CASE json_typeof(value)"
