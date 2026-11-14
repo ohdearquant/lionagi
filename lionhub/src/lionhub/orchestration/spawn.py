@@ -1142,6 +1142,15 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
         root = yaml.compose(block, Loader=yaml.SafeLoader)
         too_deep = _node_depth(root) > _MAX_FRONTMATTER_DEPTH
     except RecursionError:
+        # The loaders recurse once per level, so the stack ran out either on a block nested
+        # past what it allows or in a caller already deep in its own stack. The scanner does
+        # not recurse, so its count tells the two apart; only the first is this refusal.
+        try:
+            written = _token_depth(list(yaml.scan(block, Loader=yaml.SafeLoader)))
+        except yaml.YAMLError:
+            written = 0
+        if written <= _MAX_FRONTMATTER_DEPTH:
+            raise
         too_deep = True
     except yaml.YAMLError:
         if unreadable_yaml_has_sensitive_text(block):

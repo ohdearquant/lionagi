@@ -141,6 +141,30 @@ def test_deep_closed_frontmatter_without_mcp_is_refused(recursion_limit):
         _parse_profile("reviewer", "---\n" + _nested_flow(65) + "---\nReview.")
 
 
+def _compose_out_of_stack(monkeypatch):
+    import yaml
+
+    def out_of_stack(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(yaml, "compose", out_of_stack)
+
+
+@pytest.mark.parametrize("mcp", ["", "mcp: none\n"])
+def test_stack_exhausted_by_the_caller_is_not_reported_as_deep_frontmatter(monkeypatch, mcp):
+    # A caller already near the recursion limit can exhaust the stack on a shallow block;
+    # that is the caller's error, not a nesting refusal naming the profile.
+    _compose_out_of_stack(monkeypatch)
+    with pytest.raises(RecursionError):
+        _parse_profile("reviewer", "---\n" + mcp + "model: example\n---\nReview.")
+
+
+def test_stack_exhausted_on_deep_frontmatter_is_the_nesting_refusal(monkeypatch):
+    _compose_out_of_stack(monkeypatch)
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
+        _parse_profile("reviewer", "---\n" + _nested_flow(65) + "---\nReview.")
+
+
 def _aliased_stages(stages: int = 40, width: int = 30) -> str:
     # Each stage is written inside the one before it and anchored; a later top-level key
     # aliases it, so the shortest path to every stage is two levels however deep it is written.
