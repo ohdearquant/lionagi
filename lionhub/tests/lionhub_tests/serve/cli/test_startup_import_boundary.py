@@ -238,8 +238,8 @@ def test_environment_refusal_with_stderr_closed_keeps_stdout_clean(
         """,
         close_stderr=True,
     )
+    # The child's stderr is closed, so only the exit status and stdout can be checked.
     assert process.returncode == 78
-    assert process.stderr == ""
     if not machine:
         assert process.stdout == ""
         return

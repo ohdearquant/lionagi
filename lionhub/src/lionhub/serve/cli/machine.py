@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi._feature_errors import MissingFeatureError
 from lionagi.ln import import_module
 
 from ._machine_envelope import _CONTRACT_VERSION, _ERROR_KINDS, _encode_envelope, _failure
@@ -767,8 +768,9 @@ def dispatch_machine(argv: list[str]) -> int:
     the refusal a second time in the exit status would give a consumer two
     answers to one question.
 
-    A `ModuleNotFoundError` before run allocation is re-raised so the entry
-    point can return exit 78 with a best-effort environment refusal. Once a run
+    A `ModuleNotFoundError` or `MissingFeatureError` before run allocation is
+    re-raised so the entry point can return exit 78 with a best-effort
+    environment refusal. Once a run
     exists on disk it is an ordinary failure of that run and gets an envelope
     like any other.
     """
@@ -779,10 +781,10 @@ def dispatch_machine(argv: list[str]) -> int:
             data = _run_machine_command(argv)
         except MachineError as exc:
             channel.emit(failure(exc.kind, str(exc), exc.detail))
-        except ModuleNotFoundError:
+        except (ModuleNotFoundError, MissingFeatureError):
             if not run_was_allocated():
                 raise
-            channel.emit(failure("internal", "a required module is not installed"))
+            channel.emit(failure("internal", "a required module or feature is not installed"))
         except Exception as exc:  # noqa: BLE001 — a crash with no envelope is unreadable
             from lionagi.state.engine import mask_credentials
 

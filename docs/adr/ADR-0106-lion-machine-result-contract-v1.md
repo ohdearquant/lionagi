@@ -799,11 +799,11 @@ being asked of them in one place.
    branch against a hand-written envelope.
 5. **Never render `available: false` as "none"** (D7). Absence of evidence is not
    evidence of absence, and the whole wrapper exists to stop those sharing an encoding.
-6. **Check the exit status before parsing stdout, and do not parse it at all on 78**
-   (D8). Attributing an environment fault to the submitted work is the misattribution
-   this contract was written to remove.
-   A consumer that does parse stdout on 78 finds either nothing or a valid
-   `unavailable` envelope and never treats empty stdout there as malformed.
+6. **Check the exit status before parsing stdout, and never read stdout on 78 as a
+   result of the submitted work** (D8). Attributing an environment fault to the
+   submitted work is the misattribution this contract was written to remove. On 78,
+   stdout holds either nothing or a valid `unavailable` envelope. A consumer may read
+   that envelope as a diagnostic, and never treats empty stdout there as malformed.
 7. **Never treat a terminal notice as proof, or as the only discovery path** (D9).
    Delivery can fail, and the record of that failure lives in state a non-polling
    consumer is not reading.

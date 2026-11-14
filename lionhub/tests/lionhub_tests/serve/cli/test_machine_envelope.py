@@ -739,6 +739,9 @@ def machine_import_file(tmp_path, monkeypatch):
         "name='forged_optional', path='forged/machine.py')\n"
         "missing = ModuleNotFoundError('missing nested dependency', "
         "name='nested_optional', path='dependency/path.py')\n"
+        "from lionagi._feature_errors import MissingFeatureError\n"
+        "feature = MissingFeatureError(feature='fixture provider', "
+        "missing_distribution='fixture-dist', install_hint='install fixture-dist')\n"
     )
     errors = importlib.import_module("_machine_loader_errors")
     return tmp_path / "_machine_loader_fixture.py", errors
@@ -813,4 +816,23 @@ def test_machine_module_missing_error_keeps_allocation_boundary(machine_import_f
     envelope = _one_object(capfd.readouterr().out)
     assert envelope["ok"] is False
     assert envelope["error"]["kind"] == "internal"
-    assert envelope["error"]["message"] == "a required module is not installed"
+    assert envelope["error"]["message"] == "a required module or feature is not installed"
+
+
+def test_machine_missing_feature_error_keeps_allocation_boundary(machine_import_file, capfd):
+    path, errors = machine_import_file
+    # The provider registry raises this when a selected provider is called, not at import.
+    path.write_text(
+        "from _machine_loader_errors import feature\ndef machine_result(argv):\n    raise feature\n"
+    )
+    with pytest.raises(MissingFeatureError) as before_allocation:
+        machine.dispatch_machine(["fixture"])
+    assert before_allocation.value is errors.feature
+    assert capfd.readouterr().out == ""
+
+    mark_run_allocated()
+    assert machine.dispatch_machine(["fixture"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "internal"
+    assert envelope["error"]["message"] == "a required module or feature is not installed"
