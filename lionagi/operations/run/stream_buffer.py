@@ -1,7 +1,7 @@
 """Shared record definitions for persisted live stream output.
 
 The live stream buffer has one writer (``lionagi.operations.run.run``) and one reader
-(``lionagi.cli.monitor``); both take the record marker and the legacy text rules from here.
+(``lionhub.serve.cli.monitor``); both take the record marker and the legacy text rules from here.
 """
 
 from collections.abc import Mapping

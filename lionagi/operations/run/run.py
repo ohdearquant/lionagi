@@ -48,7 +48,11 @@ from lionagi.operations._observe import (
 from lionagi.operations._observe import (
     check_control as _check_control,
 )
-from lionagi.operations.run.stream_buffer import STREAM_CHUNK_MARKER, legacy_fallback_text
+from lionagi.operations.run.stream_buffer import (
+    STREAM_CHUNK_MARKER,
+    _plain,
+    legacy_fallback_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +77,6 @@ async def _write_branch_snapshot(branch: Branch, snapshot_dir: str | Path) -> No
     await run_sync(partial(os.replace, str(tmp_fp), str(fp)))
 
 
-def _buffer_text(value: Any) -> str | None:
-    """Extract a plain string without invoking a subclass's conversion hook."""
-    return str.__str__(value) if isinstance(value, str) else None
-
-
 async def _append_chunk(buffer_path, chunk) -> None:
     """Append a strict JSON projection, retaining text if serialization fails."""
     payload = None
@@ -96,8 +95,8 @@ async def _append_chunk(buffer_path, chunk) -> None:
         )
         failure = "non-finite float" if nonfinite else "unserializable value"
         if isinstance(chunk, StreamChunk):
-            kind = _buffer_text(chunk.type) or "error"
-            content = _buffer_text(chunk.content) or ""
+            kind = _plain(chunk.type) or "error"
+            content = _plain(chunk.content) or ""
             fallback = {
                 STREAM_CHUNK_MARKER: True,
                 "type": kind,
@@ -114,7 +113,7 @@ async def _append_chunk(buffer_path, chunk) -> None:
                         value = getattr(chunk, name, None)
                     except Exception:
                         value = None
-                    if (value := _buffer_text(value)) is not None:
+                    if (value := _plain(value)) is not None:
                         data[name] = value
             text = legacy_fallback_text(data)
             text = text or ""

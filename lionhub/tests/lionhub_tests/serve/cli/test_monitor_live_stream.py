@@ -137,6 +137,39 @@ def test_stream_tail_splits_only_on_line_feed(tmp_path):
     assert monitor._stream_tail(tmp_path, "branch") == []
 
 
+def test_stream_tail_shows_a_too_deeply_nested_line_as_written(tmp_path):
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    deep = "[" * 200_000 + "]" * 200_000
+    (stream / "branch.buffer.jsonl").write_text(
+        json.dumps({"text": "before"}) + "\n" + deep + "\n" + json.dumps({"text": "after"}) + "\n"
+    )
+    assert monitor._stream_tail(tmp_path, "branch") == ["before", deep[:120], "after"]
+
+
+def test_stream_tail_parses_only_the_lines_in_its_window(tmp_path, monkeypatch):
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    records = [{"text": str(i)} for i in range(1000)]
+    records[500] = {"_lionagi_stream_chunk": True, "type": "thinking", "content": "hidden"}
+    (stream / "branch.buffer.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    parsed = []
+    loads = json.loads
+
+    def counting_loads(line, *args, **kwargs):
+        parsed.append(line)
+        return loads(line, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", counting_loads)
+    assert monitor._stream_tail(tmp_path, "branch", n_lines=3) == ["997", "998", "999"]
+    assert len(parsed) == 3
+    # A non-text record inside the window takes no slot, so the scan reads one line further.
+    assert monitor._stream_tail(tmp_path, "branch", n_lines=500) == [
+        str(i) for i in range(499, 1000) if i != 500
+    ]
+    assert len(parsed) == 3 + 501
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("view", ["session", "play"])
 @pytest.mark.parametrize("legacy", [False, True], ids=["distinct-run-id", "legacy-no-run-id"])
