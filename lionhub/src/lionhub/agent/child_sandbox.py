@@ -90,6 +90,7 @@ DEFAULT_DENY_READ: tuple[str, ...] = (
     "~/.my.cnf",
     "~/.codex/auth.json",
     "~/.claude/.credentials.json",
+    "~/.claude.json",
     "~/.gemini/oauth_creds.json",
     "~/.config/github-copilot",
     "~/.copilot",
@@ -112,7 +113,8 @@ DEFAULT_ALLOW_WRITE: tuple[str, ...] = (
 #: child is launched and confined, and what Claude Code loads into every session. The sandbox's
 #: write limit covers Bash only, so these are denied to the Edit and Write tools by permission
 #: rules. ``~/.claude.json`` holds Claude Code's user-scope MCP servers, which run outside the
-#: sandbox. Every ``deny_read`` entry and every ``extends`` file is denied the same way.
+#: sandbox; it is in ``DEFAULT_DENY_READ`` too. Every ``deny_read`` entry, one a profile is
+#: exempted from reading included, and every ``extends`` file is denied the same way.
 DEFAULT_DENY_EDIT: tuple[str, ...] = (
     "~/.lionagi/settings.yaml",
     "~/.lionagi/agents",

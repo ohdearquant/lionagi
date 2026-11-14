@@ -137,6 +137,7 @@ _EXPECTED_DENY_READ = (
     "~/.my.cnf",
     "~/.codex/auth.json",
     "~/.claude/.credentials.json",
+    "~/.claude.json",
     "~/.gemini/oauth_creds.json",
     "~/.config/github-copilot",
     "~/.copilot",
@@ -259,7 +260,20 @@ def test_lionagis_own_credential_file_is_denied_where_lionagi_home_points(tmp_pa
 
 
 def test_claude_codes_user_state_file_is_denied_to_the_file_tools():
-    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    settings = claude_settings_for(resolve_child_sandbox(None, {}))
+    rules = settings["permissions"]["deny"]
+    # It holds user-scope MCP server definitions, whose environment can carry tokens.
+    assert "Read(~/.claude.json)" in rules
+    assert "~/.claude.json" in settings["sandbox"]["filesystem"]["denyRead"]
+    assert "Edit(~/.claude.json)" in rules
+
+
+def test_a_read_exemption_for_claude_codes_user_state_file_lifts_only_the_read_denial():
+    settings = _settings(profiles={"builder": {"allow_read": ["~/.claude.json"]}})
+    policy = resolve_child_sandbox("builder", settings)
+    assert "~/.claude.json" not in policy.deny_read
+    rules = claude_settings_for(policy)["permissions"]["deny"]
+    assert "Read(~/.claude.json)" not in rules
     assert "Edit(~/.claude.json)" in rules
 
 
