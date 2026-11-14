@@ -51,12 +51,13 @@ kept and made exact; its "outside the wheel" holds from 2.0.
 
 Through 1.x the `lionagi` distribution bundles the `lionagi_studio` root as D1 bundles `lionhub`. The
 wheel carries three import roots, and no second distribution is published or required before 2.0. D1's
-rules for a bundled root apply: `apps/studio/backend/src/` holds no package other than `lionagi_studio`,
-and the wheel's file list carries the root's typing marker, compatibility manifest and playbooks. The
-application's project file declares the root for the application's own builds and tests; no 1.x
-release builds or publishes a distribution from it, and how the application is distributed after 2.0 is
-outside these records. The `studio` extra continues to add dependencies only. A 1.x Studio installation
-therefore needs no new install step, before or after the move.
+rules for a bundled root apply: every source-root list D1 names gains the new root,
+`apps/studio/backend/src/` holds no package other than `lionagi_studio`, and the wheel's file list
+carries the root's typing marker, compatibility manifest and playbooks. The application's project file
+declares the root for the application's own builds and tests; no 1.x release builds or publishes a
+distribution from it, and how the application is distributed after 2.0 is outside these records. The
+`studio` extra continues to add dependencies only. A 1.x Studio installation therefore needs no new
+install step, before or after the move.
 
 ### G2. Old paths through 1.x
 
@@ -72,37 +73,52 @@ including patch targets and pickled class references. `python -m lionagi.studio`
 The two old parent packages that daemon paths pass through, `lionagi.studio` and
 `lionagi.studio.services`, have empty initializers today and keep them, empty, through 1.x. The finder
 steps aside for a file still at an old path, so these two stay ordinary packages: importing an old
-daemon path loads neither the application root nor its initializers, gives one deprecation warning as
-D3 states, and attaches nothing to an application module. Every other module and package under
-`lionagi/studio/` leaves in the move change, and the broad row is permitted only in that change. A file
-left at any other old path would be loaded in place of the moved module, or would break its
-resolution. B1's rule against a broad row over retained modules protected retained implementation; the
-two empty initializers are the only files it now covers, and they hold none. The change carries a
-longest-prefix test for every split destination and a test that both initializers are empty.
+daemon path loads neither the application root nor its initializers, gives one deprecation warning per
+old module as D3 states, and attaches nothing to an application module. These two names are the only old
+Studio paths that do not resolve to a moved module: they import as the empty packages, and a resource
+read through either name reads the empty old package. The moved-module tests and the frozen inventory
+(G4) name them as their only two exceptions and check every module and subpackage below them. `python -m
+lionagi.studio` gives one deprecation warning, as running any other moved module entry does, and a test
+runs it. Every other module and package under `lionagi/studio/` leaves in the move change, and the broad
+row is permitted only in that change. A file left at any other old path would be loaded in place of the
+moved module, or would break its resolution. B1's rule against a broad row over retained modules
+protected retained implementation; the two empty initializers are the only files it now covers, and they
+hold none. The change carries a longest-prefix test for every split destination and a test that only the
+two empty initializers remain under `lionagi/studio/`.
 
-A definition extracted from a mixed Studio module into `lionhub` stays importable from that module's
-old path: the module's new home in `lionagi_studio` re-exports the same object through 1.x. Repository
-code, launcher targets, the container command and generated child arguments use the canonical names
-(D4). Old names stay supported for external callers through the finder.
+A definition extracted from a mixed Studio module into `lionhub` stays importable from that module's old
+path: a mixed module, such as the configuration module that holds both daemon and Operator settings,
+takes no longer row, its old path follows the broad row to its new home in `lionagi_studio`, and that
+home re-exports the same object through 1.x. Daemon code imports those definitions from `lionhub`.
+Repository code, launcher targets, the container command and generated child arguments use the canonical
+names (D4). Old names stay supported for external callers through the finder.
 
 D5 applies to the move. A module whose logger name comes from its module path keeps its old dotted name
 as a literal, and stored strings are not rewritten. New serialization records canonical class paths, so
 the class-path allow-list gains `lionagi_studio.` by D5's rule that every row's new prefix joins it
-(ADR-0001 Amendment 2). As with `lionhub`, the prefix admits no code that an old `lionagi.` name does not
-already reach, and it leaves with the row at 2.0. D5's persisted-name search, conversion and release
-documentation obligations cover the old Studio paths. Package resources are located relative to their
-package, never from a module's depth in the source tree.
+(ADR-0001 Amendment 2). As with `lionhub`, the prefix admits no code that an old `lionagi.` name does
+not already reach, and it leaves with the row at 2.0. No `Element` subclass lives in the application
+today; one added later has its prefix registered by the application (`register_type_prefix`) before 2.0
+removes the row. D5's persisted-name search, conversion and release documentation obligations cover the
+old Studio paths. Package resources are located relative to their package, never from a module's depth
+in the source tree.
 
 ### G3. Compatibility check before the scheduler starts
 
 The application root carries a fixed compatibility manifest, a data file naming the attachment protocol
-version it implements and the library versions it supports. The daemon factory reads it whenever it is
-given an attachment, before the attachment adds any route and before any process resource starts. It
-refuses a missing, malformed or incompatible manifest with an actionable error. Every path that attaches
-the application, whether the launcher, the app factory, the app export, the module entry or a direct
-caller of the factory, goes through that one check. A daemon started without the application never
-reads it. Within one 1.x wheel the versions match by construction, so the check catches stale or partial
-installations. It carries over unchanged to 2.0, where the versions are installed independently.
+version it implements and the library versions it supports. Whenever the daemon factory is given an
+attachment, it reads the manifest of the package that defines that attachment, so the factory names no
+application root, and it does so before the attachment adds any route and before any process resource
+starts. It refuses a missing, malformed or incompatible manifest with an actionable error. Every path
+that attaches the application, whether the launcher, the app factory, the app export, the module entry
+or a direct caller of the factory, goes through that one check: the attachment is handed to the factory
+and never called by other code, and a test checks that. Importing `lionagi_studio.app` builds its app
+export through the factory, so that import adds no route before the check either. The Studio launch
+adapter, the one hub file that names the root, reports an application root that is absent or fails to
+import with an actionable error before it calls the factory. A daemon started without the application
+never reads the manifest. Within one 1.x wheel the versions match by construction, so the check catches
+stale or partial installations. It carries over unchanged to 2.0, where the versions are installed
+independently.
 
 ### G4. D2, the inventory and the tests
 
@@ -114,16 +130,17 @@ boundary test gains the application root: no file under `lionagi/` names `lionag
 table in `_moved.py`, and no file under `lionhub/` names it except the explicit Studio launch adapter.
 
 B1's checked inventory of retained application paths is replaced by a frozen inventory of old Studio
-paths: every `lionagi.studio` module path at this amendment's base, every one added before the move,
-and every existing Studio row. A test requires each old path to resolve to its declared destination,
-in `lionhub` or in `lionagi_studio`, as the same object. Freezing it before the daemon and application
-moves means a module lost, or a longer row forgotten, in any of those changes cannot disappear from
-both sides of the comparison. Fresh-install tests, run from the built wheel outside the checkout, cover
-the daemon and local schedule commands with the bundled application installed but blocked from import,
-the old imports and every launch surface with the application selected, and a refused selection for
-each manifest failure. At 2.0 the release guard removes the Studio rows with the finder and requires
-the old imports to fail, and the local schedule test runs with the application physically absent, as
-B3 requires.
+paths: every `lionagi.studio` module path at this amendment's base, every one added before the move, and
+every existing Studio row. A test requires each old path to resolve to its declared destination, in
+`lionhub` or in `lionagi_studio`, as the same object; the two parent packages G2 names are its only
+exceptions and must import as the empty packages. Freezing it before the daemon and application moves
+means a module lost, or a longer row forgotten, in any of those changes cannot disappear from both sides
+of the comparison. Fresh-install tests, run from the built wheel outside the checkout, cover the daemon
+and local schedule commands with the bundled application installed but blocked from import, the old
+imports and every launch surface with the application selected, and a refused selection for each
+manifest failure. At 2.0 the release guard removes the Studio rows with the finder and requires the old
+imports to fail, and the local schedule test runs with the application physically absent, as B3
+requires.
 
 ### G5. Order and what 2.0 changes
 
@@ -131,11 +148,12 @@ The move is one change, after the daemon move (B2 step 5) and the CLI move (B2 s
 the scheduler and the CLI's local commands no longer import any application module when it lands.
 Shared-service extraction, resource-lookup corrections, and the manifest with its check land before it
 as separate changes; the check lands once the daemon factory takes the attachment, with the manifest
-beside the application at its old location. The move itself keeps D6's restriction to relocation,
-import rewrites, logger-name literals, the rows, and the packaging entries for the new root. D6's
-per-change items apply, with one difference for item 7: the application's tests move to
+beside the application at its old location. The move itself keeps D6's restriction to relocation, import
+rewrites, logger-name literals, the rows, and the packaging entries for the new root. D6's per-change
+items apply, with one difference for item 7: the application's tests move to
 `apps/studio/backend/tests/`, never to `lionhub/tests`, and the repository's test run collects them
-through 1.x. The route, identity, state and lifecycle contracts do not change because files move.
+through 1.x. The hub README's summary of the table lists the Studio row with its `lionagi_studio`
+destination. The route, identity, state and lifecycle contracts do not change because files move.
 
 At 2.0 no application file moves. The core wheel contains neither hub nor application code, the hub is
 its own distribution under D1, and the application leaves both library wheels at the same import root.
