@@ -863,21 +863,46 @@ allocation order are unsafe as a commit boundary
 
 The logical baseline suppresses debt and does not create acknowledgment rows. Preserve
 existing physical rows and the physical write/readback path for actual and not-applicable
-outcomes, including late completion after retirement. A baseline alone is insufficient
+outcomes while their transition survives. A baseline alone is insufficient
 evidence that a particular callback completed or that an ambiguous physical ACK committed.
 An active registration preserves its existing cutoff and registration time. Fresh
-`start="all"` has no cutoff, and reactivation with `start="all"` preserves the consumer's
-previous cutoff and physical acknowledgments. `start="now"` reactivation advances the
-cutoff. Retirement ends the obligation atomically and preserves both kinds of evidence.
-An active consumer retains every eligible transition outside its cut that has no physical
-ACK, regardless of age.
+`start="all"` has no cutoff. Reactivation with `start="all"` preserves the previous cutoff and
+surviving acknowledgments and replays only retained history. `start="now"` advances the
+cutoff. Retirement ends the obligation atomically. Unacknowledged history owed only to
+retired consumers becomes eligible for pruning. To preserve the debt, keep the consumer
+registered and active and leave the events unacknowledged. Inactivity alone does not retire
+a consumer. An active consumer retains eligible transitions outside its cut without a
+physical ACK, regardless of age, once all retention paths apply the linked-entity guard below.
+
+When accepted, the following statements supersede the corresponding promises above for
+standalone v1 named consumers:
+
+- Registration and retention says `start="all"` “registers without acknowledging that
+  history.” A fresh registration leaves retained eligible history owed.
+- Registration and retention says `start="all"` “leaves it owed.” Reactivation leaves
+  only retained unacknowledged history outside the prior cutoff owed. History released at
+  retirement may have been pruned.
+- Registration and retention says retirement is “atomically ending service and its
+  retention obligation” and that “A late acknowledgement after retirement is accepted
+  idempotently.” Retirement makes that consumer's outstanding history prunable when no
+  other retention obligation protects it. A late accepted outcome creates a physical ACK
+  only while the transition survives. A verified admitted outcome after pruning records
+  the distinct settlement described below.
+- The planned operator interface says retire “ends its retention obligation” and
+  `--start all` “leaves it owed.” The retire help and documentation must explain that
+  previously owed history can be pruned. The reactivation help must promise retained
+  history only. The retire documentation must describe keeping the registration active
+  and leaving events unacknowledged to preserve them.
+- The base enrollment test says “`all` leaves owed,” and the concurrency test says
+  “retirement after admission permits completion/late ACK.” Verify retained debt for
+  `all` and both settlement paths for an admitted completion.
 
 | Reader or writer | Rule |
 | --- | --- |
 | `lionagi/state/lifecycle/deliveries.py::_check_schema`, `lionagi/state/lifecycle/deliveries.py::register_consumer`, `lionagi/state/lifecycle/deliveries.py::change_consumer`, `lionagi/state/lifecycle/deliveries.py::retire_consumer` | Validate the native epoch shape and classification metadata. Read and update the cutoff with the registration. The simple retirement path only changes state. |
 | `lionagi/state/lifecycle/deliveries.py::_unacknowledged_count`, `lionagi/state/lifecycle/deliveries.py::get_owed_transition`, `lionagi/state/lifecycle/deliveries.py::reconcile_unacknowledged` | Use one logical predicate: eligible, outside the cutoff, and no physical row for this consumer. The two delivery readers require an active registration. Exact and paged reads apply the same cutoff. |
-| `lionagi/state/lifecycle/consumer_inspection.py::list_consumers`, `lionagi/state/lifecycle/consumer_inspection.py::preview_consumer_change` | Count retained candidates with the logical predicate in the existing read snapshot. Retired consumers owe zero but their candidates still use the cutoff. The CLI and machine listing both use `lionhub/src/lionhub/serve/cli/state.py::_terminal_consumer_list_data`. Keep their existing SQLite support boundary. |
-| `lionagi/state/lifecycle/deliveries.py::ack_delivery`, `lionagi/state/lifecycle/deliveries.py::is_acknowledged`, `lionagi/state/lifecycle/reconciler.py::_keeper_ack` | Preserve physical writes and exact settlement readback. Keeper and normal writes validate schema, require a registered identity and allow late success for a retired identity. The late paths `lionagi/state/lifecycle/reconciler.py::_acknowledge_late`, `lionagi/state/lifecycle/reconciler.py::_finish_late_result` and `lionagi/state/lifecycle/reconciler.py::_drain_deferred` preserve that distinction. |
+| `lionagi/state/lifecycle/consumer_inspection.py::list_consumers`, `lionagi/state/lifecycle/consumer_inspection.py::preview_consumer_change` | Count retained candidates with the logical predicate in the existing read snapshot. Retired consumers owe zero but their candidates still use the cutoff. The CLI and machine listing both use `lionhub/src/lionhub/serve/cli/state.py::_terminal_consumer_list_data`. Keep their existing SQLite support boundary. The listing gains the persisted settled-after-prune count. |
+| `lionagi/state/lifecycle/deliveries.py::ack_delivery`, `lionagi/state/lifecycle/deliveries.py::is_acknowledged`, `lionagi/state/lifecycle/reconciler.py::_keeper_ack` | Keep physical ACK readback distinct from settlement after prune. Normal and keeper completions validate schema, the registered identity and the admission. Carry the same admission through `lionagi/state/lifecycle/reconciler.py::_acknowledge_late`, `lionagi/state/lifecycle/reconciler.py::_finish_late_result` and `lionagi/state/lifecycle/reconciler.py::_drain_deferred`. |
 | `lionagi/state/lifecycle/reconciler.py::_consumer_is_active`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler._attempt_one`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`, `lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::run_terminal_reconciliation` | Immediately before the effect, one statement returns registration activity and this event's debt separately. Exact attempts report `not_owed` for a settled event. Replay keeps its existing stop and cursor rewind when the registration is inactive. An active registration with one settled event skips it, leaves the cursor advanced and continues the same bounded pass without an attempt, failure, backoff or ACK. |
 | `lionagi/state/db.py::StateDB.delete_imported_session`, `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk` | Use the retention rules below. Delete physical ACK children before leaving history in the same transaction. The metadata declarations in `lionagi/state/schema.sql` and `lionagi/state/schema_meta.py` describe the same constraints. |
 
@@ -901,10 +926,49 @@ survives the publication boundary, including cancellation after commit. A later 
 or partial count needs a separate API decision with a visible representation of incomplete
 results.
 
+### Settlement after pruning
+
+Record a durable admission ID for each effect in the transaction that verifies active
+registration and exact debt. On PostgreSQL this transaction uses the shared fence. On
+SQLite it uses the writer reservation. Commit admission before running the effect.
+Store the attempt's consumer, transition ID, and admission and settlement state in
+`terminal_delivery_attempts` without a foreign key to the transition. This leaves the
+attempt record available if the transition is removed. A pruning transaction marks
+outstanding admissions to a removed transition as pruned under the same fence.
+Index outstanding admissions by transition ID so pruning visits the attempts
+associated with the affected transitions. A rollback of the prune rolls back its marks.
+
+When an admitted attempt returns an acknowledgment-eligible outcome, settle it under
+the fence. If the transition survives, write the physical ACK and record that commit on
+the attempt in the same transaction. Later pruning leaves that outcome available for
+ambiguous-write readback and does not reclassify it as settlement after prune.
+If the transition is gone and the same admission has a prune mark, record
+`settled_after_prune` on the attempt and increment the consumer's persisted count once
+in the same transaction. A missing transition alone proves neither admission nor
+delivery. Without the matching admission and prune mark, the missing-row case records
+no settlement. Retrying the same admission is idempotent. After an ambiguous commit,
+read back the admission's settlement state separately from `is_acknowledged`.
+A transient settlement write failure retries persistence with the same admission
+and accepted outcome. It never re-runs the effect.
+
+Exact, replay, late, deferred and keeper paths report `settled_after_prune` separately
+from succeeded physical ACKs and failures. A confirmed settlement does not increment
+failures or enter delivery backoff. Consumer inspection exposes the persisted count in
+human and machine listing on SQLite. The daemon reports the same persisted total for its
+consumer on either backend through
+`lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::run_terminal_reconciliation`.
+The total survives attempt-record cleanup. Keep pending admissions available while
+their owners can still settle them, including detached effects. The handler wait budget
+does not prove an effect has ended. Reclaim unresolved records only after the owner is
+known to have stopped and can no longer settle. Compact completed records after the
+retry and readback lifetime has elapsed. The persisted counter measures settled
+attempts and does not count every transition removed during retirement.
+
 ### Native upgrade and maintenance
 
-Add the epoch row, a per-transition epoch, a consumer cutoff and an index for eligible
-epoch lookups. Store history that predates the native migration at epoch zero if it is
+Add the epoch row, a per-transition epoch, a consumer cutoff, the admission and settlement
+storage, and an index for eligible epoch lookups. Store history that predates the native
+migration at epoch zero if it is
 eligible. Preserve all existing acknowledgments and initialize consumer cutoffs as absent.
 Ineligible and unclassified rows remain distinct and have no epoch-based eligibility.
 In the native migration, backfill eligible history to epoch zero and validate a constraint
@@ -923,8 +987,11 @@ If the operator cannot fence off old instances, defer migration. Future fact-bac
 need equivalent commit ordering before joining this baseline.
 
 Routine session pruning retains any candidate with an eligible transition still owed by
-an active consumer and reports the retained count separately from deletion. Retired
-consumers do not block. A pruned session may remove its physical ACK children only in the
+an active consumer and reports the retained count separately from deletion. A registered
+consumer that stops reconciling still blocks prune for its owed transitions. Retirement
+releases that consumer's protection. The standalone v1 guard preserves active debt for
+direct session transitions. The remaining deletion paths need the broader rules below.
+A pruned session may remove its physical ACK children only in the
 same transaction as the associated transitions and before those parents. The debt check
 and deletion must share a lock boundary with enrollment, retirement, eligibility and ACK
 writes, including `start="all"` activation, which can expose debt without advancing the epoch.
@@ -950,6 +1017,26 @@ must distinguish this result from missing or ineligible input and retry when deb
 including when backfill recorded the deferred result. Delete physical ACK children before
 their transitions in the successful absorption transaction.
 
+### Consequences of commit-ordered enrollment
+
+- **Exclusive work delays eligible writes and acknowledgments.** A producer or
+  settlement waits for registrations, retirement, or a retention chunk holding the
+  exclusive PostgreSQL fence. Shared scheduler pruning uses
+  `lionhub/src/lionhub/orchestration/scheduler/settings.py`'s `PRUNE_CHUNK_ROWS`,
+  which defaults to 100 candidate roots per transaction. Dependent row count, retained
+  reference scans and archive output can lengthen a chunk. The PostgreSQL session-lock
+  path sets a 250 ms lock timeout per acquisition
+  (`lionagi/state/db.py::_locked_cli_worker_prune_candidates`), which bounds that wait
+  only. It does not bound the holder's duration. The explicit CLI path must bound its
+  fence work separately if it retains one transaction for a full prune. Registration
+  holds the fence while reading its exact counts. That cost depends on eligible or
+  unclassified history and the ACK ledger. The SQLite measurements above characterize the
+  previous hold and establish no PostgreSQL wall-time bound.
+- **Migration requires an offline cutover.** The operator must stop old clients that
+  can read or write the store and verify the upgrade before restarting participants.
+  Availability during the upgrade depends on the deployment's ability to coordinate
+  the shutdown and restart.
+
 ### Verification required with implementation
 
 1. In SQLite and PostgreSQL, run backdated writes on both sides of the fence, including a
@@ -964,7 +1051,12 @@ their transitions in the successful absorption transaction.
    reactivate with `now`, and verify that final admission skips the covered event.
    For replay, verify that the subsequent owed event in the same pass proceeds without
    a cursor rewind, failure or backoff. Cover a concurrent physical ACK separately.
-   An already admitted effect can still ACK.
+   On both backends, admit and hold an effect, retire on another connection, prune the
+   transition, then complete the effect. Verify a durable `settled_after_prune` outcome,
+   one increment in operator inspection or metrics, no FK error or physical ACK, and no
+   failure or backoff. Retry the same admission and check the count stays unchanged.
+   Use a missing-row control with no admission. Also finish an admitted attempt while
+   its transition survives and verify the normal physical ACK.
 3. Migrate an existing database with active and retired identities, physical ACKs and
    eligibility classes. Verify rollback, new opens refused to old binaries, a coordinated
    restart that closes every old handle,
@@ -976,6 +1068,8 @@ their transitions in the successful absorption transaction.
    session resolving an owed play, invocation or schedule run. Race fresh and existing
    `all` enrollment, retirement and ACK against prune. Verify that import absorption
    defers without changing any row and can retry after debt clears.
+   Check that an idle active registration retains its debt, and that reactivation with
+   `all` replays only surviving history after retirement and prune.
 5. Run fresh now-registration, now-reactivation, operator retire, active attachment and
    uncontended terminal writes at 10,000, 100,000 and 1,000,000 rows. Repeat the SQLite
    witness with a live PostgreSQL comparison. Include old ACK-heavy history and nonempty
