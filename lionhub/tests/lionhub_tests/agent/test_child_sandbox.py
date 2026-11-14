@@ -336,6 +336,48 @@ def test_a_linked_lionagi_home_configuration_entry_is_also_denied_at_its_target(
     assert f"Edit(/{skills.resolve()}/**)" in rules
 
 
+def test_the_tests_name_every_lionagi_home_configuration_entry():
+    assert set(_HOME_CONFIG_FILES) == set(child_sandbox._HOME_CONFIG_FILES)
+    assert set(_HOME_CONFIG_DIRS) == set(child_sandbox._HOME_CONFIG_DIRS)
+
+
+def test_links_inside_the_lionagi_home_configuration_directories_are_denied_at_their_targets(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "lionagi-home"
+    source = tmp_path / "maintained"
+    (source / "skill-a").mkdir(parents=True)
+    (source / "hook.sh").write_text("true\n", encoding="utf-8")
+    shared = tmp_path / "shared-skills"
+    shared.mkdir()
+    # A linked skills directory whose entries are themselves links, as an installed tree is.
+    (shared / "skill-a").symlink_to(source / "skill-a", target_is_directory=True)
+    (shared / "loop").symlink_to(shared, target_is_directory=True)
+    (home / "hooks").mkdir(parents=True)
+    (home / "hooks" / "pre.sh").symlink_to(source / "hook.sh")
+    (home / "hooks" / "gone.sh").symlink_to(tmp_path / "missing" / "gone.sh")
+    (home / "skills").symlink_to(shared, target_is_directory=True)
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{(source / 'hook.sh').resolve()})" in rules
+    assert f"Edit(/{(source / 'skill-a').resolve()}/**)" in rules
+    # A link whose target is missing still names it, so the child cannot create it.
+    assert f"Edit(/{tmp_path.resolve() / 'missing' / 'gone.sh'})" in rules
+
+
+def test_a_dangling_lionagi_home_configuration_link_is_denied_at_its_missing_target(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "lionagi-home"
+    home.mkdir()
+    missing = tmp_path / "not-yet" / "house_rules.md"
+    (home / "operator_house_rules.md").symlink_to(missing)
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{home}/operator_house_rules.md)" in rules
+    assert f"Edit(/{tmp_path.resolve() / 'not-yet' / 'house_rules.md'})" in rules
+
+
 @pytest.mark.parametrize("path", _CLAUDE_USER_FILES)
 def test_a_read_exemption_for_a_claude_user_file_lifts_only_the_read_denial(path):
     settings = _settings(profiles={"builder": {"allow_read": [path]}})

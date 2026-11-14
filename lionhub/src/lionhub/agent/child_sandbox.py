@@ -227,40 +227,71 @@ def run_state_paths() -> tuple[str, ...]:
     )
 
 
+# Configuration under ``LIONAGI_HOME`` that later runs load: files, then directories.
+_HOME_CONFIG_FILES = (
+    "operator_hooks.json",
+    "operator_hooks.settings.json",
+    "operator_mcp.json",
+    "operator_house_rules.md",
+    "mcp_servers.json",
+    ".mcp.json",
+)
+_HOME_CONFIG_DIRS = ("hooks", "playbooks", "skills")
+
+
+def _written_and_resolved(path: str) -> list[str]:
+    """``path`` as written and, when it differs, the path it resolves to.
+
+    Resolution is not strict, so a link whose target is missing still names that target.
+    """
+    names = [re.sub(r"/{2,}", "/", path).rstrip("/")]
+    try:
+        names.append(str(Path(path).expanduser().resolve()))
+    except (OSError, RuntimeError):
+        pass
+    return list(dict.fromkeys(names))
+
+
+def _link_targets_under(root: str) -> list[str]:
+    """The resolved target of every link in the tree at ``root``, linked directories followed."""
+    targets: list[str] = []
+    seen: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen:
+            dirnames[:] = []
+            continue
+        seen.add(real)
+        for name in (*dirnames, *filenames):
+            entry = os.path.join(dirpath, name)
+            if os.path.islink(entry):
+                targets += _written_and_resolved(entry)[1:]
+    return targets
+
+
 def lionagi_home_config_paths() -> tuple[str, ...]:
     """Configuration under ``LIONAGI_HOME`` that later runs load outside the sandbox.
 
     Studio's hook library and operator hooks become the Claude Code hooks of later operator
     turns, the MCP server registry, the ``.mcp.json`` synced from it and the operator's own MCP
     configuration start MCP servers, the operator's house rules are loaded into its later turns,
-    and playbooks and skills are loaded into later runs. A child that rewrote any of them could steer
-    or run code outside its sandbox the next time they are read.
+    and playbooks and skills are loaded into later runs. A child that rewrote any of them could
+    steer or run code outside its sandbox the next time they are read.
 
-    An entry that exists and resolves elsewhere, such as house rules kept as a link to their
-    maintained source, is named both as written and as the file it resolves to, so a child cannot
-    rewrite it through the link target.
+    Each entry is named as written and as the path it resolves to, and every link inside the
+    hook, playbook and skill directories is named by its target too, so a child cannot rewrite
+    loaded configuration through a link target. A link whose target is missing names that target,
+    so the child cannot create it either.
     """
     from lionagi._paths import LIONAGI_HOME
 
     home = str(LIONAGI_HOME)
     paths: list[str] = []
-    for name in (
-        "hooks",
-        "operator_hooks.json",
-        "operator_hooks.settings.json",
-        "operator_mcp.json",
-        "operator_house_rules.md",
-        "mcp_servers.json",
-        ".mcp.json",
-        "playbooks",
-        "skills",
-    ):
+    for name in (*_HOME_CONFIG_FILES, *_HOME_CONFIG_DIRS):
         written = f"{home}/{name}"
-        paths.append(written)
-        try:
-            paths.append(str(Path(written).resolve(strict=True)))
-        except (OSError, RuntimeError):
-            pass
+        paths += _written_and_resolved(written)
+        if name in _HOME_CONFIG_DIRS and os.path.isdir(written):
+            paths += _link_targets_under(written)
     return tuple(dict.fromkeys(paths))
 
 
@@ -361,10 +392,9 @@ def _read_extends(raw: Any) -> list[tuple[list[str], dict]]:
         path = Path(entry.strip()).expanduser()
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            real = str(path.resolve(strict=True))
         except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
             raise _refusal(f"child_sandbox: cannot read extends file {entry!r}: {exc}") from exc
-        names = list(dict.fromkeys([re.sub(r"/{2,}", "/", entry.strip()).rstrip("/"), real]))
+        names = _written_and_resolved(entry.strip())
         layers.append((names, _mapping(f"extends file {entry!r}", {} if data is None else data)))
     return layers
 
