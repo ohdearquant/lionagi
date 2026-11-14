@@ -1175,7 +1175,17 @@ def apply_forwarded_mcp_servers(
                                 or (unicodedata.category(char) == "Zs" and char != " ")
                                 for char in config_text
                             )
-                            description = "non-path config" if unsafe else config_text
+                            path_shaped = (
+                                "/" in config_text
+                                or "\\" in config_text
+                                or candidate.endswith(".json")
+                            )
+                            if unsafe or not path_shaped:
+                                description = "non-path config"
+                            elif len(config_text) > 1024:
+                                description = config_text[:1024] + "... (truncated)"
+                            else:
+                                description = config_text
                         else:
                             description = "inline JSON config"
                 logger.warning(

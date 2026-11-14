@@ -51,6 +51,29 @@ def test_dropped_config_path_is_named_once(caplog, as_path):
     _assert_drop_warning(caplog, inherited_file=True, config_arg=str(path))
 
 
+def test_dropped_bare_config_token_is_not_logged(caplog):
+    marker = "private-config-token"
+    kwargs = {"mcp_config": marker}
+
+    with caplog.at_level(logging.WARNING):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "non-path config" in caplog.text
+    assert marker not in caplog.text
+
+
+def test_dropped_long_config_path_is_truncated(caplog):
+    path = "configs/" + "a" * 1200 + ".json"
+    kwargs = {"mcp_config": path}
+
+    with caplog.at_level(logging.WARNING):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "(truncated)" in caplog.text
+    assert path not in caplog.text
+    assert len(caplog.text) < 1200
+
+
 @pytest.mark.parametrize("prefix", ["", " \n\t"], ids=["plain", "whitespace"])
 @pytest.mark.parametrize("malformed", [False, True], ids=["valid", "incomplete"])
 def test_dropped_inline_config_never_logs_its_contents(caplog, prefix, malformed):
