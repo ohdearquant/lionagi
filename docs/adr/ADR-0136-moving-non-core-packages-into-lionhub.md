@@ -64,7 +64,9 @@ install step, before or after the move.
 D3's finder serves the old paths. The move adds `Moved("lionagi.studio", "lionagi_studio", <release>,
 "2.0.0")` and keeps every longer row whose module moved to `lionhub`. The finder takes the longest
 matching prefix, so an old daemon or scheduler path still reaches its `lionhub` module. Every
-daemon-owned module has its longer row before the broad row lands. The finder returns the target
+daemon-owned module has its longer row before the broad row lands. ADR-0138 F3 and F5 name the
+daemon-owned modules: F3 allocates the route modules, and F5 gives one ownership rule and a table for
+every other module under `lionagi/studio/`. The finder returns the target
 module object under the old name, so old and new names share one implementation and one module state,
 including patch targets and pickled class references. `python -m lionagi.studio` and
 `uvicorn lionagi.studio.app:app` run the canonical code; the module entry imports by absolute
@@ -122,8 +124,9 @@ independently.
 
 ### G4. D2, the inventory and the tests
 
-D2's exempt set is the one Amendment 3 C2 governs. At this amendment's base it is
-`{operations, service, studio}`: `cli` left it in the CLI move (ADR-0139 Amendment 5), which also ended
+D2's exempt set is the one Amendment 3 C2 governs. This amendment's base is development-line commit
+`c83e53d7`. At that base the set is `{operations, service, studio}`: `cli` left it in the CLI move
+(ADR-0139 Amendment 5), which also ended
 C2's `cli/agent.py` and `cli/orchestrate/_orchestration.py` rows. `studio` leaves it in the move change,
 because no source file that names `lionhub` then remains under `lionagi/studio/`; C2's
 `studio/operator/engine.py` row is removed in the same change. The other members leave on their own
@@ -134,7 +137,8 @@ table in `_moved.py`, and no file under `lionhub/` names it except the explicit 
 B1's checked inventory of retained application paths is replaced by a frozen inventory of old Studio
 paths: every `lionagi.studio` module path at this amendment's base, every one added before the move, and
 every existing Studio row. A test requires each old path to resolve to its declared destination, in
-`lionhub` or in `lionagi_studio`, as the same object; the two parent packages G2 names are its only
+`lionhub` or in `lionagi_studio`, as the same object; ADR-0138 F3 and F5 declare which of the two
+holds each module; the two parent packages G2 names are its only
 exceptions and must import as the empty packages. Freezing it before the daemon and application moves
 means a module lost, or a longer row forgotten, in any of those changes cannot disappear from both sides
 of the comparison. Fresh-install tests, run from the built wheel outside the checkout, cover the daemon
