@@ -146,7 +146,6 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/services/schedule_declaration.py:482@8c119ecc",
         "lionagi/studio/services/schedule_declaration.py:482@b4a3bebf",
         "lionagi/studio/services/schedule_declaration.py:534@b4a3bebf",
-        "tests/test_moved_modules.py:669@b4a3bebf",
     ),
     "ADR-0139-cli-package-location-and-console-script-ownership.md": (
         "lionagi/_auto.py:143@2a49c9fe",
