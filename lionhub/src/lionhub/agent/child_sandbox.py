@@ -42,6 +42,7 @@ __all__ = (
     "claude_settings_for",
     "default_allow_write",
     "effective_policy",
+    "lionagi_home_config_paths",
     "policy_from_dict",
     "resolve_child_sandbox",
     "run_state_paths",
@@ -223,6 +224,31 @@ def run_state_paths() -> tuple[str, ...]:
         ),
         f"{home}/logs/agents",
         f"{home}/last_branch.json",
+    )
+
+
+def lionagi_home_config_paths() -> tuple[str, ...]:
+    """Configuration under ``LIONAGI_HOME`` that later runs load and run outside the sandbox.
+
+    Studio's hook library and operator hooks become the Claude Code hooks of later operator
+    turns, the MCP server registry and the ``.mcp.json`` synced from it start MCP servers, and
+    playbooks and skills are loaded into later runs. A child that rewrote any of them could have
+    code run outside its sandbox the next time they are read.
+    """
+    from lionagi._paths import LIONAGI_HOME
+
+    home = str(LIONAGI_HOME)
+    return tuple(
+        f"{home}/{name}"
+        for name in (
+            "hooks",
+            "operator_hooks.json",
+            "operator_hooks.settings.json",
+            "mcp_servers.json",
+            ".mcp.json",
+            "playbooks",
+            "skills",
+        )
     )
 
 
@@ -494,7 +520,9 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
     ``permissions.deny`` rules. Bash writes are held to the working directory and
     ``allowWrite`` by the sandbox, which does not cover the file tools, so ``Edit`` rules deny
     them ``policy.deny_edit``, ``DEFAULT_DENY_EDIT``, the read list, the run files
-    (``run_state_paths``) and every ``PROJECT_CONFIG_NAMES`` entry at any depth. Claude Code
+    (``run_state_paths``), the configuration later runs load from the lionagi home
+    (``lionagi_home_config_paths``) and every ``PROJECT_CONFIG_NAMES`` entry at any depth. Every
+    other path outside the working directory stays writable to the file tools. Claude Code
     also applies ``Edit`` denials to the sandbox's write limit, so Bash is refused the same
     paths inside the working directory. In permission rules an absolute ``/x`` is written
     ``//x``, because a single leading slash is relative to the settings source.
@@ -508,7 +536,13 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
     rules: list[str] = []
     for path in policy.deny_read:
         rules += [f"Read({rule_path(path)})", f"Read({rule_path(path)}/**)"]
-    edit = [*DEFAULT_DENY_EDIT, *policy.deny_edit, *policy.deny_read, *run_state_paths()]
+    edit = [
+        *DEFAULT_DENY_EDIT,
+        *policy.deny_edit,
+        *policy.deny_read,
+        *run_state_paths(),
+        *lionagi_home_config_paths(),
+    ]
     for path in dict.fromkeys(edit):
         rules += [f"Edit({rule_path(path)})", f"Edit({rule_path(path)}/**)"]
     for name in PROJECT_CONFIG_NAMES:

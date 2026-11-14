@@ -32,6 +32,7 @@ from lionhub.agent.child_sandbox import (
     claude_settings_argument,
     claude_settings_for,
     effective_policy,
+    lionagi_home_config_paths,
     policy_from_dict,
     resolve_child_sandbox,
     run_state_paths,
@@ -60,9 +61,14 @@ GLOBAL_PROFILES = ("builder", "keeper")
 
 
 def _fixed_edit_rules():
-    """The Edit rules every enabled policy ends with: the run files, then project configuration."""
+    """The Edit rules every enabled policy ends with: the run files, the lionagi home's loaded
+    configuration, then project configuration."""
     return [
-        *[rule for path in run_state_paths() for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")],
+        *[
+            rule
+            for path in (*run_state_paths(), *lionagi_home_config_paths())
+            for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")
+        ],
         *[
             rule
             for name in PROJECT_CONFIG_NAMES
@@ -272,6 +278,39 @@ def test_claude_codes_user_files_are_denied_to_the_file_tools(path):
     assert f"Read({path})" in rules
     assert path in settings["sandbox"]["filesystem"]["denyRead"]
     assert f"Edit({path})" in rules
+
+
+# Studio's hook library and operator hooks, the MCP server registry and its synced copy, and
+# the playbooks and skills directories: later runs load them and run what they name.
+_HOME_CONFIG_FILES = (
+    "operator_hooks.json",
+    "operator_hooks.settings.json",
+    "mcp_servers.json",
+    ".mcp.json",
+)
+_HOME_CONFIG_DIRS = ("hooks", "playbooks", "skills")
+
+
+def test_configuration_later_runs_load_from_the_lionagi_home_is_denied_to_the_file_tools(
+    isolated_home,
+):
+    home = isolated_home / ".lionagi"
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    for name in _HOME_CONFIG_FILES:
+        assert f"Edit(/{home}/{name})" in rules
+    for name in _HOME_CONFIG_DIRS:
+        assert f"Edit(/{home}/{name}/**)" in rules
+    # The child may still read them; only writing is refused.
+    for name in (*_HOME_CONFIG_FILES, *_HOME_CONFIG_DIRS):
+        assert f"Read(/{home}/{name})" not in rules
+
+
+def test_the_lionagi_home_configuration_denial_follows_lionagi_home(tmp_path, monkeypatch):
+    elsewhere = tmp_path / "relocated"
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", elsewhere)
+    rules = claude_settings_for(resolve_child_sandbox(None, {}))["permissions"]["deny"]
+    assert f"Edit(/{elsewhere}/operator_hooks.json)" in rules
+    assert f"Edit(/{elsewhere}/hooks/**)" in rules
 
 
 @pytest.mark.parametrize("path", _CLAUDE_USER_FILES)
