@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.cli.orchestrate._orchestration import _confine_claude_worker
+from lionhub.serve.cli.orchestrate._orchestration import _confine_claude_worker
 from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionhub.agent.factory import create_agent
 from lionhub.agent.spec import AgentSpec
@@ -176,9 +176,9 @@ async def test_create_agent_leaves_a_caller_supplied_model_that_is_not_claude_co
 # Every one of them names the agent profile it was given, so the exemption key is never the
 # role the profile casts.
 _CALL_SITES = {
-    "lionagi.cli.agent": 1,
-    "lionagi.cli.orchestrate._orchestration": 2,
-    "lionagi.cli.orchestrate.fanout": 1,
+    "lionhub.serve.cli.agent": 1,
+    "lionhub.serve.cli.orchestrate._orchestration": 2,
+    "lionhub.serve.cli.orchestrate.fanout": 1,
 }
 
 
@@ -210,7 +210,7 @@ async def test_a_flow_orchestrator_with_a_loaded_profile_gets_that_profiles_exem
     monkeypatch, tmp_path
 ):
     """A profile orchestrator is built as a plain Branch, not by create_agent."""
-    from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
     from lionhub.orchestration.runs import RunDir
 
     work = tmp_path / "work"
@@ -256,9 +256,9 @@ async def test_a_plain_li_agent_profile_leg_is_confined_under_its_profile_name(
     """A ``-a <profile>`` leg with no role key is built as a plain Branch, not by create_agent."""
     from unittest.mock import AsyncMock
 
-    import lionagi.cli.agent as agent_mod
+    import lionhub.serve.cli.agent as agent_mod
     from lionagi import Branch
-    from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
     from lionagi.service.manager import iModelManager
     from lionhub.orchestration.spawn import _parse_profile
 

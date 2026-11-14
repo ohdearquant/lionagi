@@ -2330,7 +2330,7 @@ async def _run_agent(
             else:
                 # Built here rather than by create_agent, so the profile's sandbox policy is
                 # set here too.
-                from lionagi.cli.orchestrate._orchestration import _confine_claude_worker
+                from lionhub.serve.cli.orchestrate._orchestration import _confine_claude_worker
 
                 _confine_claude_worker(chat_model, agent_name if profile is not None else None)
                 branch = Branch(
