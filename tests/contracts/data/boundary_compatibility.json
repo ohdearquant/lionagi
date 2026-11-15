@@ -116,6 +116,9 @@
     "lionhub/src/lionhub/agent/factory.py": [
       "os.getenv:\"LIONAGI_KHIVE_INJECTION\""
     ],
+    "lionhub/src/lionhub/agent/khive_actor.py": [
+      "os.environ.get:MINTED_CHILD_ACTOR_ENV"
+    ],
     "lionhub/src/lionhub/orchestration/runs.py": [
       "os.environ.get:_RUN_ID_ENV_VAR"
     ],
@@ -1106,7 +1109,7 @@
       "__all__ = (\n    \"auto_format_python\",\n    \"guard_destructive\",\n    \"guard_email_in_headers\",\n    \"guard_paths\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
     ],
     "lionhub/src/lionhub/agent/khive_actor.py": [
-      "__all__ = (\n    \"KHIVE_ACTOR_ENV\",\n    \"attribute_khive_servers\",\n    \"child_khive_actor\",\n    \"is_khive_server\",\n)"
+      "__all__ = (\n    \"KHIVE_ACTOR_ENV\",\n    \"MINTED_CHILD_ACTOR_ENV\",\n    \"attribute_khive_servers\",\n    \"child_khive_actor\",\n    \"is_khive_server\",\n    \"minted_child_actor\",\n    \"run_khive_actor\",\n)"
     ],
     "lionhub/src/lionhub/agent/nudge.py": [
       "__all__ = (\n    \"NudgeContext\",\n    \"NudgeEngine\",\n    \"NudgeRule\",\n    \"ToolCallRecord\",\n    \"default_nudge_rules\",\n)"
@@ -3961,7 +3964,9 @@
     "lionhub/src/lionhub/agent/khive_actor.py": [
       "attribute_khive_servers",
       "child_khive_actor",
-      "is_khive_server"
+      "is_khive_server",
+      "minted_child_actor",
+      "run_khive_actor"
     ],
     "lionhub/src/lionhub/agent/nudge.py": [
       "NudgeContext",

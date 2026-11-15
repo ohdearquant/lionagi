@@ -35,7 +35,7 @@ from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
 from lionhub.agent import AgentSpec, create_agent
 from lionhub.agent.factory import register_profile_injection
-from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
+from lionhub.agent.khive_actor import attribute_khive_servers, run_khive_actor
 from lionhub.orchestration.console import hint, warn
 from lionhub.orchestration.job import validate_cwd_exists
 from lionhub.orchestration.runs import (
@@ -1138,7 +1138,7 @@ async def setup_orchestration(
     # The orchestrator's own khive servers act as its profile. The worker set above
     # stays as resolved: each worker is attributed to its own profile where it is
     # handed the set.
-    orc_khive_actor = child_khive_actor(getattr(orc_profile, "name", None))
+    orc_khive_actor = run_khive_actor(getattr(orc_profile, "name", None))
     run_mcp_servers = attribute_khive_servers(run_mcp_servers, orc_khive_actor)
 
     if not model_spec:
@@ -1534,7 +1534,7 @@ async def build_worker_branch(
     )
     # Each worker's khive servers act as that worker's own profile; a bare worker
     # applies no profile, so it has none to act as.
-    worker_khive_actor = child_khive_actor(None if env.bare else getattr(w_profile, "name", None))
+    worker_khive_actor = run_khive_actor(None if env.bare else getattr(w_profile, "name", None))
     worker_mcp_servers = (
         {}
         if profile_disables_mcp

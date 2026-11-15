@@ -924,14 +924,14 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
 
     from lionhub.agent.casts.pattern import Role
     from lionhub.agent.casts.profile import Profile
-    from lionhub.agent.khive_actor import child_khive_actor
+    from lionhub.agent.khive_actor import run_khive_actor
 
     identity = Profile(name=role_name, role=Role(name=role_name, description="", body=""))
     provider_spec = AgentSpec(profile=identity, pack=None, khive_injection=configured)
     _register_providers(
         branch,
         provider_spec,
-        actor=child_khive_actor(getattr(profile, "name", None)),
+        actor=run_khive_actor(getattr(profile, "name", None)),
     )
 
 

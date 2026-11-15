@@ -11,16 +11,22 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import shutil
 import sys
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
+from lionhub.agent.khive_actor import (
+    MINTED_CHILD_ACTOR_ENV,
+    attribute_khive_servers,
+    run_khive_actor,
+)
 
 _PROJECT_ACTOR = "agent:fixture-project"
+_MINTED_ACTOR = "agent:fixture-lead:worker"
 _INIT_REQUEST = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -88,25 +94,57 @@ async def _initialize(server: dict, project: Path, home: Path) -> str:
     return actors[0]
 
 
+@contextmanager
+def _as_child(project: Path, minted_actor: str | None):
+    """Run in ``project`` with the minted-actor variable set to ``minted_actor`` (or unset)."""
+    previous_cwd = Path.cwd()
+    previous = os.environ.pop(MINTED_CHILD_ACTOR_ENV, None)
+    if minted_actor is not None:
+        os.environ[MINTED_CHILD_ACTOR_ENV] = minted_actor
+    os.chdir(project)
+    try:
+        yield
+    finally:
+        os.chdir(previous_cwd)
+        os.environ.pop(MINTED_CHILD_ACTOR_ENV, None)
+        if previous is not None:
+            os.environ[MINTED_CHILD_ACTOR_ENV] = previous
+
+
 def _boot_actor(
-    kkernel: str, root: Path, profile: str, *, with_flag: bool, stand_in: str | None
+    kkernel: str,
+    root: Path,
+    profile: str,
+    *,
+    with_flag: bool,
+    stand_in: str | None,
+    minted: bool = False,
 ) -> str:
     home = root / "home"
     home.mkdir(parents=True)
     project = root / "project"
     config = project / ".khive"
     config.mkdir(parents=True)
-    (config / "config.toml").write_text(f'[actor]\nid = "{_PROJECT_ACTOR}"\n', encoding="utf-8")
-    actor = child_khive_actor(profile)
-    server = {
-        "command": kkernel,
-        "args": ["mcp", "--db", ":memory:", "--no-embed", "--pack", "kg"],
-        "env": {"KHIVE_ACTOR": actor},
-    }
-    if with_flag:
-        servers = attribute_khive_servers({"khive": server}, actor)
-        assert servers is not None
-        server = servers["khive"]
+    if minted:
+        # The shape the lion MCP server mints for a write-capable child.
+        config_text = (
+            f'[actor]\nid = "{_MINTED_ACTOR}"\ndisplay_name = "{_MINTED_ACTOR}"\n'
+            'visible_namespaces = ["agent:fixture-lead"]\n'
+        )
+    else:
+        config_text = f'[actor]\nid = "{_PROJECT_ACTOR}"\n'
+    (config / "config.toml").write_text(config_text, encoding="utf-8")
+    with _as_child(project, _MINTED_ACTOR if minted else None):
+        actor = run_khive_actor(profile)
+        server = {
+            "command": kkernel,
+            "args": ["mcp", "--db", ":memory:", "--no-embed", "--pack", "kg"],
+            "env": {"KHIVE_ACTOR": actor},
+        }
+        if with_flag:
+            servers = attribute_khive_servers({"khive": server}, actor)
+            assert servers is not None
+            server = servers["khive"]
     if stand_in is not None:
         # Match the kkernel command during attribution, then run the test fixture.
         server = {**server, "command": stand_in}
@@ -115,13 +153,22 @@ def _boot_actor(
 
 def _run_cases(kkernel: str, root: Path, *, stand_in: str | None = None) -> dict[str, str]:
     cases = (
-        ("worker", "fixture-worker", True, "agent:fixture-worker"),
-        ("reviewer", "fixture-reviewer", True, "agent:fixture-reviewer"),
-        ("env-only", "fixture-worker", False, _PROJECT_ACTOR),
+        ("worker", "fixture-worker", True, False, "agent:fixture-worker"),
+        ("reviewer", "fixture-reviewer", True, False, "agent:fixture-reviewer"),
+        ("env-only", "fixture-worker", False, False, _PROJECT_ACTOR),
+        # attributed, but the minted config in the child's directory decides
+        ("minted", "fixture-worker", True, True, _MINTED_ACTOR),
     )
     observed = {}
-    for case, profile, with_flag, expected in cases:
-        actor = _boot_actor(kkernel, root / case, profile, with_flag=with_flag, stand_in=stand_in)
+    for case, profile, with_flag, minted, expected in cases:
+        actor = _boot_actor(
+            kkernel,
+            root / case,
+            profile,
+            with_flag=with_flag,
+            stand_in=stand_in,
+            minted=minted,
+        )
         assert actor == expected, f"{case}: expected {expected}, got {actor}"
         observed[case] = actor
     return observed
@@ -144,7 +191,9 @@ assert "--no-embed" in sys.argv
 assert os.environ["KHIVE_NO_DAEMON"] == "1"
 assert "KHIVE_EMAIL_EXTERNAL_SENDERS" not in os.environ
 assert Path(os.environ["HOME"]).resolve() == Path.cwd().parent / "home"
-assert os.environ["KHIVE_ACTOR"] in {"agent:fixture-worker", "agent:fixture-reviewer"}
+assert os.environ["KHIVE_ACTOR"] in {
+    "agent:fixture-worker", "agent:fixture-reviewer", "agent:fixture-lead:worker"
+}
 config = Path(".khive/config.toml").read_text()
 fallback = re.search(r'id = "([^"]+)"', config)[1]
 actor = sys.argv[sys.argv.index("--actor") + 1] if "--actor" in sys.argv else fallback
@@ -160,6 +209,7 @@ print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {}}), flush=T
         "worker": "agent:fixture-worker",
         "reviewer": "agent:fixture-reviewer",
         "env-only": _PROJECT_ACTOR,
+        "minted": _MINTED_ACTOR,
     }
 
 

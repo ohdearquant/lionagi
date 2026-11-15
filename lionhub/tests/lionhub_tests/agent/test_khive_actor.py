@@ -9,7 +9,13 @@ import json
 
 import pytest
 
-from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
+from lionhub.agent.khive_actor import (
+    MINTED_CHILD_ACTOR_ENV,
+    attribute_khive_servers,
+    child_khive_actor,
+    minted_child_actor,
+    run_khive_actor,
+)
 
 
 def _khive(env=None, *, command="/usr/local/bin/kkernel", **extra):
@@ -274,3 +280,72 @@ def test_another_servers_khive_actor_is_still_a_secret_field(codex_env):
 
     with pytest.raises(ConfigurationError, match="ignores the user config"):
         apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)
+
+
+# --- the minted per-run actor ----------------------------------------------
+
+
+@pytest.fixture
+def minted_dir(tmp_path, monkeypatch):
+    """A working directory whose actor config names agent:lead:worker."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text(
+        '[actor]\nid = "agent:lead:worker"\nvisible_namespaces = ["agent:lead"]\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_minted_actor(monkeypatch):
+    monkeypatch.delenv(MINTED_CHILD_ACTOR_ENV, raising=False)
+
+
+def test_no_variable_means_no_minted_actor(minted_dir):
+    assert minted_child_actor() is None
+    assert run_khive_actor("implementer") == "agent:implementer"
+
+
+def test_a_variable_matching_the_directory_config_is_the_minted_actor(minted_dir, monkeypatch):
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+    assert minted_child_actor() == "agent:lead:worker"
+    assert run_khive_actor("implementer") == "agent:lead:worker"
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        None,
+        '[actor]\nid = "agent:other"\n',
+        "[actor\nid = broken",
+        '[server]\nid = "agent:lead:worker"\n',
+    ],
+)
+def test_a_variable_the_directory_config_does_not_confirm_is_ignored(
+    tmp_path, monkeypatch, config_text
+):
+    if config_text is not None:
+        (tmp_path / ".khive").mkdir()
+        (tmp_path / ".khive" / "config.toml").write_text(config_text)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+    assert minted_child_actor() is None
+    assert run_khive_actor("implementer") == "agent:implementer"
+
+
+def test_the_minted_actor_gets_no_flag_so_the_directory_config_decides(minted_dir, monkeypatch):
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+    server = _khive(args=["mcp", "--actor", "agent:launcher", "--namespace=x"])
+
+    result = attribute_khive_servers({"khive": server}, run_khive_actor("implementer"))["khive"]
+
+    assert result["args"] == ["mcp"]
+    assert result["env"] == {"KHIVE_ACTOR": "agent:lead:worker"}
+
+
+def test_another_actor_still_gets_the_flag_in_a_minted_directory(minted_dir, monkeypatch):
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+
+    result = attribute_khive_servers({"khive": _khive()}, "agent:implementer")["khive"]
+
+    assert result["args"] == ["mcp", "--actor", "agent:implementer"]

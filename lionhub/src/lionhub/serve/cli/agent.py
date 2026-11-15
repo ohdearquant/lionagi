@@ -49,7 +49,7 @@ from lionagi.service.imodel import _endpoint_routing_enabled
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
-from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
+from lionhub.agent.khive_actor import attribute_khive_servers, run_khive_actor
 from lionhub.orchestration.arguments import BoundedInt
 from lionhub.orchestration.console import hint, log_error
 from lionhub.orchestration.job import (
@@ -1738,7 +1738,7 @@ def _attributed_resolution(resolution: McpResolution, agent_name: str | None) ->
     """Give each handed khive server the child's ``agent:<profile>`` actor."""
     return dataclasses.replace(
         resolution,
-        servers=attribute_khive_servers(resolution.servers, child_khive_actor(agent_name)),
+        servers=attribute_khive_servers(resolution.servers, run_khive_actor(agent_name)),
     )
 
 
@@ -2299,7 +2299,7 @@ async def _run_agent(
                     sandbox_profile=agent_name or None,
                     # The pre-turn khive client is given the actor the khive
                     # servers handed to the child above are given.
-                    khive_actor=child_khive_actor(agent_name),
+                    khive_actor=run_khive_actor(agent_name),
                 )
                 if api_launch is not None:
                     branch.metadata[_API_LAUNCH_KEY] = dict(api_launch)

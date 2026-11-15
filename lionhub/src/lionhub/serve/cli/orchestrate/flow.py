@@ -31,7 +31,7 @@ from lionagi.ln.concurrency import (
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.session.exchange import Exchange
 from lionhub.agent.casts.emission import SpawnRequest, TaskAssignment
-from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
+from lionhub.agent.khive_actor import attribute_khive_servers, run_khive_actor
 from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionhub.orchestration.console import progress
 from lionhub.orchestration.console import warn as _warn
@@ -2527,7 +2527,7 @@ async def _execute_dag(
         source_id = getattr(source_branch, "id", None)
         spawn_khive_actor = khive_actors.get(str(source_id)) if source_id is not None else None
         if spawn_khive_actor is None:
-            spawn_khive_actor = child_khive_actor(None)
+            spawn_khive_actor = run_khive_actor(None)
         branch_id = getattr(branch, "id", None)
         if branch_id is not None:
             khive_actors[str(branch_id)] = spawn_khive_actor
