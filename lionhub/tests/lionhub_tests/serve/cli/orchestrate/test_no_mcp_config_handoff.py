@@ -1303,7 +1303,7 @@ async def test_flow_planner_spawns_with_the_default_mcp_config(
     from lionhub.serve.cli.orchestrate import flow
 
     captured = tmp_path / "argv.json"
-    executable = tmp_path / "claude"
+    executable = tmp_path / "fake-claude"
     executable.write_text(
         f"#!{sys.executable}\n"
         "import json\n"
