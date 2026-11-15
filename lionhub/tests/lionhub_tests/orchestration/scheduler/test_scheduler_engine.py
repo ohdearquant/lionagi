@@ -486,6 +486,9 @@ async def test_fire_build_argv_exception_records_failed_run():
         c for c in svc.update_status.await_args_list if c.kwargs.get("new_status") == "failed"
     ]
     assert failed_calls
+    [invocation_failure] = [call for call in failed_calls if call.args[0] == "invocation"]
+    assert invocation_failure.kwargs["evidence_refs"] == []
+    assert not invocation_failure.kwargs.get("record_chain_decision")
 
 
 @pytest.mark.asyncio
@@ -530,6 +533,9 @@ async def test_fire_cancellation_records_cancelled_run():
     assert extra["error_detail"] == "Scheduler shutdown"
     assert isinstance(extra["ended_at"], float) and extra["ended_at"] > 0
     assert run_cancel[0].kwargs["expected_statuses"] == {"running"}
+    [invocation_cancel] = [call for call in cancelled_calls if call.args[0] == "invocation"]
+    assert invocation_cancel.kwargs["evidence_refs"] == []
+    assert not invocation_cancel.kwargs.get("record_chain_decision")
 
 
 @pytest.mark.asyncio
