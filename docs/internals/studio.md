@@ -962,6 +962,15 @@ in that zone), and the next plan reports `UNCHANGED`.
 - **Orphan cleanup** — Scoped to pruned lineage only; never touches rows
   outside it, to avoid a newborn-orphan race where `_persist.py` commits a
   progression before the session row exists.
+  Arrays and objects in surviving progressions protect messages named by
+  their immediate values. A scalar protects the message it names, and JSON
+  null names none. If a session selected for pruning owns a non-array
+  progression, its session row can still be pruned while its progressions
+  and messages are kept. Later session prunes leave these orphaned
+  progressions and messages in place. The CLI's internal
+  `deferred_victim_progressions` count covers the kept non-array
+  progressions without surviving owners. Other non-array survivors are
+  reported separately. Malformed JSON aborts the write transaction.
 - **Audit event ordering** — Runs after the prune transaction commits;
   `insert_admin_event` opens its own write transaction, and nesting it inside
   the prune transaction would self-deadlock on the sqlite write lock.

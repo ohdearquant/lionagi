@@ -268,12 +268,14 @@ async def test_failed_effect_remains_owed(tmp_path):
 async def test_cancel_resistant_async_effect_keeps_event_admission_until_finished(
     tmp_path, adapter, delivery_kind, late_outcome, acknowledged
 ):
-    entered, release = asyncio.Event(), asyncio.Event()
+    entered, release, second_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
     calls = []
 
     async def prepare(_row, _db):
         async def deliver():
             calls.append("effect")
+            if len(calls) > 1:
+                second_started.set()
             entered.set()
             try:
                 await release.wait()
@@ -303,6 +305,8 @@ async def test_cancel_resistant_async_effect_keeps_event_admission_until_finishe
             assert await is_acknowledged(db, event_id, "async-late") is acknowledged
             next_result = await getattr(second, adapter)(db, event_id)
             assert next_result.status == ("not_owed" if acknowledged else "failed")
+            if not acknowledged:
+                await asyncio.wait_for(second_started.wait(), 2)
             assert len(calls) == (1 if acknowledged else 2)
         finally:
             release.set()
@@ -619,6 +623,7 @@ async def test_late_async_private_memory_close_does_not_ack_new_generation(caplo
         )
         result = await _first_attempt(runner, "attempt_exact", db, event_id, key, started)
         assert result.status == "failed"
+        await asyncio.wait_for(asyncio.to_thread(started.wait), 2)
         assert calls == ["effect"]
         await db.close()
         await db.open()

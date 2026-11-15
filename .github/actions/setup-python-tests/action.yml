@@ -1,5 +1,5 @@
 name: Set up Python tests
-description: Install the matrix interpreter, test dependencies, and a local PostgreSQL server.
+description: Install the matrix interpreter, test dependencies, and PostgreSQL for compatible tests.
 inputs:
   python-version:
     description: Python interpreter for uv and pytest.
@@ -34,8 +34,31 @@ runs:
       run: |
         uv venv
         uv sync --all-extras
+    # A nightly run can test a different revision from the one providing this action.
+    - name: Check the test checkout for worker-local PostgreSQL databases
+      id: postgres-fixture
+      shell: bash
+      run: |
+        fixture="$GITHUB_WORKSPACE/tests/state/conftest.py"
+        supported=false
+        if [[ ! -e "$fixture" ]]; then
+          echo "Using the checked-out tests' PostgreSQL setup: fixture file was absent."
+        elif [[ ! -f "$fixture" || ! -r "$fixture" ]]; then
+          echo "::warning::Using the checked-out tests' PostgreSQL setup: fixture marker could not be read."
+        elif grep -Fqx 'RUNNER_POSTGRES_PER_WORKER = True' "$fixture"; then
+          supported=true
+        else
+          status=$?
+          if [[ "$status" == 1 ]]; then
+            echo "Using the checked-out tests' PostgreSQL setup: fixture marker was absent."
+          else
+            echo "::warning::Using the checked-out tests' PostgreSQL setup: fixture marker could not be read."
+          fi
+        fi
+        echo "supported=$supported" >> "$GITHUB_OUTPUT"
     - name: Start PostgreSQL 16 for tests
       id: postgres
+      if: steps.postgres-fixture.outputs.supported == 'true'
       shell: bash
       run: |
         set -euo pipefail

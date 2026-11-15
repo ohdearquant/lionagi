@@ -101,7 +101,7 @@ async def test_connection_reuse_keeps_shared_progression_across_victim_batches(
             batches = [
                 parameters
                 for _connection, statement, parameters, executemany in seen
-                if "INSERT INTO prune_victims" in statement and executemany
+                if "INSERT INTO temp.prune_victims" in statement and executemany
             ]
             assert len(batches) == 2
             assert all(len(batch) == 2 for batch in batches)

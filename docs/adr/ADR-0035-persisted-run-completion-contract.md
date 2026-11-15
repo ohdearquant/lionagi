@@ -321,6 +321,10 @@ to explain lookup and state problems without corrupting contract lines.
 
 ### D5 — Transactional status vocabulary, terminal protection, and CAS
 
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+proposes that a terminal schedule run cannot move to a nonterminal status,
+even with a valid override.
+
 Every ordinary status transition passes through `StateDB.update_status()`.
 
 **The contract** (`lionagi/state/db.py`):
