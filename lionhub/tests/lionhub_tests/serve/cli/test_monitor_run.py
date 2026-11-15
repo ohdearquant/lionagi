@@ -1138,6 +1138,24 @@ async def test_dispatch_wait_chain_follow_no_declared_action_resolves_immediatel
 
 
 @pytest.mark.asyncio
+async def test_dispatch_wait_legacy_cancelled_parent_without_on_fail_resolves_immediately(
+    temp_db_path: Path, sleep_probe: list[float]
+) -> None:
+    async with StateDB() as db:
+        action = {"kind": "agent"}
+        schedule_id = await _make_schedule(db, on_success=action)
+        run_id = await _make_schedule_run(db, schedule_id, status="cancelled", exit_code=None)
+        schedule = await db.get_schedule(schedule_id)
+        assert schedule["on_success"] == action
+        assert schedule["on_fail"] is None
+        row = await db.get_schedule_run(run_id)
+        assert not row["status_evidence_refs"]
+
+    assert _dispatch_wait([run_id], interval=0.1, follow=False) == 1
+    assert not sleep_probe
+
+
+@pytest.mark.asyncio
 @pytest.mark.slow_timing
 async def test_dispatch_wait_chain_follow_grace_expiry_does_not_hang(
     temp_db_path: Path, capsys: pytest.CaptureFixture
