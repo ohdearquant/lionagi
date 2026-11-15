@@ -1311,7 +1311,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     enables the corresponding containment. The light workload also restricts the
     worker, so keep it when a readable mapping sets it or an unreadable block has
     a top-level line declaring it. Empty blocks have no settings to lose. A block
-    after prompt text that declares containment raises with its opening line.
+    after prompt text that declares containment or tool settings raises with its opening line.
     """
     from itertools import pairwise
 
@@ -1417,9 +1417,14 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                 block = "\n".join("" if j in fenced else lines[j] for j in range(opening + 1, end))
                 reads, document = read(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)
+                declared = set(_FLAG_KEY_LINE.findall(block))
                 if not reads:
                     refuse_unread_tool_settings(block, key_lines_only=True)
-                declared = set(_FLAG_KEY_LINE.findall(block))
+                else:
+                    mappings = document if isinstance(document, list) else (document,)
+                    for mapping in mappings:
+                        if isinstance(mapping, dict):
+                            declared.update(key for key in _PROFILE_TOOL_FIELDS if key in mapping)
                 if not reads or isinstance(document, dict):
                     declared.update(containment_settings(block, document))
                 if declared:
