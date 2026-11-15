@@ -1748,8 +1748,8 @@ chain of an exception that replaces it. Except for the limits in rule 6, a
 caller cancellation observed in the read, response exit or session exit reaches
 the caller and is never converted to a transport error or retried. Make at most
 one accounting call for the attempt. A ledger failure or a cleanup failure
-during this unwind cannot replace the caller's cancellation or trigger another
-settlement.
+raised while the adapter unwinds an observed caller cancellation does not
+replace it or trigger another settlement.
 
 **Rule 5. Provider data.** Keep body bytes and provider text out of the exception,
 its chain and adapter-owned traceback locals, including on rule 6 paths.
@@ -1767,7 +1767,11 @@ further retry within the existing retry budget and reservation rules.
 This is the only exception to Decision 4's sentence that cancellation does not
 retry or move the request to another account. The attempt never observes the
 cancellation, so the retry is the deadline's or the failure's own. That retry
-follows the reservation rules for any deadline 529.
+follows the reservation rules for any deadline 529. A cleanup error that clears
+every link to a cancellation from the caller's scope can likewise reach the
+caller as that ordinary error when no unshielded checkpoint follows before the
+error leaves the caller's scope; the scope's cancellation is delivered again at
+any later checkpoint, so it never causes a retry.
 
 <!-- markdownlint-disable-next-line MD029 -->
 4. Keep D6's typed evidence requirement and Amendment 5's accounting shield.
@@ -1812,7 +1816,10 @@ existing retry budget and reservation rules. This is the only exception to
 Decision 4's sentence that cancellation does not retry or move the request to
 another account. The attempt never observes the cancellation, so the retry is
 the deadline's or the failure's own. That retry follows the reservation rules
-for any deadline 529.
+for any deadline 529. When cleanup clears every link to a cancellation from the
+caller's scope and no unshielded checkpoint follows before the error leaves that
+scope, the caller receives the ordinary error; the scope's cancellation is
+delivered again at any later checkpoint, so it never causes a retry.
 
 ### Verification
 
@@ -1836,7 +1843,11 @@ for any deadline 529.
   cleanup, response close and session close. Enable retries and verify one
   transport request, no transport error and one accounting call. The native
   cancellation that reaches the caller is the same instance. The AnyIO caller
-  scope catches its cancellation.
+  scope catches its cancellation. With the caller's scope cancelled after the
+  read deadline delivers and before it exits, raise a replacing error that keeps
+  the deadline's cancellation in its chain. Verify that what reaches the caller
+  is the caller scope's cancellation, caught by that scope, and that one
+  accounting call is made.
 - Rule 5. Deliver a partial body containing a sentinel before cancelling.
   Verify the sentinel stays out of the propagated exception, chain, adapter
   locals, logs and ledger, including on rule 6 paths. Enable capture and verify
@@ -1846,3 +1857,8 @@ for any deadline 529.
   separately a cleanup error whose chain has lost the native cancellation.
   Assert rule 4 where caller cancellation is delivered, and verify the
   ordinary outcome where it merges with the deadline or becomes unobservable.
+  Wrap the request in the caller's `fail_after`, stall the read until that
+  deadline cancels it, and raise a cleanup error with every exception link
+  cleared. Verify the ordinary error reaches the caller when no unshielded
+  checkpoint follows, the scope's timeout reaches it when one does, and there is
+  no second transport request in either arm.
