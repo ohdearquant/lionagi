@@ -137,7 +137,11 @@ class SeatbeltPolicy:
         """Writes to the workspace, the uv cache, the temporary directory and ``extra_roots``;
         the workspace's ``.git`` stays read-only, since a hook written there would run outside
         the sandbox. ``pty`` lets the confined process open pseudo-terminals, which a CLI's
-        shell tool needs to run a command."""
+        shell tool needs to run a command. While the child sandbox is enabled, a workspace that
+        is the home directory or an ancestor of it is refused."""
+        from lionhub.agent.child_sandbox import _refuse_a_home_workspace
+
+        _refuse_a_home_workspace(workspace_root)
         workspace = Path(workspace_root).expanduser().resolve()
         roots: list[str] = []
         for root in (

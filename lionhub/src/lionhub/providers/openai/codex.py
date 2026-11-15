@@ -1867,6 +1867,9 @@ class CodexCodeRequest(BaseModel):
 
     def _cmd_args(self, plain: _PlainRequest, cwd: Path) -> list[str]:
         """Render a previously checked request and workspace snapshot."""
+        from lionhub.agent.child_sandbox import _refuse_a_home_workspace
+
+        _refuse_a_home_workspace(cwd, plain.env)
         _refuse_ambiguous_approval(plain)
         _refuse_light_escape(plain)
         light = plain.workload == "light"
