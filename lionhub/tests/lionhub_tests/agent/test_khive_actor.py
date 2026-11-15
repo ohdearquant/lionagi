@@ -343,6 +343,30 @@ def test_the_minted_actor_gets_no_flag_so_the_directory_config_decides(minted_di
     assert result["env"] == {"KHIVE_ACTOR": "agent:lead:worker"}
 
 
+@pytest.mark.parametrize("provider_config", ["other", "missing", "minted"])
+def test_minted_server_checks_the_provider_working_directory(
+    minted_dir, monkeypatch, provider_config
+):
+    actor = "agent:minted-run"
+    (minted_dir / ".khive" / "config.toml").write_text(f'[actor]\nid = "{actor}"\n')
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, actor)
+    provider_cwd = minted_dir
+    if provider_config != "minted":
+        provider_cwd = minted_dir / "provider"
+        provider_cwd.mkdir()
+        if provider_config == "other":
+            config_dir = provider_cwd / ".khive"
+            config_dir.mkdir()
+            (config_dir / "config.toml").write_text('[actor]\nid = "agent:other-dir"\n')
+
+    result = attribute_khive_servers(
+        {"khive": _khive()}, run_khive_actor("implementer"), cwd=provider_cwd
+    )["khive"]
+
+    assert result["args"] == (["mcp"] if provider_config == "minted" else ["mcp", "--actor", actor])
+    assert result["env"] == {"KHIVE_ACTOR": actor}
+
+
 def test_the_minted_actor_server_cannot_move_to_another_directory(
     minted_dir, monkeypatch, tmp_path_factory
 ):

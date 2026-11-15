@@ -914,8 +914,8 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
     injection is a context-provider concern, orthogonal to CodingToolkit/path-guards.
     The provider is keyed on ``{role_name}-recall-v1`` (role_name is the invoked
     profile name). None/False disables; the env kill-switch is honored by
-    ``_register_providers``. The provider's khive server runs as the profile's own
-    actor (the one its forwarded khive servers get), not as the launching process.
+    ``_register_providers``. Its direct khive connection uses the same minted or
+    profile actor as the forwarded servers and starts in the process directory.
     """
     configured = getattr(profile, "khive_injection", None)
     # Only None/False disable — an empty mapping is a valid opt-in (see _register_providers).

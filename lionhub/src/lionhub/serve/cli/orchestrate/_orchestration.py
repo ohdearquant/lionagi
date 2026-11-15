@@ -1139,7 +1139,6 @@ async def setup_orchestration(
     # stays as resolved: each worker is attributed to its own profile where it is
     # handed the set.
     orc_khive_actor = run_khive_actor(getattr(orc_profile, "name", None))
-    run_mcp_servers = attribute_khive_servers(run_mcp_servers, orc_khive_actor)
 
     if not model_spec:
         # Only reachable when the caller named an agent, since naming nothing
@@ -1171,6 +1170,12 @@ async def setup_orchestration(
         tool_settings=_profile_tool_settings(orc_profile),
     )
     _orc_provider = orc_imodel.endpoint.config.provider
+    orc_kwargs = orc_imodel.endpoint.config.kwargs
+    if cwd:
+        orc_kwargs.setdefault("repo", Path(cwd))
+    run_mcp_servers = attribute_khive_servers(
+        run_mcp_servers, orc_khive_actor, cwd=orc_kwargs.get("repo")
+    )
     # The orchestrator takes the run's set as a single agent does: a set the caller
     # named with --mcp-config, or an empty one, is its whole set, so the servers its own
     # CLI config declares are left out; a set only found by the .mcp.json lookup joins them.
@@ -1197,8 +1202,6 @@ async def setup_orchestration(
     # from that config (build_imodel_from_spec), and that effort stays its own.
     if effort_requested:
         effort = orc_effort
-    if cwd:
-        orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
 
     run = allocate_run(save_dir=save_dir)
     if isinstance(run, RunDir):
@@ -1535,10 +1538,16 @@ async def build_worker_branch(
     # Each worker's khive servers act as that worker's own profile; a bare worker
     # applies no profile, so it has none to act as.
     worker_khive_actor = run_khive_actor(None if env.bare else getattr(w_profile, "name", None))
+    is_cli = bool(getattr(w_imodel, "is_cli", False))
+    artifact_dir = env.run.agent_artifact_dir(agent_id)
     worker_mcp_servers = (
         {}
         if profile_disables_mcp
-        else attribute_khive_servers(getattr(env, "mcp_servers", None), worker_khive_actor)
+        else attribute_khive_servers(
+            getattr(env, "mcp_servers", None),
+            worker_khive_actor,
+            cwd=artifact_dir if is_cli else None,
+        )
     )
     _isolate_worker_cli_config(
         w_imodel,
@@ -1552,8 +1561,6 @@ async def build_worker_branch(
         worker_mcp_servers, contained=_claude_worker_contained(w_imodel)
     )
     _hand_mcp_servers(w_imodel, servers, label=agent_id, exclusive=exclusive)
-    is_cli = bool(getattr(w_imodel, "is_cli", False))
-    artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     if is_cli:
         w_imodel.endpoint.config.kwargs["repo"] = artifact_dir

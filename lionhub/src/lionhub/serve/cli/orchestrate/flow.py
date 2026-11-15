@@ -2534,7 +2534,9 @@ async def _execute_dag(
         worker_mcp_servers = (
             {}
             if profile_mcp_disabled
-            else attribute_khive_servers(getattr(env, "mcp_servers", None), spawn_khive_actor)
+            else attribute_khive_servers(
+                getattr(env, "mcp_servers", None), spawn_khive_actor, cwd=artifact_dir
+            )
         )
         _isolate_worker_cli_config(
             chat_model,

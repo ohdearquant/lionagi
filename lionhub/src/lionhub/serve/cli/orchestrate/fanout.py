@@ -107,11 +107,12 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"
     # build_worker_branch hands it to a worker: as the whole set.
     # The synthesizer is a cast role with no profile of its own and runs on a copy
     # of the orchestrator's model, so its khive servers act as the orchestrator's profile.
+    chat_model = env.orc_branch.chat_model.copy()
     worker_servers = attribute_khive_servers(
         getattr(env, "mcp_servers", None),
         run_khive_actor(getattr(env, "orc_profile_name", None)),
+        cwd=chat_model.endpoint.config.kwargs.get("repo"),
     )
-    chat_model = env.orc_branch.chat_model.copy()
     strip_connector_grant(chat_model.endpoint.config.kwargs)
     _hand_mcp_servers(
         chat_model,

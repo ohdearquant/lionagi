@@ -12,12 +12,11 @@ fallback. The server's packs are left as configured.
 A write-capable child started by the lion MCP server is the exception. That
 server writes a per-run actor config into the child's own directory, naming a
 child actor derived from the submitter and the namespaces it may read, and
-names the same actor in ``LIONAGI_MCP_CHILD_ACTOR``. When the config in the
-child's working directory names that actor, the servers get no ``--actor``
-flag and no ``cwd`` of their own, so that config decides, namespaces included.
-``KHIVE_ACTOR`` carries the same name. Every agent this child starts from the
-same directory with the same environment, such as a flow's workers, resolves
-the same per-run actor: the run, not each profile, is the attributed actor.
+names the same actor in ``LIONAGI_MCP_CHILD_ACTOR``. The process directory
+verifies the per-run actor. When the provider's working directory also names
+it, the servers get no ``--actor`` flag or ``cwd`` of their own, so that config
+decides, namespaces included. Otherwise the flag pins the verified actor.
+``KHIVE_ACTOR`` carries the same name for every worker in the run.
 """
 
 from __future__ import annotations
@@ -71,9 +70,8 @@ def minted_child_actor(cwd: str | os.PathLike[str] | None = None) -> str | None:
     Returns the value of ``LIONAGI_MCP_CHILD_ACTOR`` only when
     ``<cwd>/.khive/config.toml`` (``cwd`` defaults to the working directory)
     names the same ``[actor].id``. If the variable is unset or empty, or the
-    config is missing, unreadable or names another actor, the result is None
-    and the child keeps its ``agent:<profile>`` actor. The variable alone
-    never changes attribution.
+    config is missing, unreadable or names another actor, the result is None.
+    The variable alone never changes attribution.
     """
     actor = os.environ.get(MINTED_CHILD_ACTOR_ENV, "")
     if not actor:
@@ -92,8 +90,9 @@ def minted_child_actor(cwd: str | os.PathLike[str] | None = None) -> str | None:
 def run_khive_actor(profile: str | None) -> str:
     """The khive actor this process's child runs as.
 
-    The minted per-run actor when one is verified (``minted_child_actor``),
-    otherwise ``child_khive_actor(profile)``.
+    The per-run actor verified in the process directory, otherwise
+    ``child_khive_actor(profile)``. A provider's directory only decides whether
+    its server needs the actor flag.
     """
     return minted_child_actor() or child_khive_actor(profile)
 
@@ -137,9 +136,8 @@ def _actor_args(value: Any, actor: str, *, flag: bool = True) -> list[Any]:
 def _attributed(spec: Mapping[str, Any], actor: str, *, flag: bool) -> dict[str, Any]:
     """Copy a khive server with ``actor`` in its environment and, with ``flag``, its arguments.
 
-    Without ``flag`` the server's directory config decides its actor, so any
-    ``cwd`` the entry names is removed: the server starts in the child's own
-    directory, the one whose config was checked, and cannot read another.
+    Without ``flag``, remove any server-specific ``cwd`` so the server inherits
+    the provider directory whose config qualified for flag omission.
     """
     existing = spec.get("env")
     env: dict[str, Any] = dict(existing) if isinstance(existing, Mapping) else {}
@@ -152,20 +150,21 @@ def _attributed(spec: Mapping[str, Any], actor: str, *, flag: bool) -> dict[str,
     return server
 
 
-def attribute_khive_servers(servers: Mapping[str, Any] | None, actor: str) -> dict[str, Any] | None:
+def attribute_khive_servers(
+    servers: Mapping[str, Any] | None, actor: str, *, cwd: str | os.PathLike[str] | None = None
+) -> dict[str, Any] | None:
     """Copy ``servers`` with each khive server's actor set to ``actor``.
 
     Returns None for None. Otherwise returns a new mapping in which every server
     whose ``command`` basename is ``kkernel`` gets new ``args`` and ``env``. Any
     actor or namespace option is removed from the args, and ``KHIVE_ACTOR``
-    carries ``actor``. ``--actor <actor>`` is added, which overrides a directory
-    config, unless ``actor`` is the verified minted actor of this child
-    (``minted_child_actor``): then the directory config that names it decides,
-    with its namespaces. Other entries are passed through.
+    carries ``actor``. Omit ``--actor <actor>`` only when both the process and
+    the provider's ``cwd`` name the minted actor. The provider's directory
+    defaults to the process directory. Other entries are passed through.
     """
     if servers is None:
         return None
-    flag = actor != minted_child_actor()
+    flag = actor != minted_child_actor() or (cwd is not None and actor != minted_child_actor(cwd))
     return {
         name: _attributed(spec, actor, flag=flag) if is_khive_server(spec) else spec
         for name, spec in servers.items()
