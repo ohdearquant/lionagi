@@ -343,6 +343,32 @@ def test_the_minted_actor_gets_no_flag_so_the_directory_config_decides(minted_di
     assert result["env"] == {"KHIVE_ACTOR": "agent:lead:worker"}
 
 
+def test_the_minted_actor_server_cannot_move_to_another_directory(
+    minted_dir, monkeypatch, tmp_path_factory
+):
+    # Without the flag the directory config decides, so an entry naming another
+    # directory could otherwise read whichever actor that directory's config names.
+    other = tmp_path_factory.mktemp("other")
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+    server = _khive(cwd=str(other))
+
+    result = attribute_khive_servers({"khive": server}, run_khive_actor("implementer"))["khive"]
+
+    assert "cwd" not in result
+    assert result["args"] == ["mcp"]
+    assert server["cwd"] == str(other)
+
+
+def test_a_flagged_server_keeps_its_cwd(minted_dir, monkeypatch, tmp_path_factory):
+    other = str(tmp_path_factory.mktemp("other"))
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+
+    result = attribute_khive_servers({"khive": _khive(cwd=other)}, "agent:implementer")["khive"]
+
+    assert result["cwd"] == other
+    assert result["args"] == ["mcp", "--actor", "agent:implementer"]
+
+
 def test_another_actor_still_gets_the_flag_in_a_minted_directory(minted_dir, monkeypatch):
     monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
 

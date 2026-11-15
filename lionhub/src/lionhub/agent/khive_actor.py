@@ -14,8 +14,10 @@ server writes a per-run actor config into the child's own directory, naming a
 child actor derived from the submitter and the namespaces it may read, and
 names the same actor in ``LIONAGI_MCP_CHILD_ACTOR``. When the config in the
 child's working directory names that actor, the servers get no ``--actor``
-flag, so the config decides, namespaces included. ``KHIVE_ACTOR`` carries the
-same name.
+flag and no ``cwd`` of their own, so that config decides, namespaces included.
+``KHIVE_ACTOR`` carries the same name. Every agent this child starts from the
+same directory with the same environment, such as a flow's workers, resolves
+the same per-run actor: the run, not each profile, is the attributed actor.
 """
 
 from __future__ import annotations
@@ -133,13 +135,20 @@ def _actor_args(value: Any, actor: str, *, flag: bool = True) -> list[Any]:
 
 
 def _attributed(spec: Mapping[str, Any], actor: str, *, flag: bool) -> dict[str, Any]:
-    """Copy a khive server with ``actor`` in its environment and, with ``flag``, its arguments."""
+    """Copy a khive server with ``actor`` in its environment and, with ``flag``, its arguments.
+
+    Without ``flag`` the server's directory config decides its actor, so any
+    ``cwd`` the entry names is removed: the server starts in the child's own
+    directory, the one whose config was checked, and cannot read another.
+    """
     existing = spec.get("env")
     env: dict[str, Any] = dict(existing) if isinstance(existing, Mapping) else {}
     env[KHIVE_ACTOR_ENV] = actor
     server = dict(spec)
     server["args"] = _actor_args(spec.get("args"), actor, flag=flag)
     server["env"] = env
+    if not flag:
+        server.pop("cwd", None)
     return server
 
 
