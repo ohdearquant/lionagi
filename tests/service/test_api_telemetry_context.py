@@ -15,6 +15,7 @@ from lionagi.service._api_telemetry import (
     mark_dispatch,
     record_guard_refusal,
     record_selected_attempt,
+    record_served_model,
 )
 from lionhub.serve.cli._api_usage import APIUsageCollector
 
@@ -31,6 +32,29 @@ def _decision(**updates):
         model="requested-model",
     )
     return InputDecision(**(fields | updates))
+
+
+def test_served_model_uses_the_recorded_request_owner():
+    collector = APIUsageCollector(run_id="run-a", branch_id="branch-a")
+    with collect_api_turn(collector, 1):
+        first = capture_request(_decision(), api_call_id="event-a")
+        second = capture_request(_decision(), api_call_id="event-b")
+
+    with activate_request(second):
+        record_served_model(first, "served-first")
+    with activate_request(first):
+        record_served_model(second, "served-second")
+        record_served_model(None, "unowned-response")
+
+    snapshot = collector.close()
+    record_served_model(first, "late-response")
+    assert collector.snapshot() == snapshot
+    assert [
+        (row["model"], row["model_semantics"], row["served_model"]) for row in snapshot["requests"]
+    ] == [
+        ("requested-model", "requested", "served-first"),
+        ("requested-model", "requested", "served-second"),
+    ]
 
 
 def test_detached_versioned_record_dedupes_actual_identities_and_seals():

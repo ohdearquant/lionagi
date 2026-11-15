@@ -398,3 +398,84 @@ async def test_cli_prune_refuses_an_unknown_dialect(monkeypatch):
     monkeypatch.setattr(db_mod, "StateDB", UnsupportedStore)
     with pytest.raises(ValueError, match="State prune does not support 'unknown'"):
         await _prune(keep_days=30, keep_n=1, dry_run=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entry", "chunk_rows"),
+    [
+        ("cli", 8),
+        ("explicit", 8),
+        ("explicit", 1),
+        ("age", 8),
+        ("age", 1),
+    ],
+)
+async def test_branch_only_legacy_prune_protects_shared_lineage(
+    prune_store, monkeypatch, entry, chunk_rows
+):
+    from lionhub.orchestration.scheduler import db_maintenance, settings
+
+    monkeypatch.setattr(settings, "PRUNE_CHUNK_ROWS", chunk_rows)
+    monkeypatch.setattr(settings, "PRUNE_ARCHIVE_DIR", None)
+    old = time.time() - 60 * 86400
+    kept = {"root-member", "legacy-member", "shared-member", "shared-direct"}
+    async with StateDB() as db:
+        for message_id in sorted(kept | {"reclaimed"}):
+            await db.insert_message(
+                {"id": message_id, "created_at": old, "role": "user", "content": {}}
+            )
+        for progression_id, members in (
+            ("deferred-root", ["root-member"]),
+            ("legacy", []),
+            ("shared-array", ["shared-member"]),
+            ("ordinary-root", ["reclaimed"]),
+        ):
+            await db.create_progression(progression_id, members)
+        await db.execute(
+            "UPDATE progressions SET collection = ? WHERE id = 'legacy'",
+            ('{"member":"legacy-member"}',),
+        )
+        for session_id, progression_id, reference in (
+            ("a-deferred", "deferred-root", {"first_msg_id": "shared-direct"}),
+            ("b-ordinary", "ordinary-root", {"last_msg_id": "shared-direct"}),
+        ):
+            await db.create_session(
+                {
+                    "id": session_id,
+                    "status": "completed",
+                    "progression_id": progression_id,
+                    "updated_at": old,
+                    **reference,
+                }
+            )
+        for branch_id, session_id, progression_id in (
+            ("legacy-only", "a-deferred", "legacy"),
+            ("deferred-shared", "a-deferred", "shared-array"),
+            ("ordinary-shared", "b-ordinary", "shared-array"),
+        ):
+            await db.create_branch(
+                {"id": branch_id, "session_id": session_id, "progression_id": progression_id}
+            )
+
+    if entry == "cli":
+        assert await _prune(keep_days=30, keep_n=0, dry_run=False) == {
+            "sessions": 2,
+            "branches": 3,
+            "messages": 1,
+            "deferred_victim_progressions": 1,
+        }
+    elif entry == "explicit":
+        assert await db_maintenance.prune_terminal_sessions_by_id(["a-deferred", "b-ordinary"]) == 2
+    else:
+        assert (await db_maintenance.prune_old_data(keep_days=30))["sessions_pruned"] == 2
+
+    async with StateDB() as db:
+        assert await db.fetch_one("SELECT id FROM sessions") is None
+        assert await db.fetch_one("SELECT id FROM branches") is None
+        assert {row["id"] for row in await db.fetch_all("SELECT id FROM messages")} == kept
+        assert {row["id"] for row in await db.fetch_all("SELECT id FROM progressions")} == {
+            "deferred-root",
+            "legacy",
+            "shared-array",
+        }

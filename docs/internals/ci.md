@@ -3,6 +3,11 @@
 `scripts/ci.sh` is the entry point for current Python checks in CI, local
 development, and pre-commit. Workflows select a command and set policy through
 environment variables.
+The main CI and release test matrices run pytest through it. Other steps
+call pytest directly, among them the documentation contract tests in CI and in
+the docs deploy, the serial performance tests, the compatibility-mode tests,
+the lion1 package jobs, the agent workbench image test, and the release repair
+path for older tags.
 
 ## Release images
 

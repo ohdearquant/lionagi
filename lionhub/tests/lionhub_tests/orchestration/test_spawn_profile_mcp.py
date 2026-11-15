@@ -336,6 +336,35 @@ def test_a_tool_key_line_in_an_unreadable_block_after_prompt_text_is_refused(
         _parse_profile("reviewer", f"{before}{declaration}{after}")
 
 
+@pytest.mark.parametrize("key", ("tools", "allowed_tools", "disallowed_tools"))
+@pytest.mark.parametrize(
+    "declaration",
+    ("{key}: [Example]", "- {key}: [Example]", "{{{key}: [Example]}}"),
+    ids=("mapping", "list-item", "flow-mapping"),
+)
+def test_readable_tool_setting_after_prompt_text_is_refused(key, declaration):
+    text = f"Prompt.\n\n---\n{declaration.format(key=key)}\n---\nEnd."
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"--- block on line 3.*{key} declaration.*move the block to the top of the file",
+    ):
+        _parse_profile("reviewer", text)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    (
+        "Prompt.\n\n---\ndescription: |\n  allowed_tools: [Example]\n---\nEnd.",
+        "Prompt.\n\n```yaml\n---\nallowed_tools: [Example]\n---\n```\nEnd.",
+    ),
+    ids=("scalar-value", "fenced-example"),
+)
+def test_readable_tool_mentions_after_prompt_text_stay_in_the_prompt(prompt):
+    profile = _parse_profile("reviewer", prompt)
+    assert profile.raw_body == prompt
+    assert profile.extra == {}
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [("2026-02-28", date(2026, 2, 28)), ('"2026-02-30"', "2026-02-30")],

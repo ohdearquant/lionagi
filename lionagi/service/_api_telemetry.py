@@ -38,6 +38,8 @@ class APIUsageSink(Protocol):
         self, request_index: int, *, read: int | None, write: int | None
     ) -> None: ...
 
+    def record_served_model(self, request_index: int, model: str | None) -> None: ...
+
     def record_selected_attempt(
         self,
         request_index: int,
@@ -148,6 +150,15 @@ def record_cache_usage(frame: RequestFrame | None, *, read: int | None, write: i
         try:
             if collector := _live(frame.owner):
                 collector.record_cache_usage(frame.request_index, read=read, write=write)
+        except Exception:
+            return
+
+
+def record_served_model(frame: RequestFrame | None, model: str | None) -> None:
+    if frame is not None:
+        try:
+            if collector := _live(frame.owner):
+                collector.record_served_model(frame.request_index, model)
         except Exception:
             return
 

@@ -33,6 +33,7 @@ jobs:
     outputs:
       version: ${{ steps.release.outputs.version }}
       sha: ${{ steps.release.outputs.sha }}
+      python_versions: ${{ steps.release.outputs.python_versions }}
     steps:
     - uses: actions/checkout@v7
       with:
@@ -52,12 +53,12 @@ jobs:
       contents: read
     needs: source
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       matrix:
-        # Historical image repairs keep their original interpreter range.
-        python-version: ${{ fromJSON(github.event_name == 'release' && '["3.10","3.11","3.12","3.13","3.14"]' || '["3.10","3.11","3.12","3.13"]') }}
+        python-version: ${{ fromJSON(needs.source.outputs.python_versions) }}
     steps:
     - name: Require the resolved source commit
       shell: bash
@@ -102,15 +103,13 @@ jobs:
     
     - name: Run tests
       shell: bash
-      env:
-        RELEASE_TEST_MODE: ${{ github.event_name == 'release' && 'release' || 'repair' }}
-        MAXFAIL: '0'
       run: |
-        case "$RELEASE_TEST_MODE" in
+        case "${GITHUB_EVENT_NAME-}" in
           release)
-            exec scripts/ci.sh test-python
+            # Report failures across the full test selection before publishing.
+            MAXFAIL=0 exec scripts/ci.sh test-python
             ;;
-          repair)
+          workflow_dispatch)
             # Older tags lack the configured-root helper.
             if [ -f scripts/test_roots.py ]; then
               uv run python scripts/test_roots.py > /dev/null
@@ -118,7 +117,7 @@ jobs:
             exec uv run pytest --maxfail=1 --disable-warnings
             ;;
           *)
-            echo '::error::unknown release test mode'
+            echo '::error::unsupported release test event'
             exit 1
             ;;
         esac
