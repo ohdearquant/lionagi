@@ -223,10 +223,18 @@ character and `final_response_truncated` is true. The `final_response_path`
 field points to the full UTF-8 text in the run's state directory. The CLI
 atomically writes this owner-only file before invoking the notifier. If
 the write fails, the notifier still runs with the preview and a null
-`final_response_path`. When the run has no final response, such as a fanout with unsynthesized worker
-results, `final_response` and `final_response_path` are null and
-`final_response_truncated` is false. `status` and `exit_class` still describe
-the run itself, including when the assistant reports that its task failed.
+`final_response_path`. When the run has no final response, such as a fanout
+with unsynthesized worker results, `final_response` and `final_response_path`
+are null and `final_response_truncated` is false. An assistant reply with no
+text is a final response: `final_response` is an empty string and the file is
+empty. `status` and `exit_class` still describe the run itself, including when
+the assistant reports that its task failed.
+
+The `{payload}` argv placeholder carries every key except `final_response`,
+because other local users can read a process's arguments. The JSON on stdin
+and `LIONAGI_NOTIFY_PAYLOAD` carry it. The response is model output, which
+repository content the agent read can steer, so a notifier treats it as
+untrusted text and never passes it to a shell or an evaluator.
 
 **`deliver_flow_notify_now`** — the direct-path sibling of
 `register_flow_notify_scope`, for the one case that registered path cannot

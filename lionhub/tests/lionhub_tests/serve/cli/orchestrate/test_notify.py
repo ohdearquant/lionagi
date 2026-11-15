@@ -156,7 +156,13 @@ async def test_final_response_matches_in_every_notify_transport(
 
     [(argv, env_payload, at_launch)] = launch
     payload = json.loads(env_payload)
-    assert argv == ("capture-notify", env_payload, "completed", "inv-123")
+    assert argv[0] == "capture-notify"
+    assert argv[2:] == ("completed", "inv-123")
+    # Arguments are visible to other local users, so the text stays out of argv.
+    argv_payload = json.loads(argv[1])
+    assert "final_response" not in argv_payload
+    assert json.dumps(preview)[1:-1] not in argv[1]
+    assert argv_payload == {k: v for k, v in payload.items() if k != "final_response"}
     communicate.assert_awaited_once_with(env_payload.encode())
     assert payload["final_response"] == preview
     assert payload["final_response_truncated"] is truncated

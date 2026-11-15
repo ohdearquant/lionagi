@@ -91,8 +91,13 @@ def _legacy_argv_env_builders(payload_fn, *, invocation_id: str | None):
     `--notify` adapter (registered or delivered directly)."""
 
     def _argv_fn(argv: tuple[str, ...], envelope: RunTerminalEnvelope) -> list[str]:
+        # Other local users can read a process's arguments, but not its stdin
+        # or environment, so the response text stays out of argv. The path
+        # and truncation flag still tell the notifier where to read it.
+        argv_payload = payload_fn(envelope)
+        argv_payload.pop("final_response", None)
         values = {
-            "{payload}": json.dumps(payload_fn(envelope)),
+            "{payload}": json.dumps(argv_payload),
             "{status}": envelope.terminal_status,
             "{invocation_id}": invocation_id or "",
         }
