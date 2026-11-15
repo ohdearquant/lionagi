@@ -9,8 +9,8 @@ import pytest
 pytest.importorskip("ruvector")
 pytestmark = pytest.mark.integration
 from lionagi import Branch, Node
-from lionagi.integrations.ruvector import RuVectorStore
 from lionagi.protocols.action.tool import Tool
+from lionhub.integrations.ruvector import RuVectorStore
 
 
 def node(content="document", vector=None, metadata=None):

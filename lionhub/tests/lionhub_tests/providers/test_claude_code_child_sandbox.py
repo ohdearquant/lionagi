@@ -37,13 +37,14 @@ OFF = ChildSandboxPolicy(False, (), ())
 
 
 @pytest.fixture(autouse=True)
-def _stubbed_cli(monkeypatch, tmp_path):
+def _stubbed_cli(monkeypatch, tmp_path_factory):
     """A throwaway HOME, a Claude binary at the supported floor and no inherited cache setting.
 
     The host's sandbox backend is stubbed too, so no test here depends on ``bwrap`` or ``socat``.
+    The HOME sits beside the tests' working directories, never under one: a confined child
+    whose working directory is an ancestor of HOME is refused.
     """
-    home = tmp_path / "home"
-    home.mkdir()
+    home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
