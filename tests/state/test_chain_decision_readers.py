@@ -6,15 +6,18 @@
 from __future__ import annotations
 
 import json
+import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
 from lionhub.orchestration.inspection import resolve_any_target
 from lionhub.serve.cli import monitor, status
-from tests.state.test_terminal_delivery_retention_postgres import _fresh_store
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
@@ -23,12 +26,39 @@ _NO_DECISION = {"kind": "chain_decision", "v": 1, "ref": "none"}
 _FAILURE = {"kind": "failed_operation", "id": "failed-node", "label": "Failure record"}
 
 
+@asynccontextmanager
+async def _isolated_postgres_store(pg_url, monkeypatch):
+    """Connect every reader and scheduler handle to a private database."""
+    url = make_url(pg_url)
+    name = f"chain_test_{uuid.uuid4().hex[:16]}"
+    admin = create_async_engine(url, isolation_level="AUTOCOMMIT")
+    try:
+        async with admin.connect() as conn:
+            identifier = conn.dialect.identifier_preparer.quote_identifier(name)
+            await conn.exec_driver_sql(f"CREATE DATABASE {identifier}")
+            try:
+                store_url = url.set(database=name).render_as_string(hide_password=False)
+                with monkeypatch.context() as patch:
+                    patch.setattr(
+                        db_mod,
+                        "settings",
+                        db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": store_url}),
+                    )
+                    async with StateDB(url=store_url) as state:
+                        yield state
+            finally:
+                await conn.exec_driver_sql(f"DROP DATABASE {identifier}")
+    finally:
+        await admin.dispose()
+
+
 @pytest_asyncio.fixture(loop_scope="function")
 async def db(request, tmp_path, monkeypatch):
     if getattr(request, "param", "sqlite") == "postgresql":
-        async with _fresh_store(request.getfixturevalue("pg_url"), monkeypatch) as (url, _):
-            async with StateDB(url=url) as state:
-                yield state
+        async with _isolated_postgres_store(
+            request.getfixturevalue("pg_url"), monkeypatch
+        ) as state:
+            yield state
         return
 
     path = tmp_path / "state.db"
@@ -110,6 +140,21 @@ async def test_cli_session_detail_and_status_render_evidence(db):
     assert "    Failure record: failed-node" in text.splitlines()
     assert "    chain_decision: on_fail" in text.splitlines()
     assert await resolve_any_target(db, "occurrence") is None
+
+
+async def test_monitor_wait_reads_decision_from_the_terminal_row(db):
+    await _seed_schedule_run(db, on_success={"kind": "agent"})
+    await _put_refs(db, "schedule_runs", "occurrence", [_NO_DECISION])
+    pending = {"occurrence": await db.get_schedule_run("occurrence")}
+    chain = monitor._new_chain_state(pending, chain=True)
+    done = []
+
+    await monitor._poll_pending_once(db, pending, {}, done)
+    await monitor._advance_chains(db, pending, done, chain_state=chain, processed=0)
+
+    assert done[0]["status_evidence_refs"] == [_NO_DECISION]
+    assert chain["resolved_roots"] == {"occurrence"}
+    assert chain["awaiting_grace"] == {}
 
 
 @pytest.mark.parametrize("db", ["sqlite", "postgresql"], indirect=True)

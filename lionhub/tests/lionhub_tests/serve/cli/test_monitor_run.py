@@ -7,12 +7,14 @@ dashboard, not a replacement)."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -1177,6 +1179,217 @@ async def test_dispatch_wait_no_chain_ignores_fired_children(
     out = capsys.readouterr().out
     assert parent_id in out
     assert child_id not in out
+
+
+def _chain_decision(selection: str) -> dict[str, Any]:
+    return {"kind": "chain_decision", "v": 1, "ref": selection}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,exit_code", [("failed", None), ("completed", 0), ("failed", 7), ("skipped", None)]
+)
+async def test_chain_decision_none_returns_without_sleep(
+    temp_db_path: Path, sleep_probe: list[float], status: str, exit_code: int | None
+) -> None:
+    async with StateDB() as db:
+        action = {"kind": "agent"}
+        schedule = await _make_schedule(db, on_success=action, on_fail=action)
+        parent = await _make_schedule_run(db, schedule, status=status, exit_code=exit_code)
+        await _set_fields(
+            db, "schedule_runs", parent, status_evidence_refs=json.dumps([_chain_decision("none")])
+        )
+
+    assert _dispatch_wait([parent], interval=0.1, follow=False) == (
+        0 if status == "completed" else 1
+    )
+    assert not sleep_probe
+
+
+@pytest.mark.asyncio
+async def test_chain_decision_branch_with_no_chain_returns_without_sleep(
+    temp_db_path: Path, sleep_probe: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    read_decision = Mock(side_effect=AssertionError("chain following is off"))
+    monkeypatch.setattr(
+        "lionhub.serve.cli.monitor._recorded_selection", read_decision, raising=False
+    )
+    async with StateDB() as db:
+        schedule = await _make_schedule(db, on_success={"kind": "agent"})
+        parent = await _make_schedule_run(db, schedule, status="completed", exit_code=0)
+        await _set_fields(
+            db,
+            "schedule_runs",
+            parent,
+            status_evidence_refs=json.dumps([_chain_decision("on_success")]),
+        )
+        await _make_schedule_run(
+            db, schedule, status="failed", exit_code=7, chain_depth=1, chain_parent_id=parent
+        )
+
+    assert _dispatch_wait([parent], interval=0.1, follow=False, chain=False) == 0
+    assert not sleep_probe
+    read_decision.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,exit_code,child_status,child_exit",
+    [
+        ("failed", 0, "failed", 7),
+        ("cancelled", None, "completed", None),
+        ("cancelled", None, "failed", 0),
+    ],
+)
+async def test_chain_decision_branch_follows_child(
+    temp_db_path: Path,
+    capsys: pytest.CaptureFixture,
+    status: str,
+    exit_code: int | None,
+    child_status: str,
+    child_exit: int | None,
+) -> None:
+    async with StateDB() as db:
+        schedule = await _make_schedule(db, on_fail={"kind": "agent"})
+        parent = await _make_schedule_run(db, schedule, status=status, exit_code=exit_code)
+        await _set_fields(
+            db,
+            "schedule_runs",
+            parent,
+            status_evidence_refs=json.dumps([_chain_decision("on_fail")]),
+        )
+        child = await _make_schedule_run(
+            db,
+            schedule,
+            status=child_status,
+            exit_code=child_exit,
+            chain_depth=1,
+            chain_parent_id=parent,
+        )
+        await _set_fields(
+            db, "schedule_runs", child, status_evidence_refs=json.dumps([_chain_decision("none")])
+        )
+
+    assert _dispatch_wait([parent], interval=0.1, follow=False) == (
+        0 if child_status == "completed" else 1
+    )
+    assert child in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_chain_decision_survives_schedule_edit(
+    temp_db_path: Path, sleep_probe: list[float], capsys: pytest.CaptureFixture
+) -> None:
+    async with StateDB() as db:
+        schedule = await _make_schedule(db, on_success={"kind": "agent"})
+        parent = await _make_schedule_run(db, schedule, status="completed", exit_code=0)
+        await _set_fields(
+            db,
+            "schedule_runs",
+            parent,
+            status_evidence_refs=json.dumps([_chain_decision("on_success")]),
+        )
+        await _set_fields(db, "schedules", schedule, on_success=None)
+        child = await _make_schedule_run(
+            db, schedule, status="failed", exit_code=7, chain_depth=1, chain_parent_id=parent
+        )
+
+    assert _dispatch_wait([parent], interval=0.1, follow=False) == 1
+    assert sleep_probe == [0.1]
+    assert child in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_chain_decision_grace_expires_without_child(
+    temp_db_path: Path, sleep_probe: list[float]
+) -> None:
+    async with StateDB() as db:
+        schedule = await _make_schedule(db)
+        parent = await _make_schedule_run(db, schedule, status="completed", exit_code=0)
+        await _set_fields(
+            db,
+            "schedule_runs",
+            parent,
+            status_evidence_refs=json.dumps([_chain_decision("on_success")]),
+        )
+
+    assert _dispatch_wait([parent], interval=0.1, follow=False) == 0
+    assert sleep_probe == [0.1]
+
+
+@pytest.mark.asyncio
+async def test_chain_decision_of_disappeared_row_does_not_wait() -> None:
+    db = AsyncMock(spec=StateDB)
+    db.get_schedule_run.return_value = None
+    db.get_schedule.return_value = None
+    db.fetch_all.return_value = []
+    run_id = "disappeared"
+    pending = {
+        run_id: {
+            "id": run_id,
+            "schedule_id": "deleted-schedule",
+            "status": "completed",
+            "exit_code": 0,
+            "status_evidence_refs": [_chain_decision("on_success")],
+        }
+    }
+    state = _new_chain_state(pending, chain=True)
+    await _chain_tick(db, pending, [], state, 0)
+
+    assert state["resolved_roots"] == {run_id}
+    assert not state["awaiting_grace"]
+    db.fetch_all.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refs,reason,legacy,awaiting",
+    [
+        (
+            [{**_chain_decision("none"), "v": 2}],
+            "unsupported",
+            True,
+            True,
+        ),
+        ([{**_chain_decision("none"), "v": True}], "malformed", True, True),
+        ([{**_chain_decision("none"), "ref": []}], "malformed", True, True),
+        ([_chain_decision("none"), _chain_decision("on_fail")], "conflicting", True, True),
+        ([_chain_decision("none"), {"kind": "chain_decision"}], "malformed", False, False),
+        (json.dumps([_chain_decision("on_fail")] * 2), None, False, True),
+        ([{"kind": "invocation", "id": "invocation"}], None, True, True),
+        ("[unreadable json", "malformed", True, True),
+    ],
+)
+async def test_chain_decision_uses_usable_refs_and_warns_once(
+    caplog: pytest.LogCaptureFixture, refs: Any, reason: str | None, legacy: bool, awaiting: bool
+) -> None:
+    db = AsyncMock(spec=StateDB)
+    db.get_schedule.return_value = {"on_success": {"kind": "agent"}}
+    db.fetch_all.return_value = []
+    row = {
+        "id": "terminal-parent",
+        "schedule_id": "schedule",
+        "status": "completed",
+        "exit_code": 0,
+        "status_evidence_refs": refs,
+    }
+    state = _new_chain_state({row["id"]: row}, chain=True)
+    for _ in range(2):
+        await _advance_chains(db, {}, [row], chain_state=state, processed=0)
+
+    assert (row["id"] in state["awaiting_grace"]) is awaiting
+    assert (row["id"] in state["resolved_roots"]) is not awaiting
+    if legacy:
+        db.get_schedule.assert_awaited_once_with(row["schedule_id"])
+    else:
+        db.get_schedule.assert_not_awaited()
+    if reason is None:
+        assert not caplog.records
+    else:
+        (warning,) = caplog.records
+        assert warning.levelno == logging.WARNING
+        assert row["id"] in warning.message
+        assert reason in warning.message
 
 
 @pytest.mark.asyncio

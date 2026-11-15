@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verify the scheduler records its chain selection before launching the child."""
+"""Observe a real scheduler's recorded chain outcome before and after child creation."""
 
 from __future__ import annotations
 
@@ -22,8 +22,14 @@ from lionhub.orchestration.scheduler.scheduler_state import (
     _DBSchedulerStateService,
     create_skipped_run,
 )
+from lionhub.serve.cli.monitor import (
+    _advance_chains,
+    _dispatch_wait,
+    _new_chain_state,
+    _poll_pending_once,
+)
 from tests.state.conftest import pg_url  # noqa: F401
-from tests.state.test_terminal_delivery_retention_postgres import _fresh_store
+from tests.state.test_chain_decision_readers import _isolated_postgres_store
 
 from .test_scheduler_occurrence_atomicity import _schedule_row, _seed_dispatched_run_with_session
 
@@ -48,9 +54,8 @@ async def chain_store(request, tmp_path, monkeypatch):
 
     # Recovery scans every dispatched run, so give it its own database even
     # when normal backend tests share a server or test worker.
-    async with _fresh_store(request.getfixturevalue("pg_url"), monkeypatch) as (url, _):
-        async with StateDB(url=url) as db:
-            yield db
+    async with _isolated_postgres_store(request.getfixturevalue("pg_url"), monkeypatch) as db:
+        yield db
 
 
 async def _seed_session(db, invocation_id, status):
@@ -73,6 +78,12 @@ class _ObservedScheduler:
         self.monkeypatch = monkeypatch
         self.svc = _DBSchedulerStateService(persistent=True)
         self.engine = scheduler.SchedulerEngine(svc=self.svc)
+        self.pending = {_PARENT: {}}
+        self.done = []
+        self.monitor = _new_chain_state(self.pending, chain=True)
+        self.processed = 0
+        self.waited_before_child = None
+        self.followed_child = None
         self.recorded_before_child = None
         self.launches = []
         monkeypatch.setattr(
@@ -80,13 +91,25 @@ class _ObservedScheduler:
         )
         monkeypatch.setattr(launcher, "resolve_li_executable", lambda: (["/usr/bin/true"], None))
 
+    async def tick(self):
+        await _poll_pending_once(self.db, self.pending, {}, self.done)
+        self.processed = await _advance_chains(
+            self.db, self.pending, self.done, chain_state=self.monitor, processed=self.processed
+        )
+
     async def children(self):
         return await self.db.fetch_all(
             "SELECT * FROM schedule_runs WHERE chain_parent_id = ?", (_PARENT,)
         )
 
     def observe_launches(
-        self, *, session_status, child_exit=7, remove_branch=None, stop_before_child=False
+        self,
+        *,
+        session_status,
+        child_exit=0,
+        child_status="completed",
+        remove_branch=None,
+        stop_before_child=False,
     ):
         real_fire = self.engine._fire
 
@@ -95,6 +118,8 @@ class _ObservedScheduler:
                 assert await self.children() == []
                 if remove_branch is not None:
                     await self.db.update_schedule(_SCHEDULE, **{remove_branch: None})
+                await self.tick()
+                self.waited_before_child = _PARENT in self.monitor["awaiting_grace"]
                 parent = await self.db.get_schedule_run(_PARENT)
                 self.recorded_before_child = _decisions(parent)
                 if stop_before_child:
@@ -107,7 +132,9 @@ class _ObservedScheduler:
                 self.launches.append("child")
                 [child] = await self.children()
                 assert child["dispatched_at"] is not None
-                await _seed_session(self.db, invocation_id, "failed" if child_exit else "completed")
+                await self.tick()
+                self.followed_child = child["id"] in self.pending
+                await _seed_session(self.db, invocation_id, child_status)
                 return child_exit, ""
             self.launches.append("parent")
             parent = await self.db.get_schedule_run(_PARENT)
@@ -158,15 +185,27 @@ class _ObservedScheduler:
         if self.engine._fire_tasks:
             await asyncio.wait_for(asyncio.gather(*tuple(self.engine._fire_tasks)), timeout=10)
 
-    async def assert_launched(self, *, launches, child_exit, selection):
+    async def wait_exit(self, *, chain=True):
+        return await asyncio.to_thread(
+            _dispatch_wait, [_PARENT], interval=0, follow=False, chain=chain, max_wait=10
+        )
+
+    async def assert_followed(self, *, launches, child_exit, child_status):
+        await self.tick()
         assert self.launches == launches
-        assert self.recorded_before_child == _decision(selection)
+        assert self.waited_before_child is True
+        assert self.followed_child is True
         [child] = await self.children()
         assert child["exit_code"] == child_exit
-        assert child["chain_depth"] == 1
+        assert child["status"] == child_status
+        assert self.monitor["resolved_roots"] == {_PARENT}
+        assert self.monitor["chain_tail_status"][_PARENT] == child_status
 
-    async def assert_no_child(self):
+    async def assert_resolved_without_child(self):
+        await self.tick()
         assert await self.children() == []
+        assert self.monitor["awaiting_grace"] == {}
+        assert self.monitor["resolved_roots"] == {_PARENT}
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -191,7 +230,7 @@ def _decision(ref):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("branch", ["on_fail", "on_success"])
-async def test_completed_empty_records_only_selected_failure_action(observed, branch):
+async def test_completed_empty_follows_only_selected_failure_action(observed, branch):
     await observed.create_schedule(branch)
     observed.observe_launches(session_status="running", child_exit=0)
 
@@ -200,13 +239,16 @@ async def test_completed_empty_records_only_selected_failure_action(observed, br
     assert (parent["status"], parent["exit_code"]) == ("failed", 0)
     assert parent["status_reason_code"] == RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
     if branch == "on_fail":
-        await observed.assert_launched(
-            launches=["parent", "child"], child_exit=0, selection="on_fail"
+        await observed.assert_followed(
+            launches=["parent", "child"], child_exit=0, child_status="completed"
         )
+        assert await observed.wait_exit() == 0
+        assert observed.recorded_before_child == _decision("on_fail")
         expected = "on_fail"
     else:
-        await observed.assert_no_child()
+        await observed.assert_resolved_without_child()
         assert observed.launches == ["parent"]
+        assert await observed.wait_exit() == 1
         expected = "none"
     assert _decisions(parent) == _decision(expected)
     invocation = await observed.db.get_invocation(parent["invocation_id"])
@@ -215,16 +257,22 @@ async def test_completed_empty_records_only_selected_failure_action(observed, br
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("edit", [False, True], ids=["unchanged", "removed-after-decision"])
-async def test_successful_run_launches_the_selected_action(observed, edit):
+async def test_successful_run_follows_the_selected_action(observed, edit):
     await observed.create_schedule("on_success")
     observed.observe_launches(
-        session_status="completed", remove_branch="on_success" if edit else None
+        session_status="completed",
+        child_status="failed",
+        remove_branch="on_success" if edit else None,
     )
 
     assert await observed.fire()
-    await observed.assert_launched(
-        launches=["parent", "child"], child_exit=7, selection="on_success"
+    await observed.assert_followed(
+        launches=["parent", "child"], child_exit=0, child_status="failed"
     )
+    # The child process exited cleanly, but its independently stored outcome failed.
+    assert await observed.wait_exit() == 1
+    assert await observed.wait_exit(chain=False) == 0
+    assert observed.recorded_before_child == _decision("on_success")
     parent = await observed.db.get_schedule_run(_PARENT)
     assert (parent["status"], parent["exit_code"]) == ("completed", 0)
     assert _decisions(parent) == _decision("on_success")
@@ -234,12 +282,14 @@ async def test_successful_run_launches_the_selected_action(observed, edit):
 
 
 @pytest.mark.asyncio
-async def test_dispatched_recovery_records_failure_selection_without_exit_code(observed):
+async def test_dispatched_startup_recovery_follows_failure_without_exit_code(observed):
     observed.observe_launches(session_status="failed", child_exit=0)
 
     await observed.recover(session_status="failed", branch="on_fail")
 
-    await observed.assert_launched(launches=["child"], child_exit=0, selection="on_fail")
+    await observed.assert_followed(launches=["child"], child_exit=0, child_status="completed")
+    assert await observed.wait_exit() == 0
+    assert observed.recorded_before_child == _decision("on_fail")
     parent = await observed.db.get_schedule_run(_PARENT)
     assert (parent["status"], parent["exit_code"]) == ("failed", None)
     assert _decisions(parent) == _decision("on_fail")
@@ -248,7 +298,7 @@ async def test_dispatched_recovery_records_failure_selection_without_exit_code(o
 
 
 @pytest.mark.asyncio
-async def test_pre_dispatch_failure_records_no_action(observed):
+async def test_pre_dispatch_failure_resolves_without_waiting_for_failure_action(observed):
     await observed.create_schedule("on_fail")
     observed.observe_launches(session_status="failed")
     observed.monkeypatch.setattr(
@@ -256,7 +306,7 @@ async def test_pre_dispatch_failure_records_no_action(observed):
     )
 
     assert not await observed.fire()
-    await observed.assert_no_child()
+    await observed.assert_resolved_without_child()
     assert observed.launches == []
     parent = await observed.db.get_schedule_run(_PARENT)
     assert (parent["status"], parent["exit_code"], parent["dispatched_at"]) == (
@@ -269,7 +319,7 @@ async def test_pre_dispatch_failure_records_no_action(observed):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("startup", [False, True], ids=["normal", "startup"])
-async def test_cancelled_run_launches_the_recorded_failure_action(observed, startup):
+async def test_cancelled_run_follows_the_recorded_failure_action(observed, startup):
     observed.observe_launches(session_status="cancelled", child_exit=0)
     if startup:
         await observed.recover(session_status="cancelled", branch="on_fail")
@@ -277,18 +327,20 @@ async def test_cancelled_run_launches_the_recorded_failure_action(observed, star
         await observed.create_schedule("on_fail")
         assert await observed.fire()
 
-    await observed.assert_launched(
+    await observed.assert_followed(
         launches=["child"] if startup else ["parent", "child"],
         child_exit=0,
-        selection="on_fail",
+        child_status="completed",
     )
+    assert await observed.wait_exit() == 0
+    assert observed.recorded_before_child == _decision("on_fail")
     parent = await observed.db.get_schedule_run(_PARENT)
     assert parent["status"] == "cancelled"
     assert _decisions(parent) == _decision("on_fail")
 
 
 @pytest.mark.asyncio
-async def test_skipped_run_records_no_action(observed):
+async def test_skipped_run_resolves_without_waiting_for_failure_action(observed):
     await observed.create_schedule("on_fail")
     schedule = await observed.db.get_schedule(_SCHEDULE)
 
@@ -303,22 +355,27 @@ async def test_skipped_run_records_no_action(observed):
         metadata={},
     )
 
-    await observed.assert_no_child()
+    await observed.assert_resolved_without_child()
     parent = await observed.db.get_schedule_run(_PARENT)
     assert (parent["status"], parent["exit_code"]) == ("skipped", None)
     assert _decisions(parent) == _decision("none")
 
 
 @pytest.mark.asyncio
-async def test_selection_survives_interruption_before_child_creation(observed):
+async def test_recorded_failure_action_expires_grace_when_child_does_not_start(observed):
     await observed.create_schedule("on_fail")
     observed.observe_launches(session_status="running", stop_before_child=True)
 
     await observed.fire()
 
-    assert observed.recorded_before_child == _decision("on_fail")
+    assert observed.waited_before_child is True
     assert observed.launches == ["parent"]
-    await observed.assert_no_child()
+    assert _PARENT in observed.monitor["awaiting_grace"]
+    assert observed.monitor["resolved_roots"] == set()
+    await observed.assert_resolved_without_child()
     parent = await observed.db.get_schedule_run(_PARENT)
     assert (parent["status"], parent["exit_code"]) == ("failed", 0)
     assert _decisions(parent) == _decision("on_fail")
+    assert observed.recorded_before_child == _decision("on_fail")
+    assert observed.monitor["chain_tail_status"][_PARENT] == "failed"
+    assert await observed.wait_exit() == 1

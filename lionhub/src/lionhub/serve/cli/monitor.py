@@ -1511,6 +1511,7 @@ async def _poll_pending_once(
                 "_monitor_missing": True,
             }
             log_error(f"schedule_run {run_id!r} disappeared from state.db while waiting")
+            row.pop("status_evidence_refs", None)
         elif row["status"] not in SCHEDULE_RUN_TERMINAL_STATUSES:
             continue
         name = await _schedule_name(db, row["schedule_id"], cache=schedule_names)
@@ -1564,6 +1565,44 @@ async def _schedule_declares_chain_action(
     )
 
 
+def _recorded_selection(row: dict[str, Any], *, warned_runs: set[str]) -> str | None:
+    """Read the usable v1 selection and warn once per run about unusable evidence."""
+    refs = row.get("status_evidence_refs")
+    if refs is None:
+        return None
+    if isinstance(refs, str):
+        try:
+            refs = json.loads(refs)
+        except (ValueError, RecursionError):
+            refs = None
+
+    from lionagi.state.lifecycle.models import _chain_decision_selection, _is_chain_decision_ref
+
+    selections: set[str] = set()
+    problems: set[str] = set()
+    if not isinstance(refs, list):
+        problems.add("malformed chain decision evidence")
+    else:
+        for ref in refs:
+            if not _is_chain_decision_ref(ref):
+                continue
+            selection = _chain_decision_selection(ref)
+            if selection is not None:
+                selections.add(selection)
+            elif type(ref.get("v")) is int and ref["v"] != 1:
+                problems.add("unsupported chain decision version")
+            else:
+                problems.add("malformed chain decision reference")
+    if len(selections) > 1:
+        problems.add("conflicting chain decisions")
+    if problems and row["id"] not in warned_runs:
+        from lionhub.orchestration.console import warn
+
+        warn(f"schedule run {row['id']!r} has {', '.join(sorted(problems))}")
+        warned_runs.add(row["id"])
+    return selections.pop() if len(selections) == 1 else None
+
+
 def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
     """Build the bookkeeping dict `_advance_chains` mutates tick over tick;
     each originally-watched id in `pending` starts out owning itself as its own root."""
@@ -1573,6 +1612,7 @@ def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict
         "awaiting_grace": {},
         "resolved_roots": set(),
         "schedule_cache": {},
+        "warned_chain_decisions": set(),
         "chain": chain,
         "status_of": {},
         "handoff": {},
@@ -1604,10 +1644,15 @@ async def _advance_chains(
         roots = root_of.get(row["id"]) or {row["id"]}
         for root in roots:
             chain_tail_status[root] = status
-        # A skipped run never fired. Other terminal outcomes can have a child
-        # even when the subprocess exit code is missing or disagrees.
-        if (
-            chain
+        selection = (
+            _recorded_selection(row, warned_runs=chain_state["warned_chain_decisions"])
+            if chain
+            else None
+        )
+        # Legacy rows infer a selection from the stored status and current schedule.
+        if selection in ("on_success", "on_fail") or (
+            selection is None
+            and chain
             and not row.get("_monitor_missing")
             and row.get("chain_depth", 0) < parsing._MAX_CHAIN_DEPTH
             and status in ("completed", "failed", "timed_out", "cancelled")
