@@ -35,6 +35,9 @@ to commit. A failed migration leaves the old version usable by the matching
 build. The historical session end-time repair runs inside the migration
 transaction. If the migration process is killed before that transaction
 commits, the next migration restarts the repair from the beginning.
+On PostgreSQL, columns added by the migration and the repair commit together,
+so the `sessions` table stays locked against reads and writes until the whole
+repair has finished.
 
 Confirm that the committed version is the expected one and that a
 fresh writable open by the older build is refused before restarting upgraded
