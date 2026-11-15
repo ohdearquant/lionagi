@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from lionagi.state import db as db_mod
 from lionagi.state.db import SCHEMA_VERSION, StateDB
 from lionagi.state.reasons import RunReasons
+from lionhub.orchestration.schedule.parsing import _merge_chain_action
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
 from tests._scheduler_claims import claim_and_advance
@@ -1033,8 +1034,10 @@ async def _seed_dispatched_run_with_session(
     sess_id: str,
     session_status: str,
     run_fields: dict | None = None,
+    schedule_exists: bool = False,
 ) -> None:
-    await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
+    if not schedule_exists:
+        await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
     await db.create_invocation(
         {"id": inv_id, "skill": "agent", "started_at": 1000.0, "status": "running"}
     )
@@ -1165,7 +1168,10 @@ async def test_reconcile_finalizes_dispatched_orphan_from_terminal_session_evide
 
 
 @pytest.mark.asyncio
-async def test_reconciled_chain_keeps_parent_command_target(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("status", "branch"), [("completed", "on_success"), ("failed", "on_fail")])
+async def test_reconciled_top_level_run_uses_current_schedule_branch(
+    tmp_path, monkeypatch, status, branch
+):
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
@@ -1178,57 +1184,143 @@ async def test_reconciled_chain_keeps_parent_command_target(tmp_path, monkeypatc
             run_id=run_id,
             inv_id="inv-target",
             sess_id="sess-target",
-            session_status="completed",
+            session_status=status,
         )
         await db.update_schedule(
             sid,
             action_kind="command",
             action_command="echo inherited",
-            on_success={"kind": "command"},
+            on_success={"kind": "command", "prompt": "current success"},
+            on_fail={"kind": "command", "prompt": "current failure"},
         )
 
-    engine = SchedulerEngine(svc=_DBSchedulerStateService())
-    children = []
-    engine._tracked_fire = lambda sched, *args, **kwargs: children.append(sched)
-    await engine._reconcile_dispatched_orphans()
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+    try:
+        with patch.object(engine, "_tracked_fire") as launch:
+            await engine._reconcile_dispatched_orphans()
+    finally:
+        await svc.close()
 
-    assert len(children) == 1
-    assert children[0]["action_kind"] == "command"
-    assert children[0]["action_command"] == "echo inherited"
+    async with StateDB(db_path) as db:
+        run = await db.get_schedule_run(run_id)
+    assert run["status"] == status
+    assert {"kind": "chain_decision", "v": 1, "ref": branch} in run["status_evidence_refs"]
+    launch.assert_called_once()
+    chain_schedule, _ = launch.call_args.args
+    assert chain_schedule["action_kind"] == "command"
+    assert chain_schedule["action_command"] == "echo inherited"
+    assert chain_schedule["action_prompt"] == (
+        "current success" if status == "completed" else "current failure"
+    )
+    assert launch.call_args.kwargs["chain_parent_id"] == run_id
+    assert launch.call_args.kwargs["chain_depth"] == 1
 
 
 @pytest.mark.asyncio
-async def test_reconciled_legacy_child_may_refire_root_chain(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("status", "depth", "has_parent", "successor"),
+    [
+        pytest.param("completed", 1, True, None, id="completed-linked-child"),
+        pytest.param("failed", 1, True, None, id="failed-linked-child"),
+        pytest.param(
+            "completed",
+            1,
+            True,
+            {"kind": "agent", "prompt": "third step"},
+            id="multi-hop-child",
+        ),
+        pytest.param("failed", 0, True, None, id="parent-with-zero-depth"),
+        pytest.param("completed", 1, False, None, id="depth-without-parent"),
+    ],
+)
+async def test_reconciled_chain_child_stops_without_effective_branches(
+    tmp_path, monkeypatch, caplog, status, depth, has_parent, successor
+):
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    sid, run_id = "sched-sibling", "run-sibling-child"
+    sid, run_id, inv_id = "edited-root", "interrupted-child", "child-invocation"
+    parent_id = "completed-parent" if has_parent else None
+    initial_child = {
+        "kind": "agent",
+        "prompt": "second step",
+        "on_success": successor,
+        "on_fail": None,
+    }
+    original = _schedule_row(sid, next_fire_at=2000.0, on_success=initial_child)
+    effective = _merge_chain_action(original, initial_child)
+    branch = "on_success" if status == "completed" else "on_fail"
+    assert effective[branch] == successor
+
     async with StateDB(db_path) as db:
+        await db.create_schedule(original)
+        if parent_id:
+            await db.create_schedule_run(
+                _run_row(
+                    parent_id,
+                    sid,
+                    fired_at=999.0,
+                    dispatched_at=999.25,
+                    ended_at=999.5,
+                    status="completed",
+                )
+            )
         await _seed_dispatched_run_with_session(
             db,
             sid=sid,
             run_id=run_id,
-            inv_id="inv-sibling",
-            sess_id="sess-sibling",
-            session_status="failed",
-            run_fields={"chain_depth": 1, "action_kind": "agent"},
+            inv_id=inv_id,
+            sess_id="child-session",
+            session_status=status,
+            run_fields={
+                "chain_depth": depth,
+                "chain_parent_id": parent_id,
+                "action_args": {"prompt": effective["action_prompt"]},
+            },
+            schedule_exists=True,
         )
         await db.update_schedule(
             sid,
             action_kind="command",
-            action_command="echo inherited",
-            on_success={"kind": "agent", "on_success": None},
+            action_command="echo edited",
+            on_success={"kind": "command", "on_success": None},
             on_fail={"kind": "command", "on_fail": None},
         )
 
-    engine = SchedulerEngine(svc=_DBSchedulerStateService())
-    children = []
-    engine._tracked_fire = lambda sched, *args, **kwargs: children.append(sched)
-    await engine._reconcile_dispatched_orphans()
-    assert len(children) == 1
-    assert children[0]["action_kind"] == "command"
-    assert children[0]["action_command"] == "echo inherited"
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+    logger = "lionagi.studio.scheduler.engine"
+    try:
+        with (
+            caplog.at_level(logging.WARNING, logger=logger),
+            patch.object(engine, "_tracked_fire") as launch,
+        ):
+            await engine._reconcile_dispatched_orphans()
+    finally:
+        await svc.close()
+
+    async with StateDB(db_path) as db:
+        run = await db.get_schedule_run(run_id)
+        invocation = await db.get_invocation(inv_id)
+        terminal = (await _schedule_run_history(db, run_id))[-1]
+    assert run["status"] == invocation["status"] == terminal["status"] == status
+    assert terminal["previous_status"] == "running"
+    assert run["ended_at"] == invocation["ended_at"] > 1000.5
+    assert _history_evidence(terminal) == run["status_evidence_refs"]
+    decisions = [ref for ref in run["status_evidence_refs"] if ref["kind"] == "chain_decision"]
+    assert decisions == [{"kind": "chain_decision", "v": 1, "ref": "none"}]
+    assert all(ref["kind"] != "chain_decision" for ref in invocation["status_evidence_refs"])
+    launch.assert_not_called()
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == logger and record.levelno == logging.WARNING
+    ]
+    [warning] = warnings
+    assert run_id in warning and sid in warning and f"depth {depth}" in warning
+    assert "not continued" in warning and "effective branches are not stored" in warning
 
 
 @pytest.mark.asyncio
