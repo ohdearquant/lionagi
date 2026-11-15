@@ -56,7 +56,7 @@ def make_v5_sqlite(path: Path) -> None:
 
 
 async def assert_migration(db: StateDB) -> None:
-    await db.open()
+    await db.migrate()
     assert await db.schema_version() == SCHEMA_VERSION
     async with db._read() as conn:
         rows = (
@@ -169,7 +169,7 @@ async def test_v5_frozen_predicate_matches_registry_terminal_transitions(tmp_pat
 
     db = StateDB(path=path)
     try:
-        await db.open()
+        await db.migrate()
         async with db._read() as conn:
             rows = (
                 await conn.execute(text("SELECT id, delivery_eligible FROM status_transitions"))
@@ -299,7 +299,7 @@ async def test_failed_classification_rolls_back_column_marker_and_version(tmp_pa
     )
     try:
         with pytest.raises(RuntimeError, match="injected migration"):
-            await db.open()
+            await db.migrate()
     finally:
         await db.close()
     with sqlite3.connect(path) as conn:
@@ -319,12 +319,12 @@ async def test_failed_classification_rolls_back_column_marker_and_version(tmp_pa
         await db.close()
 
 
-async def test_concurrent_sqlite_opens_classify_once(tmp_path):
+async def test_concurrent_sqlite_migrations_classify_once(tmp_path):
     path = tmp_path / "state.db"
     make_v5_sqlite(path)
     first, second = StateDB(path=path), StateDB(path=path)
     try:
-        await asyncio.gather(first.open(), second.open())
+        await asyncio.gather(first.migrate(), second.migrate())
         async with first._read() as conn:
             marker = json.loads(
                 (
@@ -350,7 +350,7 @@ async def test_reopen_preserves_v6_writer_eligibility(tmp_path):
     db = StateDB(path=path)
     sid, pid = str(uuid.uuid4()), str(uuid.uuid4())
     try:
-        await db.open()
+        await db.migrate()
         await db.create_progression(pid)
         await db.create_session({"id": sid, "progression_id": pid, "status": "running"})
         await db.execute("UPDATE sessions SET status = NULL WHERE id = ?", (sid,))

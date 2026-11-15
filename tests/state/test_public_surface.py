@@ -16,6 +16,7 @@ def test_all_contents():
     assert set(state_pkg.__all__) == {
         "CompatibilityProfile",
         "ForeignLineageError",
+        "SchemaMigrationRequiredError",
         "SchemaTooNewError",
         "StateCompatibilityRefused",
         "StateDB",
@@ -43,6 +44,12 @@ def test_schema_too_new_error_importable():
 
     assert SchemaTooNewError is from_module
     assert SchemaTooNewError is state_pkg.SchemaTooNewError
+
+
+def test_schema_migration_required_error_importable():
+    from lionagi.state.db import SchemaMigrationRequiredError
+
+    assert state_pkg.SchemaMigrationRequiredError is SchemaMigrationRequiredError
 
 
 def test_foreign_lineage_error_importable():

@@ -39,7 +39,7 @@ worker.
 | `li invoke {start,end,list}` | Group sessions under one higher-level invocation |
 | `li studio [start]` | Start the Studio backend and selected frontend mode |
 | `li schedule {list,get,limits,create,enable,disable,trigger,delete,runs}` | Manage schedules through the Studio API |
-| `li state {import,import-teams,ls,stats,checkpoint,vacuum,prune,doctor}` | Inspect and maintain StateDB |
+| `li state {import,import-teams,ls,stats,checkpoint,vacuum,prune,doctor,migrate}` | Inspect and maintain StateDB |
 | `li dispatch {ls,show,ack,retry,purge}` | Operate the durable dispatch outbox |
 | `li stats runs` | Aggregate run reporting from StateDB |
 | `li mirror` | Mirror Claude Code transcripts into StateDB/Studio |
@@ -1083,6 +1083,20 @@ all, so a configured store is never reported missing because the default path
 is absent.
 
 ---
+
+## `li state migrate`
+
+```bash
+li state migrate
+```
+
+Upgrade the configured SQLite or PostgreSQL state store and print its committed
+schema version. The command uses `LIONAGI_STATE_DB_URL` when configured and the
+default local `state.db` otherwise. Run it for a recognized older store or a
+current-version store with incomplete historical session end-time repair.
+Stop writers and close all handles before migrating an existing store.
+See the [state store upgrade note](internals/state-db.md#upgrading-an-existing-store)
+for the cutover and the automatic migration setting.
 
 ## Machine mode: `--machine`
 

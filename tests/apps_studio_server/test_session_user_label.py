@@ -257,6 +257,7 @@ async def test_old_session_check_rebuild_keeps_the_new_label_column(tmp_path):
     )
     with sqlite3.connect(path) as conn:
         conn.executescript(schema)
+        conn.execute("UPDATE schema_meta SET value = '5' WHERE key = 'version'")
         conn.execute("INSERT INTO progressions (id, created_at) VALUES ('old-progression', 1.0)")
         conn.execute(
             "INSERT INTO sessions "
@@ -266,7 +267,9 @@ async def test_old_session_check_rebuild_keeps_the_new_label_column(tmp_path):
         )
     before = _stored_row(path)
 
-    async with StateDB(path) as db:
+    db = StateDB(path)
+    try:
+        await db.migrate()
         row = await db.get_session("labelled")
         assert row is not None
         assert "user_label" in row
@@ -274,6 +277,8 @@ async def test_old_session_check_rebuild_keeps_the_new_label_column(tmp_path):
         assert _without_label(_stored_row(path)) == before
         assert await db.set_session_user_label("labelled", "After rebuild")
         assert (await db.get_session("labelled"))["user_label"] == "After rebuild"
+    finally:
+        await db.close()
     assert _without_label(_stored_row(path)) == before
 
 

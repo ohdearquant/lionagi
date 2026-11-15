@@ -1,12 +1,11 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Existing-data safety: the new SQLAlchemy StateDB must open a database built
+"""Existing-data safety: SQLAlchemy StateDB must migrate a database built
 by the previous raw-aiosqlite code (canonical schema.sql + JSON stored as text
-strings) without destructive migration, read the old rows, and keep writing.
+strings) without dropping or retyping columns, read the old rows, and keep writing.
 
-Guards the production guarantee that pointing the new code at an existing
-~/.lionagi/state.db neither rewrites its schema nor loses its data.
+The fixture builds its own database and checks both old and new session rows.
 """
 
 from __future__ import annotations
@@ -72,19 +71,19 @@ def _seed_old_format_db(db_path: Path) -> tuple[str, str]:
     return sid, pid
 
 
-async def test_open_existing_schema_db_no_destructive_migration_and_roundtrip(tmp_path):
+async def test_migrate_existing_schema_db_preserves_columns_and_roundtrips_rows(tmp_path):
     db_path = tmp_path / "existing.db"
     sid, pid = _seed_old_format_db(db_path)
     before = _schema_cols(db_path)
 
     db = StateDB(db_path)
-    await db.open()
     try:
+        await db.migrate()
         after = _schema_cols(db_path)
         # Additive migration (new columns) is allowed; dropping or retyping an
         # existing column is the breakage we must never inflict on real data.
         lost = before - after
-        assert not lost, f"open() dropped/retyped existing columns: {lost}"
+        assert not lost, f"migration dropped/retyped existing columns: {lost}"
 
         # Old-format rows are readable through the new code paths.
         session = await db.get_session(sid)

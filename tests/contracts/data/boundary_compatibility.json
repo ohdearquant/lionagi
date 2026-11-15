@@ -33,6 +33,9 @@
     "lionagi/service/connections/mcp_wrapper.py": [
       "os.environ.get:\"MCP_DEBUG\""
     ],
+    "lionagi/state/db.py": [
+      "os.getenv:\"LIONAGI_STATE_AUTO_MIGRATE\""
+    ],
     "lionagi/state/engine.py": [
       "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\"",
       "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\""
@@ -906,7 +909,7 @@
     "lionagi/state/__init__.py": [
       "from typing import TYPE_CHECKING",
       "from lionagi.ln import lazy_import",
-      "__all__ = (\n    \"CompatibilityProfile\",\n    \"ForeignLineageError\",\n    \"SchemaTooNewError\",\n    \"StateCompatibilityRefused\",\n    \"StateDB\",\n    \"UnreadableStoreError\",\n    \"UnrecognizedStoreError\",\n)",
+      "__all__ = (\n    \"CompatibilityProfile\",\n    \"ForeignLineageError\",\n    \"SchemaMigrationRequiredError\",\n    \"SchemaTooNewError\",\n    \"StateCompatibilityRefused\",\n    \"StateDB\",\n    \"UnreadableStoreError\",\n    \"UnrecognizedStoreError\",\n)",
       "def __getattr__(name: str):\n    if name in __all__:\n        return lazy_import(name, _MODULES, __name__, globals())\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
     ],
     "lionagi/state/_mirror_common.py": [
@@ -2973,6 +2976,7 @@
       "ForeignLineageError",
       "NoCursorClaim",
       "ScheduleOwnershipConflictError",
+      "SchemaMigrationRequiredError",
       "SchemaTooNewError",
       "StateDB",
       "UnreadableStoreError",

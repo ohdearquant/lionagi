@@ -101,7 +101,9 @@ async def test_version_four_upgrade_preserves_unknown_and_recorded_generations(
 ) -> None:
     path = tmp_path / "old.db"
     _version_four_store(path, legacy=legacy, generation=generation)
-    async with StateDB(path) as store:
+    store = StateDB(path)
+    await store.migrate()
+    async with store:
         row = await store.get_session("old-session")
         assert row is not None and row["status"] == "running"
         assert row.get("cli_worker_generation") == generation

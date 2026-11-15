@@ -2702,31 +2702,24 @@ async def test_daemon_shutdown_during_a_store_write_terminalizes_and_can_restart
     """Drive the daemon's shutdown entry while an Operator store write owns SQLite's lock."""
     import sqlite3
 
-    from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
-    from sqlalchemy.schema import CreateTable
-
     import lionagi.state.engine as state_engine
     import lionagi.studio.services.operator as operator_service
-    from lionagi.state.schema_meta import metadata
+    from lionagi.state.db import StateDB
     from lionhub.orchestration.state_store import open_db
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", 50)
+    # The daemon needs a native store ready for ordinary writes before it starts.
+    async with StateDB(path):
+        pass
+
     coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
     monkeypatch.setattr(operator_service, "get_operator_coordinator", lambda: coordinator)
     await coordinator.startup()
     native = sqlite3.connect(path)
     try:
-        # A table of the test's own, in a store carrying the schema_meta version and the sessions
-        # table a StateDB open writes, so a later native open recognizes the store as lionagi's
-        # (ADR-0128 D7).
-        native.executescript(
-            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
-            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');"
-            f"{CreateTable(metadata.tables['sessions']).compile(dialect=sqlite_dialect())};"
-            "CREATE TABLE shutdown_probe (value INTEGER);"
-        )
+        native.execute("CREATE TABLE shutdown_probe (value INTEGER)")
     finally:
         native.close()
 

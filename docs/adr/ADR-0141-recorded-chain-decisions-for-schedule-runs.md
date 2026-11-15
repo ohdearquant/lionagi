@@ -344,6 +344,10 @@ Why this way: a monitor that understands the ref follows the scheduler's recorde
 
 ### D5: Existing JSON storage with versioned enablement
 
+**Activation amendment.** The offline cutover now activates the preservation
+version through explicit state migration, so an ordinary upgraded writer
+cannot raise the minimum writable version by opening the store.
+
 `schedule_runs.status_evidence_refs` already holds a JSON list
 (`lionagi/state/schema.sql:647@45fd503ecf2af299d48b762cd895a2b8e650ced5`).
 This decision changes no table or column. It reverses the earlier no-schema-bump
@@ -355,9 +359,13 @@ is implemented in the same release, both share one version and one offline
 cutover. Otherwise each takes its own version in implementation order. Every
 writer admitted to a decision-enabled store must include preservation.
 
-An upgraded native writable open on SQLite or PostgreSQL migrates the store
-and stamps the binary's version
-(`lionagi/state/db.py::StateDB._open`, `lionagi/state/db.py::StateDB._apply_schema`).
+During the offline cutover, run `li state migrate` or call `StateDB.migrate()`
+with the upgraded binary to stamp its version on SQLite or PostgreSQL
+(`lionhub/src/lionhub/serve/cli/state.py::_migrate`, `lionagi/state/db.py::StateDB.migrate`).
+Setting `LIONAGI_STATE_AUTO_MIGRATE=1` lets an upgraded native writable open run
+the same migration path. That setting defaults to off. It waives nothing in
+the cutover: steps 1 and 2 still come first, and a process that has it set is
+the migrator.
 The D1 and D3 persistence paths read the stamp from `schema_meta` on the
 write transaction's own connection, under the same lock as the row read
 for the transition or creation. They enable decisions at the preservation
@@ -387,8 +395,9 @@ The cutover procedure applies to both backends:
    live backend attached to the store database, including idle sessions and
    all roles. Proceed only once the writers have exited and the applicable
    census shows zero surviving handles, including ones outside the inventory.
-3. Open once with the upgraded binary. Read the committed schema version with
-   `StateDB.schema_version` and confirm it enables preservation. With admission
+3. Run `li state migrate` or call `StateDB.migrate()` with the upgraded binary.
+   Confirm that the version reported by the command or read with
+   `StateDB.schema_version` enables preservation. With admission
    still closed, exercise a fresh writable open by a binary at the version
    immediately below the preservation version and verify that it
    fails with the version error
@@ -477,6 +486,9 @@ The cutover procedure applies to both backends:
     using that mode see the existing fields and interpret chains under their current
     rules. The human run monitor uses native writable opens
     (`lionhub/src/lionhub/serve/cli/monitor.py::_dispatch_wait`).
+    After the binaries are upgraded and before the store is migrated, every native
+    writable open by the upgraded build is refused with the migration-required error,
+    the scheduler's and the human run monitor's included; read-only opens still work.
 12. **Reversal cost.** Removing D4 leaves the monitor on its stored-status fallback for every row. Removing D2 reintroduces P3. Neither needs a migration.
 
 ## Tests
