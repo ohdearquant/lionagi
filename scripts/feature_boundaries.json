@@ -145,26 +145,6 @@
       "layer": "adapter",
       "owner": "hooks"
     },
-    "lionagi.integrations": {
-      "layer": "adapter",
-      "owner": "integrations",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.integrations.ruvector": {
-      "layer": "adapter",
-      "owner": "ruvector",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.integrations.ruvector.memory": {
-      "layer": "adapter",
-      "owner": "ruvector",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.integrations.ruvector.store": {
-      "layer": "adapter",
-      "owner": "ruvector",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
     "lionagi.libs": {
       "layer": "foundation",
       "owner": "utilities"

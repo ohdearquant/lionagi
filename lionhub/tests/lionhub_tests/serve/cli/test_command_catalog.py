@@ -20,8 +20,7 @@ def _isolated_registries():
     cache = dict(_catalog._cli_realized)
     _catalog._cli_realized.clear()
     try:
-        with _auto._isolated_registry_for_tests():
-            yield
+        yield
     finally:
         _catalog._cli_realized.clear()
         _catalog._cli_realized.update(cache)

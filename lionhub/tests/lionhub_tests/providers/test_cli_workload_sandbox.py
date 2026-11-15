@@ -10,6 +10,7 @@ roots are the child sandbox's ``allow_write`` list, not whatever the user config
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
@@ -538,6 +539,132 @@ def test_a_project_codex_config_that_turns_the_sandbox_off_is_refused(tmp_path, 
     env = _home_with_config(tmp_path, "")
     with pytest.raises(CLIInputRefusedError, match="danger-full-access"):
         _codex(tmp_path, env=env)
+
+
+@pytest.fixture
+def fake_home(tmp_path, monkeypatch):
+    """A home directory two levels under tmp_path, set as this process's HOME."""
+    home = tmp_path / "users" / "u"
+    (home / "inside").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+def _repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    return repo
+
+
+@pytest.mark.parametrize(
+    "spell",
+    [
+        lambda home: str(home),
+        lambda home: str(home.parent),
+        lambda home: "/",
+        lambda home: "~",
+        lambda home: str(home) + "/",
+    ],
+    ids=["home", "parent", "root", "tilde", "trailing-slash"],
+)
+@pytest.mark.parametrize("where", ["add_dir", "override", "nested", "profile"])
+def test_a_root_reaching_the_home_directory_is_refused_while_confined(
+    tmp_path, fake_home, sandbox_on, spell, where
+):
+    root = spell(fake_home)
+    kw = {
+        "add_dir": {"add_dir": [root]},
+        "override": {"config_overrides": {"sandbox_workspace_write.writable_roots": [root]}},
+        "nested": {"config_overrides": {"sandbox_workspace_write": {"writable_roots": root}}},
+        "profile": {
+            "config_overrides": {"profiles.p.sandbox_workspace_write.writable_roots": [root]}
+        },
+    }[where]
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, **kw)
+
+
+def test_a_link_to_the_home_directory_is_refused_while_confined(tmp_path, fake_home, sandbox_on):
+    link = tmp_path / "link"
+    link.symlink_to(fake_home)
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[str(link)])
+
+
+def test_the_childs_own_home_is_checked_too(tmp_path, fake_home, sandbox_on):
+    other = tmp_path / "other-home"
+    other.mkdir()
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, env={"HOME": str(other)}, add_dir=[str(other)])
+
+
+@pytest.mark.parametrize("which", ["home", "parent"])
+def test_the_account_home_is_refused_under_a_scratch_home(
+    tmp_path, fake_home, sandbox_on, monkeypatch, which
+):
+    """HOME points at a scratch directory; the account's home from the password
+    database, and its parent, are still refused as writable roots."""
+    pwd = pytest.importorskip("pwd")
+    account = tmp_path / "accounts" / "me"
+    (account / "project").mkdir(parents=True)
+    fields = list(pwd.getpwuid(os.getuid()))
+    fields[5] = str(account)
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: pwd.struct_passwd(fields))
+    root = account if which == "home" else account.parent
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[str(root)])
+    inside = str(account / "project")
+    assert inside in _pairs(_codex(_repo(tmp_path), full_auto=True, add_dir=[inside]), "--add-dir")
+
+
+def test_the_real_account_home_is_refused_under_a_scratch_home(tmp_path, fake_home, sandbox_on):
+    """The same with nothing faked but HOME. Builds the argv only; no child starts."""
+    pwd = pytest.importorskip("pwd")
+    account = pwd.getpwuid(os.getuid()).pw_dir
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[account])
+
+
+def test_a_root_inside_the_home_directory_is_kept(tmp_path, fake_home, sandbox_on):
+    inside = str(fake_home / "inside")
+    args = _codex(_repo(tmp_path), full_auto=True, add_dir=[inside])
+    assert inside in _pairs(args, "--add-dir")
+    args = _codex(
+        _repo(tmp_path),
+        full_auto=True,
+        config_overrides={"sandbox_workspace_write.writable_roots": [inside]},
+    )
+    assert [o for o in _pairs(args, "-c") if inside in o]
+
+
+def test_a_writable_roots_value_that_is_not_a_list_of_paths_is_refused(
+    tmp_path, fake_home, sandbox_on
+):
+    with pytest.raises(CLIInputRefusedError, match="other than a list of paths"):
+        _codex(
+            _repo(tmp_path),
+            full_auto=True,
+            config_overrides={"sandbox_workspace_write.writable_roots": 7},
+        )
+
+
+def test_with_the_child_sandbox_off_a_home_root_runs_as_before(tmp_path, fake_home):
+    args = _codex(_repo(tmp_path), full_auto=True, add_dir=[str(fake_home)])
+    assert str(fake_home) in _pairs(args, "--add-dir")
+
+
+@pytest.mark.parametrize("which", ["home", "parent"])
+def test_a_case_changed_spelling_of_a_home_root_is_refused_while_confined(
+    tmp_path, fake_home, sandbox_on, which
+):
+    import os
+
+    target = fake_home if which == "home" else fake_home.parent
+    respelled = str(target.parent / target.name.upper())
+    if not os.path.exists(respelled) or not os.path.samefile(respelled, target):
+        pytest.skip("the volume under tmp_path is case-sensitive")
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[respelled])
 
 
 async def _drain_pi(pi_cli, request):

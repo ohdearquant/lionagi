@@ -1000,6 +1000,7 @@ CONTRACTS: tuple[MoveContract, ...] = (
         kind="module",
         public_names=frozenset({"StoreNotAddressableError"}),
     ),
+    MoveContract(old="lionagi.integrations", new="lionhub.integrations", kind="package"),
     MoveContract(
         old="lionagi.studio._host",
         new="lionhub.serve.daemon._host",
