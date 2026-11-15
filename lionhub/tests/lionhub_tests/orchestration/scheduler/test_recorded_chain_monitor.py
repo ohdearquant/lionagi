@@ -16,6 +16,7 @@ import pytest_asyncio
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons, ScheduleReasons
+from lionhub.orchestration.schedule.parsing import _MAX_CHAIN_DEPTH
 from lionhub.orchestration.scheduler import engine as scheduler
 from lionhub.orchestration.scheduler import subprocess as launcher
 from lionhub.orchestration.scheduler.scheduler_state import (
@@ -159,13 +160,14 @@ class _ObservedScheduler:
     async def create_schedule(self, branch):
         await self.db.create_schedule(_schedule_row(_SCHEDULE, **self.schedule_fields(branch)))
 
-    async def fire(self):
+    async def fire(self, *, chain_depth=0):
         schedule = await self.db.get_schedule(_SCHEDULE)
         return await asyncio.wait_for(
             self.engine._fire(
                 schedule,
                 _PARENT,
                 trigger_context={},
+                chain_depth=chain_depth,
                 expect_next_fire_at=schedule["next_fire_at"],
             ),
             timeout=10,
@@ -238,6 +240,7 @@ async def test_completed_empty_follows_only_selected_failure_action(observed, br
     parent = await observed.db.get_schedule_run(_PARENT)
     assert (parent["status"], parent["exit_code"]) == ("failed", 0)
     assert parent["status_reason_code"] == RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
+    assert {"kind": "invocation", "id": parent["invocation_id"]} in parent["status_evidence_refs"]
     if branch == "on_fail":
         await observed.assert_followed(
             launches=["parent", "child"], child_exit=0, child_status="completed"
@@ -282,11 +285,24 @@ async def test_successful_run_follows_the_selected_action(observed, edit):
 
 
 @pytest.mark.asyncio
-async def test_dispatched_startup_recovery_follows_failure_without_exit_code(observed):
+@pytest.mark.parametrize("edit", [False, True], ids=["unchanged", "removed-before-terminal-write"])
+async def test_dispatched_startup_recovery_follows_failure_without_exit_code(observed, edit):
     observed.observe_launches(session_status="failed", child_exit=0)
+    if edit:
+        update_status = observed.svc.update_status
+
+        async def edit_before_terminal_write(entity_type, entity_id, **kwargs):
+            if (entity_type, entity_id) == ("schedule_run", _PARENT):
+                await observed.db.update_schedule(_SCHEDULE, on_fail=None)
+            return await update_status(entity_type, entity_id, **kwargs)
+
+        observed.monkeypatch.setattr(observed.svc, "update_status", edit_before_terminal_write)
 
     await observed.recover(session_status="failed", branch="on_fail")
 
+    if edit:
+        schedule = await observed.db.get_schedule(_SCHEDULE)
+        assert schedule["on_fail"] is None
     await observed.assert_followed(launches=["child"], child_exit=0, child_status="completed")
     assert await observed.wait_exit() == 0
     assert observed.recorded_before_child == _decision("on_fail")
@@ -295,6 +311,73 @@ async def test_dispatched_startup_recovery_follows_failure_without_exit_code(obs
     assert _decisions(parent) == _decision("on_fail")
     invocation = await observed.db.get_invocation(parent["invocation_id"])
     assert _decisions(invocation) == []
+
+
+@pytest.mark.asyncio
+async def test_selection_is_none_at_depth_cap(observed):
+    await observed.create_schedule("on_success")
+    observed.observe_launches(session_status="completed")
+
+    assert await observed.fire(chain_depth=_MAX_CHAIN_DEPTH)
+
+    await observed.assert_resolved_without_child()
+    assert observed.launches == ["parent"]
+    parent = await observed.db.get_schedule_run(_PARENT)
+    assert (parent["status"], parent["chain_depth"]) == ("completed", _MAX_CHAIN_DEPTH)
+    assert _decisions(parent) == _decision("none")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("startup", [False, True], ids=["normal", "startup"])
+async def test_lost_schedule_run_cas_preserves_winner_and_launches_no_child(observed, startup):
+    observed.observe_launches(session_status="failed")
+    update_status = observed.svc.update_status
+    winner_refs = [{"kind": "schedule", "id": _SCHEDULE}]
+    winner_snapshot = None
+    scheduler_results = []
+
+    async def parent_snapshot():
+        history = await observed.db.fetch_all(
+            "SELECT * FROM status_transitions WHERE entity_type = 'schedule_run' "
+            "AND entity_id = ? ORDER BY created_at, id",
+            (_PARENT,),
+        )
+        return await observed.db.get_schedule_run(_PARENT), history
+
+    async def finalize_before_scheduler(entity_type, entity_id, **kwargs):
+        nonlocal winner_snapshot
+        if (entity_type, entity_id, kwargs["new_status"]) != ("schedule_run", _PARENT, "failed"):
+            return await update_status(entity_type, entity_id, **kwargs)
+        assert await observed.db.update_status(
+            "schedule_run",
+            _PARENT,
+            new_status="timed_out",
+            reason_code=RunReasons.TIMED_OUT_DEADLINE,
+            reason_summary="The deadline reaper finalized the run first.",
+            evidence_refs=winner_refs,
+            source="system",
+            actor="deadline-reaper",
+            expected_statuses={"running"},
+        )
+        winner_snapshot = await parent_snapshot()
+        result = await update_status(entity_type, entity_id, **kwargs)
+        scheduler_results.append(result)
+        return result
+
+    observed.monkeypatch.setattr(observed.svc, "update_status", finalize_before_scheduler)
+    if startup:
+        await observed.recover(session_status="failed", branch="on_fail")
+    else:
+        await observed.create_schedule("on_fail")
+        assert await observed.fire()
+
+    assert scheduler_results == [False]
+    parent, history = await parent_snapshot()
+    assert (parent, history) == winner_snapshot
+    assert parent["status"] == "timed_out"
+    assert parent["status_evidence_refs"] == winner_refs
+    assert await observed.children() == []
+    assert observed.launches == ([] if startup else ["parent"])
 
 
 @pytest.mark.asyncio
