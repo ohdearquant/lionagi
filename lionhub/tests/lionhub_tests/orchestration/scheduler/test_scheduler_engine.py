@@ -5424,8 +5424,13 @@ async def test_a_scheduled_engine_fire_requires_a_registered_kind(
 
     await fire_with_claim(engine, schedule, "run-engine", trigger_context={"scheduled": True})
 
-    svc.create_schedule_run_and_advance.assert_awaited_once()
-    occurrence = svc.create_schedule_run_and_advance.await_args.args[0]
+    occurrence_writer = (
+        svc.create_schedule_run_and_advance
+        if engine_kind == "research"
+        else svc.create_failed_schedule_run_and_advance
+    )
+    occurrence_writer.assert_awaited_once()
+    occurrence = occurrence_writer.await_args.args[0]
     if engine_kind == "research":
         spawn.assert_awaited_once()
         assert spawn.await_args.args[0] == [

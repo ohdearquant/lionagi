@@ -211,29 +211,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
 
 # Symbols a Proposed record asks for that do not exist yet, by record file. A name is allowed
 # here only while the head holds no such code; once it exists the entry fails and must go.
-PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {
-    "ADR-0141-recorded-chain-decisions-for-schedule-runs.md": (
-        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
-        "test_normal_path_terminal_write_records_chain_decision",
-        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
-        "test_recovery_terminal_write_records_chain_decision",
-        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
-        "test_selection_is_none_at_depth_cap",
-        "tests/state/test_lifecycle_gate.py::test_schedule_run_status_write_keeps_reason_columns",
-        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
-        "test_lost_terminal_cas_does_not_chain_normal_path",
-        "lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::"
-        "test_lost_terminal_cas_does_not_chain_recovery",
-        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
-        "test_chain_decision_none_returns_without_sleep",
-        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
-        "test_chain_decision_branch_follows_child",
-        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
-        "test_chain_decision_branch_with_no_chain_returns_without_sleep",
-        "lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::"
-        "test_chain_decision_survives_schedule_edit",
-    ),
-}
+PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {}
 
 _PATH = r"[\w./-]+\.py"
 # ``path.py:N``, ``path.py:N-M``, either with an optional ``@<hash>`` pin.
