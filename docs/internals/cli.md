@@ -210,6 +210,25 @@ terminal event now comes from the guarded lifecycle transition itself
 and letting the registry's own post-commit push fire it is what prevents
 double delivery.
 
+The `--notify` payload includes `invocation_id`, `kind`, `playbook`, `status`,
+`reason_code`, `save_dir`, `cwd`, `exit_class`, `started_at` and `ended_at`.
+A direct `li agent` run has a null `invocation_id`, and its `{invocation_id}`
+argv placeholder expands to an empty string. Flow and play runs carry an
+invocation ID when started with `--invocation`.
+
+The `final_response` field contains the last assistant message from an agent
+run or the synthesis response from a flow, fanout or play run. When the text
+exceeds 4,096 UTF-8 bytes before JSON escaping, the preview ends on a complete
+character and `final_response_truncated` is true. The `final_response_path`
+field points to the full UTF-8 text in the run's state directory. The CLI
+atomically writes this owner-only file before invoking the notifier. If
+the write fails, the run records `final_response_write_failed` as the
+notification outcome reason. When
+the run has no final response, such as a fanout with unsynthesized worker
+results, `final_response` and `final_response_path` are null and
+`final_response_truncated` is false. `status` and `exit_class` still describe
+the run itself, including when the assistant reports that its task failed.
+
 **`deliver_flow_notify_now`** — the direct-path sibling of
 `register_flow_notify_scope`, for the one case that registered path cannot
 cover: `setup_agent_persist` failing before a session entity exists (`li

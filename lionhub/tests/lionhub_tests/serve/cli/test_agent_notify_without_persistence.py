@@ -34,6 +34,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from lionagi.state.reasons import RunReasons
+
 
 def _wire_agent_stubs(monkeypatch, tmp_path: Path, *, persist: dict | None):
     """Stub _run_agent's external I/O, keeping a REAL run directory.
@@ -70,6 +72,7 @@ def _wire_agent_stubs(monkeypatch, tmp_path: Path, *, persist: dict | None):
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
     monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {"pid": 4242})
     monkeypatch.setattr(
         agent_mod,
         "_provenance",
@@ -89,6 +92,127 @@ def _wire_agent_stubs(monkeypatch, tmp_path: Path, *, persist: dict | None):
 
     monkeypatch.setattr(Branch, "operate", fake_operate)
     return run
+
+
+@pytest.fixture
+def captured_notify(monkeypatch):
+    payloads = []
+
+    async def communicate(stdin):
+        payloads.append(json.loads(stdin))
+        return b"", b""
+
+    async def spawn(_argv, _env, _marker):
+        return SimpleNamespace(communicate=communicate, returncode=0), None
+
+    monkeypatch.setattr("lionagi.state.lifecycle.notify_settings._spawn_in_group", spawn)
+    return payloads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery", ["direct", "registered"])
+async def test_agent_notice_carries_the_last_assistant_message(
+    monkeypatch, tmp_path, captured_notify, delivery
+):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.protocols.messages import AssistantResponse
+    from lionagi.state.lifecycle.callbacks import (
+        DEFAULT_TERMINAL_CALLBACKS,
+        EntityRef,
+        RunTerminalEnvelope,
+    )
+
+    session_id = "agent-notify-session"
+    persist = (
+        {"session_id": session_id, "worker_spawns_unrecorded": True}
+        if delivery == "registered"
+        else None
+    )
+    run = _wire_agent_stubs(monkeypatch, tmp_path, persist=persist)
+    if persist is not None:
+        # The session stub has no database for the post-notification sweep.
+        monkeypatch.setattr("lionagi.state.compat.is_compatibility_store", lambda _db: True)
+
+        async def teardown(_ctx, *, status, **_kwargs):
+            await DEFAULT_TERMINAL_CALLBACKS.emit(
+                RunTerminalEnvelope(
+                    event_id="agent-notify-event",
+                    entity=EntityRef(kind="session", id=session_id),
+                    previous_status="running",
+                    terminal_status=status,
+                    reason_code=RunReasons.COMPLETED_OK,
+                    occurred_at=2.0,
+                )
+            )
+            return status
+
+        monkeypatch.setattr(agent_mod, "teardown_agent_persist", teardown)
+
+    response = "The requested command failed: no such file or directory."
+
+    async def operate(self, instruction=None, **kw):
+        await self.msgs.a_add_message(assistant_response="I will try the command.")
+        answer = await self.msgs.a_add_message(assistant_response=response)
+        await self.msgs.a_add_message(
+            assistant_response=AssistantResponse(
+                content={"assistant_response": "The requested command failed."},
+                metadata={"clipped_from": str(answer.id)},
+            )
+        )
+        return "formatted result"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    await agent_mod._run_agent("codex/model", "try the command", notify="capture-notify {payload}")
+
+    [payload] = captured_notify
+    artifact = run.state_root / "notify-final-response.txt"
+    assert payload["invocation_id"] is None
+    assert payload["kind"] == "agent"
+    assert payload["status"] == "completed"
+    assert payload["exit_class"] == "success"
+    assert payload["reason_code"] == RunReasons.COMPLETED_OK
+    assert payload["final_response"] == response
+    assert payload["final_response_path"] == str(artifact)
+    assert payload["final_response_truncated"] is False
+    assert artifact.read_text(encoding="utf-8") == response
+
+
+@pytest.mark.asyncio
+async def test_failed_resume_notice_omits_the_previous_assistant_reply(
+    monkeypatch, tmp_path, captured_notify
+):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+
+    run = _wire_agent_stubs(monkeypatch, tmp_path, persist=None)
+    resumed = Branch()
+    await resumed.msgs.a_add_message(assistant_response="Answer from an earlier run.")
+    branch_file = tmp_path / "resumed-branch.json"
+    branch_file.write_text("{}")
+    monkeypatch.setattr(agent_mod, "find_branch", lambda _rid: (None, branch_file))
+    monkeypatch.setattr(Branch, "from_dict", classmethod(lambda _cls, _data: resumed))
+
+    async def operate(self, instruction=None, **kw):
+        raise RuntimeError("the current run failed before producing a response")
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    with pytest.raises(RuntimeError, match="the current run failed"):
+        await agent_mod._run_agent(
+            "codex/model",
+            "continue the work",
+            resume="resumed-branch",
+            notify="capture-notify {payload}",
+        )
+
+    [payload] = captured_notify
+    assert payload["status"] == "failed"
+    assert payload["exit_class"] == "failure"
+    assert payload["reason_code"] == RunReasons.FAILED_EXCEPTION
+    assert payload["final_response"] is None
+    assert payload["final_response_path"] is None
+    assert payload["final_response_truncated"] is False
+    assert not (run.state_root / "notify-final-response.txt").exists()
 
 
 @pytest.mark.asyncio

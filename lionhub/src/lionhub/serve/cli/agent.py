@@ -1016,20 +1016,22 @@ def _stopped_at_output_limit_with_nothing(response: Any) -> bool:
     return stopped and not wrote
 
 
-def _pass_responses(branch, before: set) -> list:
-    """The raw provider responses a pass ended on: the last two it added, the round that ended
-    the loop and the answer turn after it. ``before`` holds the ids of the branch's messages
-    before the pass. A shortened copy the context fold made of a clipped reply
-    (``clipped_from``) carries no raw response and is not a reply the model sent, so it is
-    skipped and the original keeps its place in the window."""
-    added = [
+def _new_assistant_replies(branch: Branch, before: set) -> list[AssistantResponse]:
+    """Return replies added since ``before``, skipping copies made by context folding."""
+    return [
         m
         for m in branch.msgs.messages
         if m.id not in before
         and isinstance(m, AssistantResponse)
         and not m.metadata.get("clipped_from")
     ]
-    return [m.model_response for m in added[-2:]]
+
+
+def _pass_responses(branch, before: set) -> list:
+    """The raw provider responses a pass ended on: the last two it added, the round that ended
+    the loop and the answer turn after it. ``before`` holds the ids of the branch's messages
+    before the pass."""
+    return [m.model_response for m in _new_assistant_replies(branch, before)[-2:]]
 
 
 def _first_refusal(responses: list) -> tuple[str, Any] | None:
@@ -2761,6 +2763,10 @@ async def _run_agent(
         if seed_injection_totals:
             await _seed_injection_stats(live, _injection_totals)
 
+        # A resumed branch can already contain an assistant reply from an earlier leg.
+        before_notify_leg = {message.id for message in branch.msgs.messages} if notify else set()
+        notify_final_response: str | None = None
+
         # Session-scoped: teardown_agent_persist terminalizes only the session;
         # invocation records are finalized externally and would never fire. Deferred
         # auto-resume legs unregister without firing; the recursed leg registers anew.
@@ -2801,6 +2807,8 @@ async def _run_agent(
                 cwd=cwd or os.getcwd(),
                 started_at=run_manifest["started_at"],
                 on_rejection=_notify_override_refused,
+                run=run,
+                final_response=lambda: notify_final_response,
             )
 
         # Bind this run into the notify.on_terminal handler at registration time so
@@ -2867,6 +2875,7 @@ async def _run_agent(
                         terminal_status=_terminal_status,
                         reason_code=_reason_code,
                         occurred_at=time.time(),
+                        final_response=notify_final_response,
                     )
                 except Exception as _notify_exc:  # noqa: BLE001 — a notifier failure must never affect the run
                     log_error(f"direct-path notify.on_terminal delivery failed: {_notify_exc!r}")
@@ -3279,6 +3288,10 @@ async def _run_agent(
             # Shield teardown so iModel shutdown always runs (avoids leaked
             # rate-limit replenisher tasks that hang anyio.run forever).
             with CancelScope(shield=True):
+                if notify:
+                    replies = _new_assistant_replies(branch, before_notify_leg)
+                    if replies:
+                        notify_final_response = replies[-1].response
                 # Engine session id, used by teardown to tell a genuine failure
                 # from a wrapper exception racing a still-live engine session. Only an
                 # id the CLI reported in this process: one restored from the saved

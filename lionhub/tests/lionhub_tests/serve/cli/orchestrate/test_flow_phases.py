@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import pytest
 
+from lionagi.protocols.messages import MessageManager
 from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.serve.cli.orchestrate._common import _build_worker_operate_node, bare_worker_system
 from lionhub.serve.cli.orchestrate.flow import (
@@ -2614,9 +2615,22 @@ async def test_synthesize_returns_none_for_empty_results(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_synthesize_returns_dict_with_model_key(tmp_path):
-    """_synthesize result dict must include 'model' and 'response' keys."""
+@pytest.mark.parametrize(
+    ("node_result", "assistant_reply", "expected_notify_reply"),
+    [
+        ("synthesized content", "final assistant message", "final assistant message"),
+        ("synthesized content", None, None),
+        (None, "unaccepted synthesis draft", None),
+    ],
+    ids=["synthesis-reply", "planner-only", "absent-result"],
+)
+async def test_synthesize_returns_dict_with_model_key(
+    tmp_path, node_result, assistant_reply, expected_notify_reply
+):
     env = _make_env(tmp_path)
+    env._capture_notify_response = True
+    env.orc_branch.msgs = MessageManager()
+    await env.orc_branch.msgs.a_add_message(assistant_response="planner reply")
     assignments = [TaskAssignment(task="x", assignee="researcher")]
     plan_result = _PlanResult(
         assignments=assignments,
@@ -2635,6 +2649,12 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
         worker_models=["codex/gpt-5.5"],
     )
     drain_observer_writes = AsyncMock()
+
+    async def run_dag(graph, **kwargs):
+        if assistant_reply is not None:
+            await env.orc_branch.msgs.a_add_message(assistant_response=assistant_reply)
+        return {"operation_results": {next(iter(graph.internal_nodes)): node_result}}
+
     exec_result = _ExecResult(
         agent_results=[
             {
@@ -2646,9 +2666,7 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
         ],
         n_spawned=0,
         t_exec_elapsed=1.0,
-        engine_run=SimpleNamespace(
-            run_dag=AsyncMock(return_value={"operation_results": {"node-0": "synthesized content"}})
-        ),
+        engine_run=SimpleNamespace(run_dag=run_dag),
         drain_observer_writes=drain_observer_writes,
     )
 
@@ -2664,8 +2682,9 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
 
     assert result is not None
     assert "model" in result
-    assert "response" in result
+    assert result["response"] == (node_result if node_result is not None else "(no response)")
     assert "time_ms" in result
+    assert getattr(env, "_notify_final_response", None) == expected_notify_reply
     drain_observer_writes.assert_awaited_once_with(cancellation_in_flight=False, in_flight_exc=None)
 
 

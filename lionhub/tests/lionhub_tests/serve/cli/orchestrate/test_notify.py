@@ -9,12 +9,16 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+import stat
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from lionagi.state.lifecycle import notify_settings
 from lionagi.state.lifecycle.callbacks import (
     EntityRef,
     RunTerminalEnvelope,
@@ -22,7 +26,9 @@ from lionagi.state.lifecycle.callbacks import (
 )
 from lionagi.state.lifecycle.notify_settings import ResolvedNotifyHandler, build_handler
 from lionagi.state.reasons import RunReasons
+from lionhub.orchestration.runs import RunDir
 from lionhub.serve.cli.orchestrate._notify import (
+    deliver_flow_notify_now,
     register_flow_notify_scope,
     unregister_flow_notify_scope,
 )
@@ -82,10 +88,83 @@ async def test_registered_scope_fires_with_legacy_payload_shape(tmp_path: Path):
         "exit_class": "success",
         "started_at": 1.0,
         "ended_at": 2.0,
+        "final_response": None,
+        "final_response_path": None,
+        "final_response_truncated": False,
     }
 
     unregister_flow_notify_scope(name, registry)
     assert name not in registry
+
+
+@pytest.mark.parametrize("delivery", ["registered", "direct"])
+@pytest.mark.parametrize("truncated", [False, True], ids=["short", "over-byte-limit"])
+async def test_final_response_matches_in_every_notify_transport(
+    monkeypatch, tmp_path: Path, delivery: str, truncated: bool
+):
+    run = RunDir(
+        run_id="notify-response",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    run.ensure_state_dirs()
+    artifact = run.state_root / "notify-final-response.txt"
+    launch = []
+    communicate = AsyncMock(return_value=(b"", b""))
+
+    async def spawn(argv, env, _marker):
+        snapshot = (artifact.read_bytes(), artifact.stat().st_mode) if artifact.exists() else None
+        launch.append((argv, env["LIONAGI_NOTIFY_PAYLOAD"], snapshot))
+        return SimpleNamespace(communicate=communicate, returncode=0), None
+
+    monkeypatch.setattr(notify_settings, "_spawn_in_group", spawn)
+    common = dict(
+        override="capture-notify {payload} {status} {invocation_id}",
+        run=run,
+        entity_kind="invocation",
+        entity_id="inv-123",
+        invocation_id="inv-123",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=str(run.artifact_root),
+        cwd="/repo",
+        started_at=1.0,
+    )
+    prefix = "Reviewed {status} {invocation_id} {payload}: "
+    if truncated:
+        # One byte of the two-byte character falls inside the cap.
+        preview = prefix.ljust(4095, "x")
+        expected = preview + "é and the rest"
+    else:
+        preview = expected = prefix + "é matters."
+
+    if delivery == "registered":
+        registry = TerminalCallbackRegistry()
+        current = None
+        name = register_flow_notify_scope(registry, **common, final_response=lambda: current)
+        assert name is not None
+        current = expected
+        await registry.emit(_envelope())
+    else:
+        await deliver_flow_notify_now(
+            **common,
+            final_response=expected,
+            terminal_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            occurred_at=2.0,
+        )
+
+    [(argv, env_payload, at_launch)] = launch
+    payload = json.loads(env_payload)
+    assert argv == ("capture-notify", env_payload, "completed", "inv-123")
+    communicate.assert_awaited_once_with(env_payload.encode())
+    assert payload["final_response"] == preview
+    assert payload["final_response_truncated"] is truncated
+    assert payload["final_response_path"] == str(artifact)
+    assert at_launch is not None
+    full_bytes, mode = at_launch
+    assert full_bytes == expected.encode()
+    assert stat.S_IMODE(mode) == 0o600
 
 
 async def test_payload_carries_reason_code_for_degraded_finalize(tmp_path: Path):

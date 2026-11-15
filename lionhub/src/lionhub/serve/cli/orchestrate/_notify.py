@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import traceback
 import uuid
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from lionagi.ln.concurrency import is_coro_func, maybe_await
@@ -31,6 +33,9 @@ from lionagi.state.lifecycle.notify_settings import (
 from lionhub.serve.cli.status import _classify
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+    from lionagi.state.lifecycle.notify_settings import OutcomeFn, ResolvedNotifyHandler
     from lionhub.orchestration.runs import RunDir
 
 __all__ = (
@@ -44,6 +49,8 @@ logger = logging.getLogger("lionagi.cli.orchestrate._notify")
 _PAYLOAD_ENV = "LIONAGI_NOTIFY_PAYLOAD"
 _STATUS_ENV = "LIONAGI_NOTIFY_STATUS"
 _INVOCATION_ID_ENV = "LIONAGI_NOTIFY_INVOCATION_ID"
+_ARG_PLACEHOLDER = re.compile(r"\{(?:payload|status|invocation_id)\}")
+_FINAL_RESPONSE_MAX_BYTES = 4096
 
 
 def _legacy_payload_builder(
@@ -54,9 +61,11 @@ def _legacy_payload_builder(
     save_dir: str | None,
     cwd: str,
     started_at: float,
+    response_fields: ContextVar[tuple[str | None, bool, str | None]],
 ):
     def _build(envelope: RunTerminalEnvelope) -> dict:
         _, exit_class, _ = _classify("invocation", envelope.terminal_status)
+        preview, truncated, response_path = response_fields.get()
         return {
             "invocation_id": invocation_id,
             "kind": kind,
@@ -68,6 +77,9 @@ def _legacy_payload_builder(
             "exit_class": exit_class,
             "started_at": started_at,
             "ended_at": envelope.occurred_at,
+            "final_response": preview,
+            "final_response_truncated": truncated,
+            "final_response_path": response_path,
         }
 
     return _build
@@ -79,15 +91,12 @@ def _legacy_argv_env_builders(payload_fn, *, invocation_id: str | None):
     `--notify` adapter (registered or delivered directly)."""
 
     def _argv_fn(argv: tuple[str, ...], envelope: RunTerminalEnvelope) -> list[str]:
-        payload_json = json.dumps(payload_fn(envelope))
-        status = envelope.terminal_status
-        inv_id = invocation_id or ""
-        return [
-            tok.replace("{payload}", payload_json)
-            .replace("{status}", status)
-            .replace("{invocation_id}", inv_id)
-            for tok in argv
-        ]
+        values = {
+            "{payload}": json.dumps(payload_fn(envelope)),
+            "{status}": envelope.terminal_status,
+            "{invocation_id}": invocation_id or "",
+        }
+        return [_ARG_PLACEHOLDER.sub(lambda match: values[match[0]], tok) for tok in argv]
 
     def _env_fn(envelope: RunTerminalEnvelope) -> dict[str, str]:
         return {
@@ -97,6 +106,85 @@ def _legacy_argv_env_builders(payload_fn, *, invocation_id: str | None):
         }
 
     return _argv_fn, _env_fn
+
+
+def _write_final_response(run: RunDir, text: str) -> tuple[str, bool, str]:
+    data = text.encode("utf-8")
+    path = run.write_notify_final_response(data)
+    truncated = len(data) > _FINAL_RESPONSE_MAX_BYTES
+    # The source bytes are valid UTF-8. Only an incomplete last character
+    # can be dropped when decoding the truncated prefix.
+    preview = (
+        data[:_FINAL_RESPONSE_MAX_BYTES].decode("utf-8", errors="ignore") if truncated else text
+    )
+    return preview, truncated, str(path)
+
+
+def _build_legacy_handler(
+    resolved: ResolvedNotifyHandler,
+    *,
+    invocation_id: str | None,
+    kind: str,
+    playbook: str | None,
+    save_dir: str | None,
+    cwd: str,
+    started_at: float,
+    run: RunDir | None,
+    final_response: Callable[[], str | None] | None,
+    on_rejection: Callable[[str], None],
+    outcome_fn: OutcomeFn | None = None,
+) -> Callable[[RunTerminalEnvelope], Awaitable[None]] | None:
+    # One snapshot per delivery, shared by stdin, argv and env. Concurrent
+    # dispatches have separate context, and Python handlers keep their envelope.
+    response_fields: ContextVar[tuple[str | None, bool, str | None]] = ContextVar(
+        "notify_response_fields"
+    )
+    payload_fn = _legacy_payload_builder(
+        invocation_id=invocation_id,
+        kind=kind,
+        playbook=playbook,
+        save_dir=save_dir,
+        cwd=cwd,
+        started_at=started_at,
+        response_fields=response_fields,
+    )
+    argv_fn, env_fn = _legacy_argv_env_builders(payload_fn, invocation_id=invocation_id)
+    handler = build_handler(
+        resolved,
+        payload_fn=payload_fn,
+        argv_fn=argv_fn,
+        env_fn=env_fn,
+        outcome_fn=outcome_fn,
+        on_build_failure=on_rejection,
+    )
+    if handler is None:
+        return None
+
+    async def _deliver(envelope: RunTerminalEnvelope) -> None:
+        fields: tuple[str | None, bool, str | None] | None = (None, False, None)
+        if run is not None and final_response is not None:
+            text = final_response()
+            if text is not None:
+                try:
+                    fields = await _run_sync(
+                        _write_final_response, run, text, abandon_on_cancel=True
+                    )
+                except (OSError, UnicodeError):
+                    fields = None
+        if fields is None:
+            logger.warning("Could not write the final response for the run notifier")
+            on_rejection("final_response_write_failed")
+            return
+        token = response_fields.set(fields)
+        try:
+            if is_coro_func(handler):
+                await maybe_await(handler(envelope))
+            else:
+                await maybe_await(await _run_sync(handler, envelope, abandon_on_cancel=True))
+        finally:
+            response_fields.reset(token)
+
+    return _deliver
 
 
 def register_flow_notify_scope(
@@ -112,6 +200,8 @@ def register_flow_notify_scope(
     cwd: str,
     started_at: float,
     on_rejection: Callable[[str], None] | None = None,
+    run: RunDir | None = None,
+    final_response: Callable[[], str | None] | None = None,
 ) -> str | None:
     """Register the `--notify` legacy-payload adapter scoped to this run's
     own terminal entity. Returns the registration name (pass to
@@ -143,23 +233,17 @@ def register_flow_notify_scope(
     resolved = resolution.handler
     if resolved is None:
         return None
-    payload_fn = _legacy_payload_builder(
+    handler = _build_legacy_handler(
+        resolved,
         invocation_id=invocation_id,
         kind=flow_kind,
         playbook=playbook,
         save_dir=save_dir,
         cwd=cwd,
         started_at=started_at,
-    )
-
-    _argv_fn, _env_fn = _legacy_argv_env_builders(payload_fn, invocation_id=invocation_id)
-
-    handler = build_handler(
-        resolved,
-        payload_fn=payload_fn,
-        argv_fn=_argv_fn,
-        env_fn=_env_fn,
-        on_build_failure=_report,
+        run=run,
+        final_response=final_response,
+        on_rejection=_report,
     )
     if handler is None:
         return None
@@ -197,6 +281,7 @@ async def deliver_flow_notify_now(
     terminal_status: str,
     reason_code: str,
     occurred_at: float,
+    final_response: str | None = None,
 ) -> None:
     """Deliver this run's `--notify` adapter directly, at process end, for a
     run that never got a session entity to fire the registered callback path
@@ -231,28 +316,23 @@ async def deliver_flow_notify_now(
     if resolved is None:
         return
 
-    payload_fn = _legacy_payload_builder(
+    def _outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
+        return record_notify_outcome_to_run(
+            run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
+        )
+
+    handler = _build_legacy_handler(
+        resolved,
         invocation_id=invocation_id,
         kind=flow_kind,
         playbook=playbook,
         save_dir=save_dir,
         cwd=cwd,
         started_at=started_at,
-    )
-    _argv_fn, _env_fn = _legacy_argv_env_builders(payload_fn, invocation_id=invocation_id)
-
-    def _outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
-        return record_notify_outcome_to_run(
-            run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
-        )
-
-    handler = build_handler(
-        resolved,
-        payload_fn=payload_fn,
-        argv_fn=_argv_fn,
-        env_fn=_env_fn,
+        run=run,
+        final_response=lambda: final_response,
         outcome_fn=_outcome_fn,
-        on_build_failure=_report,
+        on_rejection=_report,
     )
     if handler is None:
         return
@@ -267,12 +347,7 @@ async def deliver_flow_notify_now(
     )
     stderr_text: str | None = None
     try:
-        if is_coro_func(handler):
-            await maybe_await(handler(envelope))
-        else:
-            # offloaded so a sync handler body never blocks the loop; see
-            # TerminalCallbackRegistry.emit, which this mirrors.
-            await maybe_await(await _run_sync(handler, envelope, abandon_on_cancel=True))
+        await handler(envelope)
     except Exception as exc:  # noqa: BLE001 -- a notifier failure must never affect the run
         logger.warning(
             "direct-path notify.on_terminal delivery failed for run %s (%s)",

@@ -50,7 +50,7 @@ def _run(tmp_path: Path) -> RunDir:
     return RunDir(run_id="r-1", state_root=state_root, artifact_root=artifact_root)
 
 
-async def _deliver(run: RunDir, override: dict) -> None:
+async def _deliver(run: RunDir, override: dict, *, final_response: str | None = None) -> None:
     await deliver_flow_notify_now(
         override=override,
         run=run,
@@ -65,7 +65,51 @@ async def _deliver(run: RunDir, override: dict) -> None:
         terminal_status="completed",
         reason_code="",
         occurred_at=0.0,
+        final_response=final_response,
     )
+
+
+async def test_python_adapter_reads_the_full_response_at_delivery(tmp_path, monkeypatch):
+    run = _run(tmp_path)
+    response_file = run.state_root / "notify-final-response.txt"
+    previous_target = tmp_path / "previous.txt"
+    previous_target.write_text("original")
+    response_file.symlink_to(previous_target)
+    delivered = []
+
+    def read_response(_envelope):
+        delivered.append(response_file.read_bytes())
+        assert not response_file.is_symlink()
+        if os.name == "posix":
+            assert stat.S_IMODE(response_file.stat().st_mode) == 0o600
+
+    text = "a full response with 🦁"
+    await _deliver(run, _install_adapter(monkeypatch, read_response), final_response=text)
+
+    assert delivered == [text.encode("utf-8")]
+    assert not run.notify_outcome_path.exists()
+    assert previous_target.read_text() == "original"
+
+
+async def test_final_response_write_failure_refuses_delivery(tmp_path, monkeypatch, caplog):
+    run = _run(tmp_path)
+    destination = run.state_root / "notify-final-response.txt"
+    destination.mkdir()  # The atomic replacement must fail without changing this entry.
+    launched = []
+    secret = "PRIVATE_FINAL_RESPONSE_SENTINEL"
+
+    await _deliver(run, _install_adapter(monkeypatch, launched.append), final_response=secret)
+
+    assert launched == []
+    assert destination.is_dir()
+    assert list(run.state_root.glob(".notify-final-response.txt.*")) == []
+    assert json.loads(run.notify_outcome_path.read_text()) == {
+        "ok": False,
+        "exit_code": None,
+        "stderr_path": None,
+        "reason": "final_response_write_failed",
+    }
+    assert secret not in caplog.text
 
 
 async def test_a_python_adapter_that_raises_leaves_a_durable_record(
