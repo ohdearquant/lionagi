@@ -52,6 +52,23 @@ TAG_GUARD_RUN = (
     "  exit 1\n"
     "fi\n"
 )
+RELEASE_TEST_RUN = (
+    'case "${GITHUB_EVENT_NAME-}" in\n'
+    "  release)\n"
+    "    MAXFAIL=0 exec scripts/ci.sh test-python\n"
+    "    ;;\n"
+    "  workflow_dispatch)\n"
+    "    if [ -f scripts/test_roots.py ]; then\n"
+    "      uv run python scripts/test_roots.py > /dev/null\n"
+    "    fi\n"
+    "    exec uv run pytest --maxfail=1 --disable-warnings\n"
+    "    ;;\n"
+    "  *)\n"
+    "    echo '::error::unsupported release test event'\n"
+    "    exit 1\n"
+    "    ;;\n"
+    "esac"
+)
 UV_INSTALL_RUN = (
     'curl -LsSf https://astral.sh/uv/install.sh | sh\necho "$HOME/.cargo/bin" >> $GITHUB_PATH\n'
 )
@@ -584,7 +601,7 @@ def assert_workflow_contract(document):
     assert "if" not in jobs["test"]
     assert jobs["test"]["timeout-minutes"] == 60
     assert jobs["test"]["strategy"] == {"matrix": {"python-version": TEST_MATRIX}}
-    # Pin the checkout, setup and terminal commands. Shell tests execute both modes.
+    # Pin the checkout, setup and executable script. Shell tests execute both modes.
     # It checks out the tag ref, not the commit an earlier job computed, and then
     # requires that tag to be the resolved source before anything runs.
     *setup_steps, test_step = jobs["test"]["steps"]
@@ -610,15 +627,12 @@ def assert_workflow_contract(document):
     ]
     assert set(test_step) == {"name", "shell", "run"}
     assert test_step["name"] == "Run tests" and test_step["shell"] == "bash"
-    terminal_commands = [
-        line
-        for line in map(str.strip, test_step["run"].splitlines())
-        if line.startswith(("MAXFAIL=", "exec "))
-    ]
-    assert terminal_commands == [
-        "MAXFAIL=0 exec scripts/ci.sh test-python",
-        "exec uv run pytest --maxfail=1 --disable-warnings",
-    ]
+    commands = "\n".join(
+        line.rstrip()
+        for line in test_step["run"].splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    assert commands == RELEASE_TEST_RUN
     for step in jobs["test"]["steps"]:
         assert "if" not in step, "no test step may be skipped"
         assert not step.get("continue-on-error", False), "no test step may fail softly"
@@ -857,6 +871,8 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         "job-soft-failure-docker",
         "test-run-removed",
         "test-run-release-exec-removed",
+        "test-run-release-event-renamed",
+        "test-run-repair-roots-check-removed",
         "test-timeout-removed",
         "test-timeout-changed",
         "test-matrix-reduced",
@@ -1014,6 +1030,18 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
     elif mutation == "test-run-release-exec-removed":
         test["steps"][-1]["run"] = test["steps"][-1]["run"].replace(
             "MAXFAIL=0 exec scripts/ci.sh test-python", "MAXFAIL=0 scripts/ci.sh test-python", 1
+        )
+    elif mutation == "test-run-release-event-renamed":
+        test["steps"][-1]["run"] = test["steps"][-1]["run"].replace(
+            "  release)\n", "  published)\n", 1
+        )
+    elif mutation == "test-run-repair-roots-check-removed":
+        test["steps"][-1]["run"] = test["steps"][-1]["run"].replace(
+            "    if [ -f scripts/test_roots.py ]; then\n"
+            "      uv run python scripts/test_roots.py > /dev/null\n"
+            "    fi\n",
+            "",
+            1,
         )
     elif mutation == "test-timeout-removed":
         test.pop("timeout-minutes")
