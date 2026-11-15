@@ -4,11 +4,9 @@
 
 from __future__ import annotations
 
-import builtins
 import sys
 import types
 import uuid
-from pathlib import Path
 
 import pytest
 
@@ -26,11 +24,12 @@ async def test_replay_uses_global_settings_only(tmp_path, monkeypatch, global_en
     home = tmp_path / "home"
     daemon = tmp_path / "daemon"
     project = daemon / "project"
-    for directory in (home / ".lionagi", project / ".lionagi"):
+    for directory in (home / ".lionagi", daemon / ".lionagi", project / ".lionagi"):
         directory.mkdir(parents=True)
     global_file = home / ".lionagi" / "settings.yaml"
+    daemon_file = daemon / ".lionagi" / "settings.yaml"
     project_file = project / ".lionagi" / "settings.yaml"
-    for file, name in ((project_file, "project"),):
+    for file, name in ((project_file, "project"), (daemon_file, "daemon")):
         file.write_text(
             "notify:\n  on_terminal:\n    enabled: true\n    adapter:\n"
             f"      kind: python\n      ref: terminal_path_{name}:handle\n",
@@ -47,18 +46,19 @@ async def test_replay_uses_global_settings_only(tmp_path, monkeypatch, global_en
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(daemon)
     seen = []
-    for name in ("global", "project"):
+    for name in ("global", "project", "daemon"):
         adapter = types.ModuleType(f"terminal_path_{name}")
         adapter.handle = lambda envelope, name=name: seen.append((name, envelope.event_id))
         monkeypatch.setitem(sys.modules, adapter.__name__, adapter)
 
     opened = []
+    read_layer = settings_module._read_layer
 
-    def recording_open(file, *args, **kwargs):
-        opened.append(Path(file).resolve())
-        return builtins.open(file, *args, **kwargs)
+    def recording_read(path):
+        opened.append(path.resolve())
+        return read_layer(path)
 
-    monkeypatch.setattr(settings_module, "open", recording_open, raising=False)
+    monkeypatch.setattr(settings_module, "_read_layer", recording_read)
     consumer = "global-settings-test"
     async with StateDB(tmp_path / "state.db") as db:
         await db.create_project("alpha", path=str(project))
@@ -81,12 +81,11 @@ async def test_replay_uses_global_settings_only(tmp_path, monkeypatch, global_en
             ("session", session_id, "failed"),
         )
         assert row is not None
-        reconciler = TerminalReconciler(consumer, terminal._prepare_settings_delivery)
+        reconciler = TerminalReconciler(consumer, terminal.prepare_global_settings_delivery)
         summary = await reconciler.run_pass(db)
         assert summary["attempted"] == summary["acknowledged"] == 1
         assert summary["not_applicable"] == (0 if global_enabled else 1)
         assert await is_acknowledged(db, row["id"], consumer)
 
-    assert global_file in opened
-    assert project_file not in opened
+    assert opened == [global_file.resolve()]
     assert seen == ([("global", row["id"])] if global_enabled else [])

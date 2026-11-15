@@ -1,20 +1,21 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Settings replay resolves each transition's own session/project context."""
+"""Global replay reports each transition's session and project context after ACK."""
 
 from __future__ import annotations
 
 import time
 import uuid
 from inspect import isawaitable
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
 
 from lionagi.state.db import StateDB
+from lionagi.state.lifecycle import notify_settings, settings_delivery
+from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
 from lionagi.state.lifecycle.deliveries import is_acknowledged
-from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
+from lionagi.state.lifecycle.reconciler import DeliveryOutcome, TerminalReconciler
 from lionhub.orchestration.scheduler import terminal_reconciliation as terminal
 
 
@@ -91,45 +92,50 @@ def _row(kind: str, ident: str) -> dict:
     }
 
 
-async def _deliver(row, db):
-    prepared = await terminal._prepare_settings_delivery(row, db)
-    if isinstance(prepared, PreparedDelivery):
-        value = prepared.call()
-        return await value if isawaitable(value) else value
-    return prepared
+async def _context_diagnostics(row, db):
+    labels = []
+    await terminal.observe_global_context_after_ack(row, db, labels.append, remaining_seconds=1)
+    return labels
 
 
 @pytest.mark.asyncio
 async def test_session_and_play_use_their_linked_session(db, tmp_path):
     sid = await _session(db, project="alpha")
     no_project = await _session(db)
-    show_id, play_id, orphan_play = _id(), _id(), _id()
+    show_id, play_id, null_project_play, orphan_play = _id(), _id(), _id(), _id()
     await db.create_show({"id": show_id, "topic": "test", "show_dir": str(tmp_path)})
     await db.create_play({"id": play_id, "show_id": show_id, "name": "linked", "session_id": sid})
+    await db.create_play(
+        {
+            "id": null_project_play,
+            "show_id": show_id,
+            "name": "no-project",
+            "session_id": no_project,
+        }
+    )
     await db.create_play({"id": orphan_play, "show_id": show_id, "name": "no-session"})
-    assert await terminal._project_for_transition(_row("session", sid), db) == ("alpha", None)
-    assert await terminal._project_for_transition(_row("session", no_project), db) == (None, None)
-    assert await terminal._project_for_transition(_row("session", _id()), db) == (
-        None,
-        "no_session",
-    )
-    assert await terminal._project_for_transition(_row("play", play_id), db) == ("alpha", None)
-    assert await terminal._project_for_transition(_row("play", orphan_play), db) == (
-        None,
-        "no_session",
-    )
-    assert await terminal._project_for_transition(_row("play", _id()), db) == (None, "no_session")
+    assert await _context_diagnostics(_row("session", sid), db) == []
+    assert await _context_diagnostics(_row("session", no_project), db) == ["null_project"]
+    assert await _context_diagnostics(_row("session", _id()), db) == ["no_session"]
+    assert await _context_diagnostics(_row("play", play_id), db) == []
+    assert await _context_diagnostics(_row("play", null_project_play), db) == ["null_project"]
+    assert await _context_diagnostics(_row("play", orphan_play), db) == ["no_session"]
+    assert await _context_diagnostics(_row("play", _id()), db) == ["no_session"]
 
 
 @pytest.mark.parametrize("kind", ["invocation", "schedule_run"])
 @pytest.mark.parametrize(
     ("projects", "expected"),
     [
-        ([], (None, "no_session")),
-        ([None, None], (None, "no_session")),
-        (["alpha"], ("alpha", None)),
-        (["alpha", None, "alpha"], ("alpha", None)),
-        (["alpha", "beta"], (None, "ambiguous_project")),
+        pytest.param([], ["no_session"], id="no-sessions"),
+        pytest.param([None, None], ["null_project"], id="all-null"),
+        pytest.param(["alpha"], [], id="one-project"),
+        pytest.param(["alpha", "alpha"], [], id="one-distinct-project"),
+        pytest.param(["alpha", None, "alpha"], ["null_project"], id="one-project-and-null"),
+        pytest.param(["alpha", "beta"], ["ambiguous_project"], id="multiple-projects"),
+        pytest.param(
+            [None, "alpha", "beta"], ["ambiguous_project", "null_project"], id="mixed-projects"
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -138,68 +144,13 @@ async def test_invocation_and_schedule_resolve_distinct_project_set(db, kind, pr
     for project in projects:
         await _session(db, project=project, invocation=invocation_id)
     ident = invocation_id if kind == "invocation" else await _schedule_run(db, invocation_id)
-    assert await terminal._project_for_transition(_row(kind, ident), db) == expected
+    assert await _context_diagnostics(_row(kind, ident), db) == expected
 
 
 @pytest.mark.asyncio
-async def test_schedule_without_invocation_is_not_applicable(db):
+async def test_schedule_without_invocation_reports_missing_session_context(db):
     run_id = await _schedule_run(db, None)
-    assert await terminal._project_for_transition(_row("schedule_run", run_id), db) == (
-        None,
-        "no_session",
-    )
-
-
-def _settings(path: Path, command: str) -> None:
-    directory = path / ".lionagi"
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "settings.yaml").write_text(f"notify:\n  on_terminal: '{command}'\n")
-
-
-@pytest.mark.parametrize("path_kind", ["existing", "missing", "null", "no-project"])
-@pytest.mark.asyncio
-async def test_settings_use_global_never_project_or_daemon_cwd(
-    db, tmp_path, monkeypatch, path_kind
-):
-    home = tmp_path / "home"
-    daemon = tmp_path / "daemon"
-    project_dir = tmp_path / "project"
-    for directory in (home, daemon, project_dir):
-        directory.mkdir()
-    _settings(home, "global-marker")
-    _settings(daemon, "daemon-marker")
-    _settings(project_dir, "project-marker")
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.chdir(daemon)
-    project = None if path_kind == "no-project" else "alpha"
-    path = {
-        "existing": str(project_dir),
-        "missing": str(tmp_path / "missing"),
-        "null": None,
-        "no-project": None,
-    }[path_kind]
-    if project:
-        await db.create_project(project, path=path)
-    sid = await _session(db, project=project)
-    calls = []
-    actual_load = terminal.load_settings
-
-    def load(*args, **kwargs):
-        calls.append(kwargs)
-        return actual_load(*args, **kwargs)
-
-    selected = []
-
-    def capture(resolved, envelope):
-        selected.append((resolved.argv, envelope.entity.id))
-        return DeliveryOutcome.SUCCESS
-
-    monkeypatch.setattr(terminal, "load_settings", load)
-    monkeypatch.setattr(terminal, "prepare_resolved_delivery", capture)
-    outcome = await _deliver(_row("session", sid), db)
-    assert outcome is DeliveryOutcome.SUCCESS
-    assert calls == [{"include_project": False}]
-    assert selected == [(("global-marker",), sid)]
+    assert await _context_diagnostics(_row("schedule_run", run_id), db) == ["no_session"]
 
 
 @pytest.mark.parametrize("filter_key", ["kinds", "ids"])
@@ -216,15 +167,35 @@ async def test_settings_filters_apply_to_resolved_transition(db, tmp_path, monke
         "    adapter:\n      kind: exec\n      argv: [never-invoked]\n"
     )
     monkeypatch.setenv("HOME", str(home))
+    build_attempts = []
+
+    def record_build(*args, **kwargs):
+        build_attempts.append(args)
+
+    monkeypatch.setattr(settings_delivery, "build_handler", record_build)
     sid = await _session(db)
-    assert await _deliver(_row("session", sid), db) is (DeliveryOutcome.NOT_APPLICABLE)
+    prepared = await terminal.prepare_global_settings_delivery(_row("session", sid), db)
+    value = prepared.call()
+    outcome = await value if isawaitable(value) else value
+    assert outcome is DeliveryOutcome.NOT_APPLICABLE
+    assert build_attempts == []
 
 
 @pytest.mark.asyncio
-async def test_no_session_and_ambiguous_project_are_acked_and_counted(db):
+async def test_missing_and_ambiguous_context_are_observed_after_global_ack(db, monkeypatch):
+    delivered = []
+    monkeypatch.setattr(
+        settings_delivery,
+        "load_global_settings_layer",
+        lambda: {"notify": {"on_terminal": {"adapter": {"kind": "python", "ref": "test:notify"}}}},
+    )
+    monkeypatch.setattr(
+        notify_settings, "_make_python_handler", lambda _ref: lambda e: delivered.append(e.event_id)
+    )
     empty, ambiguous = await _invocation(db), await _invocation(db)
     await _session(db, project="alpha", invocation=ambiguous)
     await _session(db, project="beta", invocation=ambiguous)
+    db._lifecycle_service()._terminal_callbacks = TerminalCallbackRegistry()
     for ident in (empty, ambiguous):
         assert await db.update_status(
             "invocation",
@@ -235,18 +206,25 @@ async def test_no_session_and_ambiguous_project_are_acked_and_counted(db):
             actor="test",
         )
     outcomes = {}
+    consumer = "global-replay-context"
 
-    async def observe(row, state):
-        outcome = await terminal._prepare_settings_delivery(row, state)
-        outcomes[row["entity_id"]] = (row["transition_id"], outcome)
-        return outcome
+    async def observe(row, state, remaining):
+        transition = row["transition_id"]
+        acked = await is_acknowledged(state, transition, consumer)
+        labels = []
+        await terminal.observe_global_context_after_ack(
+            row, state, labels.append, remaining_seconds=remaining
+        )
+        outcomes[row["entity_id"]] = (transition, acked, labels)
 
-    reconciler = TerminalReconciler("f9-context", observe, batch_size=4)
-    result = await reconciler.run_pass(db)
-    assert result["acknowledged"] == result["not_applicable"] == 2
-    assert result["no_session"] == 1 and result["ambiguous_project"] == 1
+    reconciler = TerminalReconciler(
+        consumer, terminal.prepare_global_settings_delivery, pass_budget=5
+    )
+    result = await reconciler.run_pass(db, observe_outcome=observe)
+    assert result["attempted"] == result["acknowledged"] == 2
+    assert result["not_applicable"] == result["no_session"] == result["ambiguous_project"] == 0
     assert set(outcomes) == {empty, ambiguous}
-    assert outcomes[empty][1] is DeliveryOutcome.NO_SESSION
-    assert outcomes[ambiguous][1] is DeliveryOutcome.AMBIGUOUS_PROJECT
-    assert await is_acknowledged(db, outcomes[empty][0], "f9-context")
-    assert await is_acknowledged(db, outcomes[ambiguous][0], "f9-context")
+    assert outcomes[empty][1:] == (True, ["no_session"])
+    assert outcomes[ambiguous][1:] == (True, ["ambiguous_project"])
+    assert set(delivered) == {outcomes[empty][0], outcomes[ambiguous][0]}
+    assert len(delivered) == 2
