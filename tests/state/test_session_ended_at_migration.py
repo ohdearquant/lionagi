@@ -204,3 +204,39 @@ async def test_backfill_clears_a_duration_it_can_no_longer_vouch_for(tmp_path: P
     assert row["ended_at"] == 60.0
     assert row["ended_at_is_approximate"] is True
     assert row["duration_ms"] is None
+
+
+async def test_end_time_repair_rolls_back_when_migration_cannot_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state.db"
+    with monkeypatch.context() as older:
+        older.setattr(state_db_mod, "SCHEMA_VERSION", "5")
+        async with StateDB(path):
+            pass
+    _seed_legacy_row_with_a_stale_duration(path)
+
+    store = StateDB(path)
+
+    async def fail_after_repair(conn):
+        result = await conn.exec_driver_sql(
+            "SELECT ended_at, duration_ms FROM sessions WHERE id='stale-duration'"
+        )
+        assert tuple(result.one()) == (60.0, None)
+        raise RuntimeError("could not stamp")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(store, "_stamp_schema_version", fail_after_repair)
+        with pytest.raises(RuntimeError, match="could not stamp"):
+            await store.migrate()
+    assert store._engine is None
+    async with StateDB(path, readonly=True) as original:
+        assert await original.schema_version() == "5"
+        row = await original.get_session("stale-duration")
+        assert row is not None and (row["ended_at"], row["duration_ms"]) == (None, 999.0)
+
+    await store.migrate()
+    async with store:
+        assert await store.schema_version() == state_db_mod.SCHEMA_VERSION
+        row = await store.get_session("stale-duration")
+        assert row is not None and (row["ended_at"], row["duration_ms"]) == (60.0, None)

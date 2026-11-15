@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -15,7 +16,9 @@ from pathlib import Path
 import psutil
 import pytest
 
-from lionagi.state.db import StateDB
+from lionagi.config import settings
+from lionagi.ln.concurrency import run_async
+from lionagi.state.db import SCHEMA_VERSION, StateDB
 from lionhub.serve.cli.state import (
     _checkpoint,
     _doctor,
@@ -35,6 +38,59 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
+
+
+def test_state_migrate_upgrades_the_configured_store(temp_db_path, monkeypatch, tmp_path, capsys):
+    from lionhub.serve.cli.main import main
+
+    store = tmp_path / "configured.db"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LIONAGI_STATE_AUTO_MIGRATE", raising=False)
+    monkeypatch.setattr(
+        "lionagi.state.db.settings",
+        settings.model_copy(update={"LIONAGI_STATE_DB_URL": str(store)}),
+    )
+
+    async def create_store():
+        async with StateDB(path=store):
+            pass
+
+    run_async(create_store())
+    with contextlib.closing(sqlite3.connect(store)) as conn, conn:
+        updated = conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'version'",
+            (str(int(SCHEMA_VERSION) - 1),),
+        )
+        assert updated.rowcount == 1
+
+    assert main(["state", "migrate"]) == 0
+    assert capsys.readouterr().out == f"State store schema version {SCHEMA_VERSION}.\n"
+    with contextlib.closing(sqlite3.connect(store)) as conn:
+        assert conn.execute("SELECT value FROM schema_meta WHERE key = 'version'").fetchone() == (
+            SCHEMA_VERSION,
+        )
+    assert not temp_db_path.exists()
+
+
+def test_state_migrate_masks_a_store_failure(monkeypatch, capsys):
+    from lionhub.serve.cli.main import main
+
+    async def refuse():
+        try:
+            raise OSError("postgresql://fixture:synthetic-inner-password@db.invalid/test")
+        except OSError as exc:
+            raise ValueError(
+                "cannot upgrade postgresql://fixture:synthetic-outer-password@db.invalid/test"
+            ) from exc
+
+    monkeypatch.setattr("lionhub.serve.cli.state._migrate", refuse)
+    assert main(["state", "migrate"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error migrating state store" in captured.err
+    assert "postgresql://fixture:***@db.invalid/test" in captured.err
+    assert "synthetic-inner-password" not in captured.err
+    assert "synthetic-outer-password" not in captured.err
 
 
 async def _seed_session(

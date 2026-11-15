@@ -957,6 +957,20 @@ async def _vacuum() -> None:
         await db.vacuum()
 
 
+async def _migrate() -> str:
+    from lionagi.state.db import StateDB
+
+    db = StateDB()
+    try:
+        await db.migrate()
+        version = await db.schema_version()
+    finally:
+        await db.close()
+    if version is None:
+        raise RuntimeError("The state store has no schema version after migration.")
+    return version
+
+
 # Which sessions the prune deletes, written once. The prune selects ids with it
 # and the check below counts what it still selects afterwards; two copies of this
 # predicate drifting apart would make the pair agree while describing different
@@ -1770,10 +1784,19 @@ async def _import_teams() -> dict[str, int]:
 def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
     state = subparsers.add_parser(
         "state",
-        help="Inspect and migrate lionagi state.db.",
-        description="Manage the lionagi SQLite state database.",
+        help="Inspect and maintain LionAGI state.",
+        description="Manage the configured SQLite or PostgreSQL state store.",
     )
     state_sub = state.add_subparsers(dest="state_command", required=True)
+
+    state_sub.add_parser(
+        "migrate",
+        help="Explicitly upgrade the configured state store.",
+        description=(
+            "Upgrade the configured SQLite or PostgreSQL state store to this version of LionAGI. "
+            "Stop writers and close all handles before migrating an existing store."
+        ),
+    )
 
     consumers = state_sub.add_parser(
         "terminal-consumer",
@@ -2012,6 +2035,21 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
 @auto_register(area="state", cli=CliDeclaration(seed="state", parser_factory=add_state_subparser))
 def run_state(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
+
+    if args.state_command == "migrate":
+        from lionagi._feature_errors import MissingFeatureError
+        from lionagi.state.engine import mask_credentials
+        from lionhub.orchestration.console import log_error
+
+        try:
+            version = run_async(_migrate())
+        except (ModuleNotFoundError, MissingFeatureError):
+            raise
+        except Exception as exc:  # noqa: BLE001 -- report store errors without their traceback
+            log_error(f"error migrating state store: {mask_credentials(str(exc))}")
+            return 1
+        print(f"State store schema version {version}.")
+        return 0
 
     if args.state_command == "terminal-consumer":
         from lionagi.state.lifecycle.consumer_inspection import ConsumerInspectionBackendError

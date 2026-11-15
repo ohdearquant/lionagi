@@ -354,9 +354,10 @@ between `build_argv()` and this function gives a revoked
 A command child also gets the daemon's environment without
 `LIONAGI_STATE_DB_URL`, in any letter case (`env_without_state_db_url` in
 `lionagi/ln/_proc.py`). A command often runs another interpreter with its own
-lionagi, and an inherited store URL would open the daemon's store with that
-lionagi: one on a newer schema migrates the file on open, after which the
-daemon's own code refuses it. Every other path that runs a configured or
+lionagi, and an inherited store URL would let that build open the daemon's
+store. A migration by a newer build can leave the daemon unable to write.
+Older builds can migrate on open, as can current builds with
+`LIONAGI_STATE_AUTO_MIGRATE=1`. Every other path that runs a configured or
 agent-chosen command starts the same way: notify commands, external hooks, MCP
 terminal notices, secrets lookup commands, configured stdio MCP servers (the
 Studio connection check and the MCP connection pool), the commands run through
@@ -377,8 +378,7 @@ reads `$LIONAGI_HOME/.env` below those files, so a store URL there is a
 user-wide default that reaches every lionagi that reads that file. And a child without the variable falls
 back to the default store, `$LIONAGI_HOME/state.db`: a daemon whose store is at
 that path, by default or through the variable, shares it with any lionagi its
-commands run under the same home directory, and a lionagi of the same line on
-a newer schema migrates it on open, as an upgrade does.
+commands run under the same home directory.
 
 ## lionagi/studio/services/schedules.py
 

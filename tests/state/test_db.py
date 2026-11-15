@@ -16,7 +16,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from types import SimpleNamespace
 from unittest import mock
 
@@ -1006,7 +1006,9 @@ async def test_chain_decision_version_floor_stamps_without_schema_changes(tmp_pa
             assert await state.schema_version() == "6"
     before = schema_rows()
 
-    async with StateDB(path) as state:
+    state = StateDB(path)
+    await state.migrate()
+    async with state:
         assert await state.schema_version() == SCHEMA_VERSION
         assert int(await state.schema_version()) >= 7
     assert schema_rows() == before
@@ -1023,7 +1025,7 @@ async def test_chain_decision_version_floor_stamps_without_schema_changes(tmp_pa
     assert schema_rows() == before
 
 
-async def test_open_upgrades_an_older_recorded_schema_version(tmp_path):
+async def test_migrate_upgrades_an_older_recorded_schema_version(tmp_path):
     """A database stamped below SCHEMA_VERSION is migrated and re-stamped.
 
     The stamp records the shape the database has after the migrations that
@@ -1035,7 +1037,9 @@ async def test_open_upgrades_an_older_recorded_schema_version(tmp_path):
     _stamp_version(path, "1")
     assert _read_version(path) == "1"
 
-    async with StateDB(path=path) as state:
+    state = StateDB(path=path)
+    await state.migrate()
+    async with state:
         assert await state.schema_version() == SCHEMA_VERSION
     assert _read_version(path) == SCHEMA_VERSION
 
@@ -1082,8 +1086,7 @@ async def test_column_inspection_failure_does_not_advance_schema_version(
 
     with caplog.at_level(logging.ERROR, logger="lionagi.state.db"):
         with pytest.raises(RuntimeError, match="column inspection failed") as excinfo:
-            async with state:
-                pass
+            await state.migrate()
 
     assert excinfo.value is failure
     assert failed is True
@@ -1098,7 +1101,7 @@ async def test_column_inspection_failure_does_not_advance_schema_version(
     )
     assert record.exc_info is not None
 
-    await state.open()
+    await state.migrate()
     try:
         assert await state.schema_version() == SCHEMA_VERSION
     finally:
@@ -1143,19 +1146,32 @@ async def test_schema_version_is_rechecked_after_migration_lock(tmp_path, monkey
 
     state = StateDB(path=path)
     state._MIGRATION_COLUMNS = {"sessions": [("raced_column", "TEXT")]}
-    reconcile = state._reconcile_columns
+    schema_transaction = state._schema_transaction
+    read_schema = state._refuse_newer_schema
+    read_under_lock = False
     newer = str(int(SCHEMA_VERSION) + 1)
 
-    async def upgrade_then_reconcile():
+    @asynccontextmanager
+    async def upgrade_before_lock():
+        async with state._engine.connect():
+            pass
         _stamp_version(path, newer)
-        await reconcile()
+        async with schema_transaction() as conn:
+            yield conn
 
-    monkeypatch.setattr(state, "_reconcile_columns", upgrade_then_reconcile)
+    async def observe_locked_read(conn):
+        nonlocal read_under_lock
+        read_under_lock = conn.in_transaction()
+        return await read_schema(conn)
+
+    monkeypatch.setattr(state, "_schema_transaction", upgrade_before_lock)
+    monkeypatch.setattr(state, "_refuse_newer_schema", observe_locked_read)
 
     with pytest.raises(SchemaTooNewError):
         async with state:
             pass
 
+    assert read_under_lock
     assert _read_version(path) == newer
     conn = sqlite3.connect(path)
     try:

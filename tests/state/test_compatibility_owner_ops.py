@@ -797,7 +797,7 @@ async def test_an_open_that_fails_after_its_connection_read_the_store_keeps_its_
     path = tmp_path / "state.db"
     handle = StateDB(path)
 
-    async def fail(self):
+    async def fail(self, conn):
         raise RuntimeError("after the connection read the store")
 
     monkeypatch.setattr(StateDB, "_backfill_session_ended_at_once", fail)
@@ -826,9 +826,11 @@ async def test_a_kept_engine_whose_store_is_refused_on_the_next_open_is_disposed
     )
 
     path = tmp_path / "state.db"
+    async with StateDB(path):
+        pass
     handle = StateDB(path)
 
-    async def fail(self):
+    async def fail(self, conn):
         raise RuntimeError("after the connection read the store")
 
     monkeypatch.setattr(StateDB, "_backfill_session_ended_at_once", fail)

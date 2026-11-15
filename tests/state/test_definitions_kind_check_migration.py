@@ -18,8 +18,9 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
+import lionagi.state.db as state_db
 from lionagi.state.db import StateDB
 
 # Legacy fixture builders
@@ -186,8 +187,10 @@ async def test_old_substring_detector_would_have_false_positived(tmp_path: Path)
 # Arm 4: failed copy retries
 
 
-async def test_rebuild_crash_mid_sequence_rolls_back_and_reopen_completes(tmp_path: Path) -> None:
-    """The raw-driver rebuild is one BEGIN IMMEDIATE transaction. A crash
+async def test_rebuild_crash_mid_sequence_rolls_back_and_reopen_completes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The rebuild shares the BEGIN IMMEDIATE transaction. A crash
     injected during the INSERT..SELECT copy must roll the whole rebuild
     back -- leaving the legacy table intact with its rows -- so a later
     open() can retry and complete the migration cleanly."""
@@ -200,22 +203,26 @@ async def test_rebuild_crash_mid_sequence_rolls_back_and_reopen_completes(tmp_pa
         )
         seed.commit()
 
-    real_execute = aiosqlite.Connection.execute
-    crash = {"armed": True}
+    make_engine = state_db.make_engine
 
-    def _crashing_execute(self, sql, *args, **kwargs):
-        if crash["armed"] and "INSERT INTO definitions_new" in str(sql):
-            raise sqlite3.OperationalError("disk I/O error")
-        return real_execute(self, sql, *args, **kwargs)
+    def crashing_make_engine(*args, **kwargs):
+        engine = make_engine(*args, **kwargs)
 
-    aiosqlite.Connection.execute = _crashing_execute
-    try:
+        @event.listens_for(engine.sync_engine, "before_cursor_execute")
+        def fail_before_copy(_conn, _cursor, statement, *_args):
+            if statement.startswith("INSERT INTO definitions_new"):
+                raise RuntimeError("injected failure during definitions copy")
+
+        return engine
+
+    with monkeypatch.context() as patched:
+        patched.setattr(state_db, "make_engine", crashing_make_engine)
         state = StateDB(db_path)
-        with pytest.raises(sqlite3.OperationalError):
-            await state.open()
-        await state.close()
-    finally:
-        aiosqlite.Connection.execute = real_execute
+        try:
+            with pytest.raises(RuntimeError, match="injected failure during definitions copy"):
+                await state.open()
+        finally:
+            await state.close()
 
     # Atomic rollback: legacy table intact with its row, no stray _new table.
     with sqlite3.connect(db_path) as check:
@@ -231,7 +238,6 @@ async def test_rebuild_crash_mid_sequence_rolls_back_and_reopen_completes(tmp_pa
 
     # And the DB is healable: a clean re-open completes the rebuild, and the
     # pre-existing row survives the rebuild.
-    crash["armed"] = False
     state = StateDB(db_path)
     await state.open()
     try:

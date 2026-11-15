@@ -279,7 +279,7 @@ async def test_migration_preserves_triggers(tmp_path):
         await raw.commit()
 
     state = StateDB(db_path)
-    await state.open()
+    await state.migrate()
     try:
         async with state._read() as conn:
             trig = (

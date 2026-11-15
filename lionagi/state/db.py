@@ -30,7 +30,7 @@ from urllib.parse import parse_qsl, urlencode
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.schema import CreateTable
 
@@ -208,9 +208,8 @@ NO_CURSOR_CLAIM = NoCursorClaim()
 # layers that forward it can tell a cursor value from a missing claim.
 CursorClaim = float | str | None | NoCursorClaim
 
-# Shape of the schema this code applies; ``_apply_schema`` stamps it into ``schema_meta.version`` on
-# every open, so the recorded version describes the database after migrations. Bump it whenever a
-# migration changes the shape a reader would see.
+# Shape and write guarantees of the schema. Creation and migration stamp the version only
+# after the required changes are ready.
 SCHEMA_VERSION = "7"
 _CHAIN_DECISION_SCHEMA_VERSION = 7
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
@@ -244,6 +243,10 @@ class SchemaTooNewError(RuntimeError):
     """``schema_meta.version`` is higher than ``SCHEMA_VERSION``; only a writable open raises it."""
 
 
+class SchemaMigrationRequiredError(RuntimeError):
+    """An older native store needs an explicit migration before it can be opened for writing."""
+
+
 class ForeignLineageError(RuntimeError):
     """``schema_meta.lineage`` names another application; only a writable native open raises it."""
 
@@ -265,6 +268,7 @@ _NATIVE_OPEN_REFUSALS = (
     UnrecognizedStoreError,
     UnreadableStoreError,
     SchemaTooNewError,
+    SchemaMigrationRequiredError,
     StateCompatibilityRefused,
 )
 
@@ -881,18 +885,6 @@ def _sqlite_store_rows(
     return _StoreRows(dict(execute(_SCHEMA_META_GUARD_ROWS)), names)
 
 
-async def _sqlite_store_rows_async(driver) -> _StoreRows:
-    async def execute(statement: str) -> Sequence[Any]:
-        return await (await driver.execute(statement)).fetchall()
-
-    tables = frozenset(row[0] for row in await execute(_SQLITE_TABLE_NAMES))
-    if "schema_meta" not in tables:
-        return _StoreRows(None, tables)
-    if not {"key", "value"} <= {row[0] for row in await execute(_SQLITE_SCHEMA_META_COLUMNS)}:
-        return _StoreRows(None, tables)
-    return _StoreRows(dict(await execute(_SCHEMA_META_GUARD_ROWS)), tables)
-
-
 def _some_names(names: Sequence[str]) -> str:
     """The first three of *names*, each cut to 40 characters, for a refusal message."""
     shown = ", ".join(name[:40] for name in names[:3])
@@ -1036,11 +1028,11 @@ class StateDB:
         # its schema, so a later call that finds that engine completes the open instead of
         # returning over a store whose schema never ran.
         self._schema_applied = False
-        # Whether this handle's current engine has committed its schema transaction. A plain open
-        # that fails after that commit, in the session end-time backfill, keeps its engine with
-        # ``_schema_applied`` unset, so a later connection of it reads the store and refuses only
-        # a ``lineage`` row naming another application (ADR-0128 D7).
+        # Whether this handle's current engine has committed its schema transaction. After that
+        # commit a new connection refuses only a lineage row naming another application. A
+        # retry of an interrupted open clears the flag and reads the store again.
         self._schema_committed = False
+        self._migration_allowed = False
         # Whether a close() of this handle is in progress. Set on entry to _close(), before the
         # disposal, and cleared only once the engine is gone: a close a second native cancel
         # interrupts leaves the engine set and this flag set, so the next open or close finishes
@@ -1168,20 +1160,31 @@ class StateDB:
         context_entry = _OPEN_CALL.get() is self
         try:
             _OPEN_CALL.set(None)
-            async with self._holding_open_lock():
-                try:
-                    await self._open()
-                except BaseException:
-                    if context_entry:
-                        # The shield keeps a cancellation from reaching the disposal, but a
-                        # second native cancel delivered while the disposal is in progress still
-                        # escapes it and leaves ``_engine`` set; the disposal is entered again by
-                        # the next open or close.
-                        with CancelScope(shield=True):
-                            await self._close()
-                    raise
+            await self._open_with_schema_policy(explicit=False, close_on_failure=context_entry)
         finally:
             _OPEN_CALL.set(None)
+
+    async def migrate(self) -> None:
+        """Migrate a native writable store and leave the handle open on success."""
+        if self.readonly:
+            raise ValueError("cannot migrate a read-only state store")
+        self._refuse_in_compatibility("migration", "the store's schema belongs to its manager")
+        await self._open_with_schema_policy(explicit=True, close_on_failure=True)
+
+    async def _open_with_schema_policy(self, *, explicit: bool, close_on_failure: bool) -> None:
+        async with self._holding_open_lock():
+            self._migration_allowed = explicit or os.getenv("LIONAGI_STATE_AUTO_MIGRATE") == "1"
+            try:
+                await self._open()
+            except BaseException:
+                if close_on_failure:
+                    # A second native cancellation can interrupt disposal. A subsequent
+                    # open or close then finishes disposing the retained engine.
+                    with CancelScope(shield=True):
+                        await self._close()
+                raise
+            finally:
+                self._migration_allowed = False
 
     @asynccontextmanager
     async def _holding_open_lock(self):
@@ -1806,7 +1809,7 @@ class StateDB:
             "profile for that application."
         )
 
-    def _refuse_unless_native(self, store: _StoreRows) -> None:
+    def _refuse_unless_native(self, store: _StoreRows) -> int | None:
         """Refuse a store a native migration must not touch (ADR-0128 D7).
 
         A SQLite store with no ``schema_meta`` table is this package's when every table in it is
@@ -1814,13 +1817,13 @@ class StateDB:
         and Studio's approval ledger can create their tables before any StateDB open writes
         ``schema_meta``; on a server database, which holds other applications' tables, such a
         database is new. A ``schema_meta`` table without ``key`` and ``value`` columns is not one
-        lionagi created. A store whose ``lineage`` names lionagi is this package's: only a version
-        above ``SCHEMA_VERSION`` refuses it. A store with no ``lineage`` row predates the row, and
+        lionagi created. A store whose ``lineage`` names lionagi is this package's. A store with no
+        ``lineage`` row predates the row, and
         every store lionagi created before it holds ``schema_meta`` with a version from 1 to
         ``SCHEMA_VERSION`` and the ``sessions`` table, created together on its first open; only that
         store is adopted, and ``_apply_schema`` stamps the row into it. Missing, malformed and
         higher versions are each refused by name rather than by a failed comparison. Tables are
-        recognized by name, not by their columns.
+        recognized by name, not by their columns. Return the recognized version after admission.
         """
         where = self._store_named_for_an_operator()
         meta, tables = store
@@ -1847,7 +1850,7 @@ class StateDB:
         recorded = meta.get("version")
         if lineage == _NATIVE_LINEAGE:
             self._raise_if_schema_too_new(recorded)
-            return
+            return self._admit_schema_migration(recorded)
         if recorded is None:
             raise UnrecognizedStoreError(
                 f"{where} has a schema_meta table with no lineage or version row, which every "
@@ -1862,7 +1865,7 @@ class StateDB:
             )
         self._raise_if_schema_too_new(recorded)
         if tables is None or "sessions" in tables:
-            return
+            return self._admit_schema_migration(recorded)
         foreign = sorted(tables - _LIONAGI_TABLES)
         if foreign:
             raise UnrecognizedStoreError(
@@ -1871,6 +1874,23 @@ class StateDB:
                 "every lionagi release creates with the version row, so lionagi did not create "
                 "it. Open it read-only to inspect it."
             )
+
+        return self._admit_schema_migration(recorded)
+
+    def _admit_schema_migration(self, recorded: Any) -> int | None:
+        if not isinstance(recorded, str) or not _RECORDED_VERSION.fullmatch(recorded):
+            return None
+        try:
+            version = int(recorded)
+        except ValueError:
+            return None
+        if version < int(SCHEMA_VERSION) and not self._migration_allowed:
+            raise SchemaMigrationRequiredError(
+                f"{self._store_named_for_an_operator()} records schema version {recorded}; "
+                f"this version of lionagi requires schema version {SCHEMA_VERSION} for writing. "
+                "Run `li state migrate` to upgrade the store, or open it read-only to inspect it."
+            )
+        return version
 
     def _raise_if_schema_too_new(self, recorded: str | None) -> None:
         if recorded is None:
@@ -1892,7 +1912,7 @@ class StateDB:
             "Upgrade lionagi to open it, or open it read-only to inspect it."
         )
 
-    async def _refuse_newer_schema(self, conn) -> None:
+    async def _refuse_newer_schema(self, conn) -> int | None:
         """Refuse to open a database a native migration must not touch (``_refuse_unless_native``),
         reading its rows under the write lock and the lineage first."""
         if self.dialect == "sqlite":
@@ -1900,8 +1920,7 @@ class StateDB:
             store = await conn.run_sync(
                 lambda c: _sqlite_store_rows(lambda statement: c.exec_driver_sql(statement).all())
             )
-            self._refuse_unless_native(store)
-            return
+            return self._refuse_unless_native(store)
         if self.dialect == "postgresql":
             # The version table may not exist yet, so a row lock cannot serialize first-time schema
             # creation; this database-local lock predates any schema object.
@@ -1917,127 +1936,129 @@ class StateDB:
         if self.dialect == "postgresql":
             query += " FOR UPDATE"
         meta = dict((await conn.execute(text(query))).all())
-        self._refuse_unless_native(_StoreRows(meta, None))
+        return self._refuse_unless_native(_StoreRows(meta, None))
 
-    async def _refuse_newer_sqlite_schema(self, driver) -> None:
-        """Refuse a store a native migration must not touch (``_refuse_unless_native``), reading
-        its rows through a raw driver holding BEGIN IMMEDIATE."""
-        self._refuse_unless_native(await _sqlite_store_rows_async(driver))
+    @asynccontextmanager
+    async def _schema_transaction(self) -> AsyncIterator[AsyncConnection]:
+        async with self._engine.connect() as conn:
+            if self.dialect != "sqlite":
+                async with conn.begin():
+                    yield conn
+                return
+
+            driver = (await conn.get_raw_connection()).driver_connection
+            # A WAL checkpoint cannot run inside the migration transaction.
+            for label in await self._sqlite_rebuild_backup_labels(driver):
+                await self._backup_before_rebuild(label)
+            try:
+                # SQLite only accepts this pragma outside a transaction; the rebuilt
+                # parent tables must not cascade deletes through foreign keys.
+                await driver.execute("PRAGMA foreign_keys = OFF")
+                async with conn.begin():
+                    yield conn
+            finally:
+                with CancelScope(shield=True):
+                    await _restore_foreign_keys(conn, driver)
 
     async def _apply_schema(self) -> None:
         self._refuse_in_compatibility("migration", "the store's schema belongs to its manager")
-        await self._reconcile_columns()
-        if self.dialect == "sqlite":
-            await self._rebuild_legacy_sessions_table()
-            # existing DBs created before flow_yaml was added carry a
-            # 4-value CHECK on schedules.action_kind that omits 'flow_yaml'.
-            await self._drop_legacy_action_kind_check()
-            # Existing DBs, including ones already rebuilt to admit 'flow_yaml', carry a CHECK on
-            # schedules.action_kind that omits 'command'.
-            await self._drop_legacy_schedules_command_check()
-            # Existing DBs carry a CHECK on schedules.trigger_type that
-            # omits 'at' (the declarative ScheduleSet absolute-time trigger).
-            await self._drop_legacy_schedules_trigger_type_check()
-            # existing DBs created before the completion-trust gate carry a
-            # 6-value CHECK on invocations.status that omits 'completed_empty'.
-            await self._drop_legacy_invocations_status_check()
-            # Existing DBs carry a 5-value CHECK on schedule_runs.status and a NOT NULL schedule_id,
-            # from before schedule_runs was generalized into the task-application entity.
-            await self._drop_legacy_schedule_runs_check()
-            # Existing DBs carry a 2-value CHECK on definitions.kind that
-            # omits 'skill', from before the skill editor.
-            await self._drop_legacy_definitions_kind_check()
-        async with self._engine.begin() as conn:
-            await self._refuse_newer_schema(conn)
-            await conn.run_sync(metadata.create_all)
-            await self._classify_terminal_delivery_history_once(conn)
-            # Before _reconcile_indexes, which recreates the unique index on
-            # attention_disposition_history.sequence: that would fail against the DEFAULT 0
-            # placeholder every pre-existing row shares until this backfill gives each a distinct
-            # value.
-            await self._backfill_attention_dispositions_once(conn)
-            await self._reconcile_indexes(conn)
-            # After create_all, which guarantees sessions exists for a store that never had it, and
-            # before any write carrying a value the pre-existing CHECK does not name.
-            await self._reconcile_constraints(conn)
-            await conn.execute(
-                text(
-                    "UPDATE engine_runs SET parent_session_id = session_id "
-                    "WHERE parent_session_id IS NULL AND session_id IS NOT NULL "
-                    "AND EXISTS (SELECT 1 FROM sessions WHERE sessions.id = engine_runs.session_id)"
-                )
-            )
-            await self._backfill_dispatched_at_once(conn)
-            await self._backfill_imported_role_label_once(conn)
-            # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to re-run on every open
-            # because the rows are identity-stable. The version row is the exception and takes DO
-            # UPDATE, or a migrated database keeps reporting the version it was created at. The
-            # update only ever raises the recorded version, since a database stamped higher is
-            # refused at open.
-            await conn.execute(
-                text(
-                    "INSERT INTO schema_meta (key, value) VALUES ('version', :version) "
-                    "ON CONFLICT (key) DO UPDATE SET value = excluded.value"
-                ),
-                {"version": SCHEMA_VERSION},
-            )
-            await conn.execute(
-                text(
-                    "INSERT INTO schema_meta (key, value) VALUES ('created_at', :created_at) "
-                    "ON CONFLICT (key) DO NOTHING"
-                ),
-                {"created_at": str(int(time.time()))},
-            )
-            # ADR-0128 D7: a store this transaction created, or one _refuse_newer_schema
-            # recognized as lionagi's, carries the native lineage; a row naming another
-            # application was refused above, so this never overwrites one.
-            await conn.execute(
-                text(
-                    "INSERT INTO schema_meta (key, value) VALUES (:key, :lineage) "
-                    "ON CONFLICT (key) DO NOTHING"
-                ),
-                {"key": _LINEAGE_KEY, "lineage": _NATIVE_LINEAGE},
-            )
-            await conn.execute(
-                text(
-                    "INSERT INTO message_types (type_id, lion_class) VALUES "
-                    "(0, '__unknown__'), "
-                    "(1, 'lionagi.protocols.messages.system.System'), "
-                    "(2, 'lionagi.protocols.messages.instruction.Instruction'), "
-                    "(3, 'lionagi.protocols.messages.assistant_response.AssistantResponse'), "
-                    "(4, 'lionagi.protocols.messages.action_request.ActionRequest'), "
-                    "(5, 'lionagi.protocols.messages.action_response.ActionResponse') "
-                    "ON CONFLICT (type_id) DO NOTHING"
-                )
-            )
-        # The schema transaction has committed, and with it the native lineage row, so a
-        # connection this handle opens from here on refuses only a lineage row naming another
-        # application, never a version another writer records afterwards (ADR-0128 D7).
+        async with self._schema_transaction() as conn:
+            version = await self._refuse_newer_schema(conn)
+            # Version 7 activates preservation of chain decisions without changing
+            # version 6's schema. A completed v6 store only needs a new stamp.
+            stamp_only = version == 6 and SCHEMA_VERSION == "7"
+            if not stamp_only:
+                await self._apply_schema_changes(conn)
+            # Readers use repaired terminal durations and completion windows.
+            # A store still missing the repair must finish it before activation.
+            await self._backfill_session_ended_at_once(conn)
+            if version != int(SCHEMA_VERSION):
+                await self._stamp_schema_version(conn)
         self._schema_committed = True
 
-        # Historical terminal sessions can be numerous, so the repair does not hold the schema
-        # transaction or SQLite's writer lock. Each batch commits independently, and a crash leaves
-        # the completion marker absent so the next open resumes.
-        await self._backfill_session_ended_at_once()
+    async def _apply_schema_changes(self, conn: AsyncConnection) -> None:
+        await self._reconcile_columns(conn)
+        if self.dialect == "sqlite":
+            await self._rebuild_legacy_sessions_table(conn)
+            await self._drop_legacy_action_kind_check(conn)
+            await self._drop_legacy_schedules_command_check(conn)
+            await self._drop_legacy_schedules_trigger_type_check(conn)
+            await self._drop_legacy_invocations_status_check(conn)
+            await self._drop_legacy_schedule_runs_check(conn)
+            await self._drop_legacy_definitions_kind_check(conn)
+        await conn.run_sync(metadata.create_all)
+        await self._classify_terminal_delivery_history_once(conn)
+        # Before _reconcile_indexes, which recreates the unique index on
+        # attention_disposition_history.sequence: that would fail against the DEFAULT 0
+        # placeholder every pre-existing row shares until this backfill gives each a distinct
+        # value.
+        await self._backfill_attention_dispositions_once(conn)
+        await self._reconcile_indexes(conn)
+        # After create_all, which guarantees sessions exists for a store that never had it, and
+        # before any write carrying a value the pre-existing CHECK does not name.
+        await self._reconcile_constraints(conn)
+        await conn.execute(
+            text(
+                "UPDATE engine_runs SET parent_session_id = session_id "
+                "WHERE parent_session_id IS NULL AND session_id IS NOT NULL "
+                "AND EXISTS (SELECT 1 FROM sessions WHERE sessions.id = engine_runs.session_id)"
+            )
+        )
+        await self._backfill_dispatched_at_once(conn)
+        await self._backfill_imported_role_label_once(conn)
+        await conn.execute(
+            text(
+                "INSERT INTO schema_meta (key, value) VALUES ('created_at', :created_at) "
+                "ON CONFLICT (key) DO NOTHING"
+            ),
+            {"created_at": str(int(time.time()))},
+        )
+        # ADR-0128 D7: a store this transaction created, or one _refuse_newer_schema
+        # recognized as lionagi's, carries the native lineage; a row naming another
+        # application was refused above, so this never overwrites one.
+        await conn.execute(
+            text(
+                "INSERT INTO schema_meta (key, value) VALUES (:key, :lineage) "
+                "ON CONFLICT (key) DO NOTHING"
+            ),
+            {"key": _LINEAGE_KEY, "lineage": _NATIVE_LINEAGE},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO message_types (type_id, lion_class) VALUES "
+                "(0, '__unknown__'), "
+                "(1, 'lionagi.protocols.messages.system.System'), "
+                "(2, 'lionagi.protocols.messages.instruction.Instruction'), "
+                "(3, 'lionagi.protocols.messages.assistant_response.AssistantResponse'), "
+                "(4, 'lionagi.protocols.messages.action_request.ActionRequest'), "
+                "(5, 'lionagi.protocols.messages.action_response.ActionResponse') "
+                "ON CONFLICT (type_id) DO NOTHING"
+            )
+        )
+
+    async def _stamp_schema_version(self, conn: AsyncConnection) -> None:
+        await conn.execute(
+            text(
+                "INSERT INTO schema_meta (key, value) VALUES ('version', :version) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+            ),
+            {"version": SCHEMA_VERSION},
+        )
 
     _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = _MIGRATION_COLUMNS
     _MIGRATION_INDEXES: dict[str, tuple[str, ...]] = _MIGRATION_INDEXES
     _MIGRATION_CONSTRAINTS: dict[str, tuple[str, ...]] = _MIGRATION_CONSTRAINTS
 
-    async def _reconcile_columns(self) -> None:
+    async def _reconcile_columns(self, conn: AsyncConnection) -> None:
         for table, columns in self._MIGRATION_COLUMNS.items():
             try:
-                async with self._engine.connect() as conn:
-                    has_it = await conn.run_sync(lambda c, t=table: inspect(c).has_table(t))
-                    if not has_it:
-                        continue
-                    existing = await conn.run_sync(
-                        lambda c, t=table: [col["name"] for col in inspect(c).get_columns(t)]
-                    )
-            except _NATIVE_OPEN_REFUSALS:
-                # A new connection's own refusal (ADR-0128 D7), not a failed inspection.
-                raise
-            except Exception as exc:  # noqa: BLE001
+                has_table = await conn.run_sync(lambda c, t=table: inspect(c).has_table(t))
+                if not has_table:
+                    continue
+                existing = await conn.run_sync(
+                    lambda c, t=table: {col["name"] for col in inspect(c).get_columns(t)}
+                )
+            except Exception as exc:
                 _log.error(
                     "failed to inspect migration columns for table %r: %r",
                     table,
@@ -2047,27 +2068,7 @@ class StateDB:
                 raise
             for name, defn in columns:
                 if name not in existing:
-                    add_column = f"ALTER TABLE {table} ADD COLUMN {name} {defn}"
-                    if self.dialect == "postgresql":
-                        add_column = f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {defn}"
-                    try:
-                        async with self._engine.begin() as conn:
-                            await self._refuse_newer_schema(conn)
-                            await conn.execute(text(add_column))
-                    except OperationalError:
-                        # SQLite has no ADD COLUMN IF NOT EXISTS, and another process may commit the
-                        # same migration between our inspection and our ALTER. Only suppress the
-                        # error when a fresh inspection proves the column now exists.
-                        if self.dialect != "sqlite":
-                            raise
-                        async with self._engine.connect() as conn:
-                            reconciled = await conn.run_sync(
-                                lambda c, t=table, n=name: (
-                                    n in {col["name"] for col in inspect(c).get_columns(t)}
-                                )
-                            )
-                        if not reconciled:
-                            raise
+                    await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {defn}"))
 
     async def _reconcile_indexes(self, conn) -> None:
         """Create indexes that ``metadata.create_all`` cannot add to existing tables."""
@@ -2162,44 +2163,27 @@ class StateDB:
         if claimed.rowcount:
             await self._backfill_dispatched_at(conn)
 
-    async def _backfill_session_ended_at_once(self) -> None:
-        """Repair historical terminal sessions in bounded, resumable batches."""
-        # Completed databases take the ordinary read connection and return: opening StateDB must not
-        # consume an unrelated write transaction merely to discover a durable marker already exists.
-        async with self._read() as conn:
-            marker = (
-                await conn.execute(
-                    text("SELECT 1 FROM schema_meta WHERE key = :key"),
-                    {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
-                )
-            ).first()
+    async def _backfill_session_ended_at_once(self, conn: AsyncConnection) -> None:
+        """Repair terminal sessions in bounded batches inside the migration transaction."""
+        marker = (
+            await conn.execute(
+                text("SELECT 1 FROM schema_meta WHERE key = :key"),
+                {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
+            )
+        ).first()
         if marker is not None:
             return
 
-        while True:
-            async with self._tx() as conn:
-                await self._refuse_newer_schema(conn)
-                marker = (
-                    await conn.execute(
-                        text("SELECT 1 FROM schema_meta WHERE key = :key"),
-                        {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
-                    )
-                ).first()
-                if marker is not None:
-                    return
+        while await self._backfill_session_ended_at_batch(conn):
+            pass
 
-                repaired = await self._backfill_session_ended_at_batch(conn)
-                if repaired:
-                    continue
-
-                await conn.execute(
-                    text(
-                        "INSERT INTO schema_meta (key, value) VALUES (:key, '1') "
-                        "ON CONFLICT (key) DO NOTHING"
-                    ),
-                    {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
-                )
-                return
+        await conn.execute(
+            text(
+                "INSERT INTO schema_meta (key, value) VALUES (:key, '1') "
+                "ON CONFLICT (key) DO NOTHING"
+            ),
+            {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
+        )
 
     async def _backfill_session_ended_at_batch(self, conn) -> int:
         """Approximate at most one batch of missing historical end times."""
@@ -2368,36 +2352,57 @@ class StateDB:
                 {"id": item_id, "rev": counts[item_id]},
             )
 
-    async def _rebuild_check_constraint(self, table: str, already_rebuilt, rebuild) -> None:
-        """Run a legacy CHECK-constraint table rebuild, tolerant of a concurrent winner."""
-        try:
-            await rebuild()
-        # Five of the six rebuilds execute through the raw aiosqlite driver, which raises
-        # sqlite3.OperationalError rather than SQLAlchemy's wrapper, so both types are caught here.
-        except (OperationalError, sqlite3.OperationalError) as original_error:
-            if self.dialect != "sqlite":
-                raise
-            # The reinspection read is itself a fresh connection contending for the same schema
-            # lock, so under deep enough contention it can raise too. That must not surface as a
-            # different, less informative crash than the write failure being handled.
-            try:
-                async with self._engine.connect() as conn:
-                    row = (
-                        (
-                            await conn.execute(
-                                text(
-                                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=:t"
-                                ),
-                                {"t": table},
-                            )
-                        )
-                        .mappings()
-                        .first()
-                    )
-            except (OperationalError, sqlite3.OperationalError):
-                raise original_error from None
-            if not already_rebuilt(row["sql"] if row is not None else None):
-                raise
+    @staticmethod
+    async def _sqlite_table_sql(conn: AsyncConnection, table: str) -> str | None:
+        return (
+            await conn.execute(
+                text("SELECT sql FROM sqlite_master WHERE type='table' AND name=:table"),
+                {"table": table},
+            )
+        ).scalar_one_or_none()
+
+    @staticmethod
+    async def _sqlite_rebuild_table(
+        conn: AsyncConnection,
+        table: str,
+        create_sql: str,
+        *,
+        repair_updated_at: bool = False,
+        preserve_triggers: bool = False,
+    ) -> None:
+        """Rebuild one table on the caller's locked migration connection."""
+        cols_rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).mappings()
+        cols = [row["name"] for row in cols_rows]
+        col_list = ", ".join(cols)
+        select_list = ", ".join(
+            "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
+            if repair_updated_at and col == "updated_at"
+            else col
+            for col in cols
+        )
+
+        objects = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT sql FROM sqlite_master WHERE tbl_name=:table AND sql IS NOT NULL "
+                        "AND (type='index' OR (:preserve_triggers AND type='trigger')) "
+                        "ORDER BY type, rowid"
+                    ),
+                    {"table": table, "preserve_triggers": preserve_triggers},
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await conn.exec_driver_sql(create_sql)
+        await conn.exec_driver_sql(
+            f"INSERT INTO {table}_new ({col_list}) SELECT {select_list} FROM {table}"  # noqa: S608
+        )
+        await conn.exec_driver_sql(f"DROP TABLE {table}")
+        await conn.exec_driver_sql(f"ALTER TABLE {table}_new RENAME TO {table}")
+        for sql in objects:
+            await conn.exec_driver_sql(sql)
 
     _LEGACY_SESSION_STATUS_CHECK_MARKER = "'running', 'completed', 'failed', 'aborted'"
     # Present only in a sessions CREATE SQL predating transcript-import provenance; its absence
@@ -2415,516 +2420,138 @@ class StateDB:
             or cls._NARROW_INVOCATION_KIND_MARKER in create_sql
         )
 
-    async def _rebuild_legacy_sessions_table(self) -> None:
-        """Rebuild sessions if it carries either legacy CHECK: status vocabulary, or source_kind."""
+    async def _rebuild_legacy_sessions_table(self, conn: AsyncConnection) -> None:
+        """Rebuild sessions if it carries a legacy CHECK."""
         if self.dialect != "sqlite":
             return
-        async with self._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text("SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'")
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if row is None or row["sql"] is None:
-            return
-        create_sql: str = row["sql"]
-        if not self._sessions_rebuild_needed(create_sql):
+        create_sql = await self._sqlite_table_sql(conn, "sessions")
+        if create_sql is None or not self._sessions_rebuild_needed(create_sql):
             return
 
-        async with self._engine.connect() as conn:
-            index_rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master "
-                            "WHERE type='index' AND tbl_name='sessions' AND sql IS NOT NULL"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            index_sqls = [r["sql"] for r in index_rows]
-
-            cols_rows = (await conn.execute(text("PRAGMA table_info(sessions)"))).mappings().all()
-            cols = [r["name"] for r in cols_rows]
-        col_list = ", ".join(cols)
-
-        async def _rebuild() -> None:
-            async with self._engine.connect() as conn:
-                driver = (await conn.get_raw_connection()).driver_connection
-                try:
-                    # The OFF pragma is inside the try, not above it: it takes effect at its own
-                    # await, so anything interrupting after it, cancellation included, must still
-                    # reach the finally.
-                    await driver.execute("PRAGMA foreign_keys = OFF")
-                    # The commit closes any open transaction rather than making the pragma
-                    # effective. The pragma must run on the raw driver: open() installs BEGIN
-                    # IMMEDIATE on every sqlite engine, so setting it through an engine-level
-                    # begin() block leaves it a no-op.
-                    await driver.commit()
-                    await driver.execute("BEGIN IMMEDIATE")
-                    try:
-                        await self._refuse_newer_sqlite_schema(driver)
-                        # These are the foreign keys the declared schema carries, so a rebuilt table
-                        # ends up with the same constraints a freshly created one gets. They are
-                        # what makes the OFF pragma load-bearing: sqlite accepts a forward reference
-                        # to a missing table, but with enforcement on every statement against the
-                        # child fails while the parent is absent, including the copy below and
-                        # including rows whose FK column is NULL.
-                        await driver.execute(
-                            """
-                            CREATE TABLE sessions_new (
-                              id              TEXT    PRIMARY KEY,
-                              cc_session_id   TEXT,
-                              run_id          TEXT,
-                              cli_worker_generation TEXT,
-                              created_at      REAL    NOT NULL,
-                              node_metadata   JSON,
-                              name            TEXT,
-                              user_label      TEXT,
-                              user            TEXT,
-                              progression_id  TEXT    NOT NULL REFERENCES progressions(id),
-                              first_msg_id    TEXT    REFERENCES messages(id),
-                              last_msg_id     TEXT    REFERENCES messages(id),
-                              updated_at      REAL    NOT NULL,
-                              playbook_name   TEXT,
-                              agent_name      TEXT,
-                              invocation_kind TEXT CHECK(
-                                                invocation_kind IS NULL
-                                                OR invocation_kind IN
-                                                  ('agent', 'play', 'flow', 'fanout', 'show-play', 'engine')
-                                              ),
-                              show_topic      TEXT,
-                              show_play_name  TEXT,
-                              artifacts_path  TEXT,
-                              source_kind     TEXT    DEFAULT 'live' CHECK(
-                                                source_kind IS NULL
-                                                OR source_kind IN
-                                                  ('live', 'imported_fs', 'imported_codex')
-                                              ),
-                              status          TEXT,
-                              started_at      REAL,
-                              ended_at        REAL,
-                              ended_at_is_approximate INTEGER NOT NULL DEFAULT 0,
-                              last_message_at REAL,
-                              current_phase   TEXT,
-                              invocation_id   TEXT    REFERENCES invocations(id),
-                              model           TEXT,
-                              provider        TEXT,
-                              effort          TEXT,
-                              agent_hash      TEXT,
-                              project         TEXT,
-                              project_source  TEXT,
-                              status_reason_code     TEXT,
-                              status_reason_summary  TEXT,
-                              status_evidence_refs   JSON,
-                              artifact_contract_json      JSON,
-                              artifact_verification_json  JSON,
-                              input_tokens    INTEGER,
-                              output_tokens   INTEGER,
-                              total_cost_usd  REAL,
-                              num_turns       INTEGER,
-                              duration_ms     REAL
-                            )
-                            """
-                        )
-                        select_cols = []
-                        for c in cols:
-                            if c == "updated_at":
-                                select_cols.append(
-                                    "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
-                                )
-                            else:
-                                select_cols.append(c)
-                        select_list = ", ".join(select_cols)
-                        insert_sql = f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
-                        await driver.execute(insert_sql)
-                        await driver.execute("DROP TABLE sessions")
-                        await driver.execute("ALTER TABLE sessions_new RENAME TO sessions")
-                        for idx_sql in index_sqls:
-                            await driver.execute(idx_sql)
-                        await driver.commit()
-                    except BaseException:
-                        await driver.rollback()
-                        raise
-                finally:
-                    await _restore_foreign_keys(conn, driver)
-
-        await self._rebuild_check_constraint(
+        await self._sqlite_rebuild_table(
+            conn,
             "sessions",
-            lambda sql: sql is None or not self._sessions_rebuild_needed(sql),
-            _rebuild,
+            """
+            CREATE TABLE sessions_new (
+              id              TEXT    PRIMARY KEY,
+              cc_session_id   TEXT,
+              run_id          TEXT,
+              cli_worker_generation TEXT,
+              created_at      REAL    NOT NULL,
+              node_metadata   JSON,
+              name            TEXT,
+              user_label      TEXT,
+              user            TEXT,
+              progression_id  TEXT    NOT NULL REFERENCES progressions(id),
+              first_msg_id    TEXT    REFERENCES messages(id),
+              last_msg_id     TEXT    REFERENCES messages(id),
+              updated_at      REAL    NOT NULL,
+              playbook_name   TEXT,
+              agent_name      TEXT,
+              invocation_kind TEXT CHECK(
+                                invocation_kind IS NULL
+                                OR invocation_kind IN
+                                  ('agent', 'play', 'flow', 'fanout', 'show-play', 'engine')
+                              ),
+              show_topic      TEXT,
+              show_play_name  TEXT,
+              artifacts_path  TEXT,
+              source_kind     TEXT    DEFAULT 'live' CHECK(
+                                source_kind IS NULL
+                                OR source_kind IN
+                                  ('live', 'imported_fs', 'imported_codex')
+                              ),
+              status          TEXT,
+              started_at      REAL,
+              ended_at        REAL,
+              ended_at_is_approximate INTEGER NOT NULL DEFAULT 0,
+              last_message_at REAL,
+              current_phase   TEXT,
+              invocation_id   TEXT    REFERENCES invocations(id),
+              model           TEXT,
+              provider        TEXT,
+              effort          TEXT,
+              agent_hash      TEXT,
+              project         TEXT,
+              project_source  TEXT,
+              status_reason_code     TEXT,
+              status_reason_summary  TEXT,
+              status_evidence_refs   JSON,
+              artifact_contract_json      JSON,
+              artifact_verification_json  JSON,
+              input_tokens    INTEGER,
+              output_tokens   INTEGER,
+              total_cost_usd  REAL,
+              num_turns       INTEGER,
+              duration_ms     REAL
+            )
+            """,
+            repair_updated_at=True,
         )
 
-    # Substring present only in the current schedules CREATE SQL;
-    # its absence indicates a legacy DB whose action_kind CHECK needs rebuilding.
+    # These markers are in the CREATE SQL that introduced each value to the CHECK.
     _LEGACY_SCHEDULES_FLOW_YAML_MARKER = "'flow_yaml'"
-
-    async def _drop_legacy_action_kind_check(self) -> None:
-        """Rebuild ``schedules`` if it still carries the legacy action_kind CHECK."""
-        if self.dialect != "sqlite":
-            return
-        async with self._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if row is None or row["sql"] is None:
-            return
-        create_sql: str = row["sql"]
-        if self._LEGACY_SCHEDULES_FLOW_YAML_MARKER in create_sql:
-            # Table was already created / rebuilt with flow_yaml in the CHECK.
-            return
-
-        async with self._engine.connect() as conn:
-            index_rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master "
-                            "WHERE type='index' AND tbl_name='schedules' AND sql IS NOT NULL"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            index_sqls = [r["sql"] for r in index_rows]
-
-            cols_rows = (await conn.execute(text("PRAGMA table_info(schedules)"))).mappings().all()
-            cols = [r["name"] for r in cols_rows]
-        col_list = ", ".join(cols)
-
-        # Derive the rebuild DDL from the canonical schema_meta Table, so this migration path cannot
-        # drift from the live schema.
-        rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
-        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
-
-        # ``schedules`` is an FK target with ON DELETE CASCADE, so dropping it under enforced
-        # foreign keys cascades away schedule_runs rows even after they are copied across. `PRAGMA
-        # foreign_keys` is a no-op inside a pending transaction, so it is toggled on the raw driver
-        # connection; see docs/internals/state-db.md.
-        async def _rebuild() -> None:
-            async with self._engine.connect() as conn:
-                driver = (await conn.get_raw_connection()).driver_connection
-                try:
-                    # The OFF pragma is inside the try, not above it: it takes effect at its own
-                    # await, so anything interrupting after it, cancellation included, must still
-                    # reach the finally.
-                    await driver.execute("PRAGMA foreign_keys = OFF")
-                    await driver.commit()
-                    await driver.execute("BEGIN IMMEDIATE")
-                    try:
-                        await self._refuse_newer_sqlite_schema(driver)
-                        await driver.execute(create_stmt)
-                        insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
-                        await driver.execute(insert_sql)
-                        await driver.execute("DROP TABLE schedules")
-                        await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
-                        for idx_sql in index_sqls:
-                            await driver.execute(idx_sql)
-                        await driver.commit()
-                    except BaseException:
-                        await driver.rollback()
-                        raise
-                finally:
-                    await _restore_foreign_keys(conn, driver)
-
-        await self._rebuild_check_constraint(
-            "schedules",
-            lambda sql: sql is not None and self._LEGACY_SCHEDULES_FLOW_YAML_MARKER in sql,
-            _rebuild,
-        )
-
-    # Substring present only in the widened schedules CREATE SQL. Distinct from the flow_yaml marker
-    # above: a DB already rebuilt to admit 'flow_yaml' carries that one and would otherwise never
-    # re-run to pick up 'command' too.
     _LEGACY_SCHEDULES_COMMAND_MARKER = "'command'"
-
-    async def _drop_legacy_schedules_command_check(self) -> None:
-        """Rebuild ``schedules`` if its action_kind CHECK still omits 'command'."""
-        if self.dialect != "sqlite":
-            return
-        async with self._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if row is None or row["sql"] is None:
-            return
-        create_sql: str = row["sql"]
-        if self._LEGACY_SCHEDULES_COMMAND_MARKER in create_sql:
-            # Table was already created / rebuilt with 'command' in the CHECK.
-            return
-
-        async with self._engine.connect() as conn:
-            index_rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master "
-                            "WHERE type='index' AND tbl_name='schedules' AND sql IS NOT NULL"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            index_sqls = [r["sql"] for r in index_rows]
-
-            cols_rows = (await conn.execute(text("PRAGMA table_info(schedules)"))).mappings().all()
-            cols = [r["name"] for r in cols_rows]
-        col_list = ", ".join(cols)
-
-        # Derive the rebuild DDL from the canonical schema_meta Table, so this migration path cannot
-        # drift from the live schema.
-        rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
-        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
-
-        # ``schedules`` is an FK target with ON DELETE CASCADE, so dropping it under enforced
-        # foreign keys cascades away schedule_runs rows even after they are copied across. `PRAGMA
-        # foreign_keys` is a no-op inside a pending transaction, so it is toggled on the raw driver
-        # connection; see docs/internals/state-db.md.
-        async def _rebuild() -> None:
-            async with self._engine.connect() as conn:
-                driver = (await conn.get_raw_connection()).driver_connection
-                try:
-                    # The OFF pragma is inside the try, not above it: it takes effect at its own
-                    # await, so anything interrupting after it, cancellation included, must still
-                    # reach the finally.
-                    await driver.execute("PRAGMA foreign_keys = OFF")
-                    await driver.commit()
-                    await driver.execute("BEGIN IMMEDIATE")
-                    try:
-                        await self._refuse_newer_sqlite_schema(driver)
-                        await driver.execute(create_stmt)
-                        insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
-                        await driver.execute(insert_sql)
-                        await driver.execute("DROP TABLE schedules")
-                        await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
-                        for idx_sql in index_sqls:
-                            await driver.execute(idx_sql)
-                        await driver.commit()
-                    except BaseException:
-                        await driver.rollback()
-                        raise
-                finally:
-                    await _restore_foreign_keys(conn, driver)
-
-        await self._rebuild_check_constraint(
-            "schedules",
-            lambda sql: sql is not None and self._LEGACY_SCHEDULES_COMMAND_MARKER in sql,
-            _rebuild,
-        )
-
-    # Substring present only in the widened schedules CREATE SQL; its absence indicates a legacy DB
-    # whose trigger_type CHECK still omits 'at'.
     _LEGACY_SCHEDULES_TRIGGER_TYPE_MARKER = "'at'"
 
-    async def _drop_legacy_schedules_trigger_type_check(self) -> None:
-        """Rebuild ``schedules`` if its trigger_type CHECK still omits 'at'."""
+    async def _rebuild_legacy_schedules_check(self, conn: AsyncConnection, marker: str) -> None:
         if self.dialect != "sqlite":
             return
-        async with self._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if row is None or row["sql"] is None:
-            return
-        create_sql: str = row["sql"]
-        if self._LEGACY_SCHEDULES_TRIGGER_TYPE_MARKER in create_sql:
+        create_sql = await self._sqlite_table_sql(conn, "schedules")
+        if create_sql is None or marker in create_sql:
             return
 
-        async with self._engine.connect() as conn:
-            index_rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master "
-                            "WHERE type='index' AND tbl_name='schedules' AND sql IS NOT NULL"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            index_sqls = [r["sql"] for r in index_rows]
+        # The rebuilt table has the same constraints as a freshly-created one.
+        table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
+        ddl = str(CreateTable(table).compile(dialect=conn.dialect))
+        await self._sqlite_rebuild_table(conn, "schedules", ddl)
 
-            cols_rows = (await conn.execute(text("PRAGMA table_info(schedules)"))).mappings().all()
-            cols = [r["name"] for r in cols_rows]
-        col_list = ", ".join(cols)
+    async def _drop_legacy_action_kind_check(self, conn: AsyncConnection) -> None:
+        """Rebuild schedules if its action_kind CHECK still omits 'flow_yaml'."""
+        await self._rebuild_legacy_schedules_check(conn, self._LEGACY_SCHEDULES_FLOW_YAML_MARKER)
 
-        rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
-        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
+    async def _drop_legacy_schedules_command_check(self, conn: AsyncConnection) -> None:
+        """Rebuild schedules if its action_kind CHECK still omits 'command'."""
+        await self._rebuild_legacy_schedules_check(conn, self._LEGACY_SCHEDULES_COMMAND_MARKER)
 
-        async def _rebuild() -> None:
-            async with self._engine.connect() as conn:
-                driver = (await conn.get_raw_connection()).driver_connection
-                try:
-                    # The OFF pragma is inside the try, not above it: it takes effect at its own
-                    # await, so anything interrupting after it, cancellation included, must still
-                    # reach the finally.
-                    await driver.execute("PRAGMA foreign_keys = OFF")
-                    await driver.commit()
-                    await driver.execute("BEGIN IMMEDIATE")
-                    try:
-                        await self._refuse_newer_sqlite_schema(driver)
-                        await driver.execute(create_stmt)
-                        insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
-                        await driver.execute(insert_sql)
-                        await driver.execute("DROP TABLE schedules")
-                        await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
-                        for idx_sql in index_sqls:
-                            await driver.execute(idx_sql)
-                        await driver.commit()
-                    except BaseException:
-                        await driver.rollback()
-                        raise
-                finally:
-                    await _restore_foreign_keys(conn, driver)
+    async def _drop_legacy_schedules_trigger_type_check(self, conn: AsyncConnection) -> None:
+        """Rebuild schedules if its trigger_type CHECK still omits 'at'."""
+        await self._rebuild_legacy_schedules_check(conn, self._LEGACY_SCHEDULES_TRIGGER_TYPE_MARKER)
 
-        await self._rebuild_check_constraint(
-            "schedules",
-            lambda sql: sql is not None and self._LEGACY_SCHEDULES_TRIGGER_TYPE_MARKER in sql,
-            _rebuild,
-        )
-
-    # Substring present only in the post-completion-trust-gate invocations CREATE SQL; its absence
-    # indicates a status CHECK that needs rebuilding to admit 'completed_empty'.
     _LEGACY_INVOCATIONS_STATUS_MARKER = "'completed_empty'"
 
-    async def _drop_legacy_invocations_status_check(self) -> None:
-        """Rebuild ``invocations`` if its status CHECK still omits 'completed_empty'."""
+    async def _drop_legacy_invocations_status_check(self, conn: AsyncConnection) -> None:
+        """Rebuild invocations if its status CHECK still omits 'completed_empty'."""
         if self.dialect != "sqlite":
             return
-        async with self._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invocations'"
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if row is None or row["sql"] is None:
-            return
-        create_sql: str = row["sql"]
-        if self._LEGACY_INVOCATIONS_STATUS_MARKER in create_sql:
+        create_sql = await self._sqlite_table_sql(conn, "invocations")
+        if create_sql is None or self._LEGACY_INVOCATIONS_STATUS_MARKER in create_sql:
             return
 
-        async with self._engine.connect() as conn:
-            index_rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master "
-                            "WHERE type='index' AND tbl_name='invocations' AND sql IS NOT NULL"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            index_sqls = [r["sql"] for r in index_rows]
-
-            cols_rows = (
-                (await conn.execute(text("PRAGMA table_info(invocations)"))).mappings().all()
-            )
-            cols = [r["name"] for r in cols_rows]
-        col_list = ", ".join(cols)
-
-        # ``invocations`` is an FK target, so dropping it while `PRAGMA foreign_keys` is enforced
-        # raises a constraint failure even with rows safely copied into the new table.
-        # engine.begin() opens its transaction before the first statement and SQLite treats the
-        # pragma as a no-op inside one, so the toggle goes through the raw driver connection
-        # instead.
-        async def _rebuild() -> None:
-            async with self._engine.connect() as conn:
-                driver = (await conn.get_raw_connection()).driver_connection
-                try:
-                    # The OFF pragma is inside the try, not above it: it takes effect at its own
-                    # await, so anything interrupting after it, cancellation included, must still
-                    # reach the finally.
-                    await driver.execute("PRAGMA foreign_keys = OFF")
-                    # The commit closes any open transaction, then BEGIN IMMEDIATE makes the whole
-                    # rebuild one atomic transaction: DDL autocommits per statement otherwise, so a
-                    # crash between DROP and RENAME would strand the data in invocations_new.
-                    await driver.commit()
-                    await driver.execute("BEGIN IMMEDIATE")
-                    await self._refuse_newer_sqlite_schema(driver)
-                    await driver.execute(
-                        """
-                        CREATE TABLE invocations_new (
-                          id              TEXT    PRIMARY KEY,
-                          skill           TEXT    NOT NULL,
-                          plugin          TEXT,
-                          prompt          TEXT,
-                          started_at      REAL    NOT NULL,
-                          ended_at        REAL,
-                          status          TEXT    NOT NULL DEFAULT 'running'
-                                          CHECK(status IN ('running', 'completed',
-                                                'completed_empty', 'failed',
-                                                'timed_out', 'aborted', 'cancelled')),
-                          session_count   INTEGER NOT NULL DEFAULT 0,
-                          created_at      REAL    NOT NULL,
-                          updated_at      REAL    NOT NULL,
-                          node_metadata   JSON,
-                          status_reason_code     TEXT,
-                          status_reason_summary  TEXT,
-                          status_evidence_refs   JSON
-                        )
-                        """
-                    )
-                    insert_sql = (
-                        f"INSERT INTO invocations_new ({col_list}) "  # noqa: S608
-                        f"SELECT {col_list} FROM invocations"
-                    )
-                    await driver.execute(insert_sql)
-                    await driver.execute("DROP TABLE invocations")
-                    await driver.execute("ALTER TABLE invocations_new RENAME TO invocations")
-                    for idx_sql in index_sqls:
-                        await driver.execute(idx_sql)
-                    await driver.commit()
-                except BaseException:
-                    await driver.rollback()
-                    raise
-                finally:
-                    await _restore_foreign_keys(conn, driver)
-
-        await self._rebuild_check_constraint(
+        await self._sqlite_rebuild_table(
+            conn,
             "invocations",
-            lambda sql: sql is not None and self._LEGACY_INVOCATIONS_STATUS_MARKER in sql,
-            _rebuild,
+            """
+            CREATE TABLE invocations_new (
+              id              TEXT    PRIMARY KEY,
+              skill           TEXT    NOT NULL,
+              plugin          TEXT,
+              prompt          TEXT,
+              started_at      REAL    NOT NULL,
+              ended_at        REAL,
+              status          TEXT    NOT NULL DEFAULT 'running'
+                              CHECK(status IN ('running', 'completed',
+                                    'completed_empty', 'failed',
+                                    'timed_out', 'aborted', 'cancelled')),
+              session_count   INTEGER NOT NULL DEFAULT 0,
+              created_at      REAL    NOT NULL,
+              updated_at      REAL    NOT NULL,
+              node_metadata   JSON,
+              status_reason_code     TEXT,
+              status_reason_summary  TEXT,
+              status_evidence_refs   JSON
+            )
+            """,
         )
 
     async def _backup_before_rebuild(self, label: str) -> None:
@@ -2970,165 +2597,69 @@ class StateDB:
         # what was missed to writes concurrent with the backup itself, which is a narrower window
         # rather than no window.
 
-    # Substring present only in the current schedule_runs CREATE SQL; its absence indicates a legacy
-    # DB still carrying the 5-value CHECK and a NOT NULL schedule_id.
+    # The widened CHECK admits queued and dependency-waiting runs.
     _LEGACY_SCHEDULE_RUNS_QUEUE_MARKER = "'waiting_dependency'"
 
-    async def _drop_legacy_schedule_runs_check(self) -> None:
-        """Rebuild ``schedule_runs`` if it still carries the legacy status CHECK."""
+    async def _drop_legacy_schedule_runs_check(self, conn: AsyncConnection) -> None:
+        """Rebuild schedule_runs if it still carries the legacy status CHECK."""
         if self.dialect != "sqlite":
             return
-        async with self._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master "
-                            "WHERE type='table' AND name='schedule_runs'"
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if row is None or row["sql"] is None:
-            return
-        create_sql: str = row["sql"]
-        if self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER in create_sql:
-            # Table was already created / rebuilt with the widened CHECK.
+        create_sql = await self._sqlite_table_sql(conn, "schedule_runs")
+        if create_sql is None or self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER in create_sql:
             return
 
-        await self._backup_before_rebuild("schedule_runs")
-
-        async with self._engine.connect() as conn:
-            index_rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master "
-                            "WHERE type='index' AND tbl_name='schedule_runs' AND sql IS NOT NULL"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            index_sqls = [r["sql"] for r in index_rows]
-
-            # DROP TABLE also drops the table's triggers; capture them for
-            # replay alongside the indexes.
-            trigger_rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master "
-                            "WHERE type='trigger' AND tbl_name='schedule_runs' AND sql IS NOT NULL"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            trigger_sqls = [r["sql"] for r in trigger_rows]
-
-            cols_rows = (
-                (await conn.execute(text("PRAGMA table_info(schedule_runs)"))).mappings().all()
-            )
-            cols = [r["name"] for r in cols_rows]
-        col_list = ", ".join(cols)
-
-        # ``schedule_runs`` is both an FK source and an FK target, the same complication as the
-        # invocations rebuild, so it uses the same hand-kept-literal and raw-driver-pragma technique
-        # rather than to_metadata(), which cannot resolve cross-table foreign keys from a single-
-        # table MetaData. The literal mirrors schema.sql, and parity is test-enforced.
-        async def _rebuild() -> None:
-            async with self._engine.connect() as conn:
-                driver = (await conn.get_raw_connection()).driver_connection
-                try:
-                    # The OFF pragma is inside the try, not above it: it takes effect at its own
-                    # await, so anything interrupting after it, cancellation included, must still
-                    # reach the finally.
-                    await driver.execute("PRAGMA foreign_keys = OFF")
-                    # The commit closes any open transaction, then one BEGIN IMMEDIATE wraps the
-                    # whole rebuild so a crash mid-sequence cannot strand the data in
-                    # schedule_runs_new.
-                    await driver.commit()
-                    await driver.execute("BEGIN IMMEDIATE")
-                    await self._refuse_newer_sqlite_schema(driver)
-                    await driver.execute(
-                        """
-                        CREATE TABLE schedule_runs_new (
-                          id                  TEXT    PRIMARY KEY,
-                          schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
-                          invocation_id       TEXT    REFERENCES invocations(id),
-                          trigger_context     JSON    NOT NULL,
-                          action_kind         TEXT    NOT NULL,
-                          action_args         JSON    NOT NULL,
-                          status              TEXT    NOT NULL DEFAULT 'running'
-                                              CHECK(status IN ('queued', 'waiting_dependency',
-                                                    'running', 'retry_wait', 'completed',
-                                                    'failed', 'timed_out', 'skipped',
-                                                    'cancelled')),
-                          exit_code           INTEGER,
-                          chain_parent_id     TEXT    REFERENCES schedule_runs(id),
-                          chain_depth         INTEGER NOT NULL DEFAULT 0,
-                          fired_at            REAL    NOT NULL,
-                          ended_at            REAL,
-                          error_detail        TEXT,
-                          created_at          REAL    NOT NULL,
-                          updated_at          REAL,
-                          status_reason_code     TEXT,
-                          status_reason_summary  TEXT,
-                          status_evidence_refs   JSON,
-                          queued_at           REAL,
-                          leased_by           TEXT,
-                          lease_expires_at    REAL,
-                          concurrency_key     TEXT,
-                          lease_attempts      INTEGER NOT NULL DEFAULT 0,
-                          required_capabilities  JSON,
-                          execution_target       TEXT,
-                          library_ref             TEXT,
-                          library_content_hash    TEXT,
-                          dispatched_at           REAL,
-                          resume_packet           JSON
-                        )
-                        """
-                    )
-                    insert_sql = (
-                        f"INSERT INTO schedule_runs_new ({col_list}) "  # noqa: S608
-                        f"SELECT {col_list} FROM schedule_runs"
-                    )
-                    await driver.execute(insert_sql)
-                    await driver.execute("DROP TABLE schedule_runs")
-                    await driver.execute("ALTER TABLE schedule_runs_new RENAME TO schedule_runs")
-                    for idx_sql in index_sqls:
-                        await driver.execute(idx_sql)
-                    for trig_sql in trigger_sqls:
-                        await driver.execute(trig_sql)
-                    # New queue indexes are not part of the pre-rebuild index set, so replaying
-                    # index_sqls never creates them. Create them explicitly and idempotently, so a
-                    # migrated DB matches a freshly-created one.
-                    await driver.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_schedule_runs_queue "
-                        "ON schedule_runs(status, queued_at) "
-                        "WHERE status IN ('queued', 'retry_wait')"
-                    )
-                    await driver.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency "
-                        "ON schedule_runs(concurrency_key, status) "
-                        "WHERE status IN ('queued', 'running', 'retry_wait')"
-                    )
-                    await driver.commit()
-                except BaseException:
-                    await driver.rollback()
-                    raise
-                finally:
-                    await _restore_foreign_keys(conn, driver)
-
-        await self._rebuild_check_constraint(
+        await self._sqlite_rebuild_table(
+            conn,
             "schedule_runs",
-            lambda sql: sql is not None and self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER in sql,
-            _rebuild,
+            """
+            CREATE TABLE schedule_runs_new (
+              id                  TEXT    PRIMARY KEY,
+              schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
+              invocation_id       TEXT    REFERENCES invocations(id),
+              trigger_context     JSON    NOT NULL,
+              action_kind         TEXT    NOT NULL,
+              action_args         JSON    NOT NULL,
+              status              TEXT    NOT NULL DEFAULT 'running'
+                                  CHECK(status IN ('queued', 'waiting_dependency',
+                                        'running', 'retry_wait', 'completed',
+                                        'failed', 'timed_out', 'skipped',
+                                        'cancelled')),
+              exit_code           INTEGER,
+              chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+              chain_depth         INTEGER NOT NULL DEFAULT 0,
+              fired_at            REAL    NOT NULL,
+              ended_at            REAL,
+              error_detail        TEXT,
+              created_at          REAL    NOT NULL,
+              updated_at          REAL,
+              status_reason_code     TEXT,
+              status_reason_summary  TEXT,
+              status_evidence_refs   JSON,
+              queued_at           REAL,
+              leased_by           TEXT,
+              lease_expires_at    REAL,
+              concurrency_key     TEXT,
+              lease_attempts      INTEGER NOT NULL DEFAULT 0,
+              required_capabilities  JSON,
+              execution_target       TEXT,
+              library_ref             TEXT,
+              library_content_hash    TEXT,
+              dispatched_at           REAL,
+              resume_packet           JSON
+            )
+            """,
+            preserve_triggers=True,
+        )
+        # The pre-rebuild index set does not include the new queue indexes.
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_schedule_runs_queue "
+            "ON schedule_runs(status, queued_at) "
+            "WHERE status IN ('queued', 'retry_wait')"
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency "
+            "ON schedule_runs(concurrency_key, status) "
+            "WHERE status IN ('queued', 'running', 'retry_wait')"
         )
 
     # The pre-skill-editor definitions.kind CHECK admitted exactly these two values. A substring
@@ -3144,94 +2675,48 @@ class StateDB:
             return None
         return frozenset(re.findall(r"'([^']*)'", match.group(1)))
 
-    async def _drop_legacy_definitions_kind_check(self) -> None:
-        """Rebuild ``definitions`` if it still carries the pre-skill-editor kind CHECK."""
+    async def _sqlite_rebuild_backup_labels(self, driver) -> tuple[str, ...]:
+        """Read which tables need a backup before starting the rebuild transaction."""
+        cursor = await driver.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' "
+            "AND name IN ('schedule_runs', 'definitions')"
+        )
+        try:
+            create_sql = dict(await cursor.fetchall())
+        finally:
+            await cursor.close()
+
+        labels = []
+        schedule_runs = create_sql.get("schedule_runs")
+        if (
+            schedule_runs is not None
+            and self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER not in schedule_runs
+        ):
+            labels.append("schedule_runs")
+        definitions = create_sql.get("definitions")
+        if (
+            definitions is not None
+            and self._definitions_kind_check_values(definitions)
+            == self._LEGACY_DEFINITIONS_KIND_VALUES
+        ):
+            labels.append("definitions")
+        return tuple(labels)
+
+    async def _drop_legacy_definitions_kind_check(self, conn: AsyncConnection) -> None:
+        """Rebuild definitions if it still carries the pre-skill-editor kind CHECK."""
         if self.dialect != "sqlite":
             return
-        async with self._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='definitions'"
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if row is None or row["sql"] is None:
-            return
-        create_sql: str = row["sql"]
-        if self._definitions_kind_check_values(create_sql) != self._LEGACY_DEFINITIONS_KIND_VALUES:
-            # Not the known legacy 2-value CHECK (already migrated, or an
-            # unrecognized shape) -- leave it alone.
+        create_sql = await self._sqlite_table_sql(conn, "definitions")
+        if (
+            create_sql is None
+            or self._definitions_kind_check_values(create_sql)
+            != self._LEGACY_DEFINITIONS_KIND_VALUES
+        ):
             return
 
-        # definitions holds every version of every agent, playbook and skill ever saved through
-        # Studio: same stakes as schedule_runs, same pre-rebuild backup.
-        await self._backup_before_rebuild("definitions")
-
-        async with self._engine.connect() as conn:
-            index_rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master "
-                            "WHERE type='index' AND tbl_name='definitions' AND sql IS NOT NULL"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            index_sqls = [r["sql"] for r in index_rows]
-
-            cols_rows = (
-                (await conn.execute(text("PRAGMA table_info(definitions)"))).mappings().all()
-            )
-            cols = [r["name"] for r in cols_rows]
-        col_list = ", ".join(cols)
-
-        # Derive the rebuild DDL from the canonical schema_meta Table, so this migration path cannot
-        # drift from the live schema.
-        rebuild_table = _definitions_table.to_metadata(MetaData(), name="definitions_new")
-        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
-
-        async def _rebuild() -> None:
-            async with self._engine.connect() as conn:
-                driver = (await conn.get_raw_connection()).driver_connection
-                try:
-                    await driver.execute("PRAGMA foreign_keys = OFF")
-                    await driver.commit()
-                    await driver.execute("BEGIN IMMEDIATE")
-                    try:
-                        await self._refuse_newer_sqlite_schema(driver)
-                        await driver.execute(create_stmt)
-                        insert_sql = (
-                            f"INSERT INTO definitions_new ({col_list}) "  # noqa: S608
-                            f"SELECT {col_list} FROM definitions"
-                        )
-                        await driver.execute(insert_sql)
-                        await driver.execute("DROP TABLE definitions")
-                        await driver.execute("ALTER TABLE definitions_new RENAME TO definitions")
-                        for idx_sql in index_sqls:
-                            await driver.execute(idx_sql)
-                        await driver.commit()
-                    except BaseException:
-                        await driver.rollback()
-                        raise
-                finally:
-                    await _restore_foreign_keys(conn, driver)
-
-        await self._rebuild_check_constraint(
-            "definitions",
-            lambda sql: (
-                sql is not None
-                and self._definitions_kind_check_values(sql) != self._LEGACY_DEFINITIONS_KIND_VALUES
-            ),
-            _rebuild,
-        )
+        table = _definitions_table.to_metadata(MetaData(), name="definitions_new")
+        ddl = str(CreateTable(table).compile(dialect=conn.dialect))
+        await self._sqlite_rebuild_table(conn, "definitions", ddl)
 
     # Schema version
 

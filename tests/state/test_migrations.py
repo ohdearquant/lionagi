@@ -1270,8 +1270,8 @@ async def test_dispatched_at_backfill_runs_when_column_already_exists(tmp_path):
         await raw.commit()
 
     state = StateDB(db_path)
-    await state.open()
     try:
+        await state.migrate()
         migrated = await state.get_schedule_run("run-existing-da")
         assert migrated is not None
         assert migrated["dispatched_at"] == migrated["fired_at"] == 100.0
@@ -1336,7 +1336,7 @@ def _schema_meta_version(db_path: Path) -> str | None:
 
 
 async def test_migrated_db_reports_current_schema_version(tmp_path):
-    """A database whose tables were rewritten on open reports the version this
+    """A database whose tables were rewritten by migration reports the version this
     code applies, not the version it was created at."""
     from lionagi.state.db import SCHEMA_VERSION, StateDB
 
@@ -1350,8 +1350,11 @@ async def test_migrated_db_reports_current_schema_version(tmp_path):
     assert "'aborted')" in _sessions_create_sql(db_path)
 
     state = StateDB(f"sqlite+aiosqlite:///{db_path}")
-    async with state:
+    try:
+        await state.migrate()
         version = await state.schema_version()
+    finally:
+        await state.close()
 
     # The migration ran ...
     assert "'aborted')" not in _sessions_create_sql(db_path)
