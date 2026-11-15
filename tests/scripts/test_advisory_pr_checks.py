@@ -101,7 +101,7 @@ TRIGGERS = {
     "issue-links.yml": {
         "pull_request": {
             "types": ["opened", "edited", "reopened", "synchronize", "ready_for_review"],
-            "branches": ["main", "develop"],
+            "branches": ["main", "develop", "dev/lionagi"],
         },
     },
 }
