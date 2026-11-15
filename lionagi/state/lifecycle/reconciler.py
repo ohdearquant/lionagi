@@ -1823,10 +1823,17 @@ class TerminalReconciler:
         """Unwired replay adapter for the same exact-event attempt contract."""
         return await self._attempt_one(db, transition_id)
 
-    async def run_pass(self, db: Any) -> dict[str, int | float]:
+    async def run_pass(
+        self,
+        db: Any,
+        *,
+        observe_outcome: Callable[[dict[str, Any], Any, float], Awaitable[None]] | None = None,
+    ) -> dict[str, int | float]:
         """Attempt bounded pages until the traversal wraps or the pass budget is spent.
 
-        Only explicit outcomes are acknowledged.
+        Only explicit outcomes are acknowledged. An optional diagnostic observer
+        runs inline after the acknowledgement decision with the remaining pass
+        budget. Its failure does not affect delivery.
         """
         async with self._lock:
             started = self.clock()
@@ -1892,6 +1899,8 @@ class TerminalReconciler:
                     previous_cursor = self._cursor
                     self._cursor = (float(row["occurred_at"]), transition_id)
                     worker = None
+                    acknowledged = False
+                    outcome = None
                     try:
                         prepared = await asyncio.wait_for(
                             self.prepare(row, db), timeout=self.timeout
@@ -1906,6 +1915,7 @@ class TerminalReconciler:
                             outcome = prepared
                         if outcome in _ACKNOWLEDGE_OUTCOMES:
                             await ack_delivery(db, transition_id, self.consumer)
+                            acknowledged = True
                             self._backoff.pop(transition_id, None)
                             result["acknowledged"] += 1
                             if outcome is not DeliveryOutcome.SUCCESS:
@@ -1914,7 +1924,6 @@ class TerminalReconciler:
                                 result["no_session"] += 1
                             elif outcome is DeliveryOutcome.AMBIGUOUS_PROJECT:
                                 result["ambiguous_project"] += 1
-                            continue
                     except _WorkerBusyError:
                         result["attempted"] -= 1
                         result["saturated"] = 1
@@ -1930,8 +1939,22 @@ class TerminalReconciler:
                     finally:
                         if worker is not None:
                             _release_worker(worker)
-                    self._fail(transition_id)
-                    result["failed"] += 1
+                    if not acknowledged:
+                        self._fail(transition_id)
+                        result["failed"] += 1
+                    if observe_outcome is not None and (
+                        acknowledged or outcome is DeliveryOutcome.FAILURE
+                    ):
+                        remaining = max(0.0, self.pass_budget - (self.clock() - started))
+                        try:
+                            await observe_outcome(row, db, remaining)
+                        except asyncio.CancelledError:
+                            self._report_capacity(store, result)
+                            raise
+                        except Exception:
+                            logger.warning(
+                                "Terminal delivery observation failed for %s", transition_id
+                            )
                 else:
                     # The page ran to its end without a stop; read the next one while
                     # the budget lasts.
