@@ -93,6 +93,57 @@ def test_the_childs_own_home_counts(fake_home, tmp_path):
     assert _reaches_home(other, {"HOME": str(other)})
 
 
+def _account_home(monkeypatch, path):
+    """Make the password database name ``path`` as this account's home."""
+    import pwd
+
+    fields = list(pwd.getpwuid(os.getuid()))
+    fields[5] = str(path)
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: pwd.struct_passwd(fields))
+
+
+@pytest.mark.parametrize("which", ["home", "parent"])
+def test_the_account_home_counts_when_home_points_elsewhere(
+    fake_home, tmp_path, monkeypatch, which
+):
+    """A parent started with HOME at a scratch directory still refuses the account's
+    home, and its parent, as a workspace; a project under it is not refused."""
+    pytest.importorskip("pwd")
+    account = tmp_path / "accounts" / "me"
+    (account / "project").mkdir(parents=True)
+    _account_home(monkeypatch, account)
+    from lionhub.agent.child_sandbox import _reaches_home
+
+    assert _reaches_home(account if which == "home" else account.parent)
+    assert not _reaches_home(account / "project")
+
+
+def test_the_real_account_home_is_refused_under_a_scratch_home(tmp_path, monkeypatch):
+    """The same with nothing faked but HOME: the account's own home from the password
+    database, and its parent, are refused; a directory under it is not. Read-only."""
+    pwd = pytest.importorskip("pwd")
+    account = pwd.getpwuid(os.getuid()).pw_dir
+    monkeypatch.setenv("HOME", str(tmp_path / "scratch"))
+    from lionhub.agent.child_sandbox import _reaches_home
+
+    assert _reaches_home(account)
+    assert _reaches_home(os.path.dirname(account))
+    assert not _reaches_home(os.path.join(account, "a-project-that-need-not-exist"))
+
+
+def test_a_password_database_without_this_account_falls_back_to_home(fake_home, monkeypatch):
+    pwd = pytest.importorskip("pwd")
+
+    def _missing(uid):
+        raise KeyError(uid)
+
+    monkeypatch.setattr(pwd, "getpwuid", _missing)
+    from lionhub.agent.child_sandbox import _home_directories, _reaches_home
+
+    assert _home_directories() == {os.path.realpath(fake_home)}
+    assert _reaches_home(fake_home)
+
+
 @pytest.mark.parametrize("workload", ["heavy", "light"])
 def test_a_codex_child_at_home_is_refused(fake_home, sandbox_on, workload):
     from lionhub.providers.openai.codex import CodexCodeRequest

@@ -176,19 +176,37 @@ def _refusal(message: str) -> ConfigurationError:
     return ConfigurationError(f"{message.rstrip().rstrip('.;:')}. {CHILD_SANDBOX_OPT_OUT}")
 
 
-def _reaches_home(path: str | Path, env: Any = None) -> bool:
-    """Whether ``path`` is the home directory or an ancestor of it.
-
-    The home is this process's and, when ``env`` carries one, the child's ``HOME``. A path that
-    exists is compared by identity (device and inode) with each home and each of its ancestors,
-    since a spelling is not an identity: on a case-insensitive volume ``/users/u`` is the home
-    ``/Users/u`` and ``realpath`` keeps the case it was given. The spelling comparison, after
-    ``~`` expansion and link resolution, covers a path that does not exist yet.
+def _home_directories(env: Any = None) -> set[str]:
+    """Every directory that is this account's home, resolved: this process's ``HOME``, the
+    child's ``HOME`` when ``env`` carries one, and the account's home in the password
+    database. The last one stays the real home when a parent was started with ``HOME``
+    pointing somewhere else, as a harness, a scheduled job or a scratch-home test does.
     """
     homes = {os.path.realpath(os.path.expanduser("~"))}
     child_home = env.get("HOME") if hasattr(env, "get") else None
     if isinstance(child_home, str) and child_home:
         homes.add(os.path.realpath(os.path.expanduser(child_home)))
+    try:
+        import pwd
+
+        account_home = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError, AttributeError):
+        account_home = None
+    if account_home:
+        homes.add(os.path.realpath(account_home))
+    return homes
+
+
+def _reaches_home(path: str | Path, env: Any = None) -> bool:
+    """Whether ``path`` is the home directory or an ancestor of it.
+
+    The homes are those of ``_home_directories``. A path that exists is compared by identity
+    (device and inode) with each home and each of its ancestors, since a spelling is not an
+    identity: on a case-insensitive volume ``/users/u`` is the home ``/Users/u`` and
+    ``realpath`` keeps the case it was given. The spelling comparison, after ``~`` expansion
+    and link resolution, covers a path that does not exist yet.
+    """
+    homes = _home_directories(env)
     identities: set[tuple[int, int]] = set()
     for home in homes:
         for directory in (home, *map(str, Path(home).parents)):
