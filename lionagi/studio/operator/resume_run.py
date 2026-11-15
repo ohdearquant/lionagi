@@ -24,9 +24,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.concurrency import sleep
+from lionhub.serve.daemon.services.redact import scrub_text
 
 from . import _common
-from .redact import scrub_text
 from .run_progress import MissingOwnerContextError, resolve_run
 from .store import OperatorStore
 

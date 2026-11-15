@@ -38,9 +38,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.concurrency import sleep
 from lionagi.state.session_naming import resolve_display_name
+from lionhub.serve.daemon.services.redact import public_project, scrub_text
 
 from . import _common
-from .redact import public_project, scrub_text
 from .run_progress import resolve_run
 from .store import OperatorNotFoundError, OperatorStore
 

@@ -1066,6 +1066,12 @@ CONTRACTS: tuple[MoveContract, ...] = (
         kind="module",
         public_names=frozenset({"cancel_task", "submit_task"}),
     ),
+    MoveContract(
+        old="lionagi.studio.operator.redact",
+        new="lionhub.serve.daemon.services.redact",
+        kind="module",
+        public_names=frozenset({"redact_arguments", "scrub_text"}),
+    ),
 )
 
 

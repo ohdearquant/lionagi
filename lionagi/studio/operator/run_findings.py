@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .redact import (
+from lionhub.serve.daemon.services.redact import (
     ARTIFACT_BYTE_CAP,
     MESSAGE_BYTE_CAP,
     PER_ITEM_TEXT_CAP,
@@ -30,6 +30,7 @@ from .redact import (
     redact_arguments,
     scrub_text,
 )
+
 from .run_progress import resolve_run
 
 __all__ = ("RunFindingsInput", "run_findings")

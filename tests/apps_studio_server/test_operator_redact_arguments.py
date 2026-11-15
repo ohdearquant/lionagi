@@ -6,7 +6,7 @@ display shows the scrubbed key, and scrub collisions never drop entries."""
 
 from __future__ import annotations
 
-from lionagi.studio.operator.redact import redact_arguments
+from lionhub.serve.daemon.services.redact import redact_arguments
 
 
 class TestRawKeyClassification:

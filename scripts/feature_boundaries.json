@@ -1182,10 +1182,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.operator.redact": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.operator.rename_session": {
       "layer": "root",
       "owner": "studio"
