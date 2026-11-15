@@ -263,6 +263,10 @@ lionagi/state/lifecycle/
   with `transition_id=None` because no history row was written.
 - `rejected` returns the unchanged terminal status and `transition_id=None` after the rejection
   audit commits.
+  For an undeclared edge without an override, `SQLAlchemyLifecycleService.transition()` returns
+  `rejected` with the unchanged status, which can be nonterminal, after its rejection audit commits.
+  [ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+  defines the proposed schedule-run decision refusals and their typed and legacy outcomes.
 - Validation errors and not-found errors are exceptions, not `rejected`. Storage errors propagate
   after rollback; they are not converted into conflicts.
 
@@ -272,6 +276,9 @@ failed operations. Keeping exceptions for invalid commands and storage failure a
 inside a generic false result.
 
 ### D2 — One complete policy per managed entity
+
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+defines the proposed schedule-run terminal floor and decision refusals.
 
 One registry maps each entity type to its table, vocabulary, initial states, terminal set, allowed
 edges, same-status rule, allowed same-row patch fields, and reason-code namespace.
@@ -537,6 +544,11 @@ callers use the service. They do not retain independent policy.
 | `transitions.transition()` | `applied` | `TransitionResult(applied=True, conflict=False, ...)` |
 | `transitions.transition()` | `conflict` | `TransitionResult(applied=False, conflict=True, ...)` |
 | adapter validation/not found | exception | preserve current `ValueError`/`LookupError` class at wrapper boundary |
+
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+proposes one additional mapping: for `schedule_run`, `transitions.transition()` raises
+`TransitionRejectedError` on `rejected` after the audit commits. Other legacy mappings remain
+as above.
 
 Migration phases and gates are:
 
