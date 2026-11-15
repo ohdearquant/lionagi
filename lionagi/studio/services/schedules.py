@@ -459,7 +459,11 @@ _HEALTH_FAILING_OUTCOMES = ("failed", "timed_out")
 def _schedule_cadence_seconds(row: dict[str, Any], *, reference_at: float) -> float | None:
     """Return the schedule's expected occurrence gap at ``reference_at``.
 
-    Fixed-period triggers share the scheduler's cadence resolver. Cron is not
+    Fixed-period triggers share the scheduler's cadence resolver. A GitHub
+    poll uses the interval the scheduler actually waits, which is longer than
+    the authored one while merged-PR scans are backed off after reaching their
+    page limit; judging it by the authored interval would call an on-time
+    poller overdue. Cron is not
     fixed-period, so derive its local expected gap from two consecutive
     occurrences after ``reference_at`` -- the newest liveness evidence the
     caller has, which is the last execution for most schedules and the last
@@ -468,10 +472,13 @@ def _schedule_cadence_seconds(row: dict[str, Any], *, reference_at: float) -> fl
     ``next_fire_at`` -- a stored cursor is a promise, not evidence of work.
     """
     from lionhub.orchestration.schedule.timing import (
+        resolve_github_poll_cadence_seconds,
         resolve_schedule_cadence_seconds,
         resolve_schedule_timezone,
     )
 
+    if row.get("trigger_type") == "github_poll":
+        return resolve_github_poll_cadence_seconds(row)
     cadence = resolve_schedule_cadence_seconds(row)
     if cadence is not None or row.get("trigger_type") != "cron":
         return cadence

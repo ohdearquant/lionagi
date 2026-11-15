@@ -221,3 +221,40 @@ def test_merged_poll_projects_active_backoff(
     assert "poller_last_capped_page_limit" not in row
     assert "poller_target_generation" not in row
     assert "github_cursor" not in row
+
+
+@pytest.mark.parametrize(
+    "stagnation,quiet_for,health",
+    [
+        # Authored 300 s: overdue past max(3 * 300, 300 + 300) = 900 s.
+        pytest.param(0, 1000, "overdue", id="no-backoff-past-authored-threshold"),
+        # Two capped scans back the poll off to 1200 s, so the threshold is
+        # max(3 * 1200, 1200 + 300) = 3600 s and a 1000 s gap is on time.
+        pytest.param(2, 1000, "healthy", id="backed-off-within-effective-threshold"),
+        pytest.param(2, 3700, "overdue", id="backed-off-past-effective-threshold"),
+    ],
+)
+def test_merged_poll_overdue_uses_backed_off_interval(
+    tmp_path, monkeypatch, stagnation, quiet_for, health
+):
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    healthy_at = time.time() - quiet_for
+    sid = asyncio.run(
+        _seed_poller(
+            polled=True,
+            healthy_at=healthy_at,
+            stagnation=stagnation,
+            merged_limit=5,
+            last_capped_limit=5,
+        )
+    )
+    response = _make_client().get(f"/api/schedules/{sid}")
+
+    assert response.status_code == 200
+    row = response.json()
+    assert row["health_state"] == health
+    assert "health_cause" not in row
+    if stagnation:
+        assert row["health_effective_poll_interval_sec"] == 1200
+    else:
+        assert "health_effective_poll_interval_sec" not in row
