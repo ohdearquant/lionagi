@@ -190,7 +190,8 @@ class PiCodeRequest(BaseModel):
         exclude=True,
         description=(
             "Only 'heavy' (the default): Pi has no sandbox lionagi can pin, so a 'light' "
-            "request is refused before the process starts."
+            "request is refused before the process starts, and so is any request while the "
+            "child sandbox is enabled."
         ),
     )
 
@@ -304,6 +305,24 @@ PiSession = CLISession
 # --------------------------------------------------------------------------- NDJSON stream
 
 
+def _refuse_while_the_child_sandbox_is_enabled() -> None:
+    """Refuse to start Pi while the child sandbox is enabled.
+
+    Pi has no sandbox lionagi can pin, so a Pi child would be the one CLI child that runs
+    with the user's full file and network access while every other route is confined.
+    With ``child_sandbox: {enabled: false}`` Pi runs as before. A settings file the
+    resolver cannot read raises its own error, so the refusal fails closed.
+    """
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+    if resolve_child_sandbox(None).enabled:
+        raise CLIInputRefusedError(
+            "Pi has no sandbox lionagi can pin, so it does not run while the child sandbox "
+            "is enabled. To run Pi children without it, set `child_sandbox: {enabled: false}` "
+            "in ~/.lionagi/settings.yaml."
+        )
+
+
 # TODO: migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: PiCodeRequest):
     if PI_CLI is None:
@@ -313,6 +332,7 @@ async def _ndjson_from_cli(request: PiCodeRequest):
             f"workload {request.workload!r} needs a sandbox, and Pi has none lionagi can "
             "pin; declare the agent's workload 'heavy'"
         )
+    _refuse_while_the_child_sandbox_is_enabled()
     env = {**os.environ, **request.env()} if request.env() else None
     cmd = [PI_CLI, *request.as_cmd_args()]
     # Old Pi subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
