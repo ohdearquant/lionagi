@@ -671,6 +671,18 @@ def scoped(tmp_path):
 
 def test_no_workspace_renders_no_hook():
     assert "hooks" not in claude_settings_for(POLICY)
+    assert "disableAllHooks" not in claude_settings_for(POLICY)
+
+
+def test_the_hook_comes_with_hooks_kept_on(tmp_path):
+    # A workspace's own .claude/settings.json setting disableAllHooks would switch it off.
+    assert claude_settings_for(POLICY, tmp_path)["disableAllHooks"] is False
+
+
+def test_settings_that_switch_hooks_off_are_kept_when_no_hook_is_emitted():
+    merged = json.loads(claude_settings_argument(POLICY, json.dumps({"disableAllHooks": True})))
+    assert merged["disableAllHooks"] is True
+    assert "hooks" not in merged
 
 
 @pytest.mark.parametrize("tool", ["Edit", "Write", "MultiEdit", "NotebookEdit"])
@@ -710,10 +722,56 @@ def test_the_hook_blocks_a_link_inside_the_workspace_that_points_outside(scoped)
     assert _run_hook(command, _edit(workspace / "escape" / "MARKER")).returncode == 2
 
 
-def test_the_hook_reads_a_relative_path_against_the_workspace(scoped):
+@pytest.mark.parametrize("target", ["src/mod.py", "../outside/MARKER", "~/MARKER", "./x"])
+def test_the_hook_blocks_a_path_that_is_not_absolute(scoped, target):
+    # Claude Code resolves a relative path against its own current directory, which a cd into
+    # an added directory moves, so the hook cannot judge one and refuses it.
     _, _, _, command = scoped
-    assert _run_hook(command, _edit("src/mod.py")).returncode == 0
-    assert _run_hook(command, _edit("../outside/MARKER")).returncode == 2
+    result = _run_hook(command, _edit(target))
+    assert result.returncode == 2
+    assert "not an absolute path" in result.stderr
+
+
+@pytest.mark.parametrize("tool", ["Edit", "Write", "MultiEdit"])
+def test_the_hook_reads_only_file_path_for_the_file_tools(scoped, tool):
+    workspace, _, outside, command = scoped
+    payload = {"tool_name": tool, "tool_input": {"notebook_path": str(workspace / "a.ipynb")}}
+    assert _run_hook(command, payload).returncode == 2
+    payload = {"tool_name": tool, "tool_input": {"file_path": str(outside / "MARKER")}}
+    assert _run_hook(command, payload).returncode == 2
+
+
+def test_the_hook_reads_only_notebook_path_for_notebook_edit(scoped):
+    workspace, _, _, command = scoped
+    payload = {"tool_name": "NotebookEdit", "tool_input": {"file_path": str(workspace / "a")}}
+    assert _run_hook(command, payload).returncode == 2
+
+
+@pytest.mark.parametrize("tool", ["Edit", "Write", "MultiEdit", "NotebookEdit"])
+def test_the_hook_blocks_a_call_carrying_both_path_keys(scoped, tool):
+    # An inside path in one key must not carry an outside path in the other past the check.
+    workspace, _, outside, command = scoped
+    payload = {
+        "tool_name": tool,
+        "tool_input": {
+            "file_path": str(workspace / "a.ipynb"),
+            "notebook_path": str(workspace / "a.ipynb"),
+        },
+    }
+    result = _run_hook(command, payload)
+    assert result.returncode == 2
+    assert "no other path" in result.stderr
+    payload["tool_input"]["notebook_path"] = str(outside / "MARKER")
+    assert _run_hook(command, payload).returncode == 2
+
+
+@pytest.mark.parametrize("tool", [None, "", "Bash", "write", "Read"])
+def test_the_hook_blocks_a_tool_it_does_not_know(scoped, tool):
+    workspace, _, _, command = scoped
+    payload = {"tool_name": tool, "tool_input": {"file_path": str(workspace / "x")}}
+    result = _run_hook(command, payload)
+    assert result.returncode == 2
+    assert "not a file tool" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -1239,6 +1297,15 @@ _REFUSALS = {
     ),
     "existing settings with a sandbox block": lambda tmp_path, monkeypatch: (
         claude_settings_argument(POLICY, json.dumps({"sandbox": {"excludedCommands": ["bash"]}}))
+    ),
+    "existing settings that switch hooks off": lambda tmp_path, monkeypatch: (
+        claude_settings_argument(POLICY, json.dumps({"disableAllHooks": True}), None, tmp_path)
+    ),
+    "setting sources that load the workspace": lambda tmp_path, monkeypatch: (
+        child_sandbox._child_setting_sources("user,project")
+    ),
+    "unknown setting sources": lambda tmp_path, monkeypatch: child_sandbox._child_setting_sources(
+        "everything"
     ),
     "path with a dot-dot segment": lambda tmp_path, monkeypatch: resolve_child_sandbox(
         None, _settings(allow_write=["~/.cache/uv/../../.ssh"])

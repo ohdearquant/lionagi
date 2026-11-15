@@ -595,10 +595,16 @@ _FILE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit"
 
 #: Run by the child's ``PreToolUse`` hook as ``python -I -S -c <this> <roots JSON>``. It reads
 #: the tool call from stdin and exits 0 when the target, symlinks resolved, is inside one of the
-#: roots, and 2 (Claude Code's blocking exit) otherwise. Every failure exits 2 as well: any
+#: roots, and 2 (Claude Code's blocking exit) otherwise. The path is read from the key the named
+#: tool writes (``notebook_path`` for NotebookEdit, ``file_path`` for the others); a call naming
+#: another tool, carrying both keys, or giving a path that is not absolute is refused, since the
+#: hook cannot know where Claude Code would resolve it. Every failure exits 2 as well: any
 #: other code is a non-blocking hook error to Claude Code, and the write would go ahead.
 _FILE_TOOL_SCOPE_CHILD = r"""
 import json, os, sys
+
+PATH_KEYS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path",
+             "NotebookEdit": "notebook_path"}
 
 def refuse(message):
     sys.stderr.write("lionagi file-tool scope: " + message + "\n")
@@ -608,13 +614,22 @@ def main():
     try:
         roots = json.loads(sys.argv[1])
         event = json.load(sys.stdin)
+        tool = event.get("tool_name")
         tool_input = event.get("tool_input") or {}
-        target = tool_input.get("file_path") or tool_input.get("notebook_path")
+        keys = [key for key in ("file_path", "notebook_path") if key in tool_input]
     except Exception as exc:
         refuse("cannot read the tool call (%s); the write is refused" % type(exc).__name__)
+    if tool not in PATH_KEYS:
+        refuse("%r is not a file tool this check knows; the write is refused" % (tool,))
+    if keys != [PATH_KEYS[tool]]:
+        refuse("a %s call must carry %s and no other path; the write is refused"
+               % (tool, PATH_KEYS[tool]))
+    target = tool_input[PATH_KEYS[tool]]
     if not isinstance(target, str) or not target or "\0" in target:
         refuse("the tool call names no usable file path; the write is refused")
-    real = os.path.realpath(os.path.join(roots[0], os.path.expanduser(target)))
+    if not os.path.isabs(target):
+        refuse("%s is not an absolute path; the write is refused" % target)
+    real = os.path.realpath(target)
     for root in roots:
         base = os.path.realpath(root)
         if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
@@ -651,7 +666,10 @@ def _file_tool_scope_hook(workspace: str | Path, allow_write: tuple[str, ...]) -
         shlex.join([sys.executable, "-I", "-S", "-c", _FILE_TOOL_SCOPE_CHILD, json.dumps(roots)])
         + " || exit 2"
     )
+    # ``disableAllHooks`` from the workspace's own ``.claude/settings.json`` or
+    # ``settings.local.json`` would switch the hook off; this settings level is above those.
     return {
+        "disableAllHooks": False,
         "hooks": {
             "PreToolUse": [
                 {
@@ -659,7 +677,7 @@ def _file_tool_scope_hook(workspace: str | Path, allow_write: tuple[str, ...]) -
                     "hooks": [{"type": "command", "command": command}],
                 }
             ]
-        }
+        },
     }
 
 
@@ -716,6 +734,36 @@ def claude_settings_for(
     if workspace is not None:
         settings.update(_file_tool_scope_hook(workspace, policy.allow_write))
     return settings
+
+
+#: The settings sources a confined child may load. The project's ``.claude/settings.json`` and
+#: ``settings.local.json`` belong to the working directory the child is confined to, which may be
+#: a checkout under review: hooks, helper commands and plugins named there run outside the
+#: sandbox, and ``disableAllHooks`` there would switch off the file-tool hook.
+_CHILD_SETTING_SOURCES: tuple[str, ...] = ("user",)
+
+
+def _child_setting_sources(requested: str | None) -> str:
+    """The ``--setting-sources`` value for a confined child.
+
+    ``None`` or a value naming no source becomes ``user``: without the flag Claude Code loads
+    every source. A request naming ``project`` or ``local``, or a source Claude Code does not
+    know, is refused; a request naming only ``user`` is kept.
+    """
+    names = [name.strip() for name in (requested or "").split(",") if name.strip()]
+    if not names:
+        return ",".join(_CHILD_SETTING_SOURCES)
+    unknown = [name for name in names if name not in ("user", "project", "local")]
+    if unknown:
+        raise _refusal(f"child_sandbox: unknown setting sources {unknown!r}")
+    loose = [name for name in names if name not in _CHILD_SETTING_SOURCES]
+    if loose:
+        raise _refusal(
+            f"child_sandbox: a confined child cannot load the {', '.join(loose)} settings: they "
+            "come from the working directory, and hooks or helper commands named there run "
+            "outside the sandbox"
+        )
+    return ",".join(names)
 
 
 def _read_settings_value(value: Any, base_dir: Any = None) -> dict:
@@ -776,7 +824,13 @@ def claude_settings_argument(
             "child_sandbox: the settings handed to the child carry a sandbox block; configure "
             "the sandbox through child_sandbox in ~/.lionagi/settings.yaml instead"
         )
-    return json.dumps(_merge(base, claude_settings_for(policy, workspace)))
+    ours = claude_settings_for(policy, workspace)
+    if "disableAllHooks" in ours and base.get("disableAllHooks", False) is not False:
+        raise _refusal(
+            "child_sandbox: the settings handed to the child set disableAllHooks, which would "
+            "switch off the hook that keeps its file tools inside the working directory"
+        )
+    return json.dumps(_merge(base, ours))
 
 
 #: Versions read so far, by binary. Only a successful read is kept, so a failed probe is

@@ -703,7 +703,10 @@ class ClaudeCodeRequest(BaseModel):
         # anything launches.
         sandbox_settings = self._child_sandbox_settings()
         if sandbox_settings is not None:
+            from lionhub.agent.child_sandbox import _child_setting_sources
+
             updates["settings"] = None
+            updates["setting_sources"] = _child_setting_sources(self.setting_sources)
         source = self.model_copy(update=updates) if updates else self
         args.extend(source._build_declarative_args())
         if sandbox_settings is not None:

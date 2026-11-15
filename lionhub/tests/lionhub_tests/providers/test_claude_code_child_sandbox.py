@@ -181,6 +181,45 @@ def test_settings_carrying_their_own_sandbox_block_refuse_the_launch(tmp_path):
         _request(repo=tmp_path, settings=own).as_cmd_args()
 
 
+@pytest.mark.parametrize("value", [True, "true", 1])
+def test_settings_that_switch_hooks_off_refuse_the_launch(tmp_path, value):
+    own = json.dumps({"disableAllHooks": value})
+    with pytest.raises(ConfigurationError, match="disableAllHooks"):
+        _request(repo=tmp_path, settings=own).as_cmd_args()
+
+
+def test_the_settings_keep_hooks_on_above_the_workspace_files(tmp_path):
+    own = json.dumps({"disableAllHooks": False})
+    assert (
+        _settings_json(_request(repo=tmp_path, settings=own).as_cmd_args())["disableAllHooks"]
+        is False
+    )
+    assert _settings_json(_request(repo=tmp_path).as_cmd_args())["disableAllHooks"] is False
+
+
+def _setting_sources(args):
+    values = [args[i + 1] for i, arg in enumerate(args) if arg == "--setting-sources"]
+    assert len(values) == 1
+    return values[0]
+
+
+@pytest.mark.parametrize("requested", [None, "", " , ", "user", " user "])
+def test_a_confined_child_loads_only_the_user_settings(tmp_path, requested):
+    req = _request(repo=tmp_path, setting_sources=requested)
+    assert _setting_sources(req.as_cmd_args()) == "user"
+
+
+@pytest.mark.parametrize("requested", ["project", "local", "user,project", "user, local"])
+def test_a_confined_child_is_refused_the_workspace_settings(tmp_path, requested):
+    with pytest.raises(ConfigurationError, match="cannot load the"):
+        _request(repo=tmp_path, setting_sources=requested).as_cmd_args()
+
+
+def test_an_unknown_setting_source_is_refused(tmp_path):
+    with pytest.raises(ConfigurationError, match="unknown setting sources"):
+        _request(repo=tmp_path, setting_sources="user,policy").as_cmd_args()
+
+
 def test_a_settings_file_is_read_and_merged_into_the_one_flag(tmp_path):
     (tmp_path / "base.json").write_text(json.dumps({"model": "haiku"}), encoding="utf-8")
     args = _request(repo=tmp_path, settings="base.json").as_cmd_args()
@@ -220,6 +259,16 @@ def test_a_disabled_policy_leaves_the_callers_settings_as_they_were(monkeypatch,
     own = json.dumps({"model": "haiku"})
     args = _request(repo=tmp_path, settings=own, child_sandbox=OFF.to_dict()).as_cmd_args()
     assert _settings_values(args) == [own]
+
+
+def test_a_disabled_policy_leaves_the_callers_setting_sources_as_they_were(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+    req = _request(repo=tmp_path, setting_sources="project", child_sandbox=OFF.to_dict())
+    assert _setting_sources(req.as_cmd_args()) == "project"
+    req = _request(repo=tmp_path, child_sandbox=OFF.to_dict())
+    assert "--setting-sources" not in req.as_cmd_args()
 
 
 def test_a_stored_disabled_policy_is_overruled_while_the_global_settings_keep_the_sandbox_on(
