@@ -139,8 +139,65 @@ def test_the_confined_command_cannot_delete_outside_the_workspace(monkeypatch, t
     assert not (work / "inside").exists()
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="the policy is macOS Seatbelt")
-def test_the_pty_rule_names_only_terminal_devices():
+def test_the_pty_rule_reaches_only_terminals_the_child_allocates():
     rule = seatbelt._PTY_POLICY
     assert '#"^/dev/ttys[0-9]+$"' in rule
-    assert "file-write*" in rule
+    assert '(extension "com.apple.sandbox.pty")' in rule
+    # Every terminal device grant carries the extension; /dev/ptmx is the allocator itself.
+    for line in rule.split("(allow")[1:]:
+        assert "ttys" not in line or "com.apple.sandbox.pty" in line
+
+
+_PTY_CHILD = r"""
+import json, os, pty, sys
+out = {}
+try:
+    fd = os.open(sys.argv[1], os.O_RDWR | os.O_NOCTTY)
+    os.write(fd, b"FOREIGN")
+    out["foreign"] = "written"
+except OSError as exc:
+    out["foreign"] = type(exc).__name__
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv("/bin/echo", ["/bin/echo", "own-terminal"])
+data = b""
+try:
+    while chunk := os.read(fd, 100):
+        data += chunk
+except OSError:
+    pass
+os.waitpid(pid, 0)
+out["own"] = data.decode()
+print(json.dumps(out))
+"""
+
+
+@pytest.mark.skipif(not seatbelt_available(), reason="needs macOS sandbox-exec")
+def test_the_confined_child_uses_its_own_terminal_and_not_another(tmp_path):
+    import json
+    import os
+    import pty
+    import select
+
+    master, slave = pty.openpty()
+    try:
+        policy = SeatbeltPolicy.for_workspace(tmp_path, pty=True)
+        argv = policy.wrap([sys.executable, "-I", "-S", "-c", _PTY_CHILD, os.ttyname(slave)])
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+        )
+        shown = b""
+        while select.select([master], [], [], 0.2)[0]:
+            shown += os.read(master, 4096)
+    finally:
+        os.close(master)
+        os.close(slave)
+    out = json.loads(result.stdout)
+    assert out["foreign"] == "PermissionError"
+    assert b"FOREIGN" not in shown
+    assert "own-terminal" in out["own"]
