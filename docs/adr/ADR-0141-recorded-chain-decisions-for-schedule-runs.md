@@ -5,7 +5,8 @@
 - **Implementation-status**: not-started
 - **Area**: scheduling-control-plane
 - **Date**: 2026-11-04
-- **Relations**: extends ADR-0070; amends ADR-0035 D5, ADR-0057 D4, ADR-0058 D1/D2/D5, and ADR-0070 D4
+- **Relations**: extends ADR-0070; amends ADR-0035 D5, ADR-0057 D4, ADR-0058 D1/D2/D5, and ADR-0070 D4;
+  referenced from ADR-0057 D2, ADR-0064 D5, ADR-0070 D3 and ADR-0071 D3
 
 ## Context
 
@@ -423,8 +424,10 @@ The cutover procedure applies to both backends:
    checks pass, resolve surviving fixture references and attempt to delete
    the same acceptance schedule with
    `lionagi/studio/services/schedules.py::delete_schedule`.
-   The delete can be refused where the store protects child debt or last
-   resolvers.
+   The expected outcome is that the delete succeeds. Today the delete path
+   checks the schedule's lifecycle edge to deleted, the reason and the caller;
+   it does not check for owed deliveries or surviving resolvers. Beyond those
+   checks, only the foreign-key links below can refuse it.
    The delete cascades to runs under that schedule, including parent and child when
    both belong to it. A surviving link such as a child in another schedule, an
    outbox reference or a worker lease can block deletion
@@ -539,7 +542,7 @@ New tests (none exist at this checkout):
 19. In `tests/state/lifecycle/test_service.py` and
     `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_occurrence_atomicity.py`,
     use a controlled persistence fixture that exposes the stamp immediately below
-    the preservation version (version 6 at this checkout) to the real D1 and D3
+    the preservation version to the real D1 and D3
     gates without running native auto-migration in that arm.
     Verify guarded terminal writes and scheduler terminal creation leave both
     current and history refs without a decision. Repeat at the preservation version on SQLite
