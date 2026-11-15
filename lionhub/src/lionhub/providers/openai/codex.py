@@ -75,6 +75,7 @@ from lionhub.providers._cli_subprocess import (
 )
 
 from ._codex_profile import (
+    _codex_config_turning_sandbox_off,
     _read_codex_config,
     codex_config_defining_profile,
     codex_config_setting_default_permissions,
@@ -1062,6 +1063,60 @@ def _toml_scalar(value: str | int | float | bool) -> str:
     return dumped[len("x = ") :].rstrip("\n")
 
 
+def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
+    """Refuse a heavy request that turns codex's sandbox off while ``child_sandbox`` is enabled.
+
+    Claude Code children keep their sandbox under ``bypassPermissions`` and the Antigravity CLI
+    runs under the macOS sandbox with ``yolo``; a codex child with its sandbox off would run
+    every command with the user's full rights. Refused: ``bypass_approvals``,
+    ``sandbox='danger-full-access'``, a config override setting ``sandbox_mode`` to that mode or
+    setting ``default_permissions`` (a permissions profile codex applies in place of its
+    sandbox), and, when the request sets no mode, a codex config that sets that mode or
+    ``default_permissions``. A config that cannot be read is refused too: it cannot be ruled out.
+    ``light`` requests are refused all of this by ``_refuse_light_escape`` already.
+    """
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+    if not resolve_child_sandbox(None).enabled:
+        return
+    flags = _command_line_layer(plain)
+    reasons = []
+    if plain.bypass_approvals:
+        reasons.append("bypass_approvals turns codex's sandbox off")
+    if plain.sandbox == "danger-full-access":
+        reasons.append("sandbox='danger-full-access' turns codex's sandbox off")
+    profiles = flags.get("profiles") if isinstance(flags.get("profiles"), Mapping) else {}
+    tables = [flags, *(t for t in profiles.values() if isinstance(t, Mapping))]
+    if any(t.get("sandbox_mode") == "danger-full-access" for t in tables):
+        reasons.append("config_overrides set sandbox_mode to 'danger-full-access'")
+    if any(_sets(t, ("default_permissions",)) for t in tables):
+        reasons.append(
+            "config_overrides set default_permissions, a permissions profile codex applies in "
+            "place of its sandbox"
+        )
+    if not reasons:
+        try:
+            found = codex_config_setting_default_permissions(plain.env, cwd)
+            if found is not None:
+                reasons.append(
+                    f"{str(found)!r} sets default_permissions, a permissions profile codex "
+                    "applies in place of its sandbox"
+                )
+            elif not (plain.full_auto or plain.sandbox or _sets(flags, ("sandbox_mode",))):
+                found_mode = _codex_config_turning_sandbox_off(plain.env, cwd, plain.profile)
+                if found_mode is not None:
+                    reasons.append(found_mode)
+        except (ValueError, OSError) as exc:
+            reasons.append(str(exc))
+    if reasons:
+        raise CLIInputRefusedError(
+            "a codex child runs in its sandbox while the child sandbox is enabled; "
+            + "; ".join(reasons)
+            + ". To run codex children without it, set `child_sandbox: {enabled: false}` in "
+            "~/.lionagi/settings.yaml."
+        )
+
+
 def _heavy_writable_roots(plain: _PlainRequest) -> list[str] | None:
     """The extra writable roots a heavy codex agent gets in its workspace-write sandbox.
 
@@ -1895,6 +1950,8 @@ class CodexCodeRequest(BaseModel):
         light = plain.workload == "light"
         if light:
             self._refuse_a_config_profile_for_light(plain, cwd)
+        else:
+            _refuse_sandbox_off_while_confined(plain, cwd)
         args: list[str] = ["exec", "--json"]
         args.extend(self._build_declarative_args(plain, cwd))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None

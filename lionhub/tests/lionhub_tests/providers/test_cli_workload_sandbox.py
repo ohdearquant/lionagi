@@ -91,7 +91,8 @@ def test_a_heavy_codex_agent_writes_only_the_toolchain_caches_beyond_its_cwd(
     assert all(root.startswith("/") for root in _default_roots())
 
 
-def test_a_heavy_codex_agent_that_bypasses_the_sandbox_gets_no_pin(tmp_path, sandbox_on):
+def test_a_heavy_codex_agent_that_bypasses_the_sandbox_gets_no_pin(tmp_path):
+    # Only reachable with the child sandbox off; with it on the request is refused (below).
     import warnings
 
     with warnings.catch_warnings():
@@ -470,6 +471,73 @@ async def test_a_light_pi_agent_is_refused_before_anything_starts(tmp_path, monk
     with pytest.raises(CLIInputRefusedError, match="Pi has none"):
         async for _ in pi_cli._ndjson_from_cli(request):
             pass
+
+
+# --------------------------------------------------------------------------- sandbox off, heavy
+
+
+_SANDBOX_OFF = pytest.mark.parametrize(
+    "kw",
+    [
+        {"bypass_approvals": True},
+        {"sandbox": "danger-full-access"},
+        {"config_overrides": {"sandbox_mode": "danger-full-access"}},
+        {"config_overrides": {"profiles.p.sandbox_mode": "danger-full-access"}},
+        {"config_overrides": {"default_permissions": "open"}},
+    ],
+)
+
+
+@_SANDBOX_OFF
+def test_a_heavy_codex_agent_may_not_turn_its_sandbox_off_while_confined(tmp_path, kw, sandbox_on):
+    with pytest.raises(CLIInputRefusedError, match="child_sandbox: \\{enabled: false\\}"):
+        _codex(tmp_path, workload="heavy", **kw)
+
+
+@_SANDBOX_OFF
+def test_with_the_child_sandbox_off_the_request_runs_as_before(tmp_path, kw):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert _codex(tmp_path, workload="heavy", **kw)[:2] == ["exec", "--json"]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        'sandbox_mode = "danger-full-access"\n',
+        'profile = "p"\n[profiles.p]\nsandbox_mode = "danger-full-access"\n',
+        'default_permissions = "open"\n',
+        "sandbox_mode = \n",
+    ],
+)
+def test_a_codex_config_that_turns_the_sandbox_off_is_refused(tmp_path, config, sandbox_on):
+    env = _home_with_config(tmp_path, config)
+    with pytest.raises(CLIInputRefusedError, match="sandbox"):
+        _codex(tmp_path, env=env)
+
+
+def test_a_named_profile_that_turns_the_sandbox_off_is_refused(tmp_path, sandbox_on):
+    env = _home_with_config(tmp_path, '[profiles.p]\nsandbox_mode = "danger-full-access"\n')
+    with pytest.raises(CLIInputRefusedError, match="profile 'p'"):
+        _codex(tmp_path, env=env, profile="p")
+    assert _codex(tmp_path, env=env, profile="q")[:2] == ["exec", "--json"]
+
+
+def test_a_request_that_sets_its_own_mode_is_not_judged_by_the_configs_mode(tmp_path, sandbox_on):
+    env = _home_with_config(tmp_path, 'sandbox_mode = "danger-full-access"\n')
+    args = _codex(tmp_path, env=env, full_auto=True)
+    assert _pairs(args, "--sandbox") == ["workspace-write"]
+
+
+def test_a_project_codex_config_that_turns_the_sandbox_off_is_refused(tmp_path, sandbox_on):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text('sandbox_mode = "danger-full-access"\n')
+    env = _home_with_config(tmp_path, "")
+    with pytest.raises(CLIInputRefusedError, match="danger-full-access"):
+        _codex(tmp_path, env=env)
 
 
 async def _drain_pi(pi_cli, request):
