@@ -315,7 +315,10 @@ The reply carries the allocated `run_id`. Poll it, or read what it wrote:
 
 To block instead of polling, use `job.wait`, which observes runs until they are
 terminal or the window closes and returns partial results rather than a bare
-boolean. Because ops run in order in one call, a status read and an output read
+boolean. Set the wait window in seconds with `max_wait`. A request that passes
+`timeout` is refused with guidance to use `max_wait`.
+
+Because ops run in order in one call, a status read and an output read
 can travel together:
 
 ```json

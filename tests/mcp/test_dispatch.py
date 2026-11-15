@@ -279,6 +279,20 @@ def test_a_misspelled_parameter_is_refused_by_name(submitted):
     assert "tiemout" in error["message"]
 
 
+def test_job_wait_refuses_timeout_and_names_max_wait(monkeypatch):
+    async def unexpected_wait(*args, **kwargs):
+        pytest.fail("invalid wait arguments reached the job engine")
+
+    monkeypatch.setattr(jobs, "wait", unexpected_wait)
+    answer = call(ops=[{"op": "job.wait", "args": {"run_ids": ["rid"], "timeout": 30}}])
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "invalid_input"
+    assert "'timeout'" in error["message"]
+    assert "use 'max_wait'" in error["message"]
+    assert "max_wait" in error["schema"]["properties"]
+    assert "timeout" not in error["schema"]["properties"]
+
+
 def test_a_rejected_op_carries_the_schema_it_was_judged_against(submitted):
     # This is what makes the first mistake cost one round-trip: the caller is
     # told the shape in the same reply that refuses them.

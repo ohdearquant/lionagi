@@ -475,6 +475,7 @@ _REGISTERED: tuple[Verb, ...] = (
         summary="Observe runs until terminal or the window closes; partial results, never a bool.",
         executor="job",
         own_schema=_JOB_WAIT_SCHEMA,
+        refuses={"timeout": "use 'max_wait' to set the wait window in seconds"},
     ),
     Verb(
         name="job.kill",
