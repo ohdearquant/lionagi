@@ -15,6 +15,8 @@ from pydantic import BaseModel
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB
 from lionhub.orchestration.scheduler.subprocess import build_argv, resolve_li_executable
+from lionhub.serve.daemon.services import engine_lookup
+from lionhub.serve.daemon.services.engine_lookup import is_registered_engine_kind
 
 from .. import config
 from ..registry import studio_route
@@ -24,7 +26,6 @@ from ..services.schedules import (
     _svc_validate_identifier,
     _svc_validate_prompt,
 )
-from .engine_defs import is_registered_engine_kind
 
 _log = logging.getLogger(__name__)
 
@@ -242,11 +243,9 @@ async def launch_detached_argv(
 
 async def _resolve_engine_def(ref: str) -> dict[str, Any]:
     """Resolve *ref* (engine definition id, then name) or raise ValueError."""
-    from . import engine_defs
-
-    defn = await engine_defs.get_engine_def(ref)
+    defn = await engine_lookup.get_engine_def(ref)
     if defn is None:
-        defn = await engine_defs.get_engine_def_by_name(ref)
+        defn = await engine_lookup.get_engine_def_by_name(ref)
     if defn is None:
         raise ValueError(f"Engine definition {ref!r} not found")
     return defn

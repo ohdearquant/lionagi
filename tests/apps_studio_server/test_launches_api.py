@@ -815,8 +815,8 @@ class TestBuildArgvBeforeCreate:
 
 
 def _stub_engine_def(monkeypatch, defn: dict | None, *, by_name_only: bool = False):
-    """Patch the engine-defs lookups that _resolve_engine_def calls."""
-    import lionagi.studio.services.engine_defs as ed
+    """Patch the engine-definition lookups that _resolve_engine_def calls."""
+    import lionhub.serve.daemon.services.engine_lookup as ed
 
     monkeypatch.setattr(
         ed, "get_engine_def", AsyncMock(return_value=None if by_name_only else defn)
