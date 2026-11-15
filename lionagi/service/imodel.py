@@ -19,6 +19,7 @@ from lionagi.ln.concurrency._compat import BaseExceptionGroup, ExceptionGroup
 from lionagi.protocols.generic import Event, EventStatus, Execution, Log
 from lionagi.protocols.ids import to_uuid
 
+from ._api_telemetry import record_served_model
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
 from .connections.agentic_endpoint import _UNHELD_SESSION_TEXT
 from .connections.endpoint import (
@@ -815,12 +816,14 @@ class iModel:  # noqa: N801
         api_call: APICalling | None,
         served_model: str | None,
     ) -> None:
-        """Record the provider's report on the call and on the model.
+        """Record the provider's report on the call, on the model and in the run record.
 
         ``APICalling.metadata`` is the call-correlated evidence. The model-level
         value holds what the last invoke or stream on this model to write it
         wrote, so under concurrency it is never evidence about a particular call.
-        Recording none clears both values. A call that failed records none. A
+        When the call carries a telemetry frame, the same value is written to that
+        request's row in the run's API usage section. Recording none clears the call
+        and model values and writes ``null`` to the row. A call that failed records none. A
         stream its consumer closed early, and a stream cancelled after the provider
         named its model (a timeout that cancels it included), have not failed: each
         keeps the model read from what it delivered. A timeout raised inside the
@@ -843,6 +846,8 @@ class iModel:  # noqa: N801
             api_call.metadata.pop("served_model", None)
             if served_model is not None:
                 api_call.metadata["served_model"] = served_model
+            # A call built outside the request path has no telemetry frame.
+            record_served_model(getattr(api_call, "_telemetry_frame", None), served_model)
         if served_model is None:
             self.provider_metadata.pop("served_model", None)
         else:
