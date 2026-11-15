@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
@@ -48,8 +48,8 @@ def _is_protected_system(fm: dict[str, Any]) -> bool:
 
     - Present and truthy counts, whatever its YAML type -- ``true``, ``"true"``,
       or any other value Python considers truthy -- so this agrees with the
-      runtime's own ``bool(frontmatter.get("lion_system", True))`` check in
-      ``lionagi/cli/_providers.py`` for every value that's actually there.
+      runtime profile loader's own ``bool(frontmatter.get("lion_system", True))``
+      check for every value that's actually there.
     - An *absent* key does not count as protected: treating a missing key as
       protected would silently lock down every agent file that predates this
       feature (plain markdown with no frontmatter at all is common -- see the
@@ -96,31 +96,40 @@ def _read_unreadable_agent_block(
 def _read_agent_for_write(text: str) -> _AgentWriteRead:
     """Classify frontmatter for agent writes.
 
-    Readable settings supply the parsed mapping and its system-agent protection.
-    An unreadable block, closed or not, that mentions ``lion_system`` is
-    protected for every write. A closed block with no settings, including an
-    explicit null, allows partial updates. Other unreadable blocks refuse
-    partial updates to preserve existing settings. Deleting or replacing the
-    whole file only uses the system-agent protection.
+    Protect a profile if its unreadable header mentions ``lion_system`` or
+    the profile loaders read an explicit, truthy value. Partial updates
+    require a readable mapping or a block with bare opening and closing
+    delimiters and no settings, including an explicit null. A malformed
+    opener always refuses partial updates. Whole-file writes use the
+    system-agent protection.
     """
     normalized = _strip_frontmatter_prefix(text)
+    unreadable_header = None
     if normalized.startswith("---"):
         text = normalized
         if _FM_SPLIT.match(text) is None:
-            # The first bare delimiter closes the unreadable header. Later
-            # delimiters belong to the prompt.
+            # Check the malformed opening block itself. The profile loaders
+            # can also read a closed block between the first two bare delimiters.
             block, *rest = _FM_SPLIT.split(text, maxsplit=1)
-            return _read_unreadable_agent_block(block, rest[0].strip() if rest else "")
+            unreadable_header = _read_unreadable_agent_block(block, rest[0].strip() if rest else "")
+            if unreadable_header.protection is not None or not rest:
+                return unreadable_header
     try:
         fm, body = parse_frontmatter_strict(text)
     except (yaml.YAMLError, RecursionError):
         # A closed block may be empty. Without a closing delimiter, inspect
         # everything through the end of the file and refuse partial updates.
         parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
+        if unreadable_header is not None and len(parts) < 3:
+            return unreadable_header
         block = parts[1] if len(parts) > 1 else text
         rest = parts[2].strip() if len(parts) > 2 else ""
-        return _read_unreadable_agent_block(block, rest, allow_empty=len(parts) > 2)
+        return _read_unreadable_agent_block(
+            block, rest, allow_empty=unreadable_header is None and len(parts) > 2
+        )
     reason = "is a system agent" if _is_protected_system(fm) else None
+    if unreadable_header is not None:
+        return replace(unreadable_header, protection=reason)
     return _AgentWriteRead(fm, body, reason)
 
 
