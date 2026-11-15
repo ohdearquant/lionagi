@@ -396,9 +396,9 @@ async def test_capacity_episode_logs_once_and_records_first_and_eleventh(monkeyp
         assert len(messages) == 1
         assert "waiting schedule" in messages[0] and "waiting" in messages[0]
         assert "inflight=1" in messages[0] and "cap=1" in messages[0]
-        assert svc.create_schedule_run.await_count == 1
+        assert svc.create_skipped_schedule_run.await_count == 1
         await engine._maybe_fire(schedule, now=110.0)
-        assert svc.create_schedule_run.await_count == 2
+        assert svc.create_skipped_schedule_run.await_count == 2
         assert len(caplog.records) == 1
         blocker.release()
         await engine._maybe_fire(schedule, now=111.0)
@@ -410,7 +410,7 @@ async def test_capacity_episode_logs_once_and_records_first_and_eleventh(monkeyp
         finally:
             blocker.release()
     assert len(caplog.records) == 2
-    assert svc.create_schedule_run.await_count == 3
+    assert svc.create_skipped_schedule_run.await_count == 3
     transitions = [
         c
         for c in svc.update_status.await_args_list
@@ -459,7 +459,7 @@ async def test_a_manual_trigger_does_not_end_a_deferral_episode(monkeypatch, cap
     held.pop().release()
     assert engine._deferred_log_counts == {"waiting": 2}
     assert len(_deferral_logs(caplog)) == 1
-    assert svc.create_schedule_run.await_count == 1
+    assert svc.create_skipped_schedule_run.await_count == 1
     assert engine._global_inflight == 0
 
 

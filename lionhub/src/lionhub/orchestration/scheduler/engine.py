@@ -310,6 +310,21 @@ def _selected_chain_action(schedule: dict, success: bool) -> dict | None:
     return action
 
 
+def _chain_selection(schedule: dict | None, success: bool, depth: int) -> tuple[dict | None, str]:
+    action = (
+        _selected_chain_action(schedule, success)
+        if schedule is not None and depth < _MAX_CHAIN_DEPTH
+        else None
+    )
+    if action is None:
+        return None, "none"
+    return action, "on_success" if success else "on_fail"
+
+
+def _chain_decision_ref(selection: str) -> dict[str, Any]:
+    return {"kind": "chain_decision", "v": 1, "ref": selection}
+
+
 class SchedulerEngine:
     def __init__(
         self,
@@ -1151,6 +1166,10 @@ class SchedulerEngine:
             chain_depth = row.get("chain_depth") or 0
             trigger_context = row.get("trigger_context") or {}
             action_kind = row.get("action_kind") or ""
+            schedule = await self._svc.get_schedule(sid) if sid else None
+            chain_action, selection = _chain_selection(
+                schedule, run_status == "completed", chain_depth
+            )
 
             # The guarded CAS below is the idempotency boundary against another finalizer; losing it
             # means someone else already owns this row's follow-on effects, so this pass does
@@ -1165,11 +1184,12 @@ class SchedulerEngine:
                     "evidence; the scheduler that dispatched this run did not "
                     "record its outcome)."
                 ),
-                evidence_refs=inv_ev,
+                evidence_refs=[*inv_ev, _chain_decision_ref(selection)],
                 source="system",
                 actor="scheduler_startup_reconciliation",
                 metadata={"invocation_id": inv_id, "invocation_status": inv_status},
                 extra_fields={"ended_at": end_time},
+                record_chain_decision=True,
             )
             if not written:
                 continue
@@ -1213,30 +1233,25 @@ class SchedulerEngine:
             else:
                 self._signal_bus.pop_run_counters(run_id)
 
-            schedule = await self._svc.get_schedule(sid) if sid else None
             if schedule is None:
                 continue
             await self._check_max_runs(schedule, chain_depth)
-            if chain_depth < _MAX_CHAIN_DEPTH:
-                chain_action = _selected_chain_action(schedule, run_status == "completed")
-
-                if chain_action:
-                    chain_schedule = _merge_chain_action(schedule, chain_action)
-
-                    chain_ctx = {
-                        **trigger_context,
-                        "chain_from": run_id,
-                        "parent_status": run_status,
-                    }
-                    chain_run_id = short_id(12)
-                    self._tracked_fire(
-                        chain_schedule,
-                        chain_run_id,
-                        trigger_context=chain_ctx,
-                        chain_parent_id=run_id,
-                        chain_depth=chain_depth + 1,
-                        expect_next_fire_at=NO_CURSOR_CLAIM,
-                    )
+            if chain_action is not None:
+                chain_schedule = _merge_chain_action(schedule, chain_action)
+                chain_ctx = {
+                    **trigger_context,
+                    "chain_from": run_id,
+                    "parent_status": run_status,
+                }
+                chain_run_id = short_id(12)
+                self._tracked_fire(
+                    chain_schedule,
+                    chain_run_id,
+                    trigger_context=chain_ctx,
+                    chain_parent_id=run_id,
+                    chain_depth=chain_depth + 1,
+                    expect_next_fire_at=NO_CURSOR_CLAIM,
+                )
 
     async def _check_missed_fires(self) -> None:
         try:
@@ -2554,6 +2569,7 @@ class SchedulerEngine:
         actor: str,
         metadata: dict | None = None,
         extra_fields: dict | None = None,
+        record_chain_decision: bool = False,
     ) -> bool:
         """Write a terminal status guarded on the row still being ``running``."""
         written = await self._svc.update_status(
@@ -2568,6 +2584,7 @@ class SchedulerEngine:
             metadata=metadata,
             expected_statuses={"running"},
             extra_fields=extra_fields,
+            **({"record_chain_decision": True} if record_chain_decision else {}),
         )
         if not written:
             _log.debug(
@@ -2697,10 +2714,16 @@ class SchedulerEngine:
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
         expect_target_generation: int | None = None,
+        setup_failed: bool = False,
     ) -> bool:
         """Durably record one occurrence row: the choke point both write sites take."""
         if supersedes_run_id is not None:
-            applied = await self._svc.tombstone_and_replace_schedule_run(
+            replace_occurrence = (
+                self._svc.tombstone_and_replace_failed_schedule_run
+                if setup_failed
+                else self._svc.tombstone_and_replace_schedule_run
+            )
+            return await replace_occurrence(
                 supersedes_run_id,
                 run,
                 expected_orphan_status="running",
@@ -2710,10 +2733,14 @@ class SchedulerEngine:
                 ),
                 evidence_refs=[{"kind": "schedule_run", "id": run["id"]}],
             )
-            return applied
         # The cursor this fire was selected on is the claim: if another scheduler already advanced
         # it, that scheduler owns this occurrence and nothing is written here.
-        return await self._svc.create_schedule_run_and_advance(
+        create_occurrence = (
+            self._svc.create_failed_schedule_run_and_advance
+            if setup_failed
+            else self._svc.create_schedule_run_and_advance
+        )
+        return await create_occurrence(
             run,
             schedule_id=schedule_id,
             schedule_fields=schedule_fields,
@@ -2928,6 +2955,7 @@ class SchedulerEngine:
                     supersedes_run_id=supersedes_run_id,
                     expect_next_fire_at=expect_next_fire_at,
                     expect_github_cursor=expect_github_cursor,
+                    setup_failed=True,
                     **(
                         {"expect_target_generation": expect_target_generation}
                         if expect_target_generation is not None
@@ -3148,6 +3176,7 @@ class SchedulerEngine:
             )
             success = inv_status == "completed"
             status = _SCHEDULE_RUN_STATUS_FROM_INVOCATION.get(inv_status, exit_status)
+            chain_action, selection = _chain_selection(schedule, success, chain_depth)
             if success:
                 reason_code = RunReasons.COMPLETED_OK
                 reason_summary = "Scheduled process completed successfully."
@@ -3161,7 +3190,10 @@ class SchedulerEngine:
                 new_status=status,
                 reason_code=reason_code,
                 reason_summary=reason_summary,
-                evidence_refs=[{"kind": "invocation", "id": inv_id}],
+                evidence_refs=[
+                    {"kind": "invocation", "id": inv_id},
+                    _chain_decision_ref(selection),
+                ],
                 source="executor",
                 actor=run_id,
                 metadata={"exit_code": exit_code, "invocation_status": inv_status},
@@ -3170,6 +3202,7 @@ class SchedulerEngine:
                     "ended_at": end_time,
                     "error_detail": stderr_tail if exit_code != 0 else None,
                 },
+                record_chain_decision=True,
             )
             if written:
                 await self._dispatch_signal(
@@ -3207,27 +3240,23 @@ class SchedulerEngine:
                 self._signal_bus.pop_run_counters(run_id)
             await self._check_max_runs(schedule, chain_depth)
 
-            if chain_depth < _MAX_CHAIN_DEPTH:
-                chain_action = _selected_chain_action(schedule, success)
-
-                if chain_action:
-                    chain_schedule = _merge_chain_action(schedule, chain_action)
-
-                    chain_ctx = {
-                        **trigger_context,
-                        "chain_from": run_id,
-                        "parent_exit_code": exit_code,
-                        "parent_status": status,
-                    }
-                    chain_run_id = short_id(12)
-                    await self._fire(
-                        chain_schedule,
-                        chain_run_id,
-                        trigger_context=chain_ctx,
-                        chain_parent_id=run_id,
-                        chain_depth=chain_depth + 1,
-                        expect_next_fire_at=NO_CURSOR_CLAIM,
-                    )
+            if written and chain_action is not None:
+                chain_schedule = _merge_chain_action(schedule, chain_action)
+                chain_ctx = {
+                    **trigger_context,
+                    "chain_from": run_id,
+                    "parent_exit_code": exit_code,
+                    "parent_status": status,
+                }
+                chain_run_id = short_id(12)
+                await self._fire(
+                    chain_schedule,
+                    chain_run_id,
+                    trigger_context=chain_ctx,
+                    chain_parent_id=run_id,
+                    chain_depth=chain_depth + 1,
+                    expect_next_fire_at=NO_CURSOR_CLAIM,
+                )
             return dispatched
 
         except asyncio.CancelledError:
@@ -3346,7 +3375,7 @@ class SchedulerEngine:
                 new_status=_fire_terminal_status,
                 reason_code=_fire_exc_reason,
                 reason_summary=_fire_reason_summary,
-                evidence_refs=[{"kind": "schedule", "id": sid}],
+                evidence_refs=[{"kind": "schedule", "id": sid}, _chain_decision_ref("none")],
                 source="executor",
                 actor=run_id,
                 metadata={"exception_class": type(exc).__name__},
@@ -3354,6 +3383,7 @@ class SchedulerEngine:
                     "ended_at": _end_time,
                     "error_detail": f"{type(exc).__name__}: {exc}",
                 },
+                record_chain_decision=True,
             )
             if written:
                 await self._dispatch_signal(

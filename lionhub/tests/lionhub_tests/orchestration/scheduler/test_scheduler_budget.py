@@ -48,7 +48,7 @@ def _make_svc() -> AsyncMock:
     svc.get_schedule = AsyncMock(return_value=None)
     svc.list_schedules = AsyncMock(return_value=[])
     svc.update_schedule = AsyncMock()
-    svc.create_schedule_run = AsyncMock()
+    svc.create_skipped_schedule_run = AsyncMock()
     svc.update_schedule_run = AsyncMock()
     svc.create_invocation = AsyncMock()
     svc.update_invocation = AsyncMock()
@@ -191,8 +191,8 @@ async def test_maybe_fire_disables_and_records_when_over_budget():
     svc.update_schedule.assert_awaited_once_with(
         "sched-001", enabled=0, audit_context=ANY, reason=ANY
     )
-    svc.create_schedule_run.assert_awaited_once()
-    (run_payload,), _ = svc.create_schedule_run.await_args
+    svc.create_skipped_schedule_run.assert_awaited_once()
+    (run_payload,), _ = svc.create_skipped_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True
     budget_calls = [
         c
@@ -225,8 +225,8 @@ async def test_disable_still_lands_when_the_annotation_reread_fails():
     svc.update_schedule.assert_awaited_once_with(
         "sched-001", enabled=0, audit_context=ANY, reason=ANY
     )
-    svc.create_schedule_run.assert_awaited_once()
-    (run_payload,), _ = svc.create_schedule_run.await_args
+    svc.create_skipped_schedule_run.assert_awaited_once()
+    (run_payload,), _ = svc.create_skipped_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True
     budget_calls = [
         c
@@ -373,8 +373,8 @@ async def test_tick_github_disables_without_polling_when_over_budget():
     svc.update_schedule.assert_awaited_once_with(
         "sched-001", enabled=0, audit_context=ANY, reason=ANY
     )
-    svc.create_schedule_run.assert_awaited_once()
-    (run_payload,), _ = svc.create_schedule_run.await_args
+    svc.create_skipped_schedule_run.assert_awaited_once()
+    (run_payload,), _ = svc.create_skipped_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True
     # The budget check runs before slot reservation, so a bailed fire must leave
     # the global concurrency counter untouched -- a regression that moved the

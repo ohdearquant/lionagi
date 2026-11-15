@@ -92,6 +92,7 @@ from lionagi.state.lifecycle.models import (
 from lionagi.state.lifecycle.models import (
     TransitionCommand as _TransitionCommand,
 )
+from lionagi.state.lifecycle.models import _is_chain_decision_ref
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService as _LifecycleService
 from lionagi.state.reasons import LEGACY_IMPORTED as _LEGACY_IMPORTED
 from lionagi.state.reasons import (
@@ -210,7 +211,8 @@ CursorClaim = float | str | None | NoCursorClaim
 # Shape of the schema this code applies; ``_apply_schema`` stamps it into ``schema_meta.version`` on
 # every open, so the recorded version describes the database after migrations. Bump it whenever a
 # migration changes the shape a reader would see.
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
+_CHAIN_DECISION_SCHEMA_VERSION = 7
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 _ATTENTION_DISPOSITIONS_BACKFILL_KEY = "migration.attention_dispositions_backfill"
@@ -1089,6 +1091,7 @@ class StateDB:
         entity_id: str,
         status: str,
         actor_id: str,
+        seed_chain_decision: bool = False,
     ) -> None:
         reason_code = _INITIAL_REASON_CODES.get((entity_type, status))
         if reason_code is None:
@@ -1096,6 +1099,14 @@ class StateDB:
             # declared lifecycle initial states and must not get a fabricated creation event.
             return
         policy = _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type)
+        evidence_refs: tuple[dict[str, Any], ...] = ()
+        if (
+            seed_chain_decision
+            and entity_type == "schedule_run"
+            and status in ("skipped", "failed")
+            and await self._chain_decisions_enabled(conn)
+        ):
+            evidence_refs = ({"kind": "chain_decision", "v": 1, "ref": "none"},)
         # In compatibility mode the row is this run's, so the update is restricted to its owner.
         clause, owner = self._owner_predicate(policy.table)
         await conn.execute(
@@ -1107,7 +1118,7 @@ class StateDB:
             {
                 "reason_code": reason_code,
                 "reason_summary": "",
-                "evidence_refs": [],
+                "evidence_refs": list(evidence_refs),
                 "entity_id": entity_id,
                 **owner,
             },
@@ -1118,7 +1129,7 @@ class StateDB:
                 entity_type=entity_type,
                 entity_id=entity_id,
                 status=status,
-                reason=_ReasonRecord(code=reason_code),
+                reason=_ReasonRecord(code=reason_code, evidence_refs=evidence_refs),
                 actor=_ActorRecord(type="system", id=actor_id),
             ),
         )
@@ -3226,12 +3237,21 @@ class StateDB:
 
     async def schema_version(self) -> str | None:
         async with self._read() as conn:
-            row = (
-                (await conn.execute(text("SELECT value FROM schema_meta WHERE key = 'version'")))
-                .mappings()
-                .first()
-            )
-        return row["value"] if row else None
+            return await self._schema_version_on(conn)
+
+    @staticmethod
+    async def _schema_version_on(conn) -> str | None:
+        return (
+            await conn.execute(text("SELECT value FROM schema_meta WHERE key = 'version'"))
+        ).scalar()
+
+    async def _chain_decisions_enabled(self, conn) -> bool:
+        """Use the version visible to the transition or insertion transaction."""
+        version = await self._schema_version_on(conn)
+        try:
+            return version is not None and int(version) >= _CHAIN_DECISION_SCHEMA_VERSION
+        except ValueError:
+            return False
 
     # Messages
 
@@ -5419,6 +5439,7 @@ class StateDB:
         override_justification: str | None = None,
         fill_only_if_absent: frozenset[str] = frozenset(),
         owned_links: tuple[tuple[str, str, str], ...] = (),
+        record_chain_decision: bool = False,
     ) -> bool:
         """Atomically transition a status and record the reason, under a terminal-status floor.
 
@@ -5497,6 +5518,7 @@ class StateDB:
                 override_justification=override_justification,
                 fill_only_if_absent=fill_only_if_absent,
                 owned_links=owned_links,
+                record_chain_decision=record_chain_decision,
             )
         except _LifecycleNotFoundError as exc:
             raise LookupError(f"{canonical_type} {entity_id!r} not found (table={table})") from exc
@@ -6468,6 +6490,11 @@ class StateDB:
     # Schedule Runs
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
+        await self._create_schedule_run(run)
+
+    async def _create_schedule_run(
+        self, run: dict[str, Any], *, seed_chain_decision: bool = False
+    ) -> None:
         stmt, params = self._build_schedule_run_insert_stmt(run)
         async with self._tx() as conn:
             await conn.execute(stmt, params)
@@ -6477,6 +6504,7 @@ class StateDB:
                 entity_id=params["id"],
                 status=params["status"],
                 actor_id="create_schedule_run",
+                seed_chain_decision=seed_chain_decision,
             )
 
     @staticmethod
@@ -6534,6 +6562,30 @@ class StateDB:
         child or a replacement for an occurrence already recorded. *expect_github_cursor* is the
         per-event claim a poll batch needs, since every event in one batch shares a due instant.
         """
+        return await self._create_schedule_run_and_advance(
+            run,
+            schedule_id=schedule_id,
+            schedule_fields=schedule_fields,
+            expect_next_fire_at=expect_next_fire_at,
+            expect_github_cursor=expect_github_cursor,
+            expect_target_generation=expect_target_generation,
+            audit_context=audit_context,
+            reason=reason,
+        )
+
+    async def _create_schedule_run_and_advance(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
+        audit_context: _ScheduleAuditContext | None = None,
+        reason: _ReasonRecord | None = None,
+        seed_chain_decision: bool = False,
+    ) -> bool:
         run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
         # Engine-only path, so the monotonic cursor guard always applies: this value came from a
         # poll snapshot and must never walk an operator's move backwards.
@@ -6567,6 +6619,7 @@ class StateDB:
                 entity_id=run_params["id"],
                 status=run_params["status"],
                 actor_id="create_schedule_run_and_advance",
+                seed_chain_decision=seed_chain_decision,
             )
         return True
 
@@ -6580,6 +6633,28 @@ class StateDB:
         evidence_refs: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Tombstone an undispatched orphan and insert its replacement in one transaction."""
+        return await self._tombstone_and_replace_schedule_run(
+            orphan_id,
+            replacement_run,
+            expected_orphan_status=expected_orphan_status,
+            reason_summary=reason_summary,
+            evidence_refs=evidence_refs,
+        )
+
+    async def _tombstone_and_replace_schedule_run(
+        self,
+        orphan_id: str,
+        replacement_run: dict[str, Any],
+        *,
+        expected_orphan_status: str = "running",
+        reason_summary: str = "undispatched schedule run replaced during recovery",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        seed_chain_decision: bool = False,
+    ) -> bool:
+        if expected_orphan_status != "running" or any(
+            _is_chain_decision_ref(ref) for ref in evidence_refs or ()
+        ):
+            return False
         run_stmt, run_params = self._build_schedule_run_insert_stmt(replacement_run)
         lifecycle_service = self._lifecycle_service()
         now = time.time()
@@ -6602,7 +6677,7 @@ class StateDB:
                 conn,
                 "schedule_runs",
                 command,
-                previous_status=expected_orphan_status,
+                previous_status="running",
                 now=now,
                 extra_guard={"dispatched_at": None},
             )
@@ -6615,10 +6690,11 @@ class StateDB:
                 entity_id=run_params["id"],
                 status=run_params["status"],
                 actor_id="tombstone_and_replace_schedule_run",
+                seed_chain_decision=seed_chain_decision,
             )
         await lifecycle_service._emit_terminal_event(  # noqa: SLF001
             command,
-            previous_status=expected_orphan_status,
+            previous_status="running",
             transition_id=history_write.transition_id,
             occurred_at=now,
             eligibility_stored=history_write.eligibility_stored,
