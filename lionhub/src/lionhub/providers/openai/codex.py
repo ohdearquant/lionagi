@@ -1131,16 +1131,17 @@ def _roots_reaching_home(
     config overrides set under ``sandbox_workspace_write``, at the root or in a profile table.
     A root inside the home directory is honoured. Relative entries are read against the
     working directory, ``~`` is expanded, and links are resolved, on both sides. The home is
-    this process's and, when the request sets one, the child's ``HOME``.
+    this process's, the child's ``HOME`` when the request sets one, and the account's home
+    from the password database, which a scratch ``HOME`` does not move.
 
     An entry that exists is compared by identity (device and inode) with the home directory
     and each of its ancestors, because a spelling is not an identity: on a case-insensitive
     volume ``/users/u`` is the home ``/Users/u`` and ``realpath`` keeps the case it was given.
     The spelling comparison stays beside it for an entry that does not exist yet.
     """
-    homes = {os.path.realpath(os.path.expanduser("~"))}
-    if plain.env and plain.env.get("HOME"):
-        homes.add(os.path.realpath(os.path.expanduser(plain.env["HOME"])))
+    from lionhub.agent.child_sandbox import _home_directories
+
+    homes = _home_directories(plain.env)
     reaching: set[tuple[int, int]] = set()
     for home in homes:
         for directory in (home, *map(str, Path(home).parents)):
