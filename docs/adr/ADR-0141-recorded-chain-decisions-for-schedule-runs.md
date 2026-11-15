@@ -425,9 +425,13 @@ The cutover procedure applies to both backends:
    the same acceptance schedule with
    `lionagi/studio/services/schedules.py::delete_schedule`.
    The expected outcome is that the delete succeeds. Today the delete path
-   checks the schedule's lifecycle edge to deleted, the reason and the caller;
-   it does not check for owed deliveries or surviving resolvers. Beyond those
-   checks, only the foreign-key links below can refuse it.
+   validates the schedule's lifecycle edge to deleted, the reason and the form
+   of the audit context, supplying defaults when the caller passes none. None
+   of these is an authorization check, and the path does not check for owed
+   deliveries or surviving resolvers. Under the native profile, only the
+   foreign-key links below can refuse it beyond those validations; a
+   compatibility profile with an owner that does not list `schedules` among
+   its owned tables refuses it first.
    The delete cascades to runs under that schedule, including parent and child when
    both belong to it. A surviving link such as a child in another schedule, an
    outbox reference or a worker lease can block deletion
