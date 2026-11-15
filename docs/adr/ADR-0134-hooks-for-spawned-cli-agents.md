@@ -1194,6 +1194,9 @@ harder to read back. Kept as a fallback if the file path proves unworkable.
 
 ## Amendment 1 (2026-11-14) — Default MCP servers for Claude Code legs
 
+Status: this amendment is implemented by the change that adds it; the rest of this record stays
+Proposed with implementation not started.
+
 D4 applies `--strict-mcp-config` to every Claude Code leg, including one whose servers come
 from a discovered `.mcp.json` or its submit snapshot. A caller-named configuration still takes
 precedence, and `--no-mcp-config` supplies an empty set.
@@ -1204,3 +1207,16 @@ With neither a named nor discovered configuration and no opt-out, lionagi suppli
 from `PATH`, the leg starts with an empty strict configuration and one warning naming the missing
 executable. The run record distinguishes the generated default and the missing-executable case
 from an explicit empty configuration.
+
+lionagi does not check that the default server starts. A `kkernel` on `PATH` that exits at boot
+with this pack list is not detected: the leg runs with the `khive` server failed and no khive
+tools, and the run still records `default_claude_leg`. That reason records that lionagi supplied
+the server, never that the server started.
+
+This amendment supersedes what D4 and A4 say about which paths resolve a `.mcp.json`. D4 names
+`li agent` as the path that resolves the nearest `.mcp.json`, and A4 counts every other P3 path as
+one that resolves none. The current behavior, which `docs/internals/cli.md` describes, is that
+`li agent`, `li o flow` and `li o fanout` resolve it (flow and fan-out once for the run, used by the
+orchestrator, the synthesis agent and the workers), and that the MCP server's submits resolve it
+at submit time and hand the leg a snapshot. On those paths `--no-mcp-config` is the spawn that
+resolves none, and A4's `.mcp.json` canary runs under it.

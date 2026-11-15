@@ -136,6 +136,9 @@ If no configuration is named, discovered or carried by a snapshot, the leg uses 
 configuration with one server, `khive`. It resolves `kkernel` on `PATH` and starts
 `kkernel mcp` with an explicit pack allowlist that excludes `comm`, `exec` and `tool`.
 The run records `mcp_config_reason: default_claude_leg`, a null source and a false explicit flag.
+lionagi does not check that this server starts: a `kkernel` that exits at boot with that pack list
+leaves the leg running with the `khive` server failed, and the record still reads
+`default_claude_leg`, which records that the server was supplied, not that it started.
 If `kkernel` is unavailable, the leg warns once, starts with a strict empty set and records
 `mcp_config_reason: default_claude_leg_kkernel_unavailable`. An unusable discovered project
 config also results in a warning and a strict empty set, with its original discovery reason.
