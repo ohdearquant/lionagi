@@ -124,6 +124,138 @@ async def test_openai_served_models_reach_real_run_manifest(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("replies_usage", "counts", "totals"),
+    [
+        pytest.param(
+            ({"prompt_tokens": 137}, {"completion_tokens": 0}),
+            [(137, None), (None, 0)],
+            {"input_tokens": 137, "output_tokens": 0},
+            id="aliases-with-missing-counter",
+        ),
+        pytest.param(
+            (None, {}),
+            [(None, None), (None, None)],
+            {"input_tokens": None, "output_tokens": None},
+            id="no-counts",
+        ),
+    ],
+)
+async def test_provider_token_counts_and_totals_reach_real_run_manifest(
+    leg, monkeypatch, tmp_path, replies_usage, counts, totals
+):
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    replies = []
+    for body, usage in zip(
+        (provider._last_round(), provider._answer("done")), replies_usage, strict=True
+    ):
+        reply = {
+            "choices": [{"message": {"role": "assistant", "content": body["content"][0]["text"]}}],
+            "model": "gpt-5",
+        }
+        if usage is not None:
+            reply["usage"] = usage
+        replies.append(reply)
+
+    async def call(self, request, headers, **kwargs):
+        return replies.pop(0)
+
+    monkeypatch.setattr(OpenaiChatEndpoint, "_call", call)
+    result = await leg.run(provider._profile(api_tools="read"), model="openai/gpt-5")
+    _, manifest = _only_record(tmp_path)
+    usage = manifest["api_usage"]
+
+    assert result[3] == manifest["status"] == "completed"
+    assert usage["schema_version"] == 1
+    assert [(row["input_tokens"], row["output_tokens"]) for row in usage["requests"]] == counts
+    assert usage["totals"] == totals
+    assert all(row["estimated_cost_nusd"] is None for row in usage["requests"])
+    assert usage["estimated_cost_nusd"] is None
+    assert usage["price_table_version"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested_model", "served_models", "estimates", "total"),
+    [
+        pytest.param(
+            "claude-haiku-5-5",
+            ("unlisted-model", "claude-haiku-5-5"),
+            [None, 138],
+            None,
+            id="unpriced-served-model",
+        ),
+        pytest.param(
+            "unlisted-model",
+            ("claude-haiku-5-5", "claude-haiku-5-5"),
+            [138, 138],
+            276,
+            id="priced-served-model",
+        ),
+        pytest.param(
+            "claude-sonnet-5-5",
+            ("claude-haiku-5-5", None),
+            [138, None],
+            138,
+            id="different-rates-and-absent-usage",
+        ),
+    ],
+)
+async def test_manifest_estimates_priced_usage_at_the_served_model_rate(
+    leg, monkeypatch, tmp_path, requested_model, served_models, estimates, total
+):
+    from lionagi.config import AppSettings
+
+    monkeypatch.setattr(
+        "lionagi.config.settings", AppSettings(_env_file=None, ANTHROPIC_ACCOUNTS=())
+    )
+    replies = [provider._last_round(), provider._answer("done")]
+    counts = []
+    for reply, served_model in zip(replies, served_models, strict=True):
+        if served_model is None:
+            reply.pop("model")
+            reply.pop("usage")
+            counts.append((None, None))
+            continue
+        reply["model"] = served_model
+        # One Haiku 5-minute cache write in the US is 125 * 1.1 nUSD, rounded up.
+        reply["usage"] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 1,
+            "cache_creation": {"ephemeral_5m_input_tokens": 1},
+            "inference_geo": "us",
+            "service_tier": "standard",
+        }
+        counts.append((0, 0))
+
+    async def call(self, request, headers, **kwargs):
+        assert request["model"] == requested_model
+        return replies.pop(0)
+
+    monkeypatch.setattr(AnthropicMessagesEndpoint, "call", Endpoint.call)
+    monkeypatch.setattr(AnthropicMessagesEndpoint, "_call", call)
+    result = await leg.run(
+        provider._profile(api_tools="read"), model=f"anthropic/{requested_model}"
+    )
+    _, manifest = _only_record(tmp_path)
+    usage = manifest["api_usage"]
+
+    assert result[3] == manifest["status"] == "completed"
+    assert [
+        (row["model"], row["model_semantics"], row["served_model"]) for row in usage["requests"]
+    ] == [(requested_model, "requested", served_model) for served_model in served_models]
+    assert [(row["input_tokens"], row["output_tokens"]) for row in usage["requests"]] == counts
+    assert usage["totals"] == {"input_tokens": 0, "output_tokens": 0}
+    assert [row["estimated_cost_nusd"] for row in usage["requests"]] == estimates
+    assert usage["estimated_cost_nusd"] == total
+    assert usage["price_table_version"] == "anthropic-20261108"
+
+
+@pytest.mark.asyncio
 async def test_real_manifest_retains_all_usage_fields_and_actual_selected_account(
     leg, monkeypatch, tmp_path
 ):

@@ -13,6 +13,7 @@ from lionagi.service._api_telemetry import collect_api_turn
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionagi.service.imodel import iModel
 from lionhub.serve.cli._api_usage import APIUsageCollector
 from tests.service.hooks.test_hooked_event import _fake_hook
 
@@ -200,7 +201,13 @@ async def test_local_cache_miss_records_and_hit_stays_unknown(monkeypatch):
     cache = SimpleMemoryCache(serializer=JsonSerializer())
     monkeypatch.setattr(caches, "get", lambda alias: cache)
     endpoint = _endpoint("openai")
-    response = {"usage": {"prompt_tokens_details": {"cached_tokens": 11, "cache_write_tokens": 4}}}
+    response = {
+        "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 8,
+            "prompt_tokens_details": {"cached_tokens": 11, "cache_write_tokens": 4},
+        },
+    }
     transport = AsyncMock(return_value=response)
     monkeypatch.setattr(endpoint, "_call", transport)
     collector = _collector()
@@ -208,14 +215,20 @@ async def test_local_cache_miss_records_and_hit_stays_unknown(monkeypatch):
     with collect_api_turn(collector, 1):
         first = APICalling(endpoint=endpoint, payload=payload, cache_control=True)
         second = APICalling(endpoint=endpoint, payload=payload, cache_control=True)
-    await first.invoke()
-    await second.invoke()
+    async with iModel(endpoint=endpoint, api_key="test-key") as model:
+        await model.invoke(api_call=first)
+        await model.invoke(api_call=second)
     assert first.status is second.status is EventStatus.COMPLETED
     assert second.response == response and isinstance(second.response, dict)
     assert transport.await_count == 1
     rows = collector.snapshot()["requests"]
     assert (rows[0]["cache_read_tokens"], rows[0]["cache_write_tokens"]) == (11, 4)
     assert (rows[1]["cache_read_tokens"], rows[1]["cache_write_tokens"]) == (None, None)
+    assert [(row["input_tokens"], row["output_tokens"]) for row in rows] == [
+        (12, 8),
+        (None, None),
+    ]
+    assert collector.snapshot()["totals"] == {"input_tokens": 12, "output_tokens": 8}
 
 
 @pytest.mark.asyncio
