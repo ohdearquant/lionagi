@@ -188,6 +188,7 @@ MOVED: tuple[Moved, ...] = (
         "2.0.0",
     ),
     Moved("lionagi.studio.services._db", "lionhub.orchestration.state_store", "0.38.0", "2.0.0"),
+    Moved("lionagi.integrations", "lionhub.integrations", "0.38.0", "2.0.0"),
 )
 
 

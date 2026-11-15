@@ -45,8 +45,6 @@ MODULE_RULES = {
     "lionagi.agent": ("adapter", "agent"),
     "lionhub.agent.casts": ("adapter", "casts"),
     "lionagi.hooks": ("adapter", "hooks"),
-    "lionagi.integrations": ("adapter", "integrations"),
-    "lionagi.integrations.ruvector": ("adapter", "ruvector"),
     "lionagi.plugins": ("adapter", "plugins"),
     "lionagi.state": ("adapter", "state"),
     "lionagi.tools": ("adapter", "tools"),
@@ -86,7 +84,6 @@ ROOT_MODULES = {
 TARGET_RULES = {
     "lionagi.agent": "lionhub (destination not yet recorded)",
     "lionhub.agent.casts": "lionhub.agent.casts",
-    "lionagi.integrations": "lionhub (destination not yet recorded)",
     "lionagi.tools": "lionhub (destination not yet recorded)",
     "lionhub.serve.cli": "lionhub.serve.cli",
     "lionhub.serve.cli.orchestrate._orchestration": "lionhub.orchestration.runs",

@@ -20,10 +20,10 @@ class MissingRuVector(importlib.abc.MetaPathFinder):
             raise ModuleNotFoundError('native backend absent', name='ruvector')
 sys.meta_path.insert(0, MissingRuVector())
 import lionagi
-import lionagi.integrations
+import lionhub.integrations
 assert 'ruvector' not in sys.modules
 try:
-    import lionagi.integrations.ruvector
+    import lionhub.integrations.ruvector
 except ImportError as exc:
     assert "lionagi[ruvector]" in str(exc)
 else:
