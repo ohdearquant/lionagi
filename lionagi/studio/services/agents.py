@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
@@ -48,8 +48,8 @@ def _is_protected_system(fm: dict[str, Any]) -> bool:
 
     - Present and truthy counts, whatever its YAML type -- ``true``, ``"true"``,
       or any other value Python considers truthy -- so this agrees with the
-      runtime's own ``bool(frontmatter.get("lion_system", True))`` check in
-      ``lionagi/cli/_providers.py`` for every value that's actually there.
+      runtime profile loader's own ``bool(frontmatter.get("lion_system", True))``
+      check for every value that's actually there.
     - An *absent* key does not count as protected: treating a missing key as
       protected would silently lock down every agent file that predates this
       feature (plain markdown with no frontmatter at all is common -- see the
@@ -76,40 +76,66 @@ def _is_empty_yaml_document(block: str) -> bool:
         return False
 
 
+def _read_unreadable_agent_block(
+    block: str, body: str, *, allow_empty: bool = False
+) -> _AgentWriteRead:
+    if "lion_system" in block:
+        return _AgentWriteRead(
+            {},
+            "",
+            "may be a system agent because its frontmatter could not be read",
+            unreadable_block=True,
+        )
+    if allow_empty and _is_empty_yaml_document(block):
+        # A closed block that is empty, only comments, or an explicit null
+        # holds no settings, so a partial update has nothing to discard.
+        return _AgentWriteRead({}, body)
+    return _AgentWriteRead({}, body, unreadable_block=True)
+
+
 def _read_agent_for_write(text: str) -> _AgentWriteRead:
     """Classify frontmatter for agent writes.
 
-    Readable settings supply the parsed mapping and its system-agent protection.
-    An unreadable block, closed or not, that mentions ``lion_system`` is
-    protected for every write. A closed block with no settings, including an
-    explicit null, allows partial updates. Other unreadable blocks refuse
-    partial updates to preserve existing settings. Deleting or replacing the
-    whole file only uses the system-agent protection.
+    Protect a profile if its unreadable header mentions ``lion_system``, if an
+    unreadable or unclosed block after a malformed opener mentions it, or if the
+    profile loaders read an explicit, truthy value. Partial updates
+    require a readable mapping or a block with bare opening and closing
+    delimiters and no settings, including an explicit null. A malformed
+    opener always refuses partial updates. Whole-file writes use the
+    system-agent protection.
     """
     normalized = _strip_frontmatter_prefix(text)
+    unreadable_header = None
     if normalized.startswith("---"):
         text = normalized
+        if _FM_SPLIT.match(text) is None:
+            # Check the malformed opening block itself. The profile loaders
+            # can also read a closed block between the first two bare delimiters.
+            block, *rest = _FM_SPLIT.split(text, maxsplit=1)
+            unreadable_header = _read_unreadable_agent_block(block, rest[0].strip() if rest else "")
+            if unreadable_header.protection is not None or not rest:
+                return unreadable_header
     try:
         fm, body = parse_frontmatter_strict(text)
     except (yaml.YAMLError, RecursionError):
         # A closed block may be empty. Without a closing delimiter, inspect
         # everything through the end of the file and refuse partial updates.
         parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
+        if unreadable_header is not None and len(parts) < 3:
+            # After a malformed opener, the text past the single bare delimiter may be a
+            # block that never closes; where it was meant to end is not known, so inspect
+            # it through the end of the file, as an unclosed block after a bare opener is.
+            if len(parts) == 2 and "lion_system" in parts[1]:
+                return _read_unreadable_agent_block(parts[1], "")
+            return unreadable_header
         block = parts[1] if len(parts) > 1 else text
-        if "lion_system" in block:
-            return _AgentWriteRead(
-                {},
-                "",
-                "may be a system agent because its frontmatter could not be read",
-                unreadable_block=True,
-            )
         rest = parts[2].strip() if len(parts) > 2 else ""
-        if len(parts) > 2 and _is_empty_yaml_document(block):
-            # A closed block that is empty, only comments, or an explicit null
-            # holds no settings, so a partial update has nothing to discard.
-            return _AgentWriteRead({}, rest)
-        return _AgentWriteRead({}, rest, unreadable_block=True)
+        return _read_unreadable_agent_block(
+            block, rest, allow_empty=unreadable_header is None and len(parts) > 2
+        )
     reason = "is a system agent" if _is_protected_system(fm) else None
+    if unreadable_header is not None:
+        return replace(unreadable_header, protection=reason)
     return _AgentWriteRead(fm, body, reason)
 
 

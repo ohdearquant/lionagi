@@ -548,16 +548,17 @@ def _make_definitions_client(tmp_path, monkeypatch):
     return TestClient(app, base_url="http://127.0.0.1:8765"), agents_dir
 
 
-@pytest.mark.parametrize(
-    "method, url, body",
-    [
-        pytest.param("PUT", "/api/agents/sample", {"system_prompt": "New prompt."}, id="update"),
-        pytest.param("DELETE", "/api/agents/sample", None, id="delete"),
-        pytest.param(
-            "POST", "/api/definitions/agent/sample", {"content": "New prompt."}, id="definition"
-        ),
-    ],
+_AGENT_WRITE_REQUESTS = (
+    pytest.param("PUT", "/api/agents/sample", {"system_prompt": "New prompt."}, id="update"),
+    pytest.param("DELETE", "/api/agents/sample", None, id="delete"),
+    pytest.param(
+        "POST", "/api/definitions/agent/sample", {"content": "New prompt."}, id="definition"
+    ),
 )
+_LATER_SYSTEM_BLOCK = "---invalid\nname: sample\n---\nlion_system: true\n---\nOriginal prompt.\n"
+
+
+@pytest.mark.parametrize("method, url, body", _AGENT_WRITE_REQUESTS)
 @pytest.mark.parametrize(
     "text, refused_methods",
     [
@@ -575,6 +576,16 @@ def _make_definitions_client(tmp_path, monkeypatch):
             "---\nlion_system: true\nOriginal prompt.\n",
             ("PUT", "DELETE", "POST"),
             id="system-unclosed",
+        ),
+        pytest.param(
+            "---settings\nlion_system: true\n---\nOriginal prompt.\n",
+            ("PUT", "DELETE", "POST"),
+            id="system-malformed-opener",
+        ),
+        pytest.param(
+            "\ufeff---settings\nlion_system: true\n---\nOriginal prompt.\n",
+            ("PUT", "DELETE", "POST"),
+            id="system-malformed-opener-with-bom",
         ),
         pytest.param(
             "---\nDeadline: 2026-02-30\n---\nOriginal prompt.\n",
@@ -632,6 +643,124 @@ def test_agent_writes_protect_system_frontmatter(
             if method == "PUT" and "lion_system: false" in text:
                 assert "lion_system: false" in path.read_text()
                 assert "custom: kept" in path.read_text()
+
+
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["plain", "bom"])
+def test_agent_write_classifier_protects_later_system_block(prefix):
+    from lionagi.studio.services.agents import _read_agent_for_write
+
+    assert _read_agent_for_write(prefix + _LATER_SYSTEM_BLOCK).protection is not None
+
+
+@pytest.mark.parametrize("method, url, body", _AGENT_WRITE_REQUESTS)
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["plain", "bom"])
+def test_agent_routes_refuse_later_system_block(tmp_path, monkeypatch, method, url, body, prefix):
+    from lionagi.studio.services.agents import _read_agent_for_write
+
+    source = prefix + _LATER_SYSTEM_BLOCK
+    # Check classification before creating a fixture on disk or calling a write route.
+    assert _read_agent_for_write(source).protection is not None
+    client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
+    path = agents_dir / "sample.md"
+    original = source.encode()
+    path.write_bytes(original)
+
+    response = client.request(method, url, json=body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 403, response.text
+    detail = response.json()["detail"]
+    assert "sample" in detail and "system agent" in detail
+    assert "Original prompt." not in detail
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["plain", "bom"])
+@pytest.mark.parametrize(
+    ("text", "protected", "unreadable"),
+    [
+        pytest.param(
+            "---invalid\nlion_system: true\n---\nPrompt.\n",
+            True,
+            True,
+            id="system-malformed-opener",
+        ),
+        pytest.param(
+            "---invalid\nlion_system: true\nPrompt.\n",
+            True,
+            True,
+            id="system-malformed-opener-unclosed",
+        ),
+        pytest.param(
+            "---invalid\nlion_system: true\n---\nexample: in the prompt\n---\nMore prompt.\n",
+            True,
+            True,
+            id="system-malformed-opener-with-prompt-delimiter",
+        ),
+        pytest.param(
+            "---invalid\nname: profile\n---\nPrompt mentions lion_system.\n",
+            True,
+            True,
+            id="malformed-opener-marker-after-single-delimiter",
+        ),
+        pytest.param(
+            "---invalid\nname: sample\n---\nlion_system: true\nPrompt.\n",
+            True,
+            True,
+            id="later-unclosed-system-block",
+        ),
+        pytest.param(
+            "---invalid\nname: profile\n---\nPrompt.\n",
+            False,
+            True,
+            id="ordinary-malformed-opener",
+        ),
+        pytest.param(
+            "--- null\n---\nPrompt.\n",
+            False,
+            True,
+            id="malformed-empty-block",
+        ),
+        pytest.param(
+            "---invalid\nname: sample\n---\nlion_system: false\n---\nPrompt.\n",
+            False,
+            True,
+            id="later-nonsystem-block",
+        ),
+        pytest.param(
+            "---invalid\nname: sample\n---\nlion_system: true\nnotes: [unfinished\n---\nPrompt.\n",
+            True,
+            True,
+            id="later-unreadable-system-block",
+        ),
+        pytest.param(
+            "---\nlion_system: false\n---\nPrompt.\n",
+            False,
+            False,
+            id="readable-user-profile",
+        ),
+        pytest.param(
+            "---\nnull\n---\nPrompt.\n",
+            False,
+            False,
+            id="readable-empty-settings",
+        ),
+        pytest.param(
+            "Prompt mentions lion_system.\n",
+            False,
+            False,
+            id="ordinary-prompt-without-frontmatter",
+        ),
+    ],
+)
+def test_agent_write_classifier_checks_only_the_malformed_header(
+    prefix, text, protected, unreadable
+):
+    from lionagi.studio.services.agents import _read_agent_for_write
+
+    classified = _read_agent_for_write(prefix + text)
+
+    assert (classified.protection is not None) is protected
+    assert classified.unreadable_block is unreadable
 
 
 @pytest.mark.parametrize("prefix", ["\ufeff", "\u200b"], ids=["bom", "zero-width-space"])
@@ -853,6 +982,19 @@ def test_partial_update_still_refuses_a_block_that_is_not_a_mapping(tmp_path, mo
     with pytest.raises(AgentProtectedError, match="frontmatter could not be read"):
         update_agent("odd", {"effort": "high"})
     assert (root / "odd.md").read_text() == original
+
+
+def test_partial_update_refuses_empty_block_with_a_malformed_opener(tmp_path, monkeypatch):
+    from lionagi.studio.services.agents import AgentProtectedError, update_agent
+
+    path = _make_agents_root(tmp_path, monkeypatch) / "blank.md"
+    original = b"--- null\n---\nKeep this body.\n"
+    path.write_bytes(original)
+
+    with pytest.raises(AgentProtectedError, match="frontmatter could not be read"):
+        update_agent("blank", {"effort": "high"})
+
+    assert path.read_bytes() == original
 
 
 def test_a_comment_naming_lion_system_still_protects_an_empty_block(tmp_path, monkeypatch):
