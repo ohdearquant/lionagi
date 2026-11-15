@@ -152,6 +152,7 @@ _EXPECTED_DENY_READ = (
     "~/.zsh_history",
     "~/.bash_history",
     "~/.python_history",
+    "~/.khive",
 )
 
 

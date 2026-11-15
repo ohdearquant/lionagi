@@ -61,7 +61,7 @@ CHILD_SANDBOX_OPT_OUT = (
     "`child_sandbox: {enabled: false}` in ~/.lionagi/settings.yaml."
 )
 
-#: Generic credential locations a child may not read. Entries are ``~/`` or absolute paths;
+#: Generic credential locations and local stores a child may not read. Entries are ``~/`` or absolute paths;
 #: a file entry names one file and a directory entry names the whole directory.
 DEFAULT_DENY_READ: tuple[str, ...] = (
     "~/.ssh",
@@ -100,6 +100,9 @@ DEFAULT_DENY_READ: tuple[str, ...] = (
     "~/.zsh_history",
     "~/.bash_history",
     "~/.python_history",
+    # khive's default home: its stores, server socket and configuration. A child reaches khive
+    # through the server it is handed, which runs outside the sandbox.
+    "~/.khive",
 )
 
 #: Toolchain caches a sandboxed child may write besides its working directory.
