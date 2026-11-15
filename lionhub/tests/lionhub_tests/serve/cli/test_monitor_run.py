@@ -1187,7 +1187,14 @@ def _chain_decision(selection: str) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "status,exit_code", [("failed", None), ("completed", 0), ("failed", 7), ("skipped", None)]
+    "status,exit_code",
+    [
+        ("failed", None),
+        ("cancelled", None),
+        ("completed", 0),
+        ("failed", 7),
+        ("skipped", None),
+    ],
 )
 async def test_chain_decision_none_returns_without_sleep(
     temp_db_path: Path, sleep_probe: list[float], status: str, exit_code: int | None
@@ -1201,6 +1208,29 @@ async def test_chain_decision_none_returns_without_sleep(
         )
 
     assert _dispatch_wait([parent], interval=0.1, follow=False) == (
+        0 if status == "completed" else 1
+    )
+    assert not sleep_probe
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", sorted(SCHEDULE_RUN_TERMINAL_STATUSES))
+async def test_terminal_task_application_without_schedule_resolves_without_grace(
+    temp_db_path: Path, sleep_probe: list[float], status: str
+) -> None:
+    from lionagi.studio.services.task_applications import TaskApplication, submit_task
+
+    async with StateDB() as db:
+        run_id = await submit_task(
+            db,
+            TaskApplication(action_kind="agent", args={"prompt": "test"}, execution_target="host"),
+        )
+        await _set_fields(db, "schedule_runs", run_id, status=status)
+        row = await db.get_schedule_run(run_id)
+        assert row["schedule_id"] is None
+        assert not row["status_evidence_refs"]
+
+    assert _dispatch_wait([run_id], interval=0.1, follow=False) == (
         0 if status == "completed" else 1
     )
     assert not sleep_probe
