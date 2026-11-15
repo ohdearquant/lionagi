@@ -1352,6 +1352,29 @@ observer cannot distinguish from a fresh one. These values describe the final ob
 response, not a sum of retry attempts or a statement of billed usage. Counts outside the
 non-negative signed 64-bit range are unknown.
 
+Each request records the provider's `input_tokens` and `output_tokens`, including the
+`prompt_tokens` and `completion_tokens` aliases. Anthropic's input count is the fresh
+input count, with cache reads and writes reported separately when available. A missing
+count is `null`. An explicit zero stays zero. The record observes successful, fresh
+non-streaming responses through the built-in dispatch and naturally completed streams
+that return usage. Built-in local cache hits, unverified dispatch overrides, failed or
+cancelled calls and streams closed early have no observed token counts.
+
+A request's `estimated_cost_nusd` holds a list-price estimate in integer nanodollars
+when the current Anthropic price table can price the complete usage report. The
+estimate uses the provider-reported `served_model`. The same row shows the requested
+`model`. Each estimate rounds up once from the table's exact rates. Missing or
+unpriceable usage leaves the estimate `null`. Billed spend is a separate accounting measure.
+
+The run's `totals.input_tokens` and `totals.output_tokens` sum the known counts
+independently. Each is `null` when no request reports that count. The run's
+`estimated_cost_nusd` sums the request estimates when at least one request
+has an estimate and every request with an observed token count can be priced. Rows
+without observed counts are excluded. Otherwise the estimated total is `null`.
+`price_table_version` identifies the price revision when any request has an estimate,
+even if the aggregate is unavailable. It is `null` when no request has an estimate.
+Earlier usage records may omit these fields.
+
 `guard_refusal_count`, with coverage `act_policy_denial_v1`, counts explicit session
 authorization refusals and direct typed governance errors caught by action execution.
 These include tool-pre-hook `deny` and `ask` decisions, unsupported decisions or return

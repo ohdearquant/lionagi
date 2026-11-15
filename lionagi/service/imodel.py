@@ -19,7 +19,7 @@ from lionagi.ln.concurrency._compat import BaseExceptionGroup, ExceptionGroup
 from lionagi.protocols.generic import Event, EventStatus, Execution, Log
 from lionagi.protocols.ids import to_uuid
 
-from ._api_telemetry import record_served_model
+from ._api_telemetry import _record_response_usage, record_served_model
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
 from .connections.agentic_endpoint import _UNHELD_SESSION_TEXT
 from .connections.endpoint import (
@@ -971,6 +971,20 @@ class iModel:  # noqa: N801
             raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
         if not failed and api_call.status == EventStatus.COMPLETED:
             self._calibrate_input_scale(api_call, usage)
+            self._observe_response_usage(api_call, served_model, usage)
+
+    @staticmethod
+    def _observe_response_usage(call: APICalling, served_model: str | None, usage: Any) -> None:
+        frame = getattr(call, "_telemetry_frame", None)
+        if frame is not None:
+            _record_response_usage(
+                frame,
+                usage,
+                provider=call.endpoint.config.provider,
+                endpoint=call.endpoint.config.endpoint,
+                served_model=served_model,
+                payload=call.payload,
+            )
 
     def _calibrate_input_scale(self, call: APICalling, usage: Any) -> None:
         """Raise input_token_scale to the provider's reported input per token the cap counted.
@@ -1042,16 +1056,19 @@ class iModel:  # noqa: N801
 
             completed_call = self.executor.pile.pop(api_call.id)
             response = completed_call.response if completed_call else None
-            self._store_served_model(
-                completed_call,
-                self._reported_served_model(response),
-            )
+            served_model = self._reported_served_model(response)
+            self._store_served_model(completed_call, served_model)
             if (
                 completed_call is not None
                 and completed_call.status == EventStatus.COMPLETED
                 and isinstance(response, dict)
             ):
-                self._calibrate_input_scale(completed_call, response.get("usage"))
+                usage = response.get("usage")
+                self._calibrate_input_scale(completed_call, usage)
+                if getattr(
+                    completed_call, "_uncached_response", False
+                ) and not self._reports_failure(response):
+                    self._observe_response_usage(completed_call, served_model, usage)
             if (
                 restored_resume is not None
                 and completed_call is not None

@@ -26,6 +26,11 @@ def _scale(value: float | None) -> float | None:
     return None
 
 
+def _sum_known(values: list[int | None]) -> int | None:
+    known = [value for value in values if value is not None]
+    return sum(known) if known else None
+
+
 class APIUsageCollector:
     def __init__(self, *, run_id: str, branch_id: str) -> None:
         self.closed = False
@@ -33,6 +38,7 @@ class APIUsageCollector:
         self._guard_calls: set[str] = set()
         self._labels: list[dict] = []
         self._label_pairs: set[tuple[str, str]] = set()
+        self._price_table_version: str | None = None
         self._run_id = run_id
         self._branch_id = branch_id
 
@@ -60,6 +66,9 @@ class APIUsageCollector:
                     "scale": _scale(decision.scale),
                 },
                 "dispatch_started": False,
+                "input_tokens": None,
+                "output_tokens": None,
+                "estimated_cost_nusd": None,
                 "cache_read_tokens": None,
                 "cache_write_tokens": None,
                 "selected_attempts": [],
@@ -86,6 +95,22 @@ class APIUsageCollector:
     def record_served_model(self, request_index: int, model: str | None) -> None:
         if row := self._row(request_index):
             row["served_model"] = _identifier(model)
+
+    def record_token_usage(
+        self,
+        request_index: int,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        estimated_cost_nusd: int | None,
+        price_table_version: str | None,
+    ) -> None:
+        if row := self._row(request_index):
+            row["input_tokens"] = input_tokens
+            row["output_tokens"] = output_tokens
+            row["estimated_cost_nusd"] = estimated_cost_nusd
+            if price_table_version is not None:
+                self._price_table_version = price_table_version
 
     def record_selected_attempt(
         self,
@@ -117,12 +142,23 @@ class APIUsageCollector:
             self._guard_calls.add(safe_id)
 
     def snapshot(self) -> dict:
+        estimates = [
+            row["estimated_cost_nusd"]
+            for row in self._requests
+            if row["input_tokens"] is not None or row["output_tokens"] is not None
+        ]
         return copy(
             {
                 "schema_version": 1,
                 "run_id": self._run_id,
                 "branch_id": self._branch_id,
                 "requests": self._requests,
+                "totals": {
+                    key: _sum_known([row[key] for row in self._requests])
+                    for key in ("input_tokens", "output_tokens")
+                },
+                "estimated_cost_nusd": (None if None in estimates else _sum_known(estimates)),
+                "price_table_version": self._price_table_version,
                 "guard_refusal_count": len(self._guard_calls),
                 "guard_refusal_coverage": "act_policy_denial_v1",
                 "account_labels": self._labels,
