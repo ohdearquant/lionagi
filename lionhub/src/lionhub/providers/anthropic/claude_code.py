@@ -797,7 +797,7 @@ class ClaudeCodeRequest(BaseModel):
             text = str.__str__(existing) if isinstance(existing, str) else str(existing)
             if not text.lstrip().startswith("{"):
                 base_dir = self.cwd()
-        return claude_settings_argument(policy, existing, base_dir)
+        return claude_settings_argument(policy, existing, base_dir, self.cwd())
 
     def _build_declarative_args(self) -> list[str]:
         return build_declarative_cli_args(self)

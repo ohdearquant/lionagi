@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
+import shlex
 
 import pytest
 
@@ -78,8 +80,8 @@ def _settings_json(args):
 
 
 def test_the_argv_carries_one_settings_flag_with_the_sandbox_block(tmp_path):
-    args = _request(repo=tmp_path).as_cmd_args()
-    assert _settings_json(args) == claude_settings_for(_effective())
+    req = _request(repo=tmp_path)
+    assert _settings_json(req.as_cmd_args()) == claude_settings_for(_effective(), req.cwd())
 
 
 def test_the_policy_field_is_not_a_command_line_flag(tmp_path):
@@ -89,8 +91,9 @@ def test_the_policy_field_is_not_a_command_line_flag(tmp_path):
 
 
 def test_a_light_request_keeps_its_tool_denials_beside_the_sandbox(tmp_path):
-    args = _request(repo=tmp_path, workload="light").as_cmd_args()
-    assert _settings_json(args) == claude_settings_for(_effective())
+    req = _request(repo=tmp_path, workload="light")
+    args = req.as_cmd_args()
+    assert _settings_json(args) == claude_settings_for(_effective(), req.cwd())
     text = " ".join(args)
     assert all(tool in text for tool in LIGHT_DISALLOWED_TOOLS)
 
@@ -150,6 +153,28 @@ def test_inline_settings_are_merged_into_the_one_flag(tmp_path):
     assert merged["permissions"]["deny"] == ["Bash(rm:*)", *ours["permissions"]["deny"]]
 
 
+def test_the_settings_carry_a_file_tool_hook_scoped_to_the_request_workspace(tmp_path):
+    req = _request(repo=tmp_path)
+    hooks = _settings_json(req.as_cmd_args())["hooks"]["PreToolUse"]
+    assert len(hooks) == 1
+    assert hooks[0]["matcher"] == "Edit|Write|MultiEdit|NotebookEdit"
+    command = hooks[0]["hooks"][0]["command"]
+    roots = json.loads(shlex.split(command)[5])
+    assert roots[0] == str(req.cwd())
+    assert roots[1:] == [os.path.expanduser(path) for path in _effective().allow_write]
+
+
+def test_hooks_the_caller_already_has_are_kept_beside_the_file_tool_hook(tmp_path):
+    theirs = {"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]}
+    own = json.dumps({"hooks": {"PreToolUse": [theirs]}})
+    hooks = _settings_json(_request(repo=tmp_path, settings=own).as_cmd_args())["hooks"]
+    assert hooks["PreToolUse"][0] == theirs
+    assert [entry["matcher"] for entry in hooks["PreToolUse"]] == [
+        "Bash",
+        "Edit|Write|MultiEdit|NotebookEdit",
+    ]
+
+
 def test_settings_carrying_their_own_sandbox_block_refuse_the_launch(tmp_path):
     own = json.dumps({"sandbox": {"excludedCommands": ["bash"]}})
     with pytest.raises(ConfigurationError, match="carry a sandbox block"):
@@ -204,9 +229,10 @@ def test_a_stored_disabled_policy_is_overruled_while_the_global_settings_keep_th
     # not trusted to turn the sandbox off on their own.
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
     with caplog.at_level("WARNING"):
-        args = _request(repo=tmp_path, child_sandbox=OFF.to_dict()).as_cmd_args()
+        req = _request(repo=tmp_path, child_sandbox=OFF.to_dict())
+        args = req.as_cmd_args()
     assert _settings_json(args) == claude_settings_for(
-        child_sandbox.resolve_child_sandbox(None, {})
+        child_sandbox.resolve_child_sandbox(None, {}), req.cwd()
     )
     assert "the stored policy turns the sandbox off" in caplog.text
 

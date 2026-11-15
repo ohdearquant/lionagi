@@ -12,6 +12,7 @@ import dataclasses
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -633,6 +634,113 @@ def test_claude_settings_for_a_home_path_and_an_absolute_path():
             ]
         },
     }
+
+
+# --------------------------------------------------------------------------- the file-tool hook
+
+
+def _hook_command(workspace, allow_write=()):
+    settings = claude_settings_for(ChildSandboxPolicy(True, (), tuple(allow_write)), workspace)
+    entry = settings["hooks"]["PreToolUse"][0]
+    assert entry["matcher"] == "Edit|Write|MultiEdit|NotebookEdit"
+    return entry["hooks"][0]["command"]
+
+
+def _run_hook(command, payload):
+    """Run the hook as Claude Code does: through a shell, the tool call on stdin."""
+    body = payload if isinstance(payload, str) else json.dumps(payload)
+    return subprocess.run(
+        ["/bin/sh", "-c", command], input=body, capture_output=True, text=True, timeout=30
+    )
+
+
+def _edit(path, tool="Write"):
+    key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+    return {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": {key: str(path)}}
+
+
+@pytest.fixture
+def scoped(tmp_path):
+    workspace = tmp_path / "work"
+    cache = tmp_path / "cache"
+    outside = tmp_path / "outside"
+    for directory in (workspace, cache, outside):
+        directory.mkdir()
+    return workspace, cache, outside, _hook_command(workspace, [str(cache)])
+
+
+def test_no_workspace_renders_no_hook():
+    assert "hooks" not in claude_settings_for(POLICY)
+
+
+@pytest.mark.parametrize("tool", ["Edit", "Write", "MultiEdit", "NotebookEdit"])
+def test_the_hook_allows_a_file_tool_inside_the_workspace(scoped, tool):
+    workspace, _, _, command = scoped
+    result = _run_hook(command, _edit(workspace / "pkg" / "new.py", tool))
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_hook_allows_a_writable_cache(scoped):
+    _, cache, _, command = scoped
+    assert _run_hook(command, _edit(cache / "entry")).returncode == 0
+
+
+@pytest.mark.parametrize("tool", ["Edit", "Write", "MultiEdit", "NotebookEdit"])
+def test_the_hook_blocks_a_file_tool_outside_every_root(scoped, tool):
+    _, _, outside, command = scoped
+    result = _run_hook(command, _edit(outside / "MARKER", tool))
+    assert result.returncode == 2
+    assert "outside the working directory" in result.stderr
+
+
+def test_the_hook_blocks_a_path_that_climbs_out_of_the_workspace(scoped):
+    workspace, _, _, command = scoped
+    assert _run_hook(command, _edit(workspace / ".." / "outside" / "x")).returncode == 2
+
+
+def test_the_hook_blocks_a_sibling_that_shares_the_workspace_prefix(scoped, tmp_path):
+    _, _, _, command = scoped
+    (tmp_path / "work-sibling").mkdir()
+    assert _run_hook(command, _edit(tmp_path / "work-sibling" / "x")).returncode == 2
+
+
+def test_the_hook_blocks_a_link_inside_the_workspace_that_points_outside(scoped):
+    workspace, _, outside, command = scoped
+    (workspace / "escape").symlink_to(outside)
+    assert _run_hook(command, _edit(workspace / "escape" / "MARKER")).returncode == 2
+
+
+def test_the_hook_reads_a_relative_path_against_the_workspace(scoped):
+    _, _, _, command = scoped
+    assert _run_hook(command, _edit("src/mod.py")).returncode == 0
+    assert _run_hook(command, _edit("../outside/MARKER")).returncode == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not json",
+        "[]",
+        {"tool_name": "Write", "tool_input": {}},
+        {"tool_name": "Write", "tool_input": {"file_path": 7}},
+        {"tool_name": "Write", "tool_input": {"file_path": ""}},
+    ],
+)
+def test_the_hook_blocks_a_call_it_cannot_read(scoped, payload):
+    _, _, _, command = scoped
+    assert _run_hook(command, payload).returncode == 2
+
+
+def test_the_hook_blocks_when_its_interpreter_cannot_start(monkeypatch, tmp_path):
+    monkeypatch.setattr(child_sandbox.sys, "executable", str(tmp_path / "missing" / "python"))
+    command = _hook_command(tmp_path)
+    assert _run_hook(command, _edit(tmp_path / "inside")).returncode == 2
+
+
+def test_no_interpreter_refuses_the_settings(monkeypatch, tmp_path):
+    monkeypatch.setattr(child_sandbox.sys, "executable", "")
+    with pytest.raises(ConfigurationError, match="no Python interpreter"):
+        claude_settings_for(POLICY, tmp_path)
 
 
 def test_a_disabled_policy_renders_no_settings():

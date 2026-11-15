@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -589,7 +590,82 @@ def effective_policy(stored: ChildSandboxPolicy) -> ChildSandboxPolicy:
     )
 
 
-def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
+#: The file tools a ``PreToolUse`` hook holds to the working directory and ``allow_write``.
+_FILE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit"
+
+#: Run by the child's ``PreToolUse`` hook as ``python -I -S -c <this> <roots JSON>``. It reads
+#: the tool call from stdin and exits 0 when the target, symlinks resolved, is inside one of the
+#: roots, and 2 (Claude Code's blocking exit) otherwise. Every failure exits 2 as well: any
+#: other code is a non-blocking hook error to Claude Code, and the write would go ahead.
+_FILE_TOOL_SCOPE_CHILD = r"""
+import json, os, sys
+
+def refuse(message):
+    sys.stderr.write("lionagi file-tool scope: " + message + "\n")
+    sys.exit(2)
+
+def main():
+    try:
+        roots = json.loads(sys.argv[1])
+        event = json.load(sys.stdin)
+        tool_input = event.get("tool_input") or {}
+        target = tool_input.get("file_path") or tool_input.get("notebook_path")
+    except Exception as exc:
+        refuse("cannot read the tool call (%s); the write is refused" % type(exc).__name__)
+    if not isinstance(target, str) or not target or "\0" in target:
+        refuse("the tool call names no usable file path; the write is refused")
+    real = os.path.realpath(os.path.join(roots[0], os.path.expanduser(target)))
+    for root in roots:
+        base = os.path.realpath(root)
+        if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
+            sys.exit(0)
+    refuse(
+        "%s is outside the working directory and the writable caches; file tools may write "
+        "only under %s" % (target, ", ".join(roots))
+    )
+
+try:
+    main()
+except SystemExit:
+    raise
+except BaseException as exc:
+    refuse("the scope check failed (%s); the write is refused" % type(exc).__name__)
+"""
+
+
+def _file_tool_scope_hook(workspace: str | Path, allow_write: tuple[str, ...]) -> dict[str, Any]:
+    """The ``hooks`` settings that refuse file-tool writes outside ``workspace`` and ``allow_write``.
+
+    The sandbox confines Bash only, and ``permissions.deny`` can name paths to refuse but not a
+    set to allow, so a hook carries the allow list. It runs under ``bypassPermissions`` too.
+    """
+    if not sys.executable:
+        raise _refusal(
+            "child_sandbox: no Python interpreter to run the file-tool hook, so the child's "
+            "Edit and Write tools cannot be confined"
+        )
+    roots = [str(Path(workspace).expanduser())]
+    roots += [os.path.expanduser(path) for path in allow_write]
+    # ``|| exit 2`` turns an interpreter that fails to start (127, 126) into a refusal too.
+    command = (
+        shlex.join([sys.executable, "-I", "-S", "-c", _FILE_TOOL_SCOPE_CHILD, json.dumps(roots)])
+        + " || exit 2"
+    )
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": _FILE_TOOL_MATCHER,
+                    "hooks": [{"type": "command", "command": command}],
+                }
+            ]
+        }
+    }
+
+
+def claude_settings_for(
+    policy: ChildSandboxPolicy, workspace: str | Path | None = None
+) -> dict[str, Any]:
     """Claude Code settings that confine a child to ``policy`` (``{}`` when disabled).
 
     ``sandbox.filesystem.denyRead`` stops Bash reads; the Read tool is stopped by the
@@ -598,7 +674,9 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
     them ``policy.deny_edit``, ``DEFAULT_DENY_EDIT``, the read list, the run files
     (``run_state_paths``), the configuration later runs load from the lionagi home
     (``lionagi_home_config_paths``) and every ``PROJECT_CONFIG_NAMES`` entry at any depth. Every
-    other path outside the working directory stays writable to the file tools. Claude Code
+    other path outside the working directory stays writable to the file tools unless
+    ``workspace`` is given: then a ``PreToolUse`` hook also refuses Edit, Write, MultiEdit and
+    NotebookEdit on any target outside ``workspace`` and ``allow_write``. Claude Code
     also applies ``Edit`` denials to the sandbox's write limit, so Bash is refused the same
     paths inside the working directory. In permission rules an absolute ``/x`` is written
     ``//x``, because a single leading slash is relative to the settings source.
@@ -623,7 +701,7 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
         rules += [f"Edit({rule_path(path)})", f"Edit({rule_path(path)}/**)"]
     for name in PROJECT_CONFIG_NAMES:
         rules += [f"Edit(//**/{name})", f"Edit(//**/{name}/**)"]
-    return {
+    settings: dict[str, Any] = {
         "sandbox": {
             "enabled": True,
             "failIfUnavailable": True,
@@ -635,6 +713,9 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
         },
         "permissions": {"deny": rules},
     }
+    if workspace is not None:
+        settings.update(_file_tool_scope_hook(workspace, policy.allow_write))
+    return settings
 
 
 def _read_settings_value(value: Any, base_dir: Any = None) -> dict:
@@ -678,7 +759,10 @@ def _merge(base: dict, ours: dict) -> dict:
 
 
 def claude_settings_argument(
-    policy: ChildSandboxPolicy, existing: Any = None, base_dir: Any = None
+    policy: ChildSandboxPolicy,
+    existing: Any = None,
+    base_dir: Any = None,
+    workspace: str | Path | None = None,
 ) -> str:
     """One inline-JSON ``--settings`` value: ``existing`` (if any) merged with the policy.
 
@@ -692,7 +776,7 @@ def claude_settings_argument(
             "child_sandbox: the settings handed to the child carry a sandbox block; configure "
             "the sandbox through child_sandbox in ~/.lionagi/settings.yaml instead"
         )
-    return json.dumps(_merge(base, claude_settings_for(policy)))
+    return json.dumps(_merge(base, claude_settings_for(policy, workspace)))
 
 
 #: Versions read so far, by binary. Only a successful read is kept, so a failed probe is
