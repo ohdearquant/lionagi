@@ -31,7 +31,7 @@ from lionhub.orchestration.job import (
 from lionhub.orchestration.state_store import open_db as _open_db
 from lionhub.orchestration.state_store import require_file_store, store_exists, store_path
 
-_log = logging.getLogger("lionagi.studio.services.admin")
+_log = logging.getLogger("lionhub.serve.daemon.services.admin")
 
 PhantomReason = Literal["process_dead", "missing_artifacts", "stale_lock"]
 

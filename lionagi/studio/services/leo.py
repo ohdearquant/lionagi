@@ -167,8 +167,8 @@ def _all_tools() -> list:
 
 async def tool_list_runs(page: int = 1, per_page: int = 10) -> dict[str, Any]:
     """List recent studio runs (read-only)."""
-    from lionagi.studio.services import runs as runs_svc
-    from lionagi.studio.services import sessions as sessions_svc
+    from lionhub.serve.daemon.services import runs as runs_svc
+    from lionhub.serve.daemon.services import sessions as sessions_svc
 
     raw = await runs_svc.list_runs(limit=per_page, offset=(page - 1) * per_page)
     total = await sessions_svc.count_sessions()
@@ -177,7 +177,7 @@ async def tool_list_runs(page: int = 1, per_page: int = 10) -> dict[str, Any]:
 
 async def tool_list_invocations(limit: int = 10, offset: int = 0) -> dict[str, Any]:
     """List recent invocations (read-only)."""
-    from lionagi.studio.services import invocations as inv_svc
+    from lionhub.serve.daemon.services import invocations as inv_svc
 
     rows = await inv_svc.list_invocations(limit=limit, offset=offset)
     return {"invocations": rows}
@@ -185,7 +185,7 @@ async def tool_list_invocations(limit: int = 10, offset: int = 0) -> dict[str, A
 
 async def tool_list_sessions(limit: int = 10) -> dict[str, Any]:
     """List recent agent sessions (read-only)."""
-    from lionagi.studio.services import sessions as sess_svc
+    from lionhub.serve.daemon.services import sessions as sess_svc
 
     rows = await sess_svc.list_sessions(limit=limit)
     return {"sessions": rows}
@@ -211,14 +211,14 @@ async def tool_get_playbook(name: str) -> dict[str, Any]:
 
 async def tool_list_schedules() -> dict[str, Any]:
     """List configured schedules (read-only)."""
-    from lionagi.studio.services import schedules as sched_svc
+    from lionhub.serve.daemon.services import schedules as sched_svc
 
     return {"schedules": await sched_svc.list_schedules()}
 
 
 async def tool_studio_doctor() -> dict[str, Any]:
     """Run the studio doctor health check (read-only)."""
-    from lionagi.studio.services import admin as admin_svc
+    from lionhub.serve.daemon.services import admin as admin_svc
 
     return await admin_svc.doctor(stale_hours=1.0)
 

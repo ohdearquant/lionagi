@@ -136,13 +136,13 @@ def test_compare_rejects_unknown_op():
 
 
 def test_svc_validate_threshold_config_accepts_none():
-    from lionagi.studio.services.schedules import _svc_validate_threshold_config
+    from lionhub.serve.daemon.services.schedules import _svc_validate_threshold_config
 
     _svc_validate_threshold_config(None)  # does not raise
 
 
 def test_svc_validate_threshold_config_rejects_bad_metric():
-    from lionagi.studio.services.schedules import _svc_validate_threshold_config
+    from lionhub.serve.daemon.services.schedules import _svc_validate_threshold_config
 
     with pytest.raises(ValueError, match="metric"):
         _svc_validate_threshold_config(
@@ -151,7 +151,7 @@ def test_svc_validate_threshold_config_rejects_bad_metric():
 
 
 def test_svc_validate_threshold_config_rejects_unknown_key():
-    from lionagi.studio.services.schedules import _svc_validate_threshold_config
+    from lionhub.serve.daemon.services.schedules import _svc_validate_threshold_config
 
     with pytest.raises(ValueError, match="unknown key"):
         _svc_validate_threshold_config(
@@ -325,7 +325,7 @@ async def test_maybe_fire_breach_fires_with_trigger_context():
     assert ctx["threshold"] == 5
     assert ctx["window_minutes"] == 30
     # A threshold alert is a fire of the schedule's own timer, so its run reads as scheduled.
-    from lionagi.studio.services.schedules import _run_trigger_facts
+    from lionhub.serve.daemon.services.schedules import _run_trigger_facts
 
     assert _run_trigger_facts({"trigger_context": ctx})["scheduled"] is True
 

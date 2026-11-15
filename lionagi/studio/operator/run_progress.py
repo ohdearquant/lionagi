@@ -208,7 +208,7 @@ async def _find_sessions_by_text(
     """Sessions whose name or playbook name contains ``ref`` (case-insensitive),
     scoped to ``project`` when the calling turn names one — a name/playbook
     substring search must not enumerate another project's runs."""
-    from lionagi.studio.services.sessions import SessionFilter, list_sessions
+    from lionhub.serve.daemon.services.sessions import SessionFilter, list_sessions
 
     by_name = await list_sessions(limit=limit, where=SessionFilter(search=ref, project=project))
     by_playbook = await list_sessions(
@@ -616,7 +616,7 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
         }
 
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
-    from lionagi.studio.services.runs import get_run
+    from lionhub.serve.daemon.services.runs import get_run
 
     run = await get_run(resolution["session_id"])
     if run is None:

@@ -14,7 +14,7 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from unittest.mock import AsyncMock, patch
 
-from lionagi.studio.services.schedules import (
+from lionhub.serve.daemon.services.schedules import (
     _svc_validate_action_cwd,
     create_schedule,
     update_schedule,
@@ -92,7 +92,7 @@ def test_create_schedule_persists_explicit_action_cwd(tmp_path):
     data = _create_data(action_cwd=str(tmp_path))
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -119,7 +119,7 @@ def test_create_schedule_derives_action_cwd_from_action_project(tmp_path, monkey
     data = _create_data(action_project="myproj")
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -147,7 +147,7 @@ def test_create_schedule_explicit_action_cwd_wins_over_action_project(tmp_path, 
     data = _create_data(action_project="myproj", action_cwd=str(explicit_dir))
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -170,7 +170,7 @@ def test_create_schedule_no_cwd_no_resolvable_project_stays_none(monkeypatch):
     data = _create_data(action_project="unregistered")
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -192,7 +192,7 @@ def test_create_schedule_without_action_project_stays_none_without_lookup(monkey
     data = _create_data()
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -218,7 +218,7 @@ def test_update_schedule_rejects_invalid_action_cwd():
     }
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=existing)
             mock_db.update_schedule = AsyncMock()
@@ -242,7 +242,7 @@ def test_update_schedule_accepts_valid_action_cwd(tmp_path):
     }
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=existing)
             mock_db.update_schedule = AsyncMock()

@@ -204,7 +204,7 @@ CREATE TABLE schedules (
 The HTTP create model mirrors these columns:
 
 ```python
-# lionagi/studio/services/schedules.py
+# lionhub/src/lionhub/serve/daemon/services/schedules.py
 class CreateScheduleRequest(BaseModel):
     name: str
     description: str | None = None
@@ -319,7 +319,7 @@ Why this way: outside the accepted `at` recovery crash window above, the ordinar
 defer paths make their reasons explicit instead of silently dropping a due fire. The cost is policy
 concentration in one engine and single-process correctness for reservations.
 
-Code anchors: `lionagi/studio/services/schedules.py`; `lionhub/src/lionhub/orchestration/scheduler/engine.py`
+Code anchors: `lionhub/src/lionhub/serve/daemon/services/schedules.py`; `lionhub/src/lionhub/orchestration/scheduler/engine.py`
 (`_check_missed_fires`, `_maybe_fire`, `_reserve_max_runs_budget`, `_reserve_global_slot`,
 `_check_budget`); `lionagi/state/schema.sql`.
 

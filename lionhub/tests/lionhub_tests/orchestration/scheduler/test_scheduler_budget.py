@@ -71,7 +71,7 @@ def test_svc_validate_budget_usd_rejects_non_finite(bad_value):
     A plain ``<= 0`` predicate lets nan/inf through; nan then round-trips to NULL
     in SQLite and _check_budget treats the schedule as unbounded forever.
     """
-    from lionagi.studio.services.schedules import _svc_validate_budget_usd
+    from lionhub.serve.daemon.services.schedules import _svc_validate_budget_usd
 
     with pytest.raises(ValueError, match="finite positive number"):
         _svc_validate_budget_usd(bad_value)
@@ -79,7 +79,7 @@ def test_svc_validate_budget_usd_rejects_non_finite(bad_value):
 
 @pytest.mark.parametrize("good_value", [0.01, 1, 12.5, 1000.0])
 def test_svc_validate_budget_usd_accepts_finite_positive(good_value):
-    from lionagi.studio.services.schedules import _svc_validate_budget_usd
+    from lionhub.serve.daemon.services.schedules import _svc_validate_budget_usd
 
     _svc_validate_budget_usd(good_value)  # does not raise
 

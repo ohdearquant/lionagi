@@ -6,7 +6,7 @@ touched. Measure-only, read-side aggregation over already-persisted
 messages -- never touches a live agent.
 
 Mirrors the per-session file-set union `get_session()` builds in
-lionagi/studio/services/sessions.py (`message_stats.files`), but reads
+lionhub/src/lionhub/serve/daemon/services/sessions.py (`message_stats.files`), but reads
 directly off StateDB's async engine instead of that module's aiosqlite
 connection, so the scheduler's finalize path (``engine.py`` in this
 package) stays on the connection it already holds rather than opening a

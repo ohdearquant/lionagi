@@ -48,7 +48,7 @@ async def test_cli_resume_rejects_unsupported_checkpoint_before_flow(tmp_path, m
 async def test_mcp_detail_reports_unsupported_checkpoint(tmp_path, monkeypatch, version):
     from lionagi import _paths
     from lionagi.state import db as state_db
-    from lionagi.studio.services import sessions as sessions_svc
+    from lionhub.serve.daemon.services import sessions as sessions_svc
     from lionhub.serve.mcp._run_detail import build_run_detail
 
     if version == "duplicate":

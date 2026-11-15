@@ -83,10 +83,10 @@ def _neutralize_heavy_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
     consistent OOM kills in xdist workers and leaked writes into DEFAULT_DB_PATH.
     The scheduler, reconciliation, and checkpoint paths are covered elsewhere.
     """
-    import lionagi.studio.services.launches as launches_mod
     import lionhub.orchestration.scheduler.db_maintenance as db_maintenance_mod
     import lionhub.orchestration.scheduler.engine as engine_mod
     import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
+    import lionhub.serve.daemon.services.launches as launches_mod
 
     monkeypatch.setattr(engine_mod.scheduler, "start", _anoop)
     monkeypatch.setattr(engine_mod.scheduler, "stop", _anoop)

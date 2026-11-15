@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services import schedules
+from lionhub.serve.daemon.services import schedules
 
 
 @pytest.mark.parametrize("history_kind", ["recorded", "legacy", "unavailable"])

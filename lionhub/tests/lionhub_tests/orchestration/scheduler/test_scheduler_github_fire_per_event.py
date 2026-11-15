@@ -19,10 +19,10 @@ import pytest
 
 import lionhub.orchestration.schedule.validation as schedule_validation
 from lionagi.state.db import NO_CURSOR_CLAIM
-from lionagi.studio.services.schedules import _run_trigger_facts
 from lionhub.orchestration.scheduler import github as gh_mod
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
+from lionhub.serve.daemon.services.schedules import _run_trigger_facts
 
 
 def _minimal_schedule(**overrides) -> dict:

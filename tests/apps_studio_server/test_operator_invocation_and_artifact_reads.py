@@ -39,7 +39,7 @@ def _assert_planted_values_are_scrubbed(raw_source: object, tool_result: object)
 
 async def test_get_invocation_returns_projected_fields_for_known_id(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_invocation
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     source = {
         "id": "inv-happy",
@@ -66,7 +66,7 @@ async def test_get_invocation_returns_projected_fields_for_known_id(monkeypatch)
 
 async def test_get_invocation_caps_oversized_artifact_content_and_flags_truncation(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_invocation
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     oversized_body = "y" * 2_000_050
     source = {
@@ -90,7 +90,7 @@ async def test_get_invocation_caps_oversized_artifact_content_and_flags_truncati
 
 async def test_get_invocation_redacts_secret_url_and_path_from_all_content(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_invocation
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     source = {
         "id": "inv-secret",
@@ -121,7 +121,7 @@ async def test_get_invocation_redacts_secret_url_and_path_from_all_content(monke
 
 async def test_get_invocation_reports_unknown_for_missing_invocation_id(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_invocation
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     async def fake_get_invocation(_invocation_id, **_kwargs):
         return None
@@ -211,7 +211,7 @@ async def test_list_artifacts_returns_empty_for_unknown_owner_id(monkeypatch):
 
 async def test_get_artifact_returns_full_projection_for_known_id(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_artifact
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     source = {"id": "a-happy", "kind": "result", "name": "result", "content": {"ok": True}}
 
@@ -229,7 +229,7 @@ async def test_get_artifact_returns_full_projection_for_known_id(monkeypatch):
 
 async def test_get_artifact_caps_oversized_content_and_flags_truncation(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_artifact
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     oversized_body = "z" * 2_000_050
     source = {
@@ -251,7 +251,7 @@ async def test_get_artifact_caps_oversized_content_and_flags_truncation(monkeypa
 
 async def test_get_artifact_redacts_secret_url_and_path_from_content(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_artifact
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     source = {
         "id": "a-secret",
@@ -273,7 +273,7 @@ async def test_get_artifact_redacts_secret_url_and_path_from_content(monkeypatch
 
 async def test_get_artifact_reports_unknown_for_missing_artifact_id(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_artifact
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     async def fake_get_artifact(_artifact_id, **_kwargs):
         return None
@@ -307,7 +307,7 @@ async def test_the_read_tools_ask_for_a_read_only_open_where_the_store_offers_on
     """
     import lionagi.state.db as state_db
     from lionagi.studio.operator import application_mcp
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     seen: list[bool] = []
 

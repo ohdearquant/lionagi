@@ -393,7 +393,7 @@ async def test_a_secret_nested_under_a_credential_name_is_withheld_on_both_read_
 
     from lionagi.studio.operator.application_mcp import get_artifact
     from lionagi.studio.operator.run_findings import run_findings
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     nested = "correct horse battery staple"
     payload = {

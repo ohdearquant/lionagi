@@ -111,8 +111,8 @@ async def _cancel_while_worker_is_blocked(subject, probe, *, abandon):
 def _admin_subject(monkeypatch, tmp_path, site, probe):
     from lionagi.state import db as state_db
     from lionagi.state.reasons import SessionReasons
-    from lionagi.studio.services import admin, sessions
     from lionhub.serve import diagnostics
+    from lionhub.serve.daemon.services import admin, sessions
 
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
@@ -337,7 +337,7 @@ def _assert_admin_arguments(site, probe, row, boundaries):
 async def test_admin_workers_preserve_arguments_context_results_and_errors(
     monkeypatch, tmp_path, site, fails
 ):
-    from lionagi.studio.services import admin
+    from lionhub.serve.daemon.services import admin
 
     error = ValueError("worker failed") if fails else None
     probe = _WorkerProbe(_admin_result(admin, site), error=error)
@@ -398,7 +398,7 @@ async def test_admin_workers_preserve_arguments_context_results_and_errors(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("site", _ADMIN_SITES)
 async def test_admin_workers_shield_the_default_wait(monkeypatch, tmp_path, site):
-    from lionagi.studio.services import admin
+    from lionhub.serve.daemon.services import admin
 
     probe = _WorkerProbe(_admin_result(admin, site), blocked=True)
     subject, _, _, _, _ = _admin_subject(monkeypatch, tmp_path, site, probe)
@@ -864,7 +864,7 @@ async def test_thread_callers_delegate_to_the_shared_worker_helper(monkeypatch, 
         return await native(func, *args, **kwargs)
 
     if site in _ADMIN_SITES:
-        from lionagi.studio.services import admin
+        from lionhub.serve.daemon.services import admin
 
         probe = _WorkerProbe(_admin_result(admin, site))
         subject, owner, _, _, _ = _admin_subject(monkeypatch, tmp_path, site, probe)

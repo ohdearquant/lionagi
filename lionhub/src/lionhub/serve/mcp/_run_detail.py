@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Execution-graph, artifact-contract, and stall detail for ``job.status(detail=True)``.
 
-Reuses the Studio session service (``lionagi.studio.services.sessions.get_session``)
+Reuses the Studio session service (``lionhub.serve.daemon.services.sessions.get_session``)
 for the planned graph, per-branch status, and artifact-verification state rather
 than re-deriving any of that here. This module only reshapes what that service
 already computed into the per-node/per-artifact/per-stall triples a machine
@@ -62,7 +62,7 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     session_id = session_row["id"]
 
     try:
-        from lionagi.studio.services import sessions as sessions_svc
+        from lionhub.serve.daemon.services import sessions as sessions_svc
     except ImportError:
         return {"detail_unavailable": "studio_extra_not_installed"}
 

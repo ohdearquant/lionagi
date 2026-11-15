@@ -18,7 +18,7 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
 | `lionhub/src/lionhub/integrations/` | Optional third-party integrations: the RuVector vector store and memory store. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
-| `lionhub/src/lionhub/serve/daemon/` | Studio daemon process services: host admission, the reconnect channel, the scheduler log, stack-dump diagnostics, and the helpers behind the execution routes. |
+| `lionhub/src/lionhub/serve/daemon/` | Studio daemon process services: host admission, the reconnect channel, the scheduler log, stack-dump diagnostics, launch access and pairing, the daemon's route inventory, and the daemon's routes for runs, sessions, invocations, launches, schedules, identity and maintenance. |
 | `lionhub/tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
 
 ## Moved imports
@@ -94,6 +94,19 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.studio.services.run_view` | `lionhub.serve.daemon.services.run_view` |
 | `lionagi.studio.services.task_applications` | `lionhub.serve.daemon.services.task_applications` |
 | `lionagi.studio.operator.redact` | `lionhub.serve.daemon.services.redact` |
+| `lionagi.studio.launch_access` | `lionhub.serve.daemon.launch_access` |
+| `lionagi.studio.services.runs` | `lionhub.serve.daemon.services.runs` |
+| `lionagi.studio.services.run_resume` | `lionhub.serve.daemon.services.run_resume` |
+| `lionagi.studio.services.run_resume_worker` | `lionhub.serve.daemon.services.run_resume_worker` |
+| `lionagi.studio.services.engine_runs` | `lionhub.serve.daemon.services.engine_runs` |
+| `lionagi.studio.services.invocations` | `lionhub.serve.daemon.services.invocations` |
+| `lionagi.studio.services.launches` | `lionhub.serve.daemon.services.launches` |
+| `lionagi.studio.services.identity` | `lionhub.serve.daemon.services.identity` |
+| `lionagi.studio.services.pairing` | `lionhub.serve.daemon.services.pairing` |
+| `lionagi.studio.services.sessions` | `lionhub.serve.daemon.services.sessions` |
+| `lionagi.studio.services.admin` | `lionhub.serve.daemon.services.admin` |
+| `lionagi.studio.services.schedules` | `lionhub.serve.daemon.services.schedules` |
+| `lionagi.studio.services._session_tail` | `lionhub.serve.daemon.services._session_tail` |
 
 ## Tests
 

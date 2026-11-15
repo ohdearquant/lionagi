@@ -874,7 +874,7 @@ allocation order are unsafe as a commit boundary
   The same entry order applies to
   `lionagi/state/db.py::StateDB.create_schedule_run_and_advance` and
   `lionagi/state/db.py::StateDB.tombstone_and_replace_schedule_run`.
-  Studio's `lionagi/studio/services/admin.py::transition_sessions` opens its
+  Studio's `lionhub/src/lionhub/serve/daemon/services/admin.py::transition_sessions` opens its
   own outer transaction with shared mode before its session reads and
   updates. Its raw writer and
   `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`
@@ -940,7 +940,7 @@ standalone v1 named consumers:
 | `lionagi/state/lifecycle/reconciler.py::_consumer_is_active`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler._attempt_one`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`, `lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::run_terminal_reconciliation` | Immediately before the effect, one statement returns registration activity and this event's debt separately. Exact attempts report `not_owed` for a settled event. Replay keeps its existing stop and cursor rewind when the registration is inactive. An active registration with a settled event skips it, clears any previous backoff and continues from the advanced cursor without an attempt, failure or ACK. A prepare failure or timeout follows the same activity and debt check before it can count as failed. |
 | `lionagi/state/db.py::StateDB.delete_imported_session`, `lionagi/state/codex_mirror.py::absorb_orchestrated_session`, `lionagi/state/codex_mirror.py::absorb_orchestrated_backfill`, `lionhub/src/lionhub/serve/mirror.py::_mirror_one_codex`, `lionhub/src/lionhub/serve/mirror.py::_absorb_backfill` | Apply retention to the imported session and its dependencies. Report debt deferral separately, keep both per-file IDs pending when needed, and keep the backfill retryable. |
 | `lionhub/src/lionhub/serve/cli/state.py::_prune` and its `retained_tables`, `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk`, `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_run_chunk` | Protect the complete resolving links: `plays.session_id`, invocation-to-sessions, and schedule-run-to-invocation-to-sessions. Archive history for removed entities. If their own entity survives, disposition history that loses its last resolver under the retention policy. |
-| `lionagi/state/db.py::StateDB.delete_schedule`, `lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted`, and `lionagi/studio/services/schedules.py::delete_schedule` | Take the retention locks, lock the parent schedule, then check debt for all child schedule runs. Report a refused cascade separately from a missing schedule. |
+| `lionagi/state/db.py::StateDB.delete_schedule`, `lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted`, and `lionhub/src/lionhub/serve/daemon/services/schedules.py::delete_schedule` | Take the retention locks, lock the parent schedule, then check debt for all child schedule runs. Report a refused cascade separately from a missing schedule. |
 
 Continue returning exact transaction-snapshot integers for the existing operator mutation.
 For now-reactivation, one pre-change logical debt count gives both `candidate_before` and
@@ -1170,7 +1170,7 @@ retention rules under the same fence:
 | `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk`, shared by explicit `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_terminal_sessions_by_id` and age-based `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_old_data` | Deletes session transitions with no ACK children. An ACK referencing a transition prevents its deletion and rolls back the chunk. The optional ZIP covers other session dependencies. Add ACK deletion before transition deletion, with the own-history archive and receipt. |
 | `lionagi/state/db.py::StateDB.delete_imported_session` | Deletes the imported session's ACKs and transitions without an own-history archive or receipt. Add both for mirror absorption. |
 | `lionhub/src/lionhub/serve/cli/state.py::_prune` and `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_run_chunk` | Delete sessions or runs and leave their own transition history in the store. Add ACK and transition cleanup together with the archive and receipt. For run pruning, removing the run's own transitions and ACKs is new behavior. |
-| `lionagi/state/db.py::StateDB.delete_schedule` and `lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted` | Both delete the schedule and cascade its runs. Studio's `lionagi/studio/services/schedules.py::delete_schedule` delegates to StateDB. Polymorphic history has no entity foreign key, so the cascade leaves the schedule and run history behind. Archive and receipt the previous history and ACKs for the schedule and every deleted run. |
+| `lionagi/state/db.py::StateDB.delete_schedule` and `lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted` | Both delete the schedule and cascade its runs. Studio's `lionhub/src/lionhub/serve/daemon/services/schedules.py::delete_schedule` delegates to StateDB. Polymorphic history has no entity foreign key, so the cascade leaves the schedule and run history behind. Archive and receipt the previous history and ACKs for the schedule and every deleted run. |
 
 Keep the new `deleted` audit event in the live schedule history. It records
 the deletion and remains the row that prevents reuse of the definition's ID
@@ -1250,7 +1250,7 @@ and worker-protection outcomes retain their own handling.
   retry budget permits at most three attempts, subject to the original deadline
   (`lionagi/state/db.py::StateDB.delete_imported_session`). The Studio
   readiness probe defaults to 1,000 ms for its SQLite read
-  (`lionagi/studio/services/admin.py::store_probe`). The reconciliation
+  (`lionhub/src/lionhub/serve/daemon/services/admin.py::store_probe`). The reconciliation
   budget defaults to 10 s and is checked across pages
   (`lionagi/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`,
   `lionhub/src/lionhub/orchestration/scheduler/settings.py`).
@@ -1270,8 +1270,8 @@ and worker-protection outcomes retain their own handling.
   A resumed run's availability, deferred launch or flow preflight may today
   open SQLite read-only before triggering an effect. Such a read proves the
   row exists or is terminal, but supplies no writer compatibility proof
-  (`lionagi/studio/services/run_resume.py::resume_availability`,
-  `lionagi/studio/services/run_resume_worker.py::_wait_for_terminal`,
+  (`lionhub/src/lionhub/serve/daemon/services/run_resume.py::resume_availability`,
+  `lionhub/src/lionhub/serve/daemon/services/run_resume_worker.py::_wait_for_terminal`,
   `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_validate_flow_invocation`).
   When supported clients use these reads as effect gates, check the schema
   version before reporting readiness or starting work. The offline stop

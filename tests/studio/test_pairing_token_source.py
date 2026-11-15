@@ -27,7 +27,7 @@ _CONFIGURED = "configured-operator-token"
 @pytest.fixture()
 def fresh_launch(monkeypatch):
     """A process with no launch bearer and no codes yet."""
-    import lionagi.studio.launch_access as launch_access
+    import lionhub.serve.daemon.launch_access as launch_access
 
     monkeypatch.setattr(launch_access, "_bearer", None)
     monkeypatch.setattr(launch_access, "_codes", {})

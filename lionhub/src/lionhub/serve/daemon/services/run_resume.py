@@ -28,7 +28,7 @@ from .schedules import (
     _svc_validate_prompt,
 )
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.services.run_resume")
 
 
 class RunNotFoundError(LookupError):
@@ -351,7 +351,7 @@ async def _resume_agent_run(
             argv = [
                 sys.executable,
                 "-m",
-                "lionagi.studio.services.run_resume_worker",
+                "lionhub.serve.daemon.services.run_resume_worker",
                 "--config",
                 tmp_path,
             ]

@@ -373,7 +373,7 @@ def test_operator_branch_resumes_the_conversations_provider_session(tmp_path):
 @pytest.mark.asyncio
 async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
     from lionagi.studio.operator.application_mcp import list_recent_runs
-    from lionagi.studio.services import runs as runs_service
+    from lionhub.serve.daemon.services import runs as runs_service
 
     observed = {}
 
@@ -944,7 +944,7 @@ async def test_application_mcp_resume_run_is_reachable_end_to_end(tmp_path, monk
     present in source with no registry entry and no coordinator branch."""
     import uuid
 
-    import lionagi.studio.services.run_resume as resume_svc
+    import lionhub.serve.daemon.services.run_resume as resume_svc
     from lionagi.state.db import StateDB
     from lionagi.studio.operator.application_mcp import _dispatch
     from lionagi.studio.operator.resume_run import resume_run
@@ -1080,8 +1080,8 @@ async def test_application_mcp_resume_run_delegates_flow_kind_to_checkpoint_repl
     same as the agent-kind end-to-end test above."""
     import uuid
 
-    import lionagi.studio.services.run_resume as resume_svc
     import lionhub.orchestration.flow.checkpoint as ckmod
+    import lionhub.serve.daemon.services.run_resume as resume_svc
     from lionagi.state.db import StateDB
     from lionagi.studio.operator.application_mcp import _dispatch
     from lionagi.studio.operator.resume_run import resume_run
@@ -1637,11 +1637,11 @@ async def test_scripted_turn_streams_and_is_visible_as_canonical_run(tmp_path, m
 
     from lionagi.session.branch import Branch
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.run_resume import (
+    from lionhub.orchestration.runs import find_branch
+    from lionhub.serve.daemon.services.run_resume import (
         _ensure_branch_snapshot_available,
         _resolve_branch,
     )
-    from lionhub.orchestration.runs import find_branch
 
     # The Operator's canonical Run is not display-only: the exact branch
     # and DB run mapping consumed by `li agent -r` already exist.
@@ -1664,7 +1664,7 @@ async def test_scripted_turn_streams_and_is_visible_as_canonical_run(tmp_path, m
     assert "studio_permission" not in request_kwargs.get("mcp_servers", {})
     assert "studio_operator" not in request_kwargs.get("mcp_servers", {})
 
-    from lionagi.studio.services.runs import list_runs
+    from lionhub.serve.daemon.services.runs import list_runs
 
     runs = await list_runs(limit=50, offset=0)
     run = next(item for item in runs if item["id"] == run_id)
@@ -2105,7 +2105,7 @@ async def test_execute_application_command_failure_has_no_invocation_before_laun
     monkeypatch,
 ):
     """launch() raising before it returns leaves no invocation id to carry forward."""
-    import lionagi.studio.services.launches as launches_mod
+    import lionhub.serve.daemon.services.launches as launches_mod
     from lionagi.studio.operator.coordinator import (
         ApplicationCommandError,
         _execute_application_command,
@@ -2126,8 +2126,8 @@ async def test_execute_application_command_failure_carries_invocation_id_once_re
     monkeypatch,
 ):
     """A poll failure after launch() succeeds must still carry the recorded invocation id."""
-    import lionagi.studio.services.invocations as invocations_mod
-    import lionagi.studio.services.launches as launches_mod
+    import lionhub.serve.daemon.services.invocations as invocations_mod
+    import lionhub.serve.daemon.services.launches as launches_mod
     from lionagi.studio.operator.coordinator import (
         ApplicationCommandError,
         _execute_application_command,
@@ -3630,7 +3630,7 @@ async def test_second_turn_on_a_conversation_reuses_the_same_branch_and_appends(
     branches reader), and the second turn's messages must be appended to
     the first turn's progression, never overwrite it."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.runs import list_runs
+    from lionhub.serve.daemon.services.runs import list_runs
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -4064,11 +4064,11 @@ async def _pending_permission_proposal(tmp_path, monkeypatch, coordinator):
 async def test_a_decision_with_the_capability_header_records_its_principal(tmp_path, monkeypatch):
     """The decision route resolves ``X-Studio-Decision-Token`` and the decision
     row and its audit row carry that principal, committed with the decision."""
-    from lionagi.studio.launch_access import (
+    from lionagi.studio.services.operator import decide_operator_proposal
+    from lionhub.serve.daemon.launch_access import (
         mint_decision_capability,
         reset_launch_access,
     )
-    from lionagi.studio.services.operator import decide_operator_proposal
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -4110,8 +4110,8 @@ async def test_a_decision_without_a_capability_is_still_accepted_and_unattribute
 ):
     """This release does not yet require a decision capability: a decision that carries none is
     accepted and recorded with no principal."""
-    from lionagi.studio.launch_access import reset_launch_access
     from lionagi.studio.services.operator import decide_operator_proposal
+    from lionhub.serve.daemon.launch_access import reset_launch_access
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -4150,7 +4150,7 @@ async def test_the_admission_bearer_alone_still_decides_over_http(tmp_path, monk
     capability."""
     httpx = pytest.importorskip("httpx")
     from lionagi.studio.app import create_app
-    from lionagi.studio.launch_access import reset_launch_access
+    from lionhub.serve.daemon.launch_access import reset_launch_access
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -4192,8 +4192,8 @@ async def test_the_admission_bearer_alone_still_decides_over_http(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_a_capability_from_another_origin_is_not_attributed(tmp_path, monkeypatch):
-    from lionagi.studio.launch_access import mint_decision_capability, reset_launch_access
     from lionagi.studio.services.operator import decide_operator_proposal
+    from lionhub.serve.daemon.launch_access import mint_decision_capability, reset_launch_access
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -4243,13 +4243,13 @@ async def test_a_capability_is_attributed_only_with_exactly_its_own_origin(
     repeats the header."""
     from unittest.mock import AsyncMock, MagicMock
 
-    from lionagi.studio.launch_access import (
+    from lionagi.studio.operator.types import ConfirmProposalRequest
+    from lionagi.studio.services import operator as operator_svc
+    from lionhub.serve.daemon.launch_access import (
         mint_decision_capability,
         reset_launch_access,
         resolve_decision_capability,
     )
-    from lionagi.studio.operator.types import ConfirmProposalRequest
-    from lionagi.studio.services import operator as operator_svc
 
     reset_launch_access()
     capability = mint_decision_capability(_PAGE)
@@ -4286,12 +4286,12 @@ async def test_the_decision_principal_is_written_with_the_decision_or_not_at_all
     so no principal is recorded for a decision that did not happen."""
     from fastapi import HTTPException
 
-    from lionagi.studio.launch_access import (
+    from lionagi.studio.services.operator import decide_operator_proposal
+    from lionhub.serve.daemon.launch_access import (
         mint_decision_capability,
         reset_launch_access,
         resolve_decision_capability,
     )
-    from lionagi.studio.services.operator import decide_operator_proposal
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)

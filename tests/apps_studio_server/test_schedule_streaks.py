@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from lionagi.state.db import StateDB  # noqa: E402
-from lionagi.studio.services.schedules import (  # noqa: E402
+from lionhub.serve.daemon.services.schedules import (  # noqa: E402
     create_schedule,
     get_schedule,
     list_schedules,

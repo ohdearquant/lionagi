@@ -3,7 +3,7 @@
 """Studio Operator lifecycle service/adapter: ``resume_run``.
 
 Delegates to the real, supported ``POST /runs/{run_id}/resume`` surface
-(`lionagi/studio/services/run_resume.py::resume_run`) for the actual launch
+(`lionhub/src/lionhub/serve/daemon/services/run_resume.py::resume_run`) for the actual launch
 decision -- this adapter never picks an argv or a resume path itself. It
 does read the run's recorded ``invocation_kind`` before creating a proposal,
 so the proposal's summary says the true thing the dispatcher is about to do
@@ -83,7 +83,7 @@ def _kind_argument_mismatch(
     the only thing this changes is when the caller learns it, not what they
     are told.
     """
-    from lionagi.studio.services.run_resume import FLOW_RESUME_KINDS
+    from lionhub.serve.daemon.services.run_resume import FLOW_RESUME_KINDS
 
     if kind == "agent":
         if args.instruction is None:
@@ -245,8 +245,8 @@ async def execute_resume_command(command: dict[str, Any]) -> dict[str, Any]:
     surface instead of a stub is that the human sees the real reason a
     resume could not proceed.
     """
-    from lionagi.studio.services import launches as _launches
-    from lionagi.studio.services.run_resume import (
+    from lionhub.serve.daemon.services import launches as _launches
+    from lionhub.serve.daemon.services.run_resume import (
         RunBranchConflictError,
         RunBranchMembershipError,
         RunNotFoundError,
@@ -255,7 +255,7 @@ async def execute_resume_command(command: dict[str, Any]) -> dict[str, Any]:
         RunResumeUnavailableError,
         RunResumeUnsupportedKindError,
     )
-    from lionagi.studio.services.run_resume import resume_run as _service_resume_run
+    from lionhub.serve.daemon.services.run_resume import resume_run as _service_resume_run
 
     run_id = command.get("run_id")
     if not isinstance(run_id, str) or not run_id:

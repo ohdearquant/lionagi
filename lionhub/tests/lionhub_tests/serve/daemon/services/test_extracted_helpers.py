@@ -50,7 +50,11 @@ def test_the_studio_name_is_the_lionhub_object(old, new, name):
 
 
 @pytest.mark.parametrize(
-    "path", ["lionagi/studio/services/runs.py", "lionagi/studio/services/sessions.py"]
+    "path",
+    [
+        "lionhub/src/lionhub/serve/daemon/services/runs.py",
+        "lionhub/src/lionhub/serve/daemon/services/sessions.py",
+    ],
 )
 def test_the_daemon_routes_import_neither_studio_module(path):
     tree = ast.parse((_ROOT / path).read_text(encoding="utf-8"))
@@ -64,7 +68,7 @@ def test_the_daemon_routes_import_neither_studio_module(path):
 
 
 def test_the_launch_route_does_not_import_the_engine_definition_application_module():
-    path = "lionagi/studio/services/launches.py"
+    path = "lionhub/src/lionhub/serve/daemon/services/launches.py"
     tree = ast.parse((_ROOT / path).read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):

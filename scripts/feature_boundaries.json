@@ -1122,10 +1122,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.launch_access": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.operator": {
       "layer": "root",
       "owner": "studio"
@@ -1202,15 +1198,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services._session_tail": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.admin": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
     "lionagi.studio.services.agents": {
       "layer": "root",
       "owner": "studio"
@@ -1235,29 +1222,9 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.engine_runs": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
     "lionagi.studio.services.hooks_library": {
       "layer": "root",
       "owner": "studio"
-    },
-    "lionagi.studio.services.identity": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
-    "lionagi.studio.services.invocations": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
-    "lionagi.studio.services.launches": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
     },
     "lionagi.studio.services.leo": {
       "layer": "root",
@@ -1275,11 +1242,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.pairing": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
     "lionagi.studio.services.playbooks": {
       "layer": "root",
       "owner": "studio"
@@ -1296,36 +1258,9 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.run_resume": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
-    "lionagi.studio.services.run_resume_worker": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.services.run_tags": {
       "layer": "root",
       "owner": "studio"
-    },
-    "lionagi.studio.services.runs": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
-    "lionagi.studio.services.schedules": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.orchestration.schedule",
-      "additional_targets": [
-        "lionhub.serve"
-      ]
-    },
-    "lionagi.studio.services.sessions": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
     },
     "lionagi.studio.services.shows": {
       "layer": "root",

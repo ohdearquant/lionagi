@@ -8,7 +8,7 @@ import sqlite3
 import pytest
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services import schedules
+from lionhub.serve.daemon.services import schedules
 
 
 def _past_the_parsers_depth(opener: str) -> str:

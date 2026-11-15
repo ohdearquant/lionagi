@@ -248,7 +248,7 @@ def test_registry_mutation_updates_blueprint_availability_and_cli_choices(
     "module",
     [
         "lionagi.studio.services.engine_defs",
-        "lionagi.studio.services.launches",
+        "lionhub.serve.daemon.services.launches",
         "lionagi.studio.services.workflow_compile",
     ],
 )

@@ -23,10 +23,10 @@ V2 implementation and adoption require acceptance of this record and the tests i
 
 **P1 — A bounded result is not a bounded query.** At the source baseline the page query uses
 a limited CTE, selected-session correlated aggregates, a CROSS JOIN and a final ORDER BY
-(`lionagi/studio/services/sessions.py::list_sessions` at `1717674a2140d3571fcb90e3f68204845048ef80`). Status filtering uses an IN predicate with
-a NULL arm for completed (`lionagi/studio/services/sessions.py::SessionFilter.where` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`). OFFSET remains
-(`lionagi/studio/services/sessions.py::list_sessions` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`) and a separate exact count is read
-(`lionagi/studio/services/sessions.py::count_sessions` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`, `lionagi/studio/services/sessions.py::list_sessions_route` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`).
+(`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions` at `1717674a2140d3571fcb90e3f68204845048ef80`). Status filtering uses an IN predicate with
+a NULL arm for completed (`lionhub/src/lionhub/serve/daemon/services/sessions.py::SessionFilter.where` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`). OFFSET remains
+(`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`) and a separate exact count is read
+(`lionhub/src/lionhub/serve/daemon/services/sessions.py::count_sessions` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`, `lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions_route` at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`).
 A later `list_sessions` implementation includes a `recent_unfiltered` path and a query-plan
 fallback when its required index or ordering plan is unavailable. The existing projection
 growth test measures the page statement rather than the entire route
@@ -35,15 +35,15 @@ growth test measures the page statement rather than the entire route
 
 **P2 — Contains can reject an arbitrary prefix before producing a result.** The filter
 uses escaped, case-insensitive contains on name fields and playbook
-(`lionagi/studio/services/sessions.py::SessionFilter.where`).
-The page applies those predicates before LIMIT (`lionagi/studio/services/sessions.py::list_sessions`).
+(`lionhub/src/lionhub/serve/daemon/services/sessions.py::SessionFilter.where`).
+The page applies those predicates before LIMIT (`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`).
 A returned-row limit therefore does not limit rejected candidates. The existing tag
-predicate can also group rows across the tag table (`lionagi/studio/services/sessions.py::SessionFilter.where`).
+predicate can also group rows across the tag table (`lionhub/src/lionhub/serve/daemon/services/sessions.py::SessionFilter.where`).
 
 **P3 — Existing clients rely on numeric totals and numbered transport.** Runs returns
 page/per_page, total, total_pages, has_next and has_prev; sessions returns limit/offset,
-total and truncated (`lionagi/studio/services/runs.py::paginate_runs`,
-`lionagi/studio/services/sessions.py::list_sessions_route`). The runs client requires those numeric fields
+total and truncated (`lionhub/src/lionhub/serve/daemon/services/runs.py::paginate_runs`,
+`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions_route`). The runs client requires those numeric fields
 (`apps/studio/frontend/src/lib/api.ts:1018-1026`). The visible history control already uses
 Load more, but its pager increments page numbers and consumes has_next
 (`apps/studio/frontend/src/components/fleet/FleetView.tsx:489-498`,
@@ -52,25 +52,25 @@ Load more, but its pager increments page numbers and consumes has_next
 **P4 — Mutable sort keys do not define a historical snapshot.** Current recent order is
 updated_at descending; cost orders reported values before NULL, including reported zero,
 then updated_at. Neither includes an id tie-break
-(`lionagi/studio/services/sessions.py::_SESSION_SORTS`). Fresh schemas require updated_at, but legacy
+(`lionhub/src/lionhub/serve/daemon/services/sessions.py::_SESSION_SORTS`). Fresh schemas require updated_at, but legacy
 additive migration permits NULL (`lionagi/state/schema.sql:124`,
 `lionagi/state/schema_migrations.py::MIGRATION_COLUMNS`). Cursor keys must come from stored values,
 before the listing DTO's NULL-to-zero timestamp fallback
-(`lionagi/studio/services/sessions.py::list_sessions`).
+(`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`).
 
 **P5 — Query labels and cursor encodings are not authorization.** Authentication and
 origin controls run before API routes (`lionagi/studio/app.py::create_app.require_studio_bearer_token`). File-store guards and
 configured store resolution precede listing (`lionhub/src/lionhub/orchestration/state_store.py::store_path`,
-`lionhub/src/lionhub/orchestration/state_store.py::require_file_store`, `lionagi/studio/services/sessions.py::list_sessions`). A project
-label is an ordinary user predicate (`lionagi/studio/services/sessions.py::SessionFilter.where`). This
+`lionhub/src/lionhub/orchestration/state_store.py::require_file_store`, `lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`). A project
+label is an ordinary user predicate (`lionhub/src/lionhub/serve/daemon/services/sessions.py::SessionFilter.where`). This
 deployment exposes the configured store to an admitted caller; it does not establish a
 new row-level tenant boundary.
 
 **P6 — Progress must include rejected candidates.** A candidate window can return no
 matches while later candidates remain. Continuation based only on the last returned row
 cannot advance such a window. Separately, persisted page fields and totals currently
-come from different connections (`lionagi/studio/services/sessions.py::count_sessions`,
-`lionagi/studio/services/sessions.py::list_sessions`); a shared response snapshot requires new work.
+come from different connections (`lionhub/src/lionhub/serve/daemon/services/sessions.py::count_sessions`,
+`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`); a shared response snapshot requires new work.
 
 Accepted records constrain this proposal without selecting its new wire details:
 
@@ -124,7 +124,7 @@ An unsupported version fails validation. Supplying a reserved v2 control (`curso
 `exact_total`, even false) with v1 fails validation instead of silently altering behavior.
 Do not otherwise broaden or tighten legacy unknown-parameter handling: runs currently
 forbids extras, while sessions uses individual query arguments
-(`lionagi/studio/services/runs.py::_RunListQuery`, `lionagi/studio/services/sessions.py::list_sessions_route`).
+(`lionhub/src/lionhub/serve/daemon/services/runs.py::_RunListQuery`, `lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions_route`).
 
 | Endpoint | Preserved v1 contract |
 | --- | --- |
@@ -145,14 +145,14 @@ exact_total: bool = False
 
 Sessions retains `limit` (default 500, maximum 500); runs retains `per_page` (default 20,
 maximum 500). Those existing bounds are defined at
-`lionagi/studio/services/sessions.py::MAX_SESSION_PAGE`, `lionagi/studio/services/sessions.py::list_sessions_route`,
-and `lionagi/studio/services/runs.py::_RunListQuery`. A requested row count must be at least one.
+`lionhub/src/lionhub/serve/daemon/services/sessions.py::MAX_SESSION_PAGE`, `lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions_route`,
+and `lionhub/src/lionhub/serve/daemon/services/runs.py::_RunListQuery`. A requested row count must be at least one.
 `candidate_limit` is server policy reported in the response, not a request override.
 
 Sessions gains no runs filters. Runs preserves current status alias expansion, kind
 validation/expansion, playbook/name contains, project/project-null, and AND-composed tags
-(`lionagi/studio/services/runs.py::_normalize_status_filter`, `lionagi/studio/services/runs.py::_normalize_kind_filter`,
-`lionagi/studio/services/sessions.py::SessionFilter.where`). Canonicalization follows effective predicates:
+(`lionhub/src/lionhub/serve/daemon/services/runs.py::_normalize_status_filter`, `lionhub/src/lionhub/serve/daemon/services/runs.py::_normalize_kind_filter`,
+`lionhub/src/lionhub/serve/daemon/services/sessions.py::SessionFilter.where`). Canonicalization follows effective predicates:
 deduplicate and sort set-like inputs, expand existing aliases, and discard project when
 project_null selects the NULL predicate. Preserve text matching and escaping; do not
 introduce a different Unicode-folding policy. Ineffective empty inputs remain ineffective.
@@ -200,7 +200,7 @@ cost:
 
 The last tie-break is the existing Session id using its database text ordering/collation,
 not nullable run provenance (`lionagi/state/schema.sql:110`,
-`lionagi/studio/services/sessions.py::list_sessions`). Reported zero precedes unknown cost. Negative
+`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`). Reported zero precedes unknown cost. Negative
 finite values keep ordinary numeric order. NULL updated_at is distinct from numeric zero.
 Capture the raw key before DTO conversion. Unsupported nonnumeric/nonfinite stored numeric
 keys or invalid ids encountered within the bounded candidate/lookahead traversal produce
@@ -344,14 +344,14 @@ remain unchanged.
 
 Tag matching must use candidate-constrained probes on `(session_id, tag)`; this primary
 key already exists (`lionagi/state/schema.sql:97`). Do not reuse the global grouped tag
-subquery in the default bounded path (`lionagi/studio/services/sessions.py::SessionFilter.where`). Only
+subquery in the default bounded path (`lionhub/src/lionhub/serve/daemon/services/sessions.py::SessionFilter.where`). Only
 returned-row tag hydration may enumerate all tags for those rows. Request tag count and
 returned tag fanout remain explicit work dimensions.
 
 This contract bounds candidate rows and residual evaluations, not arbitrary metadata
 bytes, predicate input size, lock waits, or latency. Branch and progression counts retain
 existing membership semantics. Current projection counts selected branches and JSON array
-lengths (`lionagi/studio/services/sessions.py::list_sessions.listing_sql`), including duplicate and pruned
+lengths (`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions.listing_sql`), including duplicate and pruned
 membership tested at `tests/apps_studio_server/test_session_listing_projection.py::test_projection_preserves_branch_and_membership_counts`.
 Selected-row fanout and membership payload can be large and must be measured separately.
 ADR-0117's proposed progression ordinal index does not supply a sessions seek index
@@ -383,7 +383,7 @@ V2 returns the same endpoint row field and effective row limit with this envelop
 
 Sessions substitutes `sessions` and `limit` and omits the run-specific diagnostic. Runs
 recomputes status_ended_at_mismatches on returned rows, preserving its page-local meaning
-from `lionagi/studio/services/runs.py::paginate_runs`. V2 does not emit v1 page/offset echoes,
+from `lionhub/src/lionhub/serve/daemon/services/runs.py::paginate_runs`. V2 does not emit v1 page/offset echoes,
 total_pages, has_next, has_prev or truncated.
 
 The envelope invariants are:
@@ -416,7 +416,7 @@ interrupt the ongoing database work rather than leave an abandoned count running
 
 Current page/count helpers independently open connections, and tag hydration opens
 another connection and executes lazy table/index creation
-(`lionagi/studio/services/sessions.py::count_sessions`, `lionagi/studio/services/sessions.py::list_sessions`,
+(`lionhub/src/lionhub/serve/daemon/services/sessions.py::count_sessions`, `lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`,
 `lionhub/src/lionhub/serve/daemon/services/run_tags_store.py` `CREATE TABLE IF NOT EXISTS run_tags (`, `lionhub/src/lionhub/serve/daemon/services/run_tags_store.py::tags_for_sessions`).
 V2 requires shared-transaction read helpers; it must not reuse these behaviors unchanged.
 On an otherwise compatible store without a run_tags table, tag membership and hydration
@@ -425,7 +425,7 @@ are empty; nonempty tag filters therefore match none. Listing performs no lazy D
 The snapshot guarantee covers persisted fields, membership/count and cursor state.
 Process liveness remains a live observation and is not part of the SQLite snapshot;
 the current run projection already makes that observation separately
-(`lionagi/studio/services/runs.py::list_runs`). An exact count or large selected-row payload can
+(`lionhub/src/lionhub/serve/daemon/services/runs.py::list_runs`). An exact count or large selected-row payload can
 extend transaction duration; “one response snapshot” is not a latency guarantee.
 
 Clients may display `No matches in this window. Continue search.` when candidates remain.

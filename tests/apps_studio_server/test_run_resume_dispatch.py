@@ -80,8 +80,8 @@ _SOME_PLAN = [{"agent_id": "worker-1", "assignee": "worker", "dep_indices": []}]
 @pytest.fixture
 def flow_resume_harness(tmp_path: Path, monkeypatch: Any):
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.run_resume as resume_svc
     import lionhub.orchestration.flow.checkpoint as ckmod
+    import lionhub.serve.daemon.services.run_resume as resume_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -296,7 +296,7 @@ def test_unknown_invocation_kind_refuses_and_never_silently_picks_a_path():
     known vocabulary from ever landing in a real row, so the "arbitrary
     unknown kind" case is exercised directly against the dispatcher with a
     synthetic session dict rather than through the DB/HTTP layer."""
-    import lionagi.studio.services.run_resume as resume_svc
+    import lionhub.serve.daemon.services.run_resume as resume_svc
 
     with pytest.raises(resume_svc.RunResumeUnsupportedKindError) as excinfo:
         _run(

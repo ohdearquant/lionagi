@@ -23,8 +23,8 @@ def test_the_old_studio_config_name_is_the_same_object(name):
     "path",
     [
         "lionagi/studio/app.py",
-        "lionagi/studio/launch_access.py",
-        "lionagi/studio/services/pairing.py",
+        "lionhub/src/lionhub/serve/daemon/launch_access.py",
+        "lionhub/src/lionhub/serve/daemon/services/pairing.py",
     ],
 )
 def test_daemon_readers_take_the_settings_from_lionhub(path):

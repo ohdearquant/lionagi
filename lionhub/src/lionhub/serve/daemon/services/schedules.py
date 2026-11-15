@@ -51,7 +51,7 @@ from lionhub.orchestration.schedule.validation import (
 from lionhub.serve.daemon.routes import studio_route
 from lionhub.serve.daemon.services import run_view
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.services.schedules")
 
 
 class NameConflictError(Exception):

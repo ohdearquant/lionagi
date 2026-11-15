@@ -1073,6 +1073,84 @@ CONTRACTS: tuple[MoveContract, ...] = (
         kind="module",
         public_names=frozenset({"redact_arguments", "scrub_text"}),
     ),
+    MoveContract(
+        old="lionagi.studio.launch_access",
+        new="lionhub.serve.daemon.launch_access",
+        kind="module",
+        public_names=frozenset({"daemon_epoch", "reset_launch_access"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.runs",
+        new="lionhub.serve.daemon.services.runs",
+        kind="module",
+        public_names=frozenset({"get_run", "list_runs"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.run_resume",
+        new="lionhub.serve.daemon.services.run_resume",
+        kind="module",
+        public_names=frozenset({"RunNotFoundError"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.run_resume_worker",
+        new="lionhub.serve.daemon.services.run_resume_worker",
+        kind="module",
+        public_names=frozenset({"main", "run_worker"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.engine_runs",
+        new="lionhub.serve.daemon.services.engine_runs",
+        kind="module",
+        public_names=frozenset({"get_engine_run", "list_engine_runs"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.invocations",
+        new="lionhub.serve.daemon.services.invocations",
+        kind="module",
+        public_names=frozenset({"get_invocation", "list_invocations"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.launches",
+        new="lionhub.serve.daemon.services.launches",
+        kind="module",
+        public_names=frozenset({"launch", "launch_detached_argv"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.identity",
+        new="lionhub.serve.daemon.services.identity",
+        kind="module",
+        public_names=frozenset({"get_identity_route"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.pairing",
+        new="lionhub.serve.daemon.services.pairing",
+        kind="module",
+        public_names=frozenset({"create_pairing_code_route", "redeem_pairing_code_route"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.sessions",
+        new="lionhub.serve.daemon.services.sessions",
+        kind="module",
+        public_names=frozenset({"display_cost", "display_model"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.admin",
+        new="lionhub.serve.daemon.services.admin",
+        kind="module",
+        public_names=frozenset({"MaintenanceBody", "PruneBody"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.schedules",
+        new="lionhub.serve.daemon.services.schedules",
+        kind="module",
+        public_names=frozenset({"compute_schedule_health", "list_schedules"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services._session_tail",
+        new="lionhub.serve.daemon.services._session_tail",
+        kind="module",
+        public_names=frozenset({"SessionTailRegistry", "capture_frontiers"}),
+    ),
 )
 
 

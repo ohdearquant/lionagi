@@ -1506,7 +1506,7 @@ def test_backend_starts_from_a_pip_install_without_apps_tree(monkeypatch, capsys
 
 @pytest.fixture()
 def fresh_launch(monkeypatch):
-    import lionagi.studio.launch_access as launch_access
+    import lionhub.serve.daemon.launch_access as launch_access
 
     monkeypatch.setattr(launch_access, "_bearer", None)
     monkeypatch.setattr(launch_access, "_codes", {})
@@ -1651,7 +1651,7 @@ def test_a_running_lionagi_daemon_issues_a_code_over_its_reconnect_socket(
 ):
     """The launcher asks a running daemon for a code over the same-user socket,
     never over HTTP: a program that can only speak HTTP cannot get one."""
-    import lionagi.studio.launch_access as launch_access
+    import lionhub.serve.daemon.launch_access as launch_access
     import lionhub.serve.daemon.reconnect as reconnect
 
     monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)

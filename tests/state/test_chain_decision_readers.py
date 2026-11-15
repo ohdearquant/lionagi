@@ -209,7 +209,8 @@ async def test_schedule_history_keeps_definition_evidence_and_omits_occurrences(
 @pytest.mark.parametrize("db", ["sqlite", "postgresql"], indirect=True)
 async def test_skipped_occurrence_keeps_evidence_in_process_and_reason_on_the_wire(db):
     pytest.importorskip("fastapi", reason="studio extra not installed")
-    from lionagi.studio.services import run_view, schedules
+    from lionagi.studio.services import run_view
+    from lionhub.serve.daemon.services import schedules
     from tests.studio.test_schedule_skip_reason_projection import (
         _CAPACITY_REASON,
         _CAPACITY_SUMMARY,
@@ -258,7 +259,7 @@ async def test_operator_failure_progress_ignores_decisions_even_with_an_id(db):
 async def test_studio_details_pass_evidence_through_before_operator_projection(db):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from lionagi.studio.operator import application_mcp
-    from lionagi.studio.services import invocations, runs, sessions
+    from lionhub.serve.daemon.services import invocations, runs, sessions
 
     await _seed_session_and_invocation(db)
     session = await sessions.get_session("session")

@@ -374,7 +374,7 @@ def _dev_pairing_line(frontend_url: str) -> str:
     only a page opened at that address can spend it. The link is that origin as a
     browser sends it, so the page it opens is the page the code is bound to.
     """
-    from lionagi.studio.launch_access import (
+    from lionhub.serve.daemon.launch_access import (
         PAIRING_CODE_TTL_S,
         _canonical_origin,
         mint_pairing_code,
@@ -401,7 +401,7 @@ def _dev_pairing_origin(frontend_url: str, bind_host: str) -> str | None:
     """
     from urllib.parse import urlsplit
 
-    from lionagi.studio.launch_access import _canonical_origin
+    from lionhub.serve.daemon.launch_access import _canonical_origin
 
     origin = _canonical_origin(frontend_url)
     try:
@@ -460,7 +460,7 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
     import errno
     import socket
 
-    from lionagi.studio.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
+    from lionhub.serve.daemon.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
 
     daemon_url = f"http://127.0.0.1:{port}"
     try:

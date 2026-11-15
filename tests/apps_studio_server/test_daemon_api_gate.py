@@ -18,7 +18,7 @@ code + sorted top-level JSON keys, not full payloads) for the admin,
 session, and schedule endpoint families.
 
 Everything is read empirically from the routers themselves
-(lionagi/studio/services/admin.py, sessions.py, schedules.py) and from
+(lionhub/src/lionhub/serve/daemon/services/admin.py, sessions.py, schedules.py) and from
 running the live app against a temp SQLite DB, following the existing
 suite's `_patch_db` / `monkeypatch.setattr(..., DEFAULT_DB_PATH, ...)`
 pattern -- never against ~/.lionagi.
@@ -737,7 +737,7 @@ _SCHEDULE_DETAIL_KEYS = sorted(
 
 def _create_gate_schedule(db_path: Path) -> str:
     async def _create() -> str:
-        import lionagi.studio.services.schedules as schedules_mod
+        import lionhub.serve.daemon.services.schedules as schedules_mod
 
         created = await schedules_mod.create_schedule(
             {
@@ -844,7 +844,7 @@ def test_schedules_detail_response_shape_with_budget_configured(tmp_path, monkey
     _patch_db(monkeypatch, db_path)
 
     async def _create() -> str:
-        import lionagi.studio.services.schedules as schedules_mod
+        import lionhub.serve.daemon.services.schedules as schedules_mod
 
         created = await schedules_mod.create_schedule(
             {

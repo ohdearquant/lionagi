@@ -380,7 +380,7 @@ back to the default store, `$LIONAGI_HOME/state.db`: a daemon whose store is at
 that path, by default or through the variable, shares it with any lionagi its
 commands run under the same home directory.
 
-## lionagi/studio/services/schedules.py
+## lionhub/src/lionhub/serve/daemon/services/schedules.py
 
 - **Recent-run list contract v1** — `GET /api/schedules/?include_recent_runs=true` adds optional
   `recent_runs_summary` to each definition: `{version: 1, limit: 25, status,
@@ -524,7 +524,7 @@ commands run under the same home directory.
   `last_healthy_poll_at` and `poller_consecutive_401` continue to describe HTTP
   liveness and authentication.
 
-## lionagi/studio/services/runs.py
+## lionhub/src/lionhub/serve/daemon/services/runs.py
 
 **Run identity projection** — list and detail rows keep `id` equal to the
 backing Session ID, which is the value accepted by every v1 Studio run and
@@ -547,7 +547,7 @@ legacy payloads. The `message_stats.message_count` check is key-presence
 based, not truthy: a legitimate `0` (stale progression referencing pruned
 message ids) must not fall through to `0 or fallback`.
 
-## lionagi/studio/services/sessions.py
+## lionhub/src/lionhub/serve/daemon/services/sessions.py
 
 - **`_fetch_action_messages`** — The `+m.lion_class` query hint disqualifies
   the `lion_class` index so the planner uses the id primary key for the IN
@@ -558,7 +558,7 @@ message ids) must not fall through to `0 or fallback`.
   since a branch with thousands of messages would exceed SQLite's 999
   bound-variable limit.
 
-## lionagi/studio/services/admin.py
+## lionhub/src/lionhub/serve/daemon/services/admin.py
 
 - **`process_liveness`** — Tri-state: `True` = observed alive; `False` =
   confirmed dead (recorded pid gone, start-time verified when recorded);
@@ -601,7 +601,7 @@ message ids) must not fall through to `0 or fallback`.
   necessarily about *now*), shelling out to git off the event loop under
   its own budget so a daemon never stalls on its own health check.
 
-## lionagi/studio/services/invocations.py
+## lionhub/src/lionhub/serve/daemon/services/invocations.py
 
 **`list_invocations_route`** — The usage aggregates are opt-in through the
 non-schema `include_usage` query flag, which the library usage panel passes and the
@@ -651,7 +651,7 @@ store — the decision belongs to a caller that has already checked
 `read_only_open_supported()`, since passing `True` unconditionally would
 fail at open elsewhere rather than degrade.
 
-## lionagi/studio/services/engine_runs.py
+## lionhub/src/lionhub/serve/daemon/services/engine_runs.py
 
 - **Canonical runtime identity** — A persisted Engine execution has one
   `engine_runs.id`, one signal session whose id is the same value, and optional
@@ -1230,7 +1230,7 @@ otherwise be misread on restore. It must recurse to every depth because
 every depth too — a shallow escape paired with the deep bytes conversion
 would leave nested collisions ambiguous.
 
-## lionagi/studio/services/run_resume.py
+## lionhub/src/lionhub/serve/daemon/services/run_resume.py
 
 `FLOW_RESUME_KINDS` lists the `invocation_kind` values that replay a
 checkpointed flow instead of reopening a single agent branch, kept separate
@@ -1855,7 +1855,7 @@ caller can tell "nothing happened" from "the field doesn't exist yet."
 
 `run_findings` derives tool-call outcomes (`success`/`error`/`pending`)
 from message content via the shared `_detect_status` heuristic retained in
-`lionagi.studio.services.runs` for Session/operator projections, since plain
+`lionhub.serve.daemon.services.runs` for Session/operator projections, since plain
 session messages carry no structured `ok: bool`. Every section
 here is bounded by a message *window* (the carrier is called with a fixed
 `message_limit`) before any byte cap ever applies — the byte cap almost

@@ -582,7 +582,7 @@ def test_studio_schedule_action_kinds_match_schema_checks():
     from sqlalchemy.dialects import postgresql
 
     from lionagi.state.db import _SCHEMA_PATH
-    from lionagi.studio.services.schedules import _PERSISTED_ACTION_KINDS
+    from lionhub.serve.daemon.services.schedules import _PERSISTED_ACTION_KINDS
 
     with closing(sqlite3.connect(":memory:")) as conn:
         conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))

@@ -123,7 +123,7 @@ def _command_allowlist() -> frozenset[str]:
 def _validate_command_allowlisted(command: str) -> None:
     """Raise ValueError if *command* is not on ``LIONAGI_SCHEDULER_COMMAND_ALLOWLIST``.
 
-    Called at schedule build/validation time (lionagi.studio.services.schedules,
+    Called at schedule build/validation time (lionhub.serve.daemon.services.schedules,
     lionhub.orchestration.schedule.declaration) and again here inside ``build_argv`` at
     actual spawn time, since the environment variable can change between
     schedule creation and fire.

@@ -91,8 +91,8 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
     ),
     "ADR-0131-operator-decisions-require-a-launcher-issued-decision-capability.md": (
         "lionagi/studio/cli.py:274@124b1419",
-        "lionagi/studio/launch_access.py:49@124b1419",
-        "lionagi/studio/launch_access.py:63@124b1419",
+        "lionhub/src/lionhub/serve/daemon/launch_access.py:49@124b1419",
+        "lionhub/src/lionhub/serve/daemon/launch_access.py:63@124b1419",
         "tests/studio/test_hosted_hardening.py:967@124b1419",
     ),
     "ADR-0136-moving-non-core-packages-into-lionhub.md": (
