@@ -200,6 +200,13 @@ def _estimate_response_cost(
     if served_model not in CURRENT_REVISION.models:
         return None, None
 
+    # Complete cache counts cannot establish the serving tier.
+    if usage.get("service_tier") is None and payload.get("service_tier") not in (
+        None,
+        "standard_only",
+    ):
+        return None, None
+
     # Read the submitted cache markers. A missing request tier uses the table's
     # standard estimate; the reported usage still determines tariff eligibility.
     try:
