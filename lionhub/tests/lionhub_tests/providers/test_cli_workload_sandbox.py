@@ -623,3 +623,17 @@ def test_a_writable_roots_value_that_is_not_a_list_of_paths_is_refused(
 def test_with_the_child_sandbox_off_a_home_root_runs_as_before(tmp_path, fake_home):
     args = _codex(_repo(tmp_path), full_auto=True, add_dir=[str(fake_home)])
     assert str(fake_home) in _pairs(args, "--add-dir")
+
+
+@pytest.mark.parametrize("which", ["home", "parent"])
+def test_a_case_changed_spelling_of_a_home_root_is_refused_while_confined(
+    tmp_path, fake_home, sandbox_on, which
+):
+    import os
+
+    target = fake_home if which == "home" else fake_home.parent
+    respelled = str(target.parent / target.name.upper())
+    if not os.path.exists(respelled) or not os.path.samefile(respelled, target):
+        pytest.skip("the volume under tmp_path is case-sensitive")
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[respelled])

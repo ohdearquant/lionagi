@@ -1132,10 +1132,23 @@ def _roots_reaching_home(
     A root inside the home directory is honoured. Relative entries are read against the
     working directory, ``~`` is expanded, and links are resolved, on both sides. The home is
     this process's and, when the request sets one, the child's ``HOME``.
+
+    An entry that exists is compared by identity (device and inode) with the home directory
+    and each of its ancestors, because a spelling is not an identity: on a case-insensitive
+    volume ``/users/u`` is the home ``/Users/u`` and ``realpath`` keeps the case it was given.
+    The spelling comparison stays beside it for an entry that does not exist yet.
     """
     homes = {os.path.realpath(os.path.expanduser("~"))}
     if plain.env and plain.env.get("HOME"):
         homes.add(os.path.realpath(os.path.expanduser(plain.env["HOME"])))
+    reaching: set[tuple[int, int]] = set()
+    for home in homes:
+        for directory in (home, *map(str, Path(home).parents)):
+            try:
+                found = os.stat(directory)
+            except OSError:
+                continue
+            reaching.add((found.st_dev, found.st_ino))
     entries: list[tuple[str, Any]] = [("add_dir", entry) for entry in plain.add_dir]
     for table in tables:
         section = table.get("sandbox_workspace_write")
@@ -1156,7 +1169,14 @@ def _roots_reaching_home(
         if not os.path.isabs(path):
             path = os.path.join(cwd, path)
         real = os.path.realpath(path)
-        if any(real == home or home.startswith(real.rstrip(os.sep) + os.sep) for home in homes):
+        try:
+            found = os.stat(real)
+            same = (found.st_dev, found.st_ino) in reaching
+        except OSError:
+            same = False
+        if same or any(
+            real == home or home.startswith(real.rstrip(os.sep) + os.sep) for home in homes
+        ):
             reasons.append(
                 f"{source} entry {entry!r} is the home directory or an ancestor of it, which "
                 "makes the whole home writable"
