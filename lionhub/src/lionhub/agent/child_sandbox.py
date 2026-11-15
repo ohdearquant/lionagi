@@ -176,6 +176,75 @@ def _refusal(message: str) -> ConfigurationError:
     return ConfigurationError(f"{message.rstrip().rstrip('.;:')}. {CHILD_SANDBOX_OPT_OUT}")
 
 
+def _home_directories(env: Any = None) -> set[str]:
+    """Every directory that is this account's home, resolved: this process's ``HOME``, the
+    child's ``HOME`` when ``env`` carries one, and the account's home in the password
+    database. The last one stays the real home when a parent was started with ``HOME``
+    pointing somewhere else, as a harness, a scheduled job or a scratch-home test does.
+    """
+    homes = {os.path.realpath(os.path.expanduser("~"))}
+    child_home = env.get("HOME") if hasattr(env, "get") else None
+    if isinstance(child_home, str) and child_home:
+        homes.add(os.path.realpath(os.path.expanduser(child_home)))
+    try:
+        import pwd
+
+        account_home = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError, AttributeError):
+        account_home = None
+    if account_home:
+        homes.add(os.path.realpath(account_home))
+    return homes
+
+
+def _reaches_home(path: str | Path, env: Any = None) -> bool:
+    """Whether ``path`` is the home directory or an ancestor of it.
+
+    The homes are those of ``_home_directories``. A path that exists is compared by identity
+    (device and inode) with each home and each of its ancestors, since a spelling is not an
+    identity: on a case-insensitive volume ``/users/u`` is the home ``/Users/u`` and
+    ``realpath`` keeps the case it was given. The spelling comparison, after ``~`` expansion
+    and link resolution, covers a path that does not exist yet.
+    """
+    homes = _home_directories(env)
+    identities: set[tuple[int, int]] = set()
+    for home in homes:
+        for directory in (home, *map(str, Path(home).parents)):
+            try:
+                found = os.stat(directory)
+            except OSError:
+                continue
+            identities.add((found.st_dev, found.st_ino))
+    real = os.path.realpath(os.path.expanduser(os.fspath(path)))
+    try:
+        found = os.stat(real)
+        if (found.st_dev, found.st_ino) in identities:
+            return True
+    except OSError:
+        pass
+    return any(real == home or home.startswith(real.rstrip(os.sep) + os.sep) for home in homes)
+
+
+def _refuse_a_home_workspace(
+    workspace: str | Path, env: Any = None, *, enabled: bool | None = None
+) -> None:
+    """Refuse a child whose working directory is the home directory or an ancestor of it.
+
+    The working directory is writable to a confined child by construction, so a workspace at
+    the home directory, ``/Users`` or ``/`` makes the whole home writable: the same outcome as
+    no sandbox. Applied while the child sandbox is enabled; ``enabled`` is the caller's already
+    resolved switch, and ``None`` resolves the global one.
+    """
+    if enabled is None:
+        enabled = resolve_child_sandbox(None).enabled
+    if enabled and _reaches_home(workspace, env):
+        raise _refusal(
+            f"child_sandbox: the working directory {os.fspath(workspace)!r} is the home "
+            "directory or an ancestor of it, which would make the whole home writable to the "
+            "child; start the agent from a project directory"
+        )
+
+
 @dataclass(frozen=True)
 class ChildSandboxPolicy:
     """Resolved sandbox policy: whether it applies, what stays unreadable, what stays writable,

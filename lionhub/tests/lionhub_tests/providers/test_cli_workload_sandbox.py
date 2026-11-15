@@ -10,6 +10,7 @@ roots are the child sandbox's ``allow_write`` list, not whatever the user config
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
@@ -595,6 +596,33 @@ def test_the_childs_own_home_is_checked_too(tmp_path, fake_home, sandbox_on):
     other.mkdir()
     with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
         _codex(_repo(tmp_path), full_auto=True, env={"HOME": str(other)}, add_dir=[str(other)])
+
+
+@pytest.mark.parametrize("which", ["home", "parent"])
+def test_the_account_home_is_refused_under_a_scratch_home(
+    tmp_path, fake_home, sandbox_on, monkeypatch, which
+):
+    """HOME points at a scratch directory; the account's home from the password
+    database, and its parent, are still refused as writable roots."""
+    pwd = pytest.importorskip("pwd")
+    account = tmp_path / "accounts" / "me"
+    (account / "project").mkdir(parents=True)
+    fields = list(pwd.getpwuid(os.getuid()))
+    fields[5] = str(account)
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: pwd.struct_passwd(fields))
+    root = account if which == "home" else account.parent
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[str(root)])
+    inside = str(account / "project")
+    assert inside in _pairs(_codex(_repo(tmp_path), full_auto=True, add_dir=[inside]), "--add-dir")
+
+
+def test_the_real_account_home_is_refused_under_a_scratch_home(tmp_path, fake_home, sandbox_on):
+    """The same with nothing faked but HOME. Builds the argv only; no child starts."""
+    pwd = pytest.importorskip("pwd")
+    account = pwd.getpwuid(os.getuid()).pw_dir
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[account])
 
 
 def test_a_root_inside_the_home_directory_is_kept(tmp_path, fake_home, sandbox_on):
