@@ -96,8 +96,9 @@ def _read_unreadable_agent_block(
 def _read_agent_for_write(text: str) -> _AgentWriteRead:
     """Classify frontmatter for agent writes.
 
-    Protect a profile if its unreadable header mentions ``lion_system`` or
-    the profile loaders read an explicit, truthy value. Partial updates
+    Protect a profile if its unreadable header mentions ``lion_system``, if an
+    unreadable or unclosed block after a malformed opener mentions it, or if the
+    profile loaders read an explicit, truthy value. Partial updates
     require a readable mapping or a block with bare opening and closing
     delimiters and no settings, including an explicit null. A malformed
     opener always refuses partial updates. Whole-file writes use the
@@ -121,6 +122,11 @@ def _read_agent_for_write(text: str) -> _AgentWriteRead:
         # everything through the end of the file and refuse partial updates.
         parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
         if unreadable_header is not None and len(parts) < 3:
+            # After a malformed opener, the text past the single bare delimiter may be a
+            # block that never closes; where it was meant to end is not known, so inspect
+            # it through the end of the file, as an unclosed block after a bare opener is.
+            if len(parts) == 2 and "lion_system" in parts[1]:
+                return _read_unreadable_agent_block(parts[1], "")
             return unreadable_header
         block = parts[1] if len(parts) > 1 else text
         rest = parts[2].strip() if len(parts) > 2 else ""

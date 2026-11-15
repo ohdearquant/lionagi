@@ -698,9 +698,15 @@ def test_agent_routes_refuse_later_system_block(tmp_path, monkeypatch, method, u
         ),
         pytest.param(
             "---invalid\nname: profile\n---\nPrompt mentions lion_system.\n",
-            False,
             True,
-            id="ordinary-malformed-opener-marker-in-prompt",
+            True,
+            id="malformed-opener-marker-after-single-delimiter",
+        ),
+        pytest.param(
+            "---invalid\nname: sample\n---\nlion_system: true\nPrompt.\n",
+            True,
+            True,
+            id="later-unclosed-system-block",
         ),
         pytest.param(
             "---invalid\nname: profile\n---\nPrompt.\n",
