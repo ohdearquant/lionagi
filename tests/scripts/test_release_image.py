@@ -182,9 +182,12 @@ def as_release_event(env):
     )
 
 
-def test_manual_repair_uses_the_release_commit_not_the_workflow_commit(metadata):
-    result = resolve_fixture(metadata)
+@pytest.mark.parametrize("prepare_image", [False, True], ids=["source", "image"])
+def test_manual_repair_uses_the_release_commit_not_the_workflow_commit(metadata, prepare_image):
+    result = resolve_fixture(metadata, prepare_image=prepare_image)
     assert json.loads(result.pop("python_versions")) == ["3.10", "3.11", "3.12", "3.13"]
+    if prepare_image:
+        assert result.pop("publish_latest") == "true"
     assert result == {"version": "1.2.3", "sha": SHA}
 
 
@@ -369,6 +372,7 @@ def test_release_image_accepts_a_published_wheel_after_upload_client_failure(met
         "version": "1.2.3",
         "sha": SHA,
         "publish_latest": "true",
+        "python_versions": json.dumps(["3.10", "3.11", "3.12", "3.13", "3.14"]),
     }
     assert not any("/actions/" in path for service, path in metadata[-1] if service == "github")
 
@@ -580,7 +584,7 @@ def assert_workflow_contract(document):
     assert "if" not in jobs["test"]
     assert jobs["test"]["timeout-minutes"] == 60
     assert jobs["test"]["strategy"] == {"matrix": {"python-version": TEST_MATRIX}}
-    # Pin the checkout and setup. Shell tests execute the final step's commands.
+    # Pin the checkout, setup and terminal commands. Shell tests execute both modes.
     # It checks out the tag ref, not the commit an earlier job computed, and then
     # requires that tag to be the resolved source before anything runs.
     *setup_steps, test_step = jobs["test"]["steps"]
@@ -606,7 +610,15 @@ def assert_workflow_contract(document):
     ]
     assert set(test_step) == {"name", "shell", "run"}
     assert test_step["name"] == "Run tests" and test_step["shell"] == "bash"
-    assert test_step["run"].strip()
+    terminal_commands = [
+        line
+        for line in map(str.strip, test_step["run"].splitlines())
+        if line.startswith(("MAXFAIL=", "exec "))
+    ]
+    assert terminal_commands == [
+        "MAXFAIL=0 exec scripts/ci.sh test-python",
+        "exec uv run pytest --maxfail=1 --disable-warnings",
+    ]
     for step in jobs["test"]["steps"]:
         assert "if" not in step, "no test step may be skipped"
         assert not step.get("continue-on-error", False), "no test step may fail softly"
@@ -844,12 +856,13 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         "job-soft-failure-test",
         "job-soft-failure-docker",
         "test-run-removed",
+        "test-run-release-exec-removed",
         "test-timeout-removed",
-        "test-timeout-exceeds-budget",
+        "test-timeout-changed",
         "test-matrix-reduced",
         "test-uv-python-pin-removed",
-        "test-mode-forces-repair",
-        "test-fail-fast-limit",
+        "test-step-release-mode-env-added",
+        "test-step-maxfail-env-added",
         "retag-step-before-image",
         "image-revision-from-event-sha",
         "image-single-platform",
@@ -998,17 +1011,21 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
         jobs["docker"]["continue-on-error"] = True
     elif mutation == "test-run-removed":
         test["steps"][-1].pop("run")
+    elif mutation == "test-run-release-exec-removed":
+        test["steps"][-1]["run"] = test["steps"][-1]["run"].replace(
+            "MAXFAIL=0 exec scripts/ci.sh test-python", "MAXFAIL=0 scripts/ci.sh test-python", 1
+        )
     elif mutation == "test-timeout-removed":
         test.pop("timeout-minutes")
-    elif mutation == "test-timeout-exceeds-budget":
+    elif mutation == "test-timeout-changed":
         test["timeout-minutes"] = 180
     elif mutation == "test-matrix-reduced":
         jobs["test"]["strategy"]["matrix"]["python-version"] = ["3.12"]
     elif mutation == "test-uv-python-pin-removed":
         test["env"].pop("UV_PYTHON")
-    elif mutation == "test-mode-forces-repair":
+    elif mutation == "test-step-release-mode-env-added":
         test["steps"][-1]["env"] = {"RELEASE_TEST_MODE": "repair"}
-    elif mutation == "test-fail-fast-limit":
+    elif mutation == "test-step-maxfail-env-added":
         test["steps"][-1]["env"] = {"MAXFAIL": "1"}
     elif mutation == "retag-step-before-image":
         docker["steps"].insert(

@@ -209,13 +209,12 @@ def resolve(
         ):
             raise ReleaseError("PyPI did not report its current lionagi version")
         result["publish_latest"] = str(latest["version"] == version).lower()
-    else:
-        # A release tests 3.10 to 3.14; a manual repair of an older tag keeps the
-        # 3.10 to 3.13 range that tag was built with.
-        python_versions = ["3.10", "3.11", "3.12", "3.13"]
-        if event == "release":
-            python_versions.append("3.14")
-        result["python_versions"] = json.dumps(python_versions)
+    # Releases test Python 3.10 through 3.14. Manual repairs retain the
+    # 3.10 through 3.13 matrix used by historical tags.
+    python_versions = ["3.10", "3.11", "3.12", "3.13"]
+    if event == "release":
+        python_versions.append("3.14")
+    result["python_versions"] = json.dumps(python_versions)
     return result
 
 
