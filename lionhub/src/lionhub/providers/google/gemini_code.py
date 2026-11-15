@@ -18,6 +18,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lionagi import ln
+from lionagi._errors import ConfigurationError
 from lionagi._provider_errors import (
     ProviderTeardownError,
     classify_provider_error,
@@ -61,6 +62,39 @@ def _resolve_agy_binary() -> str | None:
 
 AGY_CLI = _resolve_agy_binary()
 HAS_AGY = AGY_CLI is not None
+
+#: Directories the Antigravity CLI writes its own state to: conversations, caches and refreshed
+#: login. The rest of ``~/.gemini`` (the login and account files, settings) stays read-only.
+_AGY_STATE_DIRS: tuple[str, ...] = ("~/.gemini/antigravity-cli",)
+
+
+def _confined_agy_command(binary: str, request: GeminiCodeRequest) -> list[str]:
+    """The agy argv for ``request``, run under the macOS sandbox where the host has one.
+
+    agy's own ``--sandbox`` restricts its terminal but not where a command writes, so lionagi
+    confines the whole process the way it confines the API-route tools: writes only under the
+    working directory, the uv cache, the temporary directory and ``_AGY_STATE_DIRS``; network on,
+    since the CLI talks to its service; pseudo-terminals allowed for its shell tool. On a host
+    without the sandbox a ``yolo`` request is refused, since it would run commands unconfined,
+    and any other request runs as before with agy's own flags.
+    """
+    from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
+
+    if not seatbelt_available():
+        if request.yolo:
+            raise ConfigurationError(
+                "gemini-cli with yolo needs the macOS sandbox (/usr/bin/sandbox-exec) to keep its "
+                "commands inside the working directory, and this host has none; run without yolo"
+            )
+        return [binary, *request.as_cmd_args()]
+    state = []
+    for directory in _AGY_STATE_DIRS:
+        path = Path(os.path.expanduser(directory))
+        path.mkdir(parents=True, exist_ok=True)
+        state.append(path)
+    policy = SeatbeltPolicy.for_workspace(request.cwd(), network=True, extra_roots=state, pty=True)
+    return policy.wrap([binary, *request._cmd_args(native_sandbox=False)])
+
 
 log = logging.getLogger("antigravity-cli")
 
@@ -475,6 +509,15 @@ class GeminiCodeRequest(BaseModel):
 
     def as_cmd_args(self) -> list[str]:
         """Build the argv for a headless `agy` print-mode invocation."""
+        return self._cmd_args(native_sandbox=True)
+
+    def _cmd_args(self, *, native_sandbox: bool) -> list[str]:
+        """The argv; ``native_sandbox`` False leaves out agy's ``--sandbox``.
+
+        The spawn path runs agy under lionagi's own sandbox where the host has one, and macOS
+        refuses a second sandbox inside the first (``sandbox_apply: Operation not permitted``),
+        so the flag is left out there; lionagi's sandbox is the confinement.
+        """
         args: list[str] = [
             "-p",
             self.full_prompt(),
@@ -485,7 +528,7 @@ class GeminiCodeRequest(BaseModel):
         ]
         for directory in self.include_directories:
             args += ["--add-dir", str(directory)]
-        if self.sandbox or self.workload == "light":
+        if native_sandbox and (self.sandbox or self.workload == "light"):
             args.append("--sandbox")
         if self.yolo:
             args.append("--dangerously-skip-permissions")
@@ -512,11 +555,12 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
             "Antigravity CLI 'agy' not found. Install it and sign in "
             "(it installs to ~/.local/bin/agy); run `agy` once to authenticate."
         )
-    cmd = [AGY_CLI, *request.as_cmd_args()]
+    workspace = request.cwd()
+    cmd = _confined_agy_command(AGY_CLI, request)
     # agy resolves relative --add-dir entries against process cwd (no '-C' flag).
     # Default stdin DEVNULL — print mode reads nothing from stdin.
     async with contextlib.aclosing(
-        ndjson_from_cli(cmd, cwd=request.cwd(), engine="gemini", workload=request.workload)
+        ndjson_from_cli(cmd, cwd=workspace, engine="gemini", workload=request.workload)
     ) as stream:
         async for obj in stream:
             yield obj

@@ -67,6 +67,10 @@ _NETWORK_POLICY = """(allow network-outbound)
 
 # Runs as `python -I -S -c`: no site, no user or script directory on sys.path. O_NOFOLLOW keeps the
 # editor's refusal to write through a symlink in the child that does the write.
+#: The pseudo-terminal devices a CLI's shell tool opens for each command it runs.
+_PTY_POLICY = """(allow file-read* file-write* file-ioctl (regex #"^/dev/ttys[0-9]+$"))
+"""
+
 _WRITE_CHILD = """import os, sys
 path = sys.argv[1]
 try:
@@ -118,6 +122,7 @@ class SeatbeltPolicy:
     writable_roots: tuple[str, ...]
     read_only: tuple[str, ...] = ()
     network: bool = False
+    pty: bool = False
 
     @classmethod
     def for_workspace(
@@ -125,21 +130,26 @@ class SeatbeltPolicy:
         workspace_root: str | Path,
         *,
         network: bool = False,
+        extra_roots: Sequence[str | Path] = (),
+        pty: bool = False,
         _command_env_names: frozenset[str] | None = None,
     ) -> SeatbeltPolicy:
-        """Writes to the workspace, the uv cache and the temporary directory; the workspace's
-        ``.git`` stays read-only, since a hook written there would run outside the sandbox."""
+        """Writes to the workspace, the uv cache, the temporary directory and ``extra_roots``;
+        the workspace's ``.git`` stays read-only, since a hook written there would run outside
+        the sandbox. ``pty`` lets the confined process open pseudo-terminals, which a CLI's
+        shell tool needs to run a command."""
         workspace = Path(workspace_root).expanduser().resolve()
         roots: list[str] = []
         for root in (
             workspace,
             _uv_cache_dir(_command_env_names=_command_env_names),
             Path(tempfile.gettempdir()),
+            *extra_roots,
         ):
             resolved = str(Path(root).expanduser().resolve())
             if resolved not in roots:
                 roots.append(resolved)
-        return cls(tuple(roots), (str(workspace / ".git"),), network)
+        return cls(tuple(roots), (str(workspace / ".git"),), network, pty)
 
     def profile(self) -> str:
         writes = "\n".join(
@@ -152,6 +162,8 @@ class SeatbeltPolicy:
         ]
         if self.network:
             parts.append(_NETWORK_POLICY)
+        if self.pty:
+            parts.append(_PTY_POLICY)
         return "".join(parts)
 
     def wrap(self, argv: Sequence[str]) -> list[str]:
