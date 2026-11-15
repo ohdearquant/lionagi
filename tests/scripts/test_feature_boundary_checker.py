@@ -1,10 +1,13 @@
 """Static inventory and manifest validation tests."""
 
 import json
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from lionagi import _moved
 from scripts import build_feature_boundaries as builder
 from scripts import check_feature_boundaries as checker
 
@@ -275,6 +278,53 @@ def test_target_notes_use_recorded_destinations_only():
     assert builder.ADDITIONAL_TARGETS["lionhub.serve.cli.orchestrate"] == [
         "lionhub.orchestration.flow.parsing"
     ]
+
+
+def test_adr_0139_step_3_destinations_match_moves_or_target_rules():
+    root = builder.ROOT
+    adr = root / "docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md"
+    _, heading, d2 = adr.read_text(encoding="utf-8").partition("\n### D2 — ")
+    assert heading, "ADR-0139 D2 heading is missing"
+    _, header, table = d2.partition("\n### ")[0].partition("| Step-3 destination | Scope |\n")
+    assert header, "ADR-0139 D2 whole-module table is missing"
+    separator, *rows = table.partition("\n\n")[0].splitlines()
+    assert separator == "| --- | --- | --- |" and rows, "ADR-0139 D2 table has no data rows"
+
+    tracked = set(
+        subprocess.check_output(
+            ["git", "ls-files", "-z", "--", "lionagi", "lionhub/src/lionhub"],
+            cwd=root,
+            encoding="utf-8",
+        ).split("\0")
+    )
+    seen = set()
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|", 2)]
+        assert len(cells) == 3, f"invalid ADR-0139 D2 row: {row}"
+        source, destination, _ = cells
+        path = re.match(r"`(lionagi/[\w/]+\.py)(?::[^`]+)?`(?:\s|$)", source)
+        target = re.fullmatch(r"`(lionhub(?:\.\w+)+)`", destination)
+        assert path and target, f"invalid ADR-0139 D2 source or destination: {row}"
+        original, expected = path[1], target[1]
+        old = original.removesuffix(".py").replace("/", ".")
+        assert old not in seen, f"duplicate ADR-0139 D2 source: {old}"
+        seen.add(old)
+
+        destinations = [move.new for move in _moved.MOVED if move.old == old]
+        if destinations:
+            assert destinations == [expected], f"{old}: ADR-0139 D2 requires {expected} in MOVED"
+            target_path = Path("lionhub/src", *expected.split("."))
+            assert any(
+                file.as_posix() in tracked and (root / file).is_file()
+                for file in (target_path.with_suffix(".py"), target_path / "__init__.py")
+            ), f"{expected}: ADR-0139 D2 destination file is missing or untracked"
+        else:
+            assert original in tracked and (root / original).is_file(), (
+                f"{old}: ADR-0139 D2 needs an exact MOVED entry or a tracked original file"
+            )
+            assert builder.TARGET_RULES.get(old) == expected, (
+                f"{old}: ADR-0139 D2 requires an exact TARGET_RULES entry for {expected}"
+            )
 
 
 def test_committed_inventory_matches_generator_and_rejects_hand_edit(tmp_path):
