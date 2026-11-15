@@ -1086,10 +1086,11 @@ Apply it to explicit and age session pruning, CLI session pruning, run
 pruning, mirror absorption, and schedule cascades. Resolve the entire deletion
 set against `plays.session_id`, invocation sessions, and the schedule run's
 invocation and its sessions. Use the consumer's resolution rule. For the
-settings consumer, a session with a null project cannot resolve an
-invocation or a schedule run through that invocation. Preserve the existing
-handling of multiple distinct projects
-(`lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::_project_for_transition`).
+project-gated settings consumer at that cutover, a session with a null
+project could not resolve an invocation or a schedule run through that
+invocation. Multiple distinct projects made the context ambiguous. Global
+replay reports these cases as post-acknowledgment diagnostics
+(`lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::_global_context_diagnostics`).
 Stabilize every surviving link used to prove resolution through the write
 boundary. Serialize link creation, reparenting, detachment and project changes
 with that check, or retain affected candidates whose survival cannot be

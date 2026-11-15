@@ -114,13 +114,13 @@ async def test_replay_is_off_by_default_and_the_push_still_runs(tmp_path, monkey
 @pytest.mark.parametrize(
     ("projects", "succeeds", "diagnostic"),
     [
-        pytest.param((), True, "no_session", id="no-session-success"),
-        pytest.param((), False, "no_session", id="no-session-failure"),
-        pytest.param(("alpha", "beta"), True, "ambiguous_project", id="ambiguous-success"),
-        pytest.param(("alpha", "beta"), False, "ambiguous_project", id="ambiguous-failure"),
+        pytest.param((), True, "context_no_session", id="no-session-success"),
+        pytest.param((), False, "context_no_session", id="no-session-failure"),
+        pytest.param(("alpha", "beta"), True, "context_ambiguous_project", id="ambiguous-success"),
+        pytest.param(("alpha", "beta"), False, "context_ambiguous_project", id="ambiguous-failure"),
         pytest.param(("alpha",), True, None, id="resolved-success"),
         pytest.param(("alpha",), False, None, id="resolved-failure"),
-        pytest.param((None,), True, "null_project", id="null-project-success"),
+        pytest.param((None,), True, "context_null_project", id="null-project-success"),
         pytest.param(("alpha",), True, "context_read_failure", id="context-read-failure"),
     ],
 )
@@ -227,14 +227,61 @@ async def test_replay_delivers_global_notification_independently_of_context(
     if diagnostic == "context_read_failure":
         assert ack_at_context_read == [True]
 
+    summary = _logged_summary(caplog)
+    assert summary["attempted"] == 1
+    assert summary["failed"] == int(not succeeds)
+    assert summary["not_applicable"] == 0
+    for label in (
+        "context_no_session",
+        "context_ambiguous_project",
+        "context_null_project",
+        "context_read_failure",
+        "context_budget_exhausted",
+    ):
+        assert summary[label] == int(label == diagnostic)
+
+
+def _logged_summary(caplog):
     (summary,) = [
         record.args
         for record in caplog.records
         if record.name == terminal.logger.name
         and record.msg == "Terminal notification reconciliation: %s"
     ]
-    assert summary["attempted"] == 1
-    assert summary["failed"] == int(not succeeds)
-    assert summary["not_applicable"] == 0
-    for label in ("no_session", "ambiguous_project", "null_project", "context_read_failure"):
-        assert summary.get(label, 0) == int(label == diagnostic)
+    return summary
+
+
+@pytest.mark.asyncio
+async def test_replay_context_summary_preserves_reconciler_outcomes(tmp_path, monkeypatch, caplog):
+    store = tmp_path / "state.db"
+    monkeypatch.setattr(
+        state_db_mod,
+        "settings",
+        state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": f"sqlite:///{store}"}),
+    )
+    monkeypatch.setattr(scheduler_settings, "TERMINAL_RECONCILE_ENABLED", True)
+    monkeypatch.setattr(terminal, "_reconciler", None)
+    monkeypatch.setattr(terminal, "_reconciler_url", None)
+    async with StateDB(store):
+        pass
+
+    async def run_pass(self, db, *, observe_outcome):
+        row = {"entity_type": "session", "entity_id": "missing"}
+        await observe_outcome(row, db, 1)
+        await observe_outcome(row, db, 0)
+        return {"no_session": 3, "ambiguous_project": 4, "acknowledged": 1}
+
+    monkeypatch.setattr(terminal.TerminalReconciler, "run_pass", run_pass)
+    with caplog.at_level("INFO", logger=terminal.logger.name):
+        assert await terminal.run_terminal_reconciliation() == 1
+
+    assert _logged_summary(caplog) == {
+        "acknowledged": 1,
+        "no_session": 3,
+        "ambiguous_project": 4,
+        "context_no_session": 1,
+        "context_ambiguous_project": 0,
+        "context_null_project": 0,
+        "context_read_failure": 0,
+        "context_budget_exhausted": 1,
+    }

@@ -1215,6 +1215,7 @@ async def test_cancelled_reconciliation_reaps_notify_group_without_ack(tmp_path,
     from uuid import uuid4
 
     from lionagi.state.db import StateDB
+    from lionagi.state.lifecycle import settings_delivery
     from lionagi.state.lifecycle.deliveries import is_acknowledged
     from lionagi.state.lifecycle.reconciler import TerminalReconciler
     from lionhub.orchestration.scheduler import terminal_reconciliation
@@ -1224,9 +1225,9 @@ async def test_cancelled_reconciliation_reaps_notify_group_without_ack(tmp_path,
         StateDB(tmp_path / "state.db") as db,
     ):
         monkeypatch.setattr(
-            terminal_reconciliation,
-            "load_settings",
-            lambda **_: {
+            settings_delivery,
+            "load_global_settings_layer",
+            lambda: {
                 "notify": {"on_terminal": {"adapter": {"kind": "exec", "argv": list(group.argv)}}}
             },
         )
@@ -1248,7 +1249,7 @@ async def test_cancelled_reconciliation_reaps_notify_group_without_ack(tmp_path,
         consumer = terminal_reconciliation.CONSUMER_NAME
         reconciler = TerminalReconciler(
             consumer,
-            terminal_reconciliation._prepare_settings_delivery,
+            terminal_reconciliation.prepare_global_settings_delivery,
             timeout=2 * _NOTIFY_DEADMAN,
         )
         delivery = asyncio.create_task(reconciler.run_pass(db))

@@ -107,7 +107,7 @@ async def test_context_lookup_occurs_only_after_delivery(monkeypatch, mode):
     assert (
         labels
         == {
-            "never": ["context_read_failure"],
+            "never": ["context_budget_exhausted"],
             "error": ["context_read_failure"],
             "fast": ["null_project"],
         }[mode]
@@ -129,7 +129,7 @@ async def test_cancellation_resistant_diagnostic_remains_owned_until_released():
         assert not task.done()
         db.release.set()
         await asyncio.wait_for(task, 1)
-        assert labels == ["context_read_failure"]
+        assert labels == ["context_budget_exhausted"]
     finally:
         db.release.set()
         await asyncio.gather(task, return_exceptions=True)
@@ -151,12 +151,12 @@ async def test_direct_cancellation_of_diagnostic_propagates():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("budget", [0, -1])
-async def test_no_remaining_diagnostic_budget_reports_failure_once_without_read(budget):
+async def test_no_remaining_diagnostic_budget_reports_exhaustion_once_without_read(budget):
     db, labels = ContextDB("never"), []
     await service.observe_global_context_after_ack(
         _row(), db, labels.append, remaining_seconds=budget
     )
-    assert db.calls == 0 and labels == ["context_read_failure"]
+    assert db.calls == 0 and labels == ["context_budget_exhausted"]
 
 
 @pytest.mark.asyncio
