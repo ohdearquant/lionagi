@@ -88,7 +88,9 @@ async def _initialize(server: dict, project: Path, home: Path) -> str:
     return actors[0]
 
 
-def _boot_actor(kkernel: str, root: Path, profile: str, *, with_flag: bool) -> str:
+def _boot_actor(
+    kkernel: str, root: Path, profile: str, *, with_flag: bool, stand_in: str | None
+) -> str:
     home = root / "home"
     home.mkdir(parents=True)
     project = root / "project"
@@ -105,10 +107,13 @@ def _boot_actor(kkernel: str, root: Path, profile: str, *, with_flag: bool) -> s
         servers = attribute_khive_servers({"khive": server}, actor)
         assert servers is not None
         server = servers["khive"]
+    if stand_in is not None:
+        # Match the kkernel command during attribution, then run the test fixture.
+        server = {**server, "command": stand_in}
     return asyncio.run(_initialize(server, project, home))
 
 
-def _run_cases(kkernel: str, root: Path) -> dict[str, str]:
+def _run_cases(kkernel: str, root: Path, *, stand_in: str | None = None) -> dict[str, str]:
     cases = (
         ("worker", "fixture-worker", True, "agent:fixture-worker"),
         ("reviewer", "fixture-reviewer", True, "agent:fixture-reviewer"),
@@ -116,7 +121,7 @@ def _run_cases(kkernel: str, root: Path) -> dict[str, str]:
     )
     observed = {}
     for case, profile, with_flag, expected in cases:
-        actor = _boot_actor(kkernel, root / case, profile, with_flag=with_flag)
+        actor = _boot_actor(kkernel, root / case, profile, with_flag=with_flag, stand_in=stand_in)
         assert actor == expected, f"{case}: expected {expected}, got {actor}"
         observed[case] = actor
     return observed
@@ -124,8 +129,8 @@ def _run_cases(kkernel: str, root: Path) -> dict[str, str]:
 
 def test_khive_actor_boot_harness_with_stand_in(tmp_path, monkeypatch):
     monkeypatch.setenv("KHIVE_EMAIL_EXTERNAL_SENDERS", "synthetic-parent-setting")
-    kkernel = tmp_path / "kkernel"
-    kkernel.write_text(
+    stand_in = tmp_path / "kkernel-stand-in"
+    stand_in.write_text(
         f"#!{sys.executable}\n"
         """import json
 import os
@@ -150,8 +155,8 @@ print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {}}), flush=T
 """,
         encoding="utf-8",
     )
-    kkernel.chmod(0o700)
-    assert _run_cases(str(kkernel), tmp_path) == {
+    stand_in.chmod(0o700)
+    assert _run_cases("kkernel", tmp_path, stand_in=str(stand_in)) == {
         "worker": "agent:fixture-worker",
         "reviewer": "agent:fixture-reviewer",
         "env-only": _PROJECT_ACTOR,
