@@ -19,8 +19,8 @@ from pydantic import BaseModel, Field
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 from lionhub.orchestration.scheduler import subprocess as _subprocess
+from lionhub.serve.daemon.routes import studio_route
 
-from ..registry import studio_route
 from . import launches as _launches
 from .schedules import (
     _svc_validate_action_model,

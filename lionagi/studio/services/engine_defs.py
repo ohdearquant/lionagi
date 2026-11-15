@@ -23,11 +23,15 @@ from lionagi.state.db import (
     _update_engine_def_in_tx,
     state_db_known_absent,
 )
+from lionhub.serve.daemon.services.engine_lookup import (  # noqa: F401
+    get_engine_def,
+    get_engine_def_by_name,
+    is_registered_engine_kind,
+)
 
 from ..registry import studio_route
 
 KIND_META = _engine_registry.KIND_META
-is_registered_engine_kind = _engine_registry._is_registered_engine_kind
 
 
 class NameConflictError(Exception):
@@ -143,20 +147,6 @@ async def list_engine_defs(
         return []
     async with StateDB() as db:
         return await db.list_engine_defs(kind=kind, limit=limit, offset=offset)
-
-
-async def get_engine_def(def_id: str) -> dict[str, Any] | None:
-    if state_db_known_absent():
-        return None
-    async with StateDB() as db:
-        return await db.get_engine_def(def_id)
-
-
-async def get_engine_def_by_name(name: str) -> dict[str, Any] | None:
-    if state_db_known_absent():
-        return None
-    async with StateDB() as db:
-        return await db.get_engine_def_by_name(name)
 
 
 async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:

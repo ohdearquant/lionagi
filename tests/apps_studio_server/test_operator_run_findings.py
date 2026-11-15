@@ -435,8 +435,8 @@ async def test_run_findings_oversized_artifact_contract_is_capped(db_path):
     """A multi-megabyte artifact contract must not make the serialized
     response exceed the same aggregate bound every other findings section
     honors -- redaction alone is not a size bound."""
-    from lionagi.studio.operator.redact import ARTIFACT_BYTE_CAP
     from lionagi.studio.operator.run_findings import run_findings
+    from lionhub.serve.daemon.services.redact import ARTIFACT_BYTE_CAP
 
     sid = str(uuid.uuid4())
     # Many small strings rather than one giant string: redact_arguments()
@@ -679,8 +679,8 @@ async def test_run_findings_bearer_and_assignment_secrets_in_free_text_are_redac
 
 
 async def test_run_findings_per_branch_item_cap(db_path):
-    from lionagi.studio.operator.redact import PER_KIND_ITEM_CAP
     from lionagi.studio.operator.run_findings import run_findings
+    from lionhub.serve.daemon.services.redact import PER_KIND_ITEM_CAP
 
     sid = str(uuid.uuid4())
     await seed_session(db_path, session_id=sid, status="completed")
@@ -868,8 +868,8 @@ async def test_run_findings_reports_the_message_window_it_did_not_load(db_path):
     window and the largest held 48,123 messages, of which the tool returned 50
     and called the result complete.
     """
-    from lionagi.studio.operator.redact import PER_KIND_ITEM_CAP
     from lionagi.studio.operator.run_findings import run_findings
+    from lionhub.serve.daemon.services.redact import PER_KIND_ITEM_CAP
 
     sid = str(uuid.uuid4())
     bid = f"{sid}-b1"

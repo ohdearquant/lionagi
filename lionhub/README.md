@@ -93,6 +93,7 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.studio.services.signals` | `lionhub.serve.daemon.services.signals` |
 | `lionagi.studio.services.run_view` | `lionhub.serve.daemon.services.run_view` |
 | `lionagi.studio.services.task_applications` | `lionhub.serve.daemon.services.task_applications` |
+| `lionagi.studio.operator.redact` | `lionhub.serve.daemon.services.redact` |
 
 ## Tests
 

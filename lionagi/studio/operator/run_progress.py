@@ -21,8 +21,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.state.session_naming import resolve_display_name
-
-from .redact import MAX_CANDIDATES, public_project, scrub_text
+from lionhub.serve.daemon.services.redact import MAX_CANDIDATES, public_project, scrub_text
 
 # A full canonical UUID (36 characters, 8-4-4-4-12 hex). A reference in this
 # form identifies at most one row and cannot enumerate anything, which is what

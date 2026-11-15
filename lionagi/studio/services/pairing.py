@@ -17,6 +17,7 @@ import os
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
+from lionhub.serve.daemon.routes import studio_route
 from lionhub.serve.daemon.settings import CORS_ORIGINS
 
 from ..launch_access import (
@@ -26,7 +27,6 @@ from ..launch_access import (
     redeem_pairing_grant,
     revoke_decision_capability,
 )
-from ..registry import studio_route
 
 
 class PairRequest(BaseModel):

@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lionagi.ln import compute_hash
+from lionhub.serve.daemon.services.redact import redact_arguments
 
-from .redact import redact_arguments
 from .types import OperatorEngineEvent, OperatorEngineTurn
 
 if TYPE_CHECKING:

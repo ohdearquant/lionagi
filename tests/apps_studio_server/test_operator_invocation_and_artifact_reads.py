@@ -367,7 +367,7 @@ async def test_a_secret_with_no_recognisable_shape_is_redacted_by_its_key(key):
     sibling.
     """
     from lionagi.studio.operator.application_mcp import _safe_content
-    from lionagi.studio.operator.redact import scrub_text
+    from lionhub.serve.daemon.services.redact import scrub_text
 
     # Premise, asserted rather than assumed: the pattern layer really does not
     # recognise this value. If a future pattern starts catching it, this fails
@@ -419,7 +419,7 @@ async def test_a_field_name_redacts_whatever_separator_it_is_spelled_with(key):
     spaced spellings leaking exactly as before.
     """
     from lionagi.studio.operator.application_mcp import _safe_content
-    from lionagi.studio.operator.redact import scrub_text
+    from lionhub.serve.daemon.services.redact import scrub_text
 
     # Same premise as the underscored arm: the pattern layer must not be what
     # catches this, or the test would pass for the wrong reason.
@@ -478,7 +478,8 @@ async def test_token_shaped_mapping_keys_are_scrubbed_on_both_read_paths():
     tool arguments and manifests must apply the same rule or the latter path
     leaks the token verbatim.
     """
-    from lionagi.studio.operator import application_mcp, redact
+    from lionagi.studio.operator import application_mcp
+    from lionhub.serve.daemon.services import redact
 
     secret_key = "ghp_abcdefghijklmnopqrstuvwxyz123456"
     expected = {"[redacted]": "visible value"}
@@ -522,7 +523,7 @@ def _every_name_the_secret_rule_knows() -> list[str]:
     the corpus means a name added to the vocabulary is covered by the same
     commit that adds it.
     """
-    from lionagi.studio.operator import redact
+    from lionhub.serve.daemon.services import redact
 
     return sorted(set(redact._SECRET_KEY_MARKERS) | redact._EXACT_SECRET_FIELD_NAMES)
 
@@ -564,7 +565,8 @@ async def test_every_name_the_secret_rule_knows_reads_the_same_on_both_paths(spe
     if either caller grows its own copy of the rule again, which is how they
     came apart the first time.
     """
-    from lionagi.studio.operator import application_mcp, redact
+    from lionagi.studio.operator import application_mcp
+    from lionhub.serve.daemon.services import redact
 
     assert redact._is_secret_key(spelling) is True
     assert application_mcp._secret_field(spelling) is True
@@ -580,7 +582,8 @@ async def test_a_name_that_merely_contains_a_marker_is_still_served(name):
     a caller reads, which is why the exact-match names are compared for equality
     against the folded name rather than searched for inside it.
     """
-    from lionagi.studio.operator import application_mcp, redact
+    from lionagi.studio.operator import application_mcp
+    from lionhub.serve.daemon.services import redact
 
     assert redact._is_secret_key(name) is False
     assert application_mcp._secret_field(name) is False

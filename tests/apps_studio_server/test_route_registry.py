@@ -321,6 +321,7 @@ def test_route_loading_uses_the_shared_importer_in_registration_order(
 ):
     from lionagi.ln import import_module
     from lionagi.studio import registry
+    from lionhub.serve.daemon import routes
 
     name, root = route_import_package
     for leaf in ("first", "second"):
@@ -332,15 +333,20 @@ def test_route_loading_uses_the_shared_importer_in_registration_order(
             encoding="utf-8",
         )
     targets = (name + ".first", name + ".second")
-    monkeypatch.setattr(registry, "_STUDIO_ROUTE_MODULES", targets)
-    bound_importer = registry.import_module
+    monkeypatch.setattr(registry, "DAEMON_ROUTE_MODULES", ())
+    monkeypatch.setattr(
+        registry,
+        "_STUDIO_ROUTE_MODULES",
+        tuple(routes.RouteModule(i, t) for i, t in enumerate(targets)),
+    )
+    bound_importer = routes.import_module
     calls = []
 
     def observed_import(module_name, *args, **kwargs):
         calls.append((module_name, args, kwargs))
         return import_module(module_name, *args, **kwargs)
 
-    monkeypatch.setattr(registry, "import_module", observed_import)
+    monkeypatch.setattr(routes, "import_module", observed_import)
     registry.load_studio_route_modules()
     registry.load_studio_route_modules()
 
@@ -361,6 +367,7 @@ def test_route_import_failure_preserves_diagnostics_and_stops_later_registration
     import types
 
     from lionagi.studio import registry
+    from lionhub.serve.daemon import routes
 
     name, root = route_import_package
 
@@ -386,8 +393,14 @@ def test_route_import_failure_preserves_diagnostics_and_stops_later_registration
         )
     target = name + ".broken"
     (root / "broken.py").write_text("from .state import error\nraise error\n", encoding="utf-8")
+    monkeypatch.setattr(registry, "DAEMON_ROUTE_MODULES", ())
     monkeypatch.setattr(
-        registry, "_STUDIO_ROUTE_MODULES", (name + ".before", target, name + ".after")
+        registry,
+        "_STUDIO_ROUTE_MODULES",
+        tuple(
+            routes.RouteModule(i, m)
+            for i, m in enumerate((name + ".before", target, name + ".after"))
+        ),
     )
 
     with pytest.raises(ImportError) as caught:
