@@ -678,21 +678,22 @@ def capture_machine() -> list[dict[str, Any]]:
 
 # Fresh-process import-laziness trace: self-contained subprocess payload that
 # imports only the named seed via `load_cli_command`, then reports which
-# *other* seeds' modules leaked in, whether the HTTP registry got realized as
-# a side effect, and which seed(s) ended up in `_cli_realized`. Comparing
+# *other* seeds' modules leaked in, whether the Studio route registry got
+# realized as a side effect, and which seed(s) ended up in `_cli_realized`. Comparing
 # against modules belonging to other seeds catches an adapter loaded as a
 # side effect of selecting a different command. The comparison takes every
 # newly imported module, whatever its package: seed modules live under
 # lionhub, so a lionagi-only filter would see no leak at all.
 _IMPORT_TRACE_SCRIPT = (
     "import sys, json\n"
-    "from lionagi._auto import _http\n"
     "from lionhub.serve.cli.catalog import load_cli_command, seed_for, iter_cli_seeds, _cli_realized\n"
     "name = sys.argv[1]\n"
     "seed = seed_for(name)\n"
     "other_modules = {s.module for s in iter_cli_seeds() if s.module != seed.module}\n"
     "before = set(sys.modules)\n"
     "load_cli_command(seed)\n"
+    "registry = sys.modules.get('lionagi.studio.registry')\n"
+    "routes = len(registry._ROUTES) if registry is not None else 0\n"
     "after = set(sys.modules)\n"
     "new_lionagi = sorted(m for m in (after - before) if m.startswith('lionagi.'))\n"
     "leaked = sorted(other_modules & (after - before))\n"
@@ -702,8 +703,8 @@ _IMPORT_TRACE_SCRIPT = (
     "    'new_lionagi_module_count': len(new_lionagi),\n"
     "    'other_seed_modules_imported': leaked,\n"
     "    'other_seed_modules_imported_count': len(leaked),\n"
-    "    'http_registry_realized': len(_http) > 0,\n"
-    "    'http_registry_count': len(_http),\n"
+    "    'http_registry_realized': routes > 0,\n"
+    "    'http_registry_count': routes,\n"
     "    'cli_realized_names': sorted(_cli_realized.keys()),\n"
     "}\n"
     "print(json.dumps(result))\n"
