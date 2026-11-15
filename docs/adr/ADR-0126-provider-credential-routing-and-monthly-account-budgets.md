@@ -1767,11 +1767,14 @@ further retry within the existing retry budget and reservation rules.
 This is the only exception to Decision 4's sentence that cancellation does not
 retry or move the request to another account. The attempt never observes the
 cancellation, so the retry is the deadline's or the failure's own. That retry
-follows the reservation rules for any deadline 529. A cleanup error that clears
-every link to a cancellation from the caller's scope can likewise reach the
-caller as that ordinary error when no unshielded checkpoint follows before the
-error leaves the caller's scope; the scope's cancellation is delivered again at
-any later checkpoint, so it never causes a retry.
+follows the reservation rules for any deadline 529. An ordinary error whose chain holds no link to a
+cancellation from the caller's scope, because cleanup cleared the links or
+because that cancellation was not yet delivered, can likewise reach the caller
+as that ordinary error when no unshielded checkpoint follows before the error
+leaves the caller's scope; the scope's cancellation is delivered again at any
+later checkpoint, so it never causes a second transport request. A reservation
+a retry made before that checkpoint follows the existing rule for cancellation
+before the response status is known (Decision 4).
 
 <!-- markdownlint-disable-next-line MD029 -->
 4. Keep D6's typed evidence requirement and Amendment 5's accounting shield.
@@ -1819,7 +1822,8 @@ the deadline's or the failure's own. That retry follows the reservation rules
 for any deadline 529. When cleanup clears every link to a cancellation from the
 caller's scope and no unshielded checkpoint follows before the error leaves that
 scope, the caller receives the ordinary error; the scope's cancellation is
-delivered again at any later checkpoint, so it never causes a retry.
+delivered again at any later checkpoint, so it never causes a second
+transport request.
 
 ### Verification
 
@@ -1845,9 +1849,11 @@ delivered again at any later checkpoint, so it never causes a retry.
   cancellation that reaches the caller is the same instance. The AnyIO caller
   scope catches its cancellation. With the caller's scope cancelled after the
   read deadline delivers and before it exits, raise a replacing error that keeps
-  the deadline's cancellation in its chain. Verify that what reaches the caller
-  is the caller scope's cancellation, caught by that scope, and that one
-  accounting call is made.
+  only the deadline's cancellation in its chain, and let an unshielded
+  checkpoint follow inside the caller's scope before the error leaves it.
+  Verify that what reaches the caller is the caller scope's cancellation, caught
+  by that scope, and that one accounting call is made. Without that checkpoint
+  the case is rule 6's.
 - Rule 5. Deliver a partial body containing a sentinel before cancelling.
   Verify the sentinel stays out of the propagated exception, chain, adapter
   locals, logs and ledger, including on rule 6 paths. Enable capture and verify
