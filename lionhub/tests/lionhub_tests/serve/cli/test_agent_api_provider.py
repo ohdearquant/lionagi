@@ -1826,7 +1826,7 @@ async def test_agent_effort_reaches_anthropic_wire_payload(
             assert payload["output_config"]["effort"] == expected_effort
     assert leg.spec.effort == expected_effort
     assert leg.spec._effort_origin == origin
-    assert leg.spec._effort_already_applied is True
+    assert leg.spec._effort_in_supplied_model is True
 
 
 @pytest.mark.asyncio

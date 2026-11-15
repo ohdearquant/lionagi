@@ -137,8 +137,10 @@ async def test_create_agent_never_matches_the_role_name(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("serialized", [False, True], ids=["imodel", "serialized"])
 async def test_create_agent_confines_a_caller_supplied_claude_model_under_the_profile_name(
     monkeypatch,
+    serialized,
 ):
     from lionagi import iModel
 
@@ -147,10 +149,38 @@ async def test_create_agent_confines_a_caller_supplied_claude_model_under_the_pr
     assert "child_sandbox" not in model.endpoint.config.kwargs
     spec = AgentSpec.compose("implementer")
     branch = await create_agent(
-        spec, load_settings=False, chat_model=model, sandbox_profile="builder"
+        spec,
+        load_settings=False,
+        chat_model=model.to_dict() if serialized else model,
+        sandbox_profile="builder",
     )
+    if serialized:
+        assert branch.chat_model is not branch.parse_model
     policy = branch.chat_model.endpoint.config.kwargs["child_sandbox"]
     assert set(child_sandbox.DEFAULT_DENY_READ) - set(policy["deny_read"]) == {EXEMPT}
+    assert branch.parse_model.endpoint.config.kwargs["child_sandbox"] == policy
+
+
+@pytest.mark.asyncio
+async def test_create_agent_confines_the_effort_copy_without_changing_the_supplied_model():
+    from lionagi import iModel
+
+    model = iModel(provider="claude_code", model="sonnet", effort="low")
+    original_kwargs = model.endpoint.config.kwargs.copy()
+    branch = await create_agent(
+        AgentSpec.compose("implementer", effort="high"),
+        load_settings=False,
+        chat_model=model,
+        sandbox_profile="builder",
+    )
+
+    assert branch.chat_model is not model
+    expected = child_sandbox.resolve_child_sandbox("builder").to_dict()
+    for branch_model in (branch.chat_model, branch.parse_model):
+        kwargs = branch_model.endpoint.config.kwargs
+        assert kwargs["effort"] == "high"
+        assert kwargs["child_sandbox"] == expected
+    assert model.endpoint.config.kwargs == original_kwargs
 
 
 @pytest.mark.asyncio

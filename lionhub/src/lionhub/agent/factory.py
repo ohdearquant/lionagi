@@ -510,14 +510,6 @@ async def create_agent(
                 # stays contained.
                 if spec.contain_account_integrations:
                     chat_model.endpoint.config.kwargs["contain_account_integrations"] = True
-        if provider_key in _CLAUDE_PROVIDER_NAMES:
-            from .child_sandbox import resolve_child_sandbox
-
-            # Kept in the endpoint's config, so a clone or a restored model stays confined. A
-            # configuration error raises here: the agent is not built unconfined.
-            chat_model.endpoint.config.kwargs["child_sandbox"] = resolve_child_sandbox(
-                sandbox_profile
-            ).to_dict()
         branch_kwargs["chat_model"] = chat_model
 
     if log_config is not None:
@@ -527,7 +519,7 @@ async def create_agent(
     if (
         spec.effort
         and (supplied_model or not spec.model)
-        and not (supplied_model and getattr(spec, "_effort_already_applied", False))
+        and not (supplied_model and spec._effort_in_supplied_model)
     ):
         original = branch.chat_model
         origin = getattr(spec, "_effort_origin", "explicit")
@@ -544,15 +536,22 @@ async def create_agent(
             branch.parse_model = resolved
         if resolved is not original:
             branch.chat_model = resolved
-    if supplied_model:
-        from lionhub.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
 
-        if isinstance(getattr(chat_model, "endpoint", None), ClaudeCodeCLIEndpoint):
-            from .child_sandbox import resolve_child_sandbox
+    # Bind the sandbox after model deserialization and any effort copy, so the
+    # endpoints the branch runs keep the policy in their clone and restore config.
+    models = [branch.chat_model]
+    if branch.parse_model is not branch.chat_model:
+        models.append(branch.parse_model)
+    claude_endpoints = [
+        model.endpoint for model in models if isinstance(model.endpoint, ClaudeCodeCLIEndpoint)
+    ]
+    if claude_endpoints:
+        from .child_sandbox import resolve_child_sandbox
 
-            branch.chat_model.endpoint.config.kwargs["child_sandbox"] = resolve_child_sandbox(
-                sandbox_profile
-            ).to_dict()
+        policy = resolve_child_sandbox(sandbox_profile)
+        for endpoint in claude_endpoints:
+            endpoint.config.kwargs["child_sandbox"] = policy.to_dict()
     branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
 
     system_message = spec.build_system_message()

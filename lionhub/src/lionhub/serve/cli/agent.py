@@ -2274,7 +2274,7 @@ async def _run_agent(
                     )
                 # The CLI already prepared the request with the resolved effort.
                 object.__setattr__(spec, "_effort_origin", effort_origin)
-                object.__setattr__(spec, "_effort_already_applied", True)
+                object.__setattr__(spec, "_effort_in_supplied_model", True)
                 if profile is not None:
                     spec.khive_injection = getattr(profile, "khive_injection", None)
                     if api_launch is not None:

@@ -170,6 +170,21 @@ async def test_unset_effort_keeps_supplied_model_and_its_prepared_effort(sent_pa
 
 
 @pytest.mark.asyncio
+async def test_assigning_effort_replaces_the_prepared_effort(sent_payloads):
+    supplied = iModel(provider="openai", model=OPENAI_MODEL, reasoning_effort="low")
+    spec = AgentSpec.compose("implementer", effort="low")
+    object.__setattr__(spec, "_effort_in_supplied_model", True)
+    spec.effort = "high"
+
+    branch = await create_agent(spec, load_settings=False, chat_model=supplied)
+    await branch.chat_model.endpoint.call(CHAT_REQUEST)
+
+    (payload,) = sent_payloads
+    assert payload["reasoning_effort"] == "high"
+    assert supplied.endpoint.config.kwargs["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("supplied", [True, False], ids=["supplied-model", "configured-model"])
 async def test_unsupported_explicit_effort_is_refused_before_request(
     sent_payloads, monkeypatch, supplied

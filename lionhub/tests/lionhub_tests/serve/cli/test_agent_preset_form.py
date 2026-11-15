@@ -550,7 +550,7 @@ async def test_coding_preset_keeps_claude_effort_in_the_prepared_request(
     spec = create_agent.await_args.args[0]
     assert spec.effort == effort
     assert spec._effort_origin == ("default" if effort is None else "explicit")
-    assert spec._effort_already_applied is True
+    assert spec._effort_in_supplied_model is True
 
 
 @pytest.mark.asyncio
