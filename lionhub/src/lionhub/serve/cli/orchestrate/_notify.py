@@ -108,16 +108,15 @@ def _legacy_argv_env_builders(payload_fn, *, invocation_id: str | None):
     return _argv_fn, _env_fn
 
 
-def _write_final_response(run: RunDir, text: str) -> tuple[str, bool, str]:
-    data = text.encode("utf-8")
-    path = run.write_notify_final_response(data)
-    truncated = len(data) > _FINAL_RESPONSE_MAX_BYTES
-    # The source bytes are valid UTF-8. Only an incomplete last character
-    # can be dropped when decoding the truncated prefix.
-    preview = (
-        data[:_FINAL_RESPONSE_MAX_BYTES].decode("utf-8", errors="ignore") if truncated else text
-    )
-    return preview, truncated, str(path)
+def _response_bytes_and_preview(text: str) -> tuple[bytes, str, bool]:
+    # A lone surrogate has no UTF-8 encoding; it becomes "?" in both the
+    # file and the preview so neither can fail to encode.
+    data = text.encode("utf-8", errors="replace")
+    if len(data) <= _FINAL_RESPONSE_MAX_BYTES:
+        return data, data.decode("utf-8"), False
+    # The bytes are valid UTF-8. Only an incomplete last character can be
+    # dropped when decoding the truncated prefix.
+    return data, data[:_FINAL_RESPONSE_MAX_BYTES].decode("utf-8", errors="ignore"), True
 
 
 def _build_legacy_handler(
@@ -161,20 +160,23 @@ def _build_legacy_handler(
         return None
 
     async def _deliver(envelope: RunTerminalEnvelope) -> None:
-        fields: tuple[str | None, bool, str | None] | None = (None, False, None)
+        fields: tuple[str | None, bool, str | None] = (None, False, None)
         if run is not None and final_response is not None:
             text = final_response()
             if text is not None:
+                data, preview, truncated = _response_bytes_and_preview(text)
+                path: str | None = None
                 try:
-                    fields = await _run_sync(
-                        _write_final_response, run, text, abandon_on_cancel=True
+                    written = await _run_sync(
+                        run.write_notify_final_response, data, abandon_on_cancel=True
                     )
-                except (OSError, UnicodeError):
-                    fields = None
-        if fields is None:
-            logger.warning("Could not write the final response for the run notifier")
-            on_rejection("final_response_write_failed")
-            return
+                    path = str(written)
+                except OSError:
+                    # The notification is the run's outcome channel, so it still
+                    # goes out; a null path tells the notifier the file is missing.
+                    # The response text stays out of the log.
+                    logger.warning("Could not write the final response file for the run notifier")
+                fields = (preview, truncated, path)
         token = response_fields.set(fields)
         try:
             if is_coro_func(handler):

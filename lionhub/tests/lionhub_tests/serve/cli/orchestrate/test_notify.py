@@ -167,6 +167,48 @@ async def test_final_response_matches_in_every_notify_transport(
     assert stat.S_IMODE(mode) == 0o600
 
 
+async def test_unwritable_response_file_still_notifies_with_a_null_path(
+    monkeypatch, tmp_path: Path
+):
+    run = RunDir(
+        run_id="notify-response",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    run.ensure_state_dirs()
+    (run.state_root / "notify-final-response.txt").mkdir()
+    launch = []
+
+    async def spawn(argv, env, _marker):
+        launch.append(env["LIONAGI_NOTIFY_PAYLOAD"])
+        communicate = AsyncMock(return_value=(b"", b""))
+        return SimpleNamespace(communicate=communicate, returncode=0), None
+
+    monkeypatch.setattr(notify_settings, "_spawn_in_group", spawn)
+    await deliver_flow_notify_now(
+        override="capture-notify {payload}",
+        run=run,
+        entity_kind="invocation",
+        entity_id="inv-123",
+        invocation_id="inv-123",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=str(run.artifact_root),
+        cwd="/repo",
+        started_at=1.0,
+        final_response="the task failed: \ud800",
+        terminal_status="completed",
+        reason_code=RunReasons.COMPLETED_OK,
+        occurred_at=2.0,
+    )
+
+    [env_payload] = launch
+    payload = json.loads(env_payload)
+    assert payload["final_response"] == "the task failed: ?"
+    assert payload["final_response_truncated"] is False
+    assert payload["final_response_path"] is None
+
+
 async def test_payload_carries_reason_code_for_degraded_finalize(tmp_path: Path):
     """A `completed` run whose finalize step degraded must still notify
     `status="completed", exit_class="success"` (the primary work did

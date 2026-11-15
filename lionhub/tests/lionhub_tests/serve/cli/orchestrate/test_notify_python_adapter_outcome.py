@@ -91,24 +91,21 @@ async def test_python_adapter_reads_the_full_response_at_delivery(tmp_path, monk
     assert previous_target.read_text() == "original"
 
 
-async def test_final_response_write_failure_refuses_delivery(tmp_path, monkeypatch, caplog):
+async def test_final_response_write_failure_still_delivers(tmp_path, monkeypatch, caplog):
     run = _run(tmp_path)
     destination = run.state_root / "notify-final-response.txt"
     destination.mkdir()  # The atomic replacement must fail without changing this entry.
     launched = []
     secret = "PRIVATE_FINAL_RESPONSE_SENTINEL"
 
-    await _deliver(run, _install_adapter(monkeypatch, launched.append), final_response=secret)
+    with caplog.at_level(logging.WARNING):
+        await _deliver(run, _install_adapter(monkeypatch, launched.append), final_response=secret)
 
-    assert launched == []
+    assert len(launched) == 1
     assert destination.is_dir()
     assert list(run.state_root.glob(".notify-final-response.txt.*")) == []
-    assert json.loads(run.notify_outcome_path.read_text()) == {
-        "ok": False,
-        "exit_code": None,
-        "stderr_path": None,
-        "reason": "final_response_write_failed",
-    }
+    assert not run.notify_outcome_path.exists()
+    assert "Could not write the final response file" in caplog.text
     assert secret not in caplog.text
 
 

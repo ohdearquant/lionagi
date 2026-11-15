@@ -222,9 +222,8 @@ exceeds 4,096 UTF-8 bytes before JSON escaping, the preview ends on a complete
 character and `final_response_truncated` is true. The `final_response_path`
 field points to the full UTF-8 text in the run's state directory. The CLI
 atomically writes this owner-only file before invoking the notifier. If
-the write fails, the run records `final_response_write_failed` as the
-notification outcome reason. When
-the run has no final response, such as a fanout with unsynthesized worker
+the write fails, the notifier still runs with the preview and a null
+`final_response_path`. When the run has no final response, such as a fanout with unsynthesized worker
 results, `final_response` and `final_response_path` are null and
 `final_response_truncated` is false. `status` and `exit_class` still describe
 the run itself, including when the assistant reports that its task failed.

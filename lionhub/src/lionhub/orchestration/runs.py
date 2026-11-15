@@ -93,13 +93,23 @@ def active_run_id() -> str | None:
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
-    """Write *payload* to *path* so readers never see a partial file."""
+    """Write *payload* to *path* so readers never see a partial file.
+
+    A non-finite float is refused before anything is written: json.dumps would
+    emit the tokens ``NaN``/``Infinity``, which this process reads back happily
+    and every strict reader rejects.
+    """
     raise_if_non_finite(payload)
     _atomic_write_bytes(path, json.dumps(payload, indent=2).encode("utf-8"))
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Replace the destination with a new owner-only file on the same filesystem."""
+    """Replace *path* with a new owner-only file holding *data*.
+
+    The temp file is uniquely named and lives in the destination directory
+    (os.replace is only atomic within a filesystem), so concurrent writers
+    of the same target cannot corrupt each other's in-progress write.
+    """
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as fh:
