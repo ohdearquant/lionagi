@@ -685,6 +685,12 @@ def test_agent_routes_refuse_later_system_block(tmp_path, monkeypatch, method, u
             id="system-malformed-opener",
         ),
         pytest.param(
+            "--- lion_system: true\n---\nPrompt.\n",
+            True,
+            True,
+            id="system-marker-on-malformed-opener",
+        ),
+        pytest.param(
             "---invalid\nlion_system: true\nPrompt.\n",
             True,
             True,
