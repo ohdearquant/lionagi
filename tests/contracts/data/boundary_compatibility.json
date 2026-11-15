@@ -1614,8 +1614,14 @@
     "lionhub/src/lionhub/serve/daemon/services/artifact_verification.py": [
       "__all__ = (\"provisional_artifact_verification\", \"resolve_artifact_verification\")"
     ],
+    "lionhub/src/lionhub/serve/daemon/services/control_consumers.py": [
+      "__all__ = (\"session_has_control_consumer\",)"
+    ],
     "lionhub/src/lionhub/serve/daemon/services/redact.py": [
       "__all__ = (\n    \"MAX_CANDIDATES\",\n    \"PER_KIND_ITEM_CAP\",\n    \"PER_ITEM_TEXT_CAP\",\n    \"MESSAGE_BYTE_CAP\",\n    \"ARTIFACT_BYTE_CAP\",\n    \"public_project\",\n    \"scrub_text\",\n    \"fold_field_name\",\n    \"is_secret_field_name\",\n    \"known_secret_values\",\n    \"redact_scalar\",\n    \"redact_arguments\",\n    \"cap_by_bytes\",\n    \"cap_payload_by_bytes\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_tags_store.py": [
+      "__all__ = (\"add_tag\", \"remove_tag\", \"session_ids_with_tags\", \"tags_for_sessions\")"
     ],
     "lionhub/src/lionhub/serve/daemon/services/run_view.py": [
       "__all__ = (\n    \"build_outcome\",\n    \"build_run_view\",\n    \"build_run_view_for\",\n    \"exit_code_for_view\",\n    \"get_run_view\",\n    \"get_schedule_status_view\",\n    \"list_run_views\",\n)"
@@ -3260,7 +3266,6 @@
       "execute_steer_run_command",
       "pause_run",
       "release_run_pause",
-      "session_has_control_consumer",
       "steer_run"
     ],
     "lionagi/studio/operator/run_detail.py": [
@@ -3610,11 +3615,7 @@
     "lionagi/studio/services/run_tags.py": [
       "TagBody",
       "add_run_tag",
-      "add_tag",
-      "remove_run_tag",
-      "remove_tag",
-      "session_ids_with_tags",
-      "tags_for_sessions"
+      "remove_run_tag"
     ],
     "lionagi/studio/services/runs.py": [
       "get_run",
@@ -5024,6 +5025,9 @@
       "provisional_artifact_verification",
       "resolve_artifact_verification"
     ],
+    "lionhub/src/lionhub/serve/daemon/services/control_consumers.py": [
+      "session_has_control_consumer"
+    ],
     "lionhub/src/lionhub/serve/daemon/services/redact.py": [
       "cap_by_bytes",
       "cap_payload_by_bytes",
@@ -5032,6 +5036,12 @@
       "redact_arguments",
       "redact_scalar",
       "scrub_text"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_tags_store.py": [
+      "add_tag",
+      "remove_tag",
+      "session_ids_with_tags",
+      "tags_for_sessions"
     ],
     "lionhub/src/lionhub/serve/daemon/services/run_view.py": [
       "build_outcome",

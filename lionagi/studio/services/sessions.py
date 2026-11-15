@@ -30,8 +30,8 @@ from lionhub.orchestration.state_store import (  # noqa: F401 -- preserve the co
 from lionhub.orchestration.state_store import open_db as _open_db
 from lionhub.serve.daemon.services._io import parse_json_col as _parse_json_col
 from lionhub.serve.daemon.services.artifact_verification import resolve_artifact_verification
+from lionhub.serve.daemon.services.control_consumers import session_has_control_consumer
 
-from ..operator.run_control import session_has_control_consumer
 from ..registry import studio_route
 from ._session_tail import SessionTailRegistry, StreamResyncError, capture_frontiers
 
@@ -580,7 +580,7 @@ async def list_sessions(
         # run_tags is created lazily on first tag write, so a tag filter would
         # fail on a store that has never been tagged.
         if (where or SessionFilter()).tags:
-            from .run_tags import _ensure_table
+            from lionhub.serve.daemon.services.run_tags_store import _ensure_table
 
             await _ensure_table(db)
         approximate_end = await _approximate_end_selection(db, alias="s")
