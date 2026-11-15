@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lionagi._errors import LionError
@@ -20,87 +20,18 @@ from lionagi.state.db import (
     state_db_file,
     state_db_known_absent,
 )
+from lionhub.orchestration._prune_lineage import (
+    _non_array_progression_sql,
+    _progression_members,
+    _prune_lineage_refs_sql,
+    _prune_temp_table,
+    _retained_message_ids_sql,
+)
 from lionhub.orchestration.scheduler.retention_archive import archive_chunk_id, write_archive_chunk
 
 _log = logging.getLogger("lionagi.studio.services.db_maintenance")
 
 _SQL_IN_CHUNK = 500  # placeholder bound for a single IN-list statement; not a transaction boundary
-
-
-def _prune_temp_table(dialect: str, name: str) -> str:
-    if dialect == "sqlite":
-        return f"temp.{name}"
-    if dialect == "postgresql":
-        return f"pg_temp.{name}"
-    raise ValueError(f"Session prune does not support {dialect!r}")
-
-
-def _non_array_progression_sql(dialect: str, collection: str = "p.collection") -> str:
-    if dialect == "sqlite":
-        return f"json_type({collection}) <> 'array'"
-    if dialect == "postgresql":
-        return f"jsonb_typeof(CAST({collection} AS jsonb)) <> 'array'"
-    raise ValueError(f"Session prune does not support {dialect!r}")
-
-
-def _progression_members(dialect: str, collection: str = "p.collection") -> str:
-    """The join that expands immediate collection members, under the alias members."""
-    if dialect == "sqlite":
-        return f"json_each({collection}) AS members"
-    if dialect == "postgresql":
-        # Match the SQLite json_each values used for TEXT ID comparisons:
-        # booleans become 1/0, JSON null becomes SQL NULL, and strings are unquoted.
-        # Numbers use jsonb's numeric text. Decimal and exponent forms can differ.
-        # For arrays and objects, strip whitespace outside quoted strings to match
-        # SQLite's compact JSON. Validate with jsonb and expand the original json
-        # so every immediate value from a duplicate object key contributes.
-        return (
-            "LATERAL ("  # noqa: S608 -- collection is an internal SQL column
-            " SELECT CASE json_typeof(value)"
-            "   WHEN 'boolean' THEN CASE WHEN value::text = 'true' THEN '1' ELSE '0' END"
-            "   WHEN 'null' THEN NULL"
-            "   WHEN 'string' THEN value #>> '{}'"
-            "   WHEN 'number' THEN CAST(value AS jsonb) #>> '{}'"
-            "   ELSE regexp_replace(value::text, '(\"([^\"\\\\]|\\\\.)*\")|[[:space:]]+', '\\1', 'g')"
-            "   END AS value"
-            f" FROM (SELECT CAST({collection} AS json) AS data,"
-            f"              jsonb_typeof(CAST({collection} AS jsonb)) AS shape) AS collection_data"
-            " CROSS JOIN LATERAL ("
-            "  SELECT value FROM json_array_elements("
-            "    CASE shape WHEN 'array' THEN data ELSE '[]'::json END)"
-            "  UNION ALL"
-            "  SELECT value FROM json_each(CASE shape WHEN 'object' THEN data ELSE '{}'::json END)"
-            "  UNION ALL SELECT data WHERE shape NOT IN ('array', 'object')"
-            " ) AS expanded"
-            ") AS members"
-        )
-    raise ValueError(f"Session prune does not support {dialect!r}")
-
-
-def _retained_message_ids_sql(
-    dialect: str,
-    *,
-    excluded_progressions_sql: str | None = None,
-    deferred_direct_sql: str | None = None,
-) -> str:
-    excluded = (
-        f" AND NOT EXISTS (SELECT 1 FROM ({excluded_progressions_sql}) AS excluded"  # noqa: S608
-        " WHERE excluded.id = p.id)"
-        if excluded_progressions_sql is not None
-        else ""
-    )
-    deferred = f" UNION ALL {deferred_direct_sql}" if deferred_direct_sql is not None else ""
-    # The message key is TEXT. SQLite's compound comparisons do not coerce
-    # numeric members to text, so both prune paths cast before comparing IDs.
-    return (
-        f"SELECT CAST(members.value AS TEXT) FROM progressions p"  # noqa: S608
-        f" CROSS JOIN {_progression_members(dialect)}"
-        f" WHERE members.value IS NOT NULL{excluded}"
-        " UNION ALL SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
-        " UNION ALL SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
-        " UNION ALL SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
-        f"{deferred}"
-    )
 
 
 def _q(sql: str, params: Sequence[Any]) -> tuple[Any, dict[str, Any]]:
@@ -476,27 +407,19 @@ async def _prune_session_chunk(
     if not session_ids:
         return 0, len(retained)
 
-    # Capture child ids BEFORE archiving or deleting anything.
-    session_rows = await _fetch_chunked(
-        conn,
-        "SELECT id, progression_id, first_msg_id, last_msg_id FROM sessions WHERE id",
-        session_ids,
-    )
-    branch_rows = await _fetch_chunked(
-        conn,
-        "SELECT session_id, progression_id, system_msg_id FROM branches WHERE session_id",
-        session_ids,
-    )
-    owners = [*session_rows, *branch_rows]
-    progression_ids = sorted({row[1] for row in owners if row[1] is not None})
-    non_array_ids = {
-        row[0]
-        for row in await _fetch_chunked(
-            conn,
-            f"SELECT p.id FROM progressions p WHERE {non_array} AND p.id",  # noqa: S608
-            progression_ids,
+    # Capture lineage references before the session cascade. Keep bind counts
+    # bounded even if an operator configures a larger transaction chunk.
+    lineage = text(
+        _prune_lineage_refs_sql(dialect, "SELECT id FROM sessions WHERE id IN :session_ids")
+    ).bindparams(bindparam("session_ids", expanding=True))
+    refs = []
+    for start in range(0, len(session_ids), _SQL_IN_CHUNK):
+        result = await conn.execute(
+            lineage, {"session_ids": session_ids[start : start + _SQL_IN_CHUNK]}
         )
-    }
+        refs.extend(result.fetchall())
+    progression_ids = {row.id for row in refs if row.kind == "progression"}
+    non_array_ids = {row.id for row in refs if row.non_array}
     # Validate surviving JSON before publishing any archive. Only arrays can
     # be removed below, so the store-wide non-array count stays the same.
     non_array_count = (
@@ -504,20 +427,11 @@ async def _prune_session_chunk(
             text(f"SELECT COUNT(*) FROM progressions p WHERE {non_array}")  # noqa: S608
         )
     ).scalar_one()
-    deferred_sessions = {row[0] for row in owners if row[1] in non_array_ids}
-    deferred_progressions = {
-        row[1] for row in owners if row[0] in deferred_sessions and row[1] is not None
-    }
+    deferred_progressions = {row.id for row in refs if row.kind == "progression" and row.deferred}
     candidate_prog_ids = sorted(
-        set(progression_ids) - deferred_progressions - (deferred_progression_ids or set())
+        progression_ids - deferred_progressions - (deferred_progression_ids or set())
     )
-    current_deferred_ids = {
-        message_id
-        for row in owners
-        if row[0] in deferred_sessions
-        for message_id in row[2:]
-        if message_id is not None
-    }
+    current_deferred_ids = {row.id for row in refs if row.kind == "message" and row.deferred}
 
     coll_msg_ids: list[str] = []
     if candidate_prog_ids:
@@ -530,16 +444,7 @@ async def _prune_session_chunk(
         coll_msg_ids = [r[0] for r in rows]
 
     candidate_msg_ids = sorted(
-        (
-            set(coll_msg_ids)
-            | {
-                message_id
-                for row in owners
-                if row[0] not in deferred_sessions
-                for message_id in row[2:]
-                if message_id is not None
-            }
-        )
+        (set(coll_msg_ids) | {row.id for row in refs if row.kind == "message" and not row.deferred})
         - current_deferred_ids
         - (deferred_direct_ids or set())
     )
