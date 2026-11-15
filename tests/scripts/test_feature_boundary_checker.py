@@ -280,15 +280,26 @@ def test_target_notes_use_recorded_destinations_only():
     ]
 
 
+def _adr_0139_step_3_table(section, columns, label):
+    _, header, table = section.partition(columns)
+    assert header, f"ADR-0139 D2 {label} table is missing"
+    separator, *rows = table.partition("\n\n")[0].splitlines()
+    assert separator == "| --- | --- | --- |" and rows, (
+        f"ADR-0139 D2 {label} table has no data rows"
+    )
+    return [[cell.strip() for cell in row.strip().strip("|").split("|", 2)] for row in rows]
+
+
 def test_adr_0139_step_3_destinations_match_moves_or_target_rules():
     root = builder.ROOT
     adr = root / "docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md"
     _, heading, d2 = adr.read_text(encoding="utf-8").partition("\n### D2 — ")
     assert heading, "ADR-0139 D2 heading is missing"
-    _, header, table = d2.partition("\n### ")[0].partition("| Step-3 destination | Scope |\n")
-    assert header, "ADR-0139 D2 whole-module table is missing"
-    separator, *rows = table.partition("\n\n")[0].splitlines()
-    assert separator == "| --- | --- | --- |" and rows, "ADR-0139 D2 table has no data rows"
+    section = d2.partition("\n### ")[0]
+    rows = _adr_0139_step_3_table(section, "| Step-3 destination | Scope |\n", "whole-module")
+    assert len(rows) == 17, (
+        f"ADR-0139 D2 specifies seventeen complete source modules; found {len(rows)}"
+    )
 
     tracked = set(
         subprocess.check_output(
@@ -297,18 +308,17 @@ def test_adr_0139_step_3_destinations_match_moves_or_target_rules():
             encoding="utf-8",
         ).split("\0")
     )
-    seen = set()
+    seen = {}
     for row in rows:
-        cells = [cell.strip() for cell in row.strip().strip("|").split("|", 2)]
-        assert len(cells) == 3, f"invalid ADR-0139 D2 row: {row}"
-        source, destination, _ = cells
+        assert len(row) == 3, f"invalid ADR-0139 D2 row: {row}"
+        source, destination, _ = row
         path = re.match(r"`(lionagi/[\w/]+\.py)(?::[^`]+)?`(?:\s|$)", source)
         target = re.fullmatch(r"`(lionhub(?:\.\w+)+)`", destination)
         assert path and target, f"invalid ADR-0139 D2 source or destination: {row}"
         original, expected = path[1], target[1]
         old = original.removesuffix(".py").replace("/", ".")
         assert old not in seen, f"duplicate ADR-0139 D2 source: {old}"
-        seen.add(old)
+        seen[old] = expected
 
         destinations = [move.new for move in _moved.MOVED if move.old == old]
         if destinations:
@@ -325,6 +335,32 @@ def test_adr_0139_step_3_destinations_match_moves_or_target_rules():
             assert builder.TARGET_RULES.get(old) == expected, (
                 f"{old}: ADR-0139 D2 requires an exact TARGET_RULES entry for {expected}"
             )
+
+    # The parent package moves separately. A descendant's exact route must be
+    # represented by the step-3 table even if the parent can resolve that name.
+    cli_moves = {move.old for move in _moved.MOVED if move.old.startswith("lionagi.cli.")}
+    unlisted = cli_moves - seen.keys()
+    assert not unlisted, f"Exact CLI routes missing from ADR-0139 D2: {sorted(unlisted)}"
+
+    shared = _adr_0139_step_3_table(
+        section, "| Step-3 public owner | Extraction; retained adapter |\n", "shared-definition"
+    )
+    assert len(shared) == 1 and len(shared[0]) == 3, "ADR-0139 D2 specifies one shared definition"
+    adapter, owner, extraction = shared[0]
+    assert re.match(r"`lionagi/cli/orchestrate/_orchestration\.py(?::[^`]+)?`", adapter), (
+        "ADR-0139 D2 must name the retained orchestration adapter"
+    )
+    assert extraction.startswith("`register_branch_hook`"), "ADR-0139 D2 must name the shared hook"
+
+    from lionhub.serve.cli.orchestrate._orchestration import register_branch_hook
+
+    actual_owner = register_branch_hook.__module__
+    assert owner == f"`{actual_owner}`", (
+        f"ADR-0139 D2 must assign register_branch_hook to {actual_owner}"
+    )
+    assert actual_owner == seen["lionagi.cli._runs"], (
+        "ADR-0139 D2 must assign register_branch_hook and its enclosing module the same owner"
+    )
 
 
 def test_committed_inventory_matches_generator_and_rejects_hand_edit(tmp_path):
