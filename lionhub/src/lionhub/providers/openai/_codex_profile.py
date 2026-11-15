@@ -400,7 +400,7 @@ def codex_config_defining_profile(
     return None
 
 
-def codex_config_turning_sandbox_off(
+def _codex_config_turning_sandbox_off(
     env: Mapping[str, str] | None, cwd: Path, profile: str | None
 ) -> str | None:
     """Where a codex config sets ``sandbox_mode = "danger-full-access"`` for a run, or None.

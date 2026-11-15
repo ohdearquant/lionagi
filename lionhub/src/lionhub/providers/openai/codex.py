@@ -75,10 +75,10 @@ from lionhub.providers._cli_subprocess import (
 )
 
 from ._codex_profile import (
+    _codex_config_turning_sandbox_off,
     _read_codex_config,
     codex_config_defining_profile,
     codex_config_setting_default_permissions,
-    codex_config_turning_sandbox_off,
     codex_home_for_env,
     configured_codex_profile,
     is_generated_codex_profile,
@@ -1105,7 +1105,7 @@ def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
                     "applies in place of its sandbox"
                 )
             elif not (plain.full_auto or plain.sandbox or _sets(flags, ("sandbox_mode",))):
-                found_mode = codex_config_turning_sandbox_off(plain.env, cwd, plain.profile)
+                found_mode = _codex_config_turning_sandbox_off(plain.env, cwd, plain.profile)
                 if found_mode is not None:
                     reasons.append(found_mode)
         except (ValueError, OSError) as exc:
