@@ -151,8 +151,9 @@ def leg(monkeypatch, tmp_path):
 
     original = factory_mod.create_agent
 
-    async def create_agent(*args, **kwargs):
-        branch = await original(*args, **kwargs)
+    async def create_agent(spec, **kwargs):
+        seen.spec = spec
+        branch = await original(spec, **kwargs)
         seen.branch = branch
         return branch
 
@@ -1791,9 +1792,21 @@ async def test_a_failed_round_that_is_not_a_refusal_keeps_the_exception_reason_a
 
 
 @pytest.mark.asyncio
-async def test_profile_effort_reaches_anthropic_wire_payload(leg, monkeypatch):
+@pytest.mark.parametrize(
+    ("profile_effort", "flag_effort", "origin", "expected_effort"),
+    [
+        (None, None, "default", None),
+        ("max", "low", "explicit", "low"),
+        ("max", None, "profile", "max"),
+    ],
+    ids=["omitted", "flag", "profile"],
+)
+async def test_agent_effort_reaches_anthropic_wire_payload(
+    leg, monkeypatch, profile_effort, flag_effort, origin, expected_effort
+):
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {"pid": 4242})
     profile = _profile(api_tools="read")
-    profile.effort = "max"
+    profile.effort = profile_effort
     seen_payloads = []
 
     async def call(self, request, *args, **kwargs):
@@ -1803,10 +1816,17 @@ async def test_profile_effort_reaches_anthropic_wire_payload(leg, monkeypatch):
 
     monkeypatch.setattr(AnthropicMessagesEndpoint, "call", call)
     leg.replies = [_last_round(), _answer("done")]
-    _, _, _, status, _ = await leg.run(profile)
+    _, _, _, status, _ = await leg.run(profile, effort=flag_effort)
     assert status == "completed"
     assert seen_payloads
-    assert all(payload["output_config"]["effort"] == "max" for payload in seen_payloads)
+    for payload in seen_payloads:
+        if expected_effort is None:
+            assert "output_config" not in payload
+        else:
+            assert payload["output_config"]["effort"] == expected_effort
+    assert leg.spec.effort == expected_effort
+    assert leg.spec._effort_origin == origin
+    assert leg.spec._effort_in_supplied_model is True
 
 
 @pytest.mark.asyncio
