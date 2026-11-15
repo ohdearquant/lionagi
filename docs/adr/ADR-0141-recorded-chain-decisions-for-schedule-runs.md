@@ -6,7 +6,7 @@
 - **Area**: scheduling-control-plane
 - **Date**: 2026-11-04
 - **Relations**: extends ADR-0070; amends ADR-0035 D5, ADR-0057 D4, ADR-0058 D1/D2/D5, and ADR-0070 D4;
-  referenced from ADR-0057 D2, ADR-0064 D5, ADR-0070 D3 and ADR-0071 D3
+  referenced from ADR-0057 D2 and D4, ADR-0064 D5, ADR-0070 D3 and D4, and ADR-0071 D3
 
 ## Context
 
@@ -429,9 +429,13 @@ The cutover procedure applies to both backends:
    of the audit context, supplying defaults when the caller passes none. None
    of these is an authorization check, and the path does not check for owed
    deliveries or surviving resolvers. Under the native profile, only the
-   foreign-key links below can refuse it beyond those validations; a
-   compatibility profile with an owner that does not list `schedules` among
-   its owned tables refuses it first.
+   foreign-key links below can refuse it beyond those validations. Run the
+   delete under the native profile on either backend. SQLite compatibility
+   mode refuses it on every store: an owner that does not list `schedules`
+   among its owned tables fails the owner check
+   (`lionagi/state/db.py::StateDB._require_owned`), and the connection's
+   authorizer denies every `DELETE` whatever the owner
+   (`lionagi/state/compat.py`).
    The delete cascades to runs under that schedule, including parent and child when
    both belong to it. A surviving link such as a child in another schedule, an
    outbox reference or a worker lease can block deletion
