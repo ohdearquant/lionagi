@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 
 import pytest
 
@@ -16,6 +17,60 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from lionagi.state.db import StateDB  # noqa: E402
 from lionagi.studio.services import sessions as svc  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "ids, raw, reusable",
+    [
+        (["a", "bc"], '["a","bc"]', True),
+        (["a", "bc"], '["a", "bc"]', True),
+        # Whitespace beyond the default encoding's size would inflate the bind.
+        (["a", "bc"], '[ "a", "bc" ]', False),
+        # Non-ASCII and escaped members can decode differently, so they are never reused.
+        (["é"], '["é"]', False),
+        (["é"], '["\\u00e9"]', False),
+        (["a\\b"], '["a\\\\b"]', False),
+        ([], "[]", False),
+        (["a"], None, False),
+    ],
+)
+def test_reusable_collection_json_only_accepts_exact_sqlite_membership(ids, raw, reusable):
+    result = svc._reusable_collection_json(raw, ids)
+    assert (result is not None) is reusable
+    if result is not None:
+        with sqlite3.connect(":memory:") as conn:
+            members = [row[0] for row in conn.execute("SELECT value FROM json_each(?)", (result,))]
+        assert members == ids
+
+
+def test_reusable_collection_json_preserves_seeded_sqlite_membership():
+    generator = random.Random(3991)
+    tokens = ("", "beta", "id0", "id1", "with space", "z")
+    query = "SELECT value FROM json_each(?) ORDER BY key"
+
+    with closing(sqlite3.connect(":memory:")) as conn:
+        for _ in range(64):
+            ids = ["z", "a", "z", *generator.choices(tokens, k=6)]
+            default = json.dumps(ids)
+            compact = json.dumps(ids, separators=(",", ":"))
+            default_members = [row[0] for row in conn.execute(query, (default,))]
+            for raw in (default, compact):
+                reused = svc._reusable_collection_json(raw, ids)
+                assert reused == raw
+                assert [row[0] for row in conn.execute(query, (reused,))] == ids == default_members
+
+            escaped = compact.replace('"a"', r'"\u0061"', 1)
+            assert json.loads(escaped) == ids
+            assert len(escaped) <= len(default)
+            assert svc._reusable_collection_json(escaped, ids) is None
+
+            indented = json.dumps(ids, indent=2)
+            assert len(indented) > len(default)
+            assert svc._reusable_collection_json(indented, ids) is None
+
+            unicode_ids = [*ids, "é"]
+            literal_unicode = json.dumps(unicode_ids, ensure_ascii=False, separators=(",", ":"))
+            assert svc._reusable_collection_json(literal_unicode, unicode_ids) is None
 
 
 @pytest.fixture
