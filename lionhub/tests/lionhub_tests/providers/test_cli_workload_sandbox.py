@@ -5,7 +5,8 @@
 workspace-write sandbox with no network and no extra writable roots, agy under
 ``--sandbox``, Claude Code without its file-writing tools. A setting that would undo
 that is refused, and Pi, which has no sandbox to pin, refuses ``light`` outright. A
-``heavy`` agent's command line is the one it had before workloads existed."""
+``heavy`` codex agent keeps its network and temporary directories, but its extra writable
+roots are the child sandbox's ``allow_write`` list, not whatever the user config lists."""
 
 from __future__ import annotations
 
@@ -51,7 +52,95 @@ def test_a_heavy_codex_agent_is_given_neither_temp_directory_pin(tmp_path, kw):
         warnings.simplefilter("ignore")
         for workload in ({}, {"workload": "heavy"}):
             overrides = _pairs(_codex(tmp_path, **workload, **kw), "-c")
-            assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+            sandbox = [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+            assert not [o for o in sandbox if "writable_roots" not in o]
+
+
+def _heavy_roots_pin(roots) -> str:
+    from lionhub.providers.openai.codex import toml_override_value
+
+    return f"sandbox_workspace_write.writable_roots={toml_override_value(list(roots))}"
+
+
+@pytest.fixture
+def sandbox_on(monkeypatch):
+    """The child sandbox on with the default policy (the suite switches it off by default)."""
+    import lionhub.agent.child_sandbox as child_sandbox
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+
+
+def _default_roots():
+    import os
+
+    from lionhub.agent.child_sandbox import default_allow_write
+
+    return [os.path.expanduser(path) for path in default_allow_write()]
+
+
+@pytest.mark.parametrize(
+    "kw", [{}, {"full_auto": True}, {"sandbox": "workspace-write"}, {"workload": "heavy"}]
+)
+def test_a_heavy_codex_agent_writes_only_the_toolchain_caches_beyond_its_cwd(
+    tmp_path, kw, sandbox_on
+):
+    overrides = _pairs(_codex(tmp_path, **kw), "-c")
+    sandbox = [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+    assert sandbox == [_heavy_roots_pin(_default_roots())]
+    assert overrides[-1] == sandbox[0]
+    assert all(root.startswith("/") for root in _default_roots())
+
+
+def test_a_heavy_codex_agent_that_bypasses_the_sandbox_gets_no_pin(tmp_path, sandbox_on):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        overrides = _pairs(_codex(tmp_path, bypass_approvals=True), "-c")
+    assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+
+
+def test_the_heavy_pin_beats_the_user_configs_writable_roots(tmp_path, sandbox_on):
+    env = _home_with_config(
+        tmp_path,
+        "[sandbox_workspace_write]\nnetwork_access = true\n"
+        f"writable_roots = [{str(tmp_path / 'everything')!r}]\n",
+    )
+    args = _codex(tmp_path, full_auto=True, ignore_user_config=True, env=env)
+    sandbox = [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write.")]
+    # The user config's roots are carried, and the pin, after them, has the last word.
+    assert any("everything" in o for o in sandbox[:-1])
+    assert "sandbox_workspace_write.network_access=true" in sandbox
+    assert sandbox[-1] == _heavy_roots_pin(_default_roots())
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"sandbox_workspace_write.writable_roots": ["/opt/build"]},
+        {"sandbox_workspace_write": {"writable_roots": ["/opt/build"]}},
+    ],
+)
+def test_writable_roots_the_caller_sets_are_kept(tmp_path, overrides, sandbox_on):
+    args = _codex(tmp_path, full_auto=True, config_overrides=overrides)
+    sandbox = [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write")]
+    assert len(sandbox) == 1
+    assert "/opt/build" in sandbox[0]
+
+
+def test_the_heavy_roots_follow_the_child_sandbox_settings(tmp_path, monkeypatch):
+    import lionhub.agent.child_sandbox as child_sandbox
+
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"allow_write": ["/opt/c"]}}
+    )
+    overrides = _pairs(_codex(tmp_path, full_auto=True), "-c")
+    assert overrides[-1] == _heavy_roots_pin([*_default_roots(), "/opt/c"])
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+    overrides = _pairs(_codex(tmp_path, full_auto=True), "-c")
+    assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
 
 
 @pytest.mark.parametrize("kw", [{}, {"enable_features": ["apps", "plugins"]}])
