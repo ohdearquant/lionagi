@@ -1105,11 +1105,12 @@ async def test_resumed_leg_request_carries_the_codex_overrides(
 
     assert seen["kwargs"]["config_overrides"] == {
         "mcp_servers.khive.command": "kkernel",
-        "mcp_servers.khive.args": ["serve"],
+        "mcp_servers.khive.args": ["serve", "--actor", "agent:anonymous"],
         "mcp_servers.khive.env.KHIVE_ACTOR": "agent:anonymous",
     }
     assert seen["config"]
     assert SERVERS_COMMAND_ARG in seen["config"]
+    assert 'mcp_servers.khive.args=["serve", "--actor", "agent:anonymous"]' in seen["config"]
 
 
 @pytest.mark.asyncio
@@ -1484,7 +1485,7 @@ async def test_a_set_resolved_on_resume_replaces_the_one_the_codex_leg_had(
     assert seen["kwargs"]["config_overrides"] == {
         "model_provider": "vendor",
         "mcp_servers.khive.command": "kkernel",
-        "mcp_servers.khive.args": ["serve"],
+        "mcp_servers.khive.args": ["serve", "--actor", "agent:anonymous"],
         "mcp_servers.khive.env.KHIVE_ACTOR": "agent:anonymous",
     }
 
@@ -1771,7 +1772,7 @@ async def test_a_codex_worker_is_spawned_with_the_runs_server_set(flow_run, code
     args = request._cmd_args(_plain_request(request), request.cwd())
     forwarded = [args[i + 1] for i, a in enumerate(args) if a == "-c" and i + 1 < len(args)]
     assert 'mcp_servers.khive.command="kkernel"' in forwarded
-    assert 'mcp_servers.khive.args=["serve"]' in forwarded
+    assert 'mcp_servers.khive.args=["serve", "--actor", "agent:anonymous"]' in forwarded
 
 
 @pytest.mark.asyncio

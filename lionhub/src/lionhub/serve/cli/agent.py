@@ -1735,9 +1735,7 @@ def _read_api_account() -> str | None:
 
 
 def _attributed_resolution(resolution: McpResolution, agent_name: str | None) -> McpResolution:
-    """``resolution`` with every khive server it hands the child acting as the child's
-    profile (``agent:<profile>``, or ``agent:anonymous``) rather than as whoever
-    launched it; an actor config in the child's directory still wins."""
+    """Give each handed khive server the child's ``agent:<profile>`` actor."""
     return dataclasses.replace(
         resolution,
         servers=attribute_khive_servers(resolution.servers, child_khive_actor(agent_name)),

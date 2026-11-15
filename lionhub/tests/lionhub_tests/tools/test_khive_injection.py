@@ -167,6 +167,7 @@ async def test_actor_attributes_the_spawned_khive_server():
 
     assert config["command"] == "kkernel"
     assert config["env"] == {"KHIVE_ACTOR": "agent:implementer"}
+    assert config["args"] == ["mcp", "--actor", "agent:implementer"]
 
 
 @pytest.mark.asyncio
@@ -192,8 +193,9 @@ async def test_actor_replaces_the_actor_in_a_supplied_khive_config_and_keeps_the
     config = await _config_sent_to_pool(provider)
 
     assert config["env"] == {"KEEP": "1", "KHIVE_ACTOR": "agent:worker"}
-    assert config["args"] == ["mcp", "--pack", "memory"]
+    assert config["args"] == ["mcp", "--actor", "agent:worker", "--pack", "memory"]
     assert supplied["env"]["KHIVE_ACTOR"] == "someone-else"
+    assert supplied["args"] == ["mcp", "--pack", "memory"]
 
 
 @pytest.mark.asyncio

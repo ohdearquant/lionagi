@@ -2,13 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Give the khive MCP servers a child agent is handed an actor of their own.
 
-khive resolves its actor as: the ``--actor`` flag, then ``[actor] id`` in
-``<cwd>/.khive/config.toml``, then the ``KHIVE_ACTOR`` environment variable,
-then anonymous. Setting ``KHIVE_ACTOR`` in a server's environment is therefore
-a fallback: a child whose directory holds an actor config acts as that actor,
-and every other child acts as ``agent:<profile>`` instead of anonymously or as
-whoever launched it. The server's packs are left as configured, so a child keeps
-every verb its server loads, ``comm`` included, under its own actor.
+The server's ``--actor`` flag names the child actor. Its ``KHIVE_ACTOR``
+environment variable carries the same name. The server's packs are left as
+configured.
 """
 
 from __future__ import annotations
@@ -53,24 +49,45 @@ def is_khive_server(spec: Any) -> bool:
     return isinstance(command, str) and os.path.basename(command) == _KHIVE_COMMAND
 
 
+def _actor_args(value: Any, actor: str) -> list[Any]:
+    original = value if isinstance(value, (list, tuple)) else ()
+    args = []
+    skip_value = False
+    for arg in original:
+        if skip_value:
+            skip_value = False
+            if not isinstance(arg, str) or not arg.startswith("-"):
+                continue
+        if isinstance(arg, str):
+            if arg in ("--actor", "--namespace"):
+                skip_value = True
+                continue
+            if arg.startswith(("--actor=", "--namespace=")):
+                continue
+        args.append(arg)
+    offset = 1 if original and original[0] == "mcp" else len(args)
+    args[offset:offset] = ["--actor", actor]
+    return args
+
+
 def _attributed(spec: Mapping[str, Any], actor: str) -> dict[str, Any]:
-    """A shallow copy of a khive server entry whose env names ``actor``."""
+    """Copy a khive server with ``actor`` in its arguments and environment."""
     existing = spec.get("env")
     env: dict[str, Any] = dict(existing) if isinstance(existing, Mapping) else {}
     env[KHIVE_ACTOR_ENV] = actor
     server = dict(spec)
+    server["args"] = _actor_args(spec.get("args"), actor)
     server["env"] = env
     return server
 
 
 def attribute_khive_servers(servers: Mapping[str, Any] | None, actor: str) -> dict[str, Any] | None:
-    """Copy ``servers`` with each khive server's ``KHIVE_ACTOR`` set to ``actor``.
+    """Copy ``servers`` with each khive server's actor set to ``actor``.
 
     Returns None for None. Otherwise returns a new mapping in which every server
-    whose ``command`` basename is ``kkernel`` is a shallow copy with a new ``env``
-    whose ``KHIVE_ACTOR`` is ``actor``, replacing any value there. Every other
-    server, and every other key, is passed through unchanged. The input is never
-    mutated.
+    whose ``command`` basename is ``kkernel`` gets new ``args`` and ``env``.
+    The new ``--actor`` replaces any actor or namespace option, and
+    ``KHIVE_ACTOR`` carries the same value. Other entries are passed through.
     """
     if servers is None:
         return None

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
@@ -67,7 +68,39 @@ def test_pack_flags_in_the_arguments_are_kept():
     args = ["mcp", "--pack", "kg", "--pack", "comm", "--pack=comm"]
     servers = {"khive": _khive({"KHIVE_PACKS": "kg"}, args=args)}
     result = attribute_khive_servers(servers, "agent:x")
-    assert result["khive"]["args"] == args
+    assert result["khive"]["args"] == ["mcp", "--actor", "agent:x", *args[1:]]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["--actor", "agent:old"],
+        ["--actor=agent:old"],
+        ["--namespace", "old"],
+        ["--namespace=old"],
+        ["--actor=agent:old", "--namespace", "old", "--actor", "agent:second"],
+        ["--actor"],
+    ],
+    ids=["actor", "actor-equals", "namespace", "namespace-equals", "duplicates", "missing-value"],
+)
+def test_argument_actor_and_namespace_are_replaced(overrides):
+    servers = {"khive": _khive(args=["mcp", *overrides, "--pack=kg"])}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["args"] == ["mcp", "--actor", "agent:x", "--pack=kg"]
+    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x"}
+    assert attribute_khive_servers(result, "agent:x") == result
+
+
+def test_non_mcp_command_appends_the_actor():
+    servers = {"khive": _khive(args=["exec", "whoami()", "--namespace=old"])}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["args"] == ["exec", "whoami()", "--actor", "agent:x"]
+
+
+def test_kkernel_entry_without_arguments_gets_the_actor():
+    servers = {"khive": {"command": "kkernel"}}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["args"] == ["--actor", "agent:x"]
 
 
 def test_an_existing_actor_is_replaced():
@@ -101,7 +134,7 @@ def test_other_keys_of_the_server_pass_through():
     result = attribute_khive_servers(servers, "agent:x")
     server = result["khive"]
     assert server["command"] == "/usr/local/bin/kkernel"
-    assert server["args"] == ["mcp"]
+    assert server["args"] == ["mcp", "--actor", "agent:x"]
     assert server["cwd"] == "/work"
     assert server["timeout"] == 30
 
@@ -156,6 +189,7 @@ def test_the_input_is_never_mutated():
     assert result is not servers
     assert result["khive"] is not servers["khive"]
     assert result["khive"]["env"] is not servers["khive"]["env"]
+    assert result["khive"]["args"] is not servers["khive"]["args"]
 
 
 def test_the_input_env_survives_when_the_server_had_none():
@@ -182,18 +216,36 @@ def codex_env(tmp_path, monkeypatch):
 
 def test_a_codex_run_that_ignores_the_user_config_gets_the_actor_on_the_command_line(codex_env):
     from lionhub.agent.factory import apply_forwarded_mcp_servers
+    from lionhub.providers.openai.codex import CodexCodeRequest, _plain_request
 
-    servers = {"khive": {"command": "kkernel", "args": ["mcp"], "env": {"KHIVE_ACTOR": "agent:x"}}}
+    servers = attribute_khive_servers({"khive": _khive(command="kkernel")}, "agent:x")
     kwargs: dict = {"ignore_user_config": True}
 
     assert apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)
 
     assert kwargs["config_overrides"] == {
         "mcp_servers.khive.command": "kkernel",
-        "mcp_servers.khive.args": ["mcp"],
+        "mcp_servers.khive.args": ["mcp", "--actor", "agent:x"],
         "mcp_servers.khive.env.KHIVE_ACTOR": "agent:x",
     }
     assert "profile" not in kwargs
+    request = CodexCodeRequest(prompt="hi", **kwargs)
+    args = request._cmd_args(_plain_request(request), request.cwd())
+    rendered = [arg for flag, arg in zip(args, args[1:], strict=False) if flag == "-c"]
+    assert 'mcp_servers.khive.args=["mcp", "--actor", "agent:x"]' in rendered
+
+
+def test_claude_mcp_config_json_contains_the_actor_flag(monkeypatch):
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    monkeypatch.setattr(ClaudeCodeRequest, "_child_sandbox_settings", lambda _: None)
+    servers = attribute_khive_servers({"khive": _khive(command="kkernel")}, "agent:x")
+    kwargs: dict = {}
+    assert apply_forwarded_mcp_servers(kwargs, servers, provider="claude_code", exclusive=True)
+    args = ClaudeCodeRequest(prompt="hi", **kwargs).as_cmd_args()
+    config = json.loads(args[args.index("--mcp-config") + 1])
+    assert config["mcpServers"]["khive"]["args"] == ["mcp", "--actor", "agent:x"]
 
 
 def test_the_rest_of_a_khive_servers_env_stays_off_the_command_line(codex_env):
