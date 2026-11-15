@@ -700,15 +700,17 @@ def test_project_configuration_is_denied_at_any_depth():
         ".lionagi/settings.yaml",
         ".lionagi/agents",
         ".lionagi/playbooks",
+        ".khive/config.toml",
         ".env",
         ".env.local",
         ".secrets.env",
     ):
         assert f"Edit(//**/{name})" in rules
         assert f"Edit(//**/{name}/**)" in rules
-    # The rest of a project .lionagi directory stays writable.
-    assert "Edit(//**/.lionagi)" not in rules
-    assert "Edit(//**/.lionagi/**)" not in rules
+    # Other files in these project directories stay writable.
+    for directory in (".lionagi", ".khive"):
+        assert f"Edit(//**/{directory})" not in rules
+        assert f"Edit(//**/{directory}/**)" not in rules
 
 
 def test_every_read_denial_is_also_an_edit_denial():
