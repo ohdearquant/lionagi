@@ -200,15 +200,12 @@ def _estimate_response_cost(
     if served_model not in CURRENT_REVISION.models:
         return None, None
 
-    # Complete cache counts cannot establish the serving tier.
-    if usage.get("service_tier") is None and payload.get("service_tier") not in (
-        None,
-        "standard_only",
-    ):
+    # With no reported serving tier, only a standard_only request can be
+    # priced at the standard rate.
+    if usage.get("service_tier") is None and payload.get("service_tier") != "standard_only":
         return None, None
 
-    # Read the submitted cache markers. A missing request tier uses the table's
-    # standard estimate; the reported usage still determines tariff eligibility.
+    # Read the submitted cache markers for any cache write lifetime.
     try:
         ttls = request_ttls({"service_tier": "standard_only", **payload})
     except AccountRoutingError:

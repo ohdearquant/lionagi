@@ -18,6 +18,7 @@ from lionagi.service._api_telemetry import (
     record_selected_attempt,
     record_served_model,
 )
+from lionagi.service.accounts._pricing import CURRENT_REVISION
 from lionhub.serve.cli._api_usage import APIUsageCollector
 
 
@@ -61,7 +62,8 @@ def test_served_model_uses_the_recorded_request_owner():
 @pytest.mark.parametrize(
     ("request_tier", "response_tier", "expected_cost"),
     [
-        pytest.param(None, None, 64_500, id="omitted-tiers"),
+        pytest.param(None, None, None, id="omitted-tiers"),
+        pytest.param(None, "standard", 64_500, id="omitted-request-standard-response"),
         pytest.param("standard_only", None, 64_500, id="standard-request"),
         pytest.param("auto", "standard", 64_500, id="standard-response"),
         pytest.param("standard_only", "priority", None, id="priority-response"),
@@ -101,7 +103,7 @@ def test_anthropic_usage_cost_accounts_for_service_tier(request_tier, response_t
     assert snapshot["totals"] == {"input_tokens": 10, "output_tokens": 3}
     assert row["estimated_cost_nusd"] == snapshot["estimated_cost_nusd"] == expected_cost
     assert snapshot["price_table_version"] == (
-        "anthropic-20261108" if expected_cost is not None else None
+        CURRENT_REVISION.id if expected_cost is not None else None
     )
 
 
