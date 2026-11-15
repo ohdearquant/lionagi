@@ -386,8 +386,8 @@ class KhiveInjectionProvider:
         self.name = f"khive_injection:{policy.profile_id}"
         server = dict(mcp_config or _DEFAULT_MCP_CONFIG)
         if actor is not None:
-            # Same attribution the khive servers a child forwards receive; a
-            # config that does not launch khive is left as supplied.
+            # The direct stdio transport inherits the process directory, even
+            # when the model itself starts in a different workspace.
             server = attribute_khive_servers({"khive": server}, actor)["khive"]
         self._mcp_config = server
         # One provider may serve concurrent branch turns. ContextVar keeps the

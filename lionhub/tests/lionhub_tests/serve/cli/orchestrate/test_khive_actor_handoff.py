@@ -17,6 +17,7 @@ import pytest
 from lionagi import Branch
 from lionagi.operations.builder import OperationGraphBuilder
 from lionhub.agent.casts.emission import TaskAssignment
+from lionhub.agent.khive_actor import MINTED_CHILD_ACTOR_ENV
 from lionhub.serve.cli.orchestrate import fanout as fanout_module
 from lionhub.serve.cli.orchestrate._orchestration import build_worker_branch
 from lionhub.serve.cli.orchestrate.flow import _DagState, _PlanResult, _reconstruct_spawned_nodes
@@ -172,6 +173,36 @@ async def test_worker_acts_as_its_own_profile_and_the_run_set_is_left_alone(
     # Workers differ, so the set the run keeps is not attributed to any one of them.
     assert env.mcp_servers["khive"]["env"]["KHIVE_ACTOR"] == "someone-else"
     assert env.mcp_servers["khive"]["env"]["KHIVE_PACKS"] == "kg, comm ,memory"
+
+
+@pytest.mark.asyncio
+async def test_flow_worker_pins_run_actor_when_workspace_has_no_config(
+    tmp_run,  # noqa: F811
+    monkeypatch,
+):
+    actor = "agent:minted-run"
+    config_dir = tmp_run / ".khive"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(f'[actor]\nid = "{actor}"\n')
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, actor)
+    _write_config(tmp_run)
+    env = await _setup(no_mcp_config=False)
+    profile = AgentProfile(
+        name="reviewer",
+        model="claude_code/sonnet",
+        system_prompt="Review the work.",
+        raw_body="Review the work.",
+    )
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: profile)
+
+    branch, _, _, _ = await build_worker_branch(env, agent_id="w1", role="reviewer")
+
+    config = branch.chat_model.endpoint.config
+    workspace = env.run.agent_artifact_dir("w1")
+    assert config.kwargs["repo"] == workspace
+    assert not (workspace / ".khive" / "config.toml").exists()
+    assert _handed(branch.chat_model)["khive"]["args"] == ["mcp", "--actor", actor]
+    _assert_acts_as(_handed(branch.chat_model), actor)
 
 
 @pytest.mark.asyncio

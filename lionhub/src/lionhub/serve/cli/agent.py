@@ -49,7 +49,7 @@ from lionagi.service.imodel import _endpoint_routing_enabled
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
-from lionhub.agent.khive_actor import attribute_khive_servers, child_khive_actor
+from lionhub.agent.khive_actor import attribute_khive_servers, run_khive_actor
 from lionhub.orchestration.arguments import BoundedInt
 from lionhub.orchestration.console import hint, log_error
 from lionhub.orchestration.job import (
@@ -1736,13 +1736,13 @@ def _read_api_account() -> str | None:
     return api_account
 
 
-def _attributed_resolution(resolution: McpResolution, agent_name: str | None) -> McpResolution:
-    """``resolution`` with every khive server it hands the child acting as the child's
-    profile (``agent:<profile>``, or ``agent:anonymous``) rather than as whoever
-    launched it; an actor config in the child's directory still wins."""
+def _attributed_resolution(
+    resolution: McpResolution, agent_name: str | None, *, cwd: str | None
+) -> McpResolution:
+    """Attribute each khive server to the run's minted or profile actor."""
     return dataclasses.replace(
         resolution,
-        servers=attribute_khive_servers(resolution.servers, child_khive_actor(agent_name)),
+        servers=attribute_khive_servers(resolution.servers, run_khive_actor(agent_name), cwd=cwd),
     )
 
 
@@ -2027,7 +2027,7 @@ async def _run_agent(
                 disabled=no_mcp_config,
                 submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
             )
-            mcp_resolution = _attributed_resolution(mcp_resolution, agent_name)
+            mcp_resolution = _attributed_resolution(mcp_resolution, agent_name, cwd=cwd)
 
         # A resume that names no MCP flag replays the choice its branch was launched
         # with, searched from where it was launched rather than from where it is
@@ -2074,7 +2074,7 @@ async def _run_agent(
                         submit_snapshot=recorded_config if is_submit_snapshot else None,
                         **({"reject_legacy_snapshot": True} if legacy_recorded_file else {}),
                     )
-                    mcp_resolution = _attributed_resolution(mcp_resolution, agent_name)
+                    mcp_resolution = _attributed_resolution(mcp_resolution, agent_name, cwd=cwd)
                 except LegacyMcpReplayError as exc:
                     # The resolver constructed this fixed, safely-labelled message.
                     raise McpConfigError(str(exc)) from None
@@ -2306,7 +2306,7 @@ async def _run_agent(
                     sandbox_profile=agent_name or None,
                     # The pre-turn khive client is given the actor the khive
                     # servers handed to the child above are given.
-                    khive_actor=child_khive_actor(agent_name),
+                    khive_actor=run_khive_actor(agent_name),
                 )
                 if api_launch is not None:
                     branch.metadata[_API_LAUNCH_KEY] = dict(api_launch)

@@ -227,12 +227,10 @@ async def create_agent(
     a ``profiles`` key does not earn its exemption.
 
     ``khive_actor`` is the khive actor the pre-turn recall and writeback
-    client registered for ``spec.khive_injection`` acts as: its khive server is
-    spawned with ``KHIVE_ACTOR`` set to it. A caller that hands the child khive
-    servers attributed to a profile passes the same actor here, so both are
-    given the child's actor; an actor config in either server's working
-    directory still takes precedence over it. ``None`` leaves that server as
-    configured.
+    client registered for ``spec.khive_injection`` acts as. Its khive server
+    gets the actor in ``--actor`` and ``KHIVE_ACTOR``. A caller that hands the
+    child khive servers attributed to a profile passes the same actor here.
+    ``None`` leaves the injection server as configured.
 
     ``spec.contain_account_integrations`` turns a codex agent's account
     ``apps`` and ``plugins`` features off by default. It is applied to the
@@ -998,8 +996,8 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
     injection is a context-provider concern, orthogonal to CodingToolkit/path-guards.
     The provider is keyed on ``{role_name}-recall-v1`` (role_name is the invoked
     profile name). None/False disables; the env kill-switch is honored by
-    ``_register_providers``. The provider's khive server runs as the profile's own
-    actor (the one its forwarded khive servers get), not as the launching process.
+    ``_register_providers``. Its direct khive connection uses the same minted or
+    profile actor as the forwarded servers and starts in the process directory.
     """
     configured = getattr(profile, "khive_injection", None)
     # Only None/False disable — an empty mapping is a valid opt-in (see _register_providers).
@@ -1008,14 +1006,14 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
 
     from lionhub.agent.casts.pattern import Role
     from lionhub.agent.casts.profile import Profile
-    from lionhub.agent.khive_actor import child_khive_actor
+    from lionhub.agent.khive_actor import run_khive_actor
 
     identity = Profile(name=role_name, role=Role(name=role_name, description="", body=""))
     provider_spec = AgentSpec(profile=identity, pack=None, khive_injection=configured)
     _register_providers(
         branch,
         provider_spec,
-        actor=child_khive_actor(getattr(profile, "name", None)),
+        actor=run_khive_actor(getattr(profile, "name", None)),
     )
 
 

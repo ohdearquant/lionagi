@@ -41,6 +41,7 @@ from lionagi.ln._proc import (
 )
 from lionagi.ln.concurrency import current_time, sleep
 from lionagi.service._subagent_admission import refuse_nested_agent
+from lionhub.agent.khive_actor import MINTED_CHILD_ACTOR_ENV
 
 from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
@@ -1565,6 +1566,13 @@ def submit(
         # the terminal hook can record a cause instead of leaving the reason to
         # be read out of console prose.
         env[config.CAUSE_FILE_ENV_VAR] = str(d / config.CAUSE_FILENAME)
+        # Names the actor minted into the child's directory, so the child hands its khive
+        # servers no --actor flag and that config decides (an --actor flag outranks it).
+        # Cleared otherwise, so a value inherited from this server's own environment never
+        # reaches a child it minted nothing for.
+        env.pop(MINTED_CHILD_ACTOR_ENV, None)
+        if minted is not None:
+            env[MINTED_CHILD_ACTOR_ENV] = minted.actor
 
         # Checked before anything is written: Popen raising this late would
         # leave a job recorded "running" for a run that never started.

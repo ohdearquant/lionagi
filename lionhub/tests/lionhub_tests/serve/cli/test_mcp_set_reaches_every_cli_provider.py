@@ -16,6 +16,7 @@ overrides puts them in `ps` output and in every serialized request record.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -29,7 +30,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionhub.agent.factory import apply_forwarded_mcp_servers
-from lionhub.agent.khive_actor import attribute_khive_servers
+from lionhub.agent.khive_actor import MINTED_CHILD_ACTOR_ENV, attribute_khive_servers
 
 from .test_agent_preset_mcp_handover import _wire_agent_stubs
 
@@ -1051,6 +1052,59 @@ def _mcp_config_file(tmp_path: Path, servers: dict) -> str:
     return str(path)
 
 
+@pytest.mark.parametrize("provider_config", ["other", "missing", "minted"])
+def test_agent_cwd_controls_minted_khive_actor_flag(
+    monkeypatch, tmp_path, codex_home, codex_launch, provider_config
+):
+    from lionagi import Branch
+    from lionhub.serve.cli import agent as agent_mod
+
+    actor = "agent:minted-run"
+    launch_dir = tmp_path / "launch"
+    actor_dir = launch_dir / ".khive"
+    actor_dir.mkdir(parents=True)
+    (actor_dir / "config.toml").write_text(f'[actor]\nid = "{actor}"\n')
+    monkeypatch.chdir(launch_dir)
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, actor)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    codex_home.write_config({})
+
+    provider_cwd = launch_dir
+    if provider_config != "minted":
+        provider_cwd = tmp_path / "provider"
+        provider_cwd.mkdir()
+        if provider_config == "other":
+            other_actor_dir = provider_cwd / ".khive"
+            other_actor_dir.mkdir()
+            (other_actor_dir / "config.toml").write_text('[actor]\nid = "agent:other-dir"\n')
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr(agent_mod, "stamp_agent_depth", lambda _name: None)
+    seen = []
+
+    async def capture(self, instruction=None, **kwargs):
+        event = await self.chat_model.create_event(prompt="go", repo=kwargs["repo"])
+        seen.extend(await codex_launch(event.payload["request"], argv=True))
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    config = _mcp_config_file(tmp_path, {"khive": {"command": "kkernel", "args": ["mcp"]}})
+    parser = argparse.ArgumentParser()
+    agent_mod.add_agent_subparser(parser.add_subparsers(dest="command", required=True))
+    parsed = parser.parse_args(
+        ["agent", "--cwd", str(provider_cwd), "--mcp-config", config, "--", CODEX_SPEC, "go"]
+    )
+
+    assert agent_mod.run_agent(parsed) == 0
+    assert Path(seen[seen.index("-C") + 1]).resolve() == provider_cwd.resolve()
+    expected = ["mcp"] if provider_config == "minted" else ["mcp", "--actor", actor]
+    [server_args] = [arg for arg in seen if arg.startswith("mcp_servers.khive.args=")]
+    assert json.loads(server_args.partition("=")[2]) == expected
+    assert f'mcp_servers.khive.env.KHIVE_ACTOR="{actor}"' in seen
+
+
 @pytest.mark.asyncio
 async def test_resumed_codex_leg_gets_the_set_the_resume_command_resolved(
     monkeypatch, tmp_path, codex_home, caplog
@@ -1105,11 +1159,12 @@ async def test_resumed_leg_request_carries_the_codex_overrides(
 
     assert seen["kwargs"]["config_overrides"] == {
         "mcp_servers.khive.command": "kkernel",
-        "mcp_servers.khive.args": ["serve"],
+        "mcp_servers.khive.args": ["serve", "--actor", "agent:anonymous"],
         "mcp_servers.khive.env.KHIVE_ACTOR": "agent:anonymous",
     }
     assert seen["config"]
     assert SERVERS_COMMAND_ARG in seen["config"]
+    assert 'mcp_servers.khive.args=["serve", "--actor", "agent:anonymous"]' in seen["config"]
 
 
 @pytest.mark.asyncio
@@ -1484,7 +1539,7 @@ async def test_a_set_resolved_on_resume_replaces_the_one_the_codex_leg_had(
     assert seen["kwargs"]["config_overrides"] == {
         "model_provider": "vendor",
         "mcp_servers.khive.command": "kkernel",
-        "mcp_servers.khive.args": ["serve"],
+        "mcp_servers.khive.args": ["serve", "--actor", "agent:anonymous"],
         "mcp_servers.khive.env.KHIVE_ACTOR": "agent:anonymous",
     }
 
@@ -1771,7 +1826,7 @@ async def test_a_codex_worker_is_spawned_with_the_runs_server_set(flow_run, code
     args = request._cmd_args(_plain_request(request), request.cwd())
     forwarded = [args[i + 1] for i, a in enumerate(args) if a == "-c" and i + 1 < len(args)]
     assert 'mcp_servers.khive.command="kkernel"' in forwarded
-    assert 'mcp_servers.khive.args=["serve"]' in forwarded
+    assert 'mcp_servers.khive.args=["serve", "--actor", "agent:anonymous"]' in forwarded
 
 
 @pytest.mark.asyncio
