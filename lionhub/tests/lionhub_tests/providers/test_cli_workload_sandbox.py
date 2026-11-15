@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from lionagi._errors import CLIInputRefusedError
+from lionagi._errors import CLIInputRefusedError, ConfigurationError
 from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 from lionhub.providers.google.gemini_code import GeminiCodeRequest
 from lionhub.providers.openai.codex import CodexCodeRequest
@@ -470,3 +470,65 @@ async def test_a_light_pi_agent_is_refused_before_anything_starts(tmp_path, monk
     with pytest.raises(CLIInputRefusedError, match="Pi has none"):
         async for _ in pi_cli._ndjson_from_cli(request):
             pass
+
+
+async def _drain_pi(pi_cli, request):
+    async for _ in pi_cli._ndjson_from_cli(request):
+        pass
+
+
+@pytest.fixture
+def pi_launches(tmp_path, monkeypatch):
+    """Pi's launch point replaced by a recorder; the list holds each command it was handed."""
+    import lionhub.providers.pi.cli as pi_cli
+
+    launched: list[list[str]] = []
+
+    async def fake_ndjson(cmd, **_kw):
+        launched.append(list(cmd))
+        if False:
+            yield {}
+
+    monkeypatch.setattr(pi_cli, "PI_CLI", str(tmp_path / "pi-must-not-run"))
+    monkeypatch.setattr(pi_cli, "ndjson_from_cli", fake_ndjson)
+    return launched
+
+
+@pytest.mark.asyncio
+async def test_a_heavy_pi_agent_is_refused_while_the_child_sandbox_is_enabled(
+    tmp_path, monkeypatch, pi_launches
+):
+    import lionhub.agent.child_sandbox as child_sandbox
+    import lionhub.providers.pi.cli as pi_cli
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+    request = pi_cli.PiCodeRequest(prompt="hi", repo=tmp_path)
+    with pytest.raises(CLIInputRefusedError, match="while the child sandbox is enabled"):
+        await _drain_pi(pi_cli, request)
+    assert pi_launches == []
+
+
+@pytest.mark.asyncio
+async def test_a_heavy_pi_agent_runs_as_before_with_the_child_sandbox_disabled(
+    tmp_path, pi_launches
+):
+    import lionhub.providers.pi.cli as pi_cli
+
+    request = pi_cli.PiCodeRequest(prompt="hi", repo=tmp_path)
+    await _drain_pi(pi_cli, request)
+    assert len(pi_launches) == 1
+    assert pi_launches[0][0] == str(tmp_path / "pi-must-not-run")
+
+
+@pytest.mark.asyncio
+async def test_a_pi_agent_is_not_started_when_the_sandbox_settings_cannot_be_read(
+    tmp_path, monkeypatch, pi_launches
+):
+    import lionhub.agent.child_sandbox as child_sandbox
+    import lionhub.providers.pi.cli as pi_cli
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {"child_sandbox": "on"})
+    request = pi_cli.PiCodeRequest(prompt="hi", repo=tmp_path)
+    with pytest.raises(ConfigurationError):
+        await _drain_pi(pi_cli, request)
+    assert pi_launches == []
