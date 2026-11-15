@@ -765,6 +765,7 @@ class ClaudeCodeRequest(BaseModel):
         policy is enabled.
         """
         from lionhub.agent.child_sandbox import (
+            _refuse_a_home_workspace,
             check_claude_cli_floor,
             check_sandbox_backend,
             claude_settings_argument,
@@ -788,6 +789,7 @@ class ClaudeCodeRequest(BaseModel):
                 )
         if not policy.enabled:
             return None
+        _refuse_a_home_workspace(self.cwd(), self.env, enabled=True)
         check_sandbox_backend()
         binary = resolve_claude_cli()
         if binary:
