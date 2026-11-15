@@ -2115,8 +2115,12 @@ def run_state(args: argparse.Namespace) -> int:
             print(f"  skipped {result['skipped_sessions']} session(s) referenced by retained rows:")
             for table, count in result["skipped_by_reference"].items():
                 print(f"    {table}: {count}")
-        if deferred := result.get("deferred_victim_progressions"):
-            print(f"  deferred message cleanup for {deferred} non-array victim progression(s)")
+        if kept := result.get("deferred_victim_progressions"):
+            verb, owners = ("would keep", "selected") if args.dry_run else ("kept", "deleted")
+            print(f"  {verb} {kept} non-array progression(s) from {owners} sessions")
+            print(
+                "  later session prunes leave the orphaned progressions and their messages in place"
+            )
         if retained := result.get("non_array_survivor_progressions"):
             print(f"  retained {retained} other non-array progression(s)")
         # Recomputed after the fact, never carried out of the prune's own
