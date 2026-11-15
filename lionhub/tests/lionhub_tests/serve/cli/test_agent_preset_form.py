@@ -435,7 +435,7 @@ class TestPresetCodingBehaviour:
 _CODING_TOOL_NAMES = {"reader", "editor", "bash", "search"}
 
 
-def _wire_run_agent_mocks(monkeypatch, tmp_path):
+def _wire_run_agent_mocks(monkeypatch, tmp_path, *, use_real_model=False):
     """Wire all external stubs needed for a bare _run_agent() call in tests."""
     from unittest.mock import AsyncMock
 
@@ -448,8 +448,9 @@ def _wire_run_agent_mocks(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Branch, "operate", fast_operate)
     monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
-    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "claude/sonnet")
-    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    if not use_real_model:
+        monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "claude/sonnet")
+        monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
 
     async def fake_setup(*a, **kw):
         return None
@@ -508,6 +509,48 @@ async def test_run_agent_preset_coding_creates_preset_config(monkeypatch, tmp_pa
 
     assert status == "completed"
     assert coding_calls, "_make_coding_preset() must have been called"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", [None, "low"], ids=["omitted", "flag"])
+async def test_coding_preset_keeps_claude_effort_in_the_prepared_request(
+    monkeypatch, tmp_path, effort
+):
+    from unittest.mock import AsyncMock
+
+    import lionhub.agent.factory as factory_mod
+    from lionagi import Branch
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionhub.serve.cli.agent import _run_agent
+
+    _wire_run_agent_mocks(monkeypatch, tmp_path, use_real_model=True)
+    create_agent = AsyncMock(wraps=factory_mod.create_agent)
+    monkeypatch.setattr(factory_mod, "create_agent", create_agent)
+    requests = []
+
+    async def operate(branch, *args, **kwargs):
+        event = await branch.chat_model.create_event(prompt="Build a feature")
+        requests.append(event.payload["request"])
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    _, _, _, status, _ = await _run_agent(
+        "claude/sonnet",
+        "Build a feature",
+        preset="coding",
+        cwd=str(tmp_path),
+        no_mcp_config=True,
+        effort=effort,
+    )
+
+    assert status == "completed"
+    (request,) = requests
+    assert isinstance(request, ClaudeCodeRequest)
+    assert request.effort == effort
+    spec = create_agent.await_args.args[0]
+    assert spec.effort == effort
+    assert spec._effort_origin == ("default" if effort is None else "explicit")
+    assert spec._effort_already_applied is True
 
 
 @pytest.mark.asyncio

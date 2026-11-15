@@ -24,6 +24,8 @@ from .spec import AgentSpec
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from lionagi.service.imodel import iModel
+
 __all__ = (
     "create_agent",
     "CREATE_AGENT_BRANCH_ORIGIN_KEY",
@@ -44,8 +46,7 @@ _MAX_TOKENS_PROVIDERS = frozenset({"anthropic"})
 
 
 class _AgentSettingError(ConfigurationError):
-    """The agent being built cannot carry ``agent_env``, ``contain_account_integrations``,
-    ``prompt_caching`` or ``max_tokens``."""
+    """The resolved agent or model cannot carry a requested setting."""
 
     __slots__ = ()
 
@@ -82,14 +83,72 @@ def _api_effort_kwargs(provider: str, model: str, effort: str, *, origin: str = 
     )
 
 
+def _merge_effort_kwargs(config: dict, update: dict) -> None:
+    for key in ("output_config", "reasoning"):
+        existing = config.get(key)
+        if key in update and isinstance(existing, dict):
+            update[key] = {**existing, **update[key]}
+    config.update(update)
+
+
 def _set_api_effort(
     config: dict, provider: str, model: str, effort: str, *, origin: str = "explicit"
 ) -> bool:
     update = _api_effort_kwargs(provider, model, effort, origin=origin)
-    if "output_config" in update and isinstance(config.get("output_config"), dict):
-        update["output_config"] = {**config["output_config"], **update["output_config"]}
-    config.update(update)
+    _merge_effort_kwargs(config, update)
     return bool(update)
+
+
+def _apply_resolved_model_effort(
+    model: iModel, effort: str | None, *, origin: str, copy_model: bool = False
+) -> iModel:
+    """Apply declared effort using the resolved endpoint's request fields."""
+    if not effort or origin == "default":
+        return model
+
+    from lionagi.service.providers import (
+        PROVIDER_EFFORT_KWARG,
+        PROVIDERS_EFFORT_VIA_MODEL_NAME,
+        _clamp_claude_effort,
+        _clamp_codex_effort,
+    )
+
+    config = model.endpoint.config
+    provider = _canonical_provider(config.provider)
+    model_name = model.model_name
+    kwarg = PROVIDER_EFFORT_KWARG.get(provider) if model.is_cli else None
+    if kwarg is not None:
+        if provider == "codex":
+            effort = _clamp_codex_effort(effort, model_name)
+        elif provider in _CLAUDE_PROVIDER_NAMES:
+            effort = _clamp_claude_effort(effort, model_name)
+        update = {kwarg: effort}
+    elif model.is_cli and provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+        from lionhub.providers.google.gemini_code import resolve_agy_model
+
+        update = {"model": resolve_agy_model(model_name, effort=effort, reapply_effort=True)}
+    elif (provider, config.endpoint) in (
+        ("anthropic", "messages"),
+        ("openai", "chat/completions"),
+        ("openai", "responses"),
+    ):
+        update = _api_effort_kwargs(provider, model_name, effort, origin=origin)
+        if config.endpoint == "responses" and update:
+            update = {"reasoning": {"effort": update["reasoning_effort"]}}
+    elif origin in ("profile", "stored"):
+        return model
+    else:
+        raise _AgentSettingError(
+            f"provider {provider!r}, endpoint {config.endpoint!r}, model {model_name!r} "
+            f"cannot carry effort {effort!r}"
+        )
+
+    if not update:
+        return model
+    if copy_model:
+        model = model.copy(share_session=True, share_executor=True)
+    _merge_effort_kwargs(model.endpoint.config.kwargs, update)
+    return model
 
 
 def _parse_agent_model_spec(value: str, *, origin: str = "explicit"):
@@ -202,6 +261,10 @@ async def create_agent(
     differently there, and only Anthropic's mapping is tested), and when the
     endpoint built does not keep the limit in its request settings: each of
     those would otherwise send the provider's default while the spec read as set.
+
+    Declared ``spec.effort`` uses the resolved model's request fields. A
+    supplied model gets a branch-local copy when applying the declaration,
+    and a configured default model receives the declaration as it is built.
     """
     spec = config
 
@@ -310,17 +373,8 @@ async def create_agent(
     # config, which the MCP hand-off below may turn off.
     derived_effort_kwarg: str | None = None
 
-    if chat_model is not None:
-        from lionhub.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
-
-        if isinstance(getattr(chat_model, "endpoint", None), ClaudeCodeCLIEndpoint):
-            from .child_sandbox import resolve_child_sandbox
-
-            # Resolved here as for a model this factory builds, so the profile's exemption is
-            # kept and a configuration error refuses before the agent exists.
-            chat_model.endpoint.config.kwargs["child_sandbox"] = resolve_child_sandbox(
-                sandbox_profile
-            ).to_dict()
+    supplied_model = chat_model is not None
+    if supplied_model:
         branch_kwargs["chat_model"] = chat_model
     elif spec.model:
         from lionagi.service.providers import (
@@ -470,6 +524,35 @@ async def create_agent(
         branch_kwargs["log_config"] = log_config
 
     branch = Branch(**branch_kwargs)
+    if (
+        spec.effort
+        and (supplied_model or not spec.model)
+        and not (supplied_model and getattr(spec, "_effort_already_applied", False))
+    ):
+        original = branch.chat_model
+        origin = getattr(spec, "_effort_origin", "explicit")
+        resolved = _apply_resolved_model_effort(
+            original,
+            spec.effort,
+            origin=origin,
+            copy_model=supplied_model and original is chat_model,
+        )
+        if branch.parse_model is not original:
+            # Serialized model inputs construct independent chat and parse models.
+            _apply_resolved_model_effort(branch.parse_model, spec.effort, origin=origin)
+        elif resolved is not original:
+            branch.parse_model = resolved
+        if resolved is not original:
+            branch.chat_model = resolved
+    if supplied_model:
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
+
+        if isinstance(getattr(chat_model, "endpoint", None), ClaudeCodeCLIEndpoint):
+            from .child_sandbox import resolve_child_sandbox
+
+            branch.chat_model.endpoint.config.kwargs["child_sandbox"] = resolve_child_sandbox(
+                sandbox_profile
+            ).to_dict()
     branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
 
     system_message = spec.build_system_message()

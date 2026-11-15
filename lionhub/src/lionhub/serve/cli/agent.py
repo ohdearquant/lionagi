@@ -2258,7 +2258,7 @@ async def _run_agent(
                         )
                     spec = _make_api_agent_spec(
                         cwd=cwd,
-                        effort=effort or "high",
+                        effort=effort,
                         system_prompt=profile_extra or None,
                         role=profile_role if has_role_key else "reviewer",
                         tools=api_launch["tools"],
@@ -2268,10 +2268,13 @@ async def _run_agent(
                 else:
                     spec = _make_coding_preset(
                         cwd=cwd,
-                        effort=effort or "high",
+                        effort=effort,
                         system_prompt=profile_extra or None,
                         role=profile_role if has_role_key else "implementer",
                     )
+                # The CLI already prepared the request with the resolved effort.
+                object.__setattr__(spec, "_effort_origin", effort_origin)
+                object.__setattr__(spec, "_effort_already_applied", True)
                 if profile is not None:
                     spec.khive_injection = getattr(profile, "khive_injection", None)
                     if api_launch is not None:
