@@ -25,7 +25,7 @@ def test_schedule_parser_has_no_studio_imports():
             imported.update(f"{base}.{alias.name}" for alias in node.names)
         elif isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
-    forbidden = ("lionagi.studio", "lionagi.cli", "fastapi", "pydantic")
+    forbidden = ("lionagi.studio", "lionhub.serve.cli", "fastapi", "pydantic")
     assert not {
         name
         for name in imported

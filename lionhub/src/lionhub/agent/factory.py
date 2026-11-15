@@ -18,10 +18,13 @@ from lionagi.ln.types import UnsetType
 from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionagi.session.branch import Branch
 
+from .khive_actor import KHIVE_ACTOR_ENV, is_khive_server
 from .spec import AgentSpec
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from lionagi.service.imodel import iModel
 
 __all__ = (
     "create_agent",
@@ -43,8 +46,7 @@ _MAX_TOKENS_PROVIDERS = frozenset({"anthropic"})
 
 
 class _AgentSettingError(ConfigurationError):
-    """The agent being built cannot carry ``agent_env``, ``contain_account_integrations``,
-    ``prompt_caching`` or ``max_tokens``."""
+    """The resolved agent or model cannot carry a requested setting."""
 
     __slots__ = ()
 
@@ -81,14 +83,72 @@ def _api_effort_kwargs(provider: str, model: str, effort: str, *, origin: str = 
     )
 
 
+def _merge_effort_kwargs(config: dict, update: dict) -> None:
+    for key in ("output_config", "reasoning"):
+        existing = config.get(key)
+        if key in update and isinstance(existing, dict):
+            update[key] = {**existing, **update[key]}
+    config.update(update)
+
+
 def _set_api_effort(
     config: dict, provider: str, model: str, effort: str, *, origin: str = "explicit"
 ) -> bool:
     update = _api_effort_kwargs(provider, model, effort, origin=origin)
-    if "output_config" in update and isinstance(config.get("output_config"), dict):
-        update["output_config"] = {**config["output_config"], **update["output_config"]}
-    config.update(update)
+    _merge_effort_kwargs(config, update)
     return bool(update)
+
+
+def _apply_resolved_model_effort(
+    model: iModel, effort: str | None, *, origin: str, copy_model: bool = False
+) -> iModel:
+    """Apply declared effort using the resolved endpoint's request fields."""
+    if not effort or origin == "default":
+        return model
+
+    from lionagi.service.providers import (
+        PROVIDER_EFFORT_KWARG,
+        PROVIDERS_EFFORT_VIA_MODEL_NAME,
+        _clamp_claude_effort,
+        _clamp_codex_effort,
+    )
+
+    config = model.endpoint.config
+    provider = _canonical_provider(config.provider)
+    model_name = model.model_name
+    kwarg = PROVIDER_EFFORT_KWARG.get(provider) if model.is_cli else None
+    if kwarg is not None:
+        if provider == "codex":
+            effort = _clamp_codex_effort(effort, model_name)
+        elif provider in _CLAUDE_PROVIDER_NAMES:
+            effort = _clamp_claude_effort(effort, model_name)
+        update = {kwarg: effort}
+    elif model.is_cli and provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+        from lionhub.providers.google.gemini_code import resolve_agy_model
+
+        update = {"model": resolve_agy_model(model_name, effort=effort, reapply_effort=True)}
+    elif (provider, config.endpoint) in (
+        ("anthropic", "messages"),
+        ("openai", "chat/completions"),
+        ("openai", "responses"),
+    ):
+        update = _api_effort_kwargs(provider, model_name, effort, origin=origin)
+        if config.endpoint == "responses" and update:
+            update = {"reasoning": {"effort": update["reasoning_effort"]}}
+    elif origin in ("profile", "stored"):
+        return model
+    else:
+        raise _AgentSettingError(
+            f"provider {provider!r}, endpoint {config.endpoint!r}, model {model_name!r} "
+            f"cannot carry effort {effort!r}"
+        )
+
+    if not update:
+        return model
+    if copy_model:
+        model = model.copy(share_session=True, share_executor=True)
+    _merge_effort_kwargs(model.endpoint.config.kwargs, update)
+    return model
 
 
 def _parse_agent_model_spec(value: str, *, origin: str = "explicit"):
@@ -129,6 +189,8 @@ async def create_agent(
     resolved_mcp_servers: dict[str, Any] | None | UnsetType = Unset,
     resolved_mcp_explicit: bool = False,
     agent_env: Mapping[str, str] | None = None,
+    sandbox_profile: str | None = None,
+    khive_actor: str | None = None,
     _command_env_names_out: Callable[[frozenset[str]], None] | None = None,
 ) -> Branch:
     """Create a fully wired Branch from AgentSpec: settings → hooks → prompt → model → tools.
@@ -158,6 +220,18 @@ async def create_agent(
     child with this process's environment; an agent rebuilt with
     ``create_agent`` gets the overlay only when ``agent_env`` is passed again.
 
+    ``sandbox_profile`` is the agent profile name the user passed (the ``-a`` profile), and is
+    the only key matched against ``child_sandbox.profiles.<name>.allow_read`` when a Claude
+    Code child's sandbox policy is resolved. ``None`` (a launch without a profile) gets no
+    exemption. The role the spec was cast from is never used: a role name that happens to equal
+    a ``profiles`` key does not earn its exemption.
+
+    ``khive_actor`` is the khive actor the pre-turn recall and writeback
+    client registered for ``spec.khive_injection`` acts as. Its khive server
+    gets the actor in ``--actor`` and ``KHIVE_ACTOR``. A caller that hands the
+    child khive servers attributed to a profile passes the same actor here.
+    ``None`` leaves the injection server as configured.
+
     ``spec.contain_account_integrations`` turns a codex agent's account
     ``apps`` and ``plugins`` features off by default. It is applied to the
     endpoint this factory builds, whatever spelling of the provider built it, so
@@ -185,6 +259,10 @@ async def create_agent(
     differently there, and only Anthropic's mapping is tested), and when the
     endpoint built does not keep the limit in its request settings: each of
     those would otherwise send the provider's default while the spec read as set.
+
+    Declared ``spec.effort`` uses the resolved model's request fields. A
+    supplied model gets a branch-local copy when applying the declaration,
+    and a configured default model receives the declaration as it is built.
     """
     spec = config
 
@@ -293,7 +371,8 @@ async def create_agent(
     # config, which the MCP hand-off below may turn off.
     derived_effort_kwarg: str | None = None
 
-    if chat_model is not None:
+    supplied_model = chat_model is not None
+    if supplied_model:
         branch_kwargs["chat_model"] = chat_model
     elif spec.model:
         from lionagi.service.providers import (
@@ -435,6 +514,42 @@ async def create_agent(
         branch_kwargs["log_config"] = log_config
 
     branch = Branch(**branch_kwargs)
+    if (
+        spec.effort
+        and (supplied_model or not spec.model)
+        and not (supplied_model and spec._effort_in_supplied_model)
+    ):
+        original = branch.chat_model
+        origin = getattr(spec, "_effort_origin", "explicit")
+        resolved = _apply_resolved_model_effort(
+            original,
+            spec.effort,
+            origin=origin,
+            copy_model=supplied_model and original is chat_model,
+        )
+        if branch.parse_model is not original:
+            # Serialized model inputs construct independent chat and parse models.
+            _apply_resolved_model_effort(branch.parse_model, spec.effort, origin=origin)
+        elif resolved is not original:
+            branch.parse_model = resolved
+        if resolved is not original:
+            branch.chat_model = resolved
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
+
+    # Bind the sandbox after model deserialization and any effort copy, so the
+    # endpoints the branch runs keep the policy in their clone and restore config.
+    models = [branch.chat_model]
+    if branch.parse_model is not branch.chat_model:
+        models.append(branch.parse_model)
+    claude_endpoints = [
+        model.endpoint for model in models if isinstance(model.endpoint, ClaudeCodeCLIEndpoint)
+    ]
+    if claude_endpoints:
+        from .child_sandbox import resolve_child_sandbox
+
+        policy = resolve_child_sandbox(sandbox_profile)
+        for endpoint in claude_endpoints:
+            endpoint.config.kwargs["child_sandbox"] = policy.to_dict()
     branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
 
     system_message = spec.build_system_message()
@@ -500,7 +615,7 @@ async def create_agent(
         command_env_names=command_names,
         _command_env_supplier=command_env_supplier,
     )
-    _register_providers(branch, spec)
+    _register_providers(branch, spec, actor=khive_actor)
     native_mcp_servers: frozenset[str] = frozenset()
     if resolved_mcp_servers is Unset:
         native_mcp_servers = await _load_mcp(
@@ -800,7 +915,7 @@ def _register_tools(
             branch.register_tools(tool)
 
 
-def _register_providers(branch: Branch, spec: AgentSpec) -> None:
+def _register_providers(branch: Branch, spec: AgentSpec, *, actor: str | None = None) -> None:
     # LIONAGI_KHIVE_INJECTION is the fleet-wide injection kill-switch.
     env_setting = os.getenv("LIONAGI_KHIVE_INJECTION")
     if env_setting is not None and env_setting.strip().lower() in {
@@ -858,7 +973,7 @@ def _register_providers(branch: Branch, spec: AgentSpec) -> None:
             raise TypeError(
                 "khive_injection must be None, a bool, a mapping, or a KhiveInjectionPolicy"
             )
-        provider = KhiveInjectionProvider(policy)
+        provider = KhiveInjectionProvider(policy, actor=actor)
     except Exception as exc:
         import logging
 
@@ -881,7 +996,8 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
     injection is a context-provider concern, orthogonal to CodingToolkit/path-guards.
     The provider is keyed on ``{role_name}-recall-v1`` (role_name is the invoked
     profile name). None/False disables; the env kill-switch is honored by
-    ``_register_providers``.
+    ``_register_providers``. Its direct khive connection uses the same minted or
+    profile actor as the forwarded servers and starts in the process directory.
     """
     configured = getattr(profile, "khive_injection", None)
     # Only None/False disable — an empty mapping is a valid opt-in (see _register_providers).
@@ -890,10 +1006,15 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
 
     from lionhub.agent.casts.pattern import Role
     from lionhub.agent.casts.profile import Profile
+    from lionhub.agent.khive_actor import run_khive_actor
 
     identity = Profile(name=role_name, role=Role(name=role_name, description="", body=""))
     provider_spec = AgentSpec(profile=identity, pack=None, khive_injection=configured)
-    _register_providers(branch, provider_spec)
+    _register_providers(
+        branch,
+        provider_spec,
+        actor=run_khive_actor(getattr(profile, "name", None)),
+    )
 
 
 def _register_coding_tools(
@@ -1295,6 +1416,20 @@ def apply_forwarded_mcp_servers(
             value = server_cfg.get(field_key)
             if value is None:
                 continue
+            if (
+                field_key == "env"
+                and isinstance(value, Mapping)
+                and KHIVE_ACTOR_ENV in value
+                and is_khive_server(server_cfg)
+            ):
+                # A khive server's actor is a name, never a secret: it goes on the command
+                # line, so it still reaches a run that ignores the user config.
+                overrides[f"mcp_servers.{server_name}.env.{KHIVE_ACTOR_ENV}"] = value[
+                    KHIVE_ACTOR_ENV
+                ]
+                value = {k: v for k, v in value.items() if k != KHIVE_ACTOR_ENV}
+                if not value:
+                    continue
             if field_key in _SECRET_CODEX_MCP_FIELDS:
                 secret_fields.setdefault(server_name, {})[field_key] = value
             else:

@@ -113,7 +113,7 @@ async def test_unregistered_scope_never_fires():
 
 from unittest.mock import AsyncMock, patch  # noqa: E402
 
-from ._scheduler_claims import fire_inner_with_claim, fire_with_claim
+from tests._scheduler_claims import fire_inner_with_claim, fire_with_claim
 
 
 def _notify_schedule(**overrides) -> dict:
@@ -182,7 +182,7 @@ async def test_abandoned_recovery_unregisters_only_after_terminal_write():
     # Force the pre-spawn exception branch, then reject the recovery
     # occurrence write (orphan no longer qualifies) so the fire takes the
     # abandoned-superseded-recovery exit.
-    svc.tombstone_and_replace_schedule_run = AsyncMock(return_value=False)
+    svc.tombstone_and_replace_failed_schedule_run = AsyncMock(return_value=False)
     registered_at_terminal_write: list[bool] = []
 
     async def _update_status(entity_type, entity_id, **kwargs):
@@ -215,7 +215,7 @@ async def test_abandonment_failure_still_unregisters():
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     svc = _make_engine_svc()
-    svc.tombstone_and_replace_schedule_run = AsyncMock(return_value=False)
+    svc.tombstone_and_replace_failed_schedule_run = AsyncMock(return_value=False)
     # The abandonment's end timestamp rides its guarded terminal write rather
     # than a separate update_invocation, so that write is where a database
     # failure now surfaces.
@@ -274,7 +274,9 @@ async def test_occurrence_write_failure_on_invalid_argv_still_unregisters():
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     svc = _make_engine_svc()
-    svc.create_schedule_run_and_advance = AsyncMock(side_effect=RuntimeError("occurrence failed"))
+    svc.create_failed_schedule_run_and_advance = AsyncMock(
+        side_effect=RuntimeError("occurrence failed")
+    )
     engine = SchedulerEngine(svc=svc)
 
     with (

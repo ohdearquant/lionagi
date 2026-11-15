@@ -50,8 +50,8 @@ def test_a_record_written_while_the_kill_settles_waits_for_it_and_is_kept(
     """The kill reads run.json again and writes under the run's manifest lock, which every run.json
     writer takes. Another invocation sharing the run id that records itself after that read waits
     for the kill's write, and its record is the one left."""
-    import lionagi.cli.kill as kill_mod
     import lionhub.orchestration.kill as kill_service
+    import lionhub.serve.cli.kill as kill_mod
 
     run = allocate_run(run_id=RUN_ID)
     stopped = {"run_id": RUN_ID, **_degraded(leg.pid)}

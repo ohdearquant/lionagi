@@ -354,9 +354,10 @@ between `build_argv()` and this function gives a revoked
 A command child also gets the daemon's environment without
 `LIONAGI_STATE_DB_URL`, in any letter case (`env_without_state_db_url` in
 `lionagi/ln/_proc.py`). A command often runs another interpreter with its own
-lionagi, and an inherited store URL would open the daemon's store with that
-lionagi: one on a newer schema migrates the file on open, after which the
-daemon's own code refuses it. Every other path that runs a configured or
+lionagi, and an inherited store URL would let that build open the daemon's
+store. A migration by a newer build can leave the daemon unable to write.
+Older builds can migrate on open, as can current builds with
+`LIONAGI_STATE_AUTO_MIGRATE=1`. Every other path that runs a configured or
 agent-chosen command starts the same way: notify commands, external hooks, MCP
 terminal notices, secrets lookup commands, configured stdio MCP servers (the
 Studio connection check and the MCP connection pool), the commands run through
@@ -377,8 +378,7 @@ reads `$LIONAGI_HOME/.env` below those files, so a store URL there is a
 user-wide default that reaches every lionagi that reads that file. And a child without the variable falls
 back to the default store, `$LIONAGI_HOME/state.db`: a daemon whose store is at
 that path, by default or through the variable, shares it with any lionagi its
-commands run under the same home directory, and a lionagi of the same line on
-a newer schema migrates it on open, as an upgrade does.
+commands run under the same home directory.
 
 ## lionagi/studio/services/schedules.py
 
@@ -510,6 +510,19 @@ a newer schema migrates it on open, as an upgrade does.
   requires both signals to agree nothing was recorded (zero rows AND no
   watermark); either one alone being non-null means the schedule executed
   at some point, and the honest verdict is `no-evidence`, not `never-fired`.
+- An enabled merged-PR schedule reports `overdue` with
+  `health_cause: page_limit_reached` after three consecutive capped scans
+  without dispatch. While backoff lengthens its configured polling cadence,
+  schedule list and detail responses include `health_effective_poll_interval_sec`,
+  and the `overdue` check measures quiet time against that interval rather than
+  the configured one.
+  The interval doubles after each settled capped scan up to an hour, or the
+  configured interval if it is already longer. Raising the page limit allows
+  an immediate recovery scan. A changed poll target or a scheduler start also
+  allows one immediate scan. A batch already waiting to dispatch keeps its
+  turn without another scan.
+  `last_healthy_poll_at` and `poller_consecutive_401` continue to describe HTTP
+  liveness and authentication.
 
 ## lionagi/studio/services/runs.py
 
@@ -828,7 +841,7 @@ an absolute path even when `manifest_dir` is itself relative.
 - **`_save_skill_definition`** — Always writes
   `<SKILLS_DIR>/<name>/SKILL.md` regardless of what shape currently exists
   on disk, normalizing to the one shape `li skill` actually resolves
-  (`skills.py::_find_skill_md` / `lionagi/cli/skill.py`) rather than
+  (`skills.py::_find_skill_md` / `lionhub/src/lionhub/serve/cli/skill.py`) rather than
   preserving a legacy layout. Plugin-bundled skills live under a plugin
   directory, never under `SKILLS_DIR`, so they're unreachable through this
   path by construction, not by an extra check.
@@ -897,7 +910,7 @@ in that zone), and the next plan reports `UNCHANGED`.
 ## lionagi/studio/services/playbooks.py
 
 - **`_check_spec_fields`** — Mirrors
-  `lionagi/cli/orchestrate/__init__.py::_validate_spec_fields()` exactly,
+  `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py::_validate_spec_fields()` exactly,
   implemented inline to avoid loading the full orchestrate module at import
   time. The two must be kept in sync by hand.
 - **`update_playbook`** — Conservative merge writing a playbook YAML back to
@@ -962,6 +975,15 @@ in that zone), and the next plan reports `UNCHANGED`.
 - **Orphan cleanup** — Scoped to pruned lineage only; never touches rows
   outside it, to avoid a newborn-orphan race where `_persist.py` commits a
   progression before the session row exists.
+  Arrays and objects in surviving progressions protect messages named by
+  their immediate values. A scalar protects the message it names, and JSON
+  null names none. If a session selected for pruning owns a non-array
+  progression, its session row can still be pruned while its progressions
+  and messages are kept. Later session prunes leave these orphaned
+  progressions and messages in place. The CLI's internal
+  `deferred_victim_progressions` count covers the kept non-array
+  progressions without surviving owners. Other non-array survivors are
+  reported separately. Malformed JSON aborts the write transaction.
 - **Audit event ordering** — Runs after the prune transaction commits;
   `insert_admin_event` opens its own write transaction, and nesting it inside
   the prune transaction would self-deadlock on the sqlite write lock.

@@ -5225,6 +5225,7 @@
                 "import",
                 "import-teams",
                 "ls",
+                "migrate",
                 "null-content",
                 "prune",
                 "stats",
@@ -5235,6 +5236,24 @@
             }
           ],
           "subparsers": {
+            "migrate": {
+              "prog": "li state migrate",
+              "actions": [
+                {
+                  "option_strings": [
+                    "-h",
+                    "--help"
+                  ],
+                  "dest": "help",
+                  "required": false,
+                  "nargs": 0,
+                  "default": "==SUPPRESS==",
+                  "choices": null,
+                  "help": "show this help message and exit"
+                }
+              ],
+              "subparsers": {}
+            },
             "terminal-consumer": {
               "prog": "li state terminal-consumer",
               "actions": [

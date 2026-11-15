@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lionagi._errors import LionError
@@ -19,6 +19,13 @@ from lionagi.state.db import (
     _locked_cli_worker_prune_candidates,
     state_db_file,
     state_db_known_absent,
+)
+from lionhub.orchestration._prune_lineage import (
+    _non_array_progression_sql,
+    _progression_members,
+    _prune_lineage_refs_sql,
+    _prune_temp_table,
+    _retained_message_ids_sql,
 )
 from lionhub.orchestration.scheduler.retention_archive import archive_chunk_id, write_archive_chunk
 
@@ -334,17 +341,23 @@ async def _prune_session_chunk(
     retention_params: tuple[Any, ...],
     archive_destination: Path | None,
     archive_id: str,
-) -> int:
+    deferred_direct_ids: set[str] | None = None,
+    deferred_progression_ids: set[str] | None = None,
+) -> tuple[int, int]:
     """Archive-then-delete one chunk of candidate session ids in the
     caller's transaction, running the same lock/recheck/soft-FK-nullify/
     delete/orphan-cleanup sequence ``prune_old_data`` always had, scoped to
     this chunk. When *archive_destination* is set, doomed rows are durably
     archived before any DELETE runs; a failed archive write raises and the
     caller's transaction rolls back, so this chunk's rows are refused
-    rather than lost. Returns sessions actually deleted (0 if the chunk
-    raced empty on recheck)."""
+    rather than lost. Returns the counts deleted and retained for consumer debt."""
+    dialect = conn.dialect.name
+    members = _progression_members(dialect)
+    non_array = _non_array_progression_sql(dialect)
+    message_table = _prune_temp_table(dialect, "prune_candidate_messages")
+
     if not session_ids:
-        return 0
+        return 0, 0
 
     session_ids = sorted(set(session_ids))
 
@@ -358,11 +371,9 @@ async def _prune_session_chunk(
         session_ids,
     )
 
-    session_ids = await _locked_cli_worker_prune_candidates(
-        conn, session_ids, dialect=conn.dialect.name
-    )
+    session_ids = await _locked_cli_worker_prune_candidates(conn, session_ids, dialect=dialect)
     if not session_ids:
-        return 0
+        return 0, 0
 
     # Recheck under lock, narrowed to this chunk's ids.
     rows = await _fetch_chunked(
@@ -373,53 +384,69 @@ async def _prune_session_chunk(
     )
     session_ids = sorted({r[0] for r in rows})
     if not session_ids:
-        return 0
+        return 0, 0
 
-    # Capture child ids BEFORE archiving or deleting anything.
-    rows = await _fetch_chunked(conn, "SELECT progression_id FROM sessions WHERE id", session_ids)
-    session_prog_ids = [r[0] for r in rows if r[0] is not None]
-
-    rows = await _fetch_chunked(
-        conn, "SELECT progression_id FROM branches WHERE session_id", session_ids
+    # SQLite's writer reservation already serializes enrollment, ACKs and pruning.
+    # PostgreSQL must also exclude new consumer registrations, which row locks
+    # cannot protect. Keep the consumer lock ahead of the ACK ledger lock.
+    if dialect == "postgresql":
+        await conn.execute(text("LOCK TABLE terminal_consumers IN SHARE MODE"))
+        await conn.execute(text("LOCK TABLE terminal_deliveries IN SHARE ROW EXCLUSIVE MODE"))
+    owed_rows = await _fetch_chunked(
+        conn,
+        "SELECT DISTINCT st.entity_id FROM status_transitions st "
+        "WHERE st.entity_type = 'session' AND st.delivery_eligible IS TRUE "
+        "AND EXISTS (SELECT 1 FROM terminal_consumers tc "
+        "WHERE tc.retired_at IS NULL AND NOT EXISTS ("
+        "SELECT 1 FROM terminal_deliveries td "
+        "WHERE td.transition_id = st.id AND td.consumer = tc.name)) AND st.entity_id",
+        session_ids,
     )
-    branch_prog_ids = [r[0] for r in rows if r[0] is not None]
+    retained = {row[0] for row in owed_rows}
+    session_ids = [session_id for session_id in session_ids if session_id not in retained]
+    if not session_ids:
+        return 0, len(retained)
 
-    candidate_prog_ids = sorted({*session_prog_ids, *branch_prog_ids})
+    # Capture lineage references before the session cascade. Keep bind counts
+    # bounded even if an operator configures a larger transaction chunk.
+    lineage = text(
+        _prune_lineage_refs_sql(dialect, "SELECT id FROM sessions WHERE id IN :session_ids")
+    ).bindparams(bindparam("session_ids", expanding=True))
+    refs = []
+    for start in range(0, len(session_ids), _SQL_IN_CHUNK):
+        result = await conn.execute(
+            lineage, {"session_ids": session_ids[start : start + _SQL_IN_CHUNK]}
+        )
+        refs.extend(result.fetchall())
+    progression_ids = {row.id for row in refs if row.kind == "progression"}
+    non_array_ids = {row.id for row in refs if row.non_array}
+    # Validate surviving JSON before publishing any archive. Only arrays can
+    # be removed below, so the store-wide non-array count stays the same.
+    non_array_count = (
+        await conn.execute(
+            text(f"SELECT COUNT(*) FROM progressions p WHERE {non_array}")  # noqa: S608
+        )
+    ).scalar_one()
+    deferred_progressions = {row.id for row in refs if row.kind == "progression" and row.deferred}
+    candidate_prog_ids = sorted(
+        progression_ids - deferred_progressions - (deferred_progression_ids or set())
+    )
+    current_deferred_ids = {row.id for row in refs if row.kind == "message" and row.deferred}
 
     coll_msg_ids: list[str] = []
     if candidate_prog_ids:
         rows = await _fetch_chunked(
             conn,
-            "SELECT value FROM progressions, json_each(progressions.collection)"
-            " WHERE value IS NOT NULL AND progressions.id",
+            f"SELECT CAST(members.value AS TEXT) FROM progressions p CROSS JOIN {members}"  # noqa: S608
+            " WHERE members.value IS NOT NULL AND p.id",
             candidate_prog_ids,
         )
         coll_msg_ids = [r[0] for r in rows]
 
-    # schema.sql: sessions.first_msg_id / last_msg_id REFERENCES messages(id)
-    rows = await _fetch_chunked(
-        conn,
-        "SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL AND id",
-        session_ids,
-    )
-    session_first_ids = [r[0] for r in rows]
-    rows = await _fetch_chunked(
-        conn,
-        "SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL AND id",
-        session_ids,
-    )
-    session_last_ids = [r[0] for r in rows]
-
-    # schema.sql: branches.system_msg_id REFERENCES messages(id)
-    rows = await _fetch_chunked(
-        conn,
-        "SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL AND session_id",
-        session_ids,
-    )
-    branch_sys_ids = [r[0] for r in rows]
-
     candidate_msg_ids = sorted(
-        {*coll_msg_ids, *session_first_ids, *session_last_ids, *branch_sys_ids}
+        (set(coll_msg_ids) | {row.id for row in refs if row.kind == "message" and not row.deferred})
+        - current_deferred_ids
+        - (deferred_direct_ids or set())
     )
 
     if archive_destination is not None:
@@ -427,10 +454,10 @@ async def _prune_session_chunk(
         # A failed write raises ArchiveWriteError, the caller's `async with
         # db.transaction()` rolls back, and NOTHING in this chunk is deleted
         # -- refusal without deletion on archive failure.
-        session_rows = await _fetch_chunked(
+        archived_sessions = await _fetch_chunked(
             conn, "SELECT * FROM sessions WHERE id", session_ids, fetch_mappings=True
         )
-        branch_rows = await _fetch_chunked(
+        archived_branches = await _fetch_chunked(
             conn,
             "SELECT * FROM branches WHERE session_id",
             session_ids,
@@ -473,8 +500,8 @@ async def _prune_session_chunk(
             archive_destination,
             archive_id,
             {
-                "sessions": session_rows,
-                "branches": branch_rows,
+                "sessions": archived_sessions,
+                "branches": archived_branches,
                 "progressions": progression_rows,
                 "messages": message_rows,
             },
@@ -493,6 +520,14 @@ async def _prune_session_chunk(
             suffix=still_terminal,
             suffix_params=_TERMINAL_SESSION_STATUSES,
         )
+    await _exec_chunked(
+        conn,
+        "DELETE FROM terminal_deliveries WHERE transition_id IN ("
+        "SELECT id FROM status_transitions WHERE entity_type = 'session' AND entity_id",
+        session_ids,
+        suffix=f" AND entity_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph})))",  # noqa: S608
+        suffix_params=_TERMINAL_SESSION_STATUSES,
+    )
     await _exec_chunked(
         conn,
         "DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id",
@@ -524,48 +559,67 @@ async def _prune_session_chunk(
         for i in range(0, len(candidate_prog_ids), _SQL_IN_CHUNK):
             chunk = candidate_prog_ids[i : i + _SQL_IN_CHUNK]
             ph = ", ".join("?" * len(chunk))
+            # Check each owner relation with an anti join. This avoids the
+            # unhashable NOT IN subquery that PostgreSQL can rescan for each ID.
             sql = (
                 f"DELETE FROM progressions WHERE id IN ({ph})"  # noqa: S608
-                " AND id NOT IN ("
-                "  SELECT progression_id FROM sessions WHERE progression_id IS NOT NULL"
-                "  UNION"
-                "  SELECT progression_id FROM branches WHERE progression_id IS NOT NULL"
+                " AND NOT EXISTS ("
+                "  SELECT 1 FROM sessions WHERE sessions.progression_id = progressions.id"
+                ")"
+                " AND NOT EXISTS ("
+                "  SELECT 1 FROM branches WHERE branches.progression_id = progressions.id"
                 ")"
             )
             await conn.execute(*_q(sql, chunk))
 
+    deferred_count = len(
+        await _fetch_chunked(
+            conn,
+            "SELECT p.id FROM progressions p WHERE NOT EXISTS ("
+            " SELECT 1 FROM sessions s WHERE s.progression_id = p.id"
+            ") AND NOT EXISTS ("
+            " SELECT 1 FROM branches b WHERE b.progression_id = p.id"
+            ") AND p.id",
+            sorted(non_array_ids),
+        )
+    )
+    non_array_survivor_progressions = non_array_count - deferred_count
     if candidate_msg_ids:
         # One DELETE for the whole chunk. Its survivor check reads every progression's collection
         # in the store, and a DELETE per batch of ids repeated that read inside the write
         # transaction; the candidates go into a scratch table so the check runs once.
-        await conn.execute(text("DROP TABLE IF EXISTS prune_candidate_messages"))
-        await conn.execute(
-            text("CREATE TEMPORARY TABLE prune_candidate_messages (id TEXT PRIMARY KEY)")
-        )
+        await conn.execute(text(f"DROP TABLE IF EXISTS {message_table}"))
+        await conn.execute(text(f"CREATE TEMPORARY TABLE {message_table} (id TEXT PRIMARY KEY)"))
         for i in range(0, len(candidate_msg_ids), _SQL_IN_CHUNK):
             chunk = candidate_msg_ids[i : i + _SQL_IN_CHUNK]
             ph = ", ".join("(?)" for _ in chunk)
             await conn.execute(
-                *_q(f"INSERT INTO prune_candidate_messages (id) VALUES {ph}", chunk)  # noqa: S608
+                *_q(f"INSERT INTO {message_table} (id) VALUES {ph}", chunk)  # noqa: S608
             )
+        # Set subtraction visits the surviving collections as a set and keeps
+        # the reference check in the DELETE's statement snapshot.
         await conn.execute(
             text(
-                "DELETE FROM messages WHERE id IN (SELECT id FROM prune_candidate_messages)"
-                " AND id NOT IN ("
-                "  SELECT value FROM progressions, json_each(progressions.collection)"
-                "  WHERE value IS NOT NULL"
-                "  UNION"
-                "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
-                "  UNION"
-                "  SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
-                "  UNION"
-                "  SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
+                "DELETE FROM messages WHERE id IN ("  # noqa: S608 -- fixed dialect fragment
+                f"WITH retained_messages(id) AS ({_retained_message_ids_sql(dialect)})"
+                f" SELECT id FROM {message_table} EXCEPT SELECT id FROM retained_messages"
                 ")"
             )
         )
-        await conn.execute(text("DROP TABLE prune_candidate_messages"))
+        await conn.execute(text(f"DROP TABLE {message_table}"))
 
-    return sessions_pruned
+    if deferred_count or non_array_survivor_progressions:
+        _log.warning(
+            "Session prune: deferred_victim_progressions=%d non_array_survivor_progressions=%d",
+            deferred_count,
+            non_array_survivor_progressions,
+        )
+    if deferred_direct_ids is not None:
+        deferred_direct_ids.update(current_deferred_ids)
+    if deferred_progression_ids is not None:
+        deferred_progression_ids.update(deferred_progressions)
+
+    return sessions_pruned, len(retained)
 
 
 async def _prune_run_chunk(
@@ -709,6 +763,9 @@ async def prune_terminal_sessions_by_id(session_ids: Sequence[str]) -> int:
     retention_params: tuple[Any, ...] = _TERMINAL_SESSION_STATUSES
     prune_started_at = time.time()
     pruned = 0
+    retained_for_delivery = 0
+    deferred_direct_ids: set[str] = set()
+    deferred_progression_ids: set[str] = set()
 
     chunks = [ids[i : i + PRUNE_CHUNK_ROWS] for i in range(0, len(ids), PRUNE_CHUNK_ROWS)]
 
@@ -720,7 +777,7 @@ async def prune_terminal_sessions_by_id(session_ids: Sequence[str]) -> int:
                 kind="session-explicit",
             )
             async with db.transaction() as conn:
-                pruned += await _prune_session_chunk(
+                deleted, retained = await _prune_session_chunk(
                     conn,
                     chunk_ids,
                     sess_ph=sess_ph,
@@ -728,7 +785,14 @@ async def prune_terminal_sessions_by_id(session_ids: Sequence[str]) -> int:
                     retention_params=retention_params,
                     archive_destination=PRUNE_ARCHIVE_DIR,
                     archive_id=archive_id,
+                    deferred_direct_ids=deferred_direct_ids,
+                    deferred_progression_ids=deferred_progression_ids,
                 )
+            pruned += deleted
+            retained_for_delivery += retained
+
+    if retained_for_delivery:
+        _log.info("Retained %d terminal sessions with owed deliveries", retained_for_delivery)
 
     return pruned
 
@@ -749,9 +813,8 @@ async def prune_old_data(
     since they lack CASCADE. See studio.md.
 
     Candidate ids are read one chunk at a time as well, so the pass holds
-    ``PRUNE_CHUNK_ROWS`` ids at a time rather than every id an aged backlog
-    made eligible. Total work still scales with that backlog; what is bounded
-    is the memory a pass occupies and the length of any one lock it takes."""
+    ``PRUNE_CHUNK_ROWS`` session ids at a time plus progression and direct
+    message ids from sessions deferred earlier in the pass."""
     from lionhub.orchestration.scheduler.settings import (
         DISPATCH_RETENTION_DEAD_LETTER_DAYS,
         DISPATCH_RETENTION_SUCCESS_DAYS,
@@ -776,6 +839,9 @@ async def prune_old_data(
     retention_sql, retention_params = _session_retention_predicate(cutoff)
 
     sessions_pruned = 0
+    sessions_retained_for_delivery = 0
+    deferred_direct_ids: set[str] = set()
+    deferred_progression_ids: set[str] = set()
     runs_pruned = 0
     session_archive_ids: list[str] = []
     run_archive_ids: list[str] = []
@@ -795,7 +861,7 @@ async def prune_old_data(
             chunk_index += 1
             archive_id = archive_chunk_id(cutoff=cutoff, chunk_index=chunk_index)
             async with db.transaction() as conn:
-                chunk_pruned = await _prune_session_chunk(
+                chunk_pruned, retained = await _prune_session_chunk(
                     conn,
                     chunk_ids,
                     sess_ph=sess_ph,
@@ -803,6 +869,8 @@ async def prune_old_data(
                     retention_params=retention_params,
                     archive_destination=PRUNE_ARCHIVE_DIR,
                     archive_id=archive_id,
+                    deferred_direct_ids=deferred_direct_ids,
+                    deferred_progression_ids=deferred_progression_ids,
                 )
             # Outside the transaction: this chunk has already committed and its
             # write lock has already been released. A crash here (or in the
@@ -810,6 +878,7 @@ async def prune_old_data(
             # hook exists so tests can simulate exactly that interruption
             # point without it rolling back the chunk that just landed.
             sessions_pruned += chunk_pruned
+            sessions_retained_for_delivery += retained
             # An archive is only ever written when the chunk actually deleted
             # something (see _prune_session_chunk: an empty post-recheck
             # chunk returns before write_archive_chunk runs), so chunk_pruned
@@ -891,6 +960,7 @@ async def prune_old_data(
                 "keep_days": keep_days,
                 "cutoff": cutoff,
                 "sessions_pruned": sessions_pruned,
+                "sessions_retained_for_delivery": sessions_retained_for_delivery,
                 "runs_pruned": runs_pruned,
                 "dispatch_success_keep_days": dispatch_success_keep_days,
                 "dispatch_dead_letter_keep_days": dispatch_dead_letter_keep_days,
@@ -906,10 +976,12 @@ async def prune_old_data(
         )
 
     _log.info(
-        "Prune old data (keep_days=%d, cutoff=%.0f): sessions=%d runs=%d dispatch=%d",
+        "Prune old data (keep_days=%d, cutoff=%.0f): sessions=%d retained_for_delivery=%d "
+        "runs=%d dispatch=%d",
         keep_days,
         cutoff,
         sessions_pruned,
+        sessions_retained_for_delivery,
         runs_pruned,
         dispatch_purged,
     )

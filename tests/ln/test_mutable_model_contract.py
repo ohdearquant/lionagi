@@ -777,26 +777,33 @@ def test_operation_dedup_keeps_one_value_for_one_sided_equality_in_either_order(
     assert result[0] is ordered[0]
 
 
-@dataclass(slots=True, unsafe_hash=True)
+@dataclass(slots=True)
 class FastKey(DataClass):
-    """A hashable value whose generated equality follows its fields."""
+    """A dataclass with generated equality and a distinct hash for each test key."""
 
-    value: str = ""
+    value: int
+
+    def __hash__(self) -> int:
+        return self.value
 
 
-def test_dataclass_dedup_keeps_hashable_values_in_input_order_quickly():
-    """A few thousand hashable values deduplicate in well under a second."""
+@pytest.mark.parametrize("size", [32, 64])
+def test_dataclass_dedup_keeps_first_hashable_values_with_bounded_comparisons(monkeypatch, size):
+    generated_eq = FastKey.__eq__
+    comparisons = 0
 
-    import time
+    def counted_eq(left, right):
+        nonlocal comparisons
+        comparisons += 1
+        return generated_eq(left, right)
 
-    values = [FastKey(str(n)) for n in range(6000)]
-    doubled = values + values
-    started = time.perf_counter()
-    result = to_list([doubled], flatten=True, unique=True)
-    elapsed = time.perf_counter() - started
+    monkeypatch.setattr(FastKey, "__eq__", counted_eq)
+    values = [FastKey(n) for n in range(size, 0, -1)]
+    equal_copies = [FastKey(n) for n in range(1, size + 1)]
+    result = to_list([values, equal_copies, values], flatten=True, unique=True)
     assert len(result) == len(values)
     assert all(kept is value for kept, value in zip(result, values, strict=True))
-    assert elapsed < 2.0, f"deduplicating {len(doubled)} values took {elapsed:.2f}s"
+    assert 0 < comparisons <= 2 * size
 
 
 @dataclass(slots=True, eq=False)

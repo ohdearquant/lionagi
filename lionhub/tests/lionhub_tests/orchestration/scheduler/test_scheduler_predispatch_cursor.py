@@ -29,8 +29,7 @@ from lionhub.orchestration.scheduler.github import (
     GithubPollResult,
     _cursor_for,
 )
-
-from ._scheduler_claims import fire_with_claim
+from tests._scheduler_claims import fire_with_claim
 
 CURSOR_AT_TICK_START = "2026-07-07T09:00:00Z"
 FIRST_EVENT_AT = "2026-07-07T10:00:00Z"
@@ -170,7 +169,7 @@ async def test_unresolvable_execution_root_leaves_the_cursor_unmoved():
     failed = _run_status_calls(svc, "failed")
     assert len(failed) == 1
     assert failed[0].kwargs["reason_code"] == RunReasons.FAILED_CWD_INHERIT_REFUSED
-    inserted = svc.create_schedule_run_and_advance.await_args_list[0].args[0]
+    inserted = svc.create_failed_schedule_run_and_advance.await_args_list[0].args[0]
     assert inserted["status"] == "failed"
     assert inserted.get("exit_code") is None
 
@@ -190,7 +189,7 @@ async def test_unresolvable_execution_root_still_advances_next_fire_at():
     ):
         await engine._tick_github(schedule, now=10_000.0)
 
-    fields = svc.create_schedule_run_and_advance.await_args_list[0].kwargs["schedule_fields"]
+    fields = svc.create_failed_schedule_run_and_advance.await_args_list[0].kwargs["schedule_fields"]
     assert fields["last_fired_at"] > 0
     assert "github_cursor" not in fields
 

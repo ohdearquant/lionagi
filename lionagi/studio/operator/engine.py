@@ -292,6 +292,9 @@ def _render_operator_context(context: Any) -> str | None:
         if value is None or value == {} or value == "":
             return
         text = value if isinstance(value, str) else _canonical_json(value)
+        # One line per field: JSON escapes CR and LF but, with ensure_ascii off, not the other
+        # characters splitlines() breaks on (U+0085, U+2028, U+2029), so split on all of them.
+        text = " ".join(text.splitlines())
         if len(text) > _CONTEXT_VALUE_BYTE_LIMIT:
             text = text[:_CONTEXT_VALUE_BYTE_LIMIT] + "… (truncated)"
         lines.append(f"- {label}: {text}")
@@ -842,6 +845,12 @@ def build_operator_branch(
 
         db_path = turn.store_path or str(OperatorStore().path())
         extra_servers, extra_tools = _operator_extra_mcp()
+        # A khive server the Operator is granted acts as the Operator, not as
+        # whoever started the daemon. The id sits outside the ``agent:`` names a
+        # profile maps to, so no child agent shares it.
+        from lionhub.agent.khive_actor import attribute_khive_servers
+
+        extra_servers = attribute_khive_servers(extra_servers, "studio:operator") or {}
         model_kwargs = {
             "endpoint": "query_cli",
             # Claude's own auth is used by the CLI endpoint.

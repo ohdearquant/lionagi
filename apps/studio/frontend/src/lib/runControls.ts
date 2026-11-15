@@ -1,7 +1,7 @@
 /**
  * Run control commands (pause / resume-gate / steer) for the run detail view.
  *
- * Mirrors the consumer-kind table in lionagi/cli/orchestrate/_control.py
+ * Mirrors the consumer-kind table in lionhub/src/lionhub/serve/cli/orchestrate/_control.py
  * (`_CONSUMER_KINDS_BY_VERB`): a flow or play run drains all three verbs; an
  * agent run drains only `message` (a steer lands as a warm continuation at
  * the next turn boundary — there is no pause seam inside a single

@@ -29,7 +29,7 @@ import pytest
 # `__getattr__` scheme in `lionagi/__init__.py`.
 _FORBIDDEN_MODULE_PREFIXES: tuple[str, ...] = (
     "lionhub.providers.",
-    "lionagi.cli",
+    "lionhub.serve.cli",
     "lionagi.operations.flow",
     # Plugin discovery/activation must stay opt-in: a bare `import lionagi`
     # must never scan `.lionagi/plugins/` or import bundle code. A consumer

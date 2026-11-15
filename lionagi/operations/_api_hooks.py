@@ -12,9 +12,10 @@ unchanged.
 
 from __future__ import annotations
 
-import math
 import re
 from typing import TYPE_CHECKING, Any
+
+from lionagi.service._api_telemetry import _usage_token_counts
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
@@ -104,23 +105,10 @@ def _typed_usage(tokens: dict | None) -> dict[str, int] | None:
     tokens. The attempt itself is priced from the provider's own count before
     masking.
     """
-    if not isinstance(tokens, dict):
-        return None
-
-    def _num(*keys: str) -> int | None:
-        for key in keys:
-            val = tokens.get(key)
-            if isinstance(val, int | float) and not isinstance(val, bool):
-                if isinstance(val, float) and not math.isfinite(val):
-                    continue  # NaN/inf can't coerce to int; treat as absent
-                return int(val)
-        return None
-
-    input_tokens = _num("input_tokens", "prompt_tokens")
-    output_tokens = _num("output_tokens", "completion_tokens")
+    input_tokens, output_tokens = _usage_token_counts(tokens)
     if input_tokens is None and output_tokens is None:
         return None
-    return {"input_tokens": input_tokens or 0, "output_tokens": output_tokens or 0}
+    return {"input_tokens": int(input_tokens or 0), "output_tokens": int(output_tokens or 0)}
 
 
 def _error_summary(error: str | BaseException | None) -> str | None:

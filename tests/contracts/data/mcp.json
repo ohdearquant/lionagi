@@ -61,6 +61,7 @@
     "state import",
     "state import-teams",
     "state ls",
+    "state migrate",
     "state null-content",
     "state prune",
     "state stats",
@@ -78,7 +79,7 @@
     "team send",
     "team show"
   ],
-  "available_path_count": 77,
+  "available_path_count": 78,
   "catalog": {
     "verb_count": 71,
     "available_count": 45,
@@ -2469,6 +2470,17 @@
         "description": "Print a table of sessions stored in state.db."
       }
     },
+    "state migrate": {
+      "path": "state migrate",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state migrate",
+        "properties": {},
+        "additionalProperties": false,
+        "description": "Upgrade the configured SQLite or PostgreSQL state store to this version of LionAGI. Stop writers and close all handles before migrating an existing store."
+      }
+    },
     "state null-content": {
       "path": "state null-content",
       "stage": "static",
@@ -2824,7 +2836,7 @@
       }
     }
   },
-  "projection_count": 63,
+  "projection_count": 64,
   "projection_errors": {
     "dispatch": {
       "kind": "SchemaProjectionError",
@@ -2874,7 +2886,7 @@
     "state": {
       "kind": "SchemaProjectionError",
       "class": "unresolved_subcommand",
-      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'null-content', 'prune', 'stats', 'terminal-consumer', 'vacuum']"
+      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'migrate', 'null-content', 'prune', 'stats', 'terminal-consumer', 'vacuum']"
     },
     "state terminal-consumer": {
       "kind": "SchemaProjectionError",
@@ -3080,7 +3092,7 @@
       "input": "state",
       "kind": "SchemaProjectionError",
       "class": "unresolved_subcommand",
-      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'null-content', 'prune', 'stats', 'terminal-consumer', 'vacuum']"
+      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'migrate', 'null-content', 'prune', 'stats', 'terminal-consumer', 'vacuum']"
     },
     {
       "input": "mirror",

@@ -85,6 +85,8 @@ class DisableScheduleRequest(BaseModel):
 _NON_NULLABLE_SCHEDULE_FIELDS: frozenset[str] = frozenset(
     {"name", "trigger_type", "action_kind", "missed_fire_policy", "overlap_policy"}
 )
+_PERSISTED_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml", "command"})
+_PERSISTED_ACTION_FIELDS = frozenset({"action_kind", "action_agent"})
 
 # Updates touching these fields must validate the effective action kind.
 # Model and agent may be inherited by reachable children, so their updates also
@@ -366,6 +368,32 @@ def _svc_validate_action_kind_type(kind: Any) -> None:
         raise ValueError(f"action_kind must be a string, got {type(kind).__name__}")
 
 
+def _persisted_action_kind(kind: str) -> str:
+    from lionhub.orchestration.schedule.parsing import _ALIAS_ACTION_KINDS
+
+    canonical_kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    if canonical_kind not in _PERSISTED_ACTION_KINDS:
+        raise ValueError(
+            f"Invalid schedule action_kind {kind!r}. Supported kinds: "
+            f"{', '.join(sorted(_PERSISTED_ACTION_KINDS))}"
+        )
+    return canonical_kind
+
+
+def _is_schedule_action_kind_constraint(exc: Exception) -> bool:
+    original = exc.orig if isinstance(exc, SAIntegrityError) else exc
+    if isinstance(original, sqlite3.IntegrityError):
+        return str(original).startswith(
+            (
+                "CHECK constraint failed: action_kind IN (",
+                "CHECK constraint failed: ck_schedules_action_kind",
+            )
+        )
+    # SQLAlchemy's asyncpg adapter keeps the server error as its cause.
+    server_error = original.__cause__ or original
+    return getattr(server_error, "constraint_name", None) == "ck_schedules_action_kind"
+
+
 def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
     """Service-boundary check: a play launch has no '--' separator, so a prompt it sends that
     starts with '-' would re-parse as a flag of `li play`."""
@@ -431,7 +459,11 @@ _HEALTH_FAILING_OUTCOMES = ("failed", "timed_out")
 def _schedule_cadence_seconds(row: dict[str, Any], *, reference_at: float) -> float | None:
     """Return the schedule's expected occurrence gap at ``reference_at``.
 
-    Fixed-period triggers share the scheduler's cadence resolver. Cron is not
+    Fixed-period triggers share the scheduler's cadence resolver. A GitHub
+    poll uses the interval the scheduler actually waits, which is longer than
+    the authored one while merged-PR scans are backed off after reaching their
+    page limit; judging it by the authored interval would call an on-time
+    poller overdue. Cron is not
     fixed-period, so derive its local expected gap from two consecutive
     occurrences after ``reference_at`` -- the newest liveness evidence the
     caller has, which is the last execution for most schedules and the last
@@ -440,10 +472,13 @@ def _schedule_cadence_seconds(row: dict[str, Any], *, reference_at: float) -> fl
     ``next_fire_at`` -- a stored cursor is a promise, not evidence of work.
     """
     from lionhub.orchestration.schedule.timing import (
+        resolve_github_poll_cadence_seconds,
         resolve_schedule_cadence_seconds,
         resolve_schedule_timezone,
     )
 
+    if row.get("trigger_type") == "github_poll":
+        return resolve_github_poll_cadence_seconds(row)
     cadence = resolve_schedule_cadence_seconds(row)
     if cadence is not None or row.get("trigger_type") != "cron":
         return cadence
@@ -569,6 +604,16 @@ def compute_schedule_health(
             if type(limit) is int and 5 <= limit < 100
             else "The last capped page limit is unknown; review the limit and retry."
         )
+    if row.get("enabled") and row.get("trigger_type") == "github_poll":
+        from lionhub.orchestration.schedule.timing import (
+            resolve_github_poll_cadence_seconds,
+            resolve_schedule_cadence_seconds,
+        )
+
+        authored = resolve_schedule_cadence_seconds(row)
+        effective = resolve_github_poll_cadence_seconds(row)
+        if isinstance(authored, (int, float)) and effective is not None and effective > authored:
+            result["health_effective_poll_interval_sec"] = effective
     return result
 
 
@@ -1115,6 +1160,7 @@ _SCHEDULE_SUMMARY_FIELDS = (
     "health_state",
     "health_cause",
     "health_recovery",
+    "health_effective_poll_interval_sec",
     "health_last_outcome",
     "health_last_outcome_at",
     "health_since",
@@ -1199,6 +1245,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("trigger_type is required")
     if not data.get("action_kind"):
         raise ValueError("action_kind is required")
+    data = {**data, "action_kind": _persisted_action_kind(data["action_kind"])}
 
     _svc_validate_action_model(data.get("action_model"))
     _svc_validate_prompt(data.get("action_prompt"))
@@ -1286,6 +1333,10 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         try:
             await db.create_schedule(schedule)
         except (sqlite3.IntegrityError, SAIntegrityError) as exc:
+            if _is_schedule_action_kind_constraint(exc):
+                raise ValueError(
+                    f"Invalid schedule action_kind {schedule['action_kind']!r}"
+                ) from exc
             raise NameConflictError(f"Schedule name {data['name']!r} already exists") from exc
     return {"id": schedule_id, "name": data["name"], "created_at": now}
 
@@ -1309,6 +1360,11 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         effective = {**schedule, **fields}
         if _KIND_VALIDATION_FIELDS & fields.keys():
             _svc_validate_action_kind_type(effective.get("action_kind"))
+        if _PERSISTED_ACTION_FIELDS & fields.keys():
+            kind = _persisted_action_kind(effective["action_kind"])
+            if "action_kind" in fields:
+                fields = {**fields, "action_kind": kind}
+                effective["action_kind"] = kind
 
         if "action_model" in fields:
             _svc_validate_action_model(fields["action_model"])
@@ -1389,7 +1445,14 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         if touches_interval and effective.get("trigger_type") == "interval":
             _svc_validate_interval_sec(effective.get("interval_sec"), required=True)
 
-        await db.update_schedule(schedule_id, **fields)
+        try:
+            await db.update_schedule(schedule_id, **fields)
+        except (sqlite3.IntegrityError, SAIntegrityError) as exc:
+            if _is_schedule_action_kind_constraint(exc):
+                raise ValueError(
+                    f"Invalid schedule action_kind {effective['action_kind']!r}"
+                ) from exc
+            raise
 
     # A PATCH touching cron_expr/trigger_type must recompute next_fire_at
     # immediately rather than waiting for the next fire. The field update

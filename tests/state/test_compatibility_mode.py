@@ -1388,8 +1388,10 @@ async def test_a_refused_retry_on_a_kept_engine_leaves_the_handle_ready_for_comp
     handle = StateDB(store)
     profile = None
     try:
-        with pytest.raises(RuntimeError, match="transient failure"):
-            await handle.open()
+        with monkeypatch.context() as upgrade:
+            upgrade.setenv("LIONAGI_STATE_AUTO_MIGRATE", "1")
+            with pytest.raises(RuntimeError, match="transient failure"):
+                await handle.open()
         assert handle._engine is not None, "a plain open keeps the engine it built"
         assert handle in db_mod._OPEN_NATIVE
 

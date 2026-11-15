@@ -120,7 +120,7 @@ A REJECT verdict that doesn't hold up to scrutiny damages trust in the quality g
 
 Control op (`control: true`) in FlowOp marks critic checkpoints — the orchestrator gets a
 re-planning turn if the critic returns `should_continue=true`:
-`lionagi/cli/orchestrate/flow.py`
+`lionhub/src/lionhub/serve/cli/orchestrate/flow.py`
 
 Gate verdicts are stored on the play row (`gate_passed`, `gate_feedback`) and served over
 the `/api/shows` endpoints. No Studio page displays them:

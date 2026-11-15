@@ -20,7 +20,8 @@ from lionagi.state.db import StateDB
 from lionhub.orchestration.runs import setup_agent_persist as _setup_live_persist
 from lionhub.orchestration.runs import teardown_agent_persist as _teardown_live_persist
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
-from tests.cli._aiosqlite_threads import (
+
+from ..serve.cli._aiosqlite_threads import (
     aiosqlite_threads,
     new_aiosqlite_threads,
     settled_new_aiosqlite_threads,

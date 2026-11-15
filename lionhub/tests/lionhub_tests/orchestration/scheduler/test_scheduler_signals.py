@@ -25,8 +25,7 @@ from lionhub.orchestration.scheduler.signals import (
     build_schedule_run_signal,
     record_handler_failure,
 )
-
-from ._scheduler_claims import fire_with_claim
+from tests._scheduler_claims import fire_with_claim
 
 # Helpers (mirrors tests/studio/test_scheduler_engine.py's fixtures)
 

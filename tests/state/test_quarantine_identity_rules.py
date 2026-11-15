@@ -7,13 +7,13 @@ import socket
 
 import pytest
 
-from lionagi.cli._pid_quarantine import quarantine_identity as cli_identity
 from lionagi.state._quarantine_identity import (
     UNVERIFIABLE_PID_QUARANTINE_THRESHOLD,
     encode_identity,
     is_current_quarantine,
     quarantine_identity,
 )
+from lionhub.serve.cli._pid_quarantine import quarantine_identity as cli_identity
 
 
 def row(**metadata):
@@ -117,15 +117,36 @@ def test_missing_or_local_mode_is_allowed():
     assert is_current_quarantine(row(process_identity_mode="local"))
 
 
-@pytest.mark.parametrize("host", [None, "", 123, False, []])
-def test_missing_or_non_string_host_keeps_existing_unknown_origin_behavior(host):
-    assert is_current_quarantine(row(pid_host=host))
+@pytest.mark.parametrize("host", [0, "", False, [], 123])
+def test_present_invalid_host_is_not_current(host):
+    from lionagi.state._quarantine_identity import _quarantine_record_status
+
+    assert not is_current_quarantine(row(pid_host=host))
+    assert _quarantine_record_status(row(pid_host=host)) == "unreadable"
+
+
+def test_absent_or_null_host_keeps_unknown_origin_behavior():
+    assert is_current_quarantine(row())
+    assert is_current_quarantine(row(pid_host=None))
 
 
 def test_only_nonempty_foreign_hostname_is_refused(monkeypatch):
     monkeypatch.setattr(socket, "gethostname", lambda: "local-host")
     assert is_current_quarantine(row(pid_host="local-host"))
     assert not is_current_quarantine(row(pid_host="other-host"))
+
+
+def test_stale_identity_is_classified_separately():
+    from lionagi.state._quarantine_identity import _quarantine_record_status
+
+    assert _quarantine_record_status(row(pid=124)) == "stale"
+
+
+def test_host_probe_failure_is_classified_separately(monkeypatch):
+    from lionagi.state._quarantine_identity import _quarantine_record_status
+
+    monkeypatch.setattr(socket, "gethostname", lambda: (_ for _ in ()).throw(OSError()))
+    assert _quarantine_record_status(row(pid_host="host")) == "probe_failed"
 
 
 def test_boot_marker_is_not_probed_or_used(monkeypatch):

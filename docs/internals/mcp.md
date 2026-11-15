@@ -745,7 +745,7 @@ stopped setting it for exactly these actions, so trusting it would make the
 schema — and anything pinned to it — say different things on different
 interpreters about one unchanged command.
 
-## lionagi/hooks/
+## External hooks
 
 ### `lionhub/src/lionhub/hooks/external.py`
 

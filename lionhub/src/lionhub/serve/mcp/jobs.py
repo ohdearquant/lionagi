@@ -41,6 +41,7 @@ from lionagi.ln._proc import (
 )
 from lionagi.ln.concurrency import current_time, sleep
 from lionagi.service._subagent_admission import refuse_nested_agent
+from lionhub.agent.khive_actor import MINTED_CHILD_ACTOR_ENV
 
 from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
@@ -111,7 +112,7 @@ LOST_REASON = "process_gone_without_outcome"
 # A narrower sibling of LOST_REASON: the run's own directory carries a
 # notify_outcome.json recording that its terminal notice was never delivered
 # (persistence was unavailable, or a direct-delivery attempt itself failed —
-# see lionagi/cli/orchestrate/_notify.py). Unlike LOST_REASON this is not pure
+# see lionhub/src/lionhub/serve/cli/orchestrate/_notify.py). Unlike LOST_REASON this is not pure
 # silence — the run said something about its own end before going quiet — but
 # it is still not a recorded status, so it stays OUTCOME_INDETERMINATE. Never
 # assigned from the *absence* of that file: retention prunes run directories,
@@ -1565,6 +1566,13 @@ def submit(
         # the terminal hook can record a cause instead of leaving the reason to
         # be read out of console prose.
         env[config.CAUSE_FILE_ENV_VAR] = str(d / config.CAUSE_FILENAME)
+        # Names the actor minted into the child's directory, so the child hands its khive
+        # servers no --actor flag and that config decides (an --actor flag outranks it).
+        # Cleared otherwise, so a value inherited from this server's own environment never
+        # reaches a child it minted nothing for.
+        env.pop(MINTED_CHILD_ACTOR_ENV, None)
+        if minted is not None:
+            env[MINTED_CHILD_ACTOR_ENV] = minted.actor
 
         # Checked before anything is written: Popen raising this late would
         # leave a job recorded "running" for a run that never started.

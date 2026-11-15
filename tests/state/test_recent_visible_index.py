@@ -222,7 +222,9 @@ async def test_legacy_schema_upgrade_preserves_order_and_malformed_metadata(tmp_
             "VALUES ('bad', 'p', 0, 0, '{bad')"
         )
 
-    async with StateDB(path) as store:
+    store = StateDB(path)
+    await store.migrate()
+    async with store:
         assert await store.schema_version() == SCHEMA_VERSION
     with sqlite3.connect(path) as connection:
         assert _index_sql(connection) is not None

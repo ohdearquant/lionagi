@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from ._scheduler_claims import fire_with_claim
+from tests._scheduler_claims import fire_with_claim
 
 pytest.importorskip("fastapi", reason="studio extra not installed")
 pytest.importorskip("croniter", reason="studio extra not installed")

@@ -39,7 +39,7 @@ keeps it that way. Import the module you need by its full path.
 The schedule services hold everything about a schedule that does not need the HTTP server or the
 scheduler daemon: shared parsing helpers for `li schedule`, validation of declarations and actions,
 timezone and working-directory resolution, and declaration, diff, apply and export operations.
-The Studio routes, the `lionhub.cli.schedule` adapter and the scheduler engine call these functions.
+The Studio routes, the `lionhub.serve.cli.schedule` adapter and the scheduler engine call these functions.
 
 | Module | Holds |
 | --- | --- |
@@ -52,13 +52,18 @@ The Studio routes, the `lionhub.cli.schedule` adapter and the scheduler engine c
 | `schedule.declaration` | `ScheduleSet` models and the validate, diff and apply service |
 | `schedule.export` | read-only conversion of stored schedule rows into a `ScheduleSet` |
 
-Three moved modules keep the logger names they had before the move, so existing log filters keep
+Moved modules keep the logger names they had before the move, so existing log filters keep
 matching: `state_store` logs as `lionagi.studio.services._db`, `schedule.timing` as
 `lionagi.studio.config`, and `schedule.timing` and `schedule.execution_root` log scheduler decisions
-as `lionagi.studio.scheduler.engine`. Every module in `scheduler/` likewise logs under its pre-move
-name: `lionagi.studio.scheduler.*` for the package modules and `lionagi.studio.services.*` for the
-services that moved in. A handler or filter attaches to those names, not to
-`lionhub.orchestration.scheduler`.
+as `lionagi.studio.scheduler.engine`. Moved modules in `scheduler/` likewise retain their pre-move
+names, such as `lionagi.studio.scheduler.engine` and `lionagi.studio.services.scheduler_state`.
+A new module in `scheduler/` logs as `lionagi.studio.scheduler.<module>` too: the Studio daemon
+prints scheduler lines through a handler on the `lionagi.studio.scheduler` logger, so a module named
+`lionhub.orchestration.scheduler.<module>` would miss that handler. Its lines would go only to a
+handler on the root logger; with none installed, its INFO and DEBUG lines are dropped and its
+WARNING and higher lines reach stderr through Python's last-resort handler, without the daemon's
+format. A handler or
+filter attaches to the `lionagi.studio.*` names, not to `lionhub.orchestration.scheduler`.
 
 ## Moved here
 

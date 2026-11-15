@@ -1,0 +1,401 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Actor attribution for the khive MCP servers a child agent is handed."""
+
+from __future__ import annotations
+
+import copy
+import json
+
+import pytest
+
+from lionhub.agent.khive_actor import (
+    MINTED_CHILD_ACTOR_ENV,
+    attribute_khive_servers,
+    child_khive_actor,
+    minted_child_actor,
+    run_khive_actor,
+)
+
+
+def _khive(env=None, *, command="/usr/local/bin/kkernel", **extra):
+    server = {"command": command, "args": ["mcp"], **extra}
+    if env is not None:
+        server["env"] = env
+    return server
+
+
+# --- child_khive_actor -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        ("implementer", "agent:implementer"),
+        ("code-reviewer", "agent:code-reviewer"),
+        ("a.b_c-1", "agent:a.b_c-1"),
+        ("X", "agent:X"),
+    ],
+)
+def test_valid_profile_names_the_actor(profile, expected):
+    assert child_khive_actor(profile) == expected
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [None, "", "a/b", "has space", " lead", "tab\tname", "new\nline", "caf\u00e9", 7, ["x"]],
+)
+def test_unusable_profile_names_fall_back_to_anonymous(profile):
+    assert child_khive_actor(profile) == "agent:anonymous"
+
+
+# --- attribute_khive_servers ----------------------------------------------
+
+
+def test_none_stays_none():
+    assert attribute_khive_servers(None, "agent:x") is None
+
+
+def test_empty_mapping_gives_an_empty_new_dict():
+    source: dict = {}
+    result = attribute_khive_servers(source, "agent:x")
+    assert result == {}
+    assert result is not source
+
+
+def test_kkernel_server_gets_the_actor_and_keeps_its_packs():
+    servers = {"khive": _khive({"KHIVE_PACKS": "kg, comm ,memory"})}
+    result = attribute_khive_servers(servers, "agent:implementer")
+    env = result["khive"]["env"]
+    assert env == {"KHIVE_ACTOR": "agent:implementer", "KHIVE_PACKS": "kg, comm ,memory"}
+
+
+def test_pack_flags_in_the_arguments_are_kept():
+    args = ["mcp", "--pack", "kg", "--pack", "comm", "--pack=comm"]
+    servers = {"khive": _khive({"KHIVE_PACKS": "kg"}, args=args)}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["args"] == ["mcp", "--actor", "agent:x", *args[1:]]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["--actor", "agent:old"],
+        ["--actor=agent:old"],
+        ["--namespace", "old"],
+        ["--namespace=old"],
+        ["--actor=agent:old", "--namespace", "old", "--actor", "agent:second"],
+        ["--actor"],
+    ],
+    ids=["actor", "actor-equals", "namespace", "namespace-equals", "duplicates", "missing-value"],
+)
+def test_argument_actor_and_namespace_are_replaced(overrides):
+    servers = {"khive": _khive(args=["mcp", *overrides, "--pack=kg"])}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["args"] == ["mcp", "--actor", "agent:x", "--pack=kg"]
+    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x"}
+    assert attribute_khive_servers(result, "agent:x") == result
+
+
+def test_non_mcp_command_appends_the_actor():
+    servers = {"khive": _khive(args=["exec", "whoami()", "--namespace=old"])}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["args"] == ["exec", "whoami()", "--actor", "agent:x"]
+
+
+def test_kkernel_entry_without_arguments_gets_the_actor():
+    servers = {"khive": {"command": "kkernel"}}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["args"] == ["--actor", "agent:x"]
+
+
+def test_an_existing_actor_is_replaced():
+    servers = {"khive": _khive({"KHIVE_ACTOR": "lion", "OTHER": "kept"})}
+    result = attribute_khive_servers(servers, "agent:reviewer")
+    env = result["khive"]["env"]
+    assert env["KHIVE_ACTOR"] == "agent:reviewer"
+    assert env["OTHER"] == "kept"
+
+
+def test_absent_packs_stay_absent():
+    servers = {"khive": _khive({"KHIVE_ACTOR": "lion"})}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x"}
+
+
+def test_a_server_with_no_env_gets_one():
+    servers = {"khive": _khive()}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x"}
+
+
+def test_a_null_env_is_treated_as_empty():
+    servers = {"khive": {"command": "kkernel", "args": ["mcp"], "env": None}}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["khive"]["env"] == {"KHIVE_ACTOR": "agent:x"}
+
+
+def test_other_keys_of_the_server_pass_through():
+    servers = {"khive": _khive({"A": "1"}, cwd="/work", timeout=30)}
+    result = attribute_khive_servers(servers, "agent:x")
+    server = result["khive"]
+    assert server["command"] == "/usr/local/bin/kkernel"
+    assert server["args"] == ["mcp", "--actor", "agent:x"]
+    assert server["cwd"] == "/work"
+    assert server["timeout"] == 30
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["kkernel", "/opt/khive/bin/kkernel", "./target/release/kkernel"],
+)
+def test_kkernel_is_recognised_by_basename(command):
+    servers = {"k": _khive({"KHIVE_PACKS": "comm"}, command=command)}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["k"]["env"]["KHIVE_ACTOR"] == "agent:x"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["kkernel-old", "mykkernel", "/opt/kkernel/run", "python", "", None, 3],
+)
+def test_other_commands_are_not_kkernel(command):
+    server = {"command": command, "args": ["mcp"], "env": {"KHIVE_PACKS": "kg,comm"}}
+    result = attribute_khive_servers({"s": server}, "agent:x")
+    assert result["s"] is server
+    assert result["s"]["env"] == {"KHIVE_PACKS": "kg,comm"}
+
+
+def test_non_kkernel_and_url_servers_are_unchanged():
+    other = {"command": "npx", "args": ["-y", "thing"], "env": {"KHIVE_PACKS": "comm"}}
+    remote = {"url": "https://example.invalid/mcp", "headers": {"Authorization": "x"}}
+    servers = {"khive": _khive({"KHIVE_PACKS": "kg,comm"}), "other": other, "remote": remote}
+    result = attribute_khive_servers(servers, "agent:x")
+    assert result["other"] == {
+        "command": "npx",
+        "args": ["-y", "thing"],
+        "env": {"KHIVE_PACKS": "comm"},
+    }
+    assert result["remote"] == {
+        "url": "https://example.invalid/mcp",
+        "headers": {"Authorization": "x"},
+    }
+    assert "env" not in result["remote"]
+    assert list(result) == ["khive", "other", "remote"]
+
+
+def test_the_input_is_never_mutated():
+    servers = {
+        "khive": _khive({"KHIVE_ACTOR": "lion", "KHIVE_PACKS": "kg, comm ,memory"}),
+        "other": {"command": "npx", "env": {"X": "1"}},
+    }
+    before = copy.deepcopy(servers)
+    result = attribute_khive_servers(servers, "agent:x")
+    assert servers == before
+    assert result is not servers
+    assert result["khive"] is not servers["khive"]
+    assert result["khive"]["env"] is not servers["khive"]["env"]
+    assert result["khive"]["args"] is not servers["khive"]["args"]
+
+
+def test_the_input_env_survives_when_the_server_had_none():
+    servers = {"khive": _khive()}
+    before = copy.deepcopy(servers)
+    attribute_khive_servers(servers, "agent:x")
+    assert servers == before
+    assert "env" not in servers["khive"]
+
+
+# --- the codex hand-off ---------------------------------------------------
+
+
+@pytest.fixture
+def codex_env(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    codex_home = tmp_path / "codex_home"
+    home.mkdir()
+    codex_home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    return {"HOME": str(home), "CODEX_HOME": str(codex_home)}
+
+
+def test_a_codex_run_that_ignores_the_user_config_gets_the_actor_on_the_command_line(codex_env):
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
+    from lionhub.providers.openai.codex import CodexCodeRequest, _plain_request
+
+    servers = attribute_khive_servers({"khive": _khive(command="kkernel")}, "agent:x")
+    kwargs: dict = {"ignore_user_config": True}
+
+    assert apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)
+
+    assert kwargs["config_overrides"] == {
+        "mcp_servers.khive.command": "kkernel",
+        "mcp_servers.khive.args": ["mcp", "--actor", "agent:x"],
+        "mcp_servers.khive.env.KHIVE_ACTOR": "agent:x",
+    }
+    assert "profile" not in kwargs
+    request = CodexCodeRequest(prompt="hi", **kwargs)
+    args = request._cmd_args(_plain_request(request), request.cwd())
+    rendered = [arg for flag, arg in zip(args, args[1:], strict=False) if flag == "-c"]
+    assert 'mcp_servers.khive.args=["mcp", "--actor", "agent:x"]' in rendered
+
+
+def test_claude_mcp_config_json_contains_the_actor_flag(monkeypatch):
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    monkeypatch.setattr(ClaudeCodeRequest, "_child_sandbox_settings", lambda _: None)
+    servers = attribute_khive_servers({"khive": _khive(command="kkernel")}, "agent:x")
+    kwargs: dict = {}
+    assert apply_forwarded_mcp_servers(kwargs, servers, provider="claude_code", exclusive=True)
+    args = ClaudeCodeRequest(prompt="hi", **kwargs).as_cmd_args()
+    config = json.loads(args[args.index("--mcp-config") + 1])
+    assert config["mcpServers"]["khive"]["args"] == ["mcp", "--actor", "agent:x"]
+
+
+def test_the_rest_of_a_khive_servers_env_stays_off_the_command_line(codex_env):
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
+
+    env = {"KHIVE_ACTOR": "agent:x", "TOKEN": "value"}
+    servers = {"khive": {"command": "kkernel", "args": ["mcp"], "env": env}}
+    kwargs: dict = {}
+
+    assert apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)
+
+    overrides = kwargs["config_overrides"]
+    assert overrides["mcp_servers.khive.env.KHIVE_ACTOR"] == "agent:x"
+    assert not [key for key in overrides if "TOKEN" in key or key == "mcp_servers.khive.env"]
+    assert "value" not in repr(overrides)
+    assert kwargs.get("profile")
+    assert env == {"KHIVE_ACTOR": "agent:x", "TOKEN": "value"}
+
+
+def test_another_servers_khive_actor_is_still_a_secret_field(codex_env):
+    from lionagi._errors import ConfigurationError
+    from lionhub.agent.factory import apply_forwarded_mcp_servers
+
+    servers = {"other": {"command": "npx", "args": ["x"], "env": {"KHIVE_ACTOR": "agent:x"}}}
+    kwargs: dict = {"ignore_user_config": True}
+
+    with pytest.raises(ConfigurationError, match="ignores the user config"):
+        apply_forwarded_mcp_servers(kwargs, servers, provider="codex", env=codex_env)
+
+
+# --- the minted per-run actor ----------------------------------------------
+
+
+@pytest.fixture
+def minted_dir(tmp_path, monkeypatch):
+    """A working directory whose actor config names agent:lead:worker."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text(
+        '[actor]\nid = "agent:lead:worker"\nvisible_namespaces = ["agent:lead"]\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_minted_actor(monkeypatch):
+    monkeypatch.delenv(MINTED_CHILD_ACTOR_ENV, raising=False)
+
+
+def test_no_variable_means_no_minted_actor(minted_dir):
+    assert minted_child_actor() is None
+    assert run_khive_actor("implementer") == "agent:implementer"
+
+
+def test_a_variable_matching_the_directory_config_is_the_minted_actor(minted_dir, monkeypatch):
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+    assert minted_child_actor() == "agent:lead:worker"
+    assert run_khive_actor("implementer") == "agent:lead:worker"
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        None,
+        '[actor]\nid = "agent:other"\n',
+        "[actor\nid = broken",
+        '[server]\nid = "agent:lead:worker"\n',
+    ],
+)
+def test_a_variable_the_directory_config_does_not_confirm_is_ignored(
+    tmp_path, monkeypatch, config_text
+):
+    if config_text is not None:
+        (tmp_path / ".khive").mkdir()
+        (tmp_path / ".khive" / "config.toml").write_text(config_text)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+    assert minted_child_actor() is None
+    assert run_khive_actor("implementer") == "agent:implementer"
+
+
+def test_the_minted_actor_gets_no_flag_so_the_directory_config_decides(minted_dir, monkeypatch):
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+    server = _khive(args=["mcp", "--actor", "agent:launcher", "--namespace=x"])
+
+    result = attribute_khive_servers({"khive": server}, run_khive_actor("implementer"))["khive"]
+
+    assert result["args"] == ["mcp"]
+    assert result["env"] == {"KHIVE_ACTOR": "agent:lead:worker"}
+
+
+@pytest.mark.parametrize("provider_config", ["other", "missing", "minted"])
+def test_minted_server_checks_the_provider_working_directory(
+    minted_dir, monkeypatch, provider_config
+):
+    actor = "agent:minted-run"
+    (minted_dir / ".khive" / "config.toml").write_text(f'[actor]\nid = "{actor}"\n')
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, actor)
+    provider_cwd = minted_dir
+    if provider_config != "minted":
+        provider_cwd = minted_dir / "provider"
+        provider_cwd.mkdir()
+        if provider_config == "other":
+            config_dir = provider_cwd / ".khive"
+            config_dir.mkdir()
+            (config_dir / "config.toml").write_text('[actor]\nid = "agent:other-dir"\n')
+
+    result = attribute_khive_servers(
+        {"khive": _khive()}, run_khive_actor("implementer"), cwd=provider_cwd
+    )["khive"]
+
+    assert result["args"] == (["mcp"] if provider_config == "minted" else ["mcp", "--actor", actor])
+    assert result["env"] == {"KHIVE_ACTOR": actor}
+
+
+def test_the_minted_actor_server_cannot_move_to_another_directory(
+    minted_dir, monkeypatch, tmp_path_factory
+):
+    # Without the flag the directory config decides, so an entry naming another
+    # directory could otherwise read whichever actor that directory's config names.
+    other = tmp_path_factory.mktemp("other")
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+    server = _khive(cwd=str(other))
+
+    result = attribute_khive_servers({"khive": server}, run_khive_actor("implementer"))["khive"]
+
+    assert "cwd" not in result
+    assert result["args"] == ["mcp"]
+    assert server["cwd"] == str(other)
+
+
+def test_a_flagged_server_keeps_its_cwd(minted_dir, monkeypatch, tmp_path_factory):
+    other = str(tmp_path_factory.mktemp("other"))
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+
+    result = attribute_khive_servers({"khive": _khive(cwd=other)}, "agent:implementer")["khive"]
+
+    assert result["cwd"] == other
+    assert result["args"] == ["mcp", "--actor", "agent:implementer"]
+
+
+def test_another_actor_still_gets_the_flag_in_a_minted_directory(minted_dir, monkeypatch):
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:lead:worker")
+
+    result = attribute_khive_servers({"khive": _khive()}, "agent:implementer")["khive"]
+
+    assert result["args"] == ["mcp", "--actor", "agent:implementer"]

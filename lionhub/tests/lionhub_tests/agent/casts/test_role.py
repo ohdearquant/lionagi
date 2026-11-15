@@ -3,7 +3,7 @@
 
 """Tests for Role (lionhub/src/lionhub/agent/casts/pattern.py), inline-Python roles, and the default Pack."""
 
-from pathlib import Path
+from importlib.resources import files
 
 import pytest
 
@@ -17,8 +17,7 @@ from lionhub.agent.casts.emission import (
 from lionhub.agent.casts.pack import Pack, RolePolicy
 from lionhub.agent.casts.pattern import PatternKind, Role, list_roles
 
-_ROOT = Path(__file__).parents[5]
-DEFAULT_PACK = _ROOT / "lionhub/src/lionhub/agent/casts/packs/default.yaml"
+DEFAULT_PACK = files("lionhub.agent.casts").joinpath("packs", "default.yaml")
 
 
 def test_all_roles_load():
@@ -116,6 +115,7 @@ def test_role_load_rejects_noncanonical_alias():
 
 
 def test_pack_loads_policy():
+    assert DEFAULT_PACK.is_file(), "packaged default pack is missing"
     p = Pack.from_file(DEFAULT_PACK)
     assert p.name == "default"
     critic = p.policy("critic")

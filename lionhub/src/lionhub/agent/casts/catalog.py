@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from importlib.resources import as_file, files
+
 from .pattern import Mode, Role, list_modes, list_roles
 
 __all__ = ("build_catalog",)
@@ -14,8 +16,6 @@ def _load_packaged_pack(*, raise_on_error: bool = False):
     """Load the packaged default pack from the lionhub.agent.casts resource tree.
     Raises if raise_on_error is True, otherwise returns None on failure."""
     try:
-        from importlib.resources import as_file, files
-
         from .pack import Pack
 
         packaged = files("lionhub.agent.casts").joinpath("packs", "default.yaml")

@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib
 import subprocess
 import sys
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -126,7 +127,12 @@ def test_other_import_error_has_module_prefix_and_original_cause(pattern_sources
 
 
 def test_importing_casts_keeps_the_agent_parent_lazy():
-    root = __import__("pathlib").Path(__file__).resolve().parents[5]
+    import lionhub.agent.casts as casts
+
+    # The source root holding the ``lionhub`` package (casts -> agent -> lionhub -> root).
+    # ``python -c`` puts its working directory first on ``sys.path``, so running there makes the
+    # child import this checkout's ``lionhub`` rather than another installed copy.
+    package_src = Path(casts.__file__).resolve().parents[3]
     result = subprocess.run(
         [
             sys.executable,
@@ -135,7 +141,7 @@ def test_importing_casts_keeps_the_agent_parent_lazy():
             "assert not any('lionhub.agent.' + name in sys.modules for name in "
             "('factory', 'spec', 'settings', 'permissions'))",
         ],
-        cwd=root,
+        cwd=package_src,
         capture_output=True,
         text=True,
         check=False,

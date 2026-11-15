@@ -1,10 +1,10 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01, 2026-11-02, 2026-11-09 and 2026-11-10 (see Amendments 1 to 12).
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01, 2026-11-02, 2026-11-09, 2026-11-10 and 2026-11-12 (see Amendments 1 to 13).
 - **Kind**: Aspirational
 - **Implementation-status**: partial — D1 to D5 and Amendments 1 to 8 are implemented, and so are
   D6's failure classes and shielded settlement. Within that accepted scope, two clauses remain. D4's single-use runtime ticket:
-  the reserve call returns a plain reservation. The ledger refuses a duplicate attempt id and settles an attempt once (an identical repeat changes nothing, a different one blocks the account in this implemented baseline), but nothing is consumed when the request is dispatched. D6's revoke-and-join before "not sent": the not-sent settle is chosen by whether the request was entered, with no ticket to revoke and no join of the worker. Amendment 9 is unimplemented; the preceding implementation claims apply through Amendment 8 only. The required Amendment 9 runtime-after-reconciliation no-op is a new exception, not implemented by that baseline. Amendment 12 is implemented.
+  the reserve call returns a plain reservation. The ledger refuses a duplicate attempt id and settles an attempt once (an identical repeat changes nothing, a different one blocks the account in this implemented baseline), but nothing is consumed when the request is dispatched. D6's revoke-and-join before "not sent": the not-sent settle is chosen by whether the request was entered, with no ticket to revoke and no join of the worker. Amendment 9 is partly implemented: Decision 6's evidence types and the router calls that settle with them, and Decision 4's rule that runtime evidence after an operator reconciliation returns `already_settled` without comparison, mutation or block. The typed `reconcile(evidence=)` keyword in Decision 4 is not implemented; the preceding implementation claims otherwise apply through Amendment 8 only. Amendments 12 and 13 are implemented.
 - **Area**: service-providers
 - **Date**: 2026-10-12
 - **Relations**: extends ADR-0027; follows ADR-0119 and ADR-0125 D1 and D8 (carries lion1 ADR-0024 and lion1 ADR-0028 by concept); keeps ADR-0029 D4's retry classes; preserves the boundaries of ADR-0028, ADR-0030 and ADR-0043
@@ -367,6 +367,10 @@ selection reads it: the D4 ledger.
    `caller_cancelled` differs from the first reads as identical, because the flag is not stored. It
    returns `already_settled` and clears nothing.
 
+   See [Amendment 14](#amendment-14-interrupt-a-stalled-streamed-rejection)
+   for a streamed rejection whose status is known when cancellation interrupts
+   the read. Recording that status clears warmth as a recorded rejection does.
+
    The clear has to cover more than blocks. HTTP 401/403 still blocks with `auth_required` (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._request_attempt`, `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`); accounting blocks `ceiling_exceeded` and `settlement_conflict`, and explicit operator blocks, also block an account and clear warmth. A rate-limited account, or one whose credit is exhausted (a 400), stays a
    candidate. Without the clear, its row would keep it first in W for every new scope with that
    prefix, and a bound scope never moves. The clear removes that preference and nothing else: D3's
@@ -549,6 +553,7 @@ selection reads it: the D4 ledger.
   process without the amendment has cleared the block, the rows stay until they lapse or the next
   failure there. A re-admission after an accounting block that process set (`settlement_conflict`, `ceiling_exceeded`) deletes the account’s warmth regardless of whether it served a request. Separately, the writer at c6a3b4af already implements Amendment 5 and can clear warmth; it may conflict-block a replay against a new rejection-zero outcome. Decision 6 examines that writer only. It makes no compatibility promise for the pre-Amendment-5 process described above; an accounting block is not execution evidence.
 - An outer timeout that cancels the task (`asyncio.timeout`, `anyio.fail_after`) reaches the adapter as cancellation: before send it records caller-cancelled `not_sent`; after send the original reason is `cancelled` unless a shielded status/response settlement has already selected its evidence or transport failure was latched first. Those selected bases keep their precedence under Amendment 9 Decision 2 and the shielded-status verification. An eligible stream settles Amendment 9's estimate, otherwise the reason leaves its ceiling held. Neither clears warmth unless a block is recorded; E > C blocks and clears. A transport timeout inside the adapter on an unsettled attempt uses `transport_error` in unknown or estimate evidence and clears. A late reason-only timeout write after final settlement changes nothing. If transport failure was latched first, Decision 2 records transport_error before delivering the pending cancellation; it does not replace that reason with cancelled.
+  [Amendment 14 (Proposed)](#amendment-14-interrupt-a-stalled-streamed-rejection) proposes treating an observed rejection status as evidence when cancellation interrupts classification.
 
 ### Alternatives considered
 
@@ -635,6 +640,9 @@ Tests under `tests/service/accounts/` and `tests/providers/anthropic/`:
   account's rows; the next new scope falls back to the order. `clear_block()` on an account that is not
   blocked deletes nothing. A consumer that closes the stream after an error event retains original reason `stream_error` in the open outcome or estimate evidence and clears; one that closes it without an error event retains original reason `stream_closed` and preserves warmth unless blocked. A
   transport failure after `settle_stream_end` recorded complete usage clears nothing. With an AnyIO scope cancellation (`fail_after`) pending when the adapter records a 429, the attempt keeps `rate_limited`, the rows are cleared and the caller receives `TimeoutError`; pending at a 401, the account is blocked, the attempt keeps `auth_required`, the rows are cleared and the caller receives `TimeoutError`; pending at a qualifying 529, the attempt settles `rejection_zero` with `provider_error` in structured evidence, otherwise a 5xx keeps `provider_error`; pending at a qualifying 400, the attempt settles `rejection_zero` with `request_rejected` in structured evidence and its two rejection columns, otherwise keeps open `request_rejected`; in each case warmth is cleared and the caller receives `TimeoutError`; pending at a transport failure after the request entered, the attempt keeps `transport_error` in the open outcome or eligible stream-estimate evidence, the rows are cleared and the caller receives `TimeoutError`; pending at a non-streamed 200 whose usage is incomplete, the attempt keeps `usage_incomplete` and the rows are cleared; pending at a 200 that prices over the ceiling, the account is blocked with `ceiling_exceeded` and the rows are cleared.
+  [Amendment 14 (Proposed)](#amendment-14-interrupt-a-stalled-streamed-rejection)
+  updates the streamed arms when cancellation is already pending at the rejection
+  status. The non-streamed arms keep the accepted result.
   A clearing `UnknownOutcome` on an open attempt that already recorded `cancelled` clears. A
   non-cancellation exception at `begin`'s `except BaseException` settles a `not_sent` that clears.
   `cancelled`, `stream_closed`, a caller-cancelled `not_sent` from either adapter cancellation handler or from `begin` (cancellation class and `GeneratorExit`), and an Amendment 9 reconciliation preserve warmth unless that operation records a block; block precedence is mandatory. A reconciliation without a block, an `UnknownOutcome` on a settled attempt and an identical repeat delete nothing. `ProvenNotSent(caller_cancelled=True)` followed by `ProvenNotSent(caller_cancelled=False)` on one attempt returns `already_settled` and clears nothing. For an Amendment 9 estimate E > C, including cancellation and consumer close, verify the block clears warmth; 529 zero also clears. Neither new settlement basis creates or refreshes a prefix. Typed reconciliation preserves ordinary no-clear behavior unless it records a block. For transport-first cancellation, assert the latched transport reason and shielded write before outward TimeoutError; for cancellation-first, assert cancelled and block precedence, as Decision 2 specifies.
@@ -766,9 +774,11 @@ errors rather than match message text. This amendment uses message text for diag
    it and stops after 64 KiB and one more byte, so a larger body is detected without being read
    further. Both bounds count decoded bytes: the streamed read consumes the decoded byte stream,
    never the bytes on the wire. That read comes before the settlement, so it runs under `CancelScope(shield=True)` bounded at five seconds, like the settlement writes Amendment 5 shields: a pending cancellation is still delivered after the failure is recorded (Amendment 5), and a read that has not finished within the bound returns `other` for both parser fields. On the request-rejected branch those fields are recorded; on HTTP 529 the adapter keeps both rejection columns and outward diagnostic fields null and retains the ceiling. A body over the bound, a body that does not decode, a body with no `error.type` string, or one whose `error.type` is not in the provider's set returns `other` for the parser type; the request-rejected branch records it, while HTTP 529 leaves the rejection columns and outward fields null. A body with no `error.message` string returns `other` for the parser class; HTTP 529 does not persist that diagnostic class. The settlement order remains accounting before outward failure: qualifying 400 uses `RejectionZero`, otherwise `UnknownOutcome(request_rejected)` records both fields. A possible 529 uses the same bounded read before the generic 5xx arm; only its exact pair qualifies, with type in structured evidence only.
+   [Amendment 14 (Proposed)](#amendment-14-interrupt-a-stalled-streamed-rejection) proposes dropping the shield from the streamed body read.
 4. **The drop rule.** The body, decoded object and raw message remain inside the bounded classifier/read function. That function catches its own failures, including malformed JSON, non-object root or error, missing fields, decoded-body overflow, read failure and timeout, returning `other` for both fields on failed classification. Capture failure follows the isolation rule below. HTTP 529 discards the parser diagnostics from the rejection columns and outward fields. Classifier failures log only the exception type at DEBUG, without traceback; enabled capture failures additionally emit Amendment 9's fixed WARNING event and closed failure code. No input, raw body or message is logged or placed in exception arguments, `__context__` or `__cause__`. The error is raised after
    that function has returned, outside any `except` block, so the attempt's error has no context
    from the read. This is the same rule the decode error already follows on the success path. On the streamed attempt the bounded read of Decision 3 also runs inside that function, so no string or bytes value holding the body is bound in the attempt's own frame. The sole storage exception is Amendment 9's enabled HTTP 400 class-`other` capture: the classifier passes only redacted, capped text and validated metadata to the private writer, under its reader and retention policy. Header construction supplies the exact-string redaction callable using an already-unwrapped credential; the classifier never unwraps one. Capture failure changes neither classification, accounting nor outward errors. The streamed `_classify_streamed_rejection` retains the decoded `aiter_bytes()` read under `CancelScope(deadline=..., shield=True)` (`lionhub/src/lionhub/providers/anthropic/messages.py::_classify_streamed_rejection`). Disabled capture retains no text; enabled capture grants no text input to financial or request control.
+   [Amendment 14 (Proposed)](#amendment-14-interrupt-a-stalled-streamed-rejection) applies the drop rule when cancellation ends the classifier.
 5. **Where the fields go.**
    - `AccountRoutingError` gains `provider_error_type` and `rejection_class`, both optional. Each is
      validated against its set when the error is built, and an unknown value raises `ValueError`.
@@ -785,7 +795,7 @@ errors rather than match message text. This amendment uses message text for diag
      `rejection_class`. An open `request_rejected` reason writes them atomically and retains its first reason/fields. A qualifying 400 writes them with zero settlement; 529 leaves both null and stores its qualifying type only in structured evidence. Typed reconciliation preserves existing fields, and a new final basis snapshots them before replacing outcome. Other settlements introduce neither field, and later classification never replaces stored class. They are added to an existing version 1 ledger the same way the warm-prefix table is, when missing, without changing `user_version`, and the check that lets a complete ledger through also requires them. Amendment 9 additionally requires its evidence column and a locked re-read of extension completeness. A reader that predates them does not read them,
      and a row settled by a version that predates them holds null in both. The ledger validates
      both values against the sets before writing, as it validates reason codes today.
-6. **Class remains diagnosis only.** Settlement, retry, blocking, account choice and warm-prefix clearing never read rejection class; diagnostic capture may use class `other` to select a message for inspection. Amendment 9 permits settlement to read the HTTP status and parsed error type. The resulting released ceiling changes D3 utilization and W eligibility indirectly, though their formulas are unchanged. A request rejection is still never retried and never moves to another account. Original ending reason and any block govern warmth under Amendment 9. Repeated typed zero rejections do not automatically block an account. Contradictory prior typed failure evidence can also cause settlement_conflict and clear warmth; diagnostic class cannot cause that conflict.
+6. **Class remains diagnosis only.** Settlement, retry, blocking, account choice and warm-prefix clearing never read rejection class; diagnostic capture may use class `other` to select a message for inspection. Amendment 9 permits settlement to read the HTTP status and parsed error type. The resulting released ceiling changes D3 utilization and W eligibility indirectly, though their formulas are unchanged. A request rejection is still never retried and never moves to another account. Original ending reason and any block govern warmth under Amendment 9. Repeated typed zero rejections do not automatically block an account. Contradictory prior typed failure evidence can also cause settlement_conflict and clear warmth; diagnostic class cannot cause that conflict. The billing-rejection exception is stated in Amendment 12 Decision 5.
 7. **Out of scope.** The unrouted path (`lionagi/service/connections/endpoint.py`, the error-body
    branch) is unchanged. Provider text stays absent from the ledger and routed errors. Amendment 9 supplies the formerly deferred bounded-message reader policy, authorizing only its enabled private diagnostic file; no other provider-text storage is permitted here.
 
@@ -855,6 +865,7 @@ Each item is a test that fails without this change:
   error. On the streamed attempt, a body larger than the bound is not read past 64 KiB and one
   byte, and a body that does not arrive within five seconds records `other` for both fields.
 - A cancellation already pending when a 400 arrives is delivered after the attempt is recorded `rejection_zero` with its two fields for a qualifying 400, otherwise open `request_rejected`, on both attempts.
+  [Amendment 14 (Proposed)](#amendment-14-interrupt-a-stalled-streamed-rejection) proposes distinct checks for cancellation before and after streamed classification.
 - A message containing the text of two rows gets the class of the earlier row.
 - Sentinel: a body whose message carries a unique sentinel string, through both branches. The
   sentinel is absent from the error's `args` and `str`, from every exception reachable through
@@ -907,7 +918,7 @@ output limit and the hard image and page limits, still record `other`.
    | `credit_balance_low` | `Your credit balance is too low` | the captured message quoted in the Context |
    | `spend_limit_reached` | `You have reached your specified API usage limits`, or `You have reached your specified workspace API usage limits` | rate-limits page, "Setting your own spend limit", quoted in the Context |
 
-2. **Still diagnosis only.** Amendment 7, Decision 6 as amended by Amendment 9 holds for both classes: no financial or request-control action reads message class; only diagnostic capture selects class `other`. Neither one blocks the
+2. **Still diagnosis only.** Amendment 7, Decision 6 as amended by Amendment 9 holds for both classes: no financial or request-control action reads message class; only diagnostic capture selects class `other`. Amendment 12 Decision 5 states the later billing-rejection exception. Neither one blocks the
    account, moves the request to another account, retries it or changes warm-prefix clearing. As
    Amendment 5 says, an account whose credit is exhausted stays a candidate; an operator who reads
    the class from the error or the ledger row blocks the account through the ledger's `block`. Blocking an account on a class would key financial control on message text, which Amendment 7 as amended by Amendment 9 still rules out, and needs its own decision.
@@ -984,6 +995,7 @@ At `c6a3b4af`, `UnknownOutcome` records a reason and optional rejection fields w
    The response must belong to this physical attempt and precede any successful stream response. A 200 stream containing an error event is not an HTTP 529 response. No other pair qualifies. All Amendment 7 and 8 classes qualify when the first pair is present, including class `other`; no settlement, retry, blocking, account choice or warm-prefix decision reads the rejection class. This supersedes Amendment 7's prohibition on settlement reading the typed error field, while preserving diagnosis-only use of message class. Releasing C changes the utilization used by D3 and the spending threshold used to form W in Amendment 5: their formulas stay unchanged, but candidate eligibility and ordering can change indirectly. The rule is deliberately typed, not an assertion that every unrecognized 400 is billable.
 
    Apply Amendment 7's decoded 64 KiB body limit and five-second shielded streamed-body read to both pairs. A larger body, invalid JSON, failed or timed-out read, missing or unrecognized type, or status/type mismatch keeps the ceiling. A missing or unfamiliar message with a valid type does not prevent zero settlement. Inspect a possible 529 before the generic 5xx arm, without changing its retry classification. Raise the existing routed error only after the settlement attempt; zero accounting is not request success.
+   [Amendment 14 (Proposed)](#amendment-14-interrupt-a-stalled-streamed-rejection) applies the same ordinary read deadline to both pairs and makes it interruptible.
 
    HTTP 401, 403, 429 and 413 retain D6's existing accounting, blocking and retry actions because this amendment authorizes only the two pairs above. Other 4xx and other 5xx also retain D6's treatment. No account block is inferred from a billing class. Repeated typed zero rejections do not automatically block an account.
 
@@ -1073,7 +1085,7 @@ The diagnostic JSON file has exactly `schema_version` (1), `attempt_id` (validat
 
 ### Decision — repeated rejections
 
-7. **Typed zero affects utilization; repeated rejection does not automatically block.** Retain D3 ordering, Amendment 5's candidate rule and Amendment 8 Decision 2's operator block. Releasing the held ceiling changes utilization; an account that keeps rejecting remains a candidate until an operator blocks it. Existing authentication and accounting blocks remain. No persistent rejection counter, new block reason, counter schema or migration, or new error code is added. Cost: repeated failures can keep new cold scopes on an account that cannot serve them until an operator blocks it. Zero settlement releases C from open reservations R without adding spend S, removing the accumulation of held ceilings that would otherwise saturate B under D5. A qualifying 529 keeps its bounded same-account retry, with each zero reducing committed utilization from its reserved level; zero accounting therefore supplies no pressure to move that retry or subsequent new scopes away. Fixed bindings remain; a rejected request is not moved or retried on another account. <!-- markdownlint-disable-line MD029 -->
+7. **Typed zero affects utilization; repeated rejection does not automatically block.** Retain D3 ordering, Amendment 5's candidate rule and Amendment 8 Decision 2's operator block. Releasing the held ceiling changes utilization; an account that keeps rejecting remains a candidate until an operator blocks it. Existing authentication and accounting blocks remain. No persistent rejection counter, new block reason, counter schema or migration, or new error code is added. Cost: repeated failures can keep new cold scopes on an account that cannot serve them until an operator blocks it. Zero settlement releases C from open reservations R without adding spend S, removing the accumulation of held ceilings that would otherwise saturate B under D5. A qualifying 529 keeps its bounded same-account retry, with each zero reducing committed utilization from its reserved level; zero accounting therefore supplies no pressure to move that retry or subsequent new scopes away. Fixed bindings remain; a rejected request is not moved or retried on another account. The billing-rejection exception to the prior blocking rule is stated in Amendment 12 Decision 5. <!-- markdownlint-disable-line MD029 -->
 
    Option (ii), automatic blocking for repeated typed zero rejections, is not adopted because it can block a healthy account for malformed requests. Reopen it as a later amendment when the same account has at least 60% of the provider's qualifying HTTP 400 `rejection_zero` settlements and at least seven such settlements on each of three consecutive UTC days, while on each day at least one other account is enabled and unblocked in that day’s retained closing snapshot, defined below, and settled at least one complete-usage request that day. Use integer comparison `5 * account_count >= 3 * provider_count`; a zero denominator never trips. This is a review trigger, not proof of a defective account or an automatic block. Seven rather than ten admits a seven/one/one concentration (7/9); an even distribution over two or more accounts cannot pass 60%. The successful other account is an observed service-capacity proxy, not proof that it could serve the rejected request or has unused budget.
 
@@ -1088,6 +1100,7 @@ Ambiguous non-streamed failures, other 5xx and attempts without priceable observ
 ### Consequences and verification
 
 Rejections qualifying under the policy can stop consuming local budget. A stream estimate can release budget before final billing is known, so the local ledger may undercount actual spend; the margin is not a hard budget guarantee. A 400 or 529 response can now wait up to fifteen seconds before its routed error is raised: the five-second shielded body read, then the settlement attempt with Amendment 6's per-call worst case of ten seconds; caller cancellation does not shorten the shielded parts. The daily census's validation pass reads every settled attempt row of the provider inside one read transaction, so its cost grows with the ledger's history and recurs for each counted UTC day. Under the ledger's rollback journal that transaction's shared lock holds back settlement commits until it ends, and a commit that waits past `busy_timeout_s` raises `ledger_busy` as under Amendment 6. This amendment does not bound the pass; the retained census record carries the read's elapsed time, so a later amendment can bound it from measurement, for example by a day-keyed scan or chunked validation. Diagnostic capture may support future classification at the cost of an explicitly enabled sensitive local file. Its retention is enforced lazily: until a capture is admitted or an explicit cleanup runs, written files stay on disk past seven days, including after capture is turned off, so an operator ends their retention with `cleanup_rejection_diagnostics`. Typed reconciliation is an operator act, and its trust boundary is the one every ledger write already has, write access to the ledger file: origin `operator` and the `source_ref` syntax check record the operator's testimony without authenticating it, and a mistaken typed closure stays until a sourced adjustment corrects it, because a later runtime settlement on the reconciled row returns `already_settled` without comparison, except for an attempt closed by lease expiry, where Amendment 11 records the evidence as a correction.
+[Amendment 14 (Proposed)](#amendment-14-interrupt-a-stalled-streamed-rejection) separates the interruptible read from the shielded ledger wait.
 
 MAY implement the two settlement variants and the bounded diagnostic exception. MAY NOT broaden the zero table, estimate missing dimensions, reuse another attempt's evidence, release a ceiling on time alone before the lease of Amendment 11 has passed, or silently sweep old rows. Verify both HTTP paths for exact pairs, class `other`, mismatched or missing types, unreadable bodies and read cancellation. Verify that a stream ending after `message_start` with no qualifying `message_delta` keeps the ceiling, later cumulative stream counts, missing usage, invalid replacements, ambiguous models, every ending in Decision 2, full terminal success, E greater than C, no retry after output, cancellation during write and failed commits. Verify concurrent duplicate/conflicting settlements, locked migration races, legacy null evidence, current-month operator qualification and the specified warmth rules, including block precedence and reconciliation exceptions. Verify diagnostic access controls, byte bounds, redaction, expiry and failure isolation, and Amendment 7's sentinel checks outside the one explicitly enabled file.
 
@@ -1121,17 +1134,19 @@ An attempt that never settles keeps its ceiling in the account's open total, and
 
 3. **Closed through reconciliation.** Each closed attempt becomes `settled` at zero cost with outcome `reconciled`, and one `reconciliation` adjustment of delta zero is written in the same transaction, with an id derived from the attempt id so a repeat writes nothing. Its source reference names the attempt, its age, the lease, the attempt's scope, whether the ledger holds a later settled attempt on that scope, and that the ledger saw no provider usage for it. The ledger reads no run record, so the closure says nothing about whether the provider billed.
 
-4. **Late evidence on a closed attempt blocks nothing.** Complete usage or a stream-usage estimate that arrives for an attempt this amendment closed is real spend, so it writes a `correction` adjustment, with origin runtime and a source reference naming the attempt and the closure, and returns `settled`. This holds whatever the cost: an arrival above the attempt's ceiling is recorded the same way and does not block the account. A stream estimate first passes every check an estimate on an open attempt passes (stored quote, revision, model, pricing inputs, recomputed amount, reservation provenance); a mismatched one raises `ValueError` and writes nothing. Typed zero evidence (`ProvenNotSent`, `RejectionZero`) agrees with the zero the closure recorded and returns `already_settled` without a write, as does a reason-only `UnknownOutcome`. The cost recorded for the attempt is the largest cost seen across its late arrivals, so an estimate followed by a larger bill ends at the bill and the bill is never clamped to the estimate: an arrival above the recorded cost writes a further correction for the difference and returns `settled`, and one at or below it writes nothing and returns `already_settled`, with one log line naming the attempt and both costs when it is below. A replay of an arrival therefore writes once, and a runtime that retries with different evidence cannot block the account. A correction that would take settled spend, adjustments and open reservations past a signed 64-bit total is refused with `budget_exhausted` and writes nothing, the range every other write to the account is held to. The attempt's own row stays closed at zero. For every other reconciled row nothing changes: conflicting final evidence is a `settlement_conflict` that blocks the account, as the ledger already does. Four sentences of Amendment 9 that describe late evidence on a reconciled row as `already_settled` carry the lease exception, and `docs/adr/edits/ADR-0126-amendment-11-edits.md` keeps their earlier wording, as it does for the two sentences that ruled out release by age. Blocking an account for a bill that arrives after a lease closed its hold would re-create the failure the lease removes, and keeping only the first arrival would record an estimate where a larger bill followed.
+4. **Late evidence on a closed attempt blocks nothing.** Complete usage or a stream-usage estimate that arrives for an attempt this amendment closed is real spend, so it writes a `correction` adjustment, with origin runtime and a source reference naming the attempt and the closure, and returns `settled`. This holds whatever the cost: an arrival above the attempt's ceiling is recorded the same way and does not block the account. A stream estimate first passes every check an estimate on an open attempt passes (stored quote, revision, model, pricing inputs, recomputed amount, reservation provenance); a mismatched one raises `ValueError` and writes nothing. This validation happens before comparing its cost with previously recorded corrections, including when the cost would otherwise make the estimate a no-op. Typed zero evidence (`ProvenNotSent`, `RejectionZero`) agrees with the zero the closure recorded and returns `already_settled` without a write, as does a reason-only `UnknownOutcome`. The cost recorded for the attempt is the largest cost seen across its late arrivals, so an estimate followed by a larger bill ends at the bill and the bill is never clamped to the estimate: an arrival above the recorded cost writes a further correction for the difference and returns `settled`, and one at or below it writes nothing and returns `already_settled`, with one log line naming the attempt and both costs when it is below. A replay of an arrival therefore writes once, and a runtime that retries with different evidence cannot block the account. A correction that would take settled spend, adjustments and open reservations past a signed 64-bit total is refused with `budget_exhausted` and writes nothing, the range every other write to the account is held to. The attempt's own row stays closed at zero. For every other reconciled row, Amendment 9 Decision 4 applies: late runtime evidence returns `already_settled` without comparison, mutation or block. Four sentences of Amendment 9 that describe late evidence on a reconciled row as `already_settled` carry the lease exception, and `docs/adr/edits/ADR-0126-amendment-11-edits.md` keeps their earlier wording, as it does for the two sentences that ruled out release by age. Blocking an account for a bill that arrives after a lease closed its hold would re-create the failure the lease removes, and keeping only the first arrival would record an estimate where a larger bill followed.
 
 5. **Nothing else reads it.** Account choice, warm-prefix state, blocking, retry and the schema are unchanged. No migration is needed and `user_version` stays 1.
 
 ### Consequences and verification
 
-A hold that leaked stops consuming budget after two hours without an operator act. A zero closure can understate spend by the cost of a call that billed but never reported. The worst case per closed hold is its full ceiling; the expected size is the average settled cost per call, a few cents on the ledger measured. Repeated holds that never settle therefore keep recorded spend below the provider's bill by up to their ceilings, and the ledger is not a hard budget guarantee. Tests pin the closure, the exact boundary, the budget a stale hold was refusing, the earlier-period exemption, once-only closure, the named later-settled attempt, late complete usage, including one above the ceiling, and a late stream estimate each writing one correction without a block, a mismatched estimate refused, an estimate followed by a larger bill recording the bill, a smaller arrival after the bill writing nothing and logging the drop, a replay writing once, typed zero and reason-only writes staying `already_settled`, and the conflict kept for a row an operator reconciled; removing the sweep call, moving the boundary, or removing any late-evidence rule fails them.
+A hold that leaked stops consuming budget after two hours without an operator act. A zero closure can understate spend by the cost of a call that billed but never reported. The worst case per closed hold is its full ceiling; the expected size is the average settled cost per call, a few cents on the ledger measured. Repeated holds that never settle therefore keep recorded spend below the provider's bill by up to their ceilings, and the ledger is not a hard budget guarantee. Tests pin the closure, the exact boundary, the budget a stale hold was refusing, the earlier-period exemption, once-only closure, the named later-settled attempt, late complete usage, including one above the ceiling, and a late stream estimate each writing one correction without a block, a mismatched estimate refused, an estimate followed by a larger bill recording the bill, a smaller arrival after the bill writing nothing and logging the drop, a replay writing once, typed zero and reason-only writes staying `already_settled`, and late runtime evidence on a row an operator reconciled returning `already_settled` with no write or block; removing the sweep call, moving the boundary, or removing any late-evidence rule fails them.
 
 ## Amendment 12 (2026-11-10) — a rejection for the account's billing state blocks that account
 
 On 2026-11-10 an account whose prepaid credit had run out kept being chosen. Two routed runs failed at their first call with `request_rejected` and class `credit_balance_low`, and the ledger still listed the account as unblocked, so D3's order (the account had the least spend) chose it for every new scope until an operator blocked it. Amendment 8 Decision 2 and Amendment 9 Decision 7 make that the designed behaviour: the class is diagnosis only and only an operator block removes the account. The caller saw a rejection and nothing that named the block as the remedy.
+
+Correction (2026-11-11): D3 orders candidates by utilisation ratio, not by least spend. The account was chosen under that ordering; the record above is otherwise unchanged.
 
 Amendment 8 declined to block on a class because that keys financial control on message text. For the two billing classes that cost is small and bounded. The response is HTTP 400 `invalid_request_error`, which Amendment 9 already settles at zero. The rule below matches the start of the message against fixed texts that describe the account, not the request. And the block is undone by `unblock`: a false match costs one account's availability until an operator lifts it, while a miss sends every new scope's first call to an account that cannot serve it.
 
@@ -1147,13 +1162,21 @@ This amendment blocks; it does not move the call. Moving a rejected call to anot
 
 4. **The refusal names the remedy, from a validated field.** `AccountRoutingError` and the non-streamed internal routed-attempt error gain one optional field, `billing_block`, whose only values are `credit_balance_low` and `spend_limit_reached`. It is set from the ledger, never from the response: on `request_rejected`, only when the response is itself a billing rejection and the settle transaction reports that the account's block reason after that transaction is one of the two classes, and then with that reason; on `account_blocked` for a bound scope, when the reserve transaction reads one of the two classes as the bound account's reason. When present, the message adds `billing_block=<value>` and one fixed sentence chosen by that value: the account stays blocked until an operator unblocks it after the credit is topped up (`credit_balance_low`) or the spend limit resets (`spend_limit_reached`). The message is still built from validated fields and fixed text only, and no provider text enters the error, the ledger or ordinary logs. An account blocked for any other reason carries no `billing_block`, so the remedy never names a billing cause for an account the ledger holds for another reason.
 
-5. **Scope of the exception.** This amendment makes one exception to the rule, stated in several places in this ADR, that a rejection's class never controls blocking or warm-prefix clearing: a billing rejection as Decision 1 defines it blocks its account and clears its warm prefix, through Decision 2's transaction only. Every sentence that states the rule is amended by that exception alone and holds for every other response. The sentences located are: Amendment 7's Decision 6 (its heading and "Settlement, retry, blocking, account choice and warm-prefix clearing never read rejection class", "Repeated typed zero rejections do not automatically block an account"), its second guarantee ("It is never assigned a wrong class that a caller acts on for accounting or request control"), its alternative on warm-prefix clearing ("it never uses message class") and its verification bullet ("No rejection class changes settlement, retry, blocking, account choice or warmth"); Amendment 8's Purpose ("neither billing class controls settlement, routing, retry, blocking or warmth"), its Decision 2 (heading, "no financial or request-control action reads message class", "Neither one blocks the account ... or changes warm-prefix clearing", "an account whose credit is exhausted stays a candidate", "an operator who reads the class ... blocks the account through the ledger's block", "Blocking an account on a class would key financial control on message text, which Amendment 7 as amended by Amendment 9 still rules out, and needs its own decision": this amendment is that decision) and its guarantee "An account out of credit remains eligible for reservation ... until blocked"; and Amendment 9's Decision 7 (heading, "an account that keeps rejecting remains a candidate until an operator blocks it", "Cost: repeated failures can keep new cold scopes on an account that cannot serve them until an operator blocks it", and its "no ... new block reason"). Amendment 8 Decision 1's substring rule still assigns every class; Decision 1 here adds a prefix test that reads the class it assigns. Amendment 7 Decisions 1 and 5 gain `billing_block` as Decision 4 states; their other fields and rules are unchanged. Unchanged and still in force: the operator block and `unblock`; no move, retry or rebinding of a rejected request (Amendment 8 Decision 2, Amendment 9 Decision 7's "Fixed bindings remain", D3, Amendment 5, D4's deferral of failover); Amendment 9 Decision 7's reopening trigger; zero qualification by status and type; and the CLI's subscription-route rule (`lionagi/cli/agent.py::_subscription_switch_objection`), which still treats only `ceiling_exceeded` blocks as spend refusals. The schema does not change: both reasons pass the ledger's reason pattern, and `user_version` stays 1.
+5. **Scope of the exception.** This amendment makes one exception to the rule, stated in several places in this ADR, that a rejection's class never controls blocking or warm-prefix clearing: a billing rejection as Decision 1 defines it blocks its account and clears its warm prefix, through Decision 2's transaction only. Every sentence that states the rule is amended by that exception alone and holds for every other response. The sentences located are: Amendment 7's Decision 6 (its heading and "Settlement, retry, blocking, account choice and warm-prefix clearing never read rejection class", "Repeated typed zero rejections do not automatically block an account"), its second guarantee ("It is never assigned a wrong class that a caller acts on for accounting or request control"), its alternative on warm-prefix clearing ("it never uses message class") and its verification bullet ("No rejection class changes settlement, retry, blocking, account choice or warmth"); Amendment 8's Purpose ("neither billing class controls settlement, routing, retry, blocking or warmth"), its Decision 2 (heading, "no financial or request-control action reads message class", "Neither one blocks the account ... or changes warm-prefix clearing", "an account whose credit is exhausted stays a candidate", "an operator who reads the class ... blocks the account through the ledger's block", "Blocking an account on a class would key financial control on message text, which Amendment 7 as amended by Amendment 9 still rules out, and needs its own decision": this amendment is that decision) and its guarantee "An account out of credit remains eligible for reservation ... until blocked"; and Amendment 9's Decision 7 (heading, "an account that keeps rejecting remains a candidate until an operator blocks it", "Cost: repeated failures can keep new cold scopes on an account that cannot serve them until an operator blocks it", and its "no ... new block reason"). Amendment 8 Decision 1's substring rule still assigns every class; Decision 1 here adds a prefix test that reads the class it assigns. Amendment 7 Decisions 1 and 5 gain `billing_block` as Decision 4 states; their other fields and rules are unchanged. Unchanged and still in force: the operator block and `unblock`; no move, retry or rebinding of a rejected request (Amendment 8 Decision 2, Amendment 9 Decision 7's "Fixed bindings remain", D3, Amendment 5, D4's deferral of failover); Amendment 9 Decision 7's reopening trigger; zero qualification by status and type; and the CLI's subscription-route rule (`lionhub/src/lionhub/serve/cli/agent.py::_subscription_switch_objection`), which still treats only `ceiling_exceeded` blocks as spend refusals. The schema does not change: both reasons pass the ledger's reason pattern, and `user_version` stays 1.
 
 ### Consequences and verification
 
-An exhausted account fails the calls already sent to it and then stops receiving new scopes; the call that met the rejection still fails, with a message that says what to do. Conversations already bound to that account fail until it is unblocked, as they do today after an operator block. The block does not lift itself: an account stays blocked after a top-up, and after the provider's stated resume time for a spend limit, until an operator unblocks it, because reading that time would read message text. Keys that share one organisation's credit or one workspace's spend limit are blocked one by one, each after its own first rejection. A caller that places one of the fixed texts at the start of a validation message (for example as a payload key the provider names first) can block its own account; the block is reversible and blocks nothing else. If a later settle on the same account replaces the billing reason with `ceiling_exceeded`, the CLI treats the account as over its ceiling, as it does today. If the provider changes either text, the rule stops matching and the account falls back to the operator block; a changed text never causes a block.
+An exhausted account fails the calls already sent to it and then stops receiving new scopes; the call that met the rejection still fails, with a message that says what to do. Conversations already bound to that account fail until it is unblocked, as they do today after an operator block. The block does not lift itself: an account stays blocked after a top-up, and after the provider's stated resume time for a spend limit, until an operator unblocks it, because reading that time would read message text. Keys that share one organisation's credit or one workspace's spend limit are blocked one by one, each after its own first rejection. Caller text can reach the start of a provider 400 message: the provider names an unknown top-level request key first (`<key>: Extra inputs are not permitted`, `invalid_request_error`), so a raw request whose key is one of the fixed texts returns a message that passes Decision 1's test. A routed call cannot send such a key: the endpoint keeps only the request model's fields (`lionagi/service/connections/endpoint.py::Endpoint.create_payload`) and that model forbids any other (`lionhub/src/lionhub/providers/anthropic/messages.py::CreateMessageRequest`); `tests/service/accounts/test_routed_rejection_class.py::test_a_request_cannot_carry_a_top_level_key_that_starts_a_billing_message` pins both. An unknown key nested in a field the request model accepts as a mapping is reported under that field's path (`metadata.<key>: ...`, `output_config.<key>: ...`, `tool_choice.auto.<key>: ...`, `messages.0.<key>: ...`), and the other validation messages observed also begin with the path of the field in error (`tools.0.custom.name: ...`), so none of them begins with caller text. Any path that does put a fixed text at the start blocks the account, not only the caller's scope: every scope and process using that credential stops until an operator unblocks the account. A billing rejection that arrives after an Amendment 11 lease has already closed the attempt writes no block (`lionagi/service/accounts/_ledger.py:1624@02fcd3b0`). If a later settle on the same account replaces the billing reason with `ceiling_exceeded`, the CLI treats the account as over its ceiling, as it does today. If the provider changes either text, the rule stops matching and the account falls back to the operator block; a changed text never causes a block.
 
 Tests cover both classes on the JSON and streamed paths: one transaction carries the first zero closure, the block and the warm-prefix clear; a ledger error or a cancellation inside it leaves neither write; an identical replay after an operator unblock writes no block; a contradictory duplicate still blocks for `settlement_conflict` only; an account with an existing non-billing reason keeps it and its error carries no `billing_block`; a non-billing rejection on an account already blocked for a billing class carries no `billing_block`; the call fails with `request_rejected` carrying `billing_block` and is not retried on any account; a scope bound to the account then refuses with `account_blocked` carrying `billing_block`; a new scope selects another account. Controls that must not block: the billing text present but not at the start of the message; the credit text without its full first sentence; any message whose class by Amendment 8's first-match rule is not the class whose text it begins with (an Amendment 7 row, or the other billing row, winning); the billing text under an error type other than `invalid_request_error`; a 429 with `enforced_spend_limit_reached`; a 529; and a 401 or 403, which still blocks for `auth_required` only. Removing the block, the shared transaction, the first-closure condition or the prefix anchor fails them.
+
+## Amendment 13 (2026-11-12) — a late bill on an operator-reconciled row is logged
+
+Amendment 9 Decision 4 makes an operator reconciliation the attempt's final record: runtime evidence that arrives after it returns `already_settled` without comparison, mutation or block. That rule also discards a real bill. An attempt reconciled at zero whose complete usage later arrives at a cost leaves the month's spend understated by that cost, and nothing showed that it happened.
+
+**Decision.** Decision 4's rule is unchanged except for one effect. When runtime evidence that arrives after an operator reconciliation has a cost above zero, the ledger writes one WARNING log line naming the attempt id, the reconciled cost and the arriving cost. The settle still returns `already_settled`, compares nothing against the stored row, writes nothing to the store and blocks nothing. Evidence at zero cost writes no line. The evidence is not checked against the reservation first: a stream estimate whose served model or pricing inputs differ from the reservation returns `already_settled` like any other evidence, because checking it would be the comparison Decision 4 rules out. A correction still takes a sourced adjustment.
+
+**Consequences.** An understated spend becomes visible without reopening the row. The log line is the only record of the late bill; it is not persisted, so an operator who does not read the log does not learn of it. Tests pin one WARNING line with both costs for a late bill above zero and none for evidence at zero cost, with the row, the block reason and the corrections unchanged; and a stream estimate whose served model differs from the reservation returning `already_settled` on an operator-reconciled row, where a lease-closed row refuses the same estimate (Amendment 11).
 
 ## Requirements
 
@@ -1550,6 +1573,10 @@ The owner revokes the one-use dispatch ticket and joins or accounts for that wor
 | Other 4xx, including 413; 400 failing Amendment 9's typed-evidence rule | Classify request rejection; keep ceiling without complete billing evidence. | None. |
 | Cancellation, process death or stream truncation | Settle any complete evidence already captured, or an eligible early-ended stream estimate E under Amendment 9; otherwise retain ceiling. E > C blocks with `ceiling_exceeded` and clears warmth, including on cancellation. Process death without a committed settlement retains the durable ceiling. | No cancellation replay. |
 
+See [Amendment 14](#amendment-14-interrupt-a-stalled-streamed-rejection) for
+cancellation after the streamed attempt observes a rejection status.
+Recording that status clears warmth as a recorded rejection does.
+
 Status alone is not proof of a zero bill. Amendment 9 permits zero settlement only for its closed HTTP status/type pairs as a policy interpretation of the quoted failed-request statement. Streams merge initial usage and later cumulative fields by replacement, not addition; complete terminal evidence uses exact pricing, while only eligible early-ended streams use Amendment 9's estimate. Intercept HTTP accounting before redaction buffering, generic stream projection and consumer yields. The accepted record describes generic projection as retaining raw events (`lionagi/service/connections/endpoint.py::Endpoint._line_to_stream_chunk`, `lionagi/service/connections/endpoint.py::Endpoint._event_to_stream_chunk`); the additional pre-redaction accounting parser is proposed. No automatic retry after
 stream output starts. Stream close/finalization shields an available settlement
 from caller cancellation; the shield waits at most five seconds for a worker thread
@@ -1661,3 +1688,183 @@ screens, dynamic reload and other providers would need additional transport,
 trust or lifecycle contracts. They are DEFERRED. Other key providers may later
 implement the same quote/reserve/settle semantics with their own pricing and
 response evidence; no generic provider plug-in system is introduced now.
+
+## Amendment 14: Interrupt a stalled streamed rejection
+
+- **Status**: Proposed
+- **Date**: 2026-11-14
+
+### Context
+
+After observing a routed Anthropic Messages rejection status, the streamed
+adapter shields the body read. AnyIO scope cancellation can wait for that read's
+five-second deadline. Native task cancellation interrupts the read, but the
+adapter has already marked the attempt as accounted for and can leave it open
+with no recorded reason or HTTP status.
+(`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`,
+`lionhub/src/lionhub/providers/anthropic/messages.py::_classify_streamed_rejection_details`)
+
+This amendment changes the following clauses for streamed rejection reads:
+
+| Accepted clause | Wording this amendment changes |
+| --- | --- |
+| Amendment 5, guarantees and limitations | “unless a shielded status/response settlement has already selected its evidence or transport failure was latched first.” The observed rejection status also takes precedence if cancellation interrupts the body read. |
+| Amendment 5, verification | “pending at a qualifying 529, the attempt settles `rejection_zero`” and “pending at a qualifying 400, the attempt settles `rejection_zero`”. On a streamed attempt, pending cancellation ends the read before classification and records the unread-body outcome. The non-streamed attempt reads the body before inspecting the status and keeps the accepted result. |
+| Amendment 7, Decision 3 | “under `CancelScope(shield=True)` bounded at five seconds”. The ordinary deadline stays five seconds and caller cancellation can end the read earlier. |
+| Amendment 7, Decision 4 | “under `CancelScope(deadline=..., shield=True)`”. The read becomes interruptible and the drop rule applies to its cancellation exit. |
+| Amendment 7, verification | “for a qualifying 400, otherwise open `request_rejected`, on both attempts.” Streamed verification distinguishes a completed classification from a read interrupted before it returns. |
+| Amendment 9, Decision 1 | “five-second shielded streamed-body read to both pairs”. The interruptible deadline applies to both status/type pairs. |
+| Amendment 9, consequences | “caller cancellation does not shorten the shielded parts.” The body read can end early. The ledger keeps its separate bounds and settlement shield. |
+
+### Decision
+
+**Rule 1. Interruptible read.** After a rejection status, the streamed body
+read keeps its five-second deadline and decoded bound of 64 KiB plus one byte
+to detect overflow. Caller cancellation can end the read early. Take one
+checkpoint inside the classifier, before the deadline starts and before reading
+the body.
+
+**Rule 2. One record for an interrupted read.** If caller cancellation
+interrupts the classifier before it returns, attempt one settlement using
+the observed status:
+
+| Observed response | Evidence for the same attempt |
+| --- | --- |
+| HTTP 400 or another status on the existing request-rejected path | Keep the attempt open with `request_rejected`, the observed HTTP status, and `other` for both diagnostic fields. |
+| HTTP 529 | Keep the attempt open with `provider_error` and HTTP 529. Leave both rejection diagnostic fields null. |
+
+The ceiling stays held and the account's warm-prefix rows are cleared.
+The interrupted read supplies no evidence for a block or settlement at zero.
+
+**Rule 3. Completed classification.** A classifier that returns before caller
+cancellation takes the existing classified settlement, including Amendment 12's
+atomic billing block for a qualifying rejection. A deadline or read failure that
+returns the ordinary unread-body result takes that existing settlement path.
+
+**Rule 4. Caller cancellation.** Caller cancellation is a cancellation
+requested by the caller's own scope or task. The classifier's own read deadline
+is never caller cancellation, including when its cancellation appears in the
+chain of an exception that replaces it. Except for the limits in rule 6, a
+caller cancellation observed in the read, response exit or session exit reaches
+the caller and is never converted to a transport error or retried. Make at most
+one accounting call for the attempt. A ledger failure or a cleanup failure
+raised while the adapter unwinds an observed caller cancellation does not
+replace it or trigger another settlement.
+
+**Rule 5. Provider data.** Keep body bytes and provider text out of the exception,
+its chain and adapter-owned traceback locals, including on rule 6 paths.
+A read interrupted by observed caller cancellation writes no diagnostic capture
+file and emits no capture event.
+
+**Rule 6. Unobservable cancellation.** On the asyncio backend with AnyIO
+4.15.1 and CPython 3.10 through 3.14, a native cancellation requested after
+the read deadline cancels its wait and before the task resumes can merge with
+the deadline. The caller's cancellation is then undelivered at that point.
+An ordinary cleanup error that clears every exception link to the caller's
+native cancellation can also leave it unobserved. In either case, the attempt takes
+the ordinary deadline or failure path. For HTTP 529, that may include a
+further retry within the existing retry budget and reservation rules.
+This is the only exception to Decision 4's sentence that cancellation does not
+retry or move the request to another account. The attempt never observes the
+cancellation, so the retry is the deadline's or the failure's own. That retry
+follows the reservation rules for any deadline 529. An ordinary error whose chain holds no link to a
+cancellation from the caller's scope, because cleanup cleared the links or
+because that cancellation was not yet delivered, can likewise reach the caller
+as that ordinary error when no unshielded checkpoint follows before the error
+leaves the caller's scope; the scope's cancellation is delivered again at any
+later checkpoint, so it never causes a second transport request. A reservation
+a retry made before that checkpoint follows the existing rule for cancellation
+before the response status is known (Decision 4).
+
+<!-- markdownlint-disable-next-line MD029 -->
+4. Keep D6's typed evidence requirement and Amendment 5's accounting shield.
+   The shield protects ledger work from AnyIO scope cancellation. A further
+   native task cancellation retains the existing behavior at the worker
+   boundary. Keep Amendment 6's separate bounds for thread admission and the
+   SQLite wait. A failed write leaves the ceiling held. Keep Amendment 12's
+   atomic zero settlement and block for a qualifying 400 with the winning
+   billing class and verified message prefix. Cancellation before response
+   status is known, the non-streamed path, and the existing treatment of
+   authentication, rate limits and other server errors keep their current
+   rules. Cancellation does not retry or move the request to another account.
+
+### Consequences
+
+AnyIO cancellation no longer waits for the rejection-body deadline after the
+adapter observes it. Native cancellation during the read now reaches the
+accounting call before propagation. Both paths can still wait for ledger
+admission, settlement, and response cleanup. When there is no cancellation,
+the five-second read deadline and the two separate five-second ledger waits
+still apply. A provider that would have returned qualifying evidence after
+cancellation can leave a larger open balance or miss a billing block because
+the interrupted body supplied no proof. Retained open ceilings can exhaust
+the account's budget. A later qualifying billing rejection blocks the account
+only when its settlement commits as the attempt's first closure
+(Amendment 12, Decision 2). An interrupted 400 records `other` as its
+provider error type, which cannot support a later typed 400 rejection
+settlement. Its ceiling stays held until operator reconciliation or a
+committed admission including that account closes the expired hold within
+the same credit period (Amendment 11, Decision 2). The lease is two hours
+by default. Admission in a later period leaves the prior hold open and
+excludes it from that period's budget.
+
+A native cancellation arriving after the accounting call starts and before
+worker admission can still leave an open attempt with no recorded reason or
+status, as in Amendment 5.
+
+When the caller's native cancellation merges with the read deadline or cleanup
+erases every link to it before it is observed, the attempt takes the ordinary deadline
+or failure path. For HTTP 529, that may include a further retry within the
+existing retry budget and reservation rules. This is the only exception to
+Decision 4's sentence that cancellation does not retry or move the request to
+another account. The attempt never observes the cancellation, so the retry is
+the deadline's or the failure's own. That retry follows the reservation rules
+for any deadline 529. When cleanup clears every link to a cancellation from the
+caller's scope and no unshielded checkpoint follows before the error leaves that
+scope, the caller receives the ordinary error; the scope's cancellation is
+delivered again at any later checkpoint, so it never causes a second
+transport request.
+
+### Verification
+
+- Rule 1. Use an uncontended ledger and event-gated rejection reads. Verify a
+  pending caller cancellation reaches the classifier before an immediately
+  available body is read. Keep the ordinary five-second timeout and body-size
+  controls.
+- Rule 2. Stall HTTP 400, 413 and 529 bodies. Cancel after the read starts with
+  an AnyIO scope and with native `task.cancel()`. Require cancellation to reach
+  the caller within a generous bound below five seconds. Verify one open
+  settlement with the corresponding reason, status and diagnostics, the held
+  ceiling, cleared warmth and no new block or zero settlement.
+- Rule 3. Exercise timely typed HTTP 400 and 529 responses and the qualifying
+  billing-prefix case. Verify existing classified settlement and the atomic block.
+  Repeat with cancellation after the classifier returns and before or during
+  settlement. Verify the classified outcome and the atomic block for a qualifying
+  400, subject to the accounting shield's stated limits. Expire the read
+  deadline and raise a replacing read or close error during unwinding; verify
+  the ordinary unread-body result and that no cancellation is re-raised.
+- Rule 4. During observed cancellation, raise ordinary exceptions in read
+  cleanup, response close and session close. Enable retries and verify one
+  transport request, no transport error and one accounting call. The native
+  cancellation that reaches the caller is the same instance. The AnyIO caller
+  scope catches its cancellation. With the caller's scope cancelled after the
+  read deadline delivers and before it exits, raise a replacing error that keeps
+  only the deadline's cancellation in its chain, and let an unshielded
+  checkpoint follow inside the caller's scope before the error leaves it.
+  Verify that what reaches the caller is the caller scope's cancellation, caught
+  by that scope, and that one accounting call is made. Without that checkpoint
+  the case is rule 6's.
+- Rule 5. Deliver a partial body containing a sentinel before cancelling.
+  Verify the sentinel stays out of the propagated exception, chain, adapter
+  locals, logs and ledger, including on rule 6 paths. Enable capture and verify
+  no file or capture event for an observed interruption.
+- Rule 6. Exercise the deadline-only control, a native cancellation requested
+  after the read deadline and before resumption on each supported Python, and
+  separately a cleanup error whose chain has lost the native cancellation.
+  Assert rule 4 where caller cancellation is delivered, and verify the
+  ordinary outcome where it merges with the deadline or becomes unobservable.
+  Wrap the request in the caller's `fail_after`, stall the read until that
+  deadline cancels it, and raise a cleanup error with every exception link
+  cleared. Verify the ordinary error reaches the caller when no unshielded
+  checkpoint follows, the scope's timeout reaches it when one does, and there is
+  no second transport request in either arm.

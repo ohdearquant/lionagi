@@ -15,8 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import lionhub.orchestration.scheduler.settings as scheduler_settings
-
-from ._scheduler_claims import fire_with_claim
+from tests._scheduler_claims import fire_with_claim
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -47,7 +46,7 @@ def _make_svc() -> AsyncMock:
     svc.get_schedule = AsyncMock(return_value=None)
     svc.list_schedules = AsyncMock(return_value=[])
     svc.update_schedule = AsyncMock()
-    svc.create_schedule_run = AsyncMock()
+    svc.create_skipped_schedule_run = AsyncMock()
     svc.update_schedule_run = AsyncMock()
     svc.create_invocation = AsyncMock()
     svc.update_invocation = AsyncMock()
@@ -157,8 +156,8 @@ async def test_maybe_fire_defers_when_no_slot_available(monkeypatch):
     # next_fire_at must be left untouched (still due) so the next tick retries.
     svc.update_schedule.assert_not_awaited()
     # A deferred-capacity skipped-run record was emitted.
-    svc.create_schedule_run.assert_awaited_once()
-    (run_payload,), _ = svc.create_schedule_run.await_args
+    svc.create_skipped_schedule_run.assert_awaited_once()
+    (run_payload,), _ = svc.create_skipped_schedule_run.await_args
     assert run_payload["trigger_context"]["deferred_capacity"] is True
     deferred_calls = [
         c
@@ -250,7 +249,7 @@ async def test_tick_github_polls_on_a_full_cap_and_holds_the_events_it_finds(mon
     assert engine._global_inflight == 1
     for call in svc.update_schedule.call_args_list:
         assert "github_cursor" not in call.kwargs
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_skipped_schedule_run.assert_awaited_once()
     holder_claim.release()
 
 
@@ -670,13 +669,13 @@ async def test_maybe_record_deferred_throttles_after_first(monkeypatch):
         await engine._maybe_record_deferred(schedule, now=1000.0)
 
     # First deferral emits; deferrals 2-9 (count % 10 != 1) do not.
-    assert svc.create_schedule_run.await_count == 1
+    assert svc.create_skipped_schedule_run.await_count == 1
 
     # The 10th and 11th deferrals: count=10 (no emit), count=11 (emit, 11%10==1).
     await engine._maybe_record_deferred(schedule, now=1000.0)
-    assert svc.create_schedule_run.await_count == 1
+    assert svc.create_skipped_schedule_run.await_count == 1
     await engine._maybe_record_deferred(schedule, now=1000.0)
-    assert svc.create_schedule_run.await_count == 2
+    assert svc.create_skipped_schedule_run.await_count == 2
 
 
 # _run_task_worker_tick — ad-hoc executions draw from their own independent

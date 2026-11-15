@@ -894,7 +894,7 @@ def test_the_record_route_serves_the_persisted_execution_root(tmp_path, monkeypa
     record = _make_client().get(f"/api/schedules/{schedule_id}").json()
     assert "action_cwd" in record
 
-    source = _Path("lionagi/cli/machine_schedule.py").read_text()
+    source = _Path("lionhub/src/lionhub/serve/cli/machine_schedule.py").read_text()
     create = _re.search(r"^def _create\(argv.*?^def ", source, _re.S | _re.M)
     assert create, "_create not found"
     assert '_studio(f"/{_quote(schedule_id)}")' in create.group(0), (

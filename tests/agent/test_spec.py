@@ -120,25 +120,16 @@ class TestRolePolicyBindingContract:
         """Regression guard for the fail-closed raise: every role module under
         lionhub/src/lionhub/agent/casts/roles/ must have a matching entry in the packaged
         default.yaml, or this raise would break every profile using that role."""
-        import os
+        from importlib.resources import files
 
         from lionhub.agent.casts.catalog import _load_packaged_pack
 
-        roles_dir = os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "..",
-            "lionhub",
-            "src",
-            "lionhub",
-            "agent",
-            "casts",
-            "roles",
-        )
+        roles_dir = files("lionhub.agent.casts").joinpath("roles")
+        assert roles_dir.is_dir(), "packaged role data is missing"
         role_names = {
-            f[:-3].replace("_", "-")
-            for f in os.listdir(roles_dir)
-            if f.endswith(".py") and f != "__init__.py"
+            f.name[:-3].replace("_", "-")
+            for f in roles_dir.iterdir()
+            if f.name.endswith(".py") and f.name != "__init__.py"
         }
         pack = _load_packaged_pack(raise_on_error=True)
         missing = {name for name in role_names if pack.policy(name) is None}

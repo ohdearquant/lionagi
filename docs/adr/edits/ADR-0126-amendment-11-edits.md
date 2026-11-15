@@ -85,4 +85,36 @@ New (not applied, kept for the record):
 > ### A11.7 — Amendment 11, Decision 2
 Reason: the parenthesis was proposed for removal as process narration; the entry keeps its original heading and this entry records the proposal.
 
+### A11.11 — Amendment 11, Decision 4: a reconciled row an operator closed
+
+Old:
+> For every other reconciled row nothing changes: conflicting final evidence is a `settlement_conflict` that blocks the account, as the ledger already does.
+New:
+> For every other reconciled row, Amendment 9 Decision 4 applies: late runtime evidence returns `already_settled` without comparison, mutation or block.
+Reason: the old sentence described the ledger before Amendment 9 Decision 4 was implemented; it did not overrule that decision, which the ledger now implements.
+
+### A11.12 — Implementation-status line
+
+Old:
+> Amendment 9 is unimplemented; the preceding implementation claims apply through Amendment 8 only. The required Amendment 9 runtime-after-reconciliation no-op is a new exception, not implemented by that baseline.
+New:
+> Amendment 9 is unimplemented except one rule: runtime evidence that arrives after an operator reconciliation returns `already_settled` without comparison, mutation or block (Decision 4); the preceding implementation claims otherwise apply through Amendment 8 only.
+Reason: that one rule is now implemented.
+
+### A11.13 — Amendment 11, Consequences: what the tests pin
+
+Old:
+> and the conflict kept for a row an operator reconciled;
+New:
+> and late runtime evidence on a row an operator reconciled returning `already_settled` with no write or block;
+Reason: same as A11.11.
+
+### A11.14 — Implementation-status line
+
+Old:
+> Amendment 9 is unimplemented except one rule: runtime evidence that arrives after an operator reconciliation returns `already_settled` without comparison, mutation or block (Decision 4); the preceding implementation claims otherwise apply through Amendment 8 only. Amendment 12 is implemented.
+New:
+> Amendment 9 is partly implemented: Decision 6's evidence types and the router calls that settle with them, and Decision 4's rule that runtime evidence after an operator reconciliation returns `already_settled` without comparison, mutation or block. The typed `reconcile(evidence=)` keyword in Decision 4 is not implemented; the preceding implementation claims otherwise apply through Amendment 8 only. Amendments 12 and 13 are implemented.
+Reason: Decision 6 was already implemented (`RejectionZero`, `StreamUsageEstimate`, `AccountRouter.settle_rejection` and `settle_stream_end`), so the old line understated what the code does; Amendment 13 is added in the same change.
+
 ````

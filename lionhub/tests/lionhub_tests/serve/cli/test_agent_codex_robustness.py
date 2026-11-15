@@ -1,0 +1,532 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for li agent codex robustness: bypass kwarg threading, timeout partial output, and heartbeat."""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from lionhub.orchestration.spawn import (
+    PROVIDER_BYPASS_KWARGS,
+    PROVIDER_YOLO_KWARGS,
+    build_chat_model,
+)
+
+# build_chat_model threads bypass kwarg
+
+
+# _run_agent threads bypass and warns for naked codex
+
+
+def _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured_kwargs: list):
+    """Wire all external stubs for _run_agent; spy on build_chat_model kwargs."""
+
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+
+    async def spy_operate(self, instruction=None, **kw):
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", spy_operate)
+
+    from lionagi.service.manager import iModelManager
+
+    async def fake_shutdown(self):
+        pass
+
+    monkeypatch.setattr(iModelManager, "shutdown", fake_shutdown)
+
+    def spy_build_chat_model(*args, **kwargs):
+        # args: provider, model, yolo, verbose, theme, effort, fast, bypass
+        captured_kwargs.append({"args": args, "kwargs": kwargs})
+        return "codex/gpt-5.3-codex-spark"
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", spy_build_chat_model)
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+
+    async def fake_setup(*a, **kw):
+        return None
+
+    async def fake_teardown(
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
+    ):
+        return status
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+
+    fake_run = SimpleNamespace(
+        run_id="test-run",
+        artifact_root=tmp_path / "artifacts",
+        stream_dir=tmp_path / "stream",
+        branches_dir=tmp_path / "branches",
+    )
+    monkeypatch.setattr(agent_mod, "allocate_run", lambda: fake_run)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc123",
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_threads_bypass_to_build_chat_model(monkeypatch, tmp_path):
+    """_run_agent passes bypass=True to build_chat_model when called with bypass=True."""
+    captured: list = []
+    _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
+
+    from lionhub.serve.cli.agent import _run_agent
+
+    await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", bypass=True)
+
+    assert captured, "build_chat_model was never called"
+    call = captured[0]
+    # bypass is the 8th positional arg (index 7): provider, model, yolo, verbose, theme, effort, fast, bypass
+    args = call["args"]
+    assert len(args) >= 8, f"Expected ≥8 positional args, got {len(args)}: {args}"
+    assert args[7] is True, f"bypass arg (index 7) expected True, got {args[7]!r}"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path):
+    """Naked codex without --bypass or --yolo warns even without verbose output."""
+    captured: list = []
+    _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
+
+    warnings_emitted: list[str] = []
+
+    import lionhub.orchestration.console as logging_mod
+    import lionhub.serve.cli.agent as agent_mod
+
+    def capture_warn(msg):
+        warnings_emitted.append(msg)
+
+    monkeypatch.setattr(logging_mod, "warn", capture_warn)
+    # Also patch via agent_mod's import
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/gpt-5.3-codex-spark")
+
+    from lionhub.serve.cli.agent import _run_agent
+
+    await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", bypass=False, yolo=False)
+
+    # The hint must steer users to --yolo (the sandboxed default) as the
+    # primary remedy, not --bypass (which disables the sandbox).
+    assert any("--yolo" in w for w in warnings_emitted), (
+        f"Expected the warning to recommend --yolo, got: {warnings_emitted}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_flag", ["bypass", "yolo"])
+async def test_run_agent_codex_profile_approval_flag_suppresses_warning(
+    monkeypatch, tmp_path, profile_flag
+):
+    """An approval flag explicitly enabled by a loaded profile suppresses the warning."""
+    captured: list = []
+    _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
+
+    warnings_emitted: list[str] = []
+    import lionhub.orchestration.console as logging_mod
+
+    monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
+
+    import lionhub.serve.cli.agent as agent_mod
+    from lionhub.orchestration.spawn import _parse_profile
+
+    profile = _parse_profile(
+        "approved",
+        "---\n"
+        "model: codex/gpt-5.3-codex-spark\n"
+        f"{profile_flag}: true\n"
+        "lion_system: false\n"
+        "---\n"
+        "Profile body.",
+    )
+    monkeypatch.setattr(agent_mod, "load_agent_profile", lambda _name: profile)
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/gpt-5.3-codex-spark")
+
+    from lionhub.serve.cli.agent import _run_agent
+
+    await _run_agent(None, "do stuff", agent_name="approved")
+
+    bypass_warns = [w for w in warnings_emitted if "require" in w.lower() and "bypass" in w.lower()]
+    assert not bypass_warns
+
+
+@pytest.mark.asyncio
+async def test_run_agent_codex_with_bypass_no_warning(monkeypatch, tmp_path):
+    """Codex with --bypass does not emit the bypass warning."""
+    captured: list = []
+    _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
+
+    warnings_emitted: list[str] = []
+    import lionhub.orchestration.console as logging_mod
+
+    monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
+
+    import lionhub.serve.cli.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/gpt-5.3-codex-spark")
+
+    from lionhub.serve.cli.agent import _run_agent
+
+    await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", bypass=True, yolo=False)
+
+    bypass_warns = [w for w in warnings_emitted if "bypass" in w.lower() and "require" in w.lower()]
+    assert not bypass_warns, f"Unexpected bypass warning when bypass=True: {bypass_warns}"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_codex_with_yolo_no_warning(monkeypatch, tmp_path):
+    """Codex with --yolo does not emit the bypass warning."""
+    captured: list = []
+    _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
+
+    warnings_emitted: list[str] = []
+    import lionhub.orchestration.console as logging_mod
+
+    monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
+
+    import lionhub.serve.cli.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/gpt-5.3-codex-spark")
+
+    from lionhub.serve.cli.agent import _run_agent
+
+    await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", bypass=False, yolo=True)
+
+    bypass_req_warns = [
+        w for w in warnings_emitted if "require" in w.lower() and "bypass" in w.lower()
+    ]
+    assert not bypass_req_warns, f"Unexpected warning with yolo=True: {bypass_req_warns}"
+
+
+# partial output preserved on timeout
+
+
+@pytest.mark.asyncio
+async def test_run_agent_timeout_preserves_partial_output(monkeypatch, tmp_path):
+    """On timeout, _run_agent returns partial output from the branch instead of ''."""
+
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+
+    # Simulate a branch that has accumulated a partial assistant message
+    _partial_text = "Partial review: file A looks fine, file B has an issue…"
+
+    async def timeout_operate(self, instruction=None, **kw):
+        from lionagi._errors import TimeoutError as LionTimeoutError
+
+        raise LionTimeoutError("timed out")
+
+    monkeypatch.setattr(Branch, "operate", timeout_operate)
+
+    from lionagi.service.manager import iModelManager
+
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/gpt-5.3-codex-spark")
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+
+    async def fake_setup(*a, **kw):
+        return None
+
+    async def fake_teardown(
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
+    ):
+        return status
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+
+    fake_run = SimpleNamespace(
+        run_id="test-run",
+        artifact_root=tmp_path / "artifacts",
+        stream_dir=tmp_path / "stream",
+        branches_dir=tmp_path / "branches",
+    )
+    monkeypatch.setattr(agent_mod, "allocate_run", lambda: fake_run)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc123",
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+
+    # Make the branch's last_response yield our fake partial text
+    from lionagi.protocols.messages.manager import MessageManager
+
+    monkeypatch.setattr(
+        MessageManager,
+        "last_response",
+        property(lambda self: SimpleNamespace(response=_partial_text)),
+    )
+
+    from lionhub.serve.cli.agent import _run_agent
+
+    result, _provider, _branch_id, terminal_status, _sid = await _run_agent(
+        "codex/gpt-5.3-codex-spark",
+        "review all files",
+        timeout=30,
+        bypass=True,
+    )
+
+    assert terminal_status == "timed_out"
+    assert result == _partial_text, (
+        f"Expected partial output to be preserved on timeout, got: {result!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_timeout_empty_partial_returns_empty_string(monkeypatch, tmp_path):
+    """On timeout with no partial output, result is empty string (not None)."""
+
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+
+    async def timeout_operate(self, instruction=None, **kw):
+        from lionagi._errors import TimeoutError as LionTimeoutError
+
+        raise LionTimeoutError("timed out")
+
+    monkeypatch.setattr(Branch, "operate", timeout_operate)
+
+    from lionagi.service.manager import iModelManager
+
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/gpt-5.3-codex-spark")
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+
+    async def fake_setup(*a, **kw):
+        return None
+
+    async def fake_teardown(
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
+    ):
+        return status
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc123",
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="r",
+            artifact_root=tmp_path / "a",
+            stream_dir=tmp_path / "s",
+            branches_dir=tmp_path / "b",
+        ),
+    )
+    # No partial output
+    from lionagi.protocols.messages.manager import MessageManager
+
+    monkeypatch.setattr(MessageManager, "last_response", property(lambda self: None))
+
+    from lionhub.serve.cli.agent import _run_agent
+
+    result, _provider, _branch_id, terminal_status, _sid = await _run_agent(
+        "codex/gpt-5.3-codex-spark",
+        "review all files",
+        timeout=30,
+        bypass=True,
+    )
+
+    assert terminal_status == "timed_out"
+    assert result == "", f"Expected empty string, got: {result!r}"
+
+
+# progress heartbeat fires during timeout runs
+
+
+@pytest.mark.asyncio
+async def test_run_agent_heartbeat_started_when_timeout_set(monkeypatch, tmp_path):
+    """When timeout is set, a heartbeat asyncio task is created."""
+
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+
+    heartbeat_tasks_created: list = []
+    original_ensure_future = asyncio.ensure_future
+
+    def spy_ensure_future(coro, **kw):
+        task = original_ensure_future(coro, **kw)
+        heartbeat_tasks_created.append(task)
+        return task
+
+    monkeypatch.setattr(asyncio, "ensure_future", spy_ensure_future)
+
+    async def fast_operate(self, instruction=None, **kw):
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", fast_operate)
+
+    from lionagi.service.manager import iModelManager
+
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/gpt-5.3-codex-spark")
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+
+    async def fake_setup(*a, **kw):
+        return None
+
+    async def fake_teardown(
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
+    ):
+        return status
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}", agent_definition_hash=lambda n: "h"
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="r",
+            artifact_root=tmp_path / "a",
+            stream_dir=tmp_path / "s",
+            branches_dir=tmp_path / "b",
+        ),
+    )
+
+    from lionhub.serve.cli.agent import _run_agent
+
+    await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", timeout=300, bypass=True)
+
+    assert heartbeat_tasks_created, (
+        "Expected at least one heartbeat task to be created when timeout is set"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_heartbeat_created_when_timeout_none(monkeypatch, tmp_path):
+    """A heartbeat task is created even when timeout is None.
+
+    The heartbeat carries the only receipt an operator gets that a queued
+    steer was received before the turn ends (see ADR-0108), so it is armed
+    regardless of --timeout, not just when a deadline happens to be set.
+    """
+
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+
+    heartbeat_tasks_created: list = []
+    original_ensure_future = asyncio.ensure_future
+
+    def spy_ensure_future(coro, **kw):
+        task = original_ensure_future(coro, **kw)
+        heartbeat_tasks_created.append(task)
+        return task
+
+    monkeypatch.setattr(asyncio, "ensure_future", spy_ensure_future)
+
+    async def fast_operate(self, instruction=None, **kw):
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", fast_operate)
+
+    from lionagi.service.manager import iModelManager
+
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/gpt-5.3-codex-spark")
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+
+    async def fake_setup(*a, **kw):
+        return None
+
+    async def fake_teardown(
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
+    ):
+        return status
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}", agent_definition_hash=lambda n: "h"
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="r",
+            artifact_root=tmp_path / "a",
+            stream_dir=tmp_path / "s",
+            branches_dir=tmp_path / "b",
+        ),
+    )
+
+    from lionhub.serve.cli.agent import _run_agent
+
+    await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", timeout=None, bypass=True)
+
+    assert heartbeat_tasks_created, (
+        "Expected a heartbeat task even when timeout=None — the steer receipt "
+        "ack must not silently depend on --timeout being set"
+    )

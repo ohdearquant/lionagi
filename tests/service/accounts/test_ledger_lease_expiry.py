@@ -15,6 +15,7 @@ from lionagi.service.accounts._types import (
     AccountRoutingError,
     AccountSpec,
     CompleteUsage,
+    ProvenNotSent,
     Quote,
     RouterErrorCode,
     Scope,
@@ -89,6 +90,15 @@ async def test_an_expired_hold_is_closed_at_zero_and_frees_the_budget(tmp_path):
     assert f"attempt {held.attempt_id}" in source_ref
     assert "open 7201s, lease 7200s" in source_ref
     assert "later settled attempt on this scope: no" in source_ref
+
+
+def test_expired_lease_rejects_an_unparseable_admission_timestamp(tmp_path):
+    ledger = make_ledger(tmp_path, Clock(T0))
+    with sqlite3.connect(ledger.path) as connection:
+        with pytest.raises(ValueError, match="admission timestamp"):
+            ledger._close_and_record_expired_leases(
+                connection, "anthropic", ["alpha"], "2026-01", "not-a-time"
+            )
 
 
 @pytest.mark.anyio
@@ -358,6 +368,79 @@ async def test_a_smaller_late_arrival_after_the_bill_writes_nothing_and_logs_the
 
 
 @pytest.mark.anyio
+async def test_a_replayed_mismatched_late_estimate_is_validated_before_the_noop(tmp_path):
+    import dataclasses
+
+    from lionagi.service.accounts._pricing import quote_ceiling
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
+
+    revision = priced_revision()
+    priced = quote_ceiling(
+        revision,
+        b'{"model":"model-a","messages":[{"role":"user","content":"x"}],"max_tokens":1024,"service_tier":"standard_only"}',
+    )
+    clock = Clock(T0)
+    ledger = make_ledger(tmp_path, clock, price_revisions={revision.id: revision})
+    held = await ledger.reserve(
+        scope(), uuid4(), priced, (AccountSpec("alpha", "ALPHA_KEY", 100_000),)
+    )
+    await ledger.reserve(scope(), uuid4(), quote(1), (AccountSpec("alpha", "ALPHA_KEY", 100_000),))
+    # Close the hold by admitting after its lease, then write the estimate once.
+    ledger.open_lease = timedelta(0)
+    clock.now += timedelta(seconds=1)
+    await ledger.reserve(scope(), uuid4(), quote(1), (AccountSpec("alpha", "ALPHA_KEY", 100_000),))
+    valid = estimate(priced, revision, "stream_error", output_tokens=40)
+    await ledger.settle(held.attempt_id, valid)
+    before = corrections(ledger.path)
+    invalid = dataclasses.replace(valid, served_model="model-b")
+
+    with pytest.raises(ValueError):
+        await ledger.settle(held.attempt_id, invalid)
+
+    assert corrections(ledger.path) == before
+
+
+@pytest.mark.anyio
+async def test_a_mismatched_late_estimate_below_the_recorded_cost_raises_and_writes_nothing(
+    tmp_path,
+):
+    # The check order the closure rule promises: validation runs before the cost
+    # comparison, so an estimate whose cost alone would make it a no-op still raises.
+    import dataclasses
+
+    from lionagi.service.accounts._pricing import quote_ceiling
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
+
+    revision = priced_revision()
+    priced = quote_ceiling(
+        revision,
+        b'{"model":"model-a","messages":[{"role":"user","content":"x"}],"max_tokens":1024,"service_tier":"standard_only"}',
+    )
+    clock = Clock(T0)
+    ledger = make_ledger(tmp_path, clock, price_revisions={revision.id: revision})
+    held = await ledger.reserve(
+        scope(), uuid4(), priced, (AccountSpec("alpha", "ALPHA_KEY", 100_000),)
+    )
+    ledger.open_lease = timedelta(0)
+    clock.now += timedelta(seconds=1)
+    await ledger.reserve(scope(), uuid4(), quote(1), (AccountSpec("alpha", "ALPHA_KEY", 100_000),))
+    larger = estimate(priced, revision, "stream_error", output_tokens=40_000)
+    assert await ledger.settle(held.attempt_id, larger) == "settled"
+    before = corrections(ledger.path)
+    smaller = estimate(priced, revision, "stream_error", output_tokens=40)
+    assert smaller.cost_nusd < larger.cost_nusd
+    mismatched = dataclasses.replace(smaller, served_model="model-b")
+
+    with pytest.raises(ValueError):
+        await ledger.settle(held.attempt_id, mismatched)
+
+    assert corrections(ledger.path) == before
+    # Control: the same smaller estimate with the stored model is the no-op the cost makes it.
+    assert await ledger.settle(held.attempt_id, smaller) == "already_settled"
+    assert corrections(ledger.path) == before
+
+
+@pytest.mark.anyio
 async def test_late_reason_only_evidence_stays_already_settled(tmp_path):
     from lionagi.service.accounts._types import UnknownOutcome
 
@@ -368,16 +451,84 @@ async def test_late_reason_only_evidence_stays_already_settled(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_an_operator_reconciled_row_keeps_the_conflict_rule(tmp_path):
+@pytest.mark.parametrize("cost", [0, 3])
+async def test_runtime_evidence_after_an_operator_reconciliation_changes_nothing(tmp_path, cost):
+    ledger = make_ledger(tmp_path, Clock(T0))
+    held = await ledger.reserve(scope(), uuid4(), quote(4), (spec(),))
+    await ledger.reconcile(uuid4(), held.attempt_id, cost, "operator closure")
+    before = attempt_row(ledger.path, held.attempt_id)
+
+    for evidence in (
+        CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late"),
+        CompleteUsage("model-a", 1, 2, 3, 4, 5, cost, "late"),
+        ProvenNotSent(),
+    ):
+        assert await ledger.settle(held.attempt_id, evidence) == "already_settled"
+
+    assert attempt_row(ledger.path, held.attempt_id) == before
+    assert block_reason(ledger.path) is None
+    assert corrections(ledger.path) == []
+
+
+@pytest.mark.anyio
+async def test_a_late_bill_after_an_operator_reconciliation_is_logged_and_not_recorded(
+    tmp_path, caplog
+):
     ledger = make_ledger(tmp_path, Clock(T0))
     held = await ledger.reserve(scope(), uuid4(), quote(4), (spec(),))
     await ledger.reconcile(uuid4(), held.attempt_id, 0, "operator closure")
+    before = attempt_row(ledger.path, held.attempt_id)
 
-    with pytest.raises(AccountRoutingError) as caught:
-        await ledger.settle(held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late"))
+    with caplog.at_level("INFO", logger="lionagi.service.accounts._ledger"):
+        free = await ledger.settle(held.attempt_id, ProvenNotSent())
+        billed = await ledger.settle(
+            held.attempt_id, CompleteUsage("model-a", 1, 2, 3, 4, 5, 3, "late")
+        )
 
-    assert caught.value.code == RouterErrorCode.SETTLEMENT_CONFLICT
-    assert block_reason(ledger.path) == "settlement_conflict"
+    assert (free, billed) == ("already_settled", "already_settled")
+    lines = [r for r in caplog.records if str(held.attempt_id) in r.getMessage()]
+    assert [r.levelname for r in lines] == ["WARNING"]
+    assert "reconciled 0 nusd, arrived 3 nusd" in lines[0].getMessage()
+    assert attempt_row(ledger.path, held.attempt_id) == before
+    assert block_reason(ledger.path) is None
+    assert corrections(ledger.path) == []
+
+
+@pytest.mark.anyio
+async def test_a_mismatched_stream_estimate_after_an_operator_reconciliation_is_not_compared(
+    tmp_path,
+):
+    import dataclasses
+    import json
+
+    from lionagi.service.accounts._pricing import quote_ceiling
+    from tests.service.accounts.test_ledger_settlement_evidence import estimate, priced_revision
+
+    revision = priced_revision()
+    priced = quote_ceiling(
+        revision,
+        json.dumps(
+            {
+                "model": "model-a",
+                "messages": [{"role": "user", "content": "x"}],
+                "max_tokens": 1024,
+                "service_tier": "standard_only",
+            }
+        ).encode(),
+    )
+    ledger = make_ledger(tmp_path, Clock(T0), price_revisions={revision.id: revision})
+    held = await ledger.reserve(
+        scope(), uuid4(), priced, (AccountSpec("alpha", "ALPHA_KEY", 100_000),)
+    )
+    await ledger.reconcile(uuid4(), held.attempt_id, 0, "operator closure")
+    before = attempt_row(ledger.path, held.attempt_id)
+    late = dataclasses.replace(
+        estimate(priced, revision, "stream_error", output_tokens=40), served_model="model-b"
+    )
+
+    assert await ledger.settle(held.attempt_id, late) == "already_settled"
+    assert attempt_row(ledger.path, held.attempt_id) == before
+    assert block_reason(ledger.path) is None
     assert corrections(ledger.path) == []
 
 

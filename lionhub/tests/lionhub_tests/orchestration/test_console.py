@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import logging
+import sys
+from inspect import unwrap
 from io import StringIO
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,23 +20,14 @@ from lionhub.orchestration.console import (
     configure_cli_logging,
     log_error,
 )
+from tests import _cli_logging_test_support as logging_support
+
+_CLI_LOGGERS = (*logging_support.PROVIDER_AND_LIBRARY_LOGGERS, *logging_support.CLI_CHANNEL_LOGGERS)
 
 
 @pytest.fixture(autouse=True)
 def restore_cli_logging_state():
-    names = (
-        "",
-        "lionagi.cli._logging_test",
-        "claude-cli",
-        "codex-cli",
-        "pi-cli",
-        "gemini-cli",
-        "lionagi",
-        "lionagi.cli.progress",
-        "lionagi.cli.hint",
-        "lionagi.cli.warn",
-        "lionagi.cli.error",
-    )
+    names = ("", "lionagi.cli._logging_test", *_CLI_LOGGERS)
     saved = {
         name: (
             logging.getLogger(name).level,
@@ -58,6 +52,55 @@ def restore_cli_logging_state():
         logger._lionagi_cli_fallback_level = previous
 
 
+@pytest.mark.parametrize("uses_console_fixture", [False, True], ids=["shared", "console"])
+@pytest.mark.parametrize("fallback", ["missing", None, logging.WARNING])
+def test_logging_fixtures_restore_owned_logger_state(monkeypatch, uses_console_fixture, fallback):
+    root = logging.RootLogger(logging.INFO)
+    console_only = logging.Logger("lionagi.cli._logging_test")
+    loggers = {name: logging.Logger(name) for name in logging_support._CLI_LOGGERS}
+    loggers.update({"": root, console_only.name: console_only})
+    pi = loggers["pi-cli"]
+    marker = "_lionagi_cli_fallback_level"
+    if fallback != "missing":
+        setattr(pi, marker, fallback)
+
+    first, second = logging.NullHandler(), logging.NullHandler()
+    for logger in (root, console_only, pi):
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        logger.handlers[:] = [first, second]
+
+    fixture = (
+        restore_cli_logging_state if uses_console_fixture else logging_support._restore_cli_logging
+    )
+    module = sys.modules[__name__] if uses_console_fixture else logging_support
+    changed_level, changed_marker = logging.ERROR, logging.DEBUG
+    with monkeypatch.context() as fixture_patch:
+        fixture_patch.setattr(module, "logging", SimpleNamespace(getLogger=loggers.__getitem__))
+        restoration = unwrap(fixture)()
+        next(restoration)
+        for logger in (root, console_only, pi):
+            logger.setLevel(changed_level)
+            logger.propagate = True
+            logger.handlers.reverse()
+        setattr(pi, marker, changed_marker)
+        with pytest.raises(StopIteration):
+            next(restoration)
+
+    assert (pi.level, pi.propagate, pi.handlers) == (logging.INFO, False, [first, second])
+    expected = (
+        (logging.INFO, False, [first, second])
+        if uses_console_fixture
+        else (logging.ERROR, True, [second, first])
+    )
+    for logger in (root, console_only):
+        assert (logger.level, logger.propagate, logger.handlers) == expected
+    if fallback == "missing" or (fallback is None and not uses_console_fixture):
+        assert not hasattr(pi, marker)
+    else:
+        assert getattr(pi, marker) is fallback
+
+
 @pytest.mark.parametrize(
     ("name", "verbose", "visible"),
     [
@@ -75,17 +118,7 @@ def test_cli_provider_completion_logging_without_a_root_handler(
     root = logging.getLogger()
     monkeypatch.setattr(root, "handlers", [])
     monkeypatch.setattr(root, "level", logging.WARNING)
-    for logger_name in (
-        "claude-cli",
-        "codex-cli",
-        "pi-cli",
-        "gemini-cli",
-        "lionagi",
-        "lionagi.cli.progress",
-        "lionagi.cli.hint",
-        "lionagi.cli.warn",
-        "lionagi.cli.error",
-    ):
+    for logger_name in _CLI_LOGGERS:
         logger = logging.getLogger(logger_name)
         monkeypatch.setattr(logger, "handlers", [])
         monkeypatch.setattr(logger, "level", logging.NOTSET)
@@ -108,17 +141,7 @@ def test_cli_preserves_existing_root_and_named_handlers(monkeypatch, capsys, nam
     root = logging.getLogger()
     monkeypatch.setattr(root, "handlers", [root_handler])
     monkeypatch.setattr(root, "level", logging.INFO)
-    for logger_name in (
-        "claude-cli",
-        "codex-cli",
-        "pi-cli",
-        "gemini-cli",
-        "lionagi",
-        "lionagi.cli.progress",
-        "lionagi.cli.hint",
-        "lionagi.cli.warn",
-        "lionagi.cli.error",
-    ):
+    for logger_name in _CLI_LOGGERS:
         logger = logging.getLogger(logger_name)
         monkeypatch.setattr(logger, "handlers", [named_handler] if logger_name == name else [])
         monkeypatch.setattr(logger, "level", logging.NOTSET)

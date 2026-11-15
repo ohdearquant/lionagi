@@ -267,11 +267,11 @@ def _read_registration_marker(obj: Any) -> RegistrationMarker | None:
 
 
 _DEPRECATED_ALIASES = {
-    "build_cli_parser": ("lionhub.cli.catalog.build_cli_parser", "2.0.0"),
-    "command_exists": ("lionhub.cli.catalog.command_exists", "2.0.0"),
-    "iter_cli_seeds": ("lionhub.cli.catalog.iter_cli_seeds", "2.0.0"),
-    "load_cli_command": ("lionhub.cli.catalog.load_cli_command", "2.0.0"),
-    "seed_for": ("lionhub.cli.catalog.seed_for", "2.0.0"),
+    "build_cli_parser": ("lionhub.serve.cli.catalog.build_cli_parser", "2.0.0"),
+    "command_exists": ("lionhub.serve.cli.catalog.command_exists", "2.0.0"),
+    "iter_cli_seeds": ("lionhub.serve.cli.catalog.iter_cli_seeds", "2.0.0"),
+    "load_cli_command": ("lionhub.serve.cli.catalog.load_cli_command", "2.0.0"),
+    "seed_for": ("lionhub.serve.cli.catalog.seed_for", "2.0.0"),
 }
 
 

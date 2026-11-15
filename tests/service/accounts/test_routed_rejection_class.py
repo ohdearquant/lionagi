@@ -703,6 +703,13 @@ async def test_a_cancelled_caller_still_has_its_streamed_rejection_classified(
     assert _rejection_columns(path) == [("rejection_zero", INVALID, "prompt_too_long")]
 
 
+def test_rejection_classifier_uses_module_level_error_names():
+    from lionagi.service.accounts import _types
+
+    assert messages_module._PROVIDER_ERROR_TYPES is _types._PROVIDER_ERROR_TYPES
+    assert messages_module._REJECTION_CLASSES is _types._REJECTION_CLASSES
+
+
 @pytest.mark.asyncio
 async def test_a_streamed_body_that_fails_midway_records_other(monkeypatch, tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
@@ -971,3 +978,29 @@ async def test_a_rejection_of_each_class_clears_the_warm_prefix_rows(
     assert _warm_rows(path) == []
     expected_block = "spend_limit_reached" if rejection_class == "spend_limit_reached" else None
     assert _block_reason(path, rows[0][0]) == expected_block
+
+
+@pytest.mark.parametrize(
+    "text", [t for ts in messages_module._BILLING_REJECTION_PREFIXES.values() for t in ts]
+)
+def test_a_request_cannot_carry_a_top_level_key_that_starts_a_billing_message(text):
+    # The provider names an unknown top-level key first in its 400 message, so such a key would
+    # produce a message that passes the billing prefix test and blocks the account.
+    body = json.dumps(
+        {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": f"{text}: Extra inputs are not permitted",
+            },
+        }
+    ).encode()
+    assert messages_module._classify_rejection_details(body, 400)[2] is True
+
+    endpoint = messages_module.AnthropicMessagesEndpoint()
+    request = {"model": "claude-haiku-4-5", "messages": [{"role": "user", "content": "hi"}]}
+    for payload, _ in (
+        endpoint.create_payload({**request, text: 1}),
+        endpoint.create_payload(dict(request), **{text: 1}),
+    ):
+        assert text not in payload

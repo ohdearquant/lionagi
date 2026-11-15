@@ -4,6 +4,7 @@
 """Coverage-targeted tests for agent/settings.py — uncovered paths."""
 
 import asyncio
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -44,12 +45,46 @@ def test_import_hook_trusted_module_returns_callable():
     assert callable(result)
 
 
-def test_import_hook_nonexistent_module_in_trusted_set_returns_none():
+def test_import_hook_warns_and_skips_nonexistent_trusted_module(caplog):
     result = _import_hook(
         "lionhub.agent.hooks_nonexistent:fn",
         trusted_hook_modules={"lionhub.agent.hooks_nonexistent"},
     )
     assert result is None
+    assert (
+        "Could not import the module of configured hook lionhub.agent.hooks_nonexistent:fn"
+        in caplog.text
+    )
+    assert "No module named" in caplog.text
+
+
+def test_import_hook_warns_on_a_missing_attribute(caplog):
+    result = _import_hook(
+        "lionhub.agent.hooks:nonexistent_function_xyz_abc",
+        trusted_hook_modules={"lionhub.agent.hooks"},
+    )
+    assert result is None
+    assert (
+        "Configured hook lionhub.agent.hooks:nonexistent_function_xyz_abc names no attribute"
+        in caplog.text
+    )
+    assert "Could not import the module" not in caplog.text
+
+
+def test_apply_hooks_warns_and_skips_unavailable_hook(caplog):
+    config = AgentSpec.compose("implementer")
+    result = apply_hooks_from_settings(
+        config,
+        {"hooks": {"pre": {"bash": ["lionhub.agent.hooks_nonexistent:fn"]}}},
+        trusted_hook_modules={"lionhub.agent.hooks_nonexistent"},
+    )
+    assert result is config
+    assert (
+        "Could not import the module of configured hook lionhub.agent.hooks_nonexistent:fn"
+        in caplog.text
+    )
+    assert "No module named" in caplog.text
+    assert config.hook_handlers == {}
 
 
 def test_resolve_hook_spec_string_shorthand_trusted():
@@ -208,3 +243,16 @@ def test_old_hook_spec_resolves_with_default_trust():
     )
     handlers = config.hook_handlers["pre:reader"]
     assert handlers == [guard_destructive]
+
+
+def test_import_hook_propagates_an_attribute_error_raised_by_the_module_itself(
+    tmp_path, monkeypatch, caplog
+):
+    name = "hook_module_that_fails_while_loading"
+    (tmp_path / f"{name}.py").write_text("raise AttributeError('fault inside the hook module')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, name, raising=False)
+
+    with pytest.raises(AttributeError, match="fault inside the hook module"):
+        _import_hook(f"{name}:hook", trusted_hook_modules={name})
+    assert "names no attribute" not in caplog.text

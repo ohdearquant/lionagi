@@ -29,10 +29,13 @@ async def _wait_released(key):
 
 
 @pytest.mark.asyncio
-async def test_strict_async_reservation_is_reported_and_warning_resets(tmp_path, caplog):
+async def test_strict_async_reservation_is_reported_and_warning_resets(
+    tmp_path, caplog, monkeypatch
+):
     caplog.set_level(logging.WARNING, logger=reconciliation.__name__)
     clock = [100.0]
     entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cancelled = asyncio.Event()
 
     async def hook():
         entered.set()
@@ -40,6 +43,7 @@ async def test_strict_async_reservation_is_reported_and_warning_resets(tmp_path,
             try:
                 await release.wait()
             except asyncio.CancelledError:
+                cancelled.set()
                 await release.wait()
             return DeliveryOutcome.FAILURE
         finally:
@@ -48,19 +52,40 @@ async def test_strict_async_reservation_is_reported_and_warning_resets(tmp_path,
     async def prepare(_row, _db):
         return PreparedDelivery(hook)
 
+    class HookWaitAsyncio:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def wait(self, tasks, **kwargs):
+            if len(tasks) == 1:
+                (task,) = tasks
+                if (
+                    isinstance(task, asyncio.Task)
+                    and getattr(task.get_coro(), "cr_code", None) is hook.__code__
+                ):
+                    # Measure the hook timeout after it is parked in the release wait.
+                    await asyncio.wait_for(entered.wait(), timeout=2)
+                    kwargs["timeout"] = 0.03
+            return await asyncio.wait(tasks, **kwargs)
+
+    monkeypatch.setattr(reconciliation, "asyncio", HookWaitAsyncio())
+
     async with StateDB(tmp_path / "state.db") as db:
         (event_id,) = await _seed(db, 1)
         await register_consumer(db, "strict-metrics", start="all")
         strict = TerminalReconciler(
-            "strict-metrics", prepare, batch_size=1, timeout=0.03, clock=lambda: clock[0]
+            "strict-metrics", prepare, batch_size=1, timeout=5, clock=lambda: clock[0]
         )
         reporter = TerminalReconciler(
-            "strict-metrics", prepare, batch_size=1, timeout=0.03, clock=lambda: clock[0]
+            "strict-metrics", prepare, batch_size=1, timeout=5, clock=lambda: clock[0]
         )
         key = (reconciliation._store_identity(db), "strict-metrics", event_id)
         try:
             result = await strict.attempt_exact(db, event_id)
             assert entered.is_set() and result.status == "failed"
+            assert result.outcome is DeliveryOutcome.FAILURE and result.attempted
+            await asyncio.wait_for(cancelled.wait(), timeout=2)
+            assert not finished.is_set()
             with reconciliation._workers_lock:
                 assert key in reconciliation._attempts and key not in reconciliation._workers
             clock[0] = 103.0

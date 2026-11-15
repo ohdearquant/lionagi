@@ -134,7 +134,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Correct the progression and CLI extraction design records to match current behavior and source citations.
 
-- Built-in CLI command discovery now lives in `lionhub.cli.catalog`; command names,
+- Built-in CLI command discovery now lives in `lionhub.serve.cli.catalog`; command names,
   aliases and lazy loading are unchanged.
 
 - Engine preset updates now preserve omitted fields, clear explicit nullable overrides, and validate kind-specific options atomically. New presets follow the runtime registry; unrelated edits preserve legacy options. Preset writes reject option values with trailing newlines.
@@ -189,7 +189,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - `lionagi._auto` command catalog functions are deprecated; import
   `build_cli_parser`, `command_exists`, `iter_cli_seeds`, `load_cli_command`, and
-  `seed_for` from `lionhub.cli.catalog`. The lazy aliases remain until 2.0.0.
+  `seed_for` from `lionhub.serve.cli.catalog`. The lazy aliases remain until 2.0.0.
 
 ### Fixed
 

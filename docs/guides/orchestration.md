@@ -30,7 +30,7 @@ FlowPlan from the playbook's prompt and the current input. The builder then
 turns every assignment into an `operate` node bound to a worker branch and
 wires its declared dependencies. With reactivity enabled, accepted
 `SpawnRequest` values add operations to that live graph without rerunning the
-initial planner. Source: `lionagi/cli/orchestrate/flow.py` (`_run_flow_inner`,
+initial planner. Source: `lionhub/src/lionhub/serve/cli/orchestrate/flow.py` (`_run_flow_inner`,
 `_build_dag`, and `_execute_dag`) and `lionhub/src/lionhub/orchestration/patterns.py`
 (`role_node_builder`).
 
@@ -85,19 +85,19 @@ For the second assignment, one FlowOp is an `operate` invocation on the
 analyst's branch. Its instruction is the assignment's `task`; its incoming graph
 edge points to step 1; its context includes the original task and artifact
 locations. That node invocation—not the whole branch and not the whole plan—is
-the FlowOp. Source: `lionagi/cli/orchestrate/_common.py`
-(`_build_worker_operate_node`) and `lionagi/cli/orchestrate/flow.py`
+the FlowOp. Source: `lionhub/src/lionhub/serve/cli/orchestrate/_common.py`
+(`_build_worker_operate_node`) and `lionhub/src/lionhub/serve/cli/orchestrate/flow.py`
 (`_build_dag`).
 
 At present, `inputs` and `exit_criteria` remain plan metadata: `_build_dag`
 does not copy either field into the FlowOp instruction or context. Authors
 should put execution-critical constraints in the playbook prompt rather than
 assuming those two planner fields reach the worker. Source:
-`lionagi/cli/orchestrate/flow.py`.
+`lionhub/src/lionhub/serve/cli/orchestrate/flow.py`.
 
 `--dry-run` displays the planner's declared assignments and dependencies but
 does not build the run graph. `--show-graph` writes the graph only during
-post-execution finalization. Source: `lionagi/cli/orchestrate/flow.py`.
+post-execution finalization. Source: `lionhub/src/lionhub/serve/cli/orchestrate/flow.py`.
 
 ## Choose the lightest surface
 
@@ -111,7 +111,7 @@ Prefer fan-out when the work is genuinely independent. In `fanout.py`, every
 worker node is built with `depends_on=[]`, while `flow.py` normalizes and wires
 the planner's dependency references. A playbook improves reuse; it does not
 freeze a FlowPlan or remove the planning turn. `li play` is rewritten to
-`li o flow -p NAME` by `lionagi/cli/main.py`.
+`li o flow -p NAME` by `lionhub/src/lionhub/serve/cli/main.py`.
 
 Recorded runs show flat fan-outs completing far more reliably than saved
 playbook runs. The dominant saved-playbook failure is a FlowPlan too large for
@@ -119,13 +119,13 @@ its execution window. The mechanics make that risk concrete: the flow timeout
 covers planning, execution, and synthesis, and the worker budget is divided by
 the initial assignment count. Cap and preview planned flows; do not choose a
 playbook merely because the task sounds important. Source:
-`lionagi/cli/orchestrate/flow.py` (`_run_flow` and `_run_flow_inner`).
+`lionhub/src/lionhub/serve/cli/orchestrate/flow.py` (`_run_flow` and `_run_flow_inner`).
 
 ## Reactive runs need spare capacity
 
 `reactive` defaults to `all`. It can be `off` or a comma-separated role
 allowlist. An allowed worker may emit a `SpawnRequest`; the executor converts an
-accepted request into another FlowOp. Source: `lionagi/cli/orchestrate/flow.py`
+accepted request into another FlowOp. Source: `lionhub/src/lionhub/serve/cli/orchestrate/flow.py`
 (`_parse_reactive`) and `lionhub/src/lionhub/agent/casts/emission.py` (`SpawnRequest`).
 
 For a positive `max_ops` ceiling, the fresh-run arithmetic is:
@@ -147,7 +147,7 @@ For example, budget six operations for an expected four-node plan plus two
 possible follow-ups. With no explicit ceiling (`max_ops: 0`), initial planning
 is uncapped by this setting but the executor still limits reactive spawns to 20.
 Restored spawns consume the same budget on resume. Source:
-`lionagi/cli/orchestrate/flow.py` (`_execute_dag`).
+`lionhub/src/lionhub/serve/cli/orchestrate/flow.py` (`_execute_dag`).
 
 Quote the disabled value in YAML:
 
@@ -158,7 +158,7 @@ reactive: "off"
 PyYAML parses bare `off` as boolean false, while the playbook loader requires
 `reactive` to be a string. Because validation occurs in the spawned CLI child,
 an MCP `play.submit` can return a run ID before that type error ends the run.
-Source: `lionagi/cli/orchestrate/__init__.py`, `lionhub/src/lionhub/serve/mcp/dispatch.py`, and
+Source: `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py`, `lionhub/src/lionhub/serve/mcp/dispatch.py`, and
 `lionhub/src/lionhub/serve/mcp/jobs.py`.
 
 ## Resolve issues independently
@@ -186,7 +186,7 @@ Existing customized copies remain unchanged when the bundled template updates.
 ## Playbook field reference
 
 The runtime fields below are the ones `_validate_spec_fields` in
-`lionagi/cli/orchestrate/__init__.py` type-checks when they are present. That
+`lionhub/src/lionhub/serve/cli/orchestrate/__init__.py` type-checks when they are present. That
 function is a type and bounds check, not a field list: it enumerates no closed
 set and rejects no unknown key, so its absence from that function does not make
 a key inert. The declaration fields are listed separately after the table
@@ -231,11 +231,11 @@ malformed schema, and injected as parser flags by
 `inject_playbook_schema_into_parser`. `argument-hint` is parsed by
 `_parse_argument_hint`. A declared arg is substituted into `prompt` as
 `{arg_name}`, with a CLI value overriding the playbook default. Source:
-`lionagi/cli/orchestrate/__init__.py` and `lionagi/cli/main.py`.
+`lionhub/src/lionhub/serve/cli/orchestrate/__init__.py` and `lionhub/src/lionhub/serve/cli/main.py`.
 
 The loader currently runs `_validate_spec_fields` only after the child process
 has loaded the file. Submission resolving the playbook and returning a run ID
-is not a successful validation. Source: `lionagi/cli/orchestrate/__init__.py`,
+is not a successful validation. Source: `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py`,
 `lionhub/src/lionhub/serve/mcp/projection.py`, and `lionhub/src/lionhub/serve/mcp/jobs.py`.
 
 ## Observe a submitted run
@@ -266,6 +266,6 @@ polling. Source: `lionhub/src/lionhub/serve/mcp/dispatch.py` and `lionhub/src/li
 For an interactive CLI flow, use `li o ctl status ID` for lifecycle state and
 the printed `--save` directory for artifacts. A `--background` launch instead
 prints a session ID and writes `flow.log`; that path is separate from the MCP
-submit contract. Source: `lionagi/cli/orchestrate/__init__.py`.
+submit contract. Source: `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py`.
 
 Next, learn how to [observe, control, and resume durable work](durable-operations.md).
