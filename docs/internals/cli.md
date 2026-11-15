@@ -1338,8 +1338,10 @@ precedes transport and does not prove a network send or billed usage. Safe selec
 also appear in `account_labels`; non-routed calls have no declared label, and a malformed
 label or one overlapping the resolved credential is omitted. Keys, headers, credential
 references and prompt text are excluded from this section. `model` is the requested model.
-`served_model` is the model the provider's response named, or `null` when the response
-named none or the call failed; it is the provider's own report, not a verified identity.
+`served_model` is the model the provider's response named, or `null` when no response
+that names one was read: the response named none, the call failed or was cancelled
+first, or the call was still queued or in flight when its invoke stopped waiting.
+It is the provider's own report, not a verified identity.
 
 Each request also records `cache_read_tokens` and `cache_write_tokens` from the final
 successful non-streaming response, when supplied by OpenAI or Anthropic. `null` means
