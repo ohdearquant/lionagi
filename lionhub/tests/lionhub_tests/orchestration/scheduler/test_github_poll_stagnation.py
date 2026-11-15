@@ -45,11 +45,11 @@ async def stores(tmp_path):
         yield databases
 
 
-async def _schedule(db, *, streak=2, **fields):
+async def _schedule(db, *, streak=2, schedule_id="poll", **fields):
     await db.create_schedule(
         {
-            "id": "poll",
-            "name": "poll",
+            "id": schedule_id,
+            "name": schedule_id,
             "trigger_type": "github_poll",
             "github_repo": "owner/repo",
             "github_filter": {"event": "pr_merged"},
@@ -62,8 +62,8 @@ async def _schedule(db, *, streak=2, **fields):
         }
     )
     for _ in range(streak):
-        assert await db.record_github_poll_stagnation("poll", reset=False)
-    return await db.get_schedule("poll")
+        assert await db.record_github_poll_stagnation(schedule_id, reset=False)
+    return await db.get_schedule(schedule_id)
 
 
 async def _row(db):
@@ -184,15 +184,152 @@ async def _reap(tasks):
 
 
 @pytest.mark.asyncio
+async def test_capped_merged_polls_use_fewer_requests_without_slowing_a_sibling(
+    stores, client, monkeypatch
+):
+    db, _, reader = stores
+    initial_cursor = github_module._cursor_for("2026-10-24T10:00:00Z", 0)
+    filter_ = {"event": "pr_merged", "merged_page_limit": 5}
+    await _schedule(
+        db, streak=0, poll_interval_sec=60, github_cursor=initial_cursor, github_filter=filter_
+    )
+    await _schedule(
+        db,
+        schedule_id="healthy",
+        streak=0,
+        poll_interval_sec=60,
+        github_repo="owner/healthy",
+        github_filter=filter_,
+    )
+    engine = SchedulerEngine(svc=_Service(db))
+    stalled_requests = []
+    healthy_requests = []
+
+    async def get(url, **kwargs):
+        if "owner/healthy" in url:
+            healthy_requests.append(now)
+            return _Response()
+        assert url in {
+            "https://api.github.com/repos/owner/repo/pulls",
+            "https://api.github.com/next",
+        }
+        stalled_requests.append(now)
+        return client.response
+
+    monkeypatch.setattr(client, "get", get)
+    for offset in range(0, 3600, 60):
+        now = _NOW + offset
+        await engine._tick_github(await _row(db), now)
+        await engine._tick_github(await db.get_schedule("healthy"), now)
+
+    assert len(stalled_requests) == 25, len(stalled_requests)
+    assert stalled_requests == [
+        _NOW + offset for offset in (0, 120, 360, 840, 1800) for _ in range(5)
+    ]
+    assert healthy_requests == [_NOW + offset for offset in range(0, 3600, 60)]
+    row = await _row(reader)
+    assert row[_COUNTER] == 5
+    assert row["github_cursor"] == initial_cursor
+    assert await reader.list_schedule_runs("poll") == []
+    assert engine._github_due_at(row, now) == _NOW + 3720
+    healthy = await reader.get_schedule("healthy")
+    assert healthy[_COUNTER] == 0
+    assert engine._github_due_at(healthy, now) == _NOW + 3600
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalidate", ["restart", "raised-limit", "changed-target"])
+async def test_merged_poll_invalidation_admits_one_immediate_recovery_scan(
+    stores, client, invalidate
+):
+    db, editor, reader = stores
+    service = _Service(db)
+    engine = SchedulerEngine(svc=service)
+    schedule = await _schedule(
+        db,
+        streak=0,
+        poll_interval_sec=60,
+        github_filter={"event": "pr_merged", "merged_page_limit": 5},
+    )
+
+    await engine._tick_github(schedule, _NOW)
+    assert client.calls == 5
+    assert (await _row(reader))[_COUNTER] == 1
+    await engine._tick_github(await _row(db), _NOW + 1)
+    assert client.calls == 5
+
+    if invalidate == "restart":
+        await editor.update_schedule("poll", last_fired_at=_NOW)
+        engine = SchedulerEngine(svc=service)
+    elif invalidate == "raised-limit":
+        await editor.update_schedule(
+            "poll", github_filter={"event": "pr_merged", "merged_page_limit": 6}
+        )
+    else:
+        await editor.update_schedule("poll", github_repo="owner/retargeted")
+    client.response = _Response()
+    resume_at = _NOW + 2
+    await engine._tick_github(await _row(db), resume_at)
+
+    assert client.calls == 6
+    row = await _row(reader)
+    assert (row[_COUNTER], row["poller_last_capped_page_limit"]) == (0, None)
+    assert row["last_healthy_poll_at"] == resume_at
+    assert engine._github_due_at(row, resume_at + 1) == resume_at + 60
+    await engine._tick_github(row, resume_at + 59)
+    assert client.calls == 6
+    await engine._tick_github(row, resume_at + 60)
+    assert client.calls == 7
+
+
+@pytest.mark.asyncio
+async def test_lowered_page_limit_waits_and_next_raise_uses_previous_attempt_limit(stores, client):
+    db, editor, reader = stores
+    engine = SchedulerEngine(svc=_Service(db))
+    schedule = await _schedule(
+        db,
+        streak=0,
+        poll_interval_sec=60,
+        github_filter={"event": "pr_merged", "merged_page_limit": 6},
+    )
+    await engine._tick_github(schedule, _NOW)
+    assert client.calls == 6
+
+    await editor.update_schedule(
+        "poll", github_filter={"event": "pr_merged", "merged_page_limit": 5}
+    )
+    row = await _row(db)
+    await engine._tick_github(row, _NOW + 119)
+    assert client.calls == 6
+    assert engine._github_due_at(row, _NOW + 119) == _NOW + 120
+
+    client.response = _Response(status=503)
+    await engine._tick_github(row, _NOW + 120)
+    assert client.calls == 7
+    row = await _row(reader)
+    assert (row[_COUNTER], row["poller_last_capped_page_limit"]) == (1, 6)
+    assert row["last_healthy_poll_at"] == _NOW
+
+    await editor.update_schedule(
+        "poll", github_filter={"event": "pr_merged", "merged_page_limit": 6}
+    )
+    client.response = _Response()
+    await engine._tick_github(await _row(db), _NOW + 121)
+    assert client.calls == 8
+    await engine._tick_github(await _row(db), _NOW + 122)
+    assert client.calls == 8
+
+
+@pytest.mark.asyncio
 async def test_repeated_actual_capped_polls_count_without_downgrading_http_health(stores, client):
     db, _, reader = stores
     await _schedule(db, streak=0)
     engine = SchedulerEngine(svc=_Service(db))
-    for attempt in range(1, 5):
-        await engine._tick_github(await _row(db), _NOW + attempt * 2)
+    for attempt, offset in enumerate((2, 4, 8, 16), start=1):
+        await engine._tick_github(await _row(db), _NOW + offset)
         row = await _row(reader)
         assert row[_COUNTER] == attempt
-        assert row["last_healthy_poll_at"] == _NOW + attempt * 2
+        assert row["last_healthy_poll_at"] == _NOW + offset
         assert row["poller_consecutive_401"] == 0
         assert row["github_cursor"] is None
     assert client.calls == 4
@@ -203,8 +340,8 @@ async def test_capped_poll_health_explains_recovery(stores, client):
     db, _, reader = stores
     await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
     engine = SchedulerEngine(svc=_Service(db))
-    for attempt in range(3):
-        await engine._tick_github(await _row(db), _NOW + attempt * 2)
+    for offset in (0, 2, 6):
+        await engine._tick_github(await _row(db), _NOW + offset)
     row = await _row(reader)
     health = compute_schedule_health(row, {}, now=_NOW + 6)
     assert health["health_state"] == "overdue"
@@ -280,8 +417,8 @@ async def test_target_patch_clears_stagnation_but_limit_only_preserves_it(
     db, editor, reader = stores
     await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
     engine = SchedulerEngine(svc=_Service(db))
-    for attempt in range(3):
-        await engine._tick_github(await _row(db), _NOW + attempt * 2)
+    for offset in (0, 2, 6):
+        await engine._tick_github(await _row(db), _NOW + offset)
     assert compute_schedule_health(await _row(reader), {}, now=_NOW + 6)["health_cause"] == (
         "page_limit_reached"
     )
@@ -458,20 +595,20 @@ async def test_raised_limit_recovers_ordered_events_after_restart(
 
     monkeypatch.setattr(service, "create_schedule_run_and_advance", record)
     engine = SchedulerEngine(svc=service)
-    for index in range(3):
-        await engine._tick_github(await _row(db), _NOW + index * 2)
+    for offset in (0, 2, 6):
+        await engine._tick_github(await _row(db), _NOW + offset)
     row = await _row(reader)
     assert row["github_cursor"] == cursor and row[_COUNTER] == 3
     assert compute_schedule_health(row, {}, now=_NOW + 6)["health_cause"] == "page_limit_reached"
     assert fired == []
     await db.update_schedule("poll", github_filter={"event": "pr_merged", "merged_page_limit": 6})
     engine = SchedulerEngine(svc=service)
-    await engine._tick_github(await _row(db), _NOW + 6)
+    await engine._tick_github(await _row(db), _NOW + 7)
     row = await _row(reader)
     assert fired == [2, 1]
     assert row[_COUNTER] == 0
     assert row["github_cursor"] == github_module._cursor_for("2026-10-24T10:10:00Z", 1)
-    assert "health_cause" not in compute_schedule_health(row, {}, now=_NOW + 6)
+    assert "health_cause" not in compute_schedule_health(row, {}, now=_NOW + 7)
     await SchedulerEngine(svc=service)._tick_github(await _row(db), _NOW + 8)
     assert fired == [2, 1]
     runs = await reader.list_schedule_runs("poll")
@@ -493,7 +630,7 @@ async def test_capped_ok_recovers_auth_streak_before_next_401(stores, client):
     assert row["poller_consecutive_401"] == 0
     assert row["last_healthy_poll_at"] == _NOW + 2
     client.response = _Response(status=401)
-    await engine._tick_github(await _row(db), _NOW + 4)
+    await engine._tick_github(await _row(db), _NOW + 10)
     row = await _row(reader)
     assert row["poller_consecutive_401"] == 1
     assert row[_COUNTER] == 3
@@ -645,7 +782,7 @@ async def test_held_and_reheld_batch_are_neutral_then_no_poll_launch_resets(
             assert client.calls == 1
     finally:
         holder.release()
-    await engine._tick_github(await _row(db), _NOW + 6)
+    await engine._tick_github(await _row(db), _NOW + 8)
     if capped:
         assert (await _row(reader))[_COUNTER] == 4
         assert "poll" not in engine._github_batches
@@ -691,10 +828,12 @@ async def test_limit_change_keeps_held_batch_without_skipping(stores, client, pr
     try:
         await engine._tick_github(await _row(db), _NOW)
         assert "poll" in engine._github_batches
+        assert engine._github_due_at(await _row(db), _NOW) == _NOW
         assert (await _row(reader))["github_cursor"] is None
         await db.update_schedule(
             "poll", github_filter={"event": "pr_merged", "merged_page_limit": 6}
         )
+        assert engine._github_due_at(await _row(db), _NOW + 1) == _NOW
     finally:
         holder.release()
     await engine._tick_github(await _row(db), _NOW + 2)
@@ -766,8 +905,12 @@ async def test_pre_poll_boundaries_leave_counter_and_http_untouched(
     db, _, reader = stores
     schedule = await _schedule(db)
     engine = SchedulerEngine(svc=_Service(db))
-    now = 0.5 if boundary == "cadence" else _NOW
-    if boundary == "budget":
+    now = _NOW
+    if boundary == "cadence":
+        client.response = _Response(status=503)
+        await engine._tick_github(schedule, now)
+        now += 0.5
+    elif boundary == "budget":
 
         async def exhausted(*args):
             return True
@@ -779,9 +922,10 @@ async def test_pre_poll_boundaries_leave_counter_and_http_untouched(
             return False, None
 
         monkeypatch.setattr(engine, "_reserve_rate_limit", refused)
+    calls = client.calls
     await engine._tick_github(schedule, now)
     assert (await _row(reader))[_COUNTER] == 2
-    assert client.calls == 0
+    assert client.calls == calls
 
 
 @pytest.mark.asyncio
@@ -1110,8 +1254,8 @@ async def test_repeated_truncated_polls_never_release_an_older_merge_and_become_
     monkeypatch.setattr(github_module, "github_poll", observe_poll)
     engine = SchedulerEngine(svc=_Service(db))
     observations = []
-    for attempt in range(1, 4):
-        now = _NOW + attempt * 2
+    for offset in (2, 4, 8):
+        now = _NOW + offset
         await engine._tick_github(await _row(db), now)
         row = await _row(reader)
         observations.append(
@@ -1121,19 +1265,20 @@ async def test_repeated_truncated_polls_never_release_an_older_merge_and_become_
                 "poll" in engine._github_batches,
                 engine._global_inflight,
                 compute_schedule_health(row, {}, now=now)["health_state"],
+                now,
             )
         )
 
     assert len(poll_results) == 3
     assert client.calls == 3
     for attempt, (result, observed) in enumerate(zip(poll_results, observations), start=1):
-        row, runs, held, inflight, health = observed
+        row, runs, held, inflight, health, polled_at = observed
         assert result.items == []
         assert result.scan_complete is False
         assert result.poll_status == "ok"
         assert row["github_cursor"] == initial_cursor
         assert row[_COUNTER] == attempt
-        assert row["last_healthy_poll_at"] == _NOW + attempt * 2
+        assert row["last_healthy_poll_at"] == polled_at
         assert row["poller_consecutive_401"] == 0
         assert runs == []
         assert held is False

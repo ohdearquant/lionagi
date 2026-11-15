@@ -510,6 +510,19 @@ a newer schema migrates it on open, as an upgrade does.
   requires both signals to agree nothing was recorded (zero rows AND no
   watermark); either one alone being non-null means the schedule executed
   at some point, and the honest verdict is `no-evidence`, not `never-fired`.
+- An enabled merged-PR schedule reports `overdue` with
+  `health_cause: page_limit_reached` after three consecutive capped scans
+  without dispatch. While backoff lengthens its configured polling cadence,
+  schedule list and detail responses include `health_effective_poll_interval_sec`,
+  and the `overdue` check measures quiet time against that interval rather than
+  the configured one.
+  The interval doubles after each settled capped scan up to an hour, or the
+  configured interval if it is already longer. Raising the page limit allows
+  an immediate recovery scan. A changed poll target or a scheduler start also
+  allows one immediate scan. A batch already waiting to dispatch keeps its
+  turn without another scan.
+  `last_healthy_poll_at` and `poller_consecutive_401` continue to describe HTTP
+  liveness and authentication.
 
 ## lionagi/studio/services/runs.py
 

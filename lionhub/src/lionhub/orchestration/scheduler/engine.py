@@ -43,10 +43,12 @@ from lionhub.orchestration.schedule.parsing import (
 )
 from lionhub.orchestration.schedule.timing import (
     ScheduleTimezone,  # noqa: F401
+    resolve_github_poll_cadence_seconds,
+    resolve_merged_poll_page_limit,
     resolve_schedule_cadence_seconds,
     resolve_schedule_timezone,
 )
-from lionhub.orchestration.schedule.validation import merged_page_limit, validate_rate_limit
+from lionhub.orchestration.schedule.validation import validate_rate_limit
 from lionhub.orchestration.scheduler import subprocess as _subprocess
 from lionhub.orchestration.scheduler import threshold as _threshold
 from lionhub.orchestration.scheduler.scheduler_state import (
@@ -299,6 +301,13 @@ class _GithubBatch:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _GithubPollAttempt:
+    started_at: float
+    target_generation: int | None
+    page_limit: int | None
+
+
 def _selected_chain_action(schedule: dict, success: bool) -> dict | None:
     """Return the selected stored chain if it can be used by the scheduler."""
     field = "on_success" if success else "on_fail"
@@ -341,10 +350,9 @@ class SchedulerEngine:
         self._github_tick_started_at: dict[str, float] = {}
         # schedule_id -> events a poll found while the fire cap was full, held for its next turn.
         self._github_batches: dict[str, _GithubBatch] = {}
-        # schedule_id -> when this scheduler last polled GitHub for it. The poll cadence counts
-        # from the later of this and the schedule's last fire, so a poll that fires nothing, or
-        # fails, still waits out poll_interval_sec before the next one.
-        self._github_polled_at: dict[str, float] = {}
+        # Keep attempts process-local. Even a failed scan consumes the immediate turn allowed
+        # after a restart, target change or increase in the page limit.
+        self._github_poll_attempts: dict[str, _GithubPollAttempt] = {}
         self._last_reaper_run: float = 0.0
         self._last_checkpoint_run: float = 0.0
         # Starts unresolved rather than at 0.0, which would make a prune due on the first tick. It
@@ -408,6 +416,11 @@ class SchedulerEngine:
             self._stopping = False
             self._rate_limited_logged.clear()
             self._rate_limited_this_pass.clear()
+            self._github_poll_attempts = {
+                sid: attempt
+                for sid, attempt in self._github_poll_attempts.items()
+                if attempt.page_limit is None
+            }
             self._log_scheduler_timezone()
             await self._backfill_action_cwd()
             await self._stamp_effective_timezones()
@@ -1433,19 +1446,22 @@ class SchedulerEngine:
 
         self._maybe_start_worker_pass(now)
 
+        # A poll in flight when the read starts can settle after its row was read.
+        # Its next scan needs the resulting streak from a fresh snapshot.
+        polls_in_flight = {sid for sid, task in self._github_tick_tasks.items() if not task.done()}
         schedules = await self._svc.list_schedules(enabled=True)
         polled = {s.get("id") for s in schedules if s.get("trigger_type") == "github_poll"}
         for sid in [sid for sid in self._github_batches if sid not in polled]:
             self._drop_github_batch(sid)
-        for sid in [sid for sid in self._github_polled_at if sid not in polled]:
-            del self._github_polled_at[sid]
+        for sid in [sid for sid in self._github_poll_attempts if sid not in polled]:
+            del self._github_poll_attempts[sid]
 
         def schedule_order(schedule: dict) -> float:
             # Every row is admitted in oldest-due order, a poll row at the due instant of its next
             # turn. The sort runs outside the per-row guard below, so a value that is not a number
             # sorts last instead of raising here; that row then fails alone in its own evaluation.
             if schedule.get("trigger_type") == "github_poll":
-                next_at = self._github_due_at(schedule)
+                next_at = self._github_due_at(schedule, now)
             else:
                 next_at = schedule.get("next_fire_at")
             if isinstance(next_at, int | float):
@@ -1457,6 +1473,8 @@ class SchedulerEngine:
         for s in sorted(schedules, key=schedule_order):
             try:
                 if s["trigger_type"] == "github_poll":
+                    if s["id"] in polls_in_flight and s["id"] not in self._github_batches:
+                        continue
                     await self._admit_github_tick(s, now)
                 else:
                     nfa = s.get("next_fire_at")
@@ -1480,23 +1498,25 @@ class SchedulerEngine:
                 last_schedule_error
             )
 
-    def _github_due_at(self, schedule: dict) -> Any:
+    def _github_due_at(self, schedule: dict, now: float) -> float | None:
         """When *schedule*'s next poll turn is due: its held batch's instant, else its cadence's."""
         batch = self._github_batches.get(schedule.get("id"))
-        if batch is not None:
+        if batch is not None and batch.matches(schedule):
             return batch.due_at
-        last = self._github_cadence_start(schedule)
-        interval = resolve_schedule_cadence_seconds(schedule)
-        if isinstance(last, int | float) and isinstance(interval, int | float):
-            return last + interval
-        return None
-
-    def _github_cadence_start(self, schedule: dict) -> Any:
-        """When *schedule*'s poll cadence counts from: its last fire or last poll, the later."""
-        last = schedule.get("last_fired_at") or 0
-        if not isinstance(last, int | float):
-            return last
-        return max(last, self._github_polled_at.get(schedule.get("id"), 0))
+        last_fire = schedule.get("last_fired_at") or 0
+        interval = resolve_github_poll_cadence_seconds(schedule)
+        if not isinstance(last_fire, int | float) or not isinstance(interval, int | float):
+            return None
+        attempt = self._github_poll_attempts.get(schedule.get("id"))
+        limit = resolve_merged_poll_page_limit(schedule)
+        if attempt is None:
+            return now if limit is not None else max(last_fire, 0) + interval
+        if (
+            (limit is not None or attempt.page_limit is not None)
+            and attempt.target_generation != schedule.get("poller_target_generation")
+        ) or (limit is not None and attempt.page_limit is not None and limit > attempt.page_limit):
+            return now
+        return max(last_fire, attempt.started_at) + interval
 
     async def _admit_github_tick(self, schedule: dict, now: float) -> None:
         """Start *schedule*'s poll turn; a batch the fire cap held back takes its slot here.
@@ -1504,8 +1524,8 @@ class SchedulerEngine:
         The tick reaches the row at the batch's due instant, so the slot reserved here goes to the
         batch ahead of every younger row and behind every older one, as a timed row's does. The
         turn then dispatches the batch without polling, so the slot is never held over a fetch. A
-        batch the schedule has moved past is dropped, holding no slot, and the schedule polls afresh
-        once the interval since its last fire has passed, at this turn if it already has.
+        batch the schedule has moved past is dropped, holding no slot. The next scan uses the
+        current target, cursor and cadence.
         """
         sid = schedule["id"]
         batch = self._github_batches.get(sid)
@@ -1522,9 +1542,8 @@ class SchedulerEngine:
                         schedule.get("poller_target_generation"),
                     )
                 self._drop_github_batch(sid)
-                # The poll cycle that found the dropped events was never served, so the cadence
-                # counts from the last fire alone and the schedule re-lists from where it stands.
-                self._github_polled_at.pop(sid, None)
+                # The dropped batch never got its turn; let the current target be polled afresh.
+                self._github_poll_attempts.pop(sid, None)
             elif batch.slot_claim is None:
                 allowed, batch.slot_claim = await self._reserve_global_slot(
                     sid, path="github_event"
@@ -1639,9 +1658,8 @@ class SchedulerEngine:
     async def _tick_github(self, schedule: dict, now: float) -> None:
         # A held batch is due at once: its events belong to a poll cycle that already came due.
         batch = self._github_batches.pop(schedule["id"], None)
-        poll_interval = resolve_schedule_cadence_seconds(schedule)
-        last = self._github_cadence_start(schedule)
-        if batch is None and now - last < poll_interval:
+        due_at = self._github_due_at(schedule, now) if batch is None else batch.due_at
+        if due_at is None or (batch is None and now < due_at):
             return
         deferred = False
         try:
@@ -1746,7 +1764,7 @@ class SchedulerEngine:
                 )
             batch = None
         observation.from_batch = batch is not None
-        due_at = batch.due_at if batch is not None else self._github_due_at(schedule)
+        due_at = batch.due_at if batch is not None else self._github_due_at(schedule, now)
         if await self._check_budget(schedule):
             await self._disable_for_budget_exhausted(schedule, now)
             return False
@@ -1772,15 +1790,10 @@ class SchedulerEngine:
             if batch is not None:
                 polled = batch.items
             else:
-                self._github_polled_at[sid] = now
-                poll_filter = schedule.get("github_filter") or {}
-                if poll_filter.get("event") == "pr_merged":
-                    try:
-                        observation.page_limit = merged_page_limit(
-                            poll_filter.get("merged_page_limit")
-                        )
-                    except ValueError:
-                        pass  # The poll reports invalid configuration as an error.
+                observation.page_limit = resolve_merged_poll_page_limit(schedule)
+                self._github_poll_attempts[sid] = _GithubPollAttempt(
+                    now, schedule.get("poller_target_generation"), observation.page_limit
+                )
                 poll_result = await github_poll(schedule)
                 observation.poll_status = poll_result.poll_status
                 observation.scan_complete = poll_result.scan_complete

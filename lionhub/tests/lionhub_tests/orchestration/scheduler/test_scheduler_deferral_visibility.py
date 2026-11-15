@@ -13,7 +13,11 @@ import pytest
 import lionagi.studio.config as config
 import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import NO_CURSOR_CLAIM
-from lionhub.orchestration.scheduler.engine import _MAX_PREDISPATCH_REFUSALS, SchedulerEngine
+from lionhub.orchestration.scheduler.engine import (
+    _MAX_PREDISPATCH_REFUSALS,
+    SchedulerEngine,
+    _GithubPollAttempt,
+)
 from lionhub.orchestration.scheduler.github import GithubPollResult
 
 from .test_scheduler_github_fire_per_event import _item
@@ -368,7 +372,8 @@ async def test_a_schedule_no_longer_polled_forgets_when_it_last_polled(monkeypat
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     _quiet_tick(engine)
-    engine._github_polled_at.update({"poll": 10_000.0, "gone": 10_000.0})
+    attempt = _GithubPollAttempt(10_000.0, None, None)
+    engine._github_poll_attempts.update({"poll": attempt, "gone": attempt})
     svc.list_schedules.return_value = [_poll_row()]
     turns = []
     monkeypatch.setattr(engine, "_start_github_tick", lambda schedule, now: turns.append(now))
@@ -376,8 +381,38 @@ async def test_a_schedule_no_longer_polled_forgets_when_it_last_polled(monkeypat
     with patch("lionhub.orchestration.scheduler.engine.time.time", return_value=10_010.0):
         await engine._tick()
 
-    assert engine._github_polled_at == {"poll": 10_000.0}
+    assert engine._github_poll_attempts == {"poll": attempt}
     assert turns == [10_010.0]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_reads_a_fresh_row_after_an_inflight_poll_settles(monkeypatch):
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    _quiet_tick(engine)
+    turns = []
+    release = asyncio.Event()
+    last_poll = asyncio.create_task(release.wait())
+    engine._github_tick_tasks["poll"] = last_poll
+    row = _poll_row()
+    monkeypatch.setattr(engine, "_start_github_tick", lambda schedule, now: turns.append(schedule))
+
+    async def snapshot_then_settle(**_):
+        snapshot = dict(row)
+        release.set()
+        await last_poll
+        return [snapshot]
+
+    svc.list_schedules.side_effect = snapshot_then_settle
+    try:
+        with patch("lionhub.orchestration.scheduler.engine.time.time", return_value=10_010.0):
+            await engine._tick()
+            assert turns == []
+            await engine._tick()
+        assert turns == [row]
+    finally:
+        release.set()
+        await last_poll
 
 
 @pytest.mark.asyncio
