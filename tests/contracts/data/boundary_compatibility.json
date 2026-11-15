@@ -1611,6 +1611,9 @@
     "lionhub/src/lionhub/serve/daemon/reconnect.py": [
       "__all__ = (\n    \"ReconnectChannel\",\n    \"current_uid\",\n    \"default_socket_path\",\n    \"peer_uid\",\n    \"port_proof\",\n    \"read_reconnect_reply\",\n    \"state_dir\",\n    \"unix_sockets_supported\",\n)"
     ],
+    "lionhub/src/lionhub/serve/daemon/routes.py": [
+      "__all__ = (\n    \"DAEMON_ROUTE_MODULES\",\n    \"HttpMethod\",\n    \"RouteModule\",\n    \"StudioRoute\",\n    \"iter_studio_routes\",\n    \"load_route_modules\",\n    \"studio_route\",\n)"
+    ],
     "lionhub/src/lionhub/serve/daemon/services/artifact_verification.py": [
       "__all__ = (\"provisional_artifact_verification\", \"resolve_artifact_verification\")"
     ],
@@ -3301,10 +3304,7 @@
       "WireModel"
     ],
     "lionagi/studio/registry.py": [
-      "StudioRoute",
-      "iter_studio_routes",
-      "load_studio_route_modules",
-      "studio_route"
+      "load_studio_route_modules"
     ],
     "lionagi/studio/services/_session_tail.py": [
       "SessionTailRegistry",
@@ -5006,6 +5006,13 @@
       "read_reconnect_reply",
       "state_dir",
       "unix_sockets_supported"
+    ],
+    "lionhub/src/lionhub/serve/daemon/routes.py": [
+      "RouteModule",
+      "StudioRoute",
+      "iter_studio_routes",
+      "load_route_modules",
+      "studio_route"
     ],
     "lionhub/src/lionhub/serve/daemon/services/_io.py": [
       "JsonRead",
