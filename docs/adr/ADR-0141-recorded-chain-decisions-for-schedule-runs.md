@@ -5,7 +5,9 @@
 - **Implementation-status**: not-started
 - **Area**: scheduling-control-plane
 - **Date**: 2026-11-04
-- **Relations**: extends ADR-0070; amends ADR-0035 D5, ADR-0057 D4, ADR-0058 D1/D2/D5, and ADR-0070 D4
+- **Relations**: extends ADR-0070; amends ADR-0035 D5, ADR-0057 D4, ADR-0058 D1/D2/D5, and ADR-0070 D4;
+  referenced from ADR-0057 D2 and D4, ADR-0064 D5, ADR-0070 D3 and D4, ADR-0071 D3, and ADR-0095
+  (Native upgrade and maintenance)
 
 ## Context
 
@@ -425,8 +427,15 @@ The cutover procedure applies to both backends:
    checks pass, resolve surviving fixture references and attempt to delete
    the same acceptance schedule with
    `lionagi/studio/services/schedules.py::delete_schedule`.
-   The delete can be refused where the store protects child debt or last
-   resolvers.
+   The expected outcome is that the delete succeeds. Today the delete path
+   validates the schedule's lifecycle edge to deleted, the reason and the form
+   of the audit context, supplying defaults when the caller passes none. None
+   of these is an authorization check, and the path does not check for owed
+   deliveries or surviving resolvers. Under the native profile, only the
+   foreign-key links below can refuse it beyond those validations. Run the
+   delete under the native profile on either backend. SQLite compatibility
+   mode refuses it on every store, whatever the owner: the connection's
+   authorizer denies every `DELETE` (`lionagi/state/compat.py`).
    The delete cascades to runs under that schedule, including parent and child when
    both belong to it. A surviving link such as a child in another schedule, an
    outbox reference or a worker lease can block deletion
@@ -541,7 +550,7 @@ New tests (none exist at this checkout):
 19. In `tests/state/lifecycle/test_service.py` and
     `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_occurrence_atomicity.py`,
     use a controlled persistence fixture that exposes the stamp immediately below
-    the preservation version (version 6 at this checkout) to the real D1 and D3
+    the preservation version to the real D1 and D3
     gates without running native auto-migration in that arm.
     Verify guarded terminal writes and scheduler terminal creation leave both
     current and history refs without a decision. Repeat at the preservation version on SQLite
