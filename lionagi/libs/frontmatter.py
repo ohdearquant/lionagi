@@ -7,6 +7,7 @@ from typing import Any
 
 import yaml
 
+_FM_OPENER = "---"
 _FM_SPLIT = re.compile(r"^---\s*$", re.MULTILINE)
 
 
@@ -21,10 +22,10 @@ def _strip_frontmatter_prefix(text: str) -> str:
 
 
 def _trim_frontmatter_document(text: str) -> str:
-    """Trim whitespace and remove a leading BOM before a frontmatter delimiter."""
+    """Trim whitespace and remove a leading BOM before a possible opener."""
     if text.startswith("\ufeff"):
         candidate = text[1:].strip()
-        if _FM_SPLIT.match(candidate):
+        if candidate.startswith(_FM_OPENER):
             return candidate
     return text.strip()
 
@@ -48,7 +49,7 @@ def _parse_frontmatter_for_save(text: str) -> tuple[dict[str, Any], str]:
 
 def _parse_frontmatter(text: str, load_yaml: Callable[[str], Any]) -> tuple[dict[str, Any], str]:
     text = _trim_frontmatter_document(text)
-    if not text.startswith("---"):
+    if not text.startswith(_FM_OPENER):
         return {}, text
     parts = _FM_SPLIT.split(text, maxsplit=2)
     if len(parts) < 3:
@@ -72,7 +73,7 @@ def parse_frontmatter_strict(text: str) -> tuple[dict[str, Any], str]:
     raises too, instead of being coerced into an empty metadata dict.
     """
     text = _trim_frontmatter_document(text)
-    if not text.startswith("---"):
+    if not text.startswith(_FM_OPENER):
         return {}, text
     parts = _FM_SPLIT.split(text, maxsplit=2)
     if len(parts) < 3:

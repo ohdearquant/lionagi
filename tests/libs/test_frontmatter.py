@@ -79,7 +79,6 @@ def test_frontmatter_readers_keep_leading_whitespace_semantics(prefix, newline):
         pytest.param(NO_FRONTMATTER, id="bare"),
         pytest.param(" \t" + NO_FRONTMATTER + " \t", id="outer-whitespace"),
         pytest.param("\ufeff " + NO_FRONTMATTER + "---\nLater text.\n", id="bom-plain"),
-        pytest.param("\ufeff--- heading\n---\nBody.\n", id="bom-decorative"),
         pytest.param(" \t\n\ufeff" + VALID, id="nonleading-bom"),
         pytest.param("\ufeff\ufeff" + VALID, id="double-bom"),
     ],
@@ -88,6 +87,25 @@ def test_frontmatter_readers_preserve_plain_body(document):
     expected = ({}, document.strip())
     assert parse_frontmatter(document) == expected
     assert parse_frontmatter_strict(document) == expected
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("---x\nname: example\n---\nBody.\n", id="suffixed-opener"),
+        pytest.param("--- heading\n---\nBody.\n", id="decorative-opener"),
+    ]
+)
+def malformed_opener(request):
+    return request.param
+
+
+def test_tolerant_reader_keeps_malformed_opener_body(prefix, malformed_opener):
+    assert parse_frontmatter(prefix + malformed_opener) == ({}, malformed_opener.strip())
+
+
+def test_strict_reader_rejects_malformed_opener(prefix, malformed_opener):
+    with pytest.raises(yaml.YAMLError, match="no matching closing delimiter"):
+        parse_frontmatter_strict(prefix + malformed_opener)
 
 
 def test_parse_frontmatter_tolerates_no_closing_delimiter(prefix):
