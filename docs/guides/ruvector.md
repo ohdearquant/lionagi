@@ -22,7 +22,7 @@ uv run python examples/ruvector_memory.py
 Import the backend explicitly:
 
 ```python
-from lionagi.integrations.ruvector import RuVectorMemoryStore, RuVectorStore
+from lionhub.integrations.ruvector import RuVectorMemoryStore, RuVectorStore
 ```
 
 The default LionAGI import does not load RuVector. Selecting the extra installs `ruvector>=0.1.2,<0.2` and `numpy>=1.24,<3`; supported platforms depend on available native SDK wheels.
@@ -32,7 +32,7 @@ The default LionAGI import does not load RuVector. Selecting the extra installs 
 ```python
 import asyncio
 from lionagi import Branch, MemoryItem, MemoryQuery
-from lionagi.integrations.ruvector import RuVectorMemoryStore, RuVectorStore
+from lionhub.integrations.ruvector import RuVectorMemoryStore, RuVectorStore
 
 async def embed(text: str) -> list[float]:
     # Toy fixture only. Replace with your application's embedding service.
@@ -90,7 +90,7 @@ Async methods offload synchronous operations to worker threads and serialize acc
 ## Validation and benchmarks
 
 ```bash
-uv run pytest -n0 tests/integrations
+uv run pytest -n0 lionhub/tests/lionhub_tests/integrations
 uv run python examples/ruvector_memory.py
 uv run python benchmarks/ruvector/retrieval.py --ef 100 --output /tmp/ruvector-benchmark.json
 ```
