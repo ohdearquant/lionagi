@@ -94,6 +94,26 @@ def test_get_agent_surfaces_lion_system(tmp_path, monkeypatch):
     assert result.get("fast_mode") is False
 
 
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["bare", "bom"])
+def test_agent_reads_keep_model_and_protection(prefix, tmp_path, monkeypatch):
+    from lionagi.studio.services.agents import get_agent, list_agents
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    (root / "sysagent.md").write_text(
+        f"{prefix}---\nprovider: claude\nmodel: claude-sonnet-4-6\n"
+        "lion_system: true\n---\nSystem prompt here.\n",
+        encoding="utf-8",
+    )
+
+    (listed,) = list_agents()
+    detail = get_agent("sysagent")
+    assert detail is not None
+    for agent in (listed, detail):
+        assert agent["protected"] is True
+        assert agent["model"] == "claude-sonnet-4-6"
+    assert detail["system_prompt"] == "System prompt here."
+
+
 # Tests 1c/1d/1e: absent bool fields emit CLI defaults
 
 
