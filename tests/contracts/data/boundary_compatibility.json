@@ -1617,6 +1617,9 @@
     "lionhub/src/lionhub/serve/daemon/services/control_consumers.py": [
       "__all__ = (\"session_has_control_consumer\",)"
     ],
+    "lionhub/src/lionhub/serve/daemon/services/engine_lookup.py": [
+      "__all__ = (\n    \"get_engine_def\",\n    \"get_engine_def_by_name\",\n    \"is_registered_engine_kind\",\n)"
+    ],
     "lionhub/src/lionhub/serve/daemon/services/redact.py": [
       "__all__ = (\n    \"MAX_CANDIDATES\",\n    \"PER_KIND_ITEM_CAP\",\n    \"PER_ITEM_TEXT_CAP\",\n    \"MESSAGE_BYTE_CAP\",\n    \"ARTIFACT_BYTE_CAP\",\n    \"public_project\",\n    \"scrub_text\",\n    \"fold_field_name\",\n    \"is_secret_field_name\",\n    \"known_secret_values\",\n    \"redact_scalar\",\n    \"redact_arguments\",\n    \"cap_by_bytes\",\n    \"cap_payload_by_bytes\",\n)"
     ],
@@ -3400,8 +3403,6 @@
       "engine_catalog_blueprints_route",
       "get_engine_catalog_preset",
       "get_engine_catalog_preset_route",
-      "get_engine_def",
-      "get_engine_def_by_name",
       "get_engine_def_route",
       "list_engine_catalog_presets",
       "list_engine_catalog_presets_route",
@@ -5025,6 +5026,10 @@
     ],
     "lionhub/src/lionhub/serve/daemon/services/control_consumers.py": [
       "session_has_control_consumer"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/engine_lookup.py": [
+      "get_engine_def",
+      "get_engine_def_by_name"
     ],
     "lionhub/src/lionhub/serve/daemon/services/redact.py": [
       "cap_by_bytes",
