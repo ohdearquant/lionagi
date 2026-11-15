@@ -67,8 +67,14 @@ _NETWORK_POLICY = """(allow network-outbound)
 
 # Runs as `python -I -S -c`: no site, no user or script directory on sys.path. O_NOFOLLOW keeps the
 # editor's refusal to write through a symlink in the child that does the write.
-#: The pseudo-terminal devices a CLI's shell tool opens for each command it runs.
-_PTY_POLICY = """(allow file-read* file-write* file-ioctl (regex #"^/dev/ttys[0-9]+$"))
+#: The pseudo-terminals a CLI's shell tool allocates for each command it runs. Only a terminal
+#: the confined process allocated itself carries the ``com.apple.sandbox.pty`` extension, so a
+#: terminal it did not allocate (another program's, a terminal multiplexer's pane) cannot be
+#: opened, written to or sent ioctls.
+_PTY_POLICY = """(allow pseudo-tty)
+(allow file-read* file-write* file-ioctl (literal "/dev/ptmx"))
+(allow file-read* file-write* file-ioctl
+  (require-all (regex #"^/dev/ttys[0-9]+$") (extension "com.apple.sandbox.pty")))
 """
 
 _WRITE_CHILD = """import os, sys
@@ -136,8 +142,9 @@ class SeatbeltPolicy:
     ) -> SeatbeltPolicy:
         """Writes to the workspace, the uv cache, the temporary directory and ``extra_roots``;
         the workspace's ``.git`` stays read-only, since a hook written there would run outside
-        the sandbox. ``pty`` lets the confined process open pseudo-terminals, which a CLI's
-        shell tool needs to run a command."""
+        the sandbox. ``pty`` lets the confined process allocate pseudo-terminals of its own,
+        which a CLI's shell tool needs to run a command; terminals it did not allocate stay
+        closed to it."""
         workspace = Path(workspace_root).expanduser().resolve()
         roots: list[str] = []
         for root in (
