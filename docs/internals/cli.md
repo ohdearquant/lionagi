@@ -1362,9 +1362,11 @@ cancelled calls and streams closed early have no observed token counts.
 
 A request's `estimated_cost_nusd` holds a list-price estimate in integer nanodollars
 when the current Anthropic price table can price the complete usage report. The
-estimate uses the provider-reported `served_model`. The same row shows the requested
-`model`. Each estimate rounds up once from the table's exact rates. Missing or
-unpriceable usage leaves the estimate `null`. Billed spend is a separate accounting measure.
+response must report the `standard` service tier, or the recorded request must specify
+`standard_only` when the response omits the tier. The estimate uses the provider-reported
+`served_model`. The same row shows the requested `model`. Each estimate rounds up once
+from the table's exact rates. Missing or unpriceable usage leaves the estimate `null`.
+Billed spend is a separate accounting measure.
 
 The run's `totals.input_tokens` and `totals.output_tokens` sum the known counts
 independently. Each is `null` when no request reports that count. The run's

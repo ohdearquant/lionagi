@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from lionagi.protocols.action.tool_hooks import ToolPreDecision
 from lionagi.service._api_telemetry import record_guard_refusal
+from lionagi.service.accounts._pricing import CURRENT_REVISION
 from lionagi.service.connections.endpoint import Endpoint
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionhub.serve.cli._api_usage import APIUsageCollector
@@ -252,7 +253,7 @@ async def test_manifest_estimates_priced_usage_at_the_served_model_rate(
     assert usage["totals"] == {"input_tokens": 0, "output_tokens": 0}
     assert [row["estimated_cost_nusd"] for row in usage["requests"]] == estimates
     assert usage["estimated_cost_nusd"] == total
-    assert usage["price_table_version"] == "anthropic-20261108"
+    assert usage["price_table_version"] == CURRENT_REVISION.id
 
 
 @pytest.mark.asyncio

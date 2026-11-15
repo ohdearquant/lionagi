@@ -8,6 +8,7 @@ import pytest
 
 from lionagi.service._api_telemetry import (
     InputDecision,
+    _record_response_usage,
     activate_request,
     capture_request,
     collect_api_turn,
@@ -17,6 +18,7 @@ from lionagi.service._api_telemetry import (
     record_selected_attempt,
     record_served_model,
 )
+from lionagi.service.accounts._pricing import CURRENT_REVISION
 from lionhub.serve.cli._api_usage import APIUsageCollector
 
 
@@ -55,6 +57,54 @@ def test_served_model_uses_the_recorded_request_owner():
         ("requested-model", "requested", "served-first"),
         ("requested-model", "requested", "served-second"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("request_tier", "response_tier", "expected_cost"),
+    [
+        pytest.param(None, None, None, id="omitted-tiers"),
+        pytest.param(None, "standard", 64_500, id="omitted-request-standard-response"),
+        pytest.param("standard_only", None, 64_500, id="standard-request"),
+        pytest.param("auto", "standard", 64_500, id="standard-response"),
+        pytest.param("standard_only", "priority", None, id="priority-response"),
+        pytest.param("auto", None, None, id="unreported-auto"),
+        pytest.param("priority", None, None, id="unreported-priority"),
+    ],
+)
+def test_anthropic_usage_cost_accounts_for_service_tier(request_tier, response_tier, expected_cost):
+    model = "claude-sonnet-5-5"
+    payload = {
+        "model": model,
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 3,
+        "cache_read_input_tokens": 20,
+        "cache_creation_input_tokens": 5,
+        "cache_creation": {"ephemeral_5m_input_tokens": 5},
+    }
+    if request_tier is not None:
+        payload["service_tier"] = request_tier
+    if response_tier is not None:
+        usage["service_tier"] = response_tier
+
+    collector = APIUsageCollector(run_id="run-a", branch_id="branch-a")
+    with collect_api_turn(collector, 1):
+        frame = capture_request(_decision(model=model), api_call_id="event-a")
+    _record_response_usage(
+        frame, usage, provider="anthropic", endpoint="messages", served_model=model, payload=payload
+    )
+
+    snapshot = collector.snapshot()
+    (row,) = snapshot["requests"]
+    assert (row["input_tokens"], row["output_tokens"]) == (10, 3)
+    assert snapshot["totals"] == {"input_tokens": 10, "output_tokens": 3}
+    assert row["estimated_cost_nusd"] == snapshot["estimated_cost_nusd"] == expected_cost
+    assert snapshot["price_table_version"] == (
+        CURRENT_REVISION.id if expected_cost is not None else None
+    )
 
 
 def test_detached_versioned_record_dedupes_actual_identities_and_seals():
