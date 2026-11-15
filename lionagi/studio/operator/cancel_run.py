@@ -28,9 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from lionagi.ln.concurrency import sleep
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.state.session_naming import resolve_display_name
+from lionhub.serve.daemon.services.redact import MAX_CANDIDATES, public_project
 
 from . import _common
-from .redact import MAX_CANDIDATES, public_project
 from .store import OperatorStore
 
 CANCEL_RUN_COMMAND_TYPE = "cancel"

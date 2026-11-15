@@ -11,9 +11,9 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path
+from lionhub.serve.daemon.routes import studio_route
 from lionhub.serve.daemon.services._path_safety import public_path
 
-from ..registry import studio_route
 from . import sessions as _sessions_svc
 from .sessions import display_cost, display_model
 
@@ -210,7 +210,7 @@ async def list_runs(
     """One page of runs. Filters are applied in SQL so the page is selected
     rather than sieved out of a whole-store read; per-row liveness and tag
     hydration then touch only the rows actually being returned."""
-    from . import run_tags
+    from lionhub.serve.daemon.services import run_tags_store as run_tags
 
     where = _sessions_svc.SessionFilter(
         playbook=playbook,
@@ -350,7 +350,7 @@ async def get_run(
         alive = None
     row = _run_row(detail_session, time.time(), process_alive=alive)
 
-    from . import run_tags
+    from lionhub.serve.daemon.services import run_tags_store as run_tags
 
     tagmap = await run_tags.tags_for_sessions([run_id])
     row["tags"] = tagmap.get(run_id, [])

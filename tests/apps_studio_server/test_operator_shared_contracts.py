@@ -12,7 +12,8 @@ import pytest
 
 
 def test_application_project_projection_uses_the_shared_redactor(monkeypatch):
-    from lionagi.studio.operator import application_mcp, redact
+    from lionagi.studio.operator import application_mcp
+    from lionhub.serve.daemon.services import redact
 
     class ProjectPath:
         name = "shared-project"
@@ -57,7 +58,8 @@ def test_application_project_projection_uses_the_shared_redactor(monkeypatch):
     ],
 )
 def test_both_project_import_paths_preserve_projection(value, expected):
-    from lionagi.studio.operator import application_mcp, redact
+    from lionagi.studio.operator import application_mcp
+    from lionhub.serve.daemon.services import redact
 
     assert redact.public_project(value) == expected
     assert application_mcp.public_project(value) == expected

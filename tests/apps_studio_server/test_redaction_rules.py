@@ -13,8 +13,8 @@ from __future__ import annotations
 import pytest
 
 from lionagi.adapters._base import _redact_url
-from lionagi.studio.operator import redact
 from lionagi.studio.operator.application_mcp import _safe_content
+from lionhub.serve.daemon.services import redact
 
 NO_KNOWN_VALUES: frozenset[str] = frozenset()
 SECRET = "s3cr3t-value-abc123def456"

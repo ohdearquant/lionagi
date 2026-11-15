@@ -417,7 +417,7 @@ interrupt the ongoing database work rather than leave an abandoned count running
 Current page/count helpers independently open connections, and tag hydration opens
 another connection and executes lazy table/index creation
 (`lionagi/studio/services/sessions.py::count_sessions`, `lionagi/studio/services/sessions.py::list_sessions`,
-`lionagi/studio/services/run_tags.py` `CREATE TABLE IF NOT EXISTS run_tags (`, `lionagi/studio/services/run_tags.py::tags_for_sessions`).
+`lionhub/src/lionhub/serve/daemon/services/run_tags_store.py` `CREATE TABLE IF NOT EXISTS run_tags (`, `lionhub/src/lionhub/serve/daemon/services/run_tags_store.py::tags_for_sessions`).
 V2 requires shared-transaction read helpers; it must not reuse these behaviors unchanged.
 On an otherwise compatible store without a run_tags table, tag membership and hydration
 are empty; nonempty tag filters therefore match none. Listing performs no lazy DDL.

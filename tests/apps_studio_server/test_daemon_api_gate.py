@@ -47,6 +47,7 @@ _DOCS_PATHS = frozenset({"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redir
 
 # Sorted (method, path) pairs for every non-docs route mounted on the live
 # app, pinned 2026-07-30 against the actual route table (see
+# lionhub/serve/daemon/routes.py::DAEMON_ROUTE_MODULES and
 # lionagi/studio/registry.py::_STUDIO_ROUTE_MODULES for the area modules that
 # populate it, and app.py::_mount_studio_routes for the "/api" + route.path
 # mounting rule).

@@ -10,8 +10,7 @@ import os
 from fastapi import HTTPException, Request
 
 from lionagi.version import __version__
-
-from ..registry import studio_route
+from lionhub.serve.daemon.routes import studio_route
 
 
 def _presented_bearer_matches(presented: str, token: str) -> bool:
