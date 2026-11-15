@@ -2598,7 +2598,8 @@
       "observe_cache_source",
       "record_cache_usage",
       "record_guard_refusal",
-      "record_selected_attempt"
+      "record_selected_attempt",
+      "record_served_model"
     ],
     "lionagi/service/_output_limit.py": [
       "read_output_limit_stop"
