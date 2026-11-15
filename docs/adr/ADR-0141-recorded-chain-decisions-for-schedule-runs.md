@@ -363,7 +363,9 @@ During the offline cutover, run `li state migrate` or call `StateDB.migrate()`
 with the upgraded binary to stamp its version on SQLite or PostgreSQL
 (`lionhub/src/lionhub/serve/cli/state.py::_migrate`, `lionagi/state/db.py::StateDB.migrate`).
 Setting `LIONAGI_STATE_AUTO_MIGRATE=1` lets an upgraded native writable open run
-the same migration path. That setting defaults to off.
+the same migration path. That setting defaults to off. It waives nothing in
+the cutover: steps 1 and 2 still come first, and a process that has it set is
+the migrator.
 The D1 and D3 persistence paths read the stamp from `schema_meta` on the
 write transaction's own connection, under the same lock as the row read
 for the transition or creation. They enable decisions at the preservation
@@ -484,6 +486,9 @@ The cutover procedure applies to both backends:
     using that mode see the existing fields and interpret chains under their current
     rules. The human run monitor uses native writable opens
     (`lionhub/src/lionhub/serve/cli/monitor.py::_dispatch_wait`).
+    After the binaries are upgraded and before the store is migrated, every native
+    writable open by the upgraded build is refused with the migration-required error,
+    the scheduler's and the human run monitor's included; read-only opens still work.
 12. **Reversal cost.** Removing D4 leaves the monitor on its stored-status fallback for every row. Removing D2 reintroduces P3. Neither needs a migration.
 
 ## Tests
