@@ -12,12 +12,10 @@ import contextlib
 import json
 import logging
 import os
-import shlex
 import signal
 import subprocess
 import sys
 import textwrap
-import time
 from pathlib import Path
 
 import psutil
@@ -888,102 +886,113 @@ async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatc
     assert not run.notify_outcome_path.exists()
 
 
-# ── Cancellation (the registry's outer deadline winning the race against
-# the handler's own identical wait_for) must still reap the child ──────────
+# Registry cancellation must reap the child both before and after the handler
+# receives the process handle.
 
 
-_CHILD_SCRIPT = "import time; time.sleep(30)"
-_CANCEL_BUDGET_SECONDS = 0.3
+def _capture_notify_deadline(monkeypatch: pytest.MonkeyPatch):
+    scope_ready = asyncio.get_running_loop().create_future()
 
+    @contextlib.contextmanager
+    def track_deadline(seconds):
+        with move_on_after(seconds) as scope:
+            scope_ready.set_result(scope)
+            yield scope
 
-def _record_child_starts(
-    monkeypatch: pytest.MonkeyPatch, *, start_delay: float
-) -> list[subprocess.Popen]:
-    """Record each child the test command starts, at the moment the OS starts it.
-
-    The record is made inside ``Popen`` itself, which never yields to the event loop,
-    so a child is counted even when the coroutine that spawned it is cancelled before
-    the spawn call returns. ``start_delay`` holds the loop for that long right after
-    the child starts, which makes a spawn still in progress when the registry's budget
-    expires reproducible.
-    """
-    real_popen = subprocess.Popen
-    started: list[subprocess.Popen] = []
-
-    class _RecordingPopen(real_popen):
-        def __init__(self, args, *popen_args, **popen_kwargs):
-            super().__init__(args, *popen_args, **popen_kwargs)
-            if _CHILD_SCRIPT in str(args):
-                started.append(self)
-                time.sleep(start_delay)
-
-    monkeypatch.setattr(subprocess, "Popen", _RecordingPopen)
-    return started
+    monkeypatch.setattr(callbacks, "move_on_after", track_deadline)
+    return scope_ready
 
 
 @pytest.mark.asyncio
-@pytest.mark.slow_timing
 @pytest.mark.parametrize("safe_logging", [True, False])
 @pytest.mark.parametrize(
-    "spawn_delay",
-    [0.0, 5 * _CANCEL_BUDGET_SECONDS],
+    "park_spawn",
+    [False, True],
     ids=["child-starts-promptly", "budget-expires-during-spawn"],
 )
 async def test_cancelled_exec_handler_still_kills_its_child_process_group(
     monkeypatch: pytest.MonkeyPatch,
-    spawn_delay: float,
+    park_spawn: bool,
     safe_logging: bool,
 ):
-    # Reproduces the race: TerminalCallbackRegistry's own move_on_after
-    # budget is set far shorter than the exec handler's internal
-    # asyncio.wait_for budget, so the OUTER scope wins and delivers
-    # cancellation to _exec_handler mid-communicate() -- the same failure
-    # shape asyncio.TimeoutError would hit, but through a different
-    # exception. The child (its own process group via start_new_session)
-    # must still be dead by the time emit() returns, not orphaned alive.
-    #
-    # The child is recorded where the OS starts it, not when the spawn call
-    # returns: a budget that expires while the spawn is still in progress
-    # cancels the handler before it holds the process handle, and that is a
-    # case this test must still check. The "budget-expires-during-spawn"
-    # parameter holds the loop past the budget right after the child starts
-    # to force it; a child slow to start is not a reason to count none.
-    spawned = _record_child_starts(monkeypatch, start_delay=spawn_delay)
-    cmd = f'{shlex.quote(sys.executable)} -c "{_CHILD_SCRIPT}"'
-    resolved = resolve_notify_config(override=cmd).handler
-    assert resolved is not None
-    handler = build_handler(resolved, safe_logging=safe_logging)
+    argv = (sys.executable, "-c", "import time; time.sleep(60)")
+    real_popen = subprocess.Popen
+    real_spawn = asyncio.create_subprocess_exec
+    real_communicate = asyncio.subprocess.Process.communicate
+    started: list[subprocess.Popen] = []
+    handles: list[asyncio.subprocess.Process] = []
+    spawn_ready = asyncio.Event()
+    release_spawn = asyncio.Event()
+    communicating = asyncio.Event()
+
+    class RecordingPopen(real_popen):
+        def __init__(self, args, *popen_args, **popen_kwargs):
+            super().__init__(args, *popen_args, **popen_kwargs)
+            if isinstance(args, (list, tuple)) and tuple(args) == argv:
+                # Count the OS launch even while the handler lacks the handle.
+                started.append(self)
+
+    async def track_spawn(*args, **kwargs):
+        process = await real_spawn(*args, **kwargs)
+        if args == argv:
+            handles.append(process)
+            spawn_ready.set()
+            if park_spawn:
+                await release_spawn.wait()
+        return process
+
+    async def track_communicate(process, *args, **kwargs):
+        if process in handles:
+            communicating.set()
+        return await real_communicate(process, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", RecordingPopen)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", track_spawn)
+    monkeypatch.setattr(asyncio.subprocess.Process, "communicate", track_communicate)
+    scope_ready = _capture_notify_deadline(monkeypatch)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=argv), safe_logging=safe_logging)
     assert handler is not None
-
-    registry = TerminalCallbackRegistry(budget_seconds=_CANCEL_BUDGET_SECONDS)
+    registry = TerminalCallbackRegistry(budget_seconds=2 * _NOTIFY_DEADMAN)
     registry.register("slow-notify", handler)
+    delivery = asyncio.create_task(registry.emit(_envelope()))
+    try:
+        milestone = spawn_ready if park_spawn else communicating
+        await asyncio.wait_for(milestone.wait(), _NOTIFY_DEADMAN)
+        (process,) = handles
+        assert [child.pid for child in started] == [process.pid]
+        assert process.returncode is None
+        assert communicating.is_set() == (not park_spawn)
+        child_identity = psutil.Process(process.pid)
 
-    start = time.monotonic()
-    await registry.emit(_envelope())  # must not raise
-    elapsed = time.monotonic() - start
+        scope = await scope_ready
+        scope.deadline = current_time()
+        await asyncio.wait_for(delivery, _NOTIFY_DEADMAN)
+        assert scope.cancelled_caught
+        if park_spawn:
+            assert not communicating.is_set()
+            release_spawn.set()
+        else:
+            assert process.returncode is not None
 
-    pids = [proc.pid for proc in spawned]
-    assert len(pids) == 1, f"expected the handler to start one child, saw {pids}"
-    child_pid = pids[0]
-    # Not sooner than the budget, so the child did not simply exit on its own;
-    # well short of its 30 s sleep, with room for a loaded runner.
-    assert _CANCEL_BUDGET_SECONDS <= elapsed < 10.0
-
-    # Once the handler has the process handle, its cleanup runs before emit()
-    # returns. Cancellation before that handoff delegates cleanup to the spawn
-    # task and its child watcher. Wait for the PID to clear in either case.
-    for _ in range(50):
-        try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
-            break
-        await asyncio.sleep(0.05)
-    else:
-        # Through the process handle, which checks the child has not been
-        # reaped before it signals, so the pid cannot have been reused.
-        with contextlib.suppress(ProcessLookupError):
-            spawned[0].kill()
-        pytest.fail(f"child pid {child_pid} was still alive after cancellation cleanup")
+        assert await asyncio.wait_for(process.wait(), _NOTIFY_DEADMAN) < 0
+        assert not child_identity.is_running(), "the notifier child was not reaped"
+    finally:
+        release_spawn.set()
+        if not delivery.done():
+            delivery.cancel()
+        await asyncio.gather(delivery, return_exceptions=True)
+        for process in handles:
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+            await asyncio.wait_for(process.wait(), _NOTIFY_DEADMAN)
+        for child in started:
+            if all(child.pid != process.pid for process in handles):
+                # The OS started a child without delivering a transport.
+                with contextlib.suppress(ProcessLookupError):
+                    child.kill()
+                await asyncio.to_thread(child.wait, timeout=_NOTIFY_DEADMAN)
 
 
 _NOTIFY_DEADMAN = 10
@@ -1147,15 +1156,7 @@ def _notify_group_handler(group, *, safe_logging):
 async def test_notify_deadline_reaps_the_spawned_group(
     tmp_path, monkeypatch, safe_logging, park_spawn
 ):
-    scope_ready = asyncio.get_running_loop().create_future()
-
-    @contextlib.contextmanager
-    def track_deadline(seconds):
-        with move_on_after(seconds) as scope:
-            scope_ready.set_result(scope)
-            yield scope
-
-    monkeypatch.setattr(callbacks, "move_on_after", track_deadline)
+    scope_ready = _capture_notify_deadline(monkeypatch)
     async with _notify_process_group(tmp_path, monkeypatch, park_spawn=park_spawn) as group:
         registry = TerminalCallbackRegistry(budget_seconds=2 * _NOTIFY_DEADMAN)
         registry.register("notify", _notify_group_handler(group, safe_logging=safe_logging))
