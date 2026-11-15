@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
+from argparse import Namespace
 
 import pytest
 import pytest_asyncio
@@ -16,6 +18,7 @@ from sqlalchemy.exc import DBAPIError
 
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
+from lionhub.serve.cli import state as state_cli
 from lionhub.serve.cli.state import _prune
 
 
@@ -141,7 +144,7 @@ async def test_cli_prune_previews_and_deletes_only_unshared_messages(prune_store
     assert await _stored_rows() == survivors
 
 
-async def test_cli_prune_keeps_messages_of_non_array_progressions(prune_store):
+async def test_cli_prune_keeps_messages_of_non_array_progressions(prune_store, monkeypatch, capsys):
     now = time.time()
     message_ids = (
         "unique",
@@ -204,6 +207,21 @@ async def test_cli_prune_keeps_messages_of_non_array_progressions(prune_store):
             "UPDATE branches SET system_msg_id = 'deferred-system' WHERE id = 'deferred-branch'", ()
         )
 
+    result = {}
+
+    async def capture_prune_result(**kwargs):
+        counts = await _prune(**kwargs)
+        result.clear()
+        result.update(counts)
+        return counts
+
+    monkeypatch.setattr(state_cli, "_prune", capture_prune_result)
+
+    async def prune(*, dry_run):
+        args = Namespace(state_command="prune", keep_days=30, keep_n=1, dry_run=dry_run)
+        assert await asyncio.to_thread(state_cli.run_state, args) == 0
+        return capsys.readouterr().out
+
     before = await _stored_rows()
     expected = {
         "sessions": 2,
@@ -212,12 +230,14 @@ async def test_cli_prune_keeps_messages_of_non_array_progressions(prune_store):
         "deferred_victim_progressions": 1,
         "non_array_survivor_progressions": 3,
     }
-    assert await _prune(keep_days=30, keep_n=1, dry_run=True) == expected
+    preview = await prune(dry_run=True)
+    assert result == expected
     assert await _stored_rows() == before
-    assert await _prune(keep_days=30, keep_n=1, dry_run=False) == expected
-    assert {
-        table: {row["id"] for row in rows} for table, rows in (await _stored_rows()).items()
-    } == {
+
+    applied = await prune(dry_run=False)
+    assert result == expected
+    survivors = await _stored_rows()
+    assert {table: {row["id"] for row in rows} for table, rows in survivors.items()} == {
         "sessions": {"keeper"},
         "branches": {"keeper-branch"},
         "progressions": {
@@ -229,6 +249,17 @@ async def test_cli_prune_keeps_messages_of_non_array_progressions(prune_store):
         },
         "messages": set(message_ids) - {"unique", "2"},
     }
+
+    later = await prune(dry_run=False)
+    assert result == {"sessions": 0, "branches": 0, "messages": 0}
+    assert await _stored_rows() == survivors
+    assert "deleted 0 session(s), 0 branch(es), 0 orphan message(s)" in later
+
+    explanation = "later session prunes leave the orphaned progressions and their messages in place"
+    assert "would keep 1 non-array progression(s) from selected sessions" in preview
+    assert explanation in preview
+    assert "kept 1 non-array progression(s) from deleted sessions" in applied
+    assert explanation in applied
 
 
 @pytest.mark.parametrize("invalid_progression", ["victim-history", "keeper-history"])
