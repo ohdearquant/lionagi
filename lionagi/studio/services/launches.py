@@ -15,11 +15,11 @@ from pydantic import BaseModel
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB
 from lionhub.orchestration.scheduler.subprocess import build_argv, resolve_li_executable
+from lionhub.serve.daemon.routes import studio_route
 from lionhub.serve.daemon.services import engine_lookup
 from lionhub.serve.daemon.services.engine_lookup import is_registered_engine_kind
 
 from .. import config
-from ..registry import studio_route
 from ..services.schedules import (
     _svc_validate_action_model,
     _svc_validate_extra_args,

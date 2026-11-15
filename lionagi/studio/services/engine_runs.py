@@ -13,9 +13,8 @@ from fastapi import Query
 
 from lionagi._errors import NotFoundError, ValidationError
 from lionagi.state.db import StateDB, state_db_known_absent
+from lionhub.serve.daemon.routes import studio_route
 from lionhub.serve.daemon.services.redact import cap_payload_by_bytes, redact_arguments
-
-from ..registry import studio_route
 
 
 def _parse_spec_json(raw: Any) -> Any:

@@ -28,11 +28,11 @@ from lionhub.orchestration.state_store import (  # noqa: F401 -- preserve the co
     table_columns,
 )
 from lionhub.orchestration.state_store import open_db as _open_db
+from lionhub.serve.daemon.routes import studio_route
 from lionhub.serve.daemon.services._io import parse_json_col as _parse_json_col
 from lionhub.serve.daemon.services.artifact_verification import resolve_artifact_verification
 from lionhub.serve.daemon.services.control_consumers import session_has_control_consumer
 
-from ..registry import studio_route
 from ._session_tail import SessionTailRegistry, StreamResyncError, capture_frontiers
 
 SESSION_DONE_STABLE_SECS = 60.0
