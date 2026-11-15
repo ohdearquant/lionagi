@@ -37,9 +37,9 @@ tool's HTTP request are all admitted.
 
 **P2 — a code that paired a page could be minted by any such request.** `POST
 /api/studio/pairing-codes` (`lionhub/src/lionhub/serve/daemon/services/pairing.py::create_pairing_code_route`) minted a 120-second code
-(`lionhub/src/lionhub/serve/daemon/launch_access.py::PAIRING_CODE_TTL_S`, `lionhub/src/lionhub/serve/daemon/launch_access.py:49@124b1419`) for a request without browser provenance, and `POST
+(`lionhub/src/lionhub/serve/daemon/launch_access.py::PAIRING_CODE_TTL_S`, `lionagi/studio/launch_access.py:49@124b1419`) for a request without browser provenance, and `POST
 /api/studio/pair` (`lionhub/src/lionhub/serve/daemon/services/pairing.py::redeem_pairing_code_route`) redeemed it for the daemon's one process-wide bearer
-(`lionhub/src/lionhub/serve/daemon/launch_access.py::launch_bearer`, `lionhub/src/lionhub/serve/daemon/launch_access.py:63@124b1419`). A test pinned that the command line could mint and that the minted
+(`lionhub/src/lionhub/serve/daemon/launch_access.py::launch_bearer`, `lionagi/studio/launch_access.py:63@124b1419`). A test pinned that the command line could mint and that the minted
 code redeemed (`tests/studio/test_hosted_hardening.py:967@124b1419`). The CLI used that route to pair a page
 with a daemon that was already running (`lionagi/studio/cli.py:274@124b1419`). So pairing was not a boundary:
 a tool that could send HTTP could mint, redeem with a forged `Origin`, and decide. This paragraph

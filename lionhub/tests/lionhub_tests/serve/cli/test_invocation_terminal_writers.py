@@ -142,7 +142,7 @@ async def test_refused_exit_write_is_logged(tmp_path, monkeypatch, caplog):
         return (0, "")
 
     monkeypatch.setattr("lionhub.orchestration.scheduler.subprocess.spawn_and_wait", spawn)
-    with caplog.at_level(logging.INFO, logger="lionhub.serve.daemon.services.launches"):
+    with caplog.at_level(logging.INFO, logger="lionagi.studio.services.launches"):
         await launches._spawn_detached(["unused"], "run", tmp_path=None)
 
     assert "Refused exit write for launch invocation run" in caplog.text
@@ -179,7 +179,7 @@ async def test_refused_cancellation_write_is_logged(tmp_path, monkeypatch, caplo
 
     monkeypatch.setattr("lionhub.orchestration.scheduler.subprocess.spawn_and_wait", spawn)
     with (
-        caplog.at_level(logging.INFO, logger="lionhub.serve.daemon.services.launches"),
+        caplog.at_level(logging.INFO, logger="lionagi.studio.services.launches"),
         pytest.raises(asyncio.CancelledError),
     ):
         await launches._spawn_detached(["unused"], "run", tmp_path=None)
