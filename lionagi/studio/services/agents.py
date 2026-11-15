@@ -76,6 +76,23 @@ def _is_empty_yaml_document(block: str) -> bool:
         return False
 
 
+def _read_unreadable_agent_block(
+    block: str, body: str, *, allow_empty: bool = False
+) -> _AgentWriteRead:
+    if "lion_system" in block:
+        return _AgentWriteRead(
+            {},
+            "",
+            "may be a system agent because its frontmatter could not be read",
+            unreadable_block=True,
+        )
+    if allow_empty and _is_empty_yaml_document(block):
+        # A closed block that is empty, only comments, or an explicit null
+        # holds no settings, so a partial update has nothing to discard.
+        return _AgentWriteRead({}, body)
+    return _AgentWriteRead({}, body, unreadable_block=True)
+
+
 def _read_agent_for_write(text: str) -> _AgentWriteRead:
     """Classify frontmatter for agent writes.
 
@@ -89,6 +106,11 @@ def _read_agent_for_write(text: str) -> _AgentWriteRead:
     normalized = _strip_frontmatter_prefix(text)
     if normalized.startswith("---"):
         text = normalized
+        if _FM_SPLIT.match(text) is None:
+            # The first bare delimiter closes the unreadable header. Later
+            # delimiters belong to the prompt.
+            block, *rest = _FM_SPLIT.split(text, maxsplit=1)
+            return _read_unreadable_agent_block(block, rest[0].strip() if rest else "")
     try:
         fm, body = parse_frontmatter_strict(text)
     except (yaml.YAMLError, RecursionError):
@@ -96,19 +118,8 @@ def _read_agent_for_write(text: str) -> _AgentWriteRead:
         # everything through the end of the file and refuse partial updates.
         parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
         block = parts[1] if len(parts) > 1 else text
-        if "lion_system" in block:
-            return _AgentWriteRead(
-                {},
-                "",
-                "may be a system agent because its frontmatter could not be read",
-                unreadable_block=True,
-            )
         rest = parts[2].strip() if len(parts) > 2 else ""
-        if len(parts) > 2 and _is_empty_yaml_document(block):
-            # A closed block that is empty, only comments, or an explicit null
-            # holds no settings, so a partial update has nothing to discard.
-            return _AgentWriteRead({}, rest)
-        return _AgentWriteRead({}, rest, unreadable_block=True)
+        return _read_unreadable_agent_block(block, rest, allow_empty=len(parts) > 2)
     reason = "is a system agent" if _is_protected_system(fm) else None
     return _AgentWriteRead(fm, body, reason)
 

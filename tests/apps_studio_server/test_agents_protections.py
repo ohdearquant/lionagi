@@ -577,6 +577,16 @@ def _make_definitions_client(tmp_path, monkeypatch):
             id="system-unclosed",
         ),
         pytest.param(
+            "---settings\nlion_system: true\n---\nOriginal prompt.\n",
+            ("PUT", "DELETE", "POST"),
+            id="system-malformed-opener",
+        ),
+        pytest.param(
+            "\ufeff---settings\nlion_system: true\n---\nOriginal prompt.\n",
+            ("PUT", "DELETE", "POST"),
+            id="system-malformed-opener-with-bom",
+        ),
+        pytest.param(
             "---\nDeadline: 2026-02-30\n---\nOriginal prompt.\n",
             ("PUT",),
             id="ordinary-invalid-date",
@@ -632,6 +642,71 @@ def test_agent_writes_protect_system_frontmatter(
             if method == "PUT" and "lion_system: false" in text:
                 assert "lion_system: false" in path.read_text()
                 assert "custom: kept" in path.read_text()
+
+
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["plain", "bom"])
+@pytest.mark.parametrize(
+    ("text", "protected", "unreadable"),
+    [
+        pytest.param(
+            "---invalid\nlion_system: true\n---\nPrompt.\n",
+            True,
+            True,
+            id="system-malformed-opener",
+        ),
+        pytest.param(
+            "---invalid\nlion_system: true\nPrompt.\n",
+            True,
+            True,
+            id="system-malformed-opener-unclosed",
+        ),
+        pytest.param(
+            "---invalid\nlion_system: true\n---\nexample: in the prompt\n---\nMore prompt.\n",
+            True,
+            True,
+            id="system-malformed-opener-with-prompt-delimiter",
+        ),
+        pytest.param(
+            "---invalid\nname: profile\n---\nPrompt mentions lion_system.\n",
+            False,
+            True,
+            id="ordinary-malformed-opener-marker-in-prompt",
+        ),
+        pytest.param(
+            "---invalid\nname: profile\n---\nPrompt.\n",
+            False,
+            True,
+            id="ordinary-malformed-opener",
+        ),
+        pytest.param(
+            "---\nlion_system: false\n---\nPrompt.\n",
+            False,
+            False,
+            id="readable-user-profile",
+        ),
+        pytest.param(
+            "---\nnull\n---\nPrompt.\n",
+            False,
+            False,
+            id="readable-empty-settings",
+        ),
+        pytest.param(
+            "Prompt mentions lion_system.\n",
+            False,
+            False,
+            id="ordinary-prompt-without-frontmatter",
+        ),
+    ],
+)
+def test_agent_write_classifier_checks_only_the_malformed_header(
+    prefix, text, protected, unreadable
+):
+    from lionagi.studio.services.agents import _read_agent_for_write
+
+    classified = _read_agent_for_write(prefix + text)
+
+    assert (classified.protection is not None) is protected
+    assert classified.unreadable_block is unreadable
 
 
 @pytest.mark.parametrize("prefix", ["\ufeff", "\u200b"], ids=["bom", "zero-width-space"])
