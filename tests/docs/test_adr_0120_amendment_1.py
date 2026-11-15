@@ -333,7 +333,9 @@ def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None
     assert after.startswith("async def get_session_signals_after(")
     assert "limit: int = 500" in after
     advance = _def_source(db, "StateDB.create_schedule_run_and_advance")
-    assert "guard_cursor_forward=True" in advance
+    assert "self._create_schedule_run_and_advance(" in advance
+    advance_in_tx = _def_source(db, "StateDB._create_schedule_run_and_advance")
+    assert "guard_cursor_forward=True" in advance_in_tx
 
 
 # -- what the amendment now says ---------------------------------------------
