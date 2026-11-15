@@ -207,8 +207,9 @@ class TestEscalatedWarningOnWildcardBind:
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
 
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
-        monkeypatch.setattr(config_mod, "HOST", "0.0.0.0")
+        monkeypatch.setattr(daemon_settings, "HOST", "0.0.0.0")
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
             with _lifespan_client(monkeypatch, tmp_path):
@@ -226,8 +227,9 @@ class TestEscalatedWarningOnWildcardBind:
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
 
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
-        monkeypatch.setattr(config_mod, "HOST", "0.0.0.0")
+        monkeypatch.setattr(daemon_settings, "HOST", "0.0.0.0")
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
             with _lifespan_client(monkeypatch, tmp_path):
@@ -529,8 +531,9 @@ class TestCORSWildcardOriginWarning:
         """CORS_ORIGINS containing '*' emits a startup WARNING."""
         import lionagi.studio.app as app_mod
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
-        monkeypatch.setattr(config_mod, "CORS_ORIGINS", ["*"])
+        monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", ["*"])
         monkeypatch.setattr(app_mod, "CORS_ORIGINS", ["*"])
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
@@ -548,9 +551,10 @@ class TestCORSWildcardOriginWarning:
         """No CORS warning when origins are explicitly listed (not wildcard)."""
         import lionagi.studio.app as app_mod
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
         explicit_origins = ["http://localhost:3000", "http://localhost:5173"]
-        monkeypatch.setattr(config_mod, "CORS_ORIGINS", explicit_origins)
+        monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", explicit_origins)
         monkeypatch.setattr(app_mod, "CORS_ORIGINS", explicit_origins)
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:

@@ -274,8 +274,9 @@ def test_start_claude_mirror_respects_flag(monkeypatch):
     """_start_claude_mirror no-ops when off, spawns and threads config when on."""
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.daemon.settings as daemon_settings
 
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ENABLED", False)
 
     async def _off() -> None:
         stop, task = app_mod._start_claude_mirror()
@@ -284,9 +285,9 @@ def test_start_claude_mirror_respects_flag(monkeypatch):
 
     run_async(_off())
 
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_SINCE", "12h")
-    monkeypatch.setattr(config_mod, "MIRROR_IMPORT_AMBIENT", True)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ENABLED", True)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_SINCE", "12h")
+    monkeypatch.setattr(daemon_settings, "MIRROR_IMPORT_AMBIENT", True)
     seen: dict[str, object] = {}
 
     async def _fake_forever(stop, **kwargs):
@@ -315,6 +316,7 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
     import lionagi.state.db as state_db_mod
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.daemon.settings as daemon_settings
     import lionhub.serve.mirror as service_mod
 
     isolated_home = tmp_path / "isolated-profile"
@@ -338,14 +340,14 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
     monkeypatch.setattr(service_mod, "_OFFSETS_PATH", isolated_home / "mirror" / "offsets.json")
     monkeypatch.setattr(service_mod, "CLAUDE_PROJECTS_DIR", ambient_claude)
     monkeypatch.setattr(service_mod, "CODEX_SESSIONS_DIR", ambient_codex)
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_SINCE", None)
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_INTERVAL", 0.01)
-    monkeypatch.setattr(config_mod, "MIRROR_SOURCE", "both")
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ENABLED", True)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_SINCE", None)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_INTERVAL", 0.01)
+    monkeypatch.setattr(daemon_settings, "MIRROR_SOURCE", "both")
     assert config_mod._mirror_import_ambient_default() is False
-    monkeypatch.setattr(config_mod, "MIRROR_IMPORT_AMBIENT", False, raising=False)
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ROOT", None, raising=False)
-    monkeypatch.setattr(config_mod, "MIRROR_CODEX_ROOT", None, raising=False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_IMPORT_AMBIENT", False, raising=False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ROOT", None, raising=False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CODEX_ROOT", None, raising=False)
 
     async def _body() -> tuple[object, object, list[dict]]:
         stop, task = app_mod._start_claude_mirror()
@@ -367,6 +369,7 @@ def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
     import lionagi.state.db as state_db_mod
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.daemon.settings as daemon_settings
     import lionhub.serve.mirror as service_mod
 
     isolated_home = tmp_path / "isolated-profile"
@@ -411,17 +414,17 @@ def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(service_mod, "_OFFSETS_PATH", isolated_home / "mirror" / "offsets.json")
     monkeypatch.setattr(service_mod, "CLAUDE_PROJECTS_DIR", ambient_claude)
     monkeypatch.setattr(service_mod, "CODEX_SESSIONS_DIR", ambient_codex)
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_SINCE", None)
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_INTERVAL", 0.01)
-    monkeypatch.setattr(config_mod, "MIRROR_SOURCE", "both")
-    monkeypatch.setattr(config_mod, "MIRROR_IMPORT_AMBIENT", False, raising=False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ENABLED", True)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_SINCE", None)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_INTERVAL", 0.01)
+    monkeypatch.setattr(daemon_settings, "MIRROR_SOURCE", "both")
+    monkeypatch.setattr(daemon_settings, "MIRROR_IMPORT_AMBIENT", False, raising=False)
     claude_root = config_mod._optional_mirror_root("LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT")
     codex_root = config_mod._optional_mirror_root("LIONAGI_STUDIO_MIRROR_CODEX_ROOT")
     assert claude_root == custom_claude.resolve()
     assert codex_root == custom_codex.resolve()
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ROOT", claude_root, raising=False)
-    monkeypatch.setattr(config_mod, "MIRROR_CODEX_ROOT", codex_root, raising=False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ROOT", claude_root, raising=False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CODEX_ROOT", codex_root, raising=False)
 
     async def _body() -> list[dict]:
         # Open the poll connection before the tail, so it does the one-time WAL
@@ -445,15 +448,16 @@ def test_studio_mirror_startup_error_does_not_expose_transcript_data(tmp_path, m
     """Unexpected autostart failures stay useful without echoing paths/content."""
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.daemon.settings as daemon_settings
 
     secret_path = tmp_path / "private" / "rollout-secret.jsonl"
     secret_content = "interview transcript content"
 
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
-    monkeypatch.setattr(config_mod, "MIRROR_IMPORT_AMBIENT", False, raising=False)
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ROOT", secret_path.parent, raising=False)
-    monkeypatch.setattr(config_mod, "MIRROR_CODEX_ROOT", None, raising=False)
-    monkeypatch.setattr(config_mod, "MIRROR_SOURCE", "claude")
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ENABLED", True)
+    monkeypatch.setattr(daemon_settings, "MIRROR_IMPORT_AMBIENT", False, raising=False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ROOT", secret_path.parent, raising=False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CODEX_ROOT", None, raising=False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_SOURCE", "claude")
 
     async def _boom(stop, **kwargs):
         raise RuntimeError(f"{secret_path}: {secret_content}")

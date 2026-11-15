@@ -28,8 +28,8 @@ from lionhub.serve.daemon.reconnect import (
     port_proof,
     unix_sockets_supported,
 )
+from lionhub.serve.daemon.settings import CORS_ORIGINS, HOST
 
-from .config import CORS_ORIGINS, HOST
 from .launch_access import (
     PAIRING_REDEEM_PATH,
     begin_serving,
@@ -229,7 +229,7 @@ def _emit_startup_warnings() -> None:
 
 def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, None]:
     """Start the in-process Claude Code mirror tail if enabled; return (stop, task)."""
-    from .config import (
+    from lionhub.serve.daemon.settings import (
         MIRROR_CLAUDE_ENABLED,
         MIRROR_CLAUDE_INTERVAL,
         MIRROR_CLAUDE_ROOT,

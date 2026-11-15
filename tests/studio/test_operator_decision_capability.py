@@ -199,9 +199,10 @@ def test_a_named_address_with_credentials_or_a_bad_port_is_kept_as_written(fresh
 
 def test_a_code_bound_to_the_admitted_origins_keeps_them_as_configured(fresh, monkeypatch):
     import lionagi.studio.config as config
+    import lionhub.serve.daemon.settings as daemon_settings
 
     configured = "https://Studio.Example:443/"
-    monkeypatch.setattr(config, "CORS_ORIGINS", [configured])
+    monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", [configured])
     code = fresh.mint_pairing_code()
 
     assert fresh.redeem_pairing_grant(code, origin="https://studio.example") is None
