@@ -31,7 +31,8 @@ item or of a table cell. A path inside running text may name a file that was ret
 still planned, so only the list item and the table cell are checked against the tracked
 files.
 
-A Python symbol citation checks that the symbol exists in a tracked file.
+A Python symbol citation is checked for existing in a tracked file, not for being the code
+its sentence describes.
 """
 
 from __future__ import annotations
