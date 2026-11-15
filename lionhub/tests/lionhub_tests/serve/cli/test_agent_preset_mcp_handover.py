@@ -53,7 +53,7 @@ SUBMITTED = {"khive": {"command": "kkernel", "args": ["serve"]}}
 NEARBY = {"decoy": {"command": "not-the-submitted-server"}}
 ANTIGRAVITY_PROVIDERS = ("gemini-cli", "gemini_cli", "gemini-code", "gemini_code")
 DEFAULT_CLAUDE_KHIVE_PACKS = (
-    "kg,blob,gtd,memory,brain,schedule,knowledge,session,git,code,workspace"
+    "kg,memory,brain,knowledge"
 )
 
 

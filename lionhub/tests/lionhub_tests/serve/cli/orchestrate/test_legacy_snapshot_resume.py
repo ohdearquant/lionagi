@@ -171,7 +171,9 @@ async def test_missing_launch_dir_replays_current_discovery_with_truthful_reason
         assert manifest["mcp_config_searched_from"] == str(tmp_run.resolve())
         assert "no MCP launch directory was recorded" in manifest["mcp_config_reason"]
         assert str(tmp_run.resolve()) in manifest["mcp_config_reason"]
-        assert ("resolution resolved" if found else "resolution no_mcp_config_found") in manifest[
+        # With nothing found, a Claude orchestrator falls back to the default leg server
+        # (or to an empty set when kkernel is unavailable).
+        assert ("resolution resolved" if found else "resolution default_claude_leg") in manifest[
             "mcp_config_reason"
         ]
         raise Captured

@@ -134,7 +134,8 @@ none of its own servers either, and the launch prints nothing about it.
 A Claude Code leg uses `--strict-mcp-config` for a discovered project set or submit snapshot.
 If no configuration is named, discovered or carried by a snapshot, the leg uses a strict
 configuration with one server, `khive`. It resolves `kkernel` on `PATH` and starts
-`kkernel mcp` with an explicit pack allowlist that excludes `comm`, `exec` and `tool`.
+`kkernel mcp` with the packs `kg`, `memory`, `brain` and `knowledge`: recall, composition, remembering
+and graph context. Packs that change task, schedule or repository state, and `comm` and `exec`, are left out.
 The run records `mcp_config_reason: default_claude_leg`, a null source and a false explicit flag.
 lionagi does not check that this server starts: a `kkernel` that exits at boot with that pack list
 leaves the leg running with the `khive` server failed, and the record still reads

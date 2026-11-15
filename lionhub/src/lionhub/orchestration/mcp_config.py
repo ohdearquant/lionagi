@@ -34,7 +34,7 @@ __all__ = (
 MCP_CONFIG_FILENAME = ".mcp.json"
 _CLAUDE_LEG_DEFAULT_REASON = "default_claude_leg"
 _CLAUDE_LEG_MCP_UNAVAILABLE_REASON = "default_claude_leg_kkernel_unavailable"
-_CLAUDE_LEG_KHIVE_PACKS = "kg,blob,gtd,memory,brain,schedule,knowledge,session,git,code,workspace"
+_CLAUDE_LEG_KHIVE_PACKS = "kg,memory,brain,knowledge"
 
 # Carried by a snapshot of a config that was found rather than named, naming
 # the file it was taken from. Origin comes from the carrier, not this key.

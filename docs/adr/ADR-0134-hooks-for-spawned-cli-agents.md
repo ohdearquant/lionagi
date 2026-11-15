@@ -1202,8 +1202,9 @@ from a discovered `.mcp.json` or its submit snapshot. A caller-named configurati
 precedence, and `--no-mcp-config` supplies an empty set.
 
 With neither a named nor discovered configuration and no opt-out, lionagi supplies one server,
-`khive`, running `kkernel mcp` with `KHIVE_PACKS` set to
-`kg,blob,gtd,memory,brain,schedule,knowledge,session,git,code,workspace`. If `kkernel` is absent
+`khive`, running `kkernel mcp` with `KHIVE_PACKS` set to `kg,memory,brain,knowledge`: recall, composition, remembering and graph
+context. Packs that change task, schedule or repository state, and `comm` and `exec`, are left out.
+If `kkernel` is absent
 from `PATH`, the leg starts with an empty strict configuration and one warning naming the missing
 executable. The run record distinguishes the generated default and the missing-executable case
 from an explicit empty configuration.
