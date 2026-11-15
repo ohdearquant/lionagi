@@ -124,6 +124,7 @@ async def test_run_flow_notify_fires_with_correct_legacy_payload(
         result, terminal_status = await _run_flow(
             "claude",
             "do the thing",
+            with_synthesis=False,
             save_dir=save_dir,
             cwd=cwd,
             invocation_id=invocation_id,
@@ -142,10 +143,14 @@ async def test_run_flow_notify_fires_with_correct_legacy_payload(
     assert payload["cwd"] == cwd
     assert payload["exit_class"] == "success"
     assert payload["started_at"] <= payload["ended_at"]
+    assert payload["final_response"] is None
+    assert payload["final_response_path"] is None
+    assert payload["final_response_truncated"] is False
 
 
 async def test_run_flow_reports_kind_play_with_playbook_name(temp_db_path: Path, tmp_path: Path):
     env = _make_env(tmp_path)
+    await env.orc_branch.msgs.a_add_message(assistant_response="planner reply")
     invocation_id = str(uuid4())
     await _make_invocation(temp_db_path, invocation_id)
     out_file = tmp_path / "captured.json"
@@ -163,6 +168,7 @@ async def test_run_flow_reports_kind_play_with_playbook_name(temp_db_path: Path,
         await _run_flow(
             "claude",
             "do the thing",
+            with_synthesis=False,
             invocation_id=invocation_id,
             playbook_name="ship",
             notify=_capture_command(out_file),
@@ -171,6 +177,9 @@ async def test_run_flow_reports_kind_play_with_playbook_name(temp_db_path: Path,
     payload = json.loads(out_file.read_text())
     assert payload["kind"] == "play"
     assert payload["playbook"] == "ship"
+    assert payload["final_response"] is None
+    assert payload["final_response_path"] is None
+    assert payload["final_response_truncated"] is False
 
 
 async def test_run_flow_fires_real_hook_with_settings_configured_command(

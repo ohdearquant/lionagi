@@ -144,7 +144,7 @@ def _one_fails_one_completes(session):
     return run_dag
 
 
-def _workers_then_synthesis(session, synthesis_response: str):
+def _workers_then_synthesis(session, synthesis_response: str, *, assistant_text: str | None = None):
     """Complete every worker on pass one and return *synthesis_response* on pass two."""
     passes: list = []
 
@@ -161,6 +161,8 @@ def _workers_then_synthesis(session, synthesis_response: str):
             await asyncio.gather(*emits, return_exceptions=True)
             return {"operation_results": operation_results}
         synth = nodes[-1]
+        if assistant_text is not None:
+            session.branches[synth.branch_id].msgs.add_message(assistant_response=assistant_text)
         await asyncio.gather(
             _completed(session, synth, synthesis_response, name="synthesis"),
             return_exceptions=True,
@@ -346,6 +348,56 @@ async def test_assignment_shaped_synthesis_fails_the_run_and_artifact(
     assert FAILED_SYNTHESIS_MARKER in output
     assert run.synthesis_path.read_text() == FAILED_SYNTHESIS_MARKER
     assert any("assignment" in message.lower() for message in warnings)
+
+
+@pytest.mark.parametrize(
+    ("with_synthesis", "synthesis_result", "assistant_text", "expected"),
+    [
+        pytest.param(
+            True, "result", "Final synthesis text", "Final synthesis text", id="synthesis"
+        ),
+        pytest.param(False, "result", "Final synthesis text", None, id="workers-only"),
+        pytest.param(True, "result", None, None, id="no-assistant-message"),
+        pytest.param(
+            True,
+            '{"assignments":[{"task":"plan instead","assignee":"worker"}]}',
+            "Rejected synthesis text",
+            None,
+            id="rejected-synthesis",
+        ),
+    ],
+)
+async def test_fanout_notify_reads_only_an_accepted_synthesis_response(
+    tmp_path, monkeypatch, with_synthesis, synthesis_result, assistant_text, expected
+):
+    env, run, session = _fanout_env(tmp_path)
+    env.orc_branch.msgs.add_message(assistant_response="The planner is working.")
+    _wire_fanout(
+        monkeypatch,
+        env,
+        [TaskAssignment(task="first", assignee="worker")],
+        _workers_then_synthesis(session, synthesis_result, assistant_text=assistant_text),
+    )
+    registered = {}
+    delivered = []
+
+    def register(**kwargs):
+        registered.update(kwargs)
+        return "fanout-notifier"
+
+    async def terminalize(env, status):
+        delivered.append(registered["final_response"]())
+        return status
+
+    monkeypatch.setattr(fanout_module, "register_flow_notify_scope", register)
+    monkeypatch.setattr(fanout_module, "stop_live_persist", terminalize)
+
+    await fanout_module._run_fanout(
+        "codex/model", "work", num_workers=1, with_synthesis=with_synthesis, notify="notify-hook"
+    )
+
+    assert registered["run"] is run
+    assert delivered == [expected]
 
 
 async def test_synthesis_uses_a_fresh_branch_not_the_planner_branch(

@@ -3029,6 +3029,11 @@ async def _synthesize(
     # when it was built and has no branch it belongs to. Exclude it before
     # the pass rather than after: the observer fires during run_dag.
     exec_result.checkpoint_skip_ids.add(str(synth_node))
+    capture_response = getattr(env, "_capture_notify_response", False)
+    # The orchestrator branch may already hold a planning response.
+    previous_reply_id = (
+        getattr(env.orc_branch.msgs.last_response, "id", None) if capture_response else None
+    )
     synth_exc: BaseException | None = None
     try:
         synth_result_raw = await exec_result.engine_run.run_dag(
@@ -3051,6 +3056,10 @@ async def _synthesize(
             )
     t_synth_elapsed = time.monotonic() - t_synth
     synth_res = synth_result_raw.get("operation_results", {}).get(synth_node)
+    if capture_response and synth_res is not None:
+        reply = env.orc_branch.msgs.last_response
+        if reply is not None and reply.id != previous_reply_id:
+            env._notify_final_response = reply.response
     synthesis_result = {
         "model": synth_label,
         "response": str(synth_res) if synth_res is not None else "(no response)",
@@ -3423,7 +3432,10 @@ async def _run_flow(
                 cwd=cwd or os.getcwd(),
                 started_at=_started_at,
                 on_rejection=_notify_override_refused,
+                run=env.run,
+                final_response=lambda: getattr(env, "_notify_final_response", None),
             )
+            env._capture_notify_response = _notify_scope_name is not None
 
         # Bind this run into the notify.on_terminal handler at registration time so
         # a late outcome lands here or nowhere, never on a later run. Skipped when

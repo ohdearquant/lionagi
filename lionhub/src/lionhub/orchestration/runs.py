@@ -95,19 +95,25 @@ def active_run_id() -> str | None:
 def _atomic_write_json(path: Path, payload: dict) -> None:
     """Write *payload* to *path* so readers never see a partial file.
 
-    The temp file is uniquely named and lives in the destination directory
-    (os.replace is only atomic within a filesystem), so concurrent writers
-    of the same target cannot corrupt each other's in-progress write.
-
     A non-finite float is refused before anything is written: json.dumps would
     emit the tokens ``NaN``/``Infinity``, which this process reads back happily
     and every strict reader rejects.
     """
     raise_if_non_finite(payload)
+    _atomic_write_bytes(path, json.dumps(payload, indent=2).encode("utf-8"))
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Replace *path* with a new owner-only file holding *data*.
+
+    The temp file is uniquely named and lives in the destination directory
+    (os.replace is only atomic within a filesystem), so concurrent writers
+    of the same target cannot corrupt each other's in-progress write.
+    """
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(json.dumps(payload, indent=2))
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
         os.replace(tmp_name, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -363,6 +369,13 @@ class RunDir:
         outcome and never touches the manifest."""
         self.state_root.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(self.notify_outcome_path, data)
+
+    def write_notify_final_response(self, data: bytes) -> Path:
+        """Atomically publish the full UTF-8 response in a mode-0600 file."""
+        ensure_lionagi_dir(self.state_root)
+        path = self.state_root / "notify-final-response.txt"
+        _atomic_write_bytes(path, data)
+        return path.absolute()
 
     @property
     def notify_stderr_path(self) -> Path:

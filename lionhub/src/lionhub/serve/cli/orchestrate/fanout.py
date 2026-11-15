@@ -305,7 +305,11 @@ async def _run_fanout(
                     cwd=cwd or os.getcwd(),
                     started_at=_started_at,
                     on_rejection=_notify_override_refused,
+                    run=env.run,
+                    final_response=lambda: _shared.get("final_response"),
                 )
+                if _notify_scope_name is not None:
+                    _shared["final_response"] = None
 
             # Bind this run into the notify.on_terminal handler at registration time so
             # a late outcome lands here or nowhere, never on a later run. Skipped when
@@ -704,6 +708,10 @@ async def _run_fanout_inner(
                     "result; marking the synthesis leg failed."
                 )
                 synth_text = FAILED_SYNTHESIS_MARKER
+            elif synth_res is not None and _shared is not None and "final_response" in _shared:
+                response = synth_branch.msgs.last_response
+                if response is not None:
+                    _shared["final_response"] = response.response
         synthesis_result = {
             "model": synth_label,
             "response": synth_text,
