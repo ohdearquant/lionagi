@@ -15,11 +15,13 @@ import shutil
 import signal
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from concurrent.futures import Future
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
 from pathlib import Path
+from threading import Thread
 from typing import Any
 from urllib.parse import unquote
 
@@ -754,6 +756,28 @@ def _consume_future_outcome(future: asyncio.Future) -> None:
         future.exception()
 
 
+def _capture_cli_cleanup_witnesses(
+    proc: Any, spawned: SpawnedProcess
+) -> asyncio.Future[tuple[tuple[int, float], ...]]:
+    """Collect spawn-bound identities without occupying the loop's executor."""
+    result: Future[tuple[tuple[int, float], ...]] = Future()
+
+    def collect() -> None:
+        if not result.set_running_or_notify_cancel():
+            return
+        try:
+            witnesses = _witnesses_for_spawn(proc, spawned)
+        except BaseException as exc:
+            result.set_exception(exc)
+        else:
+            result.set_result(witnesses)
+
+    # A walk that misses the cutoff may still be in a process-table read.
+    # It has no signalling authority and does not need to delay shutdown.
+    Thread(target=collect, name="cli-cleanup-witnesses", daemon=True).start()
+    return asyncio.wrap_future(result)
+
+
 @dataclass
 class _BoundedCleanupResult:
     witnesses: tuple[tuple[int, float], ...] = ()
@@ -778,8 +802,8 @@ async def _bounded_cli_cleanup(
     The deadline bounds asynchronous waits, not synchronous identity checks or
     an already-running signal syscall. Only spawn-bound witnesses authorize the
     final synchronous backstop; no fresh scan is used on the cutoff path. The
-    spawn-bound witness capture walks the process table on a worker thread so
-    the event loop keeps running, and is bounded by one grace period.
+    spawn-bound witness walk runs off the event loop and can use the group
+    cleanup budget up to the grace period reserved for termination.
     ``spawned`` is None when no identity could be read for the child; there is
     then no group authority, and only the direct child is signalled.
     """
@@ -813,12 +837,11 @@ async def _bounded_cli_cleanup(
     capture: asyncio.Future | None = None
     try:
         if spawned is not None:
-            # The process-table walk runs on a worker thread so the event loop keeps
-            # serving other work, and a shield keeps the inherited AnyIO deadline from
-            # abandoning it. A direct Task.cancel is still recorded by wait_until.
-            capture = loop.run_in_executor(None, _witnesses_for_spawn, proc, spawned)
+            # Reserve time to act on the identities. An inherited AnyIO deadline
+            # does not interrupt the wait, and wait_until records direct cancels.
+            capture = _capture_cli_cleanup_witnesses(proc, spawned)
             with CancelScope(shield=True):
-                await wait_until({capture}, min(group_deadline, loop.time() + grace))
+                await wait_until({capture}, group_deadline - grace)
             if capture.done():
                 witnesses = capture.result()
             else:

@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -391,6 +392,97 @@ async def test_witness_capture_past_its_budget_fails_closed(monkeypatch):
     assert result.witnesses == () and seen["witnesses"] == ()
     assert result.error is None and result.cancellation is None
     assert result.outcome is cli._ChildGroupCleanup.UNCONFIRMED
+
+
+@pytest.mark.asyncio
+async def test_witness_capture_is_independent_of_the_default_executor(monkeypatch):
+    loop = asyncio.get_running_loop()
+    proc = SimpleNamespace(pid=4242)
+    spawned = cli.SpawnedProcess(4242, 4242, 1.0)
+    occupied, release = asyncio.Event(), threading.Event()
+    received = []
+
+    def hold_default_worker():
+        loop.call_soon_threadsafe(occupied.set)
+        return release.wait(15)
+
+    async def group(_proc, *, witnesses, **_kwargs):
+        received.append(witnesses)
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    monkeypatch.setattr(cli, "end_child_group", group)
+    with ThreadPoolExecutor(max_workers=1) as default, monkeypatch.context() as patch:
+        patch.setattr(loop, "_default_executor", default)
+        blocker = loop.run_in_executor(None, hold_default_worker)
+        try:
+            await asyncio.wait_for(occupied.wait(), 5)
+            result = await asyncio.wait_for(cli._bounded_cli_cleanup(proc, spawned, grace=1), 10)
+            assert not blocker.done()
+            assert received == [((4242, 1.0),)]
+            assert result.witnesses == ((4242, 1.0),)
+            assert result.outcome is cli._ChildGroupCleanup.CONFIRMED_EMPTY
+        finally:
+            release.set()
+            assert await asyncio.wait_for(blocker, 5)
+
+
+@pytest.mark.asyncio
+async def test_missing_witness_deadline_keeps_lease_and_reserves_group_cleanup(monkeypatch, caplog):
+    loop = asyncio.get_running_loop()
+    clock = loop.time()
+    grace = 1.0
+    proc = SimpleNamespace(pid=4242)
+    spawned = cli.SpawnedProcess(4242, 4242, 1.0)
+    started = asyncio.Event()
+    release = threading.Event()
+    deadlines, captures, received, released = [], [], [], []
+    lease = SimpleNamespace(
+        slots=[SimpleNamespace(pool="fixture")], release=lambda: released.append(1)
+    )
+
+    def capture(_proc, _spawned):
+        loop.call_soon_threadsafe(started.set)
+        release.wait(10)
+        return ((4242, 1.0),)
+
+    async def group(_proc, *, witnesses, **_kwargs):
+        received.append(witnesses)
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    class _DeadlineWait:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def wait(self, tasks, *, timeout):
+            nonlocal clock
+            deadlines.append(timeout)
+            if len(deadlines) == 1:
+                captures.extend(tasks)
+                await started.wait()
+                clock += timeout
+                return set(), tasks
+            return await asyncio.wait(tasks)
+
+    monkeypatch.setattr(cli, "_witnesses_for_spawn", capture)
+    monkeypatch.setattr(cli, "end_child_group", group)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(loop, "time", lambda: clock)
+            patch.setattr(cli, "asyncio", _DeadlineWait())
+            result = await cli._bounded_cli_cleanup(proc, spawned, grace=grace)
+        [capture_future] = captures
+        assert not capture_future.done()
+        assert received == [()]
+        assert result.witnesses == ()
+        assert cli._finish_bounded_lease(lease, result) is cli._ChildGroupCleanup.UNCONFIRMED
+        assert not released
+        assert "CLI cleanup witness capture exceeded its budget" in caplog.text
+        assert "its subagent slots stay held until this process exits" in caplog.text
+        assert deadlines == [2 * grace, grace]
+    finally:
+        release.set()
+        for capture_future in captures:
+            await asyncio.wait_for(asyncio.shield(capture_future), 5)
 
 
 @pytest.mark.asyncio
