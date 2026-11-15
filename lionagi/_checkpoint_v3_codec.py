@@ -597,15 +597,85 @@ def _validate_op(op: PatchOp) -> None:
         raise CodecError()
 
 
+def _object_at(value: Any, tokens: tuple[str, ...]) -> FrozenObject | None:
+    """Return the object at ``tokens``, or None when the path does not end at an object."""
+    for token in tokens:
+        if isinstance(value, FrozenObject):
+            try:
+                value = value[token]
+            except KeyError:
+                return None
+        elif isinstance(value, FrozenArray):
+            try:
+                value = value[_array_index(token, len(value), add=False)]
+            except CodecError:
+                return None
+        else:
+            return None
+    return value if isinstance(value, FrozenObject) else None
+
+
+def _apply_member_group(root: Any, parent_path: tuple[str, ...], group: tuple[PatchOp, ...]) -> Any:
+    """Apply consecutive member operations on one object, rebuilding it once.
+
+    Each operation removes, adds or replaces one member of the object at
+    ``parent_path``, with the same checks ``_apply`` makes one operation at a
+    time; the object is then rebuilt and validated once instead of once per
+    operation. A parent that is not an object takes the per-operation path.
+    """
+    parent = _object_at(root, parent_path)
+    if parent is None:
+        for op in group:
+            root = _apply(root, _pointer(op.path), op)
+        return root
+    items = dict(parent._items)
+    for op in group:
+        key = _pointer(op.path)[-1]
+        if op.op == "add":
+            if key in items:
+                raise CodecError()
+            items[key] = op.value
+        else:
+            if key not in items:
+                raise CodecError()
+            if op.op == "remove":
+                del items[key]
+            else:
+                items[key] = op.value
+    rebuilt = FrozenObject(tuple(items.items()))
+    if not parent_path:
+        return rebuilt
+    return _apply(root, parent_path, PatchOp("replace", "", rebuilt))
+
+
 def apply_patch(context: FrozenObject, patch: tuple[PatchOp, ...]) -> FrozenObject:
-    """Apply a complete patch privately; on error the input is unchanged."""
+    """Apply a complete patch privately; on error the input is unchanged.
+
+    Consecutive operations on members of the same object are applied together
+    (see ``_apply_member_group``); the result equals applying them one by one.
+    """
     if not isinstance(context, FrozenObject) or not isinstance(patch, tuple):
         raise CodecError()
     result: Any = context
     try:
         for op in patch:
             _validate_op(op)
-            result = _apply(result, _pointer(op.path), op)
+        index = 0
+        while index < len(patch):
+            tokens = _pointer(patch[index].path)
+            end = index + 1
+            if tokens:
+                parent_path = tokens[:-1]
+                while end < len(patch):
+                    following = _pointer(patch[end].path)
+                    if not following or following[:-1] != parent_path:
+                        break
+                    end += 1
+            if end - index == 1:
+                result = _apply(result, tokens, patch[index])
+            else:
+                result = _apply_member_group(result, tokens[:-1], patch[index:end])
+            index = end
     except RecursionError:
         raise CodecError() from None
     return result
