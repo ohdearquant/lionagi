@@ -9,7 +9,7 @@ attached application passes its own. :func:`load_route_modules` imports one or m
 one deterministic order and refuses a method and path that two inventories both register.
 
 An inventory entry carries the position its module had in the single route list both owners once
-shared, so composing the two inventories registers the routes in the same order as before.
+shared, so composing the two inventories imports the route modules in the same order as before.
 """
 
 from __future__ import annotations
