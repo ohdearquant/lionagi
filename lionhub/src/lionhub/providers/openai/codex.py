@@ -1073,7 +1073,9 @@ def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
     setting ``default_permissions`` (a permissions profile codex applies in place of its
     sandbox), and, when the request sets no mode, a codex config that sets that mode or
     ``default_permissions``. A config that cannot be read is refused too: it cannot be ruled out.
-    ``light`` requests are refused all of this by ``_refuse_light_escape`` already.
+    So is an ``add_dir`` or ``writable_roots`` entry that is the home directory or an ancestor of
+    it (``_roots_reaching_home``). ``light`` requests are refused all of this by
+    ``_refuse_light_escape`` already.
     """
     from lionhub.agent.child_sandbox import resolve_child_sandbox
 
@@ -1108,6 +1110,7 @@ def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
                     reasons.append(found_mode)
         except (ValueError, OSError) as exc:
             reasons.append(str(exc))
+    reasons.extend(_roots_reaching_home(plain, cwd, tables))
     if reasons:
         raise CLIInputRefusedError(
             "a codex child runs in its sandbox while the child sandbox is enabled; "
@@ -1115,6 +1118,50 @@ def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
             + ". To run codex children without it, set `child_sandbox: {enabled: false}` in "
             "~/.lionagi/settings.yaml."
         )
+
+
+def _roots_reaching_home(
+    plain: _PlainRequest, cwd: Path, tables: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """Why the request's own writable roots reach the home directory, if they do.
+
+    A workspace-write root that is the home directory or one of its ancestors (``/``,
+    ``/Users``) makes the whole home writable, which is the same outcome as turning the
+    sandbox off. Checked: each ``add_dir`` entry and each ``writable_roots`` entry the run's
+    config overrides set under ``sandbox_workspace_write``, at the root or in a profile table.
+    A root inside the home directory is honoured. Relative entries are read against the
+    working directory, ``~`` is expanded, and links are resolved, on both sides. The home is
+    this process's and, when the request sets one, the child's ``HOME``.
+    """
+    homes = {os.path.realpath(os.path.expanduser("~"))}
+    if plain.env and plain.env.get("HOME"):
+        homes.add(os.path.realpath(os.path.expanduser(plain.env["HOME"])))
+    entries: list[tuple[str, Any]] = [("add_dir", entry) for entry in plain.add_dir]
+    for table in tables:
+        section = table.get("sandbox_workspace_write")
+        if not isinstance(section, Mapping) or "writable_roots" not in section:
+            continue
+        roots = section["writable_roots"]
+        if isinstance(roots, str):
+            roots = [roots]
+        if not isinstance(roots, (list, tuple)):
+            return ["config_overrides set writable_roots to something other than a list of paths"]
+        entries.extend(("writable_roots", root) for root in roots)
+    reasons = []
+    for source, entry in entries:
+        if not isinstance(entry, str):
+            reasons.append(f"a {source} entry is not a path")
+            continue
+        path = os.path.expanduser(entry)
+        if not os.path.isabs(path):
+            path = os.path.join(cwd, path)
+        real = os.path.realpath(path)
+        if any(real == home or home.startswith(real.rstrip(os.sep) + os.sep) for home in homes):
+            reasons.append(
+                f"{source} entry {entry!r} is the home directory or an ancestor of it, which "
+                "makes the whole home writable"
+            )
+    return reasons
 
 
 def _heavy_writable_roots(plain: _PlainRequest) -> list[str] | None:
