@@ -1062,6 +1062,29 @@ def _toml_scalar(value: str | int | float | bool) -> str:
     return dumped[len("x = ") :].rstrip("\n")
 
 
+def _heavy_writable_roots(plain: _PlainRequest) -> list[str] | None:
+    """The extra writable roots a heavy codex agent gets in its workspace-write sandbox.
+
+    The user config's ``[sandbox_workspace_write] writable_roots`` reach every
+    workspace-write session, and a user config that lists a home or projects directory
+    there lets any heavy agent delete files across it. A heavy agent instead gets the child
+    sandbox's ``allow_write`` list (toolchain caches by default, extended in
+    ``~/.lionagi/settings.yaml``), beside its working directory, ``add_dir`` and its
+    linked worktree's git directory, which codex takes from ``--add-dir``. ``None`` leaves
+    the setting alone: when the run's own overrides set ``writable_roots`` (the caller
+    chose them), or when ``child_sandbox`` is switched off.
+    """
+    if _sets(_command_line_layer(plain), ("sandbox_workspace_write", "writable_roots")):
+        return None
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+    policy = resolve_child_sandbox(None)
+    if not policy.enabled:
+        return None
+    roots = (os.path.expanduser(path) for path in policy.allow_write)
+    return list(dict.fromkeys(root for root in roots if os.path.isabs(root)))
+
+
 def _override_key_path(key: str, what: str) -> list[str]:
     """The parts of a `-c key=value` override's key, read as the TOML dotted
     key the CLI reads it as: a quoted part loses its quotes and its escapes, so
@@ -1998,6 +2021,13 @@ class CodexCodeRequest(BaseModel):
             args.extend(["-c", "sandbox_workspace_write.network_access=false"])
             args.extend(["-c", "sandbox_workspace_write.exclude_slash_tmp=true"])
             args.extend(["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"])
+        elif not plain.bypass_approvals:
+            roots = _heavy_writable_roots(plain)
+            if roots is not None:
+                # Last, like the light pins, so it beats the user config, a config profile,
+                # a trusted project layer and the roots carried beside ignore_user_config.
+                rendered = _rendered_override_value(roots, "The writable roots")
+                args.extend(["-c", f"sandbox_workspace_write.writable_roots={rendered}"])
 
         # Working directory (always emit)
         args.extend(["-C", str(cwd)])
