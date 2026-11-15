@@ -10,10 +10,12 @@ import {
   runReasonBannerMessage,
 } from "../src/runs/runDetailPanel.js";
 
+const chainDecision = { kind: "chain_decision", v: 1, ref: "on_fail" };
+
 const fullInv = {
   status_reason_code: "run.failed.exception",
   status_reason_summary: "RuntimeError: boom",
-  status_evidence_refs: [{ kind: "session", id: "s-1" }],
+  status_evidence_refs: [{ kind: "session", id: "s-1" }, chainDecision],
 };
 
 describe("reasonBannerMessage", () => {
@@ -34,7 +36,7 @@ describe("reasonBannerMessage", () => {
       type: "reason",
       code: "run.failed.exception",
       summary: "RuntimeError: boom",
-      evidenceRefs: [{ kind: "session", id: "s-1" }],
+      evidenceRefs: [{ kind: "session", id: "s-1" }, chainDecision],
     });
   });
 
@@ -87,7 +89,7 @@ const failedRun = {
   status: "failed",
   status_reason_code: "run.failed.exit_nonzero",
   status_reason_summary: "worker exited with code 1",
-  status_evidence_refs: [{ type: "log", path: "/tmp/run.log" }],
+  status_evidence_refs: [{ type: "log", path: "/tmp/run.log" }, chainDecision],
 };
 
 describe("runReasonBannerMessage (run-detail source)", () => {
@@ -96,7 +98,7 @@ describe("runReasonBannerMessage (run-detail source)", () => {
       type: "reason",
       code: "run.failed.exit_nonzero",
       summary: "worker exited with code 1",
-      evidenceRefs: [{ type: "log", path: "/tmp/run.log" }],
+      evidenceRefs: [{ type: "log", path: "/tmp/run.log" }, chainDecision],
     });
   });
 
