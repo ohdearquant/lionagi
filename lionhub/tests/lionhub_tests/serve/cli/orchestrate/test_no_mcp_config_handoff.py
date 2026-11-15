@@ -1,20 +1,15 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li o flow` / `li o fanout` with `--no-mcp-config` must hand workers an empty
-MCP server set, not nothing at all.
-
-Handing over nothing is what the run does when it found no config: the worker
-then falls back to whatever its CLI discovers for itself. That is the opposite
-of what the flag asked for, and it is silent, so the two states are checked
-here on the command line the worker would actually be spawned with rather than
-on whether a helper was called.
-"""
+"""Verify flow and fanout MCP selections on the command each child receives."""
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import os
+import shutil
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +26,8 @@ from lionhub.providers.openai import _codex_project_layers as project_layers
 from lionhub.providers.openai import codex as codex_mod
 from lionhub.providers.openai.codex import CodexCodeRequest
 from lionhub.serve.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
+
+from ..test_agent_preset_mcp_handover import DEFAULT_CLAUDE_KHIVE_PACKS
 
 
 @pytest.fixture
@@ -67,6 +64,21 @@ def tmp_run(monkeypatch, tmp_path):
     monkeypatch.setattr(orch_mod, "load_agent_profile", _load_profile)
     monkeypatch.setattr(orch_mod, "allocate_run", _allocate)
     return launch_dir
+
+
+@pytest.fixture
+def kkernel(monkeypatch, tmp_path):
+    kernel = SimpleNamespace(path=str(tmp_path / "bin" / "kkernel"), lookups=[])
+    real_which = shutil.which
+
+    def which(command, *args, **kwargs):
+        if command == "kkernel":
+            kernel.lookups.append(command)
+            return kernel.path
+        return real_which(command, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", which)
+    return kernel
 
 
 async def _setup(
@@ -316,36 +328,24 @@ async def test_orchestrator_gets_the_same_empty_server_set(tmp_run):
 
 
 @pytest.mark.asyncio
-async def test_setup_persists_execution_provenance(tmp_run, monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
-    import lionhub.agent.casts.catalog as catalog
+@pytest.mark.parametrize(
+    ("available", "expected_reason"),
+    [
+        (True, "default_claude_leg"),
+        (False, "default_claude_leg_kkernel_unavailable"),
+    ],
+)
+async def test_setup_persists_execution_provenance(
+    tmp_run, monkeypatch, tmp_path, kkernel, available, expected_reason
+):
     import lionhub.orchestration.runs as runs_mod
-    from lionagi import Branch
 
     target_dir = tmp_path / "target"
     target_dir.mkdir()
+    if not available:
+        kkernel.path = None
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(orch_mod, "allocate_run", runs_mod.allocate_run)
-    monkeypatch.setattr(
-        orch_mod,
-        "build_imodel_from_spec",
-        lambda *a, **kw: SimpleNamespace(
-            endpoint=SimpleNamespace(config=SimpleNamespace(provider="claude_code", kwargs={}))
-        ),
-    )
-    monkeypatch.setattr(orch_mod, "resolve_persisted_effort", lambda *a, **kw: None)
-    monkeypatch.setattr(catalog, "_load_packaged_pack", lambda **_: object())
-    monkeypatch.setattr(
-        orch_mod,
-        "AgentSpec",
-        SimpleNamespace(compose=lambda *a, **kw: object()),
-    )
-
-    async def fake_create_agent(*a, **kw):
-        return Branch(name="orchestrator")
-
-    monkeypatch.setattr(orch_mod, "create_agent", fake_create_agent)
 
     env = await setup_orchestration(
         pattern_name="Fanout",
@@ -361,27 +361,20 @@ async def test_setup_persists_execution_provenance(tmp_run, monkeypatch, tmp_pat
 
     manifest = env.run.read_manifest()
     assert manifest["cwd"] == str(target_dir.resolve())
-    assert manifest["mcp_config_reason"] == "no_mcp_config_found"
+    assert manifest["mcp_config_reason"] == expected_reason
+    assert manifest["mcp_config_explicit"] is False
+    assert manifest["mcp_config_source"] is None
 
 
 @pytest.mark.asyncio
-async def test_no_config_found_hands_over_nothing_and_says_nothing(tmp_run):
-    """The contrast case: no flag and no config to find. The worker is handed
-    no set at all and keeps its own discovery, so no MCP argument is emitted."""
-    env = await _setup(no_mcp_config=False)
+async def test_no_config_found_preserves_codex_orchestrator_discovery(tmp_run, codex_home, kkernel):
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex")
+    args = await _codex_cli_args(env.orc_branch.chat_model, hook_expected=False)
 
+    assert "--ignore-user-config" not in args
+    assert kkernel.lookups == []
     assert env.mcp_servers is None
-
-    branch, _, _, _ = await build_worker_branch(
-        env,
-        agent_id="w1",
-        role="implementer",
-        model_override="claude_code/sonnet",
-    )
-    args = await _cli_args(branch.chat_model)
-
-    assert "--mcp-config" not in args
-    assert "--strict-mcp-config" not in args
 
 
 @pytest.mark.asyncio
@@ -634,6 +627,16 @@ def _mcp_config_arg(args: list[str]) -> dict:
     return json.loads(args[args.index("--mcp-config") + 1])
 
 
+def _assert_default_mcp_argv(args: list[str], kkernel_path: str) -> None:
+    assert args.count("--strict-mcp-config") == 1
+    assert args.count("--mcp-config") == 1
+    servers = _mcp_config_arg(args)["mcpServers"]
+    assert set(servers) == {"khive"}
+    assert servers["khive"]["command"] == kkernel_path
+    assert servers["khive"]["args"] == ["mcp"]
+    assert servers["khive"]["env"]["KHIVE_PACKS"] == DEFAULT_CLAUDE_KHIVE_PACKS
+
+
 async def _casts_worker_args(env) -> list[str]:
     # A built-in casts role with no profile of its own is the worker that goes
     # through create_agent; a profile with a body of its own does not.
@@ -708,34 +711,26 @@ async def test_a_found_run_set_is_the_set_the_synthesis_branch_gets(tmp_run, hom
 
 
 @pytest.mark.asyncio
-async def test_with_no_run_set_a_casts_worker_starts_with_no_server_set(tmp_run, home_mcp_config):
-    """The run found no config and was told nothing, so its set is no set at
-    all. The worker is handed that: the home-level config is not the run's to
-    hand over, and a worker given a set chosen by a rule the run never applied
-    would start with servers the run's own resolution never saw."""
+async def test_a_casts_worker_gets_the_runs_default_mcp_set(tmp_run, home_mcp_config, kkernel):
     env = await _setup(no_mcp_config=False)
-    assert env.mcp_servers is None
-
     args = await _casts_worker_args(env)
 
-    assert "--mcp-config" not in args
-    assert "--strict-mcp-config" not in args
+    _assert_default_mcp_argv(args, kkernel.path)
     assert home_mcp_config == []
 
 
 @pytest.mark.asyncio
-async def test_with_no_run_set_the_orchestrator_starts_with_no_server_set(tmp_run, home_mcp_config):
+async def test_the_orchestrator_uses_the_default_mcp_set(tmp_run, home_mcp_config, kkernel):
     env = await _setup(no_mcp_config=False)
     args = await _cli_args(env.orc_branch.chat_model)
 
-    assert "--mcp-config" not in args
-    assert "--strict-mcp-config" not in args
+    _assert_default_mcp_argv(args, kkernel.path)
     assert home_mcp_config == []
 
 
 @pytest.mark.asyncio
-async def test_with_no_run_set_the_synthesis_branch_starts_with_no_server_set(
-    tmp_run, home_mcp_config
+async def test_the_synthesis_branch_gets_the_runs_default_mcp_set(
+    tmp_run, home_mcp_config, kkernel
 ):
     from lionhub.serve.cli.orchestrate.fanout import _fresh_synthesis_branch
 
@@ -743,16 +738,14 @@ async def test_with_no_run_set_the_synthesis_branch_starts_with_no_server_set(
     branch = await _fresh_synthesis_branch(env)
     args = await _cli_args(branch.chat_model)
 
-    assert "--mcp-config" not in args
-    assert "--strict-mcp-config" not in args
+    _assert_default_mcp_argv(args, kkernel.path)
     assert home_mcp_config == []
 
 
 @pytest.mark.asyncio
-async def test_a_home_config_never_reaches_a_worker_of_any_kind(tmp_run, home_mcp_config):
-    """The whole run, one launch: every branch it builds is handed the run's
-    own set — which, here, is none of them. Profile and built-in-role workers
-    included, so the two kinds cannot start with different servers."""
+async def test_a_run_resolves_its_default_mcp_set_once(tmp_run, home_mcp_config, kkernel):
+    from lionhub.serve.cli.orchestrate.fanout import _fresh_synthesis_branch
+
     env = await _setup(no_mcp_config=False)
 
     profile_worker, _, profile, _ = await build_worker_branch(
@@ -773,10 +766,46 @@ async def test_a_home_config_never_reaches_a_worker_of_any_kind(tmp_run, home_mc
         )[0].chat_model
     )
 
-    for args in (await _cli_args(profile_worker.chat_model), casts_args):
-        assert "--mcp-config" not in args
-        assert "--strict-mcp-config" not in args
+    synthesis = await _fresh_synthesis_branch(env)
+    for args in (
+        await _cli_args(env.orc_branch.chat_model),
+        await _cli_args(profile_worker.chat_model),
+        casts_args,
+        await _cli_args(synthesis.chat_model),
+    ):
+        _assert_default_mcp_argv(args, kkernel.path)
+    assert kkernel.lookups == ["kkernel"]
     assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_only_claude_workers_get_the_default_in_a_mixed_run(tmp_run, codex_home, kkernel):
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex")
+    env.run.write_manifest({"status": "running"})
+    before = await _codex_cli_args(env.orc_branch.chat_model, hook_expected=False)
+    assert env.run.read_manifest()["mcp_config_reason"] == "no_mcp_config_found"
+    assert kkernel.lookups == []
+
+    profile_worker, _, _, _ = await build_worker_branch(
+        env, agent_id="w0", role="implementer", model_override="claude_code/sonnet"
+    )
+    for args in (await _cli_args(profile_worker.chat_model), await _casts_worker_args(env)):
+        _assert_default_mcp_argv(args, kkernel.path)
+
+    codex_worker, _, _, _ = await build_worker_branch(
+        env, agent_id="w2", role="implementer", model_override="codex/gpt-5"
+    )
+    codex_args = await _codex_cli_args(codex_worker.chat_model)
+    assert "--ignore-user-config" in codex_args
+    assert not any("mcp_servers.khive." in arg or "ambient-mcp" in arg for arg in codex_args)
+    assert await _codex_cli_args(env.orc_branch.chat_model, hook_expected=False) == before
+    assert kkernel.lookups == ["kkernel"]
+    manifest = env.run.read_manifest()
+    assert manifest["status"] == "running"
+    assert manifest["mcp_config_reason"] == "default_claude_leg"
+    assert manifest["mcp_config_source"] is None
+    assert manifest["mcp_config_explicit"] is False
 
 
 _CONTROL_AND_KNOWLEDGE = {
@@ -1059,7 +1088,7 @@ def _pair_follows(args: list[str], flag: str, value: str) -> bool:
 async def test_a_codex_worker_with_no_run_set_still_ignores_the_user_config(tmp_run, codex_home):
     """No run set hands the worker nothing, and the user config stays out anyway."""
     codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
-    env = await _setup(no_mcp_config=False)
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex")
     assert env.mcp_servers is None
 
     branch, _, _, _ = await build_worker_branch(
@@ -1249,18 +1278,67 @@ async def test_a_named_server_set_is_the_claude_orchestrators_whole_set(tmp_run,
 
 
 @pytest.mark.asyncio
-async def test_a_discovered_server_set_is_added_to_the_claude_orchestrators_own(tmp_run):
+async def test_a_discovered_server_set_is_the_claude_orchestrators_whole_set(tmp_run):
     (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
 
     env = await _setup(no_mcp_config=False)
     args = await _cli_args(env.orc_branch.chat_model)
 
     assert _mcp_config_arg(args) == {"mcpServers": _RUN_SERVER}
-    assert "--strict-mcp-config" not in args
+    assert "--strict-mcp-config" in args
 
 
 class _RecordReached(Exception):
     pass
+
+
+@pytest.mark.asyncio
+async def test_flow_planner_spawns_with_the_default_mcp_config(
+    tmp_run, tmp_path, monkeypatch, kkernel
+):
+    from unittest.mock import AsyncMock
+
+    from lionhub.agent.casts.emission import TaskAssignment
+    from lionhub.providers.anthropic import claude_code
+    from lionhub.serve.cli.orchestrate import flow
+
+    captured = tmp_path / "argv.json"
+    executable = tmp_path / "claude"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"Path({str(captured)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        "print(json.dumps({'type': 'result', 'result': 'planned'}))\n"
+    )
+    executable.chmod(0o700)
+    monkeypatch.setattr(claude_code, "resolve_claude_cli", lambda: str(executable))
+    monkeypatch.setattr(ClaudeCodeRequest, "_child_sandbox_settings", lambda _request: None)
+    monkeypatch.setattr(flow, "stamp_worker_depth", lambda: 1)
+    monkeypatch.setattr(flow, "start_live_persist", AsyncMock())
+    monkeypatch.setattr(flow, "stop_live_persist", AsyncMock(return_value="completed"))
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        lambda *args, **kwargs: None,
+    )
+
+    async def plan(orchestrator, prompt, **kwargs):
+        event = await orchestrator.chat_model.create_event(prompt=prompt)
+        request = event.payload["request"]
+        records = [record async for record in claude_code._ndjson_from_cli(request)]
+        assert records == [{"type": "result", "result": "planned"}]
+        return [TaskAssignment(assignee="critic", task="Review the plan")]
+
+    monkeypatch.setattr(flow, "plan", plan)
+    output, status = await asyncio.wait_for(
+        flow._run_flow("claude_code/sonnet", "plan work", dry_run=True), timeout=15
+    )
+
+    assert status == "completed"
+    assert "Review the plan" in output
+    _assert_default_mcp_argv(json.loads(captured.read_text()), kkernel.path)
+    assert kkernel.lookups == ["kkernel"]
 
 
 @pytest.mark.asyncio
@@ -1391,26 +1469,22 @@ async def test_a_contained_claude_worker_reads_no_settings_and_runs_a_fixed_tool
 
 
 @pytest.mark.asyncio
-async def test_a_contained_claude_worker_with_no_server_set_starts_none_it_discovers(
-    tmp_run, monkeypatch
-):
-    """With no server set resolved, a worker's CLI discovers servers itself. A contained one
-    would start them while ``dontAsk`` refused their tools, so it is handed the empty set as
-    its whole set; a role without the flag keeps what it discovers."""
+async def test_claude_worker_containment_keeps_an_empty_run_set(tmp_run, monkeypatch, kkernel):
+    kkernel.path = None
     monkeypatch.setattr(
         orch_mod,
         "load_agent_profile",
         _claude_roles(implementer={"contain_user_settings": True}, plain={}),
     )
     env = await _setup(no_mcp_config=False)
-    assert env.mcp_servers is None
-
     args = await _worker_args(env, "implementer")
     control = await _worker_args(env, "plain")
 
     assert "--strict-mcp-config" in args
     assert _flag_values(args, "--allowedTools") == _CONTAINED_TOOLS
-    assert "--strict-mcp-config" not in control
+    assert "--strict-mcp-config" in control
+    assert _mcp_config_arg(args) == {"mcpServers": {}}
+    assert _mcp_config_arg(control) == {"mcpServers": {}}
 
 
 @pytest.mark.asyncio

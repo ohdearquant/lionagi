@@ -69,6 +69,7 @@ from ._orchestration import (
     _resolve_worker_model_spec,
     _uncontainable_cli_provider,
     _worker_mcp_hand_off,
+    _worker_mcp_servers_for_model,
     attribute_worker_build_failure,
     available_roles,
     build_worker_branch,
@@ -2534,7 +2535,9 @@ async def _execute_dag(
         worker_mcp_servers = (
             {}
             if profile_mcp_disabled
-            else attribute_khive_servers(getattr(env, "mcp_servers", None), spawn_khive_actor)
+            else attribute_khive_servers(
+                _worker_mcp_servers_for_model(env, chat_model), spawn_khive_actor
+            )
         )
         _isolate_worker_cli_config(
             chat_model,

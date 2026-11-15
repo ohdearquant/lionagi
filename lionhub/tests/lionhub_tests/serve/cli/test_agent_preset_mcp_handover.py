@@ -12,6 +12,8 @@ import argparse
 import contextlib
 import json
 import logging
+import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -50,6 +52,9 @@ def _capture_cli_messages():
 SUBMITTED = {"khive": {"command": "kkernel", "args": ["serve"]}}
 NEARBY = {"decoy": {"command": "not-the-submitted-server"}}
 ANTIGRAVITY_PROVIDERS = ("gemini-cli", "gemini_cli", "gemini-code", "gemini_code")
+DEFAULT_CLAUDE_KHIVE_PACKS = (
+    "kg,blob,gtd,memory,brain,schedule,knowledge,session,git,code,workspace"
+)
 
 
 def _write_mcp_config(directory: Path, servers: dict) -> Path:
@@ -105,6 +110,60 @@ def _wire_agent_stubs(monkeypatch, tmp_path: Path):
         ),
     )
     return branches_created
+
+
+def _wire_claude_mcp_stubs(monkeypatch, tmp_path: Path):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionhub.orchestration.runs import RunDir
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    branches = _wire_agent_stubs(monkeypatch, tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    launch = tmp_path / "launch"
+    launch.mkdir()
+    binary = tmp_path / "bin" / "kkernel"
+    binary.parent.mkdir()
+    binary.touch(mode=0o700)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(binary.parent), prepend=os.pathsep)
+    monkeypatch.chdir(launch)
+    # Render the MCP arguments without launching a provider version probe.
+    monkeypatch.setattr(ClaudeCodeRequest, "_child_sandbox_settings", lambda _request: None)
+    runs = []
+
+    def allocate():
+        root = tmp_path / "runs" / f"run-{len(runs)}"
+        run = RunDir(run_id=root.name, state_root=root, artifact_root=root / "artifacts")
+        run.ensure_state_dirs()
+        runs.append(run)
+        return run
+
+    monkeypatch.setattr(agent_mod, "allocate_run", allocate)
+    return SimpleNamespace(branches=branches, runs=runs, binary=binary)
+
+
+def _claude_mcp_servers(branch) -> dict:
+    payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hello"})
+    args = payload["request"].as_cmd_args()
+    assert args.count("--strict-mcp-config") == 1
+    assert args.count("--mcp-config") == 1
+    config = json.loads(args[args.index("--mcp-config") + 1])
+    return config["mcpServers"]
+
+
+def _assert_claude_default_mcp(leg) -> None:
+    servers = _claude_mcp_servers(leg.branches[-1])
+    assert set(servers) == {"khive"}
+    khive = servers["khive"]
+    assert khive["command"] == str(leg.binary)
+    assert khive["args"] == ["mcp"]
+    assert khive["env"]["KHIVE_PACKS"] == DEFAULT_CLAUDE_KHIVE_PACKS
+    assert khive["env"]["KHIVE_ACTOR"] == "agent:anonymous"
+    manifest = leg.runs[-1].read_manifest()
+    assert manifest["mcp_config_reason"] == "default_claude_leg"
+    assert manifest["mcp_config_explicit"] is False
+    assert manifest["mcp_config_source"] is None
 
 
 @pytest.fixture
@@ -453,6 +512,8 @@ async def test_preset_leg_gets_the_submitted_servers_not_the_target_directory(sp
     forwarded = _forwarded_servers(branch)
     assert set(forwarded) == {"khive"}
     assert forwarded["khive"]["command"] == "kkernel"
+    if model.startswith("claude_code"):
+        assert branch.chat_model.endpoint.config.kwargs["strict_mcp_config"] is True
 
 
 @pytest.mark.asyncio
@@ -575,6 +636,7 @@ async def test_a_submitted_legs_snapshot_is_recorded_for_its_resume(spawn, tmp_p
     assert launched["launch_dir"] == str(Path.cwd().resolve())
     assert launched["launch_dir"] != str(server_dir)
     assert _forwarded_servers(spawn.branches[-1]) == {"found": {"command": "found-server"}}
+    assert spawn.branches[-1].chat_model.endpoint.config.kwargs["strict_mcp_config"] is True
 
 
 @pytest.mark.asyncio
@@ -609,54 +671,95 @@ async def test_no_mcp_config_leaves_the_leg_no_servers_of_its_own_either(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
-async def test_a_leg_with_no_config_found_is_told_it_starts_without_servers(
-    monkeypatch, tmp_path, preset
-):
-    """A search that finds nothing leaves the leg no server set of its own.
-
-    `--cwd` points at a directory with no `.mcp.json` at or above it and no
-    config is named, so the leg starts with only what its provider CLI finds
-    for itself. That is the case this warning exists for, on the plain path and
-    on the path that builds the branch through `create_agent` alike.
-    """
+async def test_claude_leg_defaults_to_an_exclusive_mcp_server(monkeypatch, tmp_path, preset):
     from lionhub.serve.cli.agent import _run_agent
 
-    _wire_agent_stubs(monkeypatch, tmp_path)
-    barren = tmp_path / "barren"
-    barren.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.chdir(barren)
+    leg = _wire_claude_mcp_stubs(monkeypatch, tmp_path)
+    _write_mcp_config(tmp_path / "home" / ".lionagi", NEARBY)
+    _, _, _, status, _ = await _run_agent("claude_code/sonnet", "go", preset=preset)
 
-    with _capture_cli_messages() as messages:
-        await _run_agent("claude_code/sonnet", "go", preset=preset, yolo=True)
-
-    reported = "\n".join(messages)
-    assert "no MCP servers are being handed to this leg" in reported
-    assert "this leg" in reported.lower()
+    assert status == "completed"
+    _assert_claude_default_mcp(leg)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
-async def test_a_home_config_does_not_reach_a_leg_that_found_none(monkeypatch, tmp_path, preset):
-    """This command resolves its servers once, from where it was run, and hands
-    that result to the branch: a search that finds nothing hands over nothing,
-    and the branch does not go looking on its own. The home-level config is the
-    one such a search would otherwise pick up, so it is the one checked here."""
+@pytest.mark.parametrize("disabled", [False, True], ids=["named", "disabled"])
+async def test_claude_leg_honors_a_caller_mcp_choice(monkeypatch, tmp_path, preset, disabled):
     from lionhub.serve.cli.agent import _run_agent
 
-    branches = _wire_agent_stubs(monkeypatch, tmp_path)
-    launch = tmp_path / "launch"
-    launch.mkdir()
-    home = tmp_path / "home"
-    _write_mcp_config(home / ".lionagi", {"home-only": {"command": "home-server"}})
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.chdir(launch)
+    leg = _wire_claude_mcp_stubs(monkeypatch, tmp_path)
+    selected = {"chosen": {"command": "chosen-server"}}
+    named = None if disabled else _write_mcp_config(tmp_path / "chosen", selected)
+    _, _, _, status, _ = await _run_agent(
+        "claude_code/sonnet",
+        "go",
+        preset=preset,
+        mcp_config=str(named) if named is not None else None,
+        no_mcp_config=disabled,
+    )
 
-    await _run_agent("claude_code/sonnet", "go", preset=preset, yolo=True)
+    assert status == "completed"
+    assert _claude_mcp_servers(leg.branches[-1]) == ({} if disabled else selected)
+    manifest = leg.runs[-1].read_manifest()
+    assert manifest["mcp_config_reason"] == ("mcp_disabled_by_caller" if disabled else None)
+    assert manifest["mcp_config_explicit"] is (not disabled)
+    assert manifest["mcp_config_source"] == (None if named is None else str(named.resolve()))
 
-    assert "mcp_servers" not in branches[-1].chat_model.endpoint.config.kwargs
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
+async def test_claude_leg_without_kkernel_stays_strict_with_no_servers(
+    monkeypatch, tmp_path, preset
+):
+    from lionhub.serve.cli.agent import _run_agent
+
+    leg = _wire_claude_mcp_stubs(monkeypatch, tmp_path)
+    which = shutil.which
+
+    def unavailable(command, *args, **kwargs):
+        return None if command == "kkernel" else which(command, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", unavailable)
+    with _capture_cli_messages() as messages:
+        _, _, _, status, _ = await _run_agent("claude_code/sonnet", "go", preset=preset)
+
+    assert status == "completed"
+    assert _claude_mcp_servers(leg.branches[-1]) == {}
+    manifest = leg.runs[-1].read_manifest()
+    assert manifest["mcp_config_reason"] == "default_claude_leg_kkernel_unavailable"
+    assert manifest["mcp_config_explicit"] is False
+    assert manifest["mcp_config_source"] is None
+    assert len([message for message in messages if "kkernel" in message]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config_text", "reason", "warns"),
+    [
+        ('{"mcpServers": {}}', "mcp_config_declares_no_servers", False),
+        ("{", "mcp_config_unusable:", True),
+    ],
+    ids=["empty", "unusable"],
+)
+async def test_claude_leg_uses_strict_empty_for_a_discovered_config_without_servers(
+    monkeypatch, tmp_path, config_text, reason, warns
+):
+    from lionhub.serve.cli.agent import _run_agent
+
+    leg = _wire_claude_mcp_stubs(monkeypatch, tmp_path)
+    config = Path.cwd() / ".mcp.json"
+    config.write_text(config_text)
+    with _capture_cli_messages() as messages:
+        _, _, _, status, _ = await _run_agent("claude_code/sonnet", "go")
+
+    assert status == "completed"
+    assert _claude_mcp_servers(leg.branches[-1]) == {}
+    manifest = leg.runs[-1].read_manifest()
+    assert manifest["mcp_config_reason"].startswith(reason)
+    assert manifest["mcp_config_source"] == str(config.resolve())
+    assert manifest["mcp_config_explicit"] is False
+    assert any("MCP configuration could not be used" in message for message in messages) is warns
 
 
 @pytest.mark.asyncio

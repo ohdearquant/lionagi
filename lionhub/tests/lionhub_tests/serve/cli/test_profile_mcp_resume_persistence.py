@@ -16,6 +16,35 @@ from .test_mcp_set_reaches_every_cli_provider import (
 
 
 @pytest.mark.asyncio
+async def test_resume_applies_claude_leg_mcp_default_when_no_config_was_named(
+    monkeypatch, tmp_path
+):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch, iModel
+    from lionagi.operations.run.run import _write_branch_snapshot
+
+    from .test_agent_preset_mcp_handover import _assert_claude_default_mcp, _wire_claude_mcp_stubs
+
+    leg = _wire_claude_mcp_stubs(monkeypatch, tmp_path)
+    branch = Branch(chat_model=iModel(provider="claude_code", model="sonnet", api_key="dummy"))
+    branch.metadata[agent_mod._MCP_LAUNCH_KEY] = {
+        "mcp_config": None,
+        "no_mcp_config": False,
+        "launch_dir": str(tmp_path / "launch"),
+    }
+    branches_dir = tmp_path / "branches"
+    branches_dir.mkdir()
+    await _write_branch_snapshot(branch, branches_dir)
+    branch_path = branches_dir / f"{branch.id}.json"
+    monkeypatch.setattr(agent_mod, "find_branch", lambda _bid: ("prior", branch_path))
+
+    _, _, _, status, _ = await agent_mod._run_agent(None, "resume", resume=str(branch.id))
+
+    assert status == "completed"
+    _assert_claude_default_mcp(leg)
+
+
+@pytest.mark.asyncio
 async def test_named_config_with_snapshot_marker_survives_real_branch_resume(monkeypatch, tmp_path):
     import lionhub.serve.cli.agent as agent_mod
     from lionagi import Branch
@@ -162,6 +191,7 @@ async def test_agent_resume_replays_submitted_snapshot_origin(monkeypatch, tmp_p
     assert calls[-1][1]["submit_snapshot"] == str(old)
     assert calls[-1][2].explicit is False
     assert set(seen["mcp_servers"]) == {"original"}
+    assert seen["strict_mcp_config"] is True
 
 
 @pytest.mark.asyncio
@@ -389,8 +419,7 @@ async def test_agent_replay_never_preloads_current_ambient(monkeypatch, tmp_path
     await agent_mod._run_agent(None, "continue", resume=branch_id)
     expected = {"recorded_search": {"old"}, "recorded_disabled": set(), "no_record": {"persisted"}}
     assert set(seen["mcp_servers"]) == expected[record_kind]
-    if record_kind == "recorded_disabled":
-        assert seen["strict_mcp_config"] is True
+    assert seen["strict_mcp_config"] is True
 
 
 @pytest.mark.asyncio
@@ -522,6 +551,7 @@ async def test_empty_legacy_mcp_record_keeps_stored_branch_request(monkeypatch, 
     monkeypatch.setattr(Branch, "operate", capture)
     await agent_mod._run_agent(None, "continue", resume=branch_id)
     assert set(seen["mcp_servers"]) == {"persisted"}
+    assert seen["strict_mcp_config"] is True
 
 
 @pytest.mark.asyncio
@@ -556,6 +586,7 @@ async def test_legacy_recorded_search_uses_recorded_dir_not_current_dir(monkeypa
     monkeypatch.setattr(Branch, "operate", capture)
     await agent_mod._run_agent(None, "continue", resume=branch_id)
     assert set(seen["mcp_servers"]) == {"recorded"}
+    assert seen["strict_mcp_config"] is True
 
 
 @pytest.mark.asyncio

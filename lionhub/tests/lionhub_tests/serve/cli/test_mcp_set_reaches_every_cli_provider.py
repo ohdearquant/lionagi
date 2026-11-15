@@ -966,9 +966,8 @@ async def test_plain_leg_with_a_named_config_file_is_the_whole_set(monkeypatch, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("spec", ["claude_code/sonnet", CODEX_SPEC])
-async def test_plain_leg_with_a_found_config_file_stays_additive(monkeypatch, tmp_path, spec):
-    """A set found by the directory search is not one the caller named: the CLI
-    keeps its own servers beside it."""
+async def test_plain_leg_uses_provider_mcp_policy_for_found_config(monkeypatch, tmp_path, spec):
+    """Claude uses the discovered set on its own. Codex adds it to its own config."""
     import lionhub.serve.cli.agent as agent_mod
 
     project = tmp_path / "project"
@@ -981,7 +980,7 @@ async def test_plain_leg_with_a_found_config_file_stays_additive(monkeypatch, tm
 
     # A leg run with no profile acts as the anonymous child on khive.
     assert handed["mcp_servers"] == attribute_khive_servers(SERVERS, "agent:anonymous")
-    assert handed["mcp_exclusive"] is False
+    assert handed["mcp_exclusive"] is spec.startswith("claude_code/")
 
 
 # Site 2 — the resumed leg.
@@ -1297,9 +1296,11 @@ async def test_resumed_leg_with_a_named_config_file_is_the_whole_set(
 
 
 @pytest.mark.asyncio
-async def test_resumed_leg_with_a_found_config_file_stays_additive(monkeypatch, tmp_path):
-    """A set found in the launch directory is not one the caller named, so the
-    resumed leg does not make it exclusive."""
+@pytest.mark.parametrize("model_override", [None, "codex/gpt-5.3-codex"])
+async def test_resumed_claude_leg_with_a_found_config_file_uses_it_exclusively(
+    monkeypatch, tmp_path, model_override
+):
+    """The resumed Claude leg uses exactly the set found in its launch directory."""
     import lionhub.serve.cli.agent as agent_mod
     from lionagi import Branch
 
@@ -1320,10 +1321,10 @@ async def test_resumed_leg_with_a_found_config_file_stays_additive(monkeypatch, 
         return "done"
 
     monkeypatch.setattr(Branch, "operate", capture)
-    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+    await agent_mod._run_agent(model_override, "follow up", resume=branch_id)
 
     assert seen["kwargs"]["mcp_servers"] == attribute_khive_servers(SERVERS, "agent:anonymous")
-    assert "strict_mcp_config" not in seen["kwargs"]
+    assert seen["kwargs"]["strict_mcp_config"] is True
 
 
 @pytest.mark.asyncio

@@ -1191,3 +1191,16 @@ harder to read back. Kept as a fallback if the file path proves unworkable.
   shapes) are taken from each vendor's documentation and are not yet measured at a pinned version.
   D2's capability tables exist so that nothing depends on them until the conformance suite has
   measured them.
+
+## Amendment 1 (2026-11-14) — Default MCP servers for Claude Code legs
+
+D4 applies `--strict-mcp-config` to every Claude Code leg, including one whose servers come
+from a discovered `.mcp.json` or its submit snapshot. A caller-named configuration still takes
+precedence, and `--no-mcp-config` supplies an empty set.
+
+With neither a named nor discovered configuration and no opt-out, lionagi supplies one server,
+`khive`, running `kkernel mcp` with `KHIVE_PACKS` set to
+`kg,blob,gtd,memory,brain,schedule,knowledge,session,git,code,workspace`. If `kkernel` is absent
+from `PATH`, the leg starts with an empty strict configuration and one warning naming the missing
+executable. The run record distinguishes the generated default and the missing-executable case
+from an explicit empty configuration.

@@ -39,6 +39,7 @@ from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     OrchestrationEnv,
     _hand_mcp_servers,
+    _worker_mcp_servers_for_model,
     attribute_worker_build_failure,
     available_roles,
     build_worker_branch,
@@ -107,11 +108,11 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"
     # build_worker_branch hands it to a worker: as the whole set.
     # The synthesizer is a cast role with no profile of its own and runs on a copy
     # of the orchestrator's model, so its khive servers act as the orchestrator's profile.
+    chat_model = env.orc_branch.chat_model.copy()
     worker_servers = attribute_khive_servers(
-        getattr(env, "mcp_servers", None),
+        _worker_mcp_servers_for_model(env, chat_model),
         child_khive_actor(getattr(env, "orc_profile_name", None)),
     )
-    chat_model = env.orc_branch.chat_model.copy()
     strip_connector_grant(chat_model.endpoint.config.kwargs)
     _hand_mcp_servers(
         chat_model,

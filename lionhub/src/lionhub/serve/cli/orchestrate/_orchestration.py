@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
     from lionagi.session.exchange import Exchange
     from lionhub.agent.casts.pack import Pack
+    from lionhub.orchestration.mcp_config import McpResolution
     from lionhub.tools.communication.messenger import LionMessenger
 
 from lionagi import Branch, Session
@@ -604,6 +605,10 @@ class OrchestrationEnv:
     # The khive actor each branch the run built acts as, by branch id, so a node
     # cloned from one of them acts as that branch's profile.
     khive_actors: dict[str, str] = field(default_factory=dict)
+    # Kept only when normal resolution supplied no common set. Resolve it on
+    # the first Claude branch so other providers keep their own selection.
+    _claude_mcp_resolution: McpResolution | None = field(default=None, repr=False)
+    _mcp_launch_dir_unrecorded: bool = False
 
     def expect_worker(self, agent_id: str) -> None:
         """Declare that this run intends to run a worker under *agent_id*."""
@@ -895,6 +900,16 @@ def _claude_worker_contained(imodel) -> bool:
     return isinstance(kwargs, dict) and kwargs.get("setting_sources") == ""
 
 
+def _is_claude_cli(imodel) -> bool:
+    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+    from lionhub.agent.factory import _canonical_provider
+
+    return (
+        bool(getattr(imodel, "is_cli", False))
+        and _canonical_provider(imodel.endpoint.config.provider) in _CLAUDE_PROVIDER_NAMES
+    )
+
+
 def _confine_claude_worker(imodel, profile_name: str | None) -> None:
     """Carry the resolved child sandbox policy in a Claude worker's endpoint kwargs.
 
@@ -902,14 +917,10 @@ def _confine_claude_worker(imodel, profile_name: str | None) -> None:
     error propagates, so a worker is never built unconfined because of a mistake in the settings.
     A model that is not a Claude CLI is left alone: the policy is rendered as Claude Code settings.
     """
-    if not getattr(imodel, "is_cli", False):
+    if not _is_claude_cli(imodel):
         return
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
     from lionhub.agent.child_sandbox import resolve_child_sandbox
-    from lionhub.agent.factory import _canonical_provider
 
-    if _canonical_provider(imodel.endpoint.config.provider) not in _CLAUDE_PROVIDER_NAMES:
-        return
     imodel.endpoint.config.kwargs["child_sandbox"] = resolve_child_sandbox(profile_name).to_dict()
 
 
@@ -1046,6 +1057,52 @@ def _worker_mcp_hand_off(servers: dict | None, *, contained: bool) -> tuple[dict
     return servers, servers is not None
 
 
+def _bind_mcp_provenance(
+    run: RunDir,
+    resolution: McpResolution,
+    *,
+    cwd: str | Path | None,
+    disabled: bool = False,
+    launch_dir_unrecorded: bool = False,
+) -> RunDir:
+    if not isinstance(run, RunDir):
+        return run
+    if launch_dir_unrecorded and not disabled:
+        from lionhub.orchestration.mcp_config import _format_recorded_mcp_path
+
+        outcome = (resolution.reason or "resolved").partition(":")[0]
+        resolution = replace(
+            resolution,
+            reason=(
+                "no MCP launch directory was recorded; searched "
+                f"{_format_recorded_mcp_path(str(resolution.searched_from))}; "
+                f"resolution {outcome}"
+            ),
+        )
+    return run.with_execution_provenance(
+        cwd=cwd or os.getcwd(), mcp_resolution=resolution, mcp_disabled=disabled
+    )
+
+
+def _worker_mcp_servers_for_model(env: OrchestrationEnv, imodel) -> dict | None:
+    """Return the worker grant, resolving the Claude fallback once when needed."""
+    resolution = getattr(env, "_claude_mcp_resolution", None)
+    if resolution is None or not _is_claude_cli(imodel):
+        return getattr(env, "mcp_servers", None)
+    if resolution.servers is None:
+        from lionhub.orchestration.mcp_config import _complete_claude_leg_mcp
+
+        resolution = _complete_claude_leg_mcp(resolution)
+        env.run = _bind_mcp_provenance(
+            env.run,
+            resolution,
+            cwd=getattr(env.run, "cwd", None) or env.cwd,
+            launch_dir_unrecorded=env._mcp_launch_dir_unrecorded,
+        )
+        env._claude_mcp_resolution = resolution
+    return resolution.servers
+
+
 async def setup_orchestration(
     *,
     pattern_name: str,
@@ -1072,7 +1129,10 @@ async def setup_orchestration(
 ) -> OrchestrationEnv:
     """Resolve orchestrator config, allocate run, build branch+session."""
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
-    from lionhub.orchestration.mcp_config import resolve_spawn_mcp_servers
+    from lionhub.orchestration.mcp_config import (
+        _complete_claude_leg_mcp,
+        resolve_spawn_mcp_servers,
+    )
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory. Forward the tilde-expanded path (providers never expand `~`).
@@ -1139,7 +1199,6 @@ async def setup_orchestration(
     # stays as resolved: each worker is attributed to its own profile where it is
     # handed the set.
     orc_khive_actor = child_khive_actor(getattr(orc_profile, "name", None))
-    run_mcp_servers = attribute_khive_servers(run_mcp_servers, orc_khive_actor)
 
     if not model_spec:
         # Only reachable when the caller named an agent, since naming nothing
@@ -1171,14 +1230,18 @@ async def setup_orchestration(
         tool_settings=_profile_tool_settings(orc_profile),
     )
     _orc_provider = orc_imodel.endpoint.config.provider
-    # The orchestrator takes the run's set as a single agent does: a set the caller
-    # named with --mcp-config, or an empty one, is its whole set, so the servers its own
-    # CLI config declares are left out; a set only found by the .mcp.json lookup joins them.
+    claude_mcp_resolution = mcp_resolution if run_mcp_servers is None else None
+    orc_is_claude = _is_claude_cli(orc_imodel)
+    if orc_is_claude and claude_mcp_resolution is not None:
+        mcp_resolution = claude_mcp_resolution = _complete_claude_leg_mcp(mcp_resolution)
+        run_mcp_servers = mcp_resolution.servers
+    run_mcp_servers = attribute_khive_servers(run_mcp_servers, orc_khive_actor)
+    # Claude takes an exclusive set even when it came from discovery.
     _hand_mcp_servers(
         orc_imodel,
         run_mcp_servers,
         label="orchestrator",
-        exclusive=not run_mcp_servers or mcp_resolution.explicit,
+        exclusive=orc_is_claude or not run_mcp_servers or mcp_resolution.explicit,
     )
     effort_requested = effort is not None or parse_model_spec(model_spec).effort is not None
     if not effort_requested and orc_imodel.endpoint.config.kwargs.get("ignore_user_config"):
@@ -1200,26 +1263,13 @@ async def setup_orchestration(
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
 
-    run = allocate_run(save_dir=save_dir)
-    if isinstance(run, RunDir):
-        provenance = mcp_resolution
-        if mcp_launch_dir_unrecorded and not no_mcp_config:
-            from lionhub.orchestration.mcp_config import _format_recorded_mcp_path
-
-            resolution = (mcp_resolution.reason or "resolved").partition(":")[0]
-            provenance = replace(
-                mcp_resolution,
-                reason=(
-                    "no MCP launch directory was recorded; searched "
-                    f"{_format_recorded_mcp_path(str(mcp_resolution.searched_from))}; "
-                    f"resolution {resolution}"
-                ),
-            )
-        run = run.with_execution_provenance(
-            cwd=cwd or os.getcwd(),
-            mcp_resolution=provenance,
-            mcp_disabled=no_mcp_config,
-        )
+    run = _bind_mcp_provenance(
+        allocate_run(save_dir=save_dir),
+        mcp_resolution,
+        cwd=cwd,
+        disabled=no_mcp_config,
+        launch_dir_unrecorded=mcp_launch_dir_unrecorded,
+    )
     run.ensure_artifact_root()
 
     orc_log_config = DataLoggerConfig(auto_save_on_exit=False)
@@ -1237,11 +1287,8 @@ async def setup_orchestration(
     else:
         # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
         orc_spec = AgentSpec.compose("orchestrator", pack=loaded_pack, grant_emissions=False)
-        # This run resolved its server set once, above, and every branch it
-        # builds starts with that set: the resolved servers, the empty set a
-        # refusal is, or no set at all when the search found nothing. The
-        # factory's own discovery is what a run must not fall back on, since the
-        # home `.lionagi/.mcp.json` is not the run's to apply.
+        # Use this orchestration's selection and suppress the factory's separate
+        # directory search.
         orc_branch = await create_agent(
             orc_spec,
             load_settings=False,
@@ -1293,6 +1340,8 @@ async def setup_orchestration(
         mcp_launch_dir=launch_dir,
         mcp_disabled_by_profile=profile_origin_mcp_disabled,
         withheld_mcp_servers=withheld_mcp_servers,
+        _claude_mcp_resolution=claude_mcp_resolution,
+        _mcp_launch_dir_unrecorded=mcp_launch_dir_unrecorded,
     )
     env.khive_actors[str(orc_branch.id)] = orc_khive_actor
     return env
@@ -1538,7 +1587,9 @@ async def build_worker_branch(
     worker_mcp_servers = (
         {}
         if profile_disables_mcp
-        else attribute_khive_servers(getattr(env, "mcp_servers", None), worker_khive_actor)
+        else attribute_khive_servers(
+            _worker_mcp_servers_for_model(env, w_imodel), worker_khive_actor
+        )
     )
     _isolate_worker_cli_config(
         w_imodel,

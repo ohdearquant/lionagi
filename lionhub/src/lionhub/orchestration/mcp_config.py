@@ -12,7 +12,8 @@ and "something configured but unusable" are returned as distinct states.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import shutil
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,9 @@ __all__ = (
 )
 
 MCP_CONFIG_FILENAME = ".mcp.json"
+_CLAUDE_LEG_DEFAULT_REASON = "default_claude_leg"
+_CLAUDE_LEG_MCP_UNAVAILABLE_REASON = "default_claude_leg_kkernel_unavailable"
+_CLAUDE_LEG_KHIVE_PACKS = "kg,blob,gtd,memory,brain,schedule,knowledge,session,git,code,workspace"
 
 # Carried by a snapshot of a config that was found rather than named, naming
 # the file it was taken from. Origin comes from the carrier, not this key.
@@ -55,9 +59,8 @@ class LegacyMcpReplayError(McpConfigError):
 class McpResolution:
     """What the submitting side resolved, and why it is what it is.
 
-    ``servers`` is None whenever no server set could be produced; ``reason`` is
-    then a short machine-readable token saying why, and is None only when the
-    caller explicitly asked for no config at all.
+    ``servers`` is None when no server set could be produced or the caller asked
+    for no config. ``reason`` records a missing source or a generated default.
     """
 
     servers: dict[str, Any] | None
@@ -79,18 +82,43 @@ class McpResolution:
 
     @property
     def declared_empty(self) -> bool:
-        """Whether "no servers" is the caller's answer rather than a failure to find one.
+        """Whether resolution has selected an empty server set.
 
-        True for ``--no-mcp-config`` and for a named config that lists no
-        servers. A search that found nothing, or found a config declaring none,
-        is not a declaration: the leg is told it keeps whatever its own CLI
-        discovers, so it must not have that suppressed.
+        True for ``--no-mcp-config`` and for a resolved empty map. A failed
+        discovery with no policy applied still has no map.
         """
         if self.servers:
             return False
         if self.servers is not None:
             return True
         return self.reason is None
+
+
+def _complete_claude_leg_mcp(resolution: McpResolution) -> McpResolution:
+    """Supply a whole server set for a Claude leg after normal discovery."""
+    if resolution.servers is not None or resolution.declared_empty:
+        return resolution
+    from lionhub.orchestration.console import warn
+
+    if resolution.source is not None:
+        if resolution.reason and resolution.reason.startswith("mcp_config_unusable:"):
+            warn(
+                f"MCP configuration could not be used ({resolution.reason}). "
+                "Starting Claude Code with an empty MCP server set."
+            )
+        return replace(resolution, servers={})
+    command = shutil.which("kkernel")
+    if command is None:
+        warn("kkernel was not found on PATH. Starting Claude Code with an empty MCP server set.")
+        return replace(resolution, servers={}, reason=_CLAUDE_LEG_MCP_UNAVAILABLE_REASON)
+    servers = {
+        "khive": {
+            "command": str(Path(command).absolute()),
+            "args": ["mcp"],
+            "env": {"KHIVE_PACKS": _CLAUDE_LEG_KHIVE_PACKS},
+        }
+    }
+    return replace(resolution, servers=servers, reason=_CLAUDE_LEG_DEFAULT_REASON)
 
 
 def discover_mcp_config(start: str | Path) -> Path | None:

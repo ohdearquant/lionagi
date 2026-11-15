@@ -129,12 +129,26 @@ The child's own directory stays the one a relative `--mcp-config` name and a res
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
 path (plain, `--preset`/role, resumed) hands the leg an exclusive empty set, so its CLI loads
-none of its own servers either, and the launch prints nothing about it. A search that found
-nothing, or found a config declaring no servers, leaves a new leg to what its CLI discovers; a
-resumed leg keeps the servers its earlier run was handed. The one exception is a codex leg whose
-servers' `env` or `http_headers` went through a generated profile: that file is removed when the
-run that wrote it exits, so the resume is refused, naming the profile, rather than handing codex
-a profile whose file is gone.
+none of its own servers either, and the launch prints nothing about it.
+
+A Claude Code leg uses `--strict-mcp-config` for a discovered project set or submit snapshot.
+If no configuration is named, discovered or carried by a snapshot, the leg uses a strict
+configuration with one server, `khive`. It resolves `kkernel` on `PATH` and starts
+`kkernel mcp` with an explicit pack allowlist that excludes `comm`, `exec` and `tool`.
+The run records `mcp_config_reason: default_claude_leg`, a null source and a false explicit flag.
+If `kkernel` is unavailable, the leg warns once, starts with a strict empty set and records
+`mcp_config_reason: default_claude_leg_kkernel_unavailable`. An unusable discovered project
+config also results in a warning and a strict empty set, with its original discovery reason.
+
+Flow and fanout resolve MCP for the run. The Claude orchestrator, synthesis, and workers
+use the run's selection in strict mode, subject to each worker's profile and the run's
+worker server exclusions. In a mixed-provider run, the first Claude leg resolves a
+needed fallback once for subsequent Claude legs, and the flow manifest records the selection.
+
+For other providers, a search that finds no usable config leaves a new leg to what its CLI
+discovers, and a resumed leg keeps the servers its earlier run was handed. A codex leg cannot
+resume with a generated profile for servers' `env` or `http_headers` after that file has been
+removed. The refusal names the missing profile.
 
 A resumed or continued `li agent` leg that names neither flag replays the MCP choice its branch
 was launched with. A new branch records that choice once, in `branch.metadata` under
@@ -146,14 +160,13 @@ except that profile-origin `mcp: none` containment cannot be relaxed with `--mcp
 combination is refused even when no profile is named on resume. Its `mcp_launch` record sets
 `no_mcp_config_source` to `profile`.
 Either way, a set resolved on the resume replaces the servers the earlier run was handed, on
-codex (whose servers are merged overrides) as on Claude, and the Claude strict flag goes with
-them. The set is handed to a resumed leg as it is to a new one: a set named by a config file,
-on the resume or in the record, is the whole set (Claude gets `--strict-mcp-config`, and codex
-is given only those servers), while a set found by searching the launch directory adds to the
-servers the provider finds for itself. A recorded config is read from the launch directory when its path is
-relative; one that is missing or can no longer be read refuses the resume, naming that config
-and the flags to resume with instead. A branch created before the choice was recorded resolves
-nothing new, and its request keeps the servers its earlier run was handed.
+codex (whose servers are merged overrides) as on Claude. Claude uses strict mode for the
+resolved set. Codex uses a named config as its whole set and adds a discovered set to what it
+finds for itself. A relative recorded config path is read from the launch directory. If the
+file is missing or unreadable, the refusal names the config and the flags to resume with.
+A branch created before the launch choice was recorded keeps the server selection on its
+stored request. Claude replays that selection in strict mode, or applies the default when the
+stored request has no selection.
 
 ## `machine_schedule.py` — `li schedule ... --machine` payload rules
 

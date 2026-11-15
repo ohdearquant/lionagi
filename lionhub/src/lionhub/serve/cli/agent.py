@@ -59,9 +59,11 @@ from lionhub.orchestration.job import (
     validate_cwd_exists,
 )
 from lionhub.orchestration.mcp_config import (
+    _CLAUDE_LEG_DEFAULT_REASON,
     LegacyMcpReplayError,
     McpConfigError,
     McpResolution,
+    _complete_claude_leg_mcp,
     _format_recorded_mcp_path,
     explicit_mcp_config_path,
     resolve_spawn_mcp_servers,
@@ -1353,12 +1355,17 @@ def _report_mcp_resolution(
     from lionhub.orchestration.console import warn
 
     if resolution.declared_empty:
-        return  # --no-mcp-config or a named config listing no servers: chosen, not degraded
+        return
 
     if resolution.servers is not None:
         if forwarded:
             names = ", ".join(sorted(resolution.servers))
-            hint(f"[mcp] {len(resolution.servers)} server(s) from {resolution.source}: {names}")
+            source = (
+                "the Claude Code leg default"
+                if resolution.reason == _CLAUDE_LEG_DEFAULT_REASON
+                else resolution.source
+            )
+            hint(f"[mcp] {len(resolution.servers)} server(s) from {source}: {names}")
             return
         warn(
             f"MCP servers resolved from {resolution.source} are not carried to "
@@ -2025,7 +2032,6 @@ async def _run_agent(
                 disabled=no_mcp_config,
                 submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
             )
-            mcp_resolution = _attributed_resolution(mcp_resolution, agent_name)
 
         # A resume that names no MCP flag replays the choice its branch was launched
         # with, searched from where it was launched rather than from where it is
@@ -2072,7 +2078,6 @@ async def _run_agent(
                         submit_snapshot=recorded_config if is_submit_snapshot else None,
                         **({"reject_legacy_snapshot": True} if legacy_recorded_file else {}),
                     )
-                    mcp_resolution = _attributed_resolution(mcp_resolution, agent_name)
                 except LegacyMcpReplayError as exc:
                     # The resolver constructed this fixed, safely-labelled message.
                     raise McpConfigError(str(exc)) from None
@@ -2122,9 +2127,12 @@ async def _run_agent(
 
         from lionhub.agent.factory import _canonical_provider, _reject_unforwardable_explicit_mcp
 
+        mcp_provider = (
+            branch.chat_model.endpoint.config.provider if branch is not None else provider
+        )
         try:
             _reject_unforwardable_explicit_mcp(
-                provider,
+                mcp_provider,
                 named_explicitly=mcp_resolution.explicit,
                 asked_for_servers=bool(mcp_resolution.servers),
             )
@@ -2138,6 +2146,22 @@ async def _run_agent(
         # Settings are looked up under the provider the name resolves to, so an alias such as
         # "openai-codex" is clamped and flagged as codex; `provider` stays as written.
         canonical = _canonical_provider(provider)
+        strict_claude_mcp = _canonical_provider(mcp_provider) in _CLAUDE_PROVIDER_NAMES
+        replay_claude_set = False
+        if strict_claude_mcp:
+            if branch is not None and mcp_resolution.reason == "no_mcp_launch_recorded":
+                stored = branch.chat_model.endpoint.config.kwargs
+                replay_claude_set = bool(
+                    stored.get("mcp_config")
+                    or stored.get("mcp_servers")
+                    or stored.get("strict_mcp_config") is True
+                )
+            if not replay_claude_set:
+                mcp_resolution = _complete_claude_leg_mcp(mcp_resolution)
+        mcp_resolution = _attributed_resolution(mcp_resolution, agent_name)
+        mcp_exclusive = (
+            strict_claude_mcp or mcp_resolution.declared_empty or mcp_resolution.explicit
+        )
 
         if branch is None:
             # Codex blocks tool calls until file access is enabled. Surface this
@@ -2161,7 +2185,7 @@ async def _run_agent(
                 fast,
                 bypass,
                 mcp_servers=mcp_resolution.servers,
-                mcp_exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
+                mcp_exclusive=mcp_exclusive,
                 account_connectors=account_connectors,
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
@@ -2494,16 +2518,15 @@ async def _run_agent(
                 # empty set was carried as the ignored user config, which goes with it.
                 _drop_forwarded_mcp_servers(cfg)
                 cfg.pop("ignore_user_config", None)
-            apply_forwarded_mcp_servers(
-                cfg,
-                mcp_resolution.servers,
-                provider=provider,
-                # A set named by a config file, or declared empty, is the whole set: the provider's
-                # own servers are left out too. A set found by search joins what the provider finds
-                # for itself, and a failed search leaves the earlier run's servers, as it leaves a new
-                # leg to what its CLI finds.
-                exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
-            )
+            if replay_claude_set:
+                cfg["strict_mcp_config"] = True
+            else:
+                apply_forwarded_mcp_servers(
+                    cfg,
+                    mcp_resolution.servers,
+                    provider=mcp_provider,
+                    exclusive=mcp_exclusive,
+                )
             missing_profile = _missing_generated_codex_profile(cfg)
             if missing_profile is not None:
                 raise McpConfigError(
@@ -2515,7 +2538,9 @@ async def _run_agent(
             # A resumed leg re-spawns from the persisted request, which is the only
             # thing that decides what it carries — read the answer off it.
             forwarded = request_kwargs_carry_forwarded_mcp(cfg)
-            if mcp_resolution.servers is None and mcp_resolution.reason and forwarded:
+            if replay_claude_set:
+                hint("[mcp] this resumed leg uses its stored MCP configuration in strict mode")
+            elif mcp_resolution.servers is None and mcp_resolution.reason and forwarded:
                 hint(
                     f"[mcp] no server set resolved ({mcp_resolution.reason}); this resumed "
                     "leg keeps the servers its earlier run was handed"
@@ -2523,7 +2548,7 @@ async def _run_agent(
             else:
                 _report_mcp_resolution(
                     mcp_resolution,
-                    provider=provider,
+                    provider=mcp_provider,
                     cwd=cwd,
                     forwarded=forwarded,
                 )
