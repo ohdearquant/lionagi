@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .lifecycle import LifecycleNotFoundError
-from .lifecycle.adapters import run_legacy_transition
+from .lifecycle.adapters import TransitionRejectedError, run_legacy_transition
 from .reasons import validate_reason_code
 
 __all__ = (
@@ -130,7 +130,16 @@ async def transition(
             transition_id=None,
         )
 
-    # "rejected" is unreachable here (raise_on_undeclared_edge=True) — see docs/internals/runtime.md.
+    if outcome.result == "rejected" and request.entity_type == "schedule_run":
+        raise TransitionRejectedError(
+            request.entity_type,
+            request.entity_id,
+            outcome.previous_status,
+            request.to_state,
+            reason=outcome.rejection_reason,
+        )
+
+    # Other entities still raise inside the service on an undeclared legacy edge.
     return TransitionResult(
         applied=True,
         conflict=False,

@@ -12,6 +12,7 @@ JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "Jso
 
 ActorType = Literal["executor", "agent", "admin", "system", "scheduler", "operator", "webhook"]
 TransitionResultKind = Literal["applied", "conflict", "rejected"]
+TransitionRejectionReason = Literal["no_override", "terminal_floor", "decision_conflict"]
 SameStatusRule = Literal["append", "noop", "reject"]
 
 ScheduleOrigin = Literal[
@@ -26,6 +27,26 @@ ScheduleFailureCategory = Literal[
     "cwd_unavailable",
     "browser_unavailable",
 ]
+
+
+def _is_chain_decision_ref(value: object) -> bool:
+    return isinstance(value, Mapping) and value.get("kind") == "chain_decision"
+
+
+def _chain_decision_selection(value: object) -> str | None:
+    """Return the selected branch of a usable v1 schedule-run decision."""
+    if not isinstance(value, dict) or not _is_chain_decision_ref(value):
+        return None
+    version = value.get("v")
+    selection = value.get("ref")
+    if (
+        type(version) is int
+        and version == 1
+        and isinstance(selection, str)
+        and selection in ("on_success", "on_fail", "none")
+    ):
+        return selection
+    return None
 
 
 @dataclass(frozen=True)
@@ -86,6 +107,7 @@ class TransitionCommand:
     expected_version: float | None = None
     patch: Mapping[str, JsonValue] = field(default_factory=dict)
     override: OverrideRecord | None = None
+    record_chain_decision: bool = field(default=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -94,6 +116,7 @@ class TransitionOutcome:
     previous_status: str | None
     current_status: str
     transition_id: str | None
+    rejection_reason: TransitionRejectionReason | None = None
 
 
 @dataclass(frozen=True)

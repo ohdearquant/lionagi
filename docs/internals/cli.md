@@ -1827,16 +1827,17 @@ with `temporary_signal_handlers` and given back when the wait returns.
 from a terminal run's schedule `on_success`/`on_fail` (engine records `chain_parent_id`/
 `chain_depth` on the child — see `lionhub/src/lionhub/orchestration/scheduler/engine.py`'s `_fire`). A watched run
 going terminal is not necessarily the end of its chain, so once it lands the watch frontier is
-extended with any already-fired children and watching continues. A schedule that declares a
-chain action for the outcome but whose child hasn't fired yet gets a bounded grace window
-(`_CHAIN_GRACE_TICKS` poll ticks) before the chain concludes on the parent's stored status.
-A schedule with no matching chain action needs no grace wait. The aggregate exit code
+extended with any already-fired children and watching continues. A recorded `on_success` or
+`on_fail` decision opens a bounded grace window (`_CHAIN_GRACE_TICKS` poll ticks) for a child
+to appear. The decision comes from the terminal write, so a later schedule edit cannot
+change it. A recorded `none` resolves immediately. When no usable decision is present,
+the monitor falls back to the parent's stored status and current schedule. The aggregate exit code
 follows the final link of each chain. A chain succeeds only when its final run has stored
 status `completed`, including an `on_fail` recovery child that succeeds. The printed
-`exit_code` remains the subprocess diagnostic. Chain discovery selects the branch
-from the parent's stored status. `completed` selects `on_success`. The statuses
-`failed`, `timed_out`, and `cancelled` select `on_fail`. Skipped and missing
-runs resolve without grace.
+`exit_code` remains the subprocess diagnostic. In the fallback, `completed` selects
+`on_success`, and `failed`, `timed_out`, and `cancelled` select `on_fail`. A matching
+action opens the same grace window even if the exit code is absent. Skipped and missing
+runs resolve without grace in the fallback.
 
 **`_MAX_CHAIN_DEPTH`** — mirrors the scheduler engine's own chain-depth cap
 (`lionhub/src/lionhub/orchestration/scheduler/engine.py` `_MAX_CHAIN_DEPTH`) — the engine never fires a chain
@@ -1877,7 +1878,8 @@ chain action immediately, and starts/advances a grace countdown for roots awaiti
 `pending` in place, tick-by-tick, like `_poll_pending_once` mutates `done`. `chain_state` keys:
 `root_of` (run_id -> watched roots it accounts for), `chain_tail_status` (root id -> most recent
 terminal status), `awaiting_grace` (run_id -> `{roots, ticks_left}`), `resolved_roots`
-(roots whose chain concluded), `schedule_cache` (memoized schedule lookups), `chain` (bool,
+(roots whose chain concluded), `schedule_cache` (memoized schedule lookups),
+`warned_chain_decisions` (run IDs already reported for unusable decision evidence), `chain` (bool,
 chain-following on/off), `status_of` (folded run id -> stored terminal status), `handoff` (parent run id -> the chain child its grace
 window handed off to, so an ancestor that discovers the child later can find the current
 tail of the chain).

@@ -48,6 +48,9 @@ from .models import (
     ReasonRecord,
     TransitionCommand,
     TransitionOutcome,
+    TransitionRejectionReason,
+    _chain_decision_selection,
+    _is_chain_decision_ref,
 )
 from .policy import DEFAULT_REGISTRY, PolicyRegistry
 from .schedules import ScheduleLifecycleAdapter
@@ -158,6 +161,8 @@ class _TxProvider(Protocol):
 
     def _read(self) -> Any: ...
 
+    async def _chain_decisions_enabled(self, conn: Any) -> bool: ...
+
     def _refuse_in_compatibility(self, operation: str, reason: str) -> None: ...
 
     def _owner_predicate(self, table: str) -> tuple[str, dict[str, str]]: ...
@@ -179,6 +184,17 @@ class _TxProvider(Protocol):
 
 def _json_list(evidence_refs: tuple) -> list:
     return [dict(e) for e in evidence_refs]
+
+
+def _stored_chain_decisions(evidence_refs: Any) -> tuple[dict, ...]:
+    if isinstance(evidence_refs, str):
+        try:
+            evidence_refs = json.loads(evidence_refs)
+        except (ValueError, RecursionError):
+            return ()
+    if not isinstance(evidence_refs, list):
+        return ()
+    return tuple(ref for ref in evidence_refs if _is_chain_decision_ref(ref))
 
 
 def _correlation_for(entity_type: str, entity_id: str) -> Correlation:
@@ -609,6 +625,50 @@ class SQLAlchemyLifecycleService:
             )
             await self._terminal_callbacks.emit(envelope)
 
+    async def _preserve_schedule_chain_decisions(
+        self,
+        conn: Any,
+        command: TransitionCommand,
+        row: Mapping[str, Any],
+        *,
+        terminal_target: bool,
+        write_reason_columns: bool,
+    ) -> TransitionCommand | None:
+        """Preserve the stored decision or admit the scheduler's first terminal decision."""
+        stored = _stored_chain_decisions(row["status_evidence_refs"])
+        incoming = tuple(ref for ref in command.reason.evidence_refs if _is_chain_decision_ref(ref))
+        if stored:
+            if incoming:
+                # JSON distinguishes bool from int and int from float, even when Python equality
+                # calls those distinct version representations equal.
+                if json.dumps(_json_list(incoming), sort_keys=True) != json.dumps(
+                    stored, sort_keys=True
+                ):
+                    return None
+                return command
+            return replace(
+                command,
+                reason=replace(command.reason, evidence_refs=command.reason.evidence_refs + stored),
+            )
+        if not incoming:
+            return command
+        if not (
+            command.record_chain_decision is True
+            and write_reason_columns
+            and row["status"] == "running"
+            and terminal_target
+            and command.expected_statuses == frozenset({"running"})
+            and len(incoming) == 1
+            and _chain_decision_selection(incoming[0]) is not None
+        ):
+            return None
+        if await self._db._chain_decisions_enabled(conn):
+            return command
+        remaining = tuple(
+            ref for ref in command.reason.evidence_refs if not _is_chain_decision_ref(ref)
+        )
+        return replace(command, reason=replace(command.reason, evidence_refs=remaining))
+
     async def _transition(
         self,
         command: TransitionCommand,
@@ -689,6 +749,7 @@ class SQLAlchemyLifecycleService:
         needs_duration_basis = (
             command.entity_type == "session" and command.to_status in policy.terminal_statuses
         )
+        is_schedule_run = command.entity_type == "schedule_run"
 
         async with self._db._tx() as conn:
             # In compatibility mode a row that no longer carries the owner is refused here,
@@ -719,6 +780,8 @@ class SQLAlchemyLifecycleService:
             # SELECT unique, but never let that guard disable the terminal-end
             # invariant itself.
             fetch_cols = list(dict.fromkeys(["status", "updated_at", *guard_cols]))
+            if is_schedule_run and "status_evidence_refs" not in fetch_cols:
+                fetch_cols.append("status_evidence_refs")
             if expected_runner_identity is not None and "node_metadata" not in fetch_cols:
                 fetch_cols.append("node_metadata")
             if needs_duration_basis:
@@ -803,14 +866,40 @@ class SQLAlchemyLifecycleService:
                         current_status=previous_status,
                         transition_id=None,
                     )
+
+            def stale_guards() -> TransitionOutcome | None:
+                if (
+                    command.expected_version is not None
+                    and row["updated_at"] != command.expected_version
+                ) or any(row[col] != expected for col, expected in extra_guard.items()):
+                    return TransitionOutcome(
+                        result="conflict",
+                        previous_status=previous_status,
+                        current_status=previous_status,
+                        transition_id=None,
+                    )
+                return None
+
+            if is_schedule_run and (conflict := stale_guards()) is not None:
+                return conflict
+
             same_status = previous_status == command.to_status
             declared_edges = policy.edges.get(previous_status, ()) if enforce_edges else ()
             self_edge = next((e for e in declared_edges if e.to_status == command.to_status), None)
+            terminal_target = command.to_status in policy.terminal_statuses
 
             override_admin_event = False
             rejected = False
+            rejection_reason: TransitionRejectionReason | None = None
 
-            if self_edge is not None:
+            if (
+                is_schedule_run
+                and previous_status in policy.terminal_statuses
+                and not terminal_target
+            ):
+                rejected = True
+                rejection_reason = "terminal_floor"
+            elif self_edge is not None:
                 if (
                     self_edge.actor_types is not None
                     and command.actor.type not in self_edge.actor_types
@@ -865,6 +954,29 @@ class SQLAlchemyLifecycleService:
                 else:
                     rejected = True
 
+            if is_schedule_run:
+                if rejected:
+                    if (
+                        rejection_reason is None
+                        and previous_status in policy.terminal_statuses
+                        and terminal_target
+                        and not same_status
+                    ):
+                        rejection_reason = "no_override"
+                else:
+                    checked = await self._preserve_schedule_chain_decisions(
+                        conn,
+                        command,
+                        row,
+                        terminal_target=terminal_target,
+                        write_reason_columns=write_reason_columns,
+                    )
+                    if checked is None:
+                        rejected = True
+                        rejection_reason = "decision_conflict"
+                    else:
+                        command = checked
+
             if rejected:
                 owner_columns, owner_params, owner_values = self._owner_insert("admin_events")
                 await conn.execute(
@@ -886,6 +998,7 @@ class SQLAlchemyLifecycleService:
                             "attempted_status": command.to_status,
                             "reason_code": command.reason.code,
                             "source": command.actor.type,
+                            **({"rejection_reason": rejection_reason} if rejection_reason else {}),
                         },
                         "actor": command.actor.id or command.actor.type,
                     },
@@ -895,27 +1008,11 @@ class SQLAlchemyLifecycleService:
                     previous_status=previous_status,
                     current_status=previous_status,
                     transition_id=None,
+                    rejection_reason=rejection_reason,
                 )
 
-            if (
-                command.expected_version is not None
-                and row["updated_at"] != command.expected_version
-            ):
-                return TransitionOutcome(
-                    result="conflict",
-                    previous_status=previous_status,
-                    current_status=previous_status,
-                    transition_id=None,
-                )
-
-            for col, expected in extra_guard.items():
-                if row[col] != expected:
-                    return TransitionOutcome(
-                        result="conflict",
-                        previous_status=previous_status,
-                        current_status=previous_status,
-                        transition_id=None,
-                    )
+            if not is_schedule_run and (conflict := stale_guards()) is not None:
+                return conflict
 
             if needs_duration_basis and not same_status:
                 ended_at_value = command.patch.get("ended_at", row["ended_at"])

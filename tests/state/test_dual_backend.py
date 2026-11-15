@@ -2105,15 +2105,22 @@ async def test_postgres_recent_run_summary_cuts_a_tie_by_id_and_keeps_a_short_sl
     ]
 
 
-async def test_postgres_recent_run_summary_projects_both_trigger_facts(pg_url):
+async def test_postgres_recent_run_summary_projects_both_trigger_facts(pg_url, monkeypatch):
     """The batch ships a run's trigger context only when its text names a fact key,
     a match on the context cast to text, so the facts are read back through the
     PostgreSQL form: a timer fire, a missed-fire skip recorded through
     create_skipped_run with the scheduler's context keys, and a run naming neither."""
+    import lionagi.state.db as db_mod
     from lionagi.state.reasons import ScheduleReasons
     from lionagi.studio.services import schedules
-    from lionhub.orchestration.scheduler.scheduler_state import create_skipped_run
+    from lionhub.orchestration.scheduler.scheduler_state import (
+        _DBSchedulerStateService,
+        create_skipped_run,
+    )
 
+    monkeypatch.setattr(
+        db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": pg_url})
+    )
     sid = f"pg-facts-{_uid()}"
     db = StateDB(url=pg_url)
     await db.open()
@@ -2132,7 +2139,7 @@ async def test_postgres_recent_run_summary_projects_both_trigger_facts(pg_url):
             }
         )
         await create_skipped_run(
-            db,
+            _DBSchedulerStateService(),
             run_id=f"{sid}-missed",
             schedule={"id": sid, "action_kind": "agent"},
             trigger_context={

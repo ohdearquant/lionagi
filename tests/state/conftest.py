@@ -36,6 +36,15 @@ def _runner_database_url(url, run_token, worker):
 
 
 async def _manage_runner_database(admin_url, worker_url, *, create):
+    """Create or drop the worker database; on create, return whether it was new.
+
+    A test module outside this directory imports ``pg_url`` to use it, which
+    gives pytest a second session-scoped definition of the same fixture. Both
+    resolve to the same worker database, so the second set-up finds it already
+    there and shares it instead of failing, and only the set-up that created it
+    drops it.
+    """
+    from sqlalchemy import text
     from sqlalchemy.engine import make_url
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -45,11 +54,17 @@ async def _manage_runner_database(admin_url, worker_url, *, create):
     engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
-            if create:
-                identifier = conn.dialect.identifier_preparer.quote_identifier(name)
-                await conn.exec_driver_sql(f"CREATE DATABASE {identifier}")
-            else:
+            if not create:
                 await drop_test_database(conn, name)
+                return False
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": name}
+            )
+            if exists:
+                return False
+            identifier = conn.dialect.identifier_preparer.quote_identifier(name)
+            await conn.exec_driver_sql(f"CREATE DATABASE {identifier}")
+            return True
     finally:
         await engine.dispose()
 
@@ -61,7 +76,7 @@ def _set_up_runner_database(admin_url, worker_url, *, create):
     running, where ``asyncio.run`` refuses to start a second loop.
     """
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pool.submit(
+        return pool.submit(
             asyncio.run, _manage_runner_database(admin_url, worker_url, create=create)
         ).result()
 
@@ -129,11 +144,12 @@ def pg_url():
         if worker_url == url:
             yield url
             return
-        _set_up_runner_database(url, worker_url, create=True)
+        created = _set_up_runner_database(url, worker_url, create=True)
         try:
             yield worker_url
         finally:
-            _set_up_runner_database(url, worker_url, create=False)
+            if created:
+                _set_up_runner_database(url, worker_url, create=False)
         return
 
     try:

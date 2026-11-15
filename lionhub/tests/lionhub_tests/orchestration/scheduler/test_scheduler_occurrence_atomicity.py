@@ -17,13 +17,17 @@ import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from lionagi.state.db import StateDB
+from lionagi.state import db as db_mod
+from lionagi.state.db import SCHEMA_VERSION, StateDB
 from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
 from tests._scheduler_claims import claim_and_advance
+from tests.state.conftest import pg_url  # noqa: F401
+from tests.state.test_chain_decision_readers import _isolated_postgres_store
 
 
 def _schedule_row(schedule_id: str, **overrides) -> dict:
@@ -543,6 +547,143 @@ async def test_recovery_tombstones_undispatched_chain_child_without_retry(tmp_pa
     assert run["status_reason_code"] == RunReasons.FAILED_NEVER_DISPATCHED
 
 
+async def _schedule_run_history(db, run_id):
+    return await db.fetch_all(
+        "SELECT * FROM status_transitions WHERE entity_type = 'schedule_run' "
+        "AND entity_id = ? ORDER BY created_at, id",
+        (run_id,),
+    )
+
+
+def _history_evidence(entry):
+    refs = entry["evidence_refs"]
+    return json.loads(refs) if isinstance(refs, str) else refs
+
+
+@pytest_asyncio.fixture(params=["sqlite", "postgresql"], loop_scope="function")
+async def replacement_store(request, tmp_path, monkeypatch):
+    if request.param == "postgresql":
+        async with _isolated_postgres_store(request.getfixturevalue("pg_url"), monkeypatch) as db:
+            yield db
+        return
+
+    path = tmp_path / "state.db"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", path)
+    monkeypatch.setattr(
+        db_mod,
+        "settings",
+        db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None}),
+    )
+    async with StateDB(path) as db:
+        yield db
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize(
+    ("stamp", "expected_refs"),
+    [("6", []), ("7", [{"kind": "chain_decision", "v": 1, "ref": "none"}])],
+    ids=["before-decision-floor", "at-decision-floor"],
+)
+async def test_failed_replacement_seeds_its_current_row_and_initial_history(
+    replacement_store, stamp, expected_refs
+):
+    db = replacement_store
+    sid = "sched-failed-replacement"
+    await db.create_schedule(_schedule_row(sid))
+    await db.create_schedule_run(_run_row("orphan", sid, fired_at=1000.0))
+    orphan_evidence = [{"kind": "schedule_run", "id": "replacement"}]
+
+    # Open the actual scheduler handle before lowering the stamp. A fresh
+    # native open would migrate the store and hide the below-floor case.
+    service = _DBSchedulerStateService(persistent=True)
+    await service.open()
+    try:
+        await db.execute("UPDATE schema_meta SET value = ? WHERE key = 'version'", (stamp,))
+        assert await service.tombstone_and_replace_failed_schedule_run(
+            "orphan",
+            _run_row("replacement", sid, fired_at=1500.0, status="failed"),
+            evidence_refs=orphan_evidence,
+        )
+        assert await db.schema_version() == stamp
+
+        orphan = await db.get_schedule_run("orphan")
+        assert orphan["status"] == "failed"
+        assert orphan["status_reason_code"] == RunReasons.FAILED_NEVER_DISPATCHED
+        assert orphan["status_evidence_refs"] == orphan_evidence
+        old_history = await _schedule_run_history(db, "orphan")
+        assert _history_evidence(old_history[-1]) == orphan_evidence
+
+        replacement = await db.get_schedule_run("replacement")
+        assert replacement["status"] == "failed"
+        assert replacement["dispatched_at"] is None
+        assert replacement["status_evidence_refs"] == expected_refs
+        [initial] = await _schedule_run_history(db, "replacement")
+        assert initial["previous_status"] is None
+        assert initial["status"] == replacement["status"]
+        assert initial["reason_code"] == replacement["status_reason_code"]
+        assert _history_evidence(initial) == expected_refs
+    finally:
+        await service.close()
+        await db.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'version'", (str(SCHEMA_VERSION),)
+        )
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize(
+    ("terminal", "expected_status", "include_reserved_ref"),
+    [
+        (True, "completed", False),
+        (True, "running", False),
+        (False, "completed", False),
+        (False, "running", True),
+    ],
+    ids=[
+        "terminal-expectation",
+        "stale-running-expectation",
+        "terminal-expectation-for-running-row",
+        "reserved-evidence",
+    ],
+)
+async def test_replacement_refusal_preserves_the_orphan_and_history(
+    replacement_store, terminal, expected_status, include_reserved_ref
+):
+    db = replacement_store
+    sid = "sched-replacement-refused"
+    await db.create_schedule(_schedule_row(sid))
+    await db.create_schedule_run(_run_row("orphan", sid, fired_at=1000.0))
+    if terminal:
+        assert await db.update_status(
+            "schedule_run",
+            "orphan",
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            expected_statuses={"running"},
+            evidence_refs=[{"kind": "chain_decision", "v": 1, "ref": "on_success"}],
+            record_chain_decision=True,
+        )
+
+    before = await db.get_schedule_run("orphan")
+    history = await _schedule_run_history(db, "orphan")
+    assert before["dispatched_at"] is None
+    assert history[-1]["status"] == before["status"]
+    refs = [{"kind": "schedule_run", "id": "replacement"}]
+    if include_reserved_ref:
+        refs.append({"kind": "chain_decision", "v": 1, "ref": "none"})
+
+    assert not await db.tombstone_and_replace_schedule_run(
+        "orphan",
+        _run_row("replacement", sid, fired_at=1500.0),
+        expected_orphan_status=expected_status,
+        evidence_refs=refs,
+    )
+
+    assert await db.get_schedule_run("orphan") == before
+    assert await _schedule_run_history(db, "orphan") == history
+    assert await db.get_schedule_run("replacement") is None
+    assert await _schedule_run_history(db, "replacement") == []
+
+
 @pytest.mark.asyncio
 async def test_tombstone_and_replace_schedule_run_is_atomic(tmp_path):
     """The old two-write recovery shape (flip the orphan, then separately insert the replacement) could crash between the writes and lose the occurrence for good; tombstone_and_replace_schedule_run() does both in ONE transaction -- proven by forcing the replacement INSERT to raise mid-transaction and confirming the orphan's UPDATE rolled back too, still 'running' and visible to a fresh scan."""
@@ -586,19 +727,26 @@ async def test_tombstone_and_replace_schedule_run_is_atomic(tmp_path):
     assert [r["id"] for r in undispatched] == ["run-orphan"]
 
     # "Restart": a real (non-crashing) call now succeeds atomically.
+    refs = [{"kind": "schedule_run", "id": "run-replacement"}]
     async with StateDB(db_path) as db:
         applied = await db.tombstone_and_replace_schedule_run(
             "run-orphan",
             _run_row("run-replacement", sid, fired_at=1500.0),
             expected_orphan_status="running",
+            evidence_refs=refs,
         )
         orphan = await db.get_schedule_run("run-orphan")
         replacement = await db.get_schedule_run("run-replacement")
+        history = await _schedule_run_history(db, "run-orphan")
+        [initial] = await _schedule_run_history(db, "run-replacement")
     assert applied is True
     assert orphan["status"] == "failed"
     assert orphan["status_reason_code"] == RunReasons.FAILED_NEVER_DISPATCHED
+    assert orphan["status_evidence_refs"] == refs
+    assert _history_evidence(history[-1]) == refs
     assert replacement["status"] == "running"
     assert replacement["dispatched_at"] is None
+    assert replacement["status_evidence_refs"] == _history_evidence(initial) == []
 
     async with StateDB(db_path) as db:
         transitions = await db.fetch_all(

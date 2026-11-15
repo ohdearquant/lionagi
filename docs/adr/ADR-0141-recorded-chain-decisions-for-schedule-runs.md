@@ -1,8 +1,8 @@
 # ADR-0141: Recorded chain decisions for schedule runs
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: implemented (D1–D5, state schema version 7)
 - **Area**: scheduling-control-plane
 - **Date**: 2026-11-04
 - **Relations**: extends ADR-0070; amends ADR-0035 D5, ADR-0057 D4, ADR-0058 D1/D2/D5, and ADR-0070 D4;
@@ -349,8 +349,7 @@ Why this way: a monitor that understands the ref follows the scheduler's recorde
 This decision changes no table or column. It reverses the earlier no-schema-bump
 position because a version-6 writer can replace an evidence list and erase a decision.
 
-Ship preservation at the next schema version. Allocate and record that version
-here when preservation is implemented. If the
+Preservation starts at state schema version 7. If the
 [ADR-0095 enrollment migration](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md)
 is implemented in the same release, both share one version and one offline
 cutover. Otherwise each takes its own version in implementation order. Every
@@ -482,13 +481,13 @@ The cutover procedure applies to both backends:
 
 ## Tests
 
-New tests (none exist at this checkout):
+Regression coverage:
 
-1. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_normal_path_terminal_write_records_chain_decision`: an exit-0 child with an `on_fail` branch and a `completed_empty` invocation. The row's `status_evidence_refs` contains `{"kind": "chain_decision", "v": 1, "ref": "on_fail"}` and the invocation ref.
-2. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_recovery_terminal_write_records_chain_decision`: a dispatched orphan with a stored branch. The row carries the same element, and the definition is read before the compare-and-set.
-3. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_selection_is_none_at_depth_cap`: a run at `_MAX_CHAIN_DEPTH` records `none` and launches nothing.
-4. `tests/state/test_lifecycle_gate.py::test_schedule_run_status_write_keeps_reason_columns`: a `db.update_status` write for a schedule run persists ordinary `status_evidence_refs`. The legacy `transition()` route records ordinary refs in history only. This is the reason-column gate test (D1).
-5. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_lost_terminal_cas_does_not_chain_normal_path` and `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py::test_lost_terminal_cas_does_not_chain_recovery`: a lost compare-and-set on each path launches no child and writes no selection.
+1. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_recorded_chain_monitor.py::test_completed_empty_follows_only_selected_failure_action`: an exit-0 child with an `on_fail` branch and a `completed_empty` invocation. The row's `status_evidence_refs` contains `{"kind": "chain_decision", "v": 1, "ref": "on_fail"}` and the invocation ref.
+2. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_recorded_chain_monitor.py::test_dispatched_startup_recovery_follows_failure_without_exit_code`: a dispatched orphan with a stored branch. The row carries the same element, and the definition is read before the compare-and-set.
+3. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_recorded_chain_monitor.py::test_selection_is_none_at_depth_cap`: a run at `_MAX_CHAIN_DEPTH` records `none` and launches nothing.
+4. `tests/state/lifecycle/test_service.py::test_schedule_decisions_read_the_same_store_stamp_as_the_writer` and `tests/state/lifecycle/test_service.py::test_schedule_decision_survives_terminal_override_and_legacy_history`: a `db.update_status` write for a schedule run persists ordinary `status_evidence_refs`. The legacy `transition()` route records ordinary refs in history only. This is the reason-column gate test (D1).
+5. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_recorded_chain_monitor.py::test_lost_schedule_run_cas_preserves_winner_and_launches_no_child`: a lost compare-and-set on each path launches no child and writes no selection.
 6. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_none_returns_without_sleep`: a `none` row resolves with no sleep, whatever its exit code. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_branch_with_no_chain_returns_without_sleep`: with `--no-chain`, an `on_success` row resolves with no sleep and the wait returns the row's own result.
 7. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_branch_follows_child`: an `on_fail` selection on an exit-0 parent opens grace and prints a child that appears within it.
 8. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_survives_schedule_edit`: after the stored schedule's `on_success` is removed, a recorded `on_success` still opens grace and follows a child present within it.

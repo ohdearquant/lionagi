@@ -421,8 +421,8 @@ async def test_fire_executable_resolution_failure_records_failed_run_with_action
 
     spawn_mock.assert_not_awaited()
     svc.create_schedule_run.assert_not_awaited()
-    svc.create_schedule_run_and_advance.assert_awaited_once()
-    (run_payload,), _kwargs = svc.create_schedule_run_and_advance.await_args
+    svc.create_failed_schedule_run_and_advance.assert_awaited_once()
+    (run_payload,), _kwargs = svc.create_failed_schedule_run_and_advance.await_args
     assert run_payload["status"] == "failed"
     assert "resolve" in run_payload["error_detail"]
     assert "shutil.which" in run_payload["error_detail"]
@@ -481,11 +481,14 @@ async def test_fire_build_argv_exception_records_failed_run():
 
     mock_spawn.assert_not_awaited()
     svc.create_schedule_run.assert_not_awaited()
-    svc.create_schedule_run_and_advance.assert_awaited_once()
+    svc.create_failed_schedule_run_and_advance.assert_awaited_once()
     failed_calls = [
         c for c in svc.update_status.await_args_list if c.kwargs.get("new_status") == "failed"
     ]
     assert failed_calls
+    [invocation_failure] = [call for call in failed_calls if call.args[0] == "invocation"]
+    assert invocation_failure.kwargs["evidence_refs"] == []
+    assert not invocation_failure.kwargs.get("record_chain_decision")
 
 
 @pytest.mark.asyncio
@@ -530,6 +533,9 @@ async def test_fire_cancellation_records_cancelled_run():
     assert extra["error_detail"] == "Scheduler shutdown"
     assert isinstance(extra["ended_at"], float) and extra["ended_at"] > 0
     assert run_cancel[0].kwargs["expected_statuses"] == {"running"}
+    [invocation_cancel] = [call for call in cancelled_calls if call.args[0] == "invocation"]
+    assert invocation_cancel.kwargs["evidence_refs"] == []
+    assert not invocation_cancel.kwargs.get("record_chain_decision")
 
 
 @pytest.mark.asyncio
@@ -1023,17 +1029,16 @@ async def test_fire_exception_during_invocation_resolution_marks_run_failed_once
 
 
 @pytest.mark.asyncio
-async def test_fire_chain_runs_when_terminal_write_loses_cas():
-    """A lost CAS race on the invocation terminal write must not swallow
-    on_success chaining — the chain still fires even though the write
-    recording this run's own outcome was a no-op."""
+@pytest.mark.parametrize("loser", ["schedule_run", "invocation"])
+async def test_fire_chain_requires_a_winning_schedule_run_terminal_write(loser):
+    """Only the schedule-run terminal write determines whether the chain fires."""
     from lionagi.state.db import TransitionRejectedError
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     svc = _make_svc()
 
     async def _update_status(entity_type, entity_id, *, new_status, **kwargs):
-        if entity_type == "invocation":
+        if entity_type == loser and new_status != "running":
             if "expected_statuses" not in kwargs:
                 # Unguarded write against a row the reaper already finalized —
                 # the real DB layer raises the terminal-status floor here.
@@ -1086,7 +1091,8 @@ async def test_fire_chain_runs_when_terminal_write_loses_cas():
         )
 
     chained = [c for c in fire_calls if c[1] == 1]
-    assert chained, "on_success chain must still fire when the invocation write lost its CAS"
+    assert len(chained) == (1 if loser == "invocation" else 0)
+    assert any(call.args[0] == "invocation" for call in svc.update_status.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -1805,7 +1811,7 @@ async def test_maybe_fire_skips_overlap_and_records_skipped_run():
         await engine._maybe_fire(schedule, now=1000.0)
 
     mock_tracked.assert_not_called()
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_skipped_schedule_run.assert_awaited_once()
     # update_status called for the skipped run
     skipped_calls = [
         c for c in svc.update_status.await_args_list if c.kwargs.get("new_status") == "skipped"
@@ -1848,7 +1854,7 @@ async def test_create_skipped_run_calls_svc_create_and_update_status():
         reason_summary="overlapped",
         metadata={"overlap_policy": "skip"},
     )
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_skipped_schedule_run.assert_awaited_once()
     svc.update_status.assert_awaited_once()
     call = svc.update_status.await_args
     assert call.kwargs["new_status"] == "skipped"
@@ -2734,7 +2740,7 @@ async def test_check_missed_fires_skip_equality_boundary_is_due(monkeypatch):
         await engine._check_missed_fires()
 
     mock_tracked.assert_not_called()
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_skipped_schedule_run.assert_awaited_once()
     reason_kwargs = svc.update_status.await_args_list[-1].kwargs
     assert reason_kwargs.get("reason_code") == ScheduleReasons.SKIPPED_MISSED_FIRE
 
@@ -5368,7 +5374,7 @@ async def test_a_scheduled_fire_of_a_stored_dash_play_prompt_fails_its_run_and_s
     # The run row the operator reads carries the refusal too, not only the signal.
     stored = [
         args[0].get("error_detail")
-        for args, _ in svc.create_schedule_run_and_advance.await_args_list
+        for args, _ in svc.create_failed_schedule_run_and_advance.await_args_list
         if args and isinstance(args[0], dict)
     ]
     assert stored == ["action_prompt for a play launch must not start with '-'"]
@@ -5424,8 +5430,13 @@ async def test_a_scheduled_engine_fire_requires_a_registered_kind(
 
     await fire_with_claim(engine, schedule, "run-engine", trigger_context={"scheduled": True})
 
-    svc.create_schedule_run_and_advance.assert_awaited_once()
-    occurrence = svc.create_schedule_run_and_advance.await_args.args[0]
+    occurrence_writer = (
+        svc.create_schedule_run_and_advance
+        if engine_kind == "research"
+        else svc.create_failed_schedule_run_and_advance
+    )
+    occurrence_writer.assert_awaited_once()
+    occurrence = occurrence_writer.await_args.args[0]
     if engine_kind == "research":
         spawn.assert_awaited_once()
         assert spawn.await_args.args[0] == [
