@@ -1092,8 +1092,10 @@ li state migrate
 
 Upgrade the configured SQLite or PostgreSQL state store and print its committed
 schema version. The command uses `LIONAGI_STATE_DB_URL` when configured and the
-default local `state.db` otherwise. Stop writers and close all handles before
-migrating an existing store. See the [state store upgrade note](internals/state-db.md#upgrading-an-existing-store)
+default local `state.db` otherwise. Run it for a recognized older store or a
+current-version store with incomplete historical session end-time repair.
+Stop writers and close all handles before migrating an existing store.
+See the [state store upgrade note](internals/state-db.md#upgrading-an-existing-store)
 for the cutover and the automatic migration setting.
 
 ## Machine mode: `--machine`

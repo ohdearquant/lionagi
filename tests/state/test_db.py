@@ -24,7 +24,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
-from lionagi.state.db import SCHEMA_VERSION, SchemaTooNewError, StateDB
+from lionagi.state.db import SCHEMA_VERSION, SchemaTooNewError, StateDB, UnrecognizedStoreError
 from lionagi.state.reasons import RunReasons
 from tests._scheduler_claims import claim_and_advance
 
@@ -1245,19 +1245,15 @@ async def test_readonly_open_reads_a_newer_recorded_schema_version(tmp_path):
         assert await state.schema_version() == newer
 
 
-async def test_open_stamps_over_an_unparsable_recorded_version(tmp_path):
-    """A version this code cannot order against its own is replaced.
-
-    Nothing can be said about whether such a value is newer, so there is no
-    downgrade to prevent; the open records the shape it applied.
-    """
+async def test_open_refuses_an_unparsable_recorded_version(tmp_path):
     path = tmp_path / "garbage.db"
     async with StateDB(path=path):
         pass
     _stamp_version(path, "not-a-version")
 
-    async with StateDB(path=path) as state:
-        assert await state.schema_version() == SCHEMA_VERSION
+    with pytest.raises(UnrecognizedStoreError, match="not-a-version"):
+        await StateDB(path=path).open()
+    assert _read_version(path) == "not-a-version"
 
 
 async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):

@@ -21,7 +21,9 @@ connection's settings change the file. Read-only opens apply no migration.
 
 ### Upgrading an existing store
 
-An ordinary native writable open refuses a recognized older store by default.
+By default, an ordinary native writable open refuses both a recognized
+older store and a current-version store with incomplete historical
+session end-time repair.
 During the offline cutover, close ordinary client admission, stop writers,
 and verify that their open handles have been closed. Run `li state migrate` with
 the upgraded build against the configured store, or call `await StateDB.migrate()`
@@ -30,10 +32,15 @@ handle. The SDK leaves its handle open for inspection and the caller closes it.
 
 Migration stamps the target version only once the required changes are ready
 to commit. A failed migration leaves the old version usable by the matching
-build. Confirm that the committed version is the expected one and that a
+build. The historical session end-time repair runs inside the migration
+transaction. If the migration process is killed before that transaction
+commits, the next migration restarts the repair from the beginning.
+
+Confirm that the committed version is the expected one and that a
 fresh writable open by the older build is refused before restarting upgraded
-writers. The version 6 to 7 migration changes only the stamp. Version 7 keeps
-older writers from erasing recorded schedule chain decisions.
+writers. When the end-time repair is already recorded, upgrading from version
+6 to 7 changes only the stamp. Version 7 keeps older writers from erasing
+recorded schedule chain decisions.
 
 Setting `LIONAGI_STATE_AUTO_MIGRATE=1` opts native writable opens into the same
 migration path during an upgrade. The setting defaults to off. Use the same

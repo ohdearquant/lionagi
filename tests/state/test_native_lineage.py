@@ -160,14 +160,14 @@ async def test_a_store_without_the_lineage_row_and_a_higher_version_is_too_new(t
     assert _rows(path, "PRAGMA journal_mode") == [("delete",)]
 
 
-async def test_a_lionagi_store_with_a_version_it_cannot_order_is_stamped(tmp_path):
-    """The lineage row says the store is this package's, so a version that cannot be compared is
-    replaced by the stamp, as before the row existed."""
+async def test_a_lionagi_store_with_an_unrecognized_version_is_unchanged(tmp_path):
     path = tmp_path / "native.db"
     await _open_and_close(path)
     _execute(path, "UPDATE schema_meta SET value = 'not-a-version' WHERE key = 'version';")
-    await _open_and_close(path)
-    assert _rows(path, "SELECT value FROM schema_meta WHERE key = 'version'") == [(SCHEMA_VERSION,)]
+    before = _files(path)
+    with pytest.raises(UnrecognizedStoreError, match="not-a-version"):
+        await _open_and_close(path)
+    assert _files(path) == before
 
 
 def _created_tables(path: Path) -> set[str]:

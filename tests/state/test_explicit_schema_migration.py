@@ -15,12 +15,13 @@ from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import lionagi.state as state
-from lionagi.state import SchemaTooNewError, StateDB
+from lionagi.state import SchemaTooNewError, StateDB, UnrecognizedStoreError
 from lionagi.state import db as state_db
 from tests.state.conftest import _manage_runner_database
 
 _VERSION = "SELECT value FROM schema_meta WHERE key = 'version'"
 _CLASSIFICATION = "migration.terminal_delivery_eligibility"
+_END_TIME_REPAIR = "migration.session_ended_at_backfill"
 _TRANSITION = """
 INSERT INTO status_transitions
     (id, entity_type, entity_id, previous_status, status, reason_code, source, created_at)
@@ -64,10 +65,13 @@ async def _seed(url, version):
                     text("DELETE FROM schema_meta WHERE key = :key"), {"key": _CLASSIFICATION}
                 )
                 await conn.execute(text(_TRANSITION), {"id": "historical"})
-            await conn.execute(
-                text("UPDATE schema_meta SET value = :version WHERE key = 'version'"),
-                {"version": version},
-            )
+            if version is None:
+                await conn.exec_driver_sql("DELETE FROM schema_meta WHERE key = 'version'")
+            else:
+                await conn.execute(
+                    text("UPDATE schema_meta SET value = :version WHERE key = 'version'"),
+                    {"version": version},
+                )
         if engine.dialect.name == "sqlite":
             async with engine.connect() as conn:
                 await conn.exec_driver_sql("PRAGMA journal_mode = DELETE")
@@ -138,6 +142,95 @@ async def test_older_native_open_requires_migration_before_touching_the_store(st
     finally:
         await store.close()
     assert await _snapshot(store_url) == before
+
+
+@pytest.mark.parametrize(
+    "version", ["0", "06", "abc", None], ids=["zero", "padded", "word", "missing"]
+)
+@pytest.mark.parametrize("operation", ["open", "migrate"])
+async def test_native_store_with_unrecognized_version_is_refused(store_url, version, operation):
+    await _seed(store_url, version)
+    before = await _snapshot(store_url)
+    message = f"version {version!r}" if version is not None else "no .*version"
+    store = StateDB(url=store_url)
+    try:
+        with pytest.raises(UnrecognizedStoreError, match=message) as raised:
+            await getattr(store, operation)()
+        assert "li state migrate" not in str(raised.value)
+        assert store._engine is None
+    finally:
+        await store.close()
+    assert await _snapshot(store_url) == before
+
+
+async def _end_time_state(engine):
+    async with engine.connect() as conn:
+        marker = await conn.scalar(
+            text("SELECT value FROM schema_meta WHERE key = :key"), {"key": _END_TIME_REPAIR}
+        )
+        row = (
+            await conn.exec_driver_sql(
+                "SELECT ended_at, ended_at_is_approximate, duration_ms "
+                "FROM sessions WHERE id = 'historical-session'"
+            )
+        ).one()
+        return marker, tuple(row)
+
+
+@pytest.mark.parametrize("opt_in", [False, True], ids=["explicit", "opt-in"])
+async def test_incomplete_current_store_requires_end_time_repair(store_url, monkeypatch, opt_in):
+    await _seed(store_url, state_db.SCHEMA_VERSION)
+    engine = create_async_engine(store_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM schema_meta WHERE key = :key"), {"key": _END_TIME_REPAIR}
+            )
+            await conn.exec_driver_sql(
+                "INSERT INTO progressions (id, created_at, collection) VALUES ('history', 1, '[]')"
+            )
+            await conn.exec_driver_sql(
+                "INSERT INTO sessions "
+                "(id, progression_id, status, created_at, started_at, updated_at, "
+                "last_message_at, duration_ms) "
+                "VALUES ('historical-session', 'history', 'completed', 1, 10, 50, 60, 999)"
+            )
+
+        original = (None, (None, 0, 999.0))
+        assert await _end_time_state(engine) == original
+        store = StateDB(url=store_url)
+        try:
+            with pytest.raises(
+                state.SchemaMigrationRequiredError, match="li state migrate"
+            ) as raised:
+                await store.open()
+            message = str(raised.value)
+            assert f"is at current schema version {state_db.SCHEMA_VERSION}" in message
+            assert "has not completed the required historical session end-time repair" in message
+            assert store._engine is None
+        finally:
+            await store.close()
+        assert await _end_time_state(engine) == original
+
+        if opt_in:
+            with monkeypatch.context() as enabled:
+                enabled.setenv("LIONAGI_STATE_AUTO_MIGRATE", "1")
+                async with StateDB(url=store_url):
+                    pass
+        else:
+            await _migrate(store_url)
+        repaired = ("1", (60.0, 1, None))
+        assert await _end_time_state(engine) == repaired
+
+        async def reject_backfill(*_args):
+            pytest.fail("ordinary open must not run historical repair")
+
+        monkeypatch.setattr(StateDB, "_backfill_session_ended_at_batch", reject_backfill)
+        async with StateDB(url=store_url) as store:
+            assert await store.schema_version() == state_db.SCHEMA_VERSION
+        assert await _end_time_state(engine) == repaired
+    finally:
+        await engine.dispose()
 
 
 async def test_version_six_migration_only_stamps_the_store(store_url, monkeypatch):

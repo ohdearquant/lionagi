@@ -71,7 +71,9 @@ async def test_historical_terminal_end_backfill_is_bounded_and_idempotent(
 
     monkeypatch.setattr(StateDB, "_backfill_session_ended_at_batch", observed_batch)
 
-    async with StateDB(db_path) as db:
+    db = StateDB(db_path)
+    try:
+        await db.migrate()
         rows = {
             row["id"]: row
             for row in await db.fetch_all(
@@ -79,6 +81,8 @@ async def test_historical_terminal_end_backfill_is_bounded_and_idempotent(
                 "FROM sessions ORDER BY id"
             )
         }
+    finally:
+        await db.close()
 
     # Four eligible rows require two bounded writes, followed by one empty probe.
     assert batch_sizes == [2, 2, 0]
@@ -197,8 +201,12 @@ async def test_backfill_clears_a_duration_it_can_no_longer_vouch_for(tmp_path: P
         pass
     _seed_legacy_row_with_a_stale_duration(db_path)
 
-    async with StateDB(db_path) as db:
+    db = StateDB(db_path)
+    try:
+        await db.migrate()
         row = await db.get_session("stale-duration")
+    finally:
+        await db.close()
 
     assert row is not None
     assert row["ended_at"] == 60.0

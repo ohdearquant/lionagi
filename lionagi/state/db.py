@@ -219,6 +219,10 @@ _IMPORTED_ROLE_LABEL_BACKFILL_KEY = "migration.imported_role_label_backfill"
 _SESSION_ENDED_AT_BACKFILL_KEY = "migration.session_ended_at_backfill"
 _TERMINAL_ELIGIBILITY_BACKFILL_KEY = "migration.terminal_delivery_eligibility"
 _SESSION_ENDED_AT_BACKFILL_BATCH_SIZE = 500
+_SESSION_ENDED_AT_BACKFILL_FILTER = (
+    "ended_at IS NULL AND status IN "
+    "('completed','completed_empty','failed','timed_out','aborted','cancelled')"
+)
 # The ``schema_meta.version`` values a lionagi release writes: a whole number, no sign or padding.
 _RECORDED_VERSION = re.compile(r"[1-9][0-9]*")
 # The Studio Operator store keeps its tables in the StateDB file and creates them itself, so they can
@@ -690,7 +694,10 @@ def _validate_enum(
         raise ValueError(f"Invalid {name} {value!r}; {adr} vocabulary is {sorted(allowed)}")
 
 
-_SCHEMA_META_GUARD_ROWS = "SELECT key, value FROM schema_meta WHERE key IN ('lineage', 'version')"
+_SCHEMA_META_GUARD_ROWS = (
+    "SELECT key, value FROM schema_meta "  # noqa: S608
+    f"WHERE key IN ('lineage', 'version', '{_SESSION_ENDED_AT_BACKFILL_KEY}')"
+)
 _SQLITE_TABLE_NAMES = (
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite~_%' ESCAPE '~'"
 )
@@ -853,8 +860,8 @@ async def _locked_cli_worker_prune_candidates(
 class _StoreRows(NamedTuple):
     """What a writable native open admits a store by (ADR-0128 D7)."""
 
-    # The store's ``lineage`` and ``version`` rows; None when it has no ``schema_meta`` table with
-    # ``key`` and ``value`` columns.
+    # The store's lineage, version and historical repair marker. None when there is
+    # no schema_meta table with key and value columns.
     meta: dict[str, Any] | None
     # Every table in a SQLite store; None for a server database, which holds other applications'
     # tables beside lionagi's.
@@ -1817,13 +1824,10 @@ class StateDB:
         and Studio's approval ledger can create their tables before any StateDB open writes
         ``schema_meta``; on a server database, which holds other applications' tables, such a
         database is new. A ``schema_meta`` table without ``key`` and ``value`` columns is not one
-        lionagi created. A store whose ``lineage`` names lionagi is this package's. A store with no
-        ``lineage`` row predates the row, and
-        every store lionagi created before it holds ``schema_meta`` with a version from 1 to
-        ``SCHEMA_VERSION`` and the ``sessions`` table, created together on its first open; only that
-        store is adopted, and ``_apply_schema`` stamps the row into it. Missing, malformed and
-        higher versions are each refused by name rather than by a failed comparison. Tables are
-        recognized by name, not by their columns. Return the recognized version after admission.
+        lionagi created. A store with schema metadata must have a recognized version, whether it
+        already carries native lineage or predates that row. A legacy SQLite store containing
+        other applications' tables must also have the sessions table created by lionagi.
+        Return the recognized version after admission, or None if there is no schema metadata.
         """
         where = self._store_named_for_an_operator()
         meta, tables = store
@@ -1847,65 +1851,64 @@ class StateDB:
             )
         lineage = meta.get(_LINEAGE_KEY)
         self._raise_if_foreign_lineage(lineage)
+        native = lineage == _NATIVE_LINEAGE
         recorded = meta.get("version")
-        if lineage == _NATIVE_LINEAGE:
-            self._raise_if_schema_too_new(recorded)
-            return self._admit_schema_migration(recorded)
         if recorded is None:
+            missing = "no version row" if native else "no lineage or version row"
             raise UnrecognizedStoreError(
-                f"{where} has a schema_meta table with no lineage or version row, which every "
-                "store lionagi creates has, so this code cannot tell what shape it would "
-                "migrate. Open it read-only to inspect it."
+                f"{where} has a schema_meta table with {missing}. "
+                "Lionagi cannot determine which schema it would migrate. "
+                "Open it read-only to inspect it."
             )
         if not isinstance(recorded, str) or not _RECORDED_VERSION.fullmatch(recorded):
+            lineage_note = "" if native else " and no lineage row"
             raise UnrecognizedStoreError(
-                f"{where} records schema version {str(recorded)[:40]!r} and no lineage row; no "
-                "lionagi release writes that version, so this code cannot tell what shape it "
-                "would migrate. Open it read-only to inspect it."
+                f"{where} records schema version {str(recorded)[:40]!r}{lineage_note}. "
+                "No lionagi release writes that version. Open it read-only to inspect it."
             )
         self._raise_if_schema_too_new(recorded)
-        if tables is None or "sessions" in tables:
-            return self._admit_schema_migration(recorded)
-        foreign = sorted(tables - _LIONAGI_TABLES)
-        if foreign:
-            raise UnrecognizedStoreError(
-                f"{where} records schema version {recorded} and no lineage row, and holds tables "
-                f"lionagi never creates ({_some_names(foreign)}) but no sessions table, which "
-                "every lionagi release creates with the version row, so lionagi did not create "
-                "it. Open it read-only to inspect it."
-            )
+        if not native and tables is not None and "sessions" not in tables:
+            foreign = sorted(tables - _LIONAGI_TABLES)
+            if foreign:
+                raise UnrecognizedStoreError(
+                    f"{where} records schema version {recorded} and no lineage row, and holds tables "
+                    f"lionagi never creates ({_some_names(foreign)}) but no sessions table, which "
+                    "every lionagi release creates with the version row, so lionagi did not create "
+                    "it. Open it read-only to inspect it."
+                )
+        return self._admit_schema_migration(
+            int(recorded), repair_pending=_SESSION_ENDED_AT_BACKFILL_KEY not in meta
+        )
 
-        return self._admit_schema_migration(recorded)
-
-    def _admit_schema_migration(self, recorded: Any) -> int | None:
-        if not isinstance(recorded, str) or not _RECORDED_VERSION.fullmatch(recorded):
-            return None
-        try:
-            version = int(recorded)
-        except ValueError:
-            return None
-        if version < int(SCHEMA_VERSION) and not self._migration_allowed:
+    def _admit_schema_migration(self, version: int, *, repair_pending: bool) -> int:
+        if self._migration_allowed:
+            return version
+        if version < int(SCHEMA_VERSION):
             raise SchemaMigrationRequiredError(
-                f"{self._store_named_for_an_operator()} records schema version {recorded}; "
-                f"this version of lionagi requires schema version {SCHEMA_VERSION} for writing. "
+                f"{self._store_named_for_an_operator()} records schema version {version}. "
+                f"This version of lionagi requires schema version {SCHEMA_VERSION} for writing. "
                 "Run `li state migrate` to upgrade the store, or open it read-only to inspect it."
             )
+        if repair_pending:
+            self._raise_end_time_migration_required(current=True)
         return version
 
-    def _raise_if_schema_too_new(self, recorded: str | None) -> None:
-        if recorded is None:
-            return
-        try:
-            recorded_n = int(recorded)
-        except (TypeError, ValueError):
-            # Not a version this code can order against its own, so there is no
-            # downgrade to detect. Leave it to the stamp below.
-            return
-        if recorded_n <= int(SCHEMA_VERSION):
+    def _raise_end_time_migration_required(self, *, current: bool = False) -> None:
+        version_note = f" is at current schema version {SCHEMA_VERSION} and" if current else ""
+        raise SchemaMigrationRequiredError(
+            f"{self._store_named_for_an_operator()}{version_note} "
+            "has not completed the required historical session end-time repair. "
+            "Run `li state migrate` before opening the store for writing."
+        )
+
+    def _raise_if_schema_too_new(self, recorded: str) -> None:
+        # The caller checked the canonical decimal form. Comparing by length first
+        # rejects arbitrarily large newer stamps without converting them to integers.
+        if (len(recorded), recorded) <= (len(SCHEMA_VERSION), SCHEMA_VERSION):
             return
         where = self._store_named_for_an_operator()
         raise SchemaTooNewError(
-            f"{where} records schema version {recorded} but this version of lionagi "
+            f"{where} records schema version {recorded[:40]} but this version of lionagi "
             f"applies schema version {SCHEMA_VERSION}. It was written by a later "
             "release whose shape this code cannot verify, and opening it for writing "
             "would migrate it against that shape and record the lower version. "
@@ -1954,6 +1957,8 @@ class StateDB:
                 # SQLite only accepts this pragma outside a transaction; the rebuilt
                 # parent tables must not cascade deletes through foreign keys.
                 await driver.execute("PRAGMA foreign_keys = OFF")
+                # BEGIN IMMEDIATE serializes the schema checks and writes with other
+                # writable opens. Historical repair requires migration authority.
                 async with conn.begin():
                     yield conn
             finally:
@@ -1964,14 +1969,26 @@ class StateDB:
         self._refuse_in_compatibility("migration", "the store's schema belongs to its manager")
         async with self._schema_transaction() as conn:
             version = await self._refuse_newer_schema(conn)
-            # Version 7 activates preservation of chain decisions without changing
-            # version 6's schema. A completed v6 store only needs a new stamp.
-            stamp_only = version == 6 and SCHEMA_VERSION == "7"
+            # The chain-decision preservation step does not change the
+            # preceding version's schema. A completed store only needs a stamp.
+            stamp_only = (
+                version == _CHAIN_DECISION_SCHEMA_VERSION - 1
+                and int(SCHEMA_VERSION) == _CHAIN_DECISION_SCHEMA_VERSION
+            )
             if not stamp_only:
                 await self._apply_schema_changes(conn)
-            # Readers use repaired terminal durations and completion windows.
-            # A store still missing the repair must finish it before activation.
-            await self._backfill_session_ended_at_once(conn)
+            if self._migration_allowed:
+                await self._backfill_session_ended_at_once(conn)
+            elif version is None:
+                # Initialize the marker on a new store. Pre-versioned stores
+                # that still have historical work also need explicit migration.
+                pending_query = (
+                    f"SELECT 1 FROM sessions WHERE {_SESSION_ENDED_AT_BACKFILL_FILTER} LIMIT 1"  # noqa: S608
+                )
+                pending = await conn.scalar(text(pending_query))
+                if pending is not None:
+                    self._raise_end_time_migration_required()
+                await self._mark_session_ended_at_repaired(conn)
             if version != int(SCHEMA_VERSION):
                 await self._stamp_schema_version(conn)
         self._schema_committed = True
@@ -2177,6 +2194,9 @@ class StateDB:
         while await self._backfill_session_ended_at_batch(conn):
             pass
 
+        await self._mark_session_ended_at_repaired(conn)
+
+    async def _mark_session_ended_at_repaired(self, conn: AsyncConnection) -> None:
         await conn.execute(
             text(
                 "INSERT INTO schema_meta (key, value) VALUES (:key, '1') "
@@ -2189,17 +2209,15 @@ class StateDB:
         """Approximate at most one batch of missing historical end times."""
         if self.dialect == "sqlite":
             query = (
-                "SELECT id, created_at, updated_at, started_at, last_message_at "
+                "SELECT id, created_at, updated_at, started_at, last_message_at "  # noqa: S608
                 "FROM sessions INDEXED BY idx_sessions_terminal_missing_end "
-                "WHERE ended_at IS NULL AND status IN "
-                "('completed','completed_empty','failed','timed_out','aborted','cancelled') "
+                f"WHERE {_SESSION_ENDED_AT_BACKFILL_FILTER} "
                 "ORDER BY id LIMIT :limit"
             )
         else:
             query = (
-                "SELECT id, created_at, updated_at, started_at, last_message_at "
-                "FROM sessions WHERE ended_at IS NULL AND status IN "
-                "('completed','completed_empty','failed','timed_out','aborted','cancelled') "
+                "SELECT id, created_at, updated_at, started_at, last_message_at "  # noqa: S608
+                f"FROM sessions WHERE {_SESSION_ENDED_AT_BACKFILL_FILTER} "
                 "ORDER BY id LIMIT :limit FOR UPDATE"
             )
         rows = (
@@ -2370,7 +2388,12 @@ class StateDB:
         repair_updated_at: bool = False,
         preserve_triggers: bool = False,
     ) -> None:
-        """Rebuild one table on the caller's locked migration connection."""
+        """Rebuild one table on the caller's locked migration connection.
+
+        The caller disables foreign keys so dropping a parent cannot cascade
+        through its children. Explicit indexes are replayed. Set
+        ``preserve_triggers`` to also replay triggers dropped with the table.
+        """
         cols_rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).mappings()
         cols = [row["name"] for row in cols_rows]
         col_list = ", ".join(cols)
@@ -2600,12 +2623,16 @@ class StateDB:
     # The widened CHECK admits queued and dependency-waiting runs.
     _LEGACY_SCHEDULE_RUNS_QUEUE_MARKER = "'waiting_dependency'"
 
+    @classmethod
+    def _schedule_runs_rebuild_needed(cls, create_sql: str | None) -> bool:
+        return create_sql is not None and cls._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER not in create_sql
+
     async def _drop_legacy_schedule_runs_check(self, conn: AsyncConnection) -> None:
         """Rebuild schedule_runs if it still carries the legacy status CHECK."""
         if self.dialect != "sqlite":
             return
         create_sql = await self._sqlite_table_sql(conn, "schedule_runs")
-        if create_sql is None or self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER in create_sql:
+        if not self._schedule_runs_rebuild_needed(create_sql):
             return
 
         await self._sqlite_rebuild_table(
@@ -2648,9 +2675,10 @@ class StateDB:
               resume_packet           JSON
             )
             """,
+            # SQLite drops installed schedule-run triggers with the old table.
             preserve_triggers=True,
         )
-        # The pre-rebuild index set does not include the new queue indexes.
+        # Pre-queue tables do not have these indexes to replay.
         await conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS idx_schedule_runs_queue "
             "ON schedule_runs(status, queued_at) "
@@ -2675,6 +2703,14 @@ class StateDB:
             return None
         return frozenset(re.findall(r"'([^']*)'", match.group(1)))
 
+    @classmethod
+    def _definitions_rebuild_needed(cls, create_sql: str | None) -> bool:
+        return (
+            create_sql is not None
+            and cls._definitions_kind_check_values(create_sql)
+            == cls._LEGACY_DEFINITIONS_KIND_VALUES
+        )
+
     async def _sqlite_rebuild_backup_labels(self, driver) -> tuple[str, ...]:
         """Read which tables need a backup before starting the rebuild transaction."""
         cursor = await driver.execute(
@@ -2687,18 +2723,9 @@ class StateDB:
             await cursor.close()
 
         labels = []
-        schedule_runs = create_sql.get("schedule_runs")
-        if (
-            schedule_runs is not None
-            and self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER not in schedule_runs
-        ):
+        if self._schedule_runs_rebuild_needed(create_sql.get("schedule_runs")):
             labels.append("schedule_runs")
-        definitions = create_sql.get("definitions")
-        if (
-            definitions is not None
-            and self._definitions_kind_check_values(definitions)
-            == self._LEGACY_DEFINITIONS_KIND_VALUES
-        ):
+        if self._definitions_rebuild_needed(create_sql.get("definitions")):
             labels.append("definitions")
         return tuple(labels)
 
@@ -2707,11 +2734,7 @@ class StateDB:
         if self.dialect != "sqlite":
             return
         create_sql = await self._sqlite_table_sql(conn, "definitions")
-        if (
-            create_sql is None
-            or self._definitions_kind_check_values(create_sql)
-            != self._LEGACY_DEFINITIONS_KIND_VALUES
-        ):
+        if not self._definitions_rebuild_needed(create_sql):
             return
 
         table = _definitions_table.to_metadata(MetaData(), name="definitions_new")

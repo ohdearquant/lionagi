@@ -25,9 +25,7 @@ _BARRIER_TIMEOUT_SECONDS = 15
 
 
 def _create_legacy_session_status_db(db_path: Path) -> None:
-    """Full current schema, except sessions.status still carries the legacy
-    4-value CHECK constraint that the migration rebuilds away.
-    """
+    """A historical schema stamp with the legacy 4-value sessions.status CHECK."""
     from lionagi.state.db import _SCHEMA_PATH
 
     schema_sql = _SCHEMA_PATH.read_text()
@@ -54,6 +52,7 @@ def _create_legacy_session_status_db(db_path: Path) -> None:
     legacy_sql = schema_sql.replace(legacy_status_col, legacy_status_col_with_check, 1)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(legacy_sql)
+        conn.execute("UPDATE schema_meta SET value='5' WHERE key='version'")
 
 
 def _create_legacy_invocations_status_db(db_path: Path) -> None:
@@ -83,13 +82,13 @@ def _create_legacy_invocations_status_db(db_path: Path) -> None:
         conn.executescript(legacy_sql)
 
 
-def _open_state_db_worker(
+def _migrate_state_db_worker(
     db_path: str,
     start_barrier,
     writer_barrier,
     result_queue,
 ) -> None:
-    """Have every opener reach the migration's writer reservation together."""
+    """Have every migration reach the writer reservation together."""
     original_make_engine = state_db_module.make_engine
     original_rebuild = StateDB._sqlite_rebuild_table
     rebuilt = []
@@ -114,20 +113,23 @@ def _open_state_db_worker(
     state_db_module.make_engine = synchronized_make_engine
     StateDB._sqlite_rebuild_table = staticmethod(record_rebuild)
 
-    async def open_current_store():
-        async with StateDB(db_path):
-            pass
+    async def migrate_store():
+        state = StateDB(db_path)
+        try:
+            await state.migrate()
+        finally:
+            await state.close()
 
     try:
         start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
-        asyncio.run(open_current_store())
+        asyncio.run(migrate_store())
     except Exception:  # noqa: BLE001 -- report child failure to parent
         result_queue.put((traceback.format_exc(), rebuilt))
     else:
         result_queue.put((None, rebuilt))
 
 
-def test_concurrent_statedb_opens_rebuild_session_status_check(tmp_path: Path) -> None:
+def test_concurrent_statedb_migrations_rebuild_session_status_check(tmp_path: Path) -> None:
     """The waiting writers see the rebuilt CHECK and do not rebuild it again."""
     db_path = tmp_path / "concurrent-legacy-session-status.db"
     _create_legacy_session_status_db(db_path)
@@ -137,7 +139,7 @@ def test_concurrent_statedb_opens_rebuild_session_status_check(tmp_path: Path) -
     result_queue = context.Queue()
     processes = [
         context.Process(
-            target=_open_state_db_worker,
+            target=_migrate_state_db_worker,
             args=(str(db_path), start_barrier, writer_barrier, result_queue),
         )
         for _ in range(_NUM_CONCURRENT_WORKERS)
@@ -234,3 +236,41 @@ async def test_invocations_rebuild_crash_mid_sequence_rolls_back_atomically(
         assert await state.schema_version() == SCHEMA_VERSION
     finally:
         await state.close()
+
+
+@pytest.mark.parametrize(
+    ("table", "predicate"),
+    [
+        ("schedule_runs", "_schedule_runs_rebuild_needed"),
+        ("definitions", "_definitions_rebuild_needed"),
+    ],
+)
+async def test_rebuild_uses_the_same_decision_as_its_backup(
+    tmp_path, monkeypatch, table, predicate
+):
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path):
+        pass
+    with sqlite3.connect(db_path) as seed:
+        seed.execute("UPDATE schema_meta SET value='5' WHERE key='version'")
+
+    # Change just the selected table's decision on a schema that normally needs neither rebuild.
+    monkeypatch.setattr(
+        StateDB, predicate, staticmethod(lambda create_sql: create_sql is not None), raising=False
+    )
+    rebuilt = []
+
+    async def record_rebuild(_conn, table_name, *_args, **_kwargs):
+        backups = list(tmp_path.glob(f"{db_path.name}.pre-{table_name}.*.bak"))
+        assert len(backups) == 1, "create the backup before rebuilding its table"
+        rebuilt.append(table_name)
+
+    monkeypatch.setattr(StateDB, "_sqlite_rebuild_table", staticmethod(record_rebuild))
+    state = StateDB(db_path)
+    try:
+        await state.migrate()
+    finally:
+        await state.close()
+
+    assert rebuilt == [table]
+    assert len(list(tmp_path.glob(f"{db_path.name}.pre-*.bak"))) == 1
