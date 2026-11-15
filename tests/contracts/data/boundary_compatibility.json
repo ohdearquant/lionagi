@@ -4305,6 +4305,8 @@
       "ScheduleTimezone",
       "SystemTimezoneUnreadableError",
       "TimezoneResolution",
+      "resolve_github_poll_cadence_seconds",
+      "resolve_merged_poll_page_limit",
       "resolve_schedule_cadence_seconds",
       "resolve_schedule_timezone",
       "scheduler_timezone_report"

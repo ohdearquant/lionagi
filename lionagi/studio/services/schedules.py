@@ -597,6 +597,16 @@ def compute_schedule_health(
             if type(limit) is int and 5 <= limit < 100
             else "The last capped page limit is unknown; review the limit and retry."
         )
+    if row.get("enabled") and row.get("trigger_type") == "github_poll":
+        from lionhub.orchestration.schedule.timing import (
+            resolve_github_poll_cadence_seconds,
+            resolve_schedule_cadence_seconds,
+        )
+
+        authored = resolve_schedule_cadence_seconds(row)
+        effective = resolve_github_poll_cadence_seconds(row)
+        if isinstance(authored, (int, float)) and effective is not None and effective > authored:
+            result["health_effective_poll_interval_sec"] = effective
     return result
 
 
@@ -1143,6 +1153,7 @@ _SCHEDULE_SUMMARY_FIELDS = (
     "health_state",
     "health_cause",
     "health_recovery",
+    "health_effective_poll_interval_sec",
     "health_last_outcome",
     "health_last_outcome_at",
     "health_since",
