@@ -655,8 +655,8 @@ async def test_postgres_capability_claim(pg_url):
     Postgres, and the keyset pager's cursor-less first page must not send a
     nullable bind parameter asyncpg cannot type.
     """
-    from lionagi.studio.services.task_applications import TaskApplication, submit_task
     from lionhub.orchestration.scheduler.worker import claim_and_execute, register_heartbeat
+    from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
 
     db = StateDB(url=pg_url)
     await db.open()

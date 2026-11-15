@@ -22,8 +22,7 @@ from pydantic import BaseModel
 
 from lionagi._errors import NotFoundError
 from lionagi.ln.concurrency import run_sync
-
-from ._sse import sse_response
+from lionhub.serve.daemon.services._sse import sse_response
 
 # ---------------------------------------------------------------------------
 # Session registry

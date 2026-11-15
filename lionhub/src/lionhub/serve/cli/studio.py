@@ -24,9 +24,9 @@ from typing import Any
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._log_channels import log_error, warn
 from lionagi._paths import ensure_lionagi_dir
-from lionagi.studio._host import admitted_host_names, is_unspecified_host, normalize_host
 from lionhub.orchestration.console import _refused_inside_an_agent
 from lionhub.orchestration.schedule.parsing import _url_authority
+from lionhub.serve.daemon._host import admitted_host_names, is_unspecified_host, normalize_host
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
@@ -310,7 +310,7 @@ def _code_from_running_daemon(port: int) -> str | None:
     import hmac
     import secrets
 
-    from lionagi.studio.reconnect import (
+    from lionhub.serve.daemon.reconnect import (
         default_socket_path,
         port_proof,
         read_reconnect_reply,

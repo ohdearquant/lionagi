@@ -21,9 +21,9 @@ from lionagi.state.db import (
 )
 from lionagi.state.health import SessionHealth, classify_session_health, worst_health
 from lionagi.state.session_naming import resolve_display_name
+from lionhub.serve.daemon.services._io import parse_json_col as _parse_json_col
 
 from ..registry import studio_route
-from ._io import parse_json_col as _parse_json_col
 
 
 async def _invocation_health(

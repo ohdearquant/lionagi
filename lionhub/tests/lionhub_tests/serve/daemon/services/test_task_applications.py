@@ -21,7 +21,7 @@ import pytest_asyncio
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
-from lionagi.studio.services.task_applications import (
+from lionhub.serve.daemon.services.task_applications import (
     AdmissionRejectedError,
     TaskApplication,
     cancel_task,

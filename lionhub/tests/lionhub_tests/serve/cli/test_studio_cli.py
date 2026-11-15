@@ -1652,7 +1652,7 @@ def test_a_running_lionagi_daemon_issues_a_code_over_its_reconnect_socket(
     """The launcher asks a running daemon for a code over the same-user socket,
     never over HTTP: a program that can only speak HTTP cannot get one."""
     import lionagi.studio.launch_access as launch_access
-    import lionagi.studio.reconnect as reconnect
+    import lionhub.serve.daemon.reconnect as reconnect
 
     monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
     # A unix socket path is bounded at about 100 bytes, shorter than some test
@@ -1682,7 +1682,7 @@ def test_a_running_lionagi_daemon_issues_a_code_over_its_reconnect_socket(
 @contextlib.contextmanager
 def _socket_daemon(monkeypatch, code="code-of-the-socket-daemon"):
     """A real reconnect channel on a short socket path that ``li studio`` will read."""
-    import lionagi.studio.reconnect as reconnect
+    import lionhub.serve.daemon.reconnect as reconnect
 
     with tempfile.TemporaryDirectory(prefix="studio-r", dir="/tmp") as directory:
         socket_path = Path(directory) / "r.sock"
@@ -1705,8 +1705,8 @@ def test_a_daemon_on_the_port_that_does_not_hold_the_sockets_key_gets_no_code(
     and the second, on the port asked for, cannot prove it holds that key."""
     import secrets
 
-    import lionagi.studio.reconnect as reconnect
     import lionhub.serve.cli.studio as studio_cli
+    import lionhub.serve.daemon.reconnect as reconnect
 
     other_key = secrets.token_bytes(32)
     routes = {("GET", "/health"): (200, {"status": "ok"})}
@@ -1727,8 +1727,8 @@ def test_a_listener_relaying_the_sockets_daemon_from_another_port_gets_no_code(
 ):
     """A listener that forwards the challenge to the real daemon gets back a proof
     for the real daemon's own port, which is not the port the launcher asked."""
-    import lionagi.studio.reconnect as reconnect
     import lionhub.serve.cli.studio as studio_cli
+    import lionhub.serve.daemon.reconnect as reconnect
 
     routes = {("GET", "/health"): (200, {"status": "ok"})}
     with _socket_daemon(monkeypatch) as channel:
@@ -1766,8 +1766,8 @@ def test_a_proof_that_is_not_ascii_is_refused_like_a_wrong_one(daemon_probe, mon
 
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
 def test_a_reconnect_socket_another_user_serves_gets_no_code(daemon_probe, monkeypatch):
-    import lionagi.studio.reconnect as reconnect
     import lionhub.serve.cli.studio as studio_cli
+    import lionhub.serve.daemon.reconnect as reconnect
 
     other_uid = 0 if os.getuid() != 0 else 1
     routes = {("GET", "/health"): (200, {"status": "ok"})}
@@ -1788,8 +1788,8 @@ def test_li_studio_on_a_port_whose_daemon_does_not_own_the_socket_exits_1_withou
 ):
     import secrets
 
-    import lionagi.studio.reconnect as reconnect
     import lionhub.serve.cli.studio as studio_cli
+    import lionhub.serve.daemon.reconnect as reconnect
 
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", daemon_probe)
     routes = {("GET", "/health"): (200, {"status": "ok"})}
@@ -1808,8 +1808,8 @@ def test_li_studio_on_a_port_whose_daemon_does_not_own_the_socket_exits_1_withou
 
 
 def test_a_running_daemon_without_a_reconnect_socket_refuses(daemon_probe, monkeypatch, tmp_path):
-    import lionagi.studio.reconnect as reconnect
     import lionhub.serve.cli.studio as studio_cli
+    import lionhub.serve.daemon.reconnect as reconnect
 
     monkeypatch.setattr(reconnect, "default_socket_path", lambda *args: tmp_path / "absent.sock")
     with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
@@ -1818,8 +1818,8 @@ def test_a_running_daemon_without_a_reconnect_socket_refuses(daemon_probe, monke
 
 
 def test_a_platform_without_unix_sockets_says_to_restart_the_daemon(daemon_probe, monkeypatch):
-    import lionagi.studio.reconnect as reconnect
     import lionhub.serve.cli.studio as studio_cli
+    import lionhub.serve.daemon.reconnect as reconnect
 
     monkeypatch.setattr(reconnect, "unix_sockets_supported", lambda: False)
     with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
@@ -1843,8 +1843,8 @@ def test_nothing_listening_is_not_a_daemon(daemon_probe):
 
 
 def test_an_older_daemon_without_a_reconnect_socket_refuses(daemon_probe, monkeypatch, tmp_path):
-    import lionagi.studio.reconnect as reconnect
     import lionhub.serve.cli.studio as studio_cli
+    import lionhub.serve.daemon.reconnect as reconnect
 
     monkeypatch.setattr(reconnect, "default_socket_path", lambda *args: tmp_path / "absent.sock")
     with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):

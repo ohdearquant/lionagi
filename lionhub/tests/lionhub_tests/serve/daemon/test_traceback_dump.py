@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.studio import _traceback_dump as td
+from lionhub.serve.daemon import _traceback_dump as td
 
 
 @pytest.fixture(autouse=True)
@@ -154,7 +154,7 @@ def test_disarm_is_safe_when_nothing_was_ever_armed(monkeypatch, spy):
 _REAL_ARM = """
 import sys, time
 from pathlib import Path
-from lionagi.studio import _traceback_dump as td
+from lionhub.serve.daemon import _traceback_dump as td
 
 target = Path(sys.argv[1])
 if not td.arm_traceback_dump():

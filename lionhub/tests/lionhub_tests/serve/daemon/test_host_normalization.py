@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-from lionagi.studio._host import normalize_host
+from lionhub.serve.daemon._host import normalize_host
 
 
 @pytest.mark.parametrize(
@@ -104,7 +104,7 @@ def test_the_normalizer_module_needs_no_web_stack():
     """The CLI imports the normalizer, so it must not drag FastAPI or Starlette
     into the CLI's import path."""
     script = (
-        "import sys; import lionagi.studio._host as m; "
+        "import sys; import lionhub.serve.daemon._host as m; "
         "print('fastapi' in sys.modules, 'starlette' in sys.modules, m.normalize_host('LOCALHOST'))"
     )
     out = subprocess.run(

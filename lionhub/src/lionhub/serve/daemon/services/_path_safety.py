@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+import lionagi
 from lionagi.libs.path_safety import safe_join, validate_name
 
 
@@ -19,7 +20,9 @@ def safe_path_join(root: Path, component: str) -> Path:
 def public_path(path: Path, *, fallback_name: bool = True) -> str:
     """Repo-relative or home-relative path string, never absolute."""
     resolved = path.resolve()
-    _repo_root = Path(__file__).resolve().parents[3]
+    # The directory that holds the lionagi package: the checkout root in a source tree,
+    # site-packages in an installation. Found from the package, not from this file's depth.
+    _repo_root = Path(lionagi.__file__).resolve().parents[1]
     for root in [_repo_root, Path.home()]:
         try:
             return resolved.relative_to(root.resolve()).as_posix()

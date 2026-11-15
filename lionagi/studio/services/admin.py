@@ -65,9 +65,9 @@ from lionhub.orchestration.scheduler.liveness import (
 )
 from lionhub.orchestration.state_store import open_db as _open_db
 from lionhub.orchestration.state_store import require_file_store, store_exists, store_path
+from lionhub.serve.daemon.services._path_safety import public_path
 
 from ..registry import studio_route
-from ._path_safety import public_path
 
 # Fallback mapping for deprecated 'reason' field without reason_code.
 _LEGACY_ADMIN_REASON_CODES: dict[str, str] = {

@@ -676,7 +676,7 @@ def test_the_status_view_still_serves_what_the_cli_renders(tmp_path, monkeypatch
 def _seed_run_linked_to(
     monkeypatch, db_path: Path, *, invocation, sessions, error_detail: str | None = None
 ) -> tuple[str, str]:
-    from lionagi.studio.services import run_view
+    from lionhub.serve.daemon.services import run_view
 
     _patch_db(monkeypatch, db_path)
 
@@ -710,7 +710,7 @@ def _terminal_invocation_status() -> str:
 
 def test_a_session_reported_summary_really_reaches_the_outcome(tmp_path, monkeypatch):
     """The control. Without it the sweep below passes on an outcome nothing populated."""
-    from lionagi.studio.services.run_view import build_outcome
+    from lionhub.serve.daemon.services.run_view import build_outcome
 
     session = {
         "id": "sess-1",
@@ -768,8 +768,8 @@ def test_a_generated_summary_is_served_verbatim(tmp_path, monkeypatch):
 
     A summary this module generated carries no caller text, so it stays readable.
     """
-    from lionagi.studio.services.run_view import build_outcome
     from lionagi.studio.services.schedules import _run_view
+    from lionhub.serve.daemon.services.run_view import build_outcome
 
     outcome = build_outcome(
         {"status": "completed", "exit_code": 0}, {"id": "inv-1", "status": "completed"}, []

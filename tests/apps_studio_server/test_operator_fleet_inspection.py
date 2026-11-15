@@ -182,7 +182,7 @@ async def test_session_detail_labels_cursor_fallback(monkeypatch):
 @pytest.mark.asyncio
 async def test_session_signals_caps_rows_and_each_payload(monkeypatch):
     from lionagi.studio.operator.application_mcp import session_signals
-    from lionagi.studio.services import signals
+    from lionhub.serve.daemon.services import signals
 
     source = [
         {
@@ -380,7 +380,7 @@ async def test_list_sessions_reports_known_for_a_readable_but_empty_store(monkey
 async def test_session_signals_reports_unknown_when_the_store_cannot_be_opened(monkeypatch):
     import lionhub.orchestration.state_store as state_store
     from lionagi.studio.operator.application_mcp import session_signals
-    from lionagi.studio.services import signals
+    from lionhub.serve.daemon.services import signals
 
     consulted = False
 
@@ -401,7 +401,7 @@ async def test_session_signals_reports_unknown_when_the_store_cannot_be_opened(m
 
 async def test_session_signals_reports_known_for_a_session_with_no_signals(monkeypatch):
     from lionagi.studio.operator.application_mcp import session_signals
-    from lionagi.studio.services import signals
+    from lionhub.serve.daemon.services import signals
 
     async def fake_get_signals_after(*_args, **_kwargs):
         return []

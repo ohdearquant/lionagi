@@ -10,7 +10,7 @@ from lionhub.orchestration.scheduler.show_artifacts import (
     read_json_file,  # noqa: F401 -- preserve the compatibility import
 )
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.studio.services._io")
 
 
 @dataclass(frozen=True)

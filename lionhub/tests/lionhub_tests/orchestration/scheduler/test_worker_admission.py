@@ -24,9 +24,9 @@ from sqlalchemy.types import JSON
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
-from lionagi.studio.services.task_applications import TaskApplication, submit_task
 from lionhub.orchestration.dispatch.outbox import list_dispatches
 from lionhub.orchestration.scheduler.worker import claim_and_execute
+from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
 
 
 @pytest_asyncio.fixture

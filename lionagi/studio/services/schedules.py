@@ -48,9 +48,9 @@ from lionhub.orchestration.schedule.validation import (
 from lionhub.orchestration.schedule.validation import (
     _validate_flow_yaml_spec as _validate_flow_yaml_spec,
 )
+from lionhub.serve.daemon.services import run_view
 
 from ..registry import studio_route
-from . import run_view
 
 _log = logging.getLogger(__name__)
 

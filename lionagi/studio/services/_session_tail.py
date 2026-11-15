@@ -847,7 +847,9 @@ class _Tail:
             return await self._drain()
 
     async def _drain(self) -> tuple[bool, bool]:
-        from . import sessions, signals
+        from lionhub.serve.daemon.services import signals
+
+        from . import sessions
 
         before = await self._scalar("PRAGMA data_version")
         if before == self.completed_data_version and self.completed_state is not None:

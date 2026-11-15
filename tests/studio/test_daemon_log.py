@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from lionagi.studio.daemon_log import SCHEDULER_LOGGER, daemon_log_handler
+from lionhub.serve.daemon.daemon_log import SCHEDULER_LOGGER, daemon_log_handler
 
 FIRE = "Firing schedule nightly (run r1, chain_depth=0)"
 LINE = re.compile(

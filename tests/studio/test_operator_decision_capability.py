@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 import lionagi.studio.launch_access as launch_access
-import lionagi.studio.reconnect as reconnect
+import lionhub.serve.daemon.reconnect as reconnect
 
 _HOSTED = "https://lion-studio.khive.ai"
 
@@ -360,7 +360,7 @@ def test_a_socket_another_user_serves_is_not_read(short_dir, served_by):
 
 _ANSWER_A_CLOSED_PEER = """
 import os, signal, socket
-import lionagi.studio.reconnect as reconnect
+import lionhub.serve.daemon.reconnect as reconnect
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 channel = reconnect.ReconnectChannel("unused.sock", lambda: "code", _uid_reader=lambda _c: os.getuid())

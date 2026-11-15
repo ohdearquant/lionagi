@@ -1163,7 +1163,7 @@ class TestPairingWithToken:
 
 
 def test_health_signs_a_challenge_with_the_port_the_request_reached(make_client):
-    from lionagi.studio.reconnect import port_proof
+    from lionhub.serve.daemon.reconnect import port_proof
 
     client = make_client()
     key = bytes(range(32))
