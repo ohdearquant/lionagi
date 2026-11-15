@@ -149,16 +149,22 @@ async def test_all_candidates_referenced_are_reported_without_deleting(
 async def test_prune_keeps_permanent_tables_named_like_its_scratch_tables(
     isolated_store: Path, dry_run: bool
 ) -> None:
+    tables = (
+        "prune_orphan_progressions",
+        "prune_direct_messages",
+        "prune_victims",
+        "prune_lineage_refs",
+    )
     async with StateDB() as db:
         await _session(db, age_days=60)
-        for table in ("prune_orphan_progressions", "prune_direct_messages", "prune_victims"):
+        for table in tables:
             await db.execute(f"CREATE TABLE main.{table} (id TEXT PRIMARY KEY)")  # noqa: S608
             await db.execute(f"INSERT INTO main.{table} (id) VALUES (?)", ("sentinel",))  # noqa: S608
 
     result = await _prune(keep_days=30, keep_n=0, dry_run=dry_run)
     assert result["sessions"] == 1
     async with StateDB() as db:
-        for table in ("prune_orphan_progressions", "prune_direct_messages", "prune_victims"):
+        for table in tables:
             rows = await db.fetch_all(f"SELECT id FROM main.{table}")  # noqa: S608
             assert [row["id"] for row in rows] == ["sentinel"], table
 

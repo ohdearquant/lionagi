@@ -1050,9 +1050,10 @@ async def _prune(
 
     from sqlalchemy import text
 
-    from lionhub.orchestration.scheduler.db_maintenance import (
+    from lionhub.orchestration._prune_lineage import (
         _non_array_progression_sql,
         _progression_members,
+        _prune_lineage_refs_sql,
         _prune_temp_table,
         _retained_message_ids_sql,
     )
@@ -1065,6 +1066,7 @@ async def _prune(
         victims = _prune_temp_table(db.dialect, "prune_victims")
         orphans = _prune_temp_table(db.dialect, "prune_orphan_progressions")
         direct = _prune_temp_table(db.dialect, "prune_direct_messages")
+        lineage = _prune_temp_table(db.dialect, "prune_lineage_refs")
         members = _progression_members(db.dialect)
         non_array = _non_array_progression_sql(db.dialect)
 
@@ -1090,12 +1092,7 @@ async def _prune(
                 # collecting and deleting one chunk at a time can misclassify
                 # progressions or messages shared by multiple victim sessions.
                 await conn.execute(text(f"DROP TABLE IF EXISTS {victims}"))
-                await conn.execute(
-                    text(
-                        f"CREATE TEMPORARY TABLE {victims} "
-                        "(id TEXT PRIMARY KEY, deferred INTEGER NOT NULL DEFAULT 0)"
-                    )
-                )
+                await conn.execute(text(f"CREATE TEMPORARY TABLE {victims} (id TEXT PRIMARY KEY)"))
                 for start in range(0, len(victim_ids), _PRUNE_VICTIM_INSERT_BATCH_SIZE):
                     await conn.execute(
                         text(f"INSERT INTO {victims} (id) VALUES (:id)"),  # noqa: S608
@@ -1168,22 +1165,10 @@ async def _prune(
                     .first()["n"]
                 )
 
-                # Retain the messages of any victim with a non-array progression.
-                # Record those owners and their references before the session cascade.
-                owner_progressions = (
-                    "SELECT v.id AS owner_id, s.progression_id, v.deferred"  # noqa: S608
-                    f" FROM sessions s JOIN {victims} v ON v.id = s.id"
-                    " UNION ALL SELECT v.id, b.progression_id, v.deferred"
-                    f" FROM branches b JOIN {victims} v ON v.id = b.session_id"
-                )
-                await conn.execute(
-                    text(
-                        f"UPDATE {victims} SET deferred = 1 WHERE id IN ("  # noqa: S608
-                        f" SELECT owner_id FROM ({owner_progressions}) AS owner"
-                        " JOIN progressions p ON p.id = owner.progression_id"
-                        f" WHERE {non_array})"
-                    )
-                )
+                # Collect the protected references before deleting their owners.
+                refs_sql = _prune_lineage_refs_sql(db.dialect, f"SELECT id FROM {victims}")  # noqa: S608
+                await conn.execute(text(f"DROP TABLE IF EXISTS {lineage}"))
+                await conn.execute(text(f"CREATE TEMPORARY TABLE {lineage} AS {refs_sql}"))
                 await conn.execute(text(f"DROP TABLE IF EXISTS {orphans}"))
                 await conn.execute(
                     text(
@@ -1194,15 +1179,10 @@ async def _prune(
                 await conn.execute(
                     text(
                         f"INSERT INTO {orphans} (id, deferred) "  # noqa: S608
-                        "SELECT owner.progression_id, MAX(owner.deferred)"
-                        f" FROM ({owner_progressions}) AS owner"
-                        " WHERE owner.progression_id IS NOT NULL GROUP BY owner.progression_id"
+                        f"SELECT id, deferred FROM {lineage} WHERE kind = 'progression'"
                     )
                 )
 
-                # Direct message references disappear with their owner and may
-                # not occur in a progression. An ID can be both a candidate and
-                # protected if its owners have different progression shapes.
                 await conn.execute(text(f"DROP TABLE IF EXISTS {direct}"))
                 await conn.execute(
                     text(
@@ -1213,14 +1193,10 @@ async def _prune(
                 await conn.execute(
                     text(
                         f"INSERT INTO {direct} (id, deferred) "  # noqa: S608
-                        f"SELECT s.first_msg_id, v.deferred FROM sessions s JOIN {victims} v"
-                        " ON v.id = s.id WHERE s.first_msg_id IS NOT NULL"
-                        f" UNION SELECT s.last_msg_id, v.deferred FROM sessions s JOIN {victims} v"
-                        " ON v.id = s.id WHERE s.last_msg_id IS NOT NULL"
-                        f" UNION SELECT b.system_msg_id, v.deferred FROM branches b JOIN {victims} v"
-                        " ON v.id = b.session_id WHERE b.system_msg_id IS NOT NULL"
+                        f"SELECT id, deferred FROM {lineage} WHERE kind = 'message'"
                     )
                 )
+                await conn.execute(text(f"DROP TABLE {lineage}"))
 
                 await conn.execute(
                     text(f"DELETE FROM sessions WHERE id IN (SELECT id FROM {victims})")  # noqa: S608
