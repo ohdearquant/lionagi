@@ -196,10 +196,13 @@ def _check_studio_daemon(url: str | None = None, timeout: float = 1.5) -> dict[s
 def _check_lionagi_home(home: Path | None = None) -> dict[str, str]:
     from lionagi._paths import ensure_lionagi_dir
 
+    supplied_home = home is not None
     if home is None:
         from lionagi._paths import LIONAGI_HOME
 
         home = LIONAGI_HOME
+    if not supplied_home and not home.exists():
+        return _result("warn", f"{home} does not exist; `li doctor` did not create it")
     runs_dir = home / "runs"
     try:
         ensure_lionagi_dir(runs_dir)

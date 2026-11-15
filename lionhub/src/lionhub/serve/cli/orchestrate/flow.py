@@ -1236,6 +1236,17 @@ async def _build_dag(
 # ── Resume: pre-mark checkpoint-completed nodes ───────────────────────────────
 
 
+def _register_clone_khive_actor(env: Any, branch: Any, source: Any) -> None:
+    actors = getattr(env, "khive_actors", None)
+    source_id = getattr(source, "id", None)
+    branch_id = getattr(branch, "id", None)
+    if not isinstance(actors, dict) or source_id is None or branch_id is None:
+        return
+    actor = actors.get(str(source_id))
+    if actor is not None:
+        actors[str(branch_id)] = actor
+
+
 def _reconstruct_spawned_nodes(
     env: OrchestrationEnv,
     plan_result: _PlanResult,
@@ -1433,7 +1444,9 @@ def _reconstruct_spawned_nodes(
             # callback never runs. Give this retry its own contained branch rather
             # than reusing the (possibly unrestricted) role or orchestrator.
             cloned_orchestrator = role_branch is None
-            role_branch = (role_branch or env.orc_branch).clone()
+            source_branch = role_branch or env.orc_branch
+            role_branch = source_branch.clone()
+            _register_clone_khive_actor(env, role_branch, source_branch)
             if cloned_orchestrator:
                 model = getattr(role_branch, "chat_model", None)
                 if model is not None:
@@ -1472,6 +1485,7 @@ def _reconstruct_spawned_nodes(
                 # orchestrator, which keeps the orchestrator's connector grant. Give it a
                 # copy without the grant, contained as the other clones are.
                 role_branch = orc_branch.clone()
+                _register_clone_khive_actor(env, role_branch, orc_branch)
                 strip_connector_grant(role_branch.chat_model.endpoint.config.kwargs)
                 env.session.include_branches(role_branch)
                 persisting = getattr(env, "_live_persist", None)
