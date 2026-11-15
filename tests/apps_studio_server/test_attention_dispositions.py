@@ -586,15 +586,24 @@ def _create_pre_revision_attention_db(db_path: Path) -> None:
 
 
 def test_attention_dispositions_upgrade_from_pre_revision_store(tmp_path, monkeypatch):
-    """Opening a store already in the pre-revision/sequence shape must
-    migrate it, not just re-stamp it: ordered history reads without
-    ``OperationalError``, revision backfills from the true history count,
-    a DELETE-then-replayed-PUT is fenced (409), and the fence for an item
-    already deleted *before* the upgrade survives the upgrade too."""
+    """Explicit migration of a pre-revision/sequence store preserves the ledger.
+
+    History stays ordered, revision comes from the true history count, and
+    a deleted item's stale PUT is fenced whether the deletion happened before
+    or after the upgrade.
+    """
     db_path = tmp_path / "state.db"
     _create_pre_revision_attention_db(db_path)
     _patch_db(monkeypatch, db_path)
-    _run(_init_db(db_path))
+
+    async def migrate_store():
+        db = StateDB(db_path)
+        try:
+            await db.migrate()
+        finally:
+            await db.close()
+
+    _run(migrate_store())
 
     from fastapi import HTTPException
 
