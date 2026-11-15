@@ -13,6 +13,9 @@ code in one of four forms instead:
 * a module, ``path.py`` alone, for a record that means the whole file: it carries no line
   and no name, so nothing in it can go stale. The file it names must still be tracked.
 
+Other files can be cited with a complete backticked ``path:N@<full SHA>`` or
+``path:N-M@<full SHA>`` pin. The file must exist at the cited commit.
+
 Eight checks keep that true. Each is a plain function over the record texts and a
 ``Source`` (the tracked files, their current text, and the file text at a commit), so a
 small in-memory fixture can carry exactly one defect and a test can require the check to
@@ -28,8 +31,7 @@ item or of a table cell. A path inside running text may name a file that was ret
 still planned, so only the list item and the table cell are checked against the tracked
 files.
 
-A symbol citation is checked for existing in a tracked file, not for being the code its
-sentence describes, and the checks read citations of Python files only.
+A Python symbol citation checks that the symbol exists in a tracked file.
 """
 
 from __future__ import annotations
@@ -236,9 +238,11 @@ PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {
 }
 
 _PATH = r"[\w./-]+\.py"
+_LINE_RANGE = r":(?P<lo>\d+)(?:[-–](?P<hi>\d+))?"
 # ``path.py:N``, ``path.py:N-M``, either with an optional ``@<hash>`` pin.
-_LINE = re.compile(
-    rf"(?<![\w./-])(?P<path>{_PATH}):(?P<lo>\d+)(?:[-–](?P<hi>\d+))?(?:@(?P<sha>[0-9a-f]+))?"
+_LINE = re.compile(rf"(?<![\w./-])(?P<path>{_PATH}){_LINE_RANGE}(?:@(?P<sha>[0-9a-f]+))?")
+_INLINE_PIN = re.compile(
+    rf"(?<=`)(?P<path>[\w.-]+(?:/[\w.-]+)*){_LINE_RANGE}@(?P<sha>[0-9a-fA-F]+)(?=`)"
 )
 # ``path.py::Class.method`` and ``path.py::NAME``.
 _SYMBOL = re.compile(rf"(?<![\w./-])(?P<path>{_PATH})::(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)")
@@ -343,7 +347,7 @@ class GitSource:
     def text_at(self, sha: str, path: str) -> str | None:
         key = (sha, path)
         if key not in self._texts:
-            done = self._git("show", f"{sha}:{path}")
+            done = self._git("cat-file", "blob", f"{sha}:{path}")
             self._texts[key] = done.stdout if done.returncode == 0 else None
         return self._texts[key]
 
@@ -360,11 +364,13 @@ def _lineno(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def pin_tokens(records: dict[str, str]) -> list[tuple[str, int, re.Match[str]]]:
+def pin_tokens(
+    records: dict[str, str], *, pattern: re.Pattern[str] = _LINE
+) -> list[tuple[str, int, re.Match[str]]]:
     return [
         (name, _lineno(text, m.start()), m)
         for name, text in records.items()
-        for m in _LINE.finditer(text)
+        for m in pattern.finditer(text)
         if m.group("sha") is not None
     ]
 
@@ -475,13 +481,20 @@ def check_symbols_exist(
 def check_pins_exist(records: dict[str, str], source: Source) -> list[str]:
     """Check 3: each pin's commit exists and its file has the pinned line(s) there."""
     problems: list[str] = []
-    for name, line, m in pin_tokens(records):
+    pins = pin_tokens(records)
+    pins.extend(
+        (name, line, m)
+        for name, line, m in pin_tokens(records, pattern=_INLINE_PIN)
+        if not m.group("path").endswith(".py")
+    )
+    for name, line, m in pins:
         path, sha = m.group("path"), m.group("sha")
         lo = int(m.group("lo"))
         hi = int(m.group("hi") or lo)
         where = f"{name}:{line}: {m.group(0)}"
-        if len(sha) != 8:
-            problems.append(f"{where} carries {len(sha)} hex digits, not 8")
+        digits = 8 if path.endswith(".py") else 40
+        if len(sha) != digits:
+            problems.append(f"{where} carries {len(sha)} hex digits, not {digits}")
         elif not source.commit_exists(sha):
             problems.append(f"{where} names a commit that does not exist")
         else:
@@ -860,6 +873,82 @@ def test_pin_with_a_short_hash_is_reported() -> None:
     problems = check_pins_exist({"ADR-0001-registry.md": doc}, TREE)
     assert len(problems) == 1
     assert "not 8" in problems[0]
+
+
+FULL_PIN = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ("pkg/schema.sql", "docs/guide.md", "pyproject.toml", ".github/workflows/ci.yml", "Makefile"),
+)
+def test_non_python_pin_checks_the_line_range_at_the_commit(path: str) -> None:
+    source = MemorySource(
+        files={path: "one\ntwo\nthree\n"},
+        commits={FULL_PIN: {path: "one\ntwo\n"}},
+    )
+    records = {"adr.md": f"See `{path}:1–2@{FULL_PIN}`.\nNot `{path}:3@{FULL_PIN}`.\n"}
+    assert _all_checks(records, source, {}) == [
+        f"adr.md:2: {path}:3@{FULL_PIN} cites lines the file does not have at that commit"
+    ]
+
+
+def test_non_python_pin_can_name_a_removed_file() -> None:
+    path = "archive/old-schema.sql"
+    source = MemorySource(files={}, commits={FULL_PIN: {path: "one\n"}})
+    records = {"adr.md": f"See `{path}:1@{FULL_PIN}` and `{path}:2@{FULL_PIN}`.\n"}
+    assert _all_checks(records, source, {}) == [
+        f"adr.md:1: {path}:2@{FULL_PIN} cites lines the file does not have at that commit"
+    ]
+
+
+def test_non_python_pin_refuses_a_missing_commit_or_blob() -> None:
+    path = "pkg/schema.sql"
+    source = MemorySource(files={path: "one\n"}, commits={FULL_PIN: {}})
+    absent = "a" * 40
+    records = {"adr.md": f"See `{path}:1@{FULL_PIN}` and `{path}:1@{absent}`.\n"}
+    assert check_pins_exist(records, source) == [
+        f"adr.md:1: {path}:1@{FULL_PIN} cites {path}, which is not in that commit",
+        f"adr.md:1: {path}:1@{absent} names a commit that does not exist",
+    ]
+
+
+def test_non_python_pin_refuses_a_directory_at_the_commit(git_source: GitSource) -> None:
+    sha = git_source._git("rev-parse", "HEAD").stdout.strip()
+    records = {"adr.md": f"See `lionagi/state:1@{sha}`.\n"}
+    assert check_pins_exist(records, git_source) == [
+        f"adr.md:1: lionagi/state:1@{sha} cites lionagi/state, which is not in that commit"
+    ]
+
+
+def test_non_python_pin_reports_the_out_of_range_schema_citation(git_source: GitSource) -> None:
+    if git_source.is_shallow():
+        pytest.skip("a shallow checkout may not hold the pinned schema")
+    sha = "45fd503ecf2af299d48b762cd895a2b8e650ced5"
+    path = "lionagi/state/schema.sql"
+    records = {"adr.md": f"See `{path}:624@{sha}`.\nNot `{path}:1103@{sha}`.\n"}
+    assert _all_checks(records, git_source, {}) == [
+        f"adr.md:2: {path}:1103@{sha} cites lines the file does not have at that commit"
+    ]
+
+
+def test_non_python_pin_requires_the_full_sha() -> None:
+    records = {"adr.md": "See `pkg/schema.sql:1@0123abcd`.\n"}
+    assert check_pins_exist(records, TREE) == [
+        "adr.md:1: pkg/schema.sql:1@0123abcd carries 8 hex digits, not 40"
+    ]
+
+
+def test_python_pin_still_requires_eight_digits() -> None:
+    records = {"adr.md": f"See `pkg/registry.py:1@{FULL_PIN}`.\n"}
+    assert check_pins_exist(records, TREE) == [
+        f"adr.md:1: pkg/registry.py:1@{FULL_PIN} carries 40 hex digits, not 8"
+    ]
+
+
+def test_non_python_unpinned_and_prose_references_are_preserved() -> None:
+    records = {"adr.md": f"An ordinary foo:1@{FULL_PIN} label and `notes/old.md:200` in prose.\n"}
+    assert _all_checks(records, TREE, {}) == []
 
 
 def test_quote_absent_from_the_file_is_reported() -> None:
