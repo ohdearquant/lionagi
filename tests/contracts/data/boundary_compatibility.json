@@ -48,15 +48,7 @@
       "os.getenv:\"LIONAGI_STUDIO_HOST\""
     ],
     "lionagi/studio/config.py": [
-      "os.environ.get:\"CORS_ORIGINS\"",
-      "os.environ.get:\"LIONAGI_HOME\"",
-      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:OPERATOR_CWD_ENV_VAR",
-      "os.environ.get:env_var"
+      "os.environ.get:OPERATOR_CWD_ENV_VAR"
     ],
     "lionagi/studio/operator/_common.py": [
       "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
@@ -196,6 +188,16 @@
     "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
       "os.environ.get:_ENV_INTERVAL",
       "os.environ.get:_ENV_PATH"
+    ],
+    "lionhub/src/lionhub/serve/daemon/settings.py": [
+      "os.environ.get:\"CORS_ORIGINS\"",
+      "os.environ.get:\"LIONAGI_HOME\"",
+      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
+      "os.environ.get:env_var"
     ],
     "lionhub/src/lionhub/serve/mcp/_notify_hook.py": [
       "os.environ.get:\"LIONAGI_MCP_NOTIFY_COMMAND\"",
@@ -1625,6 +1627,9 @@
     ],
     "lionhub/src/lionhub/serve/daemon/services/task_applications.py": [
       "__all__ = (\"AdmissionRejectedError\", \"TaskApplication\", \"cancel_task\", \"submit_task\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/settings.py": [
+      "__all__ = (\n    \"CORS_ORIGINS\",\n    \"HOST\",\n    \"MIRROR_CLAUDE_ENABLED\",\n    \"MIRROR_CLAUDE_INTERVAL\",\n    \"MIRROR_CLAUDE_ROOT\",\n    \"MIRROR_CLAUDE_SINCE\",\n    \"MIRROR_CODEX_ROOT\",\n    \"MIRROR_IMPORT_AMBIENT\",\n    \"MIRROR_SOURCE\",\n    \"STUDIO_PORT\",\n)"
     ],
     "lionhub/src/lionhub/serve/diagnostics.py": [
       "__all__ = (\n    \"code_identity\",\n    \"git_identity\",\n    \"snapshot_git_position\",\n    \"GIT_TIMEOUT_SECONDS\",\n    \"IDENTITY_BUDGET_SECONDS\",\n)"

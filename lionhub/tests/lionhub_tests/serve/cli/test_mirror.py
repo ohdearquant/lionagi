@@ -1759,11 +1759,15 @@ def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
 
 
 def _reload_config():
+    """Re-read the mirror settings from the environment, then Studio's config, which re-exports them."""
     import importlib
 
     from lionagi.studio import config as config_mod
+    from lionhub.serve.daemon import settings
 
-    return importlib.reload(config_mod), config_mod
+    reloaded = importlib.reload(settings)
+    importlib.reload(config_mod)
+    return reloaded, config_mod
 
 
 def _restore_config(monkeypatch):

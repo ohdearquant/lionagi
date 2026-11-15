@@ -208,7 +208,7 @@ def is_launch_origin(origin: str) -> bool:
 
 def _normalize_origins(origins: Iterable[str] | None) -> tuple[str, ...]:
     if origins is None:
-        from .config import CORS_ORIGINS
+        from lionhub.serve.daemon.settings import CORS_ORIGINS
 
         return tuple(str(origin) for origin in CORS_ORIGINS)
     return tuple(_canonical_origin(str(origin)) for origin in origins)

@@ -17,7 +17,8 @@ import os
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..config import CORS_ORIGINS
+from lionhub.serve.daemon.settings import CORS_ORIGINS
+
 from ..launch_access import (
     DECISION_TOKEN_HEADER,
     _canonical_origin,
