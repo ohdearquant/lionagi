@@ -1177,12 +1177,16 @@ class SchedulerEngine:
 
             end_time = time.time()
             chain_depth = row.get("chain_depth") or 0
+            is_chain_child = chain_depth != 0 or row.get("chain_parent_id") is not None
             trigger_context = row.get("trigger_context") or {}
             action_kind = row.get("action_kind") or ""
             schedule = await self._svc.get_schedule(sid) if sid else None
-            chain_action, selection = _chain_selection(
-                schedule, run_status == "completed", chain_depth
-            )
+            if is_chain_child:
+                chain_action, selection = None, "none"
+            else:
+                chain_action, selection = _chain_selection(
+                    schedule, run_status == "completed", chain_depth
+                )
 
             # The guarded CAS below is the idempotency boundary against another finalizer; losing it
             # means someone else already owns this row's follow-on effects, so this pass does
@@ -1206,6 +1210,14 @@ class SchedulerEngine:
             )
             if not written:
                 continue
+            if is_chain_child:
+                _log.warning(
+                    "Chain was not continued after recovering schedule run %s (schedule %s, depth %s) "
+                    "because the child's effective branches are not stored",
+                    run_id,
+                    sid,
+                    chain_depth,
+                )
             _log.info(
                 "Reconciled dispatched-orphan schedule_run %s as %s from child "
                 "session evidence (invocation %s)",
