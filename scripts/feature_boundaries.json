@@ -1129,14 +1129,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio._host": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio._traceback_dump": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.app": {
       "layer": "root",
       "owner": "studio"
@@ -1147,10 +1139,6 @@
       "target_owner": "lionhub.serve.cli"
     },
     "lionagi.studio.config": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.daemon_log": {
       "layer": "root",
       "owner": "studio"
     },
@@ -1230,10 +1218,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.reconnect": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.registry": {
       "layer": "root",
       "owner": "studio"
@@ -1242,19 +1226,7 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services._io": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services._path_safety": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.services._session_tail": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services._sse": {
       "layer": "root",
       "owner": "studio"
     },
@@ -1268,10 +1240,6 @@
       "owner": "studio"
     },
     "lionagi.studio.services.approvals": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.artifact_verification": {
       "layer": "root",
       "owner": "studio"
     },
@@ -1365,10 +1333,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.run_view": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.services.runs": {
       "layer": "root",
       "owner": "studio",
@@ -1391,19 +1355,11 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.signals": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.services.skills": {
       "layer": "root",
       "owner": "studio"
     },
     "lionagi.studio.services.stats": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.task_applications": {
       "layer": "root",
       "owner": "studio"
     },

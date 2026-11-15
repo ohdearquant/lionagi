@@ -695,8 +695,8 @@ async def test_worker_pass_reserves_adhoc_slot_and_counts_against_adhoc_cap(monk
     import lionagi.state.db as state_db_mod
     import lionagi.studio.config as studio_config
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.task_applications import TaskApplication, submit_task
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -765,8 +765,8 @@ async def test_adhoc_lane_admits_under_continuously_saturated_scheduled_cap(monk
     import lionagi.state.db as state_db_mod
     import lionagi.studio.config as studio_config
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.task_applications import TaskApplication, submit_task
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)

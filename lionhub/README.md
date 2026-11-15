@@ -17,6 +17,7 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
+| `lionhub/src/lionhub/serve/daemon/` | Studio daemon process services: host admission, the reconnect channel, the scheduler log, stack-dump diagnostics, and the helpers behind the execution routes. |
 | `lionhub/tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
 
 ## Moved imports
@@ -79,6 +80,17 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.studio.services.schedule_export` | `lionhub.orchestration.schedule.export` |
 | `lionagi.studio.services.project_lookup` | `lionhub.orchestration.project_store` |
 | `lionagi.studio.services._db` | `lionhub.orchestration.state_store` |
+| `lionagi.studio._host` | `lionhub.serve.daemon._host` |
+| `lionagi.studio._traceback_dump` | `lionhub.serve.daemon._traceback_dump` |
+| `lionagi.studio.daemon_log` | `lionhub.serve.daemon.daemon_log` |
+| `lionagi.studio.reconnect` | `lionhub.serve.daemon.reconnect` |
+| `lionagi.studio.services._io` | `lionhub.serve.daemon.services._io` |
+| `lionagi.studio.services._path_safety` | `lionhub.serve.daemon.services._path_safety` |
+| `lionagi.studio.services._sse` | `lionhub.serve.daemon.services._sse` |
+| `lionagi.studio.services.artifact_verification` | `lionhub.serve.daemon.services.artifact_verification` |
+| `lionagi.studio.services.signals` | `lionhub.serve.daemon.services.signals` |
+| `lionagi.studio.services.run_view` | `lionhub.serve.daemon.services.run_view` |
+| `lionagi.studio.services.task_applications` | `lionhub.serve.daemon.services.task_applications` |
 
 ## Tests
 

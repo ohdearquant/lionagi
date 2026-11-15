@@ -20,9 +20,15 @@ from starlette.staticfiles import StaticFiles
 from lionagi._errors import LionError
 from lionagi.version import __version__
 from lionhub.orchestration.state_store import StoreNotAddressableError
+from lionhub.serve.daemon._host import admitted_host_names, normalize_host
+from lionhub.serve.daemon._traceback_dump import arm_traceback_dump, disarm_traceback_dump
+from lionhub.serve.daemon.reconnect import (
+    ReconnectChannel,
+    default_socket_path,
+    port_proof,
+    unix_sockets_supported,
+)
 
-from ._host import admitted_host_names, normalize_host
-from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
 from .config import CORS_ORIGINS, HOST
 from .launch_access import (
     PAIRING_REDEEM_PATH,
@@ -30,7 +36,6 @@ from .launch_access import (
     launch_bearer,
     mint_pairing_code,
 )
-from .reconnect import ReconnectChannel, default_socket_path, port_proof, unix_sockets_supported
 from .registry import iter_studio_routes, load_studio_route_modules
 
 _log = logging.getLogger(__name__)
@@ -348,9 +353,9 @@ async def _finalize_warmup(task: asyncio.Task | None) -> None:
 async def lifespan(app_instance):
     from lionhub.orchestration.scheduler.engine import scheduler
     from lionhub.orchestration.scheduler.lifecycle import run_startup_reconciliation
+    from lionhub.serve.daemon.daemon_log import daemon_log_handler
     from lionhub.serve.diagnostics import snapshot_git_position
 
-    from .daemon_log import daemon_log_handler
     from .services.operator import operator_shutdown, operator_startup
 
     # First, before anything else can run and long before the first request:

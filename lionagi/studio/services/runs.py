@@ -11,10 +11,10 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path
+from lionhub.serve.daemon.services._path_safety import public_path
 
 from ..registry import studio_route
 from . import sessions as _sessions_svc
-from ._path_safety import public_path
 from .sessions import display_cost, display_model
 
 # Read-only file viewer cap (ADR file-links feature): large artifacts are

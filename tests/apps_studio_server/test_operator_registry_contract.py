@@ -220,7 +220,7 @@ async def _exercise_session_detail(
 async def _exercise_session_signals(
     monkeypatch: pytest.MonkeyPatch, store: _WriteMethodTrap
 ) -> None:
-    from lionagi.studio.services import signals as signals_service
+    from lionhub.serve.daemon.services import signals as signals_service
 
     async def get_signals_after(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return []

@@ -4,7 +4,7 @@ Non-obvious invariants, protocol contracts, and design rationale for
 `lionagi/studio/` that don't belong inline as long-form comments. Terse
 reference — not a narrative. Organized by module path.
 
-## lionagi/studio/_host.py
+## lionhub/src/lionhub/serve/daemon/_host.py
 
 **`normalize_host`** — the one reader of a host value's spelling: whitespace
 and one bracket pair removed, lowercased, and, when `ipaddress` parses what is
@@ -919,7 +919,7 @@ in that zone), and the next plan reports `UNCHANGED`.
   clear on `None`/`""`; all other disk keys preserved. Writes through
   symlinks to the real source file.
 
-## lionagi/studio/services/task_applications.py
+## lionhub/src/lionhub/serve/daemon/services/task_applications.py
 
 - **ADR-0071 D1 architecture** — `TaskApplication` is the frozen submit shape
   every binding shares. This module wires the in-process binding

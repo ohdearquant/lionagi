@@ -1000,6 +1000,72 @@ CONTRACTS: tuple[MoveContract, ...] = (
         kind="module",
         public_names=frozenset({"StoreNotAddressableError"}),
     ),
+    MoveContract(
+        old="lionagi.studio._host",
+        new="lionhub.serve.daemon._host",
+        kind="module",
+        public_names=frozenset({"admitted_host_names", "is_unspecified_host"}),
+    ),
+    MoveContract(
+        old="lionagi.studio._traceback_dump",
+        new="lionhub.serve.daemon._traceback_dump",
+        kind="module",
+        public_names=frozenset({"arm_traceback_dump", "disarm_traceback_dump"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.daemon_log",
+        new="lionhub.serve.daemon.daemon_log",
+        kind="module",
+        public_names=frozenset({"daemon_log_handler"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.reconnect",
+        new="lionhub.serve.daemon.reconnect",
+        kind="module",
+        public_names=frozenset({"default_socket_path", "port_proof"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services._io",
+        new="lionhub.serve.daemon.services._io",
+        kind="module",
+        public_names=frozenset({"parse_json_col", "read_json_file_checked"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services._path_safety",
+        new="lionhub.serve.daemon.services._path_safety",
+        kind="module",
+        public_names=frozenset({"public_path", "safe_path_join"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services._sse",
+        new="lionhub.serve.daemon.services._sse",
+        kind="module",
+        public_names=frozenset({"sse_response"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.artifact_verification",
+        new="lionhub.serve.daemon.services.artifact_verification",
+        kind="module",
+        public_names=frozenset({"resolve_artifact_verification"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.signals",
+        new="lionhub.serve.daemon.services.signals",
+        kind="module",
+        public_names=frozenset({"get_signals_after"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.run_view",
+        new="lionhub.serve.daemon.services.run_view",
+        kind="module",
+        public_names=frozenset({"build_run_view", "get_run_view"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.task_applications",
+        new="lionhub.serve.daemon.services.task_applications",
+        kind="module",
+        public_names=frozenset({"cancel_task", "submit_task"}),
+    ),
 )
 
 

@@ -327,7 +327,7 @@ async def test_session_signals_limit_caps_and_reports_truncation(db_path):
 
 async def test_session_signals_redacts_secret_shaped_payload_value(db_path):
     from lionagi.studio.operator.application_mcp import session_signals
-    from lionagi.studio.services import signals as signals_service
+    from lionhub.serve.daemon.services import signals as signals_service
 
     sid = str(uuid.uuid4())
     await seed_session(db_path, session_id=sid, status="running")

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.studio.services.run_view import (
+from lionhub.serve.daemon.services.run_view import (
     build_outcome,
     build_run_view,
     exit_code_for_view,
@@ -409,7 +409,7 @@ def test_every_outcome_this_module_returns_declares_its_summary_provenance():
     import ast
     import inspect
 
-    from lionagi.studio.services import run_view
+    from lionhub.serve.daemon.services import run_view
 
     tree = ast.parse(inspect.getsource(run_view))
     outcomes = []

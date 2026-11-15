@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import json
 
-import lionagi.studio.services.artifact_verification as verification_mod
-from lionagi.studio.services.artifact_verification import provisional_artifact_verification
+import lionhub.serve.daemon.services.artifact_verification as verification_mod
+from lionhub.serve.daemon.services.artifact_verification import provisional_artifact_verification
 
 CONTRACT = {
     "expected": [

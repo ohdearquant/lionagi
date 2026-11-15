@@ -350,8 +350,8 @@ second name from it at `lionagi/state/db.py::_BRANCH_TERMINAL_STATUSES`.
 | --- | --- | --- |
 | `lionagi/studio/services/sessions.py::is_session_stream_done` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
 | `lionagi/studio/services/run_resume.py::_require_resumable_snapshot` | **Yes if resume is offered on a mirrored row** | read at the source: `queued = source_status not in SESSION_TERMINAL_STATUSES`, so a falsely-terminal session launches a resume immediately instead of queueing it behind live work. **Whether the Studio offers resume for a mirrored session is UNVERIFIED and is the first thing to check.** |
-| `lionagi/studio/services/run_view.py::_grading_session` | Likely, display only | not driven |
-| `lionagi/studio/services/artifact_verification.py::resolve_artifact_verification` | Unverified | not driven |
+| `lionhub/src/lionhub/serve/daemon/services/run_view.py::_grading_session` | Likely, display only | not driven |
+| `lionhub/src/lionhub/serve/daemon/services/artifact_verification.py::resolve_artifact_verification` | Unverified | not driven |
 | `lionagi/studio/services/run_resume_worker.py::_wait_for_terminal` | Unverified | not driven |
 | `lionhub/src/lionhub/serve/cli/monitor.py::_DEFAULT_MAX_WAIT_SECONDS`, `lionhub/src/lionhub/serve/cli/monitor.py::_split_watched_ids`, `lionhub/src/lionhub/serve/cli/monitor.py::_effective_session_status` | Unverified | not driven |
 | `lionhub/src/lionhub/serve/cli/machine.py::_lifecycle_summary` | Unverified, display flag | not driven |

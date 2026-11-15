@@ -45,7 +45,7 @@ body must not accept form-compatible content types that avoid a CORS preflight
 persisted session signals, show-directory changes, and Leo turns all emit unnamed
 `data:` frames, but their cursors, terminal tests, and error paths differ. Treating them
 as one replayable event log would promise semantics the code does not implement
-(`lionagi/studio/services/_sse.py`; `sessions.py`; `shows.py`; `leo.py`).
+(`lionhub/src/lionhub/serve/daemon/services/_sse.py`; `sessions.py`; `shows.py`; `leo.py`).
 
 | Concern | Decision |
 |---|---|

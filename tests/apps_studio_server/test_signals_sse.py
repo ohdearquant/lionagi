@@ -146,7 +146,7 @@ async def test_get_signals_payload_round_trips(tmp_path):
 
 @pytest.fixture
 def patched_signals_db(tmp_path, monkeypatch):
-    import lionagi.studio.services.signals as svc
+    import lionhub.serve.daemon.services.signals as svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -217,7 +217,7 @@ async def test_service_get_signals_after_seq_filter(patched_signals_db):
 async def test_signals_stream_starts_after_requested_resume_cursor(monkeypatch):
     """A reconnect must not replay the session's full durable signal log."""
     from lionagi.studio.services import sessions as sessions_svc
-    from lionagi.studio.services import signals as signals_svc
+    from lionhub.serve.daemon.services import signals as signals_svc
 
     seen: list[tuple[str, int]] = []
 

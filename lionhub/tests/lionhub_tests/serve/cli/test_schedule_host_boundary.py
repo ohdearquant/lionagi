@@ -41,8 +41,8 @@ import sys
 import lionagi.studio
 
 if sys.argv[1] == 'baseline':
-    loader = importlib.machinery.SourceFileLoader('lionagi.studio._host', sys.argv[2])
-    spec = importlib.util.spec_from_loader('lionagi.studio._host', loader)
+    loader = importlib.machinery.SourceFileLoader('lionhub.serve.daemon._host', sys.argv[2])
+    spec = importlib.util.spec_from_loader('lionhub.serve.daemon._host', loader)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -65,8 +65,8 @@ print(json.dumps(sorted(sys.modules)))
 
 
 def test_studio_reexports_the_schedule_normalizer_by_identity():
-    from lionagi.studio import _host
     from lionhub.orchestration.schedule import parsing as _schedule_parsing
+    from lionhub.serve.daemon import _host
 
     assert _host.normalize_host is _schedule_parsing.normalize_host
     assert _host.normalize_host("[::ffff:192.168.1.5]") == "192.168.1.5"

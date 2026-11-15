@@ -20,9 +20,13 @@ from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.ln.concurrency import run_sync
 from lionhub.agent.casts.pattern import list_modes as _list_modes
 from lionhub.agent.casts.pattern import list_roles as _list_roles
+from lionhub.serve.daemon.services._path_safety import (
+    public_path,
+    safe_path_join,
+    validate_name_component,
+)
 
 from ..registry import studio_route
-from ._path_safety import public_path, safe_path_join, validate_name_component
 from .redaction import (
     RedactedPayloadError,
     demo_mode_enabled,

@@ -1236,7 +1236,7 @@ async def test_chain_decision_none_returns_without_sleep(
 async def test_terminal_task_application_without_schedule_resolves_without_grace(
     temp_db_path: Path, sleep_probe: list[float], status: str
 ) -> None:
-    from lionagi.studio.services.task_applications import TaskApplication, submit_task
+    from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
 
     async with StateDB() as db:
         run_id = await submit_task(
