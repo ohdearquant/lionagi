@@ -5,17 +5,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 if __package__:
     from .quarantine import DEFAULT_MANIFEST, QuarantineError, load_manifest
 else:
     from quarantine import DEFAULT_MANIFEST, QuarantineError, load_manifest
+
+
+_REPOSITORY = "ohdearquant/lionagi"
+_ARTIFACT_PREFIX = "flake-failures-"
+_INCOMPLETE = 3
+_RUN_ID = re.compile(r"[1-9][0-9]*")
 
 
 def _walk_json(value: object) -> Iterator[dict[str, object]]:
@@ -53,46 +61,167 @@ def records_from_paths(paths: Iterable[Path]) -> Iterator[dict[str, object]]:
             yield from _records_from_file(file_path)
 
 
-def _read_gh_run_ids(path: str) -> list[str]:
+@dataclass(frozen=True)
+class _Run:
+    id: str
+    status: str | None
+    conclusion: str | None
+
+
+def _read_gh_runs(path: str) -> list[_Run]:
     raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
     value = json.loads(raw)
     rows = value if isinstance(value, list) else [value]
-    run_ids: list[str] = []
+    runs: dict[str, _Run] = {}
     for row in rows:
         if not isinstance(row, dict):
-            continue
-        run_id = row.get("databaseId") or row.get("run_id") or row.get("id")
-        if run_id is not None:
-            run_ids.append(str(run_id))
-    return list(dict.fromkeys(run_ids))
+            raise ValueError("expected a GitHub run object")
+        run_id = str(row.get("databaseId") or row.get("run_id") or row.get("id"))
+        if not _RUN_ID.fullmatch(run_id):
+            raise ValueError("expected a positive GitHub run ID")
+        status, conclusion = row.get("status"), row.get("conclusion")
+        if (status is not None and not isinstance(status, str)) or (
+            conclusion is not None and not isinstance(conclusion, str)
+        ):
+            raise ValueError(f"expected status and conclusion strings for GitHub run {run_id}")
+        run = _Run(run_id, status, conclusion)
+        if runs.setdefault(run_id, run) != run:
+            raise ValueError(f"conflicting outcomes for GitHub run {run_id}")
+    return list(runs.values())
 
 
-def _download_gh_artifacts(run_ids: Iterable[str], destination: Path) -> list[Path]:
-    downloaded: list[Path] = []
-    for run_id in run_ids:
-        run_dir = destination / run_id
-        result = subprocess.run(
-            [
-                "gh",
-                "run",
-                "download",
-                run_id,
-                "--pattern",
-                "flake-failures-*",
-                "--dir",
-                str(run_dir),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
+def _gh(*args: str) -> str:
+    result = subprocess.run(  # noqa: S603, S607 — fixed executable and scoped GitHub routes
+        ["gh", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode:
+        detail = result.stderr.strip().splitlines()
+        raise ValueError(detail[-1] if detail else f"gh exited with status {result.returncode}")
+    return result.stdout
+
+
+@dataclass(frozen=True)
+class _Artifact:
+    id: int
+    name: str
+    expired: bool
+
+
+def _list_gh_artifacts(run_id: str) -> list[_Artifact]:
+    pages = json.loads(
+        _gh(
+            "api",
+            "--hostname",
+            "github.com",
+            "--paginate",
+            "--slurp",
+            f"repos/{_REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100",
         )
-        if result.returncode == 0:
-            downloaded.append(run_dir)
-        else:
-            detail = result.stderr.strip().splitlines()
-            reason = detail[-1] if detail else f"exit {result.returncode}"
-            print(f"warning: run {run_id}: {reason}", file=sys.stderr)
-    return downloaded
+    )
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("malformed artifact listing")
+    totals: set[int] = set()
+    artifacts: dict[int, _Artifact] = {}
+    for page in pages:
+        if not isinstance(page, dict):
+            raise ValueError("malformed artifact listing page")
+        total, rows = page.get("total_count"), page.get("artifacts")
+        if type(total) is not int or total < 0 or not isinstance(rows, list):
+            raise ValueError("malformed artifact listing page")
+        totals.add(total)
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("malformed artifact metadata")
+            artifact_id, name, expired = row.get("id"), row.get("name"), row.get("expired")
+            if (
+                type(artifact_id) is not int
+                or artifact_id <= 0
+                or not isinstance(name, str)
+                or not name
+                or type(expired) is not bool
+            ):
+                raise ValueError("malformed artifact metadata")
+            if artifact_id in artifacts:
+                raise ValueError("duplicate artifact in listing")
+            artifacts[artifact_id] = _Artifact(artifact_id, name, expired)
+    if totals != {len(artifacts)}:
+        raise ValueError("incomplete artifact listing")
+    matching = [
+        artifact for artifact in artifacts.values() if artifact.name.startswith(_ARTIFACT_PREFIX)
+    ]
+    if len({artifact.name for artifact in matching}) != len(matching):
+        raise ValueError("ambiguous matching artifact names")
+    return matching
+
+
+def _artifact_records(
+    run_id: str, artifact: _Artifact, destination: Path
+) -> list[dict[str, object]]:
+    if artifact.expired:
+        raise ValueError("artifact has expired")
+    artifact_dir = destination / run_id / str(artifact.id)
+    _gh(
+        "run",
+        "download",
+        run_id,
+        "--repo",
+        f"github.com/{_REPOSITORY}",
+        "--name",
+        artifact.name,
+        "--dir",
+        str(artifact_dir),
+    )
+    records: list[dict[str, object]] = []
+    for line in (artifact_dir / "failures.jsonl").read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        if not isinstance(record, dict) or not all(
+            isinstance(record.get(key), str) and record[key] for key in ("nodeid", "signature")
+        ):
+            raise ValueError("malformed flake failure record")
+        if str(record.get("run_id", run_id)) != run_id:
+            raise ValueError("flake failure record names a different run")
+        record.setdefault("run_id", run_id)
+        records.append(record)
+    if not records:
+        raise ValueError("artifact contains no flake failure records")
+    return records
+
+
+def _collect_gh_records(
+    runs: Iterable[_Run], destination: Path
+) -> tuple[list[dict[str, object]], int, int]:
+    records: list[dict[str, object]] = []
+    artifacts_read = incomplete_runs = 0
+    for run in runs:
+        incomplete = run.status != "completed" or run.conclusion not in {"success", "failure"}
+        if incomplete:
+            print(
+                f"warning: run {run.id}: incomplete outcome "
+                f"(status={run.status!r}, conclusion={run.conclusion!r})",
+                file=sys.stderr,
+            )
+        try:
+            artifacts = _list_gh_artifacts(run.id)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"warning: run {run.id}: could not list artifacts: {exc}", file=sys.stderr)
+            incomplete_runs += 1
+            continue
+        for artifact in artifacts:
+            try:
+                records.extend(_artifact_records(run.id, artifact, destination))
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                print(f"warning: run {run.id}, artifact {artifact.name!r}: {exc}", file=sys.stderr)
+                incomplete = True
+            else:
+                artifacts_read += 1
+        incomplete_runs += incomplete
+    return records, artifacts_read, incomplete_runs
 
 
 def render_report(
@@ -137,7 +266,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--gh-runs",
         metavar="PATH",
-        help="JSON from `gh run list/view --json ...`; use - for stdin",
+        help="JSON from `gh run list/view --json databaseId,status,conclusion`; use - for stdin",
     )
     parser.add_argument("--quarantine", type=Path, default=DEFAULT_MANIFEST)
     return parser.parse_args(argv)
@@ -161,15 +290,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(render_report(direct_records, quarantined=quarantined))
             return 0
 
-        run_ids = _read_gh_run_ids(args.gh_runs)
+        runs = _read_gh_runs(args.gh_runs)
         with tempfile.TemporaryDirectory(prefix="lionagi-flakes-") as temp_dir:
-            downloaded = _download_gh_artifacts(run_ids, Path(temp_dir))
-            records = [*direct_records, *records_from_paths(downloaded)]
-            print(render_report(records, quarantined=quarantined))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+            remote_records, artifacts_read, incomplete = _collect_gh_records(runs, Path(temp_dir))
+        records = [*direct_records, *remote_records]
+        if incomplete:
+            print(
+                f"Incomplete flake report: {incomplete} of {len(runs)} runs could not be read completely."
+            )
+        tests = {str(record["nodeid"]) for record in records if record.get("nodeid")}
+        tests.discard("<pytest-session>")
+        print(
+            f"Runs requested: {len(runs)}; runs read: {len(runs) - incomplete}; "
+            f"artifacts read: {artifacts_read}; distinct tests: {len(tests)}."
+        )
+        print(render_report(records, quarantined=quarantined))
+    except (OSError, ValueError) as exc:
         print(f"flake report error: {exc}", file=sys.stderr)
         return 2
-    return 0
+    return _INCOMPLETE if incomplete else 0
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ import pytest_asyncio
 from sqlalchemy import event, inspect, text
 
 import lionagi.state.db as db_module
-from lionagi.state.db import StateDB
+from lionagi.state.db import SCHEMA_VERSION, StateDB
 from lionagi.state.engine import make_engine
 from lionagi.state.lifecycle.callbacks import EXECUTION_ENTITY_KINDS
 from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
@@ -57,7 +57,7 @@ def make_v5_sqlite(path: Path) -> None:
 
 async def assert_migration(db: StateDB) -> None:
     await db.open()
-    assert await db.schema_version() == "6"
+    assert await db.schema_version() == SCHEMA_VERSION
     async with db._read() as conn:
         rows = (
             await conn.execute(text("SELECT id, delivery_eligible FROM status_transitions"))

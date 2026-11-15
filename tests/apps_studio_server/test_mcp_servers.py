@@ -461,7 +461,7 @@ def test_synced_mcp_json_excludes_disabled_servers(tmp_path, monkeypatch):
 
 def test_synced_mcp_json_is_readable_by_mcp_resolve_contract(tmp_path, monkeypatch):
     """The file Studio writes must be exactly what
-    lionagi/cli/_mcp_resolve.py's own reader expects — this is the contract
+    lionhub.orchestration.mcp_config's own reader expects — this is the contract
     the CLI's spawn resolution depends on."""
     from lionhub.orchestration.mcp_config import _read_servers
 

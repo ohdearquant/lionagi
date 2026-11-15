@@ -123,11 +123,16 @@ def test_three_source_derived_declarations_preserve_order_and_isolation():
         ("auth_type", "bearer"),
     )
     cli_data = (
-        ("orchestrate", "Multi-agent orchestration patterns.", "lionagi.cli.orchestrate", ("o",)),
+        (
+            "orchestrate",
+            "Multi-agent orchestration patterns.",
+            "lionhub.serve.cli.orchestrate",
+            ("o",),
+        ),
         (
             "agent",
             "Spawn one-shot subagent (blocking); prints final response.",
-            "lionagi.cli.agent",
+            "lionhub.serve.cli.agent",
             (),
         ),
     )
@@ -790,7 +795,7 @@ def test_exports_and_cold_import_do_not_activate_domains_or_optional_models():
     source = """
 import sys, importlib.abc, importlib.util, importlib.metadata, asyncio, builtins
 sys.path.insert(0, ROOT)
-blocked = ("pydantic", "sqlalchemy", "lionagi.state", "lionagi.cli",
+blocked = ("pydantic", "sqlalchemy", "lionagi.state", "lionhub.serve.cli",
            "lionagi.studio", "lionhub.providers", "openai", "anthropic")
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):

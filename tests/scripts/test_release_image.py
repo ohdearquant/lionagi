@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -54,13 +55,8 @@ TAG_GUARD_RUN = (
 UV_INSTALL_RUN = (
     'curl -LsSf https://astral.sh/uv/install.sh | sh\necho "$HOME/.cargo/bin" >> $GITHUB_PATH\n'
 )
-TEST_RUN = (
-    "source .venv/bin/activate\n"
-    "if [ -f scripts/test_roots.py ]; then\n"
-    "  uv run python scripts/test_roots.py > /dev/null\n"
-    "fi\n"
-    "uv run pytest --maxfail=1 --disable-warnings\n"
-)
+TEST_MATRIX_VERSION = "${{ matrix.python-version }}"
+TEST_MATRIX = "${{ fromJSON(needs.source.outputs.python_versions) }}"
 VERIFY_RUN = (
     'if [ "${DOCKER_RESULT}" != success ]; then\n'
     "  echo '::error::image publication or digest verification did not succeed'\n"
@@ -186,8 +182,13 @@ def as_release_event(env):
     )
 
 
-def test_manual_repair_uses_the_release_commit_not_the_workflow_commit(metadata):
-    assert resolve_fixture(metadata) == {"version": "1.2.3", "sha": SHA}
+@pytest.mark.parametrize("prepare_image", [False, True], ids=["source", "image"])
+def test_manual_repair_uses_the_release_commit_not_the_workflow_commit(metadata, prepare_image):
+    result = resolve_fixture(metadata, prepare_image=prepare_image)
+    assert json.loads(result.pop("python_versions")) == ["3.10", "3.11", "3.12", "3.13"]
+    if prepare_image:
+        assert result.pop("publish_latest") == "true"
+    assert result == {"version": "1.2.3", "sha": SHA}
 
 
 def test_metadata_command_failure_keeps_the_command_output():
@@ -355,7 +356,9 @@ def test_release_event_can_precede_pypi_and_publish_history(metadata):
     as_release_event(metadata[0])
     metadata[2].clear()
     del metadata[1][RUNS]
-    assert resolve_fixture(metadata) == {"version": "1.2.3", "sha": SHA}
+    result = resolve_fixture(metadata)
+    assert json.loads(result.pop("python_versions")) == ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    assert result == {"version": "1.2.3", "sha": SHA}
     assert not any(service == "pypi" for service, _ in metadata[-1])
 
 
@@ -369,6 +372,7 @@ def test_release_image_accepts_a_published_wheel_after_upload_client_failure(met
         "version": "1.2.3",
         "sha": SHA,
         "publish_latest": "true",
+        "python_versions": json.dumps(["3.10", "3.11", "3.12", "3.13", "3.14"]),
     }
     assert not any("/actions/" in path for service, path in metadata[-1] if service == "github")
 
@@ -517,7 +521,7 @@ def assert_workflow_contract(document):
     }
     assert {name: set(job) for name, job in jobs.items()} == {
         "source": {"if", "permissions", "runs-on", "outputs", "steps"},
-        "test": {"permissions", "needs", "runs-on", "strategy", "steps"},
+        "test": {"permissions", "needs", "runs-on", "env", "strategy", "steps", "timeout-minutes"},
         "deploy": {"permissions", "needs", "if", "runs-on", "timeout-minutes", "steps"},
         "docker": {
             "permissions",
@@ -534,7 +538,10 @@ def assert_workflow_contract(document):
     for name, job in jobs.items():
         # A job-level value overrides the workflow-level pin, and a soft-failing
         # job leaves the run green without the result the gate requires.
-        assert "env" not in job, f"{name} overrides the pinned workflow environment"
+        if name == "test":
+            assert job["env"] == {"UV_PYTHON": TEST_MATRIX_VERSION}
+        else:
+            assert "env" not in job, f"{name} overrides the pinned workflow environment"
         assert not job.get("continue-on-error", False), f"{name} may fail without failing the run"
         expected = {"contents": "read"}
         if name in {"source", "docker"}:
@@ -545,6 +552,7 @@ def assert_workflow_contract(document):
     assert jobs["source"]["outputs"] == {
         "version": "${{ steps.release.outputs.version }}",
         "sha": "${{ steps.release.outputs.sha }}",
+        "python_versions": "${{ steps.release.outputs.python_versions }}",
     }
     # Exact step lists: an inserted, reordered, skipped or retagged step can
     # change the source, the build environment or what is published.
@@ -553,10 +561,6 @@ def assert_workflow_contract(document):
         "shell": "bash",
         "env": {"RESOLVED_SHA": "${{ needs.source.outputs.sha }}"},
         "run": GUARD_RUN,
-    }
-    assert jobs["source"]["outputs"] == {
-        "version": "${{ steps.release.outputs.version }}",
-        "sha": "${{ steps.release.outputs.sha }}",
     }
     assert jobs["source"]["if"] == (
         "github.event_name == 'workflow_dispatch' || startsWith("
@@ -578,14 +582,13 @@ def assert_workflow_contract(document):
     ]
     assert jobs["test"]["needs"] == "source"
     assert "if" not in jobs["test"]
-    assert jobs["test"]["strategy"] == {
-        "matrix": {"python-version": ["3.10", "3.11", "3.12", "3.13"]}
-    }
-    # The test job is what makes a red commit refuse the release, so its steps
-    # are pinned whole: a replaced install or test command would otherwise pass.
+    assert jobs["test"]["timeout-minutes"] == 60
+    assert jobs["test"]["strategy"] == {"matrix": {"python-version": TEST_MATRIX}}
+    # Pin the checkout, setup and terminal commands. Shell tests execute both modes.
     # It checks out the tag ref, not the commit an earlier job computed, and then
     # requires that tag to be the resolved source before anything runs.
-    assert jobs["test"]["steps"] == [
+    *setup_steps, test_step = jobs["test"]["steps"]
+    assert setup_steps == [
         guard,
         {
             "uses": CHECKOUT_ACTION,
@@ -604,7 +607,17 @@ def assert_workflow_contract(document):
         },
         {"name": "Install uv", "run": UV_INSTALL_RUN},
         {"name": "Install dependencies", "run": "uv venv\nuv sync --all-extras\n"},
-        {"name": "Run tests", "run": TEST_RUN},
+    ]
+    assert set(test_step) == {"name", "shell", "run"}
+    assert test_step["name"] == "Run tests" and test_step["shell"] == "bash"
+    terminal_commands = [
+        line
+        for line in map(str.strip, test_step["run"].splitlines())
+        if line.startswith(("MAXFAIL=", "exec "))
+    ]
+    assert terminal_commands == [
+        "MAXFAIL=0 exec scripts/ci.sh test-python",
+        "exec uv run pytest --maxfail=1 --disable-warnings",
     ]
     for step in jobs["test"]["steps"]:
         assert "if" not in step, "no test step may be skipped"
@@ -842,8 +855,14 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         "job-soft-failure-deploy",
         "job-soft-failure-test",
         "job-soft-failure-docker",
-        "test-run-replaced",
+        "test-run-removed",
+        "test-run-release-exec-removed",
+        "test-timeout-removed",
+        "test-timeout-changed",
         "test-matrix-reduced",
+        "test-uv-python-pin-removed",
+        "test-step-release-mode-env-added",
+        "test-step-maxfail-env-added",
         "retag-step-before-image",
         "image-revision-from-event-sha",
         "image-single-platform",
@@ -990,12 +1009,24 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
         jobs["test"]["continue-on-error"] = True
     elif mutation == "job-soft-failure-docker":
         jobs["docker"]["continue-on-error"] = True
-    elif mutation == "test-run-replaced":
-        next(s for s in jobs["test"]["steps"] if s.get("name") == "Run tests").update(
-            {"run": "true"}
+    elif mutation == "test-run-removed":
+        test["steps"][-1].pop("run")
+    elif mutation == "test-run-release-exec-removed":
+        test["steps"][-1]["run"] = test["steps"][-1]["run"].replace(
+            "MAXFAIL=0 exec scripts/ci.sh test-python", "MAXFAIL=0 scripts/ci.sh test-python", 1
         )
+    elif mutation == "test-timeout-removed":
+        test.pop("timeout-minutes")
+    elif mutation == "test-timeout-changed":
+        test["timeout-minutes"] = 180
     elif mutation == "test-matrix-reduced":
         jobs["test"]["strategy"]["matrix"]["python-version"] = ["3.12"]
+    elif mutation == "test-uv-python-pin-removed":
+        test["env"].pop("UV_PYTHON")
+    elif mutation == "test-step-release-mode-env-added":
+        test["steps"][-1]["env"] = {"RELEASE_TEST_MODE": "repair"}
+    elif mutation == "test-step-maxfail-env-added":
+        test["steps"][-1]["env"] = {"MAXFAIL": "1"}
     elif mutation == "retag-step-before-image":
         docker["steps"].insert(
             docker["steps"].index(image),
@@ -1439,68 +1470,110 @@ def test_daily_check_guidance_does_not_claim_the_issue_is_current():
     assert "behind at the last daily reading" in text
 
 
-def _simulate_release_test_step(root):
-    """Exercise only this step's fixed shell forms without launching a process."""
-    from scripts.test_roots import TestRootConfigError, configured_test_roots
+def _run_release_test_step(
+    root, *, event, version, wrapper_status=None, roots=None, legacy_mode=None
+):
+    """Run the workflow shell with a checkout-local wrapper and a stub uv."""
+    scripts = root / "scripts"
+    scripts.mkdir()
+    if roots is not None:
+        (root / "tests").mkdir()
+        (root / "pyproject.toml").write_text(
+            "[tool.pytest.ini_options]\ntestpaths = " + json.dumps(roots) + "\n",
+            encoding="utf-8",
+        )
+        shutil.copyfile(ROOT / "scripts/test_roots.py", scripts / "test_roots.py")
+    if wrapper_status is not None:
+        wrapper = scripts / "ci.sh"
+        wrapper.write_text(
+            '#!/bin/bash\nprintf "%s\\n" "ci.sh $* [uv=$UV_PYTHON, maxfail=$MAXFAIL]" >> "$TRACE"\n'
+            f"exit {wrapper_status}\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
 
-    step = next(s for s in workflow()["jobs"]["test"]["steps"] if s.get("name") == "Run tests")
-    active = True
-    pytest_calls = []
-    for line in step["run"].splitlines():
-        line = line.strip()
-        if line == "if [ -f scripts/test_roots.py ]; then":
-            active = (root / "scripts/test_roots.py").is_file()
-        elif line == "fi":
-            active = True
-        elif not active or not line:
-            continue
-        elif line == "source .venv/bin/activate":
-            assert (root / ".venv/bin/activate").is_file()
-        elif line == "uv run python scripts/test_roots.py > /dev/null":
-            if not (root / "scripts/test_roots.py").is_file():
-                return pytest_calls, "missing helper"
-            try:
-                configured_test_roots(root)
-            except TestRootConfigError:
-                return pytest_calls, "invalid roots"
-        elif line.startswith("uv run pytest"):
-            pytest_calls.append(line)
-        else:
-            raise AssertionError(f"unexpected test command: {line}")
-    return pytest_calls, None
-
-
-def _release_source_fixture(root, *, has_helper, roots):
-    (root / ".venv/bin").mkdir(parents=True)
-    (root / ".venv/bin/activate").touch()
-    (root / "tests").mkdir()
-    (root / "pyproject.toml").write_text(
-        "[tool.pytest.ini_options]\ntestpaths = " + json.dumps(roots) + "\n",
+    fake_bin = root / "bin"
+    fake_bin.mkdir()
+    uv = fake_bin / "uv"
+    uv.write_text(
+        f"#!{sys.executable}\n"
+        "import os, runpy, sys\n"
+        "args = sys.argv[1:]\n"
+        'with open(os.environ["TRACE"], "a", encoding="utf-8") as stream:\n'
+        '    print("uv", *args, f"[uv={os.environ[\'UV_PYTHON\']}]", file=stream)\n'
+        'assert "MAXFAIL" not in os.environ\n'
+        'if args == ["run", "python", "scripts/test_roots.py"]:\n'
+        '    runpy.run_path(args[-1], run_name="__main__")\n'
+        'elif args != ["run", "pytest", "--maxfail=1", "--disable-warnings"]:\n'
+        "    sys.exit(99)\n",
         encoding="utf-8",
     )
-    if has_helper:
-        (root / "scripts").mkdir()
-        (root / "scripts/test_roots.py").touch()
+    uv.chmod(0o755)
+
+    step = next(s for s in workflow()["jobs"]["test"]["steps"] if s.get("name") == "Run tests")
+    trace = root / "trace"
+    env = {
+        "PATH": str(fake_bin),
+        "TRACE": str(trace),
+        "UV_PYTHON": version,
+    }
+    if event is not None:
+        env["GITHUB_EVENT_NAME"] = event
+    if legacy_mode is not None:
+        env["RELEASE_TEST_MODE"] = legacy_mode
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    calls = trace.read_text(encoding="utf-8").splitlines() if trace.exists() else []
+    return result, calls
 
 
-@pytest.mark.parametrize("version", ["0.35.1", "0.37.0"])
-def test_release_test_step_accepts_historical_tag_without_helper(tmp_path, version):
-    # Both named tags configure this root and predate test_roots.py.
-    _release_source_fixture(tmp_path, has_helper=False, roots=["tests"])
-    calls, error = _simulate_release_test_step(tmp_path)
-    assert error is None, (version, error)
-    assert calls == ["uv run pytest --maxfail=1 --disable-warnings"]
+@pytest.mark.parametrize("wrapper_status", [0, 9])
+def test_release_test_step_uses_tagged_ci_runner_and_propagates_failure(tmp_path, wrapper_status):
+    result, calls = _run_release_test_step(
+        tmp_path, event="release", version="3.14", wrapper_status=wrapper_status
+    )
+    assert result.returncode == wrapper_status, result.stderr
+    assert calls == ["ci.sh test-python [uv=3.14, maxfail=0]"]
 
 
-def test_release_test_step_refuses_a_missing_configured_root_when_helper_exists(tmp_path):
-    _release_source_fixture(tmp_path, has_helper=True, roots=["tests", "lionhub/tests"])
-    calls, error = _simulate_release_test_step(tmp_path)
-    assert error == "invalid roots"
+def test_release_test_step_without_ci_runner_fails(tmp_path):
+    result, calls = _run_release_test_step(tmp_path, event="release", version="3.14")
+    assert result.returncode != 0
+    assert "scripts/ci.sh" in result.stderr
     assert calls == []
 
 
-def test_release_test_step_allows_existing_configured_root_when_helper_exists(tmp_path):
-    _release_source_fixture(tmp_path, has_helper=True, roots=["tests"])
-    calls, error = _simulate_release_test_step(tmp_path)
-    assert error is None
-    assert calls == ["uv run pytest --maxfail=1 --disable-warnings"]
+@pytest.mark.parametrize("event", ["pull_request", None], ids=["unsupported", "unset"])
+def test_release_test_step_refuses_invalid_event_before_running_tests(tmp_path, event):
+    result, calls = _run_release_test_step(
+        tmp_path, event=event, version="3.12", legacy_mode="repair"
+    )
+    assert calls == []
+    assert result.returncode != 0
+    assert "::error::unsupported release test event" in result.stdout
+
+
+@pytest.mark.parametrize("roots", [None, ["tests"]], ids=["historical", "with-root-helper"])
+def test_release_test_step_repairs_using_legacy_pytest_command(tmp_path, roots):
+    result, calls = _run_release_test_step(
+        tmp_path, event="workflow_dispatch", version="3.13", wrapper_status=9, roots=roots
+    )
+    assert result.returncode == 0, result.stderr
+    root_check = ["uv run python scripts/test_roots.py [uv=3.13]"] if roots is not None else []
+    assert calls == [*root_check, "uv run pytest --maxfail=1 --disable-warnings [uv=3.13]"]
+
+
+def test_release_test_step_refuses_a_missing_configured_root_when_helper_exists(tmp_path):
+    result, calls = _run_release_test_step(
+        tmp_path, event="workflow_dispatch", version="3.12", roots=["tests", "lionhub/tests"]
+    )
+    assert result.returncode != 0
+    assert "test roots: pytest testpath is not a directory inside the project" in result.stderr
+    assert calls == ["uv run python scripts/test_roots.py [uv=3.12]"]

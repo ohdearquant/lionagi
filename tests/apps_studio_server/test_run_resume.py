@@ -337,7 +337,7 @@ def test_explicit_member_branch_and_model_override(resume_harness):
     first_branch = str(uuid.uuid4())
     second_branch = str(uuid.uuid4())
     _run(_seed_run(db_path, run_id=run_id, branch_ids=[first_branch, second_branch]))
-    monkey_prefix = ["/opt/lionagi/bin/python", "-m", "lionagi.cli"]
+    monkey_prefix = ["/opt/lionagi/bin/python", "-m", "lionhub.serve.cli"]
     resume_svc._subprocess.resolve_li_executable = lambda: (monkey_prefix, None)
 
     response = client.post(

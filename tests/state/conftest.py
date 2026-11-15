@@ -5,11 +5,80 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib
 import os
+import re
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+
+# The CI setup action checks this capability in the test checkout before provisioning.
+RUNNER_POSTGRES_PER_WORKER = True
+
+
+def _runner_database_url(url, run_token, worker):
+    """Give each worker using the runner-local server its own database."""
+    if not run_token:
+        return url
+
+    from sqlalchemy.engine import make_url
+
+    worker = worker or "main"
+    if not re.fullmatch(r"[0-9a-f]{16}", run_token) or not re.fullmatch(r"main|gw[0-9]+", worker):
+        raise ValueError("invalid PostgreSQL test run or worker identifier")
+    parsed = make_url(url)
+    name = f"{parsed.database}_{run_token}_{worker}"
+    if not parsed.database or not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", name):
+        raise ValueError("invalid PostgreSQL test database name")
+    return parsed.set(database=name).render_as_string(hide_password=False)
+
+
+async def _manage_runner_database(admin_url, worker_url, *, create):
+    """Create or drop the worker database; on create, return whether it was new.
+
+    A test module outside this directory imports ``pg_url`` to use it, which
+    gives pytest a second session-scoped definition of the same fixture. Both
+    resolve to the same worker database, so the second set-up finds it already
+    there and shares it instead of failing, and only the set-up that created it
+    drops it.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from tests.state._pg_cleanup import drop_test_database
+
+    name = make_url(worker_url).database
+    engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            if not create:
+                await drop_test_database(conn, name)
+                return False
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": name}
+            )
+            if exists:
+                return False
+            identifier = conn.dialect.identifier_preparer.quote_identifier(name)
+            await conn.exec_driver_sql(f"CREATE DATABASE {identifier}")
+            return True
+    finally:
+        await engine.dispose()
+
+
+def _set_up_runner_database(admin_url, worker_url, *, create):
+    """Create or drop the worker database on a thread with its own event loop.
+
+    ``pg_url`` can be set up while an async test's event loop is already
+    running, where ``asyncio.run`` refuses to start a second loop.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            asyncio.run, _manage_runner_database(admin_url, worker_url, create=create)
+        ).result()
 
 
 @pytest.fixture(scope="session")
@@ -69,7 +138,18 @@ def pg_url():
         if not scheme.startswith("postgresql+"):
             _unavailable(f"not a Postgres URL this suite can drive: {env_url!r}")
         _require_driver(scheme.split("+", 1)[1])
-        yield url
+        worker_url = _runner_database_url(
+            url, os.environ.get("LIONAGI_TEST_PG_RUNNER"), os.environ.get("PYTEST_XDIST_WORKER")
+        )
+        if worker_url == url:
+            yield url
+            return
+        created = _set_up_runner_database(url, worker_url, create=True)
+        try:
+            yield worker_url
+        finally:
+            if created:
+                _set_up_runner_database(url, worker_url, create=False)
         return
 
     try:

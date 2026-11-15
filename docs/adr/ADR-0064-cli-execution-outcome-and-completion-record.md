@@ -305,7 +305,7 @@ EXIT_CODE_BY_STATUS = {
   `lionagi/state/lifecycle/policy.py::build_default_registry`), which carries the full schema
   vocabulary including `timed_out`, `waiting_dependency`, and `retry_wait`. `li wait`
   reads the same registry-sourced terminal map, so a `timed_out` schedule run is
-  recognized as terminal (`lionagi/cli/wait.py::wait_for_terminal`).
+  recognized as terminal (`lionhub/src/lionhub/serve/cli/wait.py::wait_for_terminal`).
 
 **Why this way.** A small status vocabulary supports reliable automation, while reason
 codes and evidence retain the cause without proliferating statuses. Denormalizing the
@@ -525,6 +525,9 @@ erase a more informative earlier failure. The ordering is part of the contract b
 changing it changes which reason scripts and operators see.
 
 ### D5 — Status writes are atomic, guarded, and auditable
+
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+proposes schedule-run rules for terminal changes and carrying forward a stored decision.
 
 The universal write contract is:
 

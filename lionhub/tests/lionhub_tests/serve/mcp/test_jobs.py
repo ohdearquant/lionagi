@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from lionagi.ln import _proc
-from lionhub.orchestration import mcp_config as _mcp_resolve
+from lionhub.orchestration import mcp_config
 from lionhub.serve.mcp import _notify_hook, config, jobs
 
 
@@ -3136,9 +3136,9 @@ def test_a_submission_that_fails_between_its_writes_leaves_no_job_behind(sandbox
     """
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
     monkeypatch.setattr(
-        _mcp_resolve,
+        mcp_config,
         "resolve_spawn_mcp_servers",
-        lambda launch_dir: _mcp_resolve.McpResolution(
+        lambda launch_dir: mcp_config.McpResolution(
             servers={"a-server": {"command": "true"}},
             reason=None,
             source=Path("/somewhere/.mcp.json"),

@@ -119,7 +119,7 @@ try:
     legacy.end_invocation()
     assert canonical._invocations_in_flight == 0
 
-    consumer = importlib.import_module("lionagi.cli.main")
+    consumer = importlib.import_module("lionhub.serve.cli.main")
     assert consumer.run_was_allocated is canonical.run_was_allocated
     with patch(old + "._run_allocated", True):
         assert consumer.run_was_allocated()
@@ -331,6 +331,12 @@ CONTRACTS: tuple[MoveContract, ...] = (
                 "uses_developer_messages",
             }
         ),
+    ),
+    MoveContract(
+        old="lionagi.cli",
+        new="lionhub.serve.cli",
+        kind="package",
+        cold_orders=(),
     ),
     MoveContract(
         old="lionagi.cli._argtypes",

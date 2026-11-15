@@ -43,7 +43,7 @@ def _fresh(source: str, *args: str) -> None:
 @pytest.mark.parametrize("name", FORWARDED_NAMES)
 def test_legacy_catalog_name_is_the_canonical_object(name):
     old = importlib.import_module("lionagi._auto")
-    catalog = importlib.import_module("lionhub.cli.catalog")
+    catalog = importlib.import_module("lionhub.serve.cli.catalog")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         assert getattr(old, name) is getattr(catalog, name)
@@ -66,7 +66,7 @@ assert len(deprecations) == 1, [str(item.message) for item in deprecations]
 warning = deprecations[0]
 message = str(warning.message)
 assert f"lionagi._auto.{name}" in message
-assert f"lionhub.cli.catalog.{name}" in message
+assert f"lionhub.serve.cli.catalog.{name}" in message
 assert "2.0.0" in message
 assert "0.37.0" not in message
 assert "deprecated since" not in message
@@ -91,8 +91,8 @@ assert not loaded_hub_modules(), loaded_hub_modules()
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     forwarded = old.seed_for
-assert "lionhub.cli.catalog" in sys.modules
-from lionhub.cli import catalog
+assert "lionhub.serve.cli.catalog" in sys.modules
+from lionhub.serve.cli import catalog
 assert forwarded is catalog.seed_for
 """
     )

@@ -21,6 +21,7 @@ from lionagi._paths import (
     _unreadable_symlink_target,
 )
 from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
+from lionagi.libs.frontmatter import _strip_frontmatter_prefix
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
@@ -1008,6 +1009,68 @@ def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
     raise ConfigurationError(f"agent profile {name!r}: mcp must be 'none'")
 
 
+# The deepest nesting of collections a profile's frontmatter may have. The YAML loaders
+# recurse at least once per level, so whether a deeper block reads depends on the
+# interpreter's recursion limit; a block within the bound reads at the default limit.
+_MAX_FRONTMATTER_DEPTH = 64
+
+
+def _node_depth(root: Any) -> int:
+    """The deepest nesting of mapping and sequence nodes under *root*, as written.
+
+    Depth is read from where each node is written, by how many other collections' text
+    encloses its own, never from the edges between nodes: an alias edge can reach a deeply
+    written node from a shallow one, and the loaders recurse along the written nesting.
+    Computed without recursion.
+    """
+    import yaml
+
+    spans: list[tuple[int, int]] = []
+    pending = [root]
+    seen: set[int] = set()
+    while pending:
+        node = pending.pop()
+        if id(node) in seen or not isinstance(node, yaml.CollectionNode):
+            continue
+        seen.add(id(node))
+        spans.append((node.start_mark.index, node.end_mark.index))
+        if isinstance(node, yaml.MappingNode):
+            pending.extend(child for pair in node.value for child in pair)
+        else:
+            pending.extend(node.value)
+    # Enclosing spans come first: by start, and the longer of two that start together.
+    spans.sort(key=lambda span: (span[0], -span[1]))
+    deepest = 0
+    open_ends: list[int] = []
+    for start, end in spans:
+        while open_ends and open_ends[-1] <= start:
+            open_ends.pop()
+        open_ends.append(end)
+        deepest = max(deepest, len(open_ends))
+    return deepest
+
+
+def _token_depth(tokens: list[Any]) -> int:
+    """The deepest nesting of block and flow collections that *tokens* open."""
+    import yaml
+
+    opening = (
+        yaml.BlockMappingStartToken,
+        yaml.BlockSequenceStartToken,
+        yaml.FlowMappingStartToken,
+        yaml.FlowSequenceStartToken,
+    )
+    closing = (yaml.BlockEndToken, yaml.FlowMappingEndToken, yaml.FlowSequenceEndToken)
+    depth = deepest = 0
+    for token in tokens:
+        if isinstance(token, opening):
+            depth += 1
+            deepest = max(deepest, depth)
+        elif isinstance(token, closing):
+            depth -= 1
+    return deepest
+
+
 def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     """Refuse an unreadable or ambiguous MCP declaration without changing other settings."""
     if not text.startswith("---"):
@@ -1015,7 +1078,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
 
     import yaml
 
-    from lionagi.libs.frontmatter import _FM_SPLIT
+    from lionagi.libs.frontmatter import _FM_SPLIT, _load_frontmatter_yaml
 
     def unreadable_yaml_has_sensitive_text(block: str) -> bool:
         # In unreadable YAML, no fragment can be reliably identified as a key
@@ -1025,39 +1088,43 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     def readable_yaml_has_mcp_key(block: str) -> bool:
         # An unclosed frontmatter block can itself be readable YAML. Preserve
         # its existing key-token behavior, including anchors and aliases.
+        try:
+            tokens = list(yaml.scan(block, Loader=yaml.SafeLoader))
+        except yaml.YAMLError:
+            return False
+        if _token_depth(tokens) > _MAX_FRONTMATTER_DEPTH:
+            # Deeper than the bound reads as unreadable, at any recursion limit.
+            return unreadable_yaml_has_sensitive_text(block)
         anchors: dict[str, str] = {}
         expecting_key = False
         pending_anchor = None
-        try:
-            for token in yaml.scan(block, Loader=yaml.SafeLoader):
-                if isinstance(token, yaml.AnchorToken):
-                    pending_anchor = token.value
-                elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
-                    anchors[pending_anchor] = token.value
-                    pending_anchor = None
-                elif pending_anchor is not None and not isinstance(token, yaml.TagToken):
-                    pending_anchor = None
-                if isinstance(token, yaml.KeyToken):
-                    expecting_key = True
-                elif expecting_key and isinstance(token, yaml.ScalarToken):
-                    expecting_key = False
-                    if token.value == "mcp":
-                        return True
-                elif expecting_key and isinstance(token, yaml.AliasToken):
-                    expecting_key = False
-                    if anchors.get(token.value) == "mcp":
-                        return True
-                elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
-                    expecting_key = False
-        except yaml.YAMLError:
-            return False
+        for token in tokens:
+            if isinstance(token, yaml.AnchorToken):
+                pending_anchor = token.value
+            elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
+                anchors[pending_anchor] = token.value
+                pending_anchor = None
+            elif pending_anchor is not None and not isinstance(token, yaml.TagToken):
+                pending_anchor = None
+            if isinstance(token, yaml.KeyToken):
+                expecting_key = True
+            elif expecting_key and isinstance(token, yaml.ScalarToken):
+                expecting_key = False
+                if token.value == "mcp":
+                    return True
+            elif expecting_key and isinstance(token, yaml.AliasToken):
+                expecting_key = False
+                if anchors.get(token.value) == "mcp":
+                    return True
+            elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
+                expecting_key = False
         return False
 
     parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
     if len(parts) < 3:
         block = text[3:]
         try:
-            yaml.safe_load(block)
+            _load_frontmatter_yaml(block)
         except (yaml.YAMLError, RecursionError):
             sensitive = unreadable_yaml_has_sensitive_text(block)
         else:
@@ -1072,15 +1139,35 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     try:
         # Check construction as well as syntax: an unsupported YAML tag can
         # otherwise make the ordinary frontmatter reader discard the block.
-        yaml.safe_load(block)
+        _load_frontmatter_yaml(block)
         root = yaml.compose(block, Loader=yaml.SafeLoader)
-    except (yaml.YAMLError, RecursionError):
+        too_deep = _node_depth(root) > _MAX_FRONTMATTER_DEPTH
+    except RecursionError:
+        # The loaders recurse once per level, so the stack ran out either on a block nested
+        # past what it allows or in a caller already deep in its own stack. The scanner does
+        # not recurse, so its count tells the two apart; only the first is this refusal.
+        try:
+            written = _token_depth(list(yaml.scan(block, Loader=yaml.SafeLoader)))
+        except yaml.YAMLError:
+            written = 0
+        if written <= _MAX_FRONTMATTER_DEPTH:
+            raise
+        too_deep = True
+    except yaml.YAMLError:
         if unreadable_yaml_has_sensitive_text(block):
             raise ConfigurationError(
                 f"agent profile {name!r}: frontmatter could not be parsed (invalid YAML); "
                 "it mentions mcp or contains a backslash; fix the YAML to proceed"
             ) from None
         return
+    if too_deep:
+        # Refused whatever it holds. Past the bound, whether the loaders can read the
+        # block depends on the interpreter's recursion limit, so the same profile would
+        # be refused in one process and have its mcp setting read in another.
+        raise ConfigurationError(
+            f"agent profile {name!r}: frontmatter nests deeper than "
+            f"{_MAX_FRONTMATTER_DEPTH} levels; flatten its settings to proceed"
+        )
 
     def contains_mcp_key(node: Any) -> bool:
         pending = [node]
@@ -1122,9 +1209,28 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
 
 
 _CONTAIN_KEY = "contain_user_settings"
+_CONTAIN_ACCOUNT_KEY = "contain_account_integrations"
+_CONTAINMENT_KEYS = (_CONTAIN_KEY, _CONTAIN_ACCOUNT_KEY)
 # A line that sets the flag as a key, in a mapping or a list item, quoted or not.
-_FLAG_KEY_LINE = re.compile(rf"^[ \t]*(?:-[ \t]+)*[\"']?{_CONTAIN_KEY}[\"']?[ \t]*:", re.M)
+_FLAG_KEY_LINE = re.compile(
+    rf"^[ \t]*(?:-[ \t]+)*[\"']?({'|'.join(_CONTAINMENT_KEYS)})[\"']?[ \t]*:", re.M
+)
+_LIGHT_WORKLOAD_LINE = re.compile(
+    r"""^(?:workload|"workload"|'workload')[ \t]*:[ \t]+(?:light|"light"|'light')"""
+    r"(?:[ \t]+(?:#[^\r\n]*)?)?\r?$",
+    re.M,
+)
 _DASHES = re.compile(r"-{3,}")
+_TOOL_FIELD = "(?:" + "|".join(_PROFILE_TOOL_FIELDS) + ")"
+_KEY_PROPERTIES = r"(?:[&!][^\s]*[ \t]+)*"
+# A line that sets a tool field as a key: in a mapping or a list item, quoted or not, with an
+# anchor or tag, as an explicit ``?`` key, or as a key of a flow mapping opened on that line.
+_TOOL_KEY_LINE = re.compile(
+    rf"^[ \t]*(?:-[ \t]+)*{_KEY_PROPERTIES}[\"']?{_TOOL_FIELD}[\"']?[ \t]*:"
+    rf"|^[ \t]*(?:-[ \t]+)*\?[ \t]+{_KEY_PROPERTIES}[\"']?{_TOOL_FIELD}\b"
+    rf"|\{{(?:[^{{}}\n]*,)?[ \t]*(?:\?[ \t]+)?{_KEY_PROPERTIES}[\"']?{_TOOL_FIELD}[\"']?[ \t]*:",
+    re.M,
+)
 
 
 def _contain_flag_values(block: str) -> list[Any]:
@@ -1199,28 +1305,50 @@ def _keys_like_the_contain_flag(document: Any) -> list[str]:
 
 
 def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
-    """The settings a profile keeps when no frontmatter block that reads opens it: none, with a
-    warning when a block with settings in it was there to lose. The worker is contained when
-    that block names ``contain_user_settings``: as a key when the block reads as YAML settings,
-    anywhere in its text when it does not read or reads as a list or a line of text, so neither
-    a broken line in the block nor text on the delimiter's line can turn containment off. A
-    block that is empty or comments only has none to lose. Text on lines of its own ahead of
-    the first ``---`` line leaves the profile all prompt, as before, and contains nothing: any
-    block after it, closed or not, that sets the flag as a key or does not read and names it
-    warns that its worker is not contained. A profile with no line of dashes has no block, and
-    all of it is the prompt."""
+    """Retain containment and refuse discarded tool settings.
+
+    A containment flag in a readable mapping, or a mention in an unreadable block,
+    enables the corresponding containment. The light workload also restricts the
+    worker, so keep it when a readable mapping sets it or an unreadable block has
+    a top-level line declaring it. Empty blocks have no settings to lose. A block
+    after prompt text that declares containment or tool settings raises with its opening line.
+    """
     from itertools import pairwise
 
     import yaml
 
-    from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
+    from lionagi.libs.frontmatter import _FM_SPLIT, _load_frontmatter_yaml, parse_frontmatter_strict
     from lionhub.orchestration.console import warn
 
     def read(block: str) -> tuple[bool, Any]:
         try:
-            return True, yaml.safe_load(block)
+            return True, _load_frontmatter_yaml(block)
         except (yaml.YAMLError, RecursionError):
             return False, None
+
+    def containment_settings(block: str, document: Any) -> dict[str, Any]:
+        if isinstance(document, dict):
+            settings = dict.fromkeys((key for key in _CONTAINMENT_KEYS if key in document), True)
+            light = document.get("workload") == "light"
+        else:
+            settings = dict.fromkeys((key for key in _CONTAINMENT_KEYS if key in block), True)
+            light = _LIGHT_WORKLOAD_LINE.search(block) is not None
+        if light:
+            settings["workload"] = "light"
+        return settings
+
+    def refuse_unread_tool_settings(block: str, *, key_lines_only: bool = False) -> None:
+        """Refuse an unreadable block that may set tool fields.
+
+        A block that opens the file is the profile's frontmatter, so even a tool mention in a
+        value refuses: its settings cannot be read. A span after prompt text may be ordinary
+        markdown, so there only a line that sets a tool field as a key refuses.
+        """
+        if _TOOL_KEY_LINE.search(block) if key_lines_only else "tools" in block:
+            raise ConfigurationError(
+                f"agent profile {name!r}: tool settings could not be read; "
+                "fix the frontmatter to proceed"
+            )
 
     def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
         if (reads and isinstance(document, dict) and "mcp" in document) or (
@@ -1244,7 +1372,11 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         # A block with no settings in it, empty or comments only, has none to lose.
         if reads and document is None:
             return {}
-        named = _CONTAIN_KEY in block
+        refuse_unread_tool_settings(block)
+        settings = containment_settings(block, document)
+        if _CONTAIN_KEY in block:
+            # Keep containment for mentions in an unclosed user-settings block.
+            settings[_CONTAIN_KEY] = True
         what = f"its frontmatter does not read as YAML settings ({reason})"
     else:
         lines = text.splitlines()
@@ -1256,11 +1388,14 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             # not read and names it anywhere. A block runs from a line of three or more dashes
             # to the next such line or, unclosed, to the end.
             delimiters = []
-            # Fenced examples are prompt text, not misplaced frontmatter.
+            # Fenced examples are prompt text, not misplaced frontmatter: no fenced line is a
+            # delimiter, and none is part of the text a span is checked on.
             fence: str | None = None
+            fenced: set[int] = set()
             for i, line in enumerate(lines):
                 marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
                 if fence is not None:
+                    fenced.add(i)
                     if (
                         marker
                         and marker[1][0] == fence[0]
@@ -1271,26 +1406,34 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                     continue
                 if marker and (marker[1][0] == "~" or "`" not in marker[2]):
                     fence = marker[1]
+                    fenced.add(i)
                     continue
                 if _DASHES.fullmatch(line.rstrip()):
                     delimiters.append(i)
-            warned_containment = False
+            # Every span between consecutive ``---`` lines is read, not only alternate ones: which
+            # line opens a block depends on how many rules came before it, and a rule in the
+            # prompt must not hide a declaration from this check.
             for opening, end in pairwise([*delimiters, len(lines)]):
-                block = "\n".join(lines[opening + 1 : end])
+                block = "\n".join("" if j in fenced else lines[j] for j in range(opening + 1, end))
                 reads, document = read(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)
-                if not warned_containment and (
-                    _FLAG_KEY_LINE.search(block)
-                    or (reads and isinstance(document, dict) and _contain_flag_values(block))
-                    or (not reads and _CONTAIN_KEY in block)
-                ):
-                    warn(
+                declared = set(_FLAG_KEY_LINE.findall(block))
+                if not reads:
+                    refuse_unread_tool_settings(block, key_lines_only=True)
+                else:
+                    mappings = document if isinstance(document, list) else (document,)
+                    for mapping in mappings:
+                        if isinstance(mapping, dict):
+                            declared.update(key for key in _PROFILE_TOOL_FIELDS if key in mapping)
+                if not reads or isinstance(document, dict):
+                    declared.update(containment_settings(block, document))
+                if declared:
+                    keys = ", ".join(sorted(declared))
+                    raise ConfigurationError(
                         f"agent profile {name!r}: the --- block on line {opening + 1} follows "
-                        "text on lines of its own, so the profile is all prompt and no setting "
-                        "in the block applies; its worker is not contained, though the block "
-                        "names contain_user_settings"
+                        f"text on lines of its own, so its {keys} declaration "
+                        "would be ignored; move the block to the top of the file"
                     )
-                    warned_containment = True
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
         # the next ``---`` line or, unclosed, to the end.
@@ -1299,10 +1442,12 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         block = "\n".join(rest if closing is None else rest[:closing])
         reads, document = read(block)
         refuse_misplaced_mcp(block, reads, document, 1)
+        if not reads:
+            refuse_unread_tool_settings(block, key_lines_only=True)
         if reads and isinstance(document, dict):
             if not document:
                 return {}
-            named = bool(_contain_flag_values(block))
+            settings = containment_settings(block, document)
         elif reads and document is None:
             # Empty or comments only, a block has no settings to lose.
             return {}
@@ -1310,28 +1455,25 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             # A hidden block that reads as a list or a line of text holds no settings, and
             # one that does not read has none to apply: either counts, as a frontmatter
             # that does not read does, when it names the flag anywhere in its text.
-            named = _CONTAIN_KEY in block
-            if not named and (reads or closing is None):
+            settings = containment_settings(block, document)
+            if not settings and (reads or closing is None):
                 return {}
         what = "text ahead of the --- on line 1 hides the frontmatter after it"
-    warn(
-        f"agent profile {name!r}: {what}; every setting in it is ignored"
-        + (", and its worker is contained, since it names contain_user_settings" if named else "")
+    flags = sorted(key for key in _CONTAINMENT_KEYS if key in settings)
+    retained = (
+        "workload 'light' is kept and other settings are ignored"
+        if "workload" in settings
+        else "every setting in it is ignored"
     )
-    return {_CONTAIN_KEY: True} if named else {}
+    warn(
+        f"agent profile {name!r}: {what}; {retained}"
+        + (f", and its worker is contained, since it names {', '.join(flags)}" if flags else "")
+    )
+    return settings
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
-    import unicodedata
-
-    # Whitespace or an invisible format character (a byte-order mark, a zero-width
-    # space) ahead of the opening delimiter would hide it and, with it, every setting.
-    start = 0
-    while start < len(text) and (
-        text[start].isspace() or unicodedata.category(text[start]) == "Cf"
-    ):
-        start += 1
-    text = text[start:]
+    text = _strip_frontmatter_prefix(text)
     _check_profile_mcp_frontmatter(name, text)
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:

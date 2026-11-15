@@ -179,6 +179,9 @@ def test_no_comparison_ref_is_unknown_not_ok(tmp_path: Path) -> None:
     assert drift["unknown"]
 
 
+# the drift verdict
+
+
 def test_version_mismatch_against_installed_distribution_is_drift() -> None:
     git = {"status": "not_a_git_checkout", "detail": "wheel install"}
     drift = diagnostics._drift(git, "0.1.0", "9.9.9")
@@ -196,6 +199,9 @@ def test_behind_outranks_unknown_in_the_verdict() -> None:
     drift = diagnostics._drift(git, "0.1.0", None)
     assert drift["status"] == "drift"
     assert any("24 commit(s) behind" in reason for reason in drift["reasons"])
+
+
+# the snapshot, and the tree moving underneath it
 
 
 @pytest.fixture
@@ -273,6 +279,9 @@ def test_the_snapshot_answers_when_the_checkout_has_moved() -> None:
     assert drift["status"] == "drift"
     assert "it moved" in drift["reasons"]
     assert any("24 commit(s) behind" in reason for reason in drift["reasons"])
+
+
+# the tree moving without the commit moving
 
 
 def test_a_dirty_tree_is_fingerprinted_and_a_clean_one_is_too(checkout_behind: Path) -> None:

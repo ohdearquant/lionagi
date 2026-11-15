@@ -19,7 +19,7 @@ from lionagi.state.engine import mask_credentials
 
 from ..registry import studio_route
 from ._path_safety import safe_path_join, validate_name_component
-from .agents import _canonicalize_casts, _is_protected_system
+from .agents import _canonicalize_casts, _read_agent_for_write
 from .redaction import (
     RedactedPayloadError,
     abbreviate_path,
@@ -410,7 +410,7 @@ async def save_definition(
 ) -> dict[str, Any]:
     """Persist a definition version: DB write first, then disk (ADR-0077 D2); per-(kind, name) lock serialises concurrent saves.
 
-    ``validate`` gates the cast role/mode check below, not the system-agent
+    ``validate`` gates the YAML scalar and cast role/mode checks below, not the system-agent
     guard (which always runs). It defaults on for the direct save route --
     the door a client posts arbitrary content through, and the one the agents
     API's role/mode validation must also bind on (see ``_canonicalize_casts``
@@ -442,10 +442,10 @@ async def save_definition(
     if kind == "agent":
         reject_if_redacted_payload(content)
 
-    from lionagi.libs.frontmatter import parse_frontmatter as _parse_fm
-
     if kind == "agent" and validate:
-        new_fm, _ = _parse_fm(content)
+        from lionagi.libs.frontmatter import _parse_frontmatter_for_save
+
+        new_fm, _ = _parse_frontmatter_for_save(content)
         _canonicalize_casts(dict(new_fm))
 
     lock = await _lock_for(kind, name)
@@ -461,9 +461,9 @@ async def save_definition(
             # calling into agents.py, since that module resolves its own _AGENTS_ROOT
             # independently of this module's (test-patchable) AGENTS_DIR/KIND_DIRS.
             existing_text = await run_sync(disk_file.read_text)
-            existing_fm, _ = _parse_fm(existing_text)
-            if _is_protected_system(existing_fm):
-                raise PermissionError(f"Agent '{name}' is a system agent and cannot be edited")
+            protection = _read_agent_for_write(existing_text).protection
+            if protection:
+                raise PermissionError(f"Agent '{name}' {protection} and cannot be edited")
 
         return await _write_version(kind, name, disk_file, content, message)
 
@@ -476,7 +476,7 @@ async def _save_skill_definition(
     Always writes ``<SKILLS_DIR>/<name>/SKILL.md`` regardless of what shape (if
     any) currently exists on disk -- a save through Studio normalizes a skill
     to the one shape ``li skill`` actually resolves (see
-    ``skills.py::_find_skill_md`` / ``lionagi/cli/skill.py``), rather than
+    ``skills.py::_find_skill_md`` / ``lionhub/src/lionhub/serve/cli/skill.py``), rather than
     preserving whatever legacy layout it started from. Plugin-bundled skills
     live under a plugin directory, never under ``SKILLS_DIR``, so they are
     unreachable through this path by construction, not by an extra check.

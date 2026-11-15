@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
-from lionagi.state.db import StateDB
+from lionagi.state.db import StateDB, TransitionRejectedError
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 from lionagi.studio.services.task_applications import TaskApplication, submit_task
 from lionhub.orchestration.scheduler.worker import (
@@ -259,7 +259,7 @@ async def test_completed_to_running_rejected(db: StateDB) -> None:
     row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
     assert row["status"] == "completed"
 
-    with pytest.raises(ValueError, match="not in the declared transition vocabulary"):
+    with pytest.raises(TransitionRejectedError, match="terminal_floor"):
         await transition(
             db,
             TransitionRequest(
@@ -281,7 +281,7 @@ async def test_failed_to_running_rejected(db: StateDB) -> None:
     row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
     assert row["status"] == "failed"
 
-    with pytest.raises(ValueError, match="not in the declared transition vocabulary"):
+    with pytest.raises(TransitionRejectedError, match="terminal_floor"):
         await transition(
             db,
             TransitionRequest(
@@ -383,7 +383,7 @@ async def test_cancelled_to_running_rejected(db: StateDB) -> None:
     run_id = await _submit_host_task(db)
     assert await cancel_task(db, run_id, actor=Actor(type="operator", id="test")) is True
 
-    with pytest.raises(ValueError, match="not in the declared transition vocabulary"):
+    with pytest.raises(TransitionRejectedError, match="terminal_floor"):
         await transition(
             db,
             TransitionRequest(

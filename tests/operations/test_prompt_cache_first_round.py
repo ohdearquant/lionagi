@@ -5,6 +5,7 @@
 Amendment 4): how a round compiles, how it is decided, and what the decision anchors."""
 
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -79,7 +80,7 @@ async def test_a_rounds_results_open_the_next_user_message_as_their_own_block():
     assert "EVIDENCE" in results["text"] and "the next step" not in results["text"]
     assert any("the next step" in block["text"] for block in rest)
     assert view["round"] == _ids(branch)
-    assert view["frontier"] == (2, 0)
+    assert view["round_end"] == (2, 0)
 
 
 @pytest.mark.asyncio
@@ -94,7 +95,7 @@ async def test_a_rounds_results_compile_alike_on_the_current_turn_and_in_history
 
     assert later[:2] == current[:2]
     assert later[2]["content"][0] == current[2]["content"][0]
-    assert view["frontier"] == (2, 0)
+    assert view["round_end"] == (2, 0)
 
 
 @pytest.mark.asyncio
@@ -108,7 +109,7 @@ async def test_results_an_answer_follows_take_a_user_message_of_their_own():
     assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant", "user"]
     (results,) = messages[2]["content"]
     assert results["text"].startswith("ToolResults") and "EVIDENCE" in results["text"]
-    assert view["frontier"] == (2, 0)
+    assert view["round_end"] == (2, 0)
 
 
 @pytest.mark.asyncio
@@ -139,7 +140,7 @@ def test_an_answer_and_the_note_after_it_are_two_blocks_of_one_assistant_message
         "[CONTEXT COMPACTION] SUMMARY",
     ]
     assert view["note"] == (1, 1)
-    assert view["frontier"] == (1, 0)
+    assert view["round_end"] == (1, 0)
 
 
 # The first round
@@ -150,6 +151,15 @@ def test_the_first_round_has_no_members_until_it_is_answered():
     branch.msgs.add_message(instruction="the task")
 
     assert first_round(branch, branch.progression) is None
+
+
+def test_round_state_keeps_the_existing_call_record_key():
+    call = cache.PromptCacheCall(ledger=None, intent="continuing", round_state="kept")
+
+    record = cache.settle(call, SimpleNamespace(response=None, metadata={}))
+
+    assert record["frontier"] == "kept"
+    assert "round_state" not in record
 
 
 @pytest.mark.asyncio
@@ -188,7 +198,7 @@ async def test_the_round_is_included_when_it_is_at_most_a_tenth_of_the_cap(over)
     branch = Branch()
     await _round_one(branch)
     _ins, messages, view = _compile(branch, "the next step")
-    size = _head_size(messages, view["frontier"])
+    size = _head_size(messages, view["round_end"])
 
     record = cache.decide_protection(
         branch.metadata,

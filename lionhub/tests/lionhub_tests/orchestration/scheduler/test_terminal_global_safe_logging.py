@@ -108,7 +108,7 @@ async def test_exec_failure_logs_no_argv_exception_or_stderr(monkeypatch, caplog
         return FakeProcess()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
-    monkeypatch.setattr(notify_settings, "observe_process_group_leader", lambda *_a, **_k: None)
+    monkeypatch.setattr("lionagi.ln._proc.observe_process_group_leader", lambda *a, **k: None)
     prepared = await prepare_global_settings_delivery(row(), None, recorder=recorder)
     with caplog.at_level("DEBUG"):
         result = prepared.call()
@@ -209,7 +209,7 @@ async def test_exec_cleanup_error_preserves_primary_and_never_acknowledges(
         observed.set()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
-    monkeypatch.setattr(notify_settings, "observe_process_group_leader", lambda *_a, **_k: None)
+    monkeypatch.setattr("lionagi.ln._proc.observe_process_group_leader", lambda *a, **k: None)
     monkeypatch.setattr(notify_settings, "aterminate_process_group", fake_terminate)
     monkeypatch.setattr(
         notify_settings, "HANDLER_BUDGET_SECONDS", 0.05 if mode == "timeout" else 10

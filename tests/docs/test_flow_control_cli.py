@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli.monitor import add_monitor_subparser
+from lionhub.serve.cli.monitor import add_monitor_subparser
 
 
 def test_monitor_help_explains_flow_entity_types():

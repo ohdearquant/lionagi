@@ -23,11 +23,11 @@ import urllib.request
 
 import pytest
 
-from lionagi.cli.doctor import _check_studio_daemon
-from lionagi.cli.machine import MachineError
-from lionagi.cli.machine_schedule import _studio
-from lionhub.cli.schedule import _api
-from lionhub.cli.studio import _daemon_health
+from lionhub.serve.cli.doctor import _check_studio_daemon
+from lionhub.serve.cli.machine import MachineError
+from lionhub.serve.cli.machine_schedule import _studio
+from lionhub.serve.cli.schedule import _api
+from lionhub.serve.cli.studio import _daemon_health
 
 _PROXY_VARS = ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "ALL_PROXY", "all_proxy")
 _PROXY_HOST = "127.0.0.1:3128"

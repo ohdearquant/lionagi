@@ -699,7 +699,7 @@ async def test_without_the_option_the_tools_render_in_the_turn_as_before():
 def test_launch_settings_reach_endpoint_config_without_provider_policy_keys(
     endpoint, declares, monkeypatch
 ):
-    from lionagi.cli.agent import _install_api_input_cap
+    from lionhub.serve.cli.agent import _install_api_input_cap
 
     monkeypatch.setattr(AnthropicMessagesEndpoint, "caches_system_prefix", declares)
     branch = Branch(chat_model=iModel(endpoint=endpoint()))

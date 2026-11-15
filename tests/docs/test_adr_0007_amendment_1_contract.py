@@ -746,7 +746,11 @@ def test_the_registry_and_counters_are_where_cited() -> None:
     _in_symbol(
         _BRANCH, "Branch.last_context_report", "def last_context_report(self):", "``skipped``"
     )
-    _in_symbol("lionagi/cli/monitor.py", "_format_khive_injection_line", '"blocks_injected",')
+    _in_symbol(
+        "lionhub/src/lionhub/serve/cli/monitor.py",
+        "_format_khive_injection_line",
+        '"blocks_injected",',
+    )
 
 
 def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:

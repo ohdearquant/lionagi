@@ -9,6 +9,7 @@ from tests import _shared_conftest as _shared
 from tests._shared_conftest import (  # noqa: F401
     _contain_the_frontend_dist_variable,
     _keep_the_interpreter_default_sigpipe,
+    _no_child_sandbox_by_default,
     _outside_any_agent,
     _remove_test_home,
     _reset_plugin_registry,

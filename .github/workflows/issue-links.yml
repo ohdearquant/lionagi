@@ -16,7 +16,7 @@ on:
     # new run cancels the one in progress (cancel-in-progress below) and checks
     # the same body again. This check is not required, so nothing waits on it.
     types: [ opened, edited, reopened, synchronize, ready_for_review ]
-    branches: [ main, develop ]
+    branches: [ main, develop, dev/lionagi ]
 
 permissions:
   contents: read

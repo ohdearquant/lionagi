@@ -138,7 +138,7 @@ async def test_schedules_are_found_in_a_moved_store(moved_sqlite_url):
 
 async def test_li_status_consults_a_moved_store(moved_sqlite_url, monkeypatch):
     """`li status` must report on the id, not on a file it never opens."""
-    from lionagi.cli import status as status_mod
+    from lionhub.serve.cli import status as status_mod
 
     await _seed_engine_def("anything")  # materializes the moved store
     monkeypatch.setattr(status_mod, "detect_project", lambda _p: ("dburl-sweep", "test"))
@@ -149,7 +149,7 @@ async def test_li_status_consults_a_moved_store(moved_sqlite_url, monkeypatch):
 
 
 async def test_li_ctl_consults_a_moved_store(moved_sqlite_url):
-    from lionagi.cli.orchestrate import _control
+    from lionhub.serve.cli.orchestrate import _control
 
     await _seed_engine_def("anything")  # materializes the moved store
     msg, _code = await _control._enqueue_control_inner(
@@ -198,7 +198,7 @@ async def test_a_server_url_does_not_answer_from_the_filesystem(absent_default, 
 async def test_the_readonly_seam_opens_a_moved_store_instead_of_reporting_it_absent(
     moved_sqlite_url,
 ):
-    from lionagi.cli.machine import readonly_state_db
+    from lionhub.serve.cli.machine import readonly_state_db
 
     name = f"seam-{uuid.uuid4().hex[:8]}"
     await _seed_engine_def(name)
@@ -216,7 +216,7 @@ async def test_the_readonly_seam_will_not_call_a_server_url_absent(absent_defaul
     # Nothing here connects: the point is that "absent" must not be answerable
     # from the filesystem for a store the filesystem knows nothing about. A
     # failure to reach it is a different answer, and the reason says which.
-    from lionagi.cli.machine import REASON_NOT_FOUND, readonly_state_db
+    from lionhub.serve.cli.machine import REASON_NOT_FOUND, readonly_state_db
 
     _set_url(monkeypatch, _SERVER_URL)
 
@@ -226,7 +226,7 @@ async def test_the_readonly_seam_will_not_call_a_server_url_absent(absent_defaul
 
 
 def test_the_absent_reason_names_the_store_that_was_consulted(moved_sqlite_url, absent_default):
-    from lionagi.cli.machine import state_db_absent
+    from lionhub.serve.cli.machine import state_db_absent
 
     detail = state_db_absent()["detail"]
     assert str(absent_default) not in detail
@@ -260,7 +260,7 @@ async def test_a_server_url_read_fails_on_the_connection_not_on_the_open_mode(
 
 
 def test_reported_sizes_describe_the_configured_store(moved_sqlite_url, tmp_path):
-    from lionagi.cli.state import _db_sizes
+    from lionhub.serve.cli.state import _db_sizes
 
     sizes = _db_sizes()
     assert sizes["is_file"] is True
@@ -271,7 +271,7 @@ def test_a_store_with_no_file_reports_no_size_rather_than_zero(absent_default, m
     # Zero would be a claim about an empty file. There is no file, so the honest
     # answer is that the question does not apply -- and `is_file` is what lets a
     # reader tell those apart instead of guessing from a bare 0.
-    from lionagi.cli.state import _db_sizes
+    from lionhub.serve.cli.state import _db_sizes
 
     _set_url(monkeypatch, _SERVER_URL)
 
@@ -334,7 +334,7 @@ async def test_the_readonly_seam_on_a_server_url_fails_on_the_connection_not_the
     this test asserted on the message text, which cannot appear in that channel
     at all -- it passed with the defect restored, which is how it was caught.
     """
-    from lionagi.cli.machine import readonly_state_db
+    from lionhub.serve.cli.machine import readonly_state_db
 
     _set_url(monkeypatch, _SERVER_URL)
 

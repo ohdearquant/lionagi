@@ -978,4 +978,4 @@ async def test_a_poll_that_fires_nothing_waits_out_its_interval_before_the_next(
 
     assert counts == [1, 1, 1, 2]
     # The next turn is ordered by the same cadence the tick gates on.
-    assert engine._github_due_at(schedule) == 10_600.0
+    assert engine._github_due_at(schedule, 10_300.0) == 10_600.0

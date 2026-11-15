@@ -110,8 +110,7 @@ async def prepare_global_settings_delivery(
 ) -> PreparedDelivery:
     """Prepare global delivery independently of optional project context.
 
-    The caller owns admission and ACKs. This alternative is not installed by
-    the existing reconciliation bootstrap.
+    The caller owns admission and ACKs.
     """
     kind, ident = row["entity_type"], row["entity_id"]
     correlations = {
@@ -203,6 +202,18 @@ async def run_terminal_reconciliation() -> int:
 
     if not studio_config.TERMINAL_RECONCILE_ENABLED or state_db_known_absent():
         return 0
+    context_counts = dict.fromkeys(
+        ("no_session", "ambiguous_project", "null_project", "context_read_failure"), 0
+    )
+
+    def count_context(label: str) -> None:
+        context_counts[label] += 1
+
+    async def observe_outcome(row: dict[str, Any], db: StateDB, remaining_seconds: float) -> None:
+        await observe_global_context_after_ack(
+            row, db, count_context, remaining_seconds=remaining_seconds
+        )
+
     async with StateDB() as db:
         if _reconciler is None or _reconciler_url != db.url:
             from lionhub.orchestration.scheduler.settings import TERMINAL_RECONCILE_BUDGET_SECONDS
@@ -211,11 +222,12 @@ async def run_terminal_reconciliation() -> int:
             # never replayed into the notifier.
             _reconciler = TerminalReconciler(
                 CONSUMER_NAME,
-                _prepare_settings_delivery,
+                prepare_global_settings_delivery,
                 start="now",
                 pass_budget=TERMINAL_RECONCILE_BUDGET_SECONDS,
             )
             _reconciler_url = db.url
-        summary = await _reconciler.run_pass(db)
+        summary = await _reconciler.run_pass(db, observe_outcome=observe_outcome)
+    summary.update(context_counts)
     logger.info("Terminal notification reconciliation: %s", summary)
     return summary["acknowledged"]

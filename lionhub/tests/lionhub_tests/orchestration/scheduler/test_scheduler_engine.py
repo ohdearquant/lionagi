@@ -421,8 +421,8 @@ async def test_fire_executable_resolution_failure_records_failed_run_with_action
 
     spawn_mock.assert_not_awaited()
     svc.create_schedule_run.assert_not_awaited()
-    svc.create_schedule_run_and_advance.assert_awaited_once()
-    (run_payload,), _kwargs = svc.create_schedule_run_and_advance.await_args
+    svc.create_failed_schedule_run_and_advance.assert_awaited_once()
+    (run_payload,), _kwargs = svc.create_failed_schedule_run_and_advance.await_args
     assert run_payload["status"] == "failed"
     assert "resolve" in run_payload["error_detail"]
     assert "shutil.which" in run_payload["error_detail"]
@@ -481,11 +481,14 @@ async def test_fire_build_argv_exception_records_failed_run():
 
     mock_spawn.assert_not_awaited()
     svc.create_schedule_run.assert_not_awaited()
-    svc.create_schedule_run_and_advance.assert_awaited_once()
+    svc.create_failed_schedule_run_and_advance.assert_awaited_once()
     failed_calls = [
         c for c in svc.update_status.await_args_list if c.kwargs.get("new_status") == "failed"
     ]
     assert failed_calls
+    [invocation_failure] = [call for call in failed_calls if call.args[0] == "invocation"]
+    assert invocation_failure.kwargs["evidence_refs"] == []
+    assert not invocation_failure.kwargs.get("record_chain_decision")
 
 
 @pytest.mark.asyncio
@@ -530,6 +533,9 @@ async def test_fire_cancellation_records_cancelled_run():
     assert extra["error_detail"] == "Scheduler shutdown"
     assert isinstance(extra["ended_at"], float) and extra["ended_at"] > 0
     assert run_cancel[0].kwargs["expected_statuses"] == {"running"}
+    [invocation_cancel] = [call for call in cancelled_calls if call.args[0] == "invocation"]
+    assert invocation_cancel.kwargs["evidence_refs"] == []
+    assert not invocation_cancel.kwargs.get("record_chain_decision")
 
 
 @pytest.mark.asyncio
@@ -1023,17 +1029,16 @@ async def test_fire_exception_during_invocation_resolution_marks_run_failed_once
 
 
 @pytest.mark.asyncio
-async def test_fire_chain_runs_when_terminal_write_loses_cas():
-    """A lost CAS race on the invocation terminal write must not swallow
-    on_success chaining — the chain still fires even though the write
-    recording this run's own outcome was a no-op."""
+@pytest.mark.parametrize("loser", ["schedule_run", "invocation"])
+async def test_fire_chain_requires_a_winning_schedule_run_terminal_write(loser):
+    """Only the schedule-run terminal write determines whether the chain fires."""
     from lionagi.state.db import TransitionRejectedError
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     svc = _make_svc()
 
     async def _update_status(entity_type, entity_id, *, new_status, **kwargs):
-        if entity_type == "invocation":
+        if entity_type == loser and new_status != "running":
             if "expected_statuses" not in kwargs:
                 # Unguarded write against a row the reaper already finalized —
                 # the real DB layer raises the terminal-status floor here.
@@ -1086,7 +1091,8 @@ async def test_fire_chain_runs_when_terminal_write_loses_cas():
         )
 
     chained = [c for c in fire_calls if c[1] == 1]
-    assert chained, "on_success chain must still fire when the invocation write lost its CAS"
+    assert len(chained) == (1 if loser == "invocation" else 0)
+    assert any(call.args[0] == "invocation" for call in svc.update_status.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -1463,7 +1469,7 @@ async def test_fire_now_returns_none_when_schedule_missing():
         (
             {
                 "action_kind": "engine",
-                "action_agent": "summarize",
+                "action_agent": "research",
                 "action_prompt": "{{pr_number}}",
             },
             "{{pr_number}}",
@@ -1573,8 +1579,12 @@ async def test_fire_now_is_not_refused_for_a_placeholder_its_launch_does_not_sen
         ),
         ({"action_kind": "engine"}, "engine launches require action_agent"),
         (
-            {"action_kind": "engine", "action_agent": "summarize", "action_prompt": ""},
+            {"action_kind": "engine", "action_agent": "research", "action_prompt": ""},
             "engine launches require action_prompt",
+        ),
+        (
+            {"action_kind": "engine", "action_agent": "unknownengine"},
+            "action_agent 'unknownengine' is not a registered engine kind",
         ),
         (
             {"action_kind": "engine", "action_agent": "coding"},
@@ -1727,7 +1737,7 @@ async def test_fire_now_refuses_when_the_execution_root_cannot_be_resolved(monke
     [
         ({"action_kind": "agent"}, "check 7"),
         ({"action_kind": "play", "action_playbook": "triage"}, "check 7"),
-        ({"action_kind": "engine", "action_agent": "summarize"}, "check 7"),
+        ({"action_kind": "engine", "action_agent": "research"}, "check 7"),
         ({"action_kind": "play"}, None),
         ({"action_kind": "playbook", "action_playbook": ""}, None),
         ({"action_kind": "flow_yaml", "action_flow_yaml": "prompt: summarize\n"}, None),
@@ -1760,7 +1770,7 @@ def test_an_engine_spec_that_renders_empty_is_refused_when_the_launch_is_built()
     from lionhub.orchestration.scheduler.subprocess import build_argv
 
     schedule = _minimal_schedule(
-        action_kind="engine", action_agent="summarize", action_prompt="{{pr_body}}"
+        action_kind="engine", action_agent="research", action_prompt="{{pr_body}}"
     )
     poll_context = {"github_events": [{"pr_body": ""}], "fired_at": 1.0}
 
@@ -1801,7 +1811,7 @@ async def test_maybe_fire_skips_overlap_and_records_skipped_run():
         await engine._maybe_fire(schedule, now=1000.0)
 
     mock_tracked.assert_not_called()
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_skipped_schedule_run.assert_awaited_once()
     # update_status called for the skipped run
     skipped_calls = [
         c for c in svc.update_status.await_args_list if c.kwargs.get("new_status") == "skipped"
@@ -1844,7 +1854,7 @@ async def test_create_skipped_run_calls_svc_create_and_update_status():
         reason_summary="overlapped",
         metadata={"overlap_policy": "skip"},
     )
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_skipped_schedule_run.assert_awaited_once()
     svc.update_status.assert_awaited_once()
     call = svc.update_status.await_args
     assert call.kwargs["new_status"] == "skipped"
@@ -2730,7 +2740,7 @@ async def test_check_missed_fires_skip_equality_boundary_is_due(monkeypatch):
         await engine._check_missed_fires()
 
     mock_tracked.assert_not_called()
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_skipped_schedule_run.assert_awaited_once()
     reason_kwargs = svc.update_status.await_args_list[-1].kwargs
     assert reason_kwargs.get("reason_code") == ScheduleReasons.SKIPPED_MISSED_FIRE
 
@@ -5364,7 +5374,7 @@ async def test_a_scheduled_fire_of_a_stored_dash_play_prompt_fails_its_run_and_s
     # The run row the operator reads carries the refusal too, not only the signal.
     stored = [
         args[0].get("error_detail")
-        for args, _ in svc.create_schedule_run_and_advance.await_args_list
+        for args, _ in svc.create_failed_schedule_run_and_advance.await_args_list
         if args and isinstance(args[0], dict)
     ]
     assert stored == ["action_prompt for a play launch must not start with '-'"]
@@ -5394,6 +5404,55 @@ async def test_a_scheduled_fire_of_a_play_playbook_named_for_a_subcommand_spawns
     assert [s.error_detail for s in failed] == [
         "ValueError: action_playbook 'list' names a `li play` subcommand, not a playbook"
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine_kind", ["unknownengine", "research"])
+async def test_a_scheduled_engine_fire_requires_a_registered_kind(
+    monkeypatch, tmp_path, engine_kind
+):
+    from lionhub.orchestration.scheduler import subprocess as sched_subprocess
+    from lionhub.orchestration.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(sched_subprocess, "resolve_li_executable", lambda: (["fixture-li"], None))
+    spawn = AsyncMock(return_value=(0, ""))
+    monkeypatch.setattr(sched_subprocess, "spawn_and_wait", spawn)
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        trigger_type="once",
+        action_kind="engine",
+        action_agent=engine_kind,
+        action_prompt="Example topic",
+        action_model=None,
+        action_cwd=str(tmp_path),
+    )
+
+    await fire_with_claim(engine, schedule, "run-engine", trigger_context={"scheduled": True})
+
+    occurrence_writer = (
+        svc.create_schedule_run_and_advance
+        if engine_kind == "research"
+        else svc.create_failed_schedule_run_and_advance
+    )
+    occurrence_writer.assert_awaited_once()
+    occurrence = occurrence_writer.await_args.args[0]
+    if engine_kind == "research":
+        spawn.assert_awaited_once()
+        assert spawn.await_args.args[0] == [
+            "fixture-li",
+            "engine",
+            "run",
+            "--",
+            "research",
+            "Example topic",
+        ]
+    else:
+        spawn.assert_not_awaited()
+        assert occurrence["status"] == "failed"
+        assert occurrence["error_detail"] == (
+            "action_agent 'unknownengine' is not a registered engine kind"
+        )
 
 
 def test_merge_chain_action_overlays_the_named_action_fields():

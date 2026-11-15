@@ -16,6 +16,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import closing
 from types import SimpleNamespace
 from unittest import mock
 
@@ -23,7 +24,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
-from lionagi.state.db import SCHEMA_VERSION, StateDB
+from lionagi.state.db import SCHEMA_VERSION, SchemaTooNewError, StateDB
 from lionagi.state.reasons import RunReasons
 from tests._scheduler_claims import claim_and_advance
 
@@ -985,6 +986,41 @@ def _read_version(path) -> str | None:
     finally:
         conn.close()
     return row[0] if row else None
+
+
+async def test_chain_decision_version_floor_stamps_without_schema_changes(tmp_path, monkeypatch):
+    """Preservation raises the writable-open floor without changing stored columns."""
+    import lionagi.state.db as state_db
+
+    path = tmp_path / "v6.db"
+
+    def schema_rows():
+        with closing(sqlite3.connect(path)) as connection:
+            return connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+            ).fetchall()
+
+    with monkeypatch.context() as old_writer:
+        old_writer.setattr(state_db, "SCHEMA_VERSION", "6")
+        async with StateDB(path) as state:
+            assert await state.schema_version() == "6"
+    before = schema_rows()
+
+    async with StateDB(path) as state:
+        assert await state.schema_version() == SCHEMA_VERSION
+        assert int(await state.schema_version()) >= 7
+    assert schema_rows() == before
+    stamped = _read_version(path)
+
+    with monkeypatch.context() as old_writer:
+        old_writer.setattr(state_db, "SCHEMA_VERSION", "6")
+        with pytest.raises(SchemaTooNewError, match="schema version 6"):
+            async with StateDB(path):
+                pytest.fail("a version-6 writer opened a decision-preserving store")
+        async with StateDB(path, readonly=True) as state:
+            assert await state.schema_version() == stamped
+    assert _read_version(path) == stamped
+    assert schema_rows() == before
 
 
 async def test_open_upgrades_an_older_recorded_schema_version(tmp_path):

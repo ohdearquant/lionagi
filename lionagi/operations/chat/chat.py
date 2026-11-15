@@ -82,12 +82,12 @@ async def chat(
         from lionagi.service.imodel import _branch_routing_context
 
         anchors: tuple[tuple[int, int], ...] = ()
-        frontier = None
+        round_state = None
         tail_skip = None
         if cache_view is not None:
             # This is the request's own compile, so the first round is decided here, once
             # (ADR-0130 Amendment 4); the fold's sizing compiles only read the decision.
-            anchors, frontier = cache_anchors(
+            anchors, round_state = cache_anchors(
                 branch.metadata, cache_view, kw["messages"], branch._prompt_cache_protect
             )
             # Decided by the fold at this request's API_PRE_CALL (ADR-0127 Amendment 4).
@@ -97,7 +97,11 @@ async def chat(
         with (
             _branch_routing_context(branch.id, imodel),
             conversation_call(
-                branch.metadata, imodel, anchors=anchors, frontier=frontier, tail_skip=tail_skip
+                branch.metadata,
+                imodel,
+                anchors=anchors,
+                round_state=round_state,
+                tail_skip=tail_skip,
             ) as cache_call,
         ):
             api_call = await imodel.invoke(**kw)

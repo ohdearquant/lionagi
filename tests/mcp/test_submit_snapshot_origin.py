@@ -23,8 +23,8 @@ class _Process:
 
 @pytest.fixture
 def submitted(tmp_path, monkeypatch):
-    from lionagi.cli.orchestrate import _orchestration as orch
     from lionhub.orchestration.runs import RunDir
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
 
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
@@ -81,7 +81,7 @@ def _submit(op, args, *, playbook=None):
 
 
 def _parse(argv):
-    from lionagi.cli.orchestrate import add_orchestrate_subparser
+    from lionhub.serve.cli.orchestrate import add_orchestrate_subparser
 
     parser = argparse.ArgumentParser()
     add_orchestrate_subparser(parser.add_subparsers(dest="command", required=True))
@@ -89,7 +89,7 @@ def _parse(argv):
 
 
 async def _setup(parsed, *, agent_name=None):
-    from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
 
     return await orch.setup_orchestration(
         pattern_name="Flow" if parsed.orch_command == "flow" else "Fanout",
@@ -109,7 +109,7 @@ async def _setup(parsed, *, agent_name=None):
 
 @pytest.mark.parametrize("op", ["flow.submit", "fanout.submit"])
 def test_snapshot_survives_source_drift_and_only_contained_worker_drops_it(submitted, op):
-    from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
 
     cwd, source, spawned = submitted
     handle = _submit(op, {"agent": "ordinary", "prompt": "work", "cwd": str(cwd)})
@@ -139,7 +139,7 @@ def test_snapshot_survives_source_drift_and_only_contained_worker_drops_it(submi
 @pytest.mark.parametrize("op", ["flow.submit", "fanout.submit"])
 def test_named_snapshot_shaped_config_remains_explicit(submitted, op):
     from lionagi._errors import ConfigurationError
-    from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
 
     cwd, source, spawned = submitted
     named = cwd / "caller.json"
@@ -177,7 +177,7 @@ def test_named_snapshot_shaped_config_remains_explicit(submitted, op):
 
 
 def test_manually_named_submit_snapshot_has_ambient_origin(submitted):
-    from lionagi.cli.orchestrate import _orchestration as orch
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
 
     cwd, _, _ = submitted
     snapshot = cwd / "manual.json"
@@ -206,7 +206,7 @@ def test_manually_named_submit_snapshot_has_ambient_origin(submitted):
 
 
 def test_playbook_contained_orchestrator_discards_submit_snapshot(submitted, monkeypatch):
-    from lionagi.cli import orchestrate
+    from lionhub.serve.cli import orchestrate
 
     cwd, _, spawned = submitted
     books = cwd / ".lionagi" / "playbooks"
@@ -235,9 +235,9 @@ def test_flow_checkpoint_replays_snapshot_origin_and_refusal(submitted, monkeypa
     from unittest.mock import AsyncMock
 
     from lionagi._errors import ConfigurationError
-    from lionagi.cli.orchestrate import _orchestration as orch
-    from lionagi.cli.orchestrate import flow
     from lionhub.orchestration.flow.checkpoint import CheckpointWriter, load_checkpoint
+    from lionhub.serve.cli.orchestrate import _orchestration as orch
+    from lionhub.serve.cli.orchestrate import flow
 
     cwd, source, spawned = submitted
     args = {"agent": "ordinary", "prompt": "work", "cwd": str(cwd)}
@@ -316,8 +316,8 @@ def test_flow_checkpoint_replays_snapshot_origin_and_refusal(submitted, monkeypa
 
 
 def test_submitted_agent_carries_ambient_snapshot_as_discovered(submitted):
-    from lionagi.cli.agent import add_agent_subparser
     from lionhub.orchestration.mcp_config import resolve_spawn_mcp_servers
+    from lionhub.serve.cli.agent import add_agent_subparser
 
     cwd, source, spawned = submitted
     handle = _submit("agent.submit", {"agent": "ordinary", "prompt": "work", "cwd": str(cwd)})
