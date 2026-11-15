@@ -7,8 +7,8 @@ import pytest
 pytest.importorskip("ruvector")
 pytestmark = pytest.mark.integration
 from lionagi import Branch
-from lionagi.integrations.ruvector import RuVectorMemoryStore, RuVectorStore
 from lionagi.protocols.memory import MemoryItem, MemoryQuery, MemoryStore
+from lionhub.integrations.ruvector import RuVectorMemoryStore, RuVectorStore
 
 
 async def embed(text):

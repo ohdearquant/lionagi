@@ -16,6 +16,7 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
+| `lionhub/src/lionhub/integrations/` | Optional third-party integrations: the RuVector vector store and memory store. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
 | `lionhub/src/lionhub/serve/daemon/` | Studio daemon process services: host admission, the reconnect channel, the scheduler log, stack-dump diagnostics, and the helpers behind the execution routes. |
 | `lionhub/tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
@@ -80,6 +81,7 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.studio.services.schedule_export` | `lionhub.orchestration.schedule.export` |
 | `lionagi.studio.services.project_lookup` | `lionhub.orchestration.project_store` |
 | `lionagi.studio.services._db` | `lionhub.orchestration.state_store` |
+| `lionagi.integrations` | `lionhub.integrations` |
 | `lionagi.studio._host` | `lionhub.serve.daemon._host` |
 | `lionagi.studio._traceback_dump` | `lionhub.serve.daemon._traceback_dump` |
 | `lionagi.studio.daemon_log` | `lionhub.serve.daemon.daemon_log` |
