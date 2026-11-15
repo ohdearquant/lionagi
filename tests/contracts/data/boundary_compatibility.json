@@ -1714,9 +1714,7 @@
       "build_cli_parser",
       "command_exists",
       "iter_cli_seeds",
-      "iter_http",
       "load_cli_command",
-      "load_http_modules",
       "seed_for"
     ],
     "lionagi/_checkpoint_v3_codec.py": [

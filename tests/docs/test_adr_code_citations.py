@@ -117,6 +117,11 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/scheduler/subprocess.py:279@c4abb363",
     ),
     "ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md": (
+        "lionagi/_auto.py:116@264f3e19",
+        "lionagi/_auto.py:191@264f3e19",
+        "lionagi/_auto.py:201@264f3e19",
+        "lionagi/_auto.py:225@264f3e19",
+        "lionagi/_auto.py:236@264f3e19",
         "lionagi/cli/_schedule_parsing.py:32-79@fa46d0e8",
         "lionagi/cli/_schedule_parsing.py:358@fa46d0e8",
         "lionagi/cli/_schedule_parsing.py:429-441@fa46d0e8",
