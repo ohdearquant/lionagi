@@ -576,6 +576,31 @@ async def test_python_enum_sets_match_schema_sql_checks(tmp_path):
     assert {col: found[col] for col in expected} == expected
 
 
+def test_studio_schedule_action_kinds_match_schema_checks():
+    import re
+
+    from sqlalchemy.dialects import postgresql
+
+    from lionagi.state.db import _SCHEMA_PATH
+    from lionagi.studio.services.schedules import _PERSISTED_ACTION_KINDS
+
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        (sqlite_ddl,) = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
+        ).fetchone()
+
+    postgres_ddl = str(
+        sa.schema.CreateTable(metadata.tables["schedules"]).compile(dialect=postgresql.dialect())
+    )
+    action_check = re.compile(r"\bCHECK\s*\(\s*action_kind\s+IN\s*\(([^)]+)\)\s*\)", re.I)
+    for source, ddl in (("schema.sql", sqlite_ddl), ("schema_meta.py", postgres_ddl)):
+        checks = action_check.findall(ddl)
+        assert len(checks) == 1, f"expected one schedules.action_kind CHECK in {source}"
+        kinds = frozenset(value.strip().strip("'") for value in checks[0].split(","))
+        assert kinds == _PERSISTED_ACTION_KINDS, source
+
+
 async def test_metadata_unique_enforcement_present(sqlite_meta_engine):
     """The three natural-key uniqueness rules are enforced (constraint or index)."""
     expected = {

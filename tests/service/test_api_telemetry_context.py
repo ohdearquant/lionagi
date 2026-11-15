@@ -6,7 +6,6 @@ import weakref
 
 import pytest
 
-from lionagi.cli._api_usage import APIUsageCollector
 from lionagi.service._api_telemetry import (
     InputDecision,
     activate_request,
@@ -17,6 +16,7 @@ from lionagi.service._api_telemetry import (
     record_guard_refusal,
     record_selected_attempt,
 )
+from lionhub.serve.cli._api_usage import APIUsageCollector
 
 
 def _decision(**updates):

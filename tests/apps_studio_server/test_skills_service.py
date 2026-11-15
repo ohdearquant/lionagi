@@ -105,7 +105,7 @@ from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 @pytest.mark.asyncio
 async def test_save_skill_definition_writes_canonical_skill_md_shape(tmp_path, monkeypatch):
     """Saving a skill through the definitions system must always land at
-    <name>/SKILL.md -- the shape lionagi/cli/skill.py's resolve_skill_path()
+    <name>/SKILL.md -- the shape lionhub/src/lionhub/serve/cli/skill.py's resolve_skill_path()
     actually looks for -- never a bare <name>.md."""
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod

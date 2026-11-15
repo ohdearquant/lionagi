@@ -568,7 +568,7 @@ lines:
   one more block (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`). The prompt therefore shows the kept
   state alone and never says material was dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py::ContextProviderRegistry.__init__`)
-  and render per session (`lionagi/cli/monitor.py::_format_khive_injection_line` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`), and `branch.last_context_report`
+  and render per session (`lionhub/src/lionhub/serve/cli/monitor.py::_format_khive_injection_line` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`), and `branch.last_context_report`
   exposes one turn's names (`lionagi/session/branch.py::Branch.last_context_report`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;

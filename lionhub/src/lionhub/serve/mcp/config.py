@@ -98,7 +98,7 @@ def li_command() -> list[str]:
 
     Resolution order: 1) ``LIONAGI_MCP_LI_BIN`` override, split on whitespace;
     2) the ``li`` console script next to ``sys.executable``, by absolute path;
-    3) ``<this-interpreter> -m lionagi.cli`` as a last resort.
+    3) ``<this-interpreter> -m lionhub.serve.cli`` as a last resort.
     """
     override = os.environ.get(LI_BIN_ENV_VAR)
     if override:
@@ -113,7 +113,7 @@ def li_command() -> list[str]:
         if bin_li.exists():
             return [str(bin_li)]
 
-    return [sys.executable, "-m", "lionagi.cli"]
+    return [sys.executable, "-m", "lionhub.serve.cli"]
 
 
 def run_dir(run_id: str) -> Path:

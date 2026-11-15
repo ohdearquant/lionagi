@@ -710,7 +710,7 @@ async def test_postgres_capability_claim(pg_url):
 # Postgres's jsonb_strip_nulls, applied to the *entire* merged document,
 # deletes nulls that predate the patch and were never touched by it --
 # SQLite's json_patch never removes them. A real NodeStarted flow segment
-# (lionagi/cli/orchestrate/flow.py) carries ended_at: None and
+# (lionhub/src/lionhub/serve/cli/orchestrate/flow.py) carries ended_at: None and
 # last_heartbeat_at: None inside a "segments" array patch value, so this was
 # reachable from production, not hypothetical. The fix computes the
 # null-deletion set from the patch alone instead of stripping the whole

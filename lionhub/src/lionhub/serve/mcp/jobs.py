@@ -111,7 +111,7 @@ LOST_REASON = "process_gone_without_outcome"
 # A narrower sibling of LOST_REASON: the run's own directory carries a
 # notify_outcome.json recording that its terminal notice was never delivered
 # (persistence was unavailable, or a direct-delivery attempt itself failed —
-# see lionagi/cli/orchestrate/_notify.py). Unlike LOST_REASON this is not pure
+# see lionhub/src/lionhub/serve/cli/orchestrate/_notify.py). Unlike LOST_REASON this is not pure
 # silence — the run said something about its own end before going quiet — but
 # it is still not a recorded status, so it stays OUTCOME_INDETERMINATE. Never
 # assigned from the *absence* of that file: retention prunes run directories,

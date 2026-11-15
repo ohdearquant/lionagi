@@ -369,7 +369,7 @@ async def test_operator_rename_reports_a_session_removed_before_label_write(db_p
 
 
 async def test_cli_session_status_uses_the_displayed_label(db_path):
-    from lionagi.cli.status import _build_view
+    from lionhub.serve.cli.status import _build_view
 
     await _seed(db_path)
     async with StateDB(db_path, readonly=True) as db:
@@ -379,7 +379,7 @@ async def test_cli_session_status_uses_the_displayed_label(db_path):
 
 
 def test_cli_wait_line_uses_the_displayed_label():
-    from lionagi.cli.monitor import _format_session_wait_line
+    from lionhub.serve.cli.monitor import _format_session_wait_line
 
     row = {
         "id": SID,

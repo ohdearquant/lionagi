@@ -7,8 +7,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from lionagi.cli import kill as kill_cli
 from lionagi.state.db import StateDB
+from lionhub.serve.cli import kill as kill_cli
 
 
 async def _seed_quarantine(kind):

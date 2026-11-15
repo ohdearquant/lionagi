@@ -124,6 +124,21 @@ def _run_update(fields: dict, existing: dict | None = None):
 # create_schedule
 
 
+@pytest.mark.parametrize("kind", ["engine", "unknown_kind"])
+def test_create_refuses_unpersisted_action_kind_before_write(kind):
+    db, err = _run_create(_create_data(action_kind=kind, action_agent="research"))
+    assert err is not None
+    assert f"action_kind {kind!r}" in str(err)
+    db.create_schedule.assert_not_called()
+
+
+def test_create_normalizes_the_playbook_alias_before_write():
+    db, err = _run_create(_create_data(action_kind="playbook", action_playbook="triage"))
+    assert err is None
+    (written,), _kwargs = db.create_schedule.await_args
+    assert written["action_kind"] == "play"
+
+
 @pytest.mark.parametrize("field", FIELDS)
 @pytest.mark.parametrize("build, fragment", CASE_PARAMS)
 def test_create_validates_chain_action(field, build, fragment):
@@ -152,6 +167,28 @@ def test_create_accepts_missing_and_null_chain_action(field):
 
 
 # update_schedule
+
+
+@pytest.mark.parametrize(
+    ("stored_kind", "fields"),
+    [
+        ("agent", {"action_kind": "engine"}),
+        ("agent", {"action_kind": "engine", "action_agent": "research"}),
+        ("engine", {"action_agent": "research"}),
+    ],
+)
+def test_action_patch_rejects_effective_unpersisted_kind(stored_kind, fields):
+    db, err = _run_update(fields, _existing(action_kind=stored_kind))
+    assert err is not None
+    assert "action_kind 'engine'" in str(err)
+    db.update_schedule.assert_not_awaited()
+
+
+def test_unrelated_patch_on_legacy_engine_schedule_keeps_the_row_editable():
+    row = _existing(action_kind="engine")
+    db, err = _run_update({"description": "updated"}, row)
+    assert err is None
+    db.update_schedule.assert_awaited_once_with(row["id"], description="updated")
 
 
 @pytest.mark.parametrize("field", FIELDS)

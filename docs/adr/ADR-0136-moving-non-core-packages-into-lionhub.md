@@ -1,7 +1,7 @@
 # ADR-0136: Moving the packages built on the core into lionhub, and removing their old import paths in 2.0
 
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
-  (2026-10-31) and Amendment 4 (2026-11-10) are Proposed
+  (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) are Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) has landed for its four packages: #3752 adds the
   `lionhub` root and the `lionagi._moved.MOVED` table and its finder, and moves
@@ -20,7 +20,155 @@
   ADR-0120's citations of the dispatch outbox to its new file; ADR-0138 records the Studio backend's
   form (D7, Amendment 2); Amendment 3 (Proposed) amends D6 row 3 and replaces Amendment 1 A5's
   providers-last order, with ADR-0140 as the providers discovery contract; Amendment 4 (Proposed) fixes
-  D7's `integrations/` slot as that package's destination and states when D6's hold on it ends
+  D7's `integrations/` slot as that package's destination and states when D6's hold on it ends;
+  Amendment 5 (Proposed) moves the Studio application to its own import root before 1.0, bundled in the
+  one distribution through 1.x, replacing Amendment 2's location timing and Amendment 3 C2's Studio step
+
+## Amendment 5 (2026-11-13): the Studio application gets its own import root before 1.0, bundled through 1.x
+
+**Status**: Proposed.
+
+Amendment 2 keeps the Studio application at its `lionagi.studio` paths through 1.x and moves it at 2.0.
+This amendment moves it before 1.0 instead, to its own import root, while the one distribution keeps
+shipping it through 1.x. It replaces Amendment 2's statements of where the application lives during 1.x
+and when it moves: B1's first, third and fourth paragraphs, the exempt-set sentences in Amendment 2's
+preamble and at the end of B2, and B3's file move and residency. It also replaces Amendment 3 C2's
+statement that `studio` stays in D2's set through 1.x. It preserves D1's single distribution through
+1.x, D3's one table and one finder, D4's removal in 2.0.0, D5's persisted names and logger names,
+Amendment 2's wave-2 boundary (B1's second paragraph and B2), and every guarantee that an installation
+which satisfies a `lionagi.studio` import or launch command today keeps satisfying it through 1.x.
+ADR-0138 F7 is amended with it.
+
+### G1. Location and residency
+
+Before 1.0 the application's implementation moves from `lionagi/studio/` to the import root
+`lionagi_studio`, at `apps/studio/backend/src/lionagi_studio/`, with its own project file at
+`apps/studio/backend/pyproject.toml`. Operator moves to `lionagi_studio.operator`, the nineteen
+application route modules to `lionagi_studio.services`, the app factory, app export and attachment to
+`lionagi_studio.app`, and the module launch surface to `lionagi_studio.__main__`. The built-in playbooks
+become package data of the new root. The application never moves into `lionhub`. D7's destination is
+kept and made exact; its "outside the wheel" holds from 2.0.
+
+Through 1.x the `lionagi` distribution bundles the `lionagi_studio` root as D1 bundles `lionhub`. The
+wheel carries three import roots, and no second distribution is published or required before 2.0. D1's
+rules for a bundled root apply: every source-root list D1 names gains the new root,
+`apps/studio/backend/src/` holds no package other than `lionagi_studio`, and the wheel's file list
+carries the root's typing marker, compatibility manifest and playbooks. The application's project file
+declares the root for the application's own builds and tests; no 1.x release builds or publishes a
+distribution from it, and how the application is distributed after 2.0 is outside these records. The
+`studio` extra continues to add dependencies only. A 1.x Studio installation therefore needs no new
+install step, before or after the move.
+
+### G2. Old paths through 1.x
+
+D3's finder serves the old paths. The move adds `Moved("lionagi.studio", "lionagi_studio", <release>,
+"2.0.0")` and keeps every longer row whose module moved to `lionhub`. The finder takes the longest
+matching prefix, so an old daemon or scheduler path still reaches its `lionhub` module. Every
+daemon-owned module has its longer row before the broad row lands. ADR-0138 F3 and F5 name the
+daemon-owned modules: F3 allocates the route modules, and F5 gives one ownership rule and a table for
+every other module under `lionagi/studio/`. The finder returns the target
+module object under the old name, so old and new names share one implementation and one module state,
+including patch targets and pickled class references. `python -m lionagi.studio` and
+`uvicorn lionagi.studio.app:app` run the canonical code; the module entry imports by absolute
+`lionagi_studio` names, so running it under its old name imports no other old path.
+
+The two old parent packages that daemon paths pass through, `lionagi.studio` and
+`lionagi.studio.services`, have empty initializers today and keep them, empty, through 1.x. The finder
+steps aside for a file still at an old path, so these two stay ordinary packages: importing an old
+daemon path loads neither the application root nor its initializers, gives one deprecation warning per
+old module as D3 states, and attaches nothing to an application module. These two names are the only old
+Studio paths that do not resolve to a moved module: they import as the empty packages, and a resource
+read through either name reads the empty old package. The moved-module tests and the frozen inventory
+(G4) name them as their only two exceptions and check every module and subpackage below them. `python -m
+lionagi.studio` gives one deprecation warning, as running any other moved module entry does, and a test
+runs it. Every other module and package under `lionagi/studio/` leaves in the move change, and the broad
+row is permitted only in that change. A file left at any other old path would be loaded in place of the
+moved module, or would break its resolution. B1's rule against a broad row over retained modules
+protected retained implementation; the two empty initializers are the only files it now covers, and they
+hold none. The change carries a longest-prefix test for every split destination and a test that only the
+two empty initializers remain under `lionagi/studio/`.
+
+A definition extracted from a mixed Studio module into `lionhub` stays importable from that module's old
+path: a mixed module, such as the configuration module that holds both daemon and Operator settings,
+takes no longer row, its old path follows the broad row to its new home in `lionagi_studio`, and that
+home re-exports the same object through 1.x. Daemon code imports those definitions from `lionhub`.
+Repository code, launcher targets, the container command and generated child arguments use the canonical
+names (D4). Old names stay supported for external callers through the finder.
+
+D5 applies to the move. A module whose logger name comes from its module path keeps its old dotted name
+as a literal, and stored strings are not rewritten. New serialization records canonical class paths, so
+the class-path allow-list gains `lionagi_studio.` by D5's rule that every row's new prefix joins it
+(ADR-0001 Amendment 2). As with `lionhub`, the prefix admits no code that an old `lionagi.` name does
+not already reach, and it leaves with the row at 2.0. No `Element` subclass lives in the application
+today; one added later has its prefix registered by the application (`register_type_prefix`) before 2.0
+removes the row. D5's persisted-name search, conversion and release documentation obligations cover the
+old Studio paths. Package resources are located relative to their package, never from a module's depth
+in the source tree.
+
+### G3. Compatibility check before the scheduler starts
+
+The application root carries a fixed compatibility manifest, a data file naming the attachment protocol
+version it implements and the library versions it supports. Whenever the daemon factory is given an
+attachment, it reads the manifest of the package that defines that attachment, so the factory names no
+application root, and it does so before the attachment adds any route and before any process resource
+starts. It refuses a missing, malformed or incompatible manifest with an actionable error. Every path
+that attaches the application, whether the launcher, the app factory, the app export, the module entry
+or a direct caller of the factory, goes through that one check: the attachment is handed to the factory
+and never called by other code, and a test checks that. Importing `lionagi_studio.app` builds its app
+export through the factory, so that import adds no route before the check either. The Studio launch
+adapter, the one hub file that names the root, reports an application root that is absent or fails to
+import with an actionable error before it calls the factory. A daemon started without the application
+never reads the manifest. Within one 1.x wheel the versions match by construction, so the check catches
+stale or partial installations. It carries over unchanged to 2.0, where the versions are installed
+independently.
+
+### G4. D2, the inventory and the tests
+
+D2's exempt set is the one Amendment 3 C2 governs. This amendment's base is development-line commit
+`c83e53d7`. At that base the set is `{operations, service, studio}`: `cli` left it in the CLI move
+(ADR-0139 Amendment 5), which also ended
+C2's `cli/agent.py` and `cli/orchestrate/_orchestration.py` rows. `studio` leaves it in the move change,
+because no source file that names `lionhub` then remains under `lionagi/studio/`; C2's
+`studio/operator/engine.py` row is removed in the same change. The other members leave on their own
+steps, and the set is empty at 2.0. The same
+boundary test gains the application root: no file under `lionagi/` names `lionagi_studio` except the
+table in `_moved.py`, and no file under `lionhub/` names it except the explicit Studio launch adapter.
+
+B1's checked inventory of retained application paths is replaced by a frozen inventory of old Studio
+paths: every `lionagi.studio` module path at this amendment's base, every one added before the move, and
+every existing Studio row. A test requires each old path to resolve to its declared destination, in
+`lionhub` or in `lionagi_studio`, as the same object; ADR-0138 F3 and F5 declare which of the two
+holds each module; the two parent packages G2 names are its only
+exceptions and must import as the empty packages. Freezing it before the daemon and application moves
+means a module lost, or a longer row forgotten, in any of those changes cannot disappear from both sides
+of the comparison. Fresh-install tests, run from the built wheel outside the checkout, cover the daemon
+and local schedule commands with the bundled application installed but blocked from import, the old
+imports and every launch surface with the application selected, and a refused selection for each
+manifest failure. At 2.0 the release guard removes the Studio rows with the finder and requires the old
+imports to fail, and the local schedule test runs with the application physically absent, as B3
+requires.
+
+### G5. Order and what 2.0 changes
+
+The move is one change, after the daemon move (B2 step 5) and the CLI move (B2 step 6), so the daemon,
+the scheduler and the CLI's local commands no longer import any application module when it lands.
+Shared-service extraction, resource-lookup corrections, and the manifest with its check land before it
+as separate changes; the check lands once the daemon factory takes the attachment, with the manifest
+beside the application at its old location. The finder change that makes a module entry under a kept old
+parent warn once, without a second warning for an entry whose parent is aliased, lands before it too.
+The move itself keeps D6's restriction to relocation, import rewrites, logger-name literals, the rows,
+and the packaging entries for the new root. D6's per-change items apply, with one difference for item 7:
+the application's tests move to `apps/studio/backend/tests/`, never to `lionhub/tests`, and the
+repository's test run collects them through 1.x. The hub README's summary of the table lists the Studio
+row with its `lionagi_studio` destination. The route, identity, state and lifecycle contracts do not
+change because files move.
+
+At 2.0 no application file moves. The core wheel contains neither hub nor application code, the hub is
+its own distribution under D1, and the application leaves both library wheels at the same import root.
+The Studio rows and the two empty initializers go with the finder (D4), and the compatibility check
+compares independently installed versions. Console-script and package ownership stay with the CLI and
+distribution records. How the application and its frontend are distributed after the split remains
+outside these records.
 
 ## Amendment 4 (2026-11-10): where `lionagi.integrations` goes, and when its hold ends
 
@@ -69,6 +217,10 @@ If an outside pull request opens after the move has merged, its author rebases o
 `lionhub/README.md` and the table row are where that author finds it.
 
 ## Amendment 3 (2026-10-31): providers move first, with finite interim imports
+
+Amendment 5 (G4) replaces this amendment's Studio timing: C1's reference to Amendment 2's retained
+application holds until the application moves to its own import root, and in C2 `studio` and its
+`studio/operator/engine.py` row leave the set with that move, before 1.0, not at 2.0.
 
 This amendment replaces Amendment 1 A5's providers-last order and amends D6 row 3 explicitly. It preserves D1's single distribution through 1.x, D3's one table and finder, D4's removal in 2.0.0, and D5's identity, persisted-name and logging requirements. The maintainer requires existing 0.x callers to continue working unchanged throughout 1.x, without a new install or registration step.
 
@@ -139,6 +291,13 @@ The four lower-module homes do not authorize provider-specific core growth. The 
 **MAY:** retain only C2's listed interim edges through their removal steps and perform the four lower-module moves. **MAY NOT:** enlarge the exemption to other consumers, hide references in computed strings, use the finder for internal provider discovery, change logger names, or silently substitute a generic endpoint when a declared provider fails. **Verify by:** exact package and file inventories at every head, the 1.0 gate deleting all 46 interim edges, ADR-0140's fresh-wheel matrix, D3–D5 compatibility checks, and the 2.0 guard requiring no automatic hub path or compatibility row.
 
 ## Amendment 2 (2026-10-25): the Studio boundary is set in wave 2 and the application extracted at 2.0
+
+Amendment 5 (G1, G2, G4, G5) replaces this amendment's statements of where the application lives
+during 1.x and when it moves: the exempt-set sentences in this preamble and at the end of B2, B1's
+first, third and fourth paragraphs, and B3's file move and residency. The application moves to its own
+import root before 1.0 and stays bundled through 1.x; where B2 says "retained application", that holds
+until that move. Amendment 3 C2 already governs the exempt set. B1's second paragraph and B2's steps
+stand.
 
 This amendment preserves D1's single-distribution transition and its promise that every existing
 `lionagi.*` import path remains available until 2.0 with its existing dependency requirements.
@@ -213,6 +372,10 @@ The test continues to require exact agreement with the packages that actually na
 not gain a blanket exemption for retained compatibility files elsewhere.
 
 ### B3. Complete extraction at 2.0
+
+Amendment 5 (G1, G5) replaces this section's file move and 1.x residency: the application has already
+moved to its own import root before 1.0, and at 2.0 it leaves the library wheels with no further move.
+The physical-absence test and the outside-these-records distribution decision stand.
 
 At 2.0, move the retained application to `apps/studio/backend/src/`, update its imports and activation
 source, and remove its old import paths and the `studio` exemption. The route, identity, state, and

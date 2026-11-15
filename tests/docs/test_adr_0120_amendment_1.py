@@ -310,14 +310,14 @@ def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
 
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
-    orchestration = "lionagi/cli/orchestrate/_orchestration.py"
+    orchestration = "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py"
     check_round = _def_source(orchestration, "TeamLifecycleCoordinator.check_round")
     assert "pending_targets = frozenset(state.pending_targets) | frozenset(exchange_pending)" in (
         check_round
     )
     build = _def_source(orchestration, "TeamLifecycleCoordinator.build_round_operations")
     assert build.startswith("def build_round_operations")
-    flow = "lionagi/cli/orchestrate/flow.py"
+    flow = "lionhub/src/lionhub/serve/cli/orchestrate/flow.py"
     assert _def_source(flow, "_execute_dag._on_team_op_complete").startswith(
         "def _on_team_op_complete"
     )
@@ -496,7 +496,10 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
-    assert "lionagi/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round" in flat
+    assert (
+        "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round"
+        in flat
+    )
     assert "lionagi/state/schema.sql:493" in flat
     assert "lionagi/state/db.py::StateDB._build_update_schedule_stmt" in flat
     assert "lionagi/state/db.py::StateDB.create_schedule_run_and_advance" in flat
@@ -509,7 +512,10 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete" in flat
+    assert (
+        "lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete"
+        in flat
+    )
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 

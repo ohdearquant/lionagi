@@ -74,7 +74,7 @@ Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. 
 
 `SandboxSession` is a dataclass holding worktree state. Module-level async functions drive the lifecycle: `create_sandbox(repo_root, base_branch)` → edit files freely → `sandbox_diff(session)` (returns diff dict) → `sandbox_commit(session, msg)` → `sandbox_merge(session)` (merges into base) or `sandbox_discard(session)` (deletes worktree, no trace). Safe for speculative or destructive edits — the base branch is never touched until an explicit `sandbox_merge()`.
 
-### CLI Architecture (`lionagi/cli/`)
+### CLI Architecture (`lionhub/src/lionhub/serve/cli/`)
 
 - `cli/agent.py` — `li agent`: one-shot or resumed turn
 - `cli/team.py` — `li team`: inbox (`~/.lionagi/teams/{id}.json`), concurrent writes via `fcntl.flock`

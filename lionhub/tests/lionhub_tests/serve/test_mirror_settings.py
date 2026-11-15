@@ -12,7 +12,8 @@ def test_mirror_settings_imports_only_the_standard_library() -> None:
     from pathlib import Path
 
     import lionhub.serve
-    from tests.cli._import_guard import resolved_imports
+
+    from .cli._import_guard import resolved_imports
 
     source = Path(lionhub.serve.__file__).resolve().parent / "mirror_settings.py"
     imported = resolved_imports(source, "lionhub.serve")

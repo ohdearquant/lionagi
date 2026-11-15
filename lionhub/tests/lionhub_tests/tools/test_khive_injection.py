@@ -140,6 +140,73 @@ def patched_transport():
         yield call_tool
 
 
+async def _config_sent_to_pool(provider):
+    """The server config the provider hands the MCP pool on its first turn."""
+    client = AsyncMock()
+    client.call_tool = AsyncMock(return_value=_mcp_result(_khive_recall_response()))
+    get_client = AsyncMock(return_value=client)
+    # The assertion is on the server config, not on truncation, so the
+    # tokenizer (which may need to download its vocabulary) is bypassed.
+    with (
+        patch(
+            "lionagi.service.connections.mcp_wrapper.MCPConnectionPool.get_client",
+            get_client,
+        ),
+        patch("lionhub.tools.khive_injection._truncate", lambda text, max_tokens: text),
+    ):
+        await provider.provide(_FakeBranch(), _FakeInstruction("hello"))
+    return get_client.await_args_list[0].args[0]
+
+
+@pytest.mark.asyncio
+async def test_actor_attributes_the_spawned_khive_server():
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    provider = KhiveInjectionProvider(policy, actor="agent:implementer")
+
+    config = await _config_sent_to_pool(provider)
+
+    assert config["command"] == "kkernel"
+    assert config["env"] == {"KHIVE_ACTOR": "agent:implementer"}
+
+
+@pytest.mark.asyncio
+async def test_no_actor_leaves_the_spawned_khive_server_unattributed():
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    provider = KhiveInjectionProvider(policy)
+
+    config = await _config_sent_to_pool(provider)
+
+    assert "env" not in config
+
+
+@pytest.mark.asyncio
+async def test_actor_replaces_the_actor_in_a_supplied_khive_config_and_keeps_the_rest():
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    supplied = {
+        "command": "/opt/bin/kkernel",
+        "args": ["mcp", "--pack", "memory"],
+        "env": {"KEEP": "1", "KHIVE_ACTOR": "someone-else"},
+    }
+    provider = KhiveInjectionProvider(policy, supplied, actor="agent:worker")
+
+    config = await _config_sent_to_pool(provider)
+
+    assert config["env"] == {"KEEP": "1", "KHIVE_ACTOR": "agent:worker"}
+    assert config["args"] == ["mcp", "--pack", "memory"]
+    assert supplied["env"]["KHIVE_ACTOR"] == "someone-else"
+
+
+@pytest.mark.asyncio
+async def test_actor_does_not_touch_a_supplied_config_that_is_not_khive():
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    supplied = {"command": "python", "args": ["-m", "other_server"]}
+    provider = KhiveInjectionProvider(policy, supplied, actor="agent:worker")
+
+    config = await _config_sent_to_pool(provider)
+
+    assert config == supplied
+
+
 @pytest.mark.asyncio
 async def test_query_construction_uses_role_and_truncated_task_text(patched_transport):
     patched_transport.return_value = _mcp_result(_khive_recall_response())

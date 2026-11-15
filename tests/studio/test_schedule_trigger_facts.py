@@ -341,7 +341,7 @@ async def test_a_stored_context_text_that_does_not_parse_fails_no_run_read(isola
 
 
 def test_machine_runs_preserves_trigger_facts_from_the_studio_response(monkeypatch):
-    from lionagi.cli import machine_schedule
+    from lionhub.serve.cli import machine_schedule
 
     row = schedules._run_view({"id": "tick", "trigger_context": {"scheduled": True}})
     requests = []

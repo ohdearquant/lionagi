@@ -239,7 +239,7 @@ def test_a_session_still_in_flight_withholds_the_session_level_grade():
     the sessions have no terminal outcome to give and the caller falls through
     to the surfaces that know it is still running. Grading the finished one
     would report a live run as done."""
-    from lionagi.cli.status import EXIT_RUNNING
+    from lionhub.serve.cli.status import EXIT_RUNNING
 
     run = _run(status="running", exit_code=None, ended_at=None, invocation_id="inv1")
     invocation = {"id": "inv1", "status": "running"}
@@ -361,14 +361,14 @@ def test_exit_code_reflects_session_terminal_status(session_status, expected):
 
 
 def test_exit_code_running_is_exit_running():
-    from lionagi.cli.status import EXIT_RUNNING
+    from lionhub.serve.cli.status import EXIT_RUNNING
 
     run = _run(status="running", ended_at=None)
     assert exit_code_for_view(run, None, []) == EXIT_RUNNING
 
 
 def test_exit_code_no_run_is_exit_unknown():
-    from lionagi.cli.status import EXIT_UNKNOWN
+    from lionhub.serve.cli.status import EXIT_UNKNOWN
 
     assert exit_code_for_view(None, None, []) == EXIT_UNKNOWN
 

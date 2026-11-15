@@ -124,10 +124,6 @@ async def test_member_chain_to_nested_group_does_not_retain_validation(link):
         group.__suppress_context__ = False
         if hasattr(group, "add_note"):
             group.add_note("safe note")
-        try:
-            raise group
-        except ExceptionGroup as raised:
-            original_traceback = raised.__traceback__
         setattr(member, link, group)
         call.execution.error = ExceptionGroup("outer", [member])
         assert call.execution.error.exceptions[0] is member
@@ -137,7 +133,7 @@ async def test_member_chain_to_nested_group_does_not_retain_validation(link):
         assert cleaned.exceptions[0].exceptions == (other,)
         assert cleaned.__cause__ is cause and cleaned.__context__ is context
         assert cleaned.__suppress_context__ is False
-        assert cleaned.__traceback__ is original_traceback
+        assert cleaned.__traceback__ is None
         if hasattr(group, "__notes__"):
             assert cleaned.__notes__ == ["safe note"]
         _assert_safe_error_graph(call.execution.error)
@@ -745,9 +741,96 @@ async def test_rebuilt_recorded_groups_preserve_safe_exception_metadata():
         assert stored.__cause__ is safe_cause and stored.__context__ is safe_context
         assert inner.__cause__ is safe_cause and inner.__context__ is None
         assert stored.__suppress_context__ is False and inner.__suppress_context__ is False
-        assert stored.__traceback__ is traceback
+        assert stored.__traceback__ is None
         if hasattr(group, "__notes__"):
             assert stored.__notes__ == ["outer note"] and inner.__notes__ == ["nested note"]
+        _assert_safe_error_graph(stored)
+    finally:
+        await model.close()
+
+
+@pytest.mark.asyncio
+async def test_sanitized_group_does_not_retain_validation_frame_locals():
+    from lionagi.ln.concurrency._compat import BaseExceptionGroup, ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+        raw_input = "private-validation-input"
+
+        def fail_with_local():
+            retained = raw_input
+            try:
+                raise ExceptionGroup("invalid", [_private_error()])
+            except ExceptionGroup as error:
+                assert retained == raw_input
+                return error
+
+        call.execution.error = fail_with_local()
+        stored = call.execution.error
+        pending = [stored]
+        seen = set()
+        while pending:
+            error = pending.pop()
+            if id(error) in seen:
+                continue
+            seen.add(id(error))
+            assert error.__traceback__ is None
+            assert error.__cause__ is None and error.__context__ is None
+            if isinstance(error, BaseExceptionGroup):
+                pending.extend(error.exceptions)
+    finally:
+        await model.close()
+
+
+def _frames_reachable_from(error):
+    from lionagi.ln.concurrency._compat import BaseExceptionGroup
+
+    pending, seen, frames = [error], set(), []
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        tb = current.__traceback__
+        while tb is not None:
+            frames.append(tb.tb_frame)
+            tb = tb.tb_next
+        pending.extend((current.__cause__, current.__context__))
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+    return frames
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+async def test_frameless_link_that_reaches_a_frame_is_dropped(link):
+    from lionagi.ln.concurrency._compat import ExceptionGroup
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    try:
+        call = model.create_api_calling(messages=[{"role": "user", "content": "hello"}])
+
+        def raise_with_local():
+            retained = _MARKER
+            try:
+                raise RuntimeError("inner")
+            except RuntimeError as error:
+                assert retained == _MARKER
+                return error
+
+        framed = raise_with_local()
+        frameless = RuntimeError("safe link")
+        setattr(frameless, link, framed)
+        group = ExceptionGroup("invalid", [_private_error()])
+        setattr(group, link, frameless)
+        assert frameless.__traceback__ is None and framed.__traceback__ is not None
+
+        call.execution.error = group
+        stored = call.execution.error
+        for frame in _frames_reachable_from(stored):
+            assert all(value != _MARKER for value in frame.f_locals.values())
+        assert getattr(stored, link) is None
         _assert_safe_error_graph(stored)
     finally:
         await model.close()
@@ -792,7 +875,7 @@ async def test_recorded_group_uses_checked_derive_and_preserves_metadata(level, 
         assert calls and cleaned is not group
         assert cleaned.exceptions[0] is other and isinstance(cleaned.exceptions[1], ValueError)
         assert cleaned.__cause__ is cause and cleaned.__context__ is context
-        assert cleaned.__suppress_context__ is False and cleaned.__traceback__ is traceback
+        assert cleaned.__suppress_context__ is False and cleaned.__traceback__ is None
         if hasattr(group, "__notes__"):
             assert cleaned.__notes__ == ["safe note"]
         assert type(cleaned) is (CustomGroup if mode == "well_behaved" else ExceptionGroup)
