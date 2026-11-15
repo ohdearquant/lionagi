@@ -283,7 +283,8 @@ def existing_agent_definition(tmp_path, monkeypatch):
 
 
 @pytest.mark.integration
-def test_save_agent_definition_rejects_invalid_date(existing_agent_definition):
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["bare", "bom"])
+def test_save_agent_definition_rejects_invalid_date(existing_agent_definition, prefix):
     client, agent_file = existing_agent_definition
     original = agent_file.read_bytes()
     frontmatter = "name: save-agent\nDeadline: 2026-02-30\n"
@@ -292,7 +293,7 @@ def test_save_agent_definition_rejects_invalid_date(existing_agent_definition):
 
     response = client.post(
         "/api/definitions/agent/save-agent",
-        json={"content": f"---\n{frontmatter}---\n\nNew body.\n"},
+        json={"content": f"{prefix}---\n{frontmatter}---\n\nNew body.\n"},
     )
 
     assert response.status_code == 422, response.text

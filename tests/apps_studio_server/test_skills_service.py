@@ -31,6 +31,23 @@ def test_validate_skill_content_accepts_well_formed_skill():
     assert errors == []
 
 
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["bare", "bom"])
+def test_skill_reads_keep_allowed_tools_and_body(tmp_path, monkeypatch, prefix):
+    from lionagi.studio.services import skills as skills_mod
+
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(prefix + VALID_SKILL, encoding="utf-8")
+    monkeypatch.setattr(skills_mod, "SKILLS_ROOT", tmp_path)
+
+    (listed,) = skills_mod.list_skills()
+    assert listed["allowed_tools"] == ["Read", "Bash"]
+    detail = skills_mod.get_skill("my-skill")
+    assert detail is not None
+    assert detail["allowed_tools"] == ["Read", "Bash"]
+    assert detail["content"] == "Body text."
+
+
 def test_validate_skill_content_rejects_broken_yaml_frontmatter():
     broken = "---\nname: [unterminated\n---\nBody.\n"
     errors = validate_skill_content(broken, "my-skill")
@@ -46,11 +63,11 @@ def test_validate_skill_content_rejects_non_mapping_frontmatter():
     assert any("mapping" in e for e in errors)
 
 
-def test_validate_skill_content_rejects_non_list_allowed_tools():
-    content = "---\nname: x\nallowed-tools: Bash\n---\nBody.\n"
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["bare", "bom"])
+def test_validate_skill_content_rejects_non_list_allowed_tools(prefix):
+    content = f"{prefix}---\nname: x\nallowed-tools: Bash\n---\nBody.\n"
     errors = validate_skill_content(content, "x")
-    assert errors
-    assert any("allowed-tools" in e for e in errors)
+    assert errors == ["allowed-tools must be a list of tool name strings"]
 
 
 def test_validate_skill_content_rejects_allowed_tools_with_non_string_entries():

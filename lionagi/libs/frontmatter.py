@@ -20,6 +20,15 @@ def _strip_frontmatter_prefix(text: str) -> str:
     return text[start:]
 
 
+def _trim_frontmatter_document(text: str) -> str:
+    """Trim whitespace and remove a leading BOM before a frontmatter delimiter."""
+    if text.startswith("\ufeff"):
+        candidate = text[1:].strip()
+        if _FM_SPLIT.match(candidate):
+            return candidate
+    return text.strip()
+
+
 def _load_frontmatter_yaml(document: str) -> Any:
     try:
         return yaml.safe_load(document)
@@ -38,7 +47,7 @@ def _parse_frontmatter_for_save(text: str) -> tuple[dict[str, Any], str]:
 
 
 def _parse_frontmatter(text: str, load_yaml: Callable[[str], Any]) -> tuple[dict[str, Any], str]:
-    text = text.strip()
+    text = _trim_frontmatter_document(text)
     if not text.startswith("---"):
         return {}, text
     parts = _FM_SPLIT.split(text, maxsplit=2)
@@ -62,7 +71,7 @@ def parse_frontmatter_strict(text: str) -> tuple[dict[str, Any], str]:
     YAML mapping (including an explicit ``null`` document, or an empty body)
     raises too, instead of being coerced into an empty metadata dict.
     """
-    text = text.strip()
+    text = _trim_frontmatter_document(text)
     if not text.startswith("---"):
         return {}, text
     parts = _FM_SPLIT.split(text, maxsplit=2)
