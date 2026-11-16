@@ -434,7 +434,7 @@ def _is_import_machinery(code: CodeType) -> bool:
     )
 
 
-def _caller_stacklevel() -> int:
+def _warning_origin() -> tuple[int, bool]:
     # Point the warning at the code that wrote the import. ``warnings`` already skips
     # the frozen importlib frames without counting them, so count only the frames it
     # counts: this module's own, ``importlib.import_module``, and a root lazy export's two.
@@ -447,8 +447,24 @@ def _caller_stacklevel() -> int:
             continue
         level += 1
         if not _is_import_machinery(frame.f_code):
-            break
-    return level
+            command_line = (
+                frame.f_globals.get("__name__") == "runpy"
+                and frame.f_code.co_name == "_get_module_details"
+                and sys.argv[:1] == ["-m"]
+            )
+            return level, command_line
+    return level, False
+
+
+def _has_aliased_parent(fullname: str) -> bool:
+    parent_name = fullname.rpartition(".")[0]
+    parent = sys.modules.get(parent_name)
+    canonical_parent = resolve(parent_name)
+    return (
+        parent is not None
+        and canonical_parent is not None
+        and parent is sys.modules.get(canonical_parent)
+    )
 
 
 class _AliasLoader(importlib.abc.Loader):
@@ -468,13 +484,24 @@ class _AliasLoader(importlib.abc.Loader):
         self._warn_moved(module.__name__)
         sys.modules[module.__name__] = moved
 
-    def _warn_moved(self, old_name: str) -> None:
-        warnings.warn(
+    def _warn_moved(self, old_name: str, *, loading_code: bool = False) -> None:
+        stacklevel, command_line = _warning_origin()
+        if command_line and not loading_code:
+            # runpy imports the parents first. Warn for the entry when it gets code.
+            return
+        if loading_code and not command_line and _has_aliased_parent(old_name):
+            # An aliased parent already warned during a programmatic runpy import.
+            return
+        message = (
             f"{old_name} moved to {self._new_name}; the old import path is removed "
-            f"in lionagi {self._row.removed_in}. Import from {self._new_name} instead.",
-            DeprecationWarning,
-            stacklevel=_caller_stacklevel(),
+            f"in lionagi {self._row.removed_in}. Import from {self._new_name} instead."
         )
+        if command_line:
+            warnings.warn_explicit(
+                message, DeprecationWarning, "<command line>", 1, module="__main__"
+            )
+        else:
+            warnings.warn(message, DeprecationWarning, stacklevel=stacklevel)
 
     def get_data(self, path: str) -> bytes:
         # Resource readers such as ``pkgutil.get_data`` ask the old name's loader.
@@ -482,18 +509,8 @@ class _AliasLoader(importlib.abc.Loader):
 
     def get_code(self, fullname: str) -> CodeType | None:
         code = importlib.util.find_spec(self._new_name).loader.get_code(self._new_name)
-        # runpy executes the code without calling exec_module. An aliased parent
-        # already warned during import, while a parent kept on disk did not.
-        parent_name = fullname.rpartition(".")[0]
-        parent = sys.modules.get(parent_name)
-        canonical_parent = resolve(parent_name)
-        parent_is_alias = (
-            parent is not None
-            and canonical_parent is not None
-            and parent is sys.modules.get(canonical_parent)
-        )
-        if code is not None and not parent_is_alias:
-            self._warn_moved(fullname)
+        if code is not None:
+            self._warn_moved(fullname, loading_code=True)
         return code
 
 

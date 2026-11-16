@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0136 A5 G5: a moved module entry warns once under either old parent layout."""
+"""ADR-0136 Amendment 5, item G5: a moved module entry warns once from the command line."""
 
 from __future__ import annotations
 
@@ -26,7 +26,12 @@ moved.install()
 
 @pytest.mark.parametrize("parent_layout", ["kept", "aliased", "renamed-kept"])
 @pytest.mark.parametrize("entry", ["__main__", "child"])
-def test_moved_module_entry_warns_once(tmp_path: Path, parent_layout: str, entry: str) -> None:
+@pytest.mark.parametrize(
+    "warning_args", [(), ("-W", "always::DeprecationWarning")], ids=["default", "always"]
+)
+def test_moved_module_entry_warns_once(
+    tmp_path: Path, parent_layout: str, entry: str, warning_args: tuple[str, ...]
+) -> None:
     old_package = tmp_path / "legacy"
     old_package.mkdir()
     (old_package / "__init__.py").write_text(
@@ -54,8 +59,7 @@ def test_moved_module_entry_warns_once(tmp_path: Path, parent_layout: str, entry
             "-B",
             "-E",
             "-S",
-            "-W",
-            "always::DeprecationWarning",
+            *warning_args,
             "-m",
             f"legacy.application{child_suffix}",
         ],
@@ -70,8 +74,7 @@ def test_moved_module_entry_warns_once(tmp_path: Path, parent_layout: str, entry
     assert result.stdout == f"ran canonical {entry}\n"
     warnings = [line for line in result.stderr.splitlines() if "DeprecationWarning:" in line]
     assert len(warnings) == 1, (len(warnings), result.stderr)
-    warning_suffix = f".{entry}" if kept_parent else ""
-    assert (
-        f"legacy.application{warning_suffix} moved to current_application{warning_suffix}; "
-        "the old import path is removed in lionagi 2.0.0." in warnings[0]
+    assert warnings[0].startswith(
+        f"<command line>:1: DeprecationWarning: legacy.application.{entry} "
+        f"moved to current_application.{entry}; the old import path is removed in lionagi 2.0.0."
     )
