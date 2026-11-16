@@ -1855,6 +1855,19 @@ class EngineResult(str):
 _JUDGE_CHAIN_LIMIT = 100
 
 
+def _explicit_cause(error: BaseException) -> BaseException | None:
+    """The explicit cause of *error*, or None when reading it fails.
+
+    A refusal subclass may make its cause unreadable; the refusal itself must still be
+    raised, so a failed read is skipped. An interrupt, an exit or a cancellation raised
+    by the read is not caught.
+    """
+    try:
+        return error.__cause__
+    except Exception:  # noqa: BLE001 — an unreadable cause is skipped
+        return None
+
+
 def _judge_refusal(
     error: BaseException,
 ) -> tuple[BaseException | None, BaseException | None, bool]:
@@ -1902,10 +1915,7 @@ def _judge_refusal(
         except Exception:  # noqa: S110 — unreadable group members are skipped
             pass
     if refusal is not None:
-        try:
-            return refusal, refusal.__cause__, False
-        except Exception:  # noqa: BLE001 — unreadable links are skipped
-            return refusal, None, False
+        return refusal, _explicit_cause(refusal), False
     return None, None, False
 
 
@@ -2094,7 +2104,7 @@ class Engine:
             # separate frame so this traceback does not retain the outer error's links.
             refusal, refusal_cause, containment_refusal = _judge_refusal(exc)
             if containment_refusal:
-                raise refusal from refusal.__cause__
+                raise refusal from _explicit_cause(refusal)
             if refusal is None:
                 # No refusal on the chain. A chain that loops back on itself, or one longer than
                 # the limit, lands here too, instead of walking forever. Under containment the
