@@ -5,15 +5,19 @@
 from __future__ import annotations
 
 import argparse
+import socket
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln._proc import (
     _admit_recorded_worker_group,
+    _finite_process_time,
     _RecordedGroupWitness,
     _RecordedWorkerIdentity,
     current_pid_markers,  # noqa: F401  (re-exported: the kill command's historical import path)
@@ -25,6 +29,7 @@ from lionagi.state._quarantine_identity import (
     _quarantine_status_label,
     is_current_quarantine,
     quarantine_identity,
+    run_probe,
 )
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from lionagi.state.db import (
@@ -42,6 +47,7 @@ from lionhub.orchestration.kill import (
     _STALE_SWEEP_ORDER,
     NOT_JUDGEABLE_HERE,
     NOT_STOPPED_SIGNALS,
+    _CommandGroupInspection,
     _degraded_run,
     _degraded_termination_target,
     _imported_degraded_process_identity,
@@ -79,8 +85,41 @@ def _same_process_scope(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return True
 
 
+def _bound_unverifiable_command_group(row: dict[str, Any], group: _CommandGroupInspection) -> bool:
+    """Only track ambiguous groups with a complete identity for this host and boot."""
+    if group.outcome != "identity_unverifiable" or group.pid is None or group.pgid != group.pid:
+        return False
+
+    metadata = row.get("node_metadata")
+    identity = quarantine_identity(row)
+    if (
+        not isinstance(metadata, dict)
+        or identity is None
+        or identity[1] is None
+        or not _finite_process_time(metadata.get("pid_create_time"))
+        or not _finite_process_time(metadata.get("pid_boot_time"))
+        or metadata.get("process_identity_mode") != "local"
+    ):
+        return False
+
+    probed, scope = run_probe(lambda: (socket.gethostname(), psutil.boot_time()))
+    if not probed or scope is None:
+        return False
+    host, boot = scope
+    return (
+        isinstance(host, str)
+        and bool(host.strip())
+        and metadata.get("pid_host") == host
+        and _finite_process_time(boot)
+        and abs(metadata["pid_boot_time"] - boot) <= BOOT_TIME_TOLERANCE
+    )
+
+
 def _quarantine_still_unverifiable(row: dict[str, Any], *, kind: str) -> bool:
     """Recheck the bound local process immediately before recording a disposition."""
+    if (group := _inspect_cancel_command_group(kind, row)) is not None:
+        return _bound_unverifiable_command_group(row, group)
+
     identity = quarantine_identity(row)
     metadata = row.get("node_metadata")
     if identity is None or not isinstance(metadata, dict):
@@ -587,7 +626,7 @@ async def _do_kill_all_stale(
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
-    """Sweep stale sessions/invocations whose PIDs are dead."""
+    """Sweep stale sessions/invocations with dead or absent process identities."""
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
 
@@ -717,7 +756,7 @@ async def _do_kill_all_stale(
                     continue
 
                 if (group := _inspect_cancel_command_group(entity_type, row_dict)) is not None:
-                    if group.outcome == "already_dead":
+                    if group.outcome in ("no_pid", "already_dead"):
                         await settle_stale(
                             entity_type,
                             row_dict,
@@ -725,15 +764,18 @@ async def _do_kill_all_stale(
                             pid=group.pid,
                             pgid=group.pgid,
                             pid_alive=False,
-                            verdict="already_dead",
+                            verdict="already_dead" if group.outcome == "already_dead" else None,
                         )
                     elif group.outcome == "verified":
                         skipped_live += 1
+                        verified_live.append((entity_type, row_dict))
                         if verbose:
                             print(
                                 f"  skip {entity_type} {entity_id[:12]}: "
                                 f"command group {group.pgid} is still alive"
                             )
+                    elif _bound_unverifiable_command_group(row_dict, group):
+                        await keep_unverifiable(entity_type, row_dict, "identity_unknown")
                     else:
                         if group.outcome in NOT_JUDGEABLE_HERE:
                             skipped_unjudgeable += 1

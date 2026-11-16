@@ -240,45 +240,121 @@ def test_preview_reports_a_terminal_sessions_recorded_worker_without_settling_it
     assert run_async(read()) == before
 
 
-async def test_stale_sweep_only_settles_verified_empty_command_groups(
+async def test_stale_sweep_settles_pidless_commands_and_verified_empty_groups(
     temp_db_path, monkeypatch, capsys
 ):
     async with db_module.StateDB() as db:
-        kept = [
-            await _invocation(db, _command_identity(5001)),
-            await _invocation(db, _command_identity(5002)),
-            await _invocation(db, {"action_kind": "command"}),
-        ]
+        live = await _invocation(db, _command_identity(5001))
         empty = await _invocation(db, _command_identity(5003))
+        historical = await _invocation(db, {"action_kind": "command"})
         ordinary = await _seed_invocation(db, started_at=time.time() - 7_200)
-    before = [await _read_invocation(row) for row in kept]
-    _observe_command_groups(monkeypatch, live=(5001,), occupied=(5002,), empty=(5003,))
+    before = {row: await _read_invocation(row) for row in (live, empty, historical, ordinary)}
+    _observe_command_groups(monkeypatch, live=(5001,), empty=(5003,))
 
-    assert await cli_kill._do_kill_all_stale(threshold_seconds=1, dry_run=True, verbose=True) == 0
+    with monkeypatch.context() as dry_run:
+        dry_run.setattr(cli_kill, "_persist_cancel", _unexpected)
+        assert (
+            await cli_kill._do_kill_all_stale(threshold_seconds=1, dry_run=True, verbose=True) == 0
+        )
     output = capsys.readouterr().out
     assert "command group 5001 is still alive" in output
-    assert "command group retained (identity_unverifiable)" in output
+    assert f"would cancel invocation {historical[:12]} (pid=None," in output
     assert f"would cancel invocation {empty[:12]}" in output
-    assert (await _read_invocation(empty))[0]["status"] == "running"
+    assert {row: await _read_invocation(row) for row in before} == before
 
     assert await cli_kill._do_kill_all_stale(threshold_seconds=1) == 0
-    assert [await _read_invocation(row) for row in kept] == before
-    empty_row, transitions = await _read_invocation(empty)
-    assert empty_row["status"] == "cancelled"
-    assert transitions[-1]["reason_code"] == RunReasons.CANCELLED_STALE_AUTO
-    assert (await _read_invocation(ordinary))[0]["status"] == "cancelled"
+    assert (await _read_invocation(live))[0]["status"] == "running"
+    for invocation_id in (empty, historical, ordinary):
+        row, transitions = await _read_invocation(invocation_id)
+        assert row["status"] == "cancelled"
+        assert transitions[-1]["reason_code"] == RunReasons.CANCELLED_STALE_AUTO
+
+
+async def test_stale_sweep_records_only_locally_bound_unverifiable_command_groups(
+    temp_db_path, monkeypatch, capsys
+):
+    async with db_module.StateDB() as db:
+        occupied = await _invocation(db, _command_identity(5002))
+        controls = [
+            await _invocation(db, {**_command_identity(5001), **override})
+            for override in (
+                {"pgid": None},
+                {"pid_create_time": "5001"},
+                {"pid_host": ""},
+                {"pid_host": "other-host"},
+                {"pid_boot_time": None},
+                {"pid_boot_time": 10.0},
+                {"process_identity_mode": "external"},
+                {"pid_create_time": 5000.0},
+            )
+        ]
+    _observe_command_groups(monkeypatch, live=(5001,), occupied=(5002,))
+    before = {row: await _read_invocation(row) for row in (occupied, *controls)}
+
+    with monkeypatch.context() as dry_run:
+        dry_run.setattr(db_module.StateDB, "observe_unverifiable_pid", _unexpected)
+        dry_run.setattr(db_module.StateDB, "clear_unverifiable_pid", _unexpected)
+        assert await cli_kill._do_kill_all_stale(threshold_seconds=1, dry_run=True) == 0
+    assert {row: await _read_invocation(row) for row in before} == before
+
+    for count in range(1, 4):
+        assert await cli_kill._do_kill_all_stale(threshold_seconds=1) == 0
+        row, transitions = await _read_invocation(occupied)
+        assert row["status"] == "running"
+        assert row["node_metadata"]["unverifiable_count"] == count
+        assert row["node_metadata"]["unverifiable_quarantined"] is (count == 3)
+        assert transitions == before[occupied][1]
+    assert f"quarantined identity-unverified rows (1): {occupied}" in capsys.readouterr().out
+    assert {row: await _read_invocation(row) for row in controls} == {
+        row: before[row] for row in controls
+    }
+
+    _observe_command_groups(monkeypatch, live=(5001, 5002))
+    assert await cli_kill._do_kill_all_stale(threshold_seconds=1) == 0
+    row, transitions = await _read_invocation(occupied)
+    assert "unverifiable_count" not in row["node_metadata"]
+    assert row["status"] == "running"
+    assert transitions == before[occupied][1]
+
+
+@pytest.mark.parametrize("group_live", [False, True], ids=["unverifiable", "verified"])
+async def test_resolve_command_quarantine_rechecks_the_group(temp_db_path, monkeypatch, group_live):
+    async with db_module.StateDB() as db:
+        invocation_id = await _invocation(db, _command_identity(5002))
+    _observe_command_groups(monkeypatch, occupied=(5002,))
+    for _ in range(3):
+        assert await cli_kill._do_kill_all_stale(threshold_seconds=1) == 0
+    before, transitions = await _read_invocation(invocation_id)
+    assert before["node_metadata"]["unverifiable_quarantined"] is True
+
+    if group_live:
+        _observe_command_groups(monkeypatch, live=(5002,))
+    result = await cli_kill._resolve_quarantine(
+        invocation_id, target="failed", reason="inspected manually"
+    )
+    if group_live:
+        assert result == 1
+        assert await _read_invocation(invocation_id) == (before, transitions)
+    else:
+        assert result == 0
+        after, updated_transitions = await _read_invocation(invocation_id)
+        assert after["status"] == "failed"
+        assert len(updated_transitions) == len(transitions) + 1
 
 
 async def test_stale_snapshot_cannot_cancel_a_command_group_published_during_the_sweep(
     temp_db_path, monkeypatch
 ):
     async with db_module.StateDB() as db:
-        invocation_id = await _seed_invocation(db, started_at=time.time() - 7_200)
+        invocation_id = await _invocation(db, {"action_kind": "command"})
     _, original_transitions = await _read_invocation(invocation_id)
 
     real_persist = cli_kill._persist_cancel
+    attempted = False
 
     async def publish_first(db, entity_type, entity_id, **kwargs):
+        nonlocal attempted
+        attempted = True
         assert entity_id == invocation_id
         assert await db.merge_invocation_node_metadata_if_running(
             entity_id, _command_identity(5001)
@@ -289,6 +365,7 @@ async def test_stale_snapshot_cannot_cancel_a_command_group_published_during_the
     monkeypatch.setattr(cli_kill, "_persist_cancel", publish_first)
 
     assert await cli_kill._do_kill_all_stale(threshold_seconds=1) == 0
+    assert attempted
     row, transitions = await _read_invocation(invocation_id)
     assert row["status"] == "running"
     assert row["node_metadata"] == _command_identity(5001)

@@ -726,7 +726,13 @@ li kill abc123 --resolve-quarantine failed --reason 'investigated'
 A verified local command process group receives SIGTERM. After the grace
 period the CLI can send SIGKILL if the group still has a verified member.
 An older invocation with no recorded PID reports `no_pid`. The stale sweep
-retains a recorded command group unless it can verify that the group is empty.
+cancels a stale PID-less invocation if the row has stayed unchanged since the
+sweep read it. For a recorded command group, the sweep cancels only after it
+verifies the group is empty. When complete identity markers bind an
+unverifiable group to this host and boot, the sweep records a quarantine
+observation and leaves the invocation running. A verified live group clears
+its observations. A dry run previews cancellations and leaves quarantine
+records unchanged.
 
 **Single-ID preview.** `li kill <id> --dry-run` shows the targets in kill
 order, including those reached through `--recursive`. It displays the
