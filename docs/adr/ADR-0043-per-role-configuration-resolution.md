@@ -17,11 +17,11 @@ This ADR defines the target state. It does not claim the resolver described belo
 
 Five current failure scenarios require one resolution contract.
 
-**P1 — selected-pack drift.** CLI worker construction reads model, effort, and Modes from the
-selected custom `Pack`, but its later `AgentSpec.compose()` call omits `pack=env.pack`. The spec
-therefore defaults to the packaged `"default"` pack when rendering directives. One worker can
-receive runtime tuning from one pack and prompt guidance from another
-(`lionagi/cli/orchestrate/_orchestration.py`; `lionagi/agent/spec.py`).
+**P1 — selected-pack drift at the original baseline.** CLI worker construction read model, effort,
+and Modes from the selected custom `Pack`. Its later `AgentSpec.compose()` call used the packaged
+`"default"` pack when rendering directives because it omitted `pack=env.pack`. The current
+worker builder passes the selected pack
+(`lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py::build_worker_branch`).
 
 **P2 — precedence is distributed and partly implicit.** Task model overrides, orchestration
 defaults, external profiles, pack configuration, and provider defaults are selected in different
@@ -637,7 +637,7 @@ Contra proferentem resolves ambiguous external profiles toward the minimal expli
 composition and replacement are both supported, but the caller chooses. During migration only, a
 missing disposition retains legacy replacement behavior with a typed warning.
 
-Source evidence for the current gaps: `lionagi/casts/pack.py`,
-`lionagi/casts/catalog.py`, `lionagi/agent/spec.py`,
+Current source locations for the components discussed above include `lionhub/src/lionhub/agent/casts/pack.py`,
+`lionhub/src/lionhub/agent/casts/catalog.py`, `lionhub/src/lionhub/agent/spec.py`,
 `lionhub/src/lionhub/orchestration/spawn.py`, and
-`lionagi/cli/orchestrate/_orchestration.py`.
+`lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py`.

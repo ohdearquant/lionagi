@@ -518,6 +518,11 @@ destination contains the current module; split destinations require a narrow
 original-logger-ownership check, not renaming the logger or ignoring arbitrary
 old strings (`tests/test_moved_modules.py::_old_references`).
 
+The progress, hint, warn, and error channels keep their `lionagi.cli.*` logger
+names so existing logging configuration still routes them. Under ADR-0136 D5,
+the 2.0 split's release notes record any channel rename. The `MOVED` row sets
+the 2.0.0 expiration for the old Python import path.
+
 **Failure tests:** `test_step3_shared_dependency_closure`,
 `test_move_table_handles_module_and_package_rows`,
 `test_specific_cli_rows_survive_parent_move`,
