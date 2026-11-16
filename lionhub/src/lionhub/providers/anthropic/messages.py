@@ -628,6 +628,7 @@ def _classify_rejection_details(body: bytes, status: int) -> tuple[str, str, boo
 
 async def _classify_streamed_rejection_details(response: Any, status: int) -> tuple[str, str, bool]:
     """Read a bounded rejection body without adding its frames to caller cancellation."""
+    await anyio.lowlevel.checkpoint()
     details = ("other", "other", False)
     deadline = anyio.current_time() + _REJECTION_READ_SECONDS
 
