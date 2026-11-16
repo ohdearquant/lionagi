@@ -627,38 +627,29 @@ def _classify_rejection_details(body: bytes, status: int) -> tuple[str, str, boo
 
 
 async def _classify_streamed_rejection_details(response: Any, status: int) -> tuple[str, str, bool]:
-    """Name the provider error type and the rejection class of a streamed rejection.
+    """Read a bounded rejection body without adding its frames to caller cancellation."""
+    details = ("other", "other", False)
+    deadline = anyio.current_time() + _REJECTION_READ_SECONDS
 
-    Reads the response's decoded byte stream (``aiter_bytes``) until it holds more than
-    ``_REJECTION_BODY_LIMIT`` bytes or ends, reads no further piece after that, and returns what
-    ``_classify_rejection`` names for the first ``_REJECTION_BODY_LIMIT + 1`` bytes. The read is
-    shielded from cancellation, so a caller that cancelled still has its attempt recorded, and
-    bounded by ``_REJECTION_READ_SECONDS``: a body that has not arrived by then is
-    ``("other", "other")``. Nothing of the body is logged, kept or raised: it is bound only in
-    this frame, only the two names leave this function, and every failure returns
-    ``("other", "other")``.
-    """
-    try:
-        body = b""
-        deadline = anyio.current_time() + _REJECTION_READ_SECONDS
-        with CancelScope(deadline=deadline, shield=True) as scope:
-            async for piece in response.aiter_bytes():
-                body += piece
-                if len(body) > _REJECTION_BODY_LIMIT:
-                    break
-        if scope.cancelled_caught:
-            return "other", "other", False
-        return _classify_rejection_details(body[: _REJECTION_BODY_LIMIT + 1], status)
-    except Exception:
-        return "other", "other", False
+    async def read_body() -> None:
+        nonlocal details
+        try:
+            body = b""
+            with CancelScope(deadline=deadline) as scope:
+                async for piece in response.aiter_bytes():
+                    body += piece
+                    if len(body) > _REJECTION_BODY_LIMIT:
+                        break
+            if not scope.cancelled_caught:
+                details = _classify_rejection_details(body[: _REJECTION_BODY_LIMIT + 1], status)
+        except (Exception, anyio.get_cancelled_exc_class()):
+            # Only the classification crosses from this task. The caller's own
+            # cancellation comes from waiting for the task group to finish.
+            return
 
-
-async def _classify_streamed_rejection(response: Any) -> tuple[str, str]:
-    """Keep the established two-name result for callers that need diagnosis only."""
-    error_type, rejection_class, _ = await _classify_streamed_rejection_details(
-        response, getattr(response, "status_code", 0)
-    )
-    return error_type, rejection_class
+    async with anyio.create_task_group() as group:
+        group.start_soon(read_body)
+    return details
 
 
 @AnthropicConfigs.MESSAGES.register
@@ -1274,6 +1265,33 @@ class AnthropicMessagesEndpoint(Endpoint):
                     chunk.metadata = redact_value(chunk.metadata, attempt.key)
                     yield chunk
 
+        async def read_rejection(response: Any, status: int) -> tuple[str, str, bool]:
+            try:
+                return await _classify_streamed_rejection_details(response, status)
+            except get_cancelled_exc_class():
+                # The HTTP status is known even though the diagnostic body was interrupted.
+                # The router shields the write, and this path already owns the outcome.
+                try:
+                    if status == 529:
+                        await router.settle_unknown(attempt, "provider_error", http_status=status)
+                    else:
+                        await router.settle_unknown(
+                            attempt,
+                            "request_rejected",
+                            provider_error_type="other",
+                            rejection_class="other",
+                            http_status=status,
+                        )
+                except Exception:  # noqa: S110 - retain the original cancellation
+                    pass
+                # Leave a closed response to the HTTP client's stream context.
+                with CancelScope(shield=True):
+                    try:
+                        await response.aclose()
+                    except Exception:  # noqa: S110 - retain the original cancellation
+                        pass
+                raise
+
         try:
             async with self._create_http_session(session_kwargs, timeout=timeout) as client:
                 request_entered = True
@@ -1318,9 +1336,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         # The raised error, and so the retry, is the same either way.
                         overloaded = False
                         if status == 529:
-                            # The body read is shielded and bounded by _REJECTION_READ_SECONDS,
-                            # so a 529 whose body stalls raises after at most that long.
-                            error_type, _ = await _classify_streamed_rejection(response)
+                            error_type, _, _ = await read_rejection(response, status)
                             overloaded = error_type == "overloaded_error"
                         if overloaded:
                             await router.settle_rejection(
@@ -1340,13 +1356,11 @@ class AnthropicMessagesEndpoint(Endpoint):
                         )
                     if status != 200:
                         settled = True
-                        # Only the two names leave the classifier: it reads the body in its own
-                        # frame and no local here holds it.
                         (
                             provider_error_type,
                             rejection_class,
                             billing_rejection,
-                        ) = await _classify_streamed_rejection_details(response, status)
+                        ) = await read_rejection(response, status)
                         # Only a 400 naming ``invalid_request_error`` settles at zero, whatever
                         # its class; every other rejection keeps the ceiling.
                         billing_block = None
