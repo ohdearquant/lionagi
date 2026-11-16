@@ -74,6 +74,27 @@ log = logging.getLogger("lionagi.providers._cli_subprocess")
 # (inherits the parent process stdin, matching the old Gemini/Pi behaviour).
 _INHERIT_STDIN = object()
 
+#: The Studio daemon's bearer, and the prefix of every remote Studio's token variable. With
+#: either, a child could ask a daemon to launch further runs, here or on another machine, so
+#: no CLI child is handed them, whatever environment its caller passed.
+_STUDIO_TOKEN_ENV = "LIONAGI_STUDIO_AUTH_TOKEN"  # noqa: S105 — a variable name, not a value
+_REMOTE_STUDIO_ENV_PREFIX = "LIONAGI_REMOTE_"
+
+
+def _withhold_studio_credentials(env: dict[str, str]) -> dict[str, str]:
+    """Remove the Studio credential variables from *env* in place and return what was removed.
+
+    Names compare without regard to case, as the command-environment scrub compares them.
+    """
+    withheld = {
+        name: value
+        for name, value in env.items()
+        if name.upper() == _STUDIO_TOKEN_ENV or name.upper().startswith(_REMOTE_STUDIO_ENV_PREFIX)
+    }
+    for name in withheld:
+        del env[name]
+    return withheld
+
 
 def spawned_pgid(pid: int) -> int:
     """The process group of a just-spawned child.
@@ -1403,12 +1424,13 @@ async def ndjson_from_cli(
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env, spawn_marker = prepare_process_group_env(child_env)
+    withheld = _withhold_studio_credentials(spawn_env)
     # Every agent lionagi starts carries a depth, so a lionagi it runs refuses to start
     # another (refuse_nested_agent). Set over whatever the environment held: only a
     # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).
     spawn_env[AGENT_DEPTH_ENV] = str(child_agent_depth())
     redaction_env: Mapping[str, str] = {
-        **_secret_candidates(spawn_env, declared),
+        **_secret_candidates({**spawn_env, **withheld}, declared),
         **_cmd_secret_values(cmd),
     }
     opaque_env: Mapping[str, str] = _opaque_env_values(spawn_env, redaction_env)

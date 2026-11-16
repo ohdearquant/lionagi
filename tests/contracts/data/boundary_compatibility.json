@@ -117,8 +117,7 @@
     "lionhub/src/lionhub/orchestration/schedule/parsing.py": [
       "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
       "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_URL\"",
-      "os.environ.get:STUDIO_TOKEN_ENV"
+      "os.environ.get:\"LIONAGI_STUDIO_URL\""
     ],
     "lionhub/src/lionhub/orchestration/schedule/timing.py": [
       "os.environ.get:\"TZ\"",
@@ -179,6 +178,9 @@
       "os.environ:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
       "os.environ:\"LIONAGI_STUDIO_HOST\"",
       "os.environ:\"LIONAGI_STUDIO_HOST\""
+    ],
+    "lionhub/src/lionhub/serve/cli/studio_client.py": [
+      "os.environ.get:STUDIO_TOKEN_ENV"
     ],
     "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
       "os.environ.get:_ENV_INTERVAL",
@@ -1595,6 +1597,9 @@
     ],
     "lionhub/src/lionhub/serve/cli/status.py": [
       "__all__ = (\n    \"run_agent_status\",\n    \"run_play_status\",\n    \"run_ctl_status\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/studio_client.py": [
+      "__all__ = (\n    \"STUDIO_TOKEN_ENV\",\n    \"STUDIO_UNAUTHORIZED_HINT\",\n    \"studio_request\",\n    \"with_unauthorized_hint\",\n)"
     ],
     "lionhub/src/lionhub/serve/cli/wait.py": [
       "__all__ = (\n    \"wait_for_terminal\",\n    \"run_wait\",\n)"
@@ -4088,8 +4093,7 @@
       "build_create_body",
       "build_quick_create_parser",
       "normalize_host",
-      "suggest_schedule_flag",
-      "with_studio_bearer"
+      "suggest_schedule_flag"
     ],
     "lionhub/src/lionhub/orchestration/schedule/timing.py": [
       "ScheduleTimezone",
@@ -4810,6 +4814,10 @@
     "lionhub/src/lionhub/serve/cli/studio.py": [
       "add_studio_subparser",
       "run_studio"
+    ],
+    "lionhub/src/lionhub/serve/cli/studio_client.py": [
+      "studio_request",
+      "with_unauthorized_hint"
     ],
     "lionhub/src/lionhub/serve/cli/team.py": [
       "QuiescenceState",
