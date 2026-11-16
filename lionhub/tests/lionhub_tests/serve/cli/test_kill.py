@@ -278,6 +278,83 @@ def test_current_pid_markers_is_the_process_module_function():
 # _do_kill (end-to-end)
 
 
+@pytest.mark.parametrize(
+    ("escalation_error", "outcome", "reason"),
+    [
+        pytest.param(
+            ProcessLookupError,
+            "already_dead",
+            RunReasons.CANCELLED_MANUAL_KILL,
+            id="exited-before-sigkill",
+        ),
+        pytest.param(PermissionError, "permission_denied", None, id="sigkill-refused"),
+        pytest.param(None, "sigkill", RunReasons.CANCELLED_FORCE_KILL, id="sigkill-delivered"),
+    ],
+)
+async def test_do_kill_records_the_observed_escalation_outcome(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    escalation_error: type[OSError] | None,
+    outcome: str,
+    reason: str | None,
+):
+    pid = 4242
+    _mock_psutil(monkeypatch, cmdline=["li", "invoke"], create_time=100.0)
+    attempted: list[int] = []
+    delivered: list[int] = []
+
+    def send_signal(target_pid: int, sig: int) -> None:
+        assert target_pid == pid
+        attempted.append(sig)
+        if sig == signal.SIGKILL and escalation_error is not None:
+            raise escalation_error("synthetic escalation result")
+        delivered.append(sig)
+
+    monkeypatch.setattr(os, "kill", send_signal)
+    history_query = (
+        "SELECT id, status, previous_status, reason_code, evidence_refs "
+        "FROM status_transitions WHERE entity_type = 'invocation' AND entity_id = ? ORDER BY id"
+    )
+
+    async with StateDB() as db:
+        inv_id = await _seed_invocation(db, pid=pid)
+        await db.merge_invocation_node_metadata(inv_id, {"pid_create_time": 100.0})
+        original = await db.get_invocation(inv_id)
+        history = await db.fetch_all(history_query, (inv_id,))
+
+    rc = await _do_kill(inv_id, grace_seconds=0)
+    output = capsys.readouterr()
+
+    assert attempted == [signal.SIGTERM, signal.SIGKILL]
+    assert delivered == (attempted if escalation_error is None else [signal.SIGTERM])
+
+    async with StateDB() as db:
+        current = await db.get_invocation(inv_id)
+        transitions = await db.fetch_all(history_query, (inv_id,))
+
+    if reason is None:
+        assert rc == 1
+        assert "permission denied" in output.err
+        assert output.out == ""
+        assert current == original
+        assert transitions == history
+        return
+
+    assert rc == 0
+    assert f"signal={outcome}" in output.out
+    assert current is not None
+    assert current["status"] == "cancelled"
+    assert len(transitions) == len(history) + 1
+    transition = next(event for event in transitions if event["previous_status"] == "running")
+    assert transition["status"] == "cancelled"
+    assert transition["reason_code"] == reason
+    evidence = json.loads(transition["evidence_refs"])
+    assert [(ref["signal"], ref["pid"]) for ref in evidence if ref["kind"] == "kill_event"] == [
+        (outcome, pid)
+    ]
+
+
 async def test_do_kill_by_full_id(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("lionhub.orchestration.kill._terminate_pid", lambda pid, **kw: "sigterm")
     _mock_runner_probe(monkeypatch, 12345, "found")
