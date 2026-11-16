@@ -299,6 +299,9 @@ async def test_do_kill_records_the_observed_escalation_outcome(
     outcome: str,
     reason: str | None,
 ):
+    from lionhub.orchestration.console import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
     pid = 4242
     _mock_psutil(monkeypatch, cmdline=["li", "invoke"], create_time=100.0)
     attempted: list[int] = []
