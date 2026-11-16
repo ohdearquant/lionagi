@@ -966,7 +966,9 @@ async def test_a_cancellation_pending_at_classifier_entry_skips_the_rejection_bo
     async def cancel_at_entry(rejection, status):
         assert rejection is response and status == 400 and response.yielded == 0
         task = asyncio.current_task()
-        assert task is not None and task.cancel(cancel_message)
+        assert task is not None
+        cancellation_requested = task.cancel(cancel_message)
+        assert cancellation_requested
         return await classify(rejection, status)
 
     monkeypatch.setattr(messages_module, "_classify_streamed_rejection_details", cancel_at_entry)
