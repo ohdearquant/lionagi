@@ -23,7 +23,7 @@ import psutil
 import pytest
 
 from lionagi.ln.concurrency import current_time, move_on_after
-from lionagi.state.lifecycle import callbacks
+from lionagi.state.lifecycle import callbacks, notify_settings
 from lionagi.state.lifecycle.callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
     EntityRef,
@@ -59,6 +59,95 @@ def test_executable_notice_and_lifecycle_envelope_share_a_schema_version():
 
     newer = replace(envelope, schema_version=envelope.schema_version + 1)
     assert TerminalNoticeContext().payload(newer)["schema_version"] == newer.schema_version
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        (["malformed"], "on_terminal_not_string_or_mapping"),
+        (" ", "on_terminal_command_is_empty"),
+        ("notify-hook | output", "on_terminal_command_requires_shell_features"),
+        ("notify-hook '", "on_terminal_command_not_parseable"),
+        ({"filter": []}, "filter_not_a_mapping"),
+        ({"filter": {"unexpected": ["value"]}}, "filter_has_unknown_keys"),
+        ({"filter": {"kinds": "invocation"}}, "filter_kinds_not_a_list_of_strings"),
+        ({"filter": {"kinds": ["unknown"]}}, "filter_kinds_unsupported"),
+        ({"filter": {"ids": [""]}}, "filter_ids_not_a_list_of_strings"),
+        ({"enabled": True}, "enabled_without_adapter"),
+        (
+            {"adapter": {"kind": "exec", "argv": ["notify-hook", 1]}},
+            "exec_adapter_argv_not_a_list_of_strings",
+        ),
+        ({"adapter": {"kind": "exec", "argv": []}}, "on_terminal_command_is_empty"),
+        ({"adapter": {"kind": "python", "ref": "unqualified"}}, "python_adapter_ref_invalid"),
+        ({"adapter": {"kind": "unsupported"}}, "adapter_kind_unsupported"),
+    ],
+)
+def test_shape_requires_its_reporter_for_every_rejection(source, reason, caplog):
+    receipt = NotifyConfigResolution(reason=reason)
+    calls = []
+
+    class Reporter:
+        def reject(self, reported_reason, diagnostic, *args):
+            calls.append((reported_reason, diagnostic, args))
+            return receipt
+
+    assert notify_settings._resolve_shape(source, reporter=Reporter()) is receipt
+    [(reported_reason, diagnostic, _args)] = calls
+    assert reported_reason == reason
+    assert diagnostic
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("scope", ["global", "project", "override"])
+def test_durable_resolution_reports_only_scope_and_reason(scope, caplog):
+    class Unformattable:
+        def __repr__(self):
+            raise AssertionError("The durable reporter formatted a config value")
+
+    source = {"adapter": {"kind": "exec", "argv": [Unformattable()]}}
+    layer = {"notify": {"on_terminal": source}}
+    with caplog.at_level(logging.WARNING, logger=notify_settings.__name__):
+        resolution = notify_settings.classify_notify_provenance(
+            layer if scope == "global" else {},
+            layer if scope == "project" else {},
+            override=source if scope == "override" else None,
+        )
+
+    outcome = {
+        "global": resolution.global_config,
+        "project": resolution.project_config,
+        "override": resolution.run_config,
+    }[scope]
+    assert outcome.reason == "exec_adapter_argv_not_a_list_of_strings"
+    assert [record.getMessage() for record in caplog.records] == [
+        f"notify.on_terminal {scope} configuration rejected: {outcome.reason}"
+    ]
+
+
+def test_legacy_resolution_keeps_diagnostic_and_disabled_config_is_silent(caplog):
+    value = "unqualified-test-adapter"
+    source = {"adapter": {"kind": "python", "ref": value}}
+    resolution = resolve_notify_config(override=source)
+    assert resolution.reason == "python_adapter_ref_invalid"
+    assert [record.getMessage() for record in caplog.records] == [
+        "notify.on_terminal (override) python adapter requires a "
+        f"'module:callable' ref, got {value!r}; resolving to disabled."
+    ]
+    caplog.clear()
+
+    disabled = {**source, "enabled": False}
+    layer = {"notify": {"on_terminal": disabled}}
+    provenance = notify_settings.classify_notify_provenance(layer, layer, override=disabled)
+    assert provenance.project_declared and provenance.run_declared
+    assert (
+        provenance.global_config
+        == provenance.project_config
+        == provenance.run_config
+        == resolve_notify_config(override=disabled)
+        == NotifyConfigResolution()
+    )
+    assert caplog.records == []
 
 
 # String form
@@ -399,6 +488,126 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
     with caplog.at_level(logging.WARNING):
         await handler(_envelope())  # must not raise
     assert any("exited 1" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize("safe_logging", [False, True], ids=["legacy", "durable"])
+@pytest.mark.parametrize(
+    ("case", "reason", "legacy_diagnostic"),
+    [
+        ("launch", "exec_adapter_launch_failed", "failed to run"),
+        ("post_spawn", "exec_adapter_post_spawn_failed", "failed to run"),
+        ("timeout", "exec_adapter_timeout", "timed out"),
+        ("cancel", None, None),
+        ("nonzero", "exec_adapter_nonzero_exit", "exited 7"),
+        ("success", None, None),
+    ],
+)
+async def test_exec_adapters_share_lifecycle_across_outcomes(
+    monkeypatch, caplog, safe_logging, case, reason, legacy_diagnostic
+):
+    label = "synthetic-notifier"
+    cause = "synthetic failure detail"
+    stderr = "synthetic child detail"
+    artifact = "private-notify-stderr.txt"
+    expected_logging = safe_logging
+    phases = []
+    receipts = []
+    warnings = []
+
+    class Process:
+        returncode = 7 if case == "nonzero" else 0
+
+        async def communicate(self, _payload):
+            phases.append("communicate")
+            if case == "post_spawn":
+                raise OSError(cause)
+            if case == "timeout":
+                raise asyncio.TimeoutError
+            if case == "cancel":
+                raise asyncio.CancelledError
+            return b"", stderr.encode() if case == "nonzero" else b""
+
+    process = Process()
+    witnesses = ((4242, 10.0),)
+
+    async def spawn(argv, _env, _marker):
+        phases.append("spawn")
+        assert argv == (label,)
+        if case == "launch":
+            raise OSError(cause)
+        return process, 10.0
+
+    def witness(proc, *, expected_leader_created):
+        phases.append("witness")
+        assert proc is process and expected_leader_created == 10.0
+        return witnesses
+
+    async def terminate(proc, *, grace, group_witnesses):
+        phases.append("terminate")
+        assert proc is process and grace is None and group_witnesses == witnesses
+
+    async def reap(proc, *, safe_logging):
+        phases.append("reap")
+        assert proc is process
+        assert safe_logging is expected_logging
+
+    def outcome(*, ok, exit_code, stderr_text):
+        receipts.append((ok, exit_code, stderr_text, None))
+        return artifact if stderr_text else None
+
+    def exec_failure(code):
+        receipts.append((False, None, None, code))
+
+    monkeypatch.setattr(notify_settings, "_spawn_in_group", spawn)
+    monkeypatch.setattr(notify_settings, "capture_group_witnesses", witness)
+    monkeypatch.setattr(notify_settings, "aterminate_process_group", terminate)
+    monkeypatch.setattr(notify_settings, "_await_proc_dead", reap)
+    monkeypatch.setattr(notify_settings, "_warn_adapter_failure", warnings.append)
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=(label,)),
+        safe_logging=safe_logging,
+        outcome_fn=outcome,
+        on_timeout=(lambda: exec_failure("exec_adapter_timeout")) if safe_logging else None,
+        on_exec_failure=exec_failure if safe_logging else None,
+    )
+    assert handler is not None
+
+    with caplog.at_level(logging.WARNING, logger=notify_settings.__name__):
+        if case == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await handler(_envelope())
+        else:
+            await handler(_envelope())
+
+    if case == "launch":
+        assert phases == ["spawn"]
+    elif case in {"post_spawn", "timeout", "cancel"}:
+        assert phases == ["spawn", "communicate", "witness", "terminate", "reap"]
+    else:
+        assert phases == ["spawn", "communicate"]
+
+    if case == "cancel":
+        assert receipts == []
+    elif case == "success":
+        assert receipts == [(True, 0, None, None)]
+    elif case == "nonzero":
+        assert receipts == [(False, 7, stderr, None)]
+    else:
+        assert receipts == [(False, None, None, reason if safe_logging else None)]
+
+    messages = [record.getMessage() for record in caplog.records]
+    if reason is None:
+        assert messages == warnings == []
+    elif safe_logging:
+        assert messages == [f"notify.on_terminal global adapter: {reason}"]
+        assert warnings == []
+    else:
+        [message] = messages
+        [warning] = warnings
+        assert legacy_diagnostic in message and label in message
+        assert legacy_diagnostic in warning and label in warning
+        if case == "nonzero":
+            assert artifact in warning and stderr not in warning
 
 
 # Adapter outcome visibility: notify_outcome.json + the CLI warn() channel
