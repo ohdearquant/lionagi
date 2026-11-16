@@ -24,6 +24,7 @@ __all__ = (
     "warn",
 )
 
+# These names preserve existing logging configuration across the CLI package move.
 PROGRESS_LOGGER_NAME = "lionagi.cli.progress"
 HINT_LOGGER_NAME = "lionagi.cli.hint"
 WARN_LOGGER_NAME = "lionagi.cli.warn"

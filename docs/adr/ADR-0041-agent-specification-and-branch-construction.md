@@ -530,7 +530,7 @@ without editing the Role itself.
 
 ### D4 — direct `Branch` construction is a raw-prompt escape hatch
 
-CLI orchestration has two construction families (`lionagi/cli/orchestrate/_orchestration.py`):
+CLI orchestration has two construction families (`lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py`):
 
 ```text
 built-in casts Role
@@ -737,8 +737,8 @@ In pari materia resolves the boundary: `AgentSpec` fields are interpreted alongs
 factory and operation consumers, not as a claim that every similarly named runtime facility is
 agent configuration.
 
-Source anchors: `lionagi/agent/spec.py`, `lionagi/agent/factory.py`,
-`lionagi/agent/settings.py`, `lionagi/protocols/action/manager.py`,
+Source anchors: `lionhub/src/lionhub/agent/spec.py`, `lionhub/src/lionhub/agent/factory.py`,
+`lionhub/src/lionhub/agent/settings.py`, `lionagi/protocols/action/manager.py`,
 `lionagi/session/branch.py`, `lionagi/protocols/context_providers.py`,
 `lionagi/operations/chat/_prepare.py`, and
-`lionagi/cli/orchestrate/_orchestration.py`.
+`lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py`.

@@ -3,13 +3,13 @@
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
   (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) are Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: partial. Wave 1 (D6) has landed for its four packages: #3752 adds the
-  `lionhub` root and the `lionagi._moved.MOVED` table and its finder, and moves
-  `lionagi.orchestration`; #3753 moves `lionagi.engines`; #3754 moves `lionagi.dispatch` and
-  `lionagi.work`, with ADR-0001 Amendment 2 for D5's class paths. `integrations` is held (D6). Wave 2
-  has begun: #3769 moves `lionagi.mcp` to `lionhub.serve.mcp` (Amendment 1 A4 item 1). The rest of
-  wave 2, wave 3 (D6) and the removal release (D4) remain. Tests covering only the packages already
-  moved are under `lionhub/tests`, and `lionhub/README.md` documents the current layout.
+- **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
+  `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
+  finder in #3752 and the D5 class paths in ADR-0001 Amendment 2. `integrations` is held (D6).
+  Wave 2 has moved MCP to `lionhub.serve.mcp` (#3769), the CLI to `lionhub.serve.cli` (#4342, #4343),
+  the scheduler (#4290), and shared daemon services and routes (#4531, #4548–#4550). The providers-first
+  change moved `lionagi.providers` to `lionhub.providers` (#4077, Amendment 3). Studio attachment and
+  extraction, later package moves and the removal release (D4) remain. See `lionhub/tests` and `lionhub/README.md`.
 - **Area**: governance
 - **Date**: 2026-10-25
 - **Relations**: follows ADR-0122 D1 (layer order), D7's interim single-distribution rule and
@@ -259,7 +259,7 @@ In the move change, add `test_provider_interim_edge_inventory` and rename D2's p
 | `operations/run/run.py` | Existing lazy `lionhub.providers.google.gemini_code` request/print-timeout behavior | Before 2.0, replace the import with an endpoint-supplied request-preparation port; remove `operations` from the set in that change. The operation stays in core. |
 | `service/accounts/_router.py` | Existing lazy `lionhub.providers.anthropic._prompt_cache` helpers | Before 2.0, replace both imports with adapter-supplied cache evidence and server-tool projection through a core-owned port. |
 | `service/providers.py` | Existing lazy `lionhub.providers.openai._codex_profile` effort-default lookup | Before 2.0, replace this import with provider configuration/effort policy supplied by the selected adapter. |
-| `lionhub/src/lionhub/orchestration/spawn.py` `from lionhub.providers.openai._codex_profile import (` | Module-top `lionhub.providers.openai._codex_profile`; also existing lazy `lionhub.providers.google.gemini_code` references at lines 200 and 320 | Remove these core edges in the CLI move; only then are they hub-to-hub. |
+| `lionhub/src/lionhub/orchestration/spawn.py` | Module-top `lionhub.providers.openai._codex_profile`; also existing lazy `lionhub.providers.google.gemini_code` references at lines 200 and 320 | Remove these core edges in the CLI move; only then are they hub-to-hub. |
 | `cli/agent.py` | Existing lazy `lionhub.providers.google.gemini_code` reference at line 2152, and the lazy `lionhub.lndl.middle` reference at line 1026 that the LNDL move adds for the API leg's LNDL loop (Amendment 1 A3; `test_lndl_interim_edge_inventory`) | Remove these core edges in the CLI move; only then are they hub-to-hub. |
 | `cli/orchestrate/_orchestration.py` | Existing lazy `lionhub.providers.openai._codex_profile` reference at line 852 | Remove this core edge in the CLI move; only then is it hub-to-hub. |
 | `studio/operator/engine.py` | Existing lazy `lionhub.providers.anthropic.claude_code` (line 405) and `lionhub.providers.google.gemini_code` (line 679) references | Remove these edges, and `studio` from the set, with the application extraction under Amendment 2 at 2.0. |
