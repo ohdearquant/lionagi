@@ -60,7 +60,8 @@ means it raised, and 2 indicates an invalid invocation or account boundary.
 ## Default-runtime import-effects baseline
 
 The baseline used revision `02d867120fb9de7bab09b2f953259defab879c04`
-and CPython 3.14.7 on Darwin arm64. It staged 31 third-party distributions
+and CPython 3.14.7 on Darwin arm64. The repository's `.python-version`
+selects 3.10. The baseline staged 31 third-party distributions
 from the lock file and loaded LionAGI from the source checkout. The
 interpreter was staged outside the operating-system account's home
 directory. Each tracked production module under `lionagi/` and
@@ -70,17 +71,24 @@ directory. Each tracked production module under `lionagi/` and
 The pinned `scripts/probe_import_effects.py` has SHA-256
 `d609ddce18d66e5f65cbb6515df3874db3197d344d4f855b7a939a4e86b8e479`.
 
-| Source | Modules | Completed | Errors | Filesystem reads | Logger mutations | Dropped reads |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Core | 334 | 272 | 62 | 102,799 | 609 | 50,168 |
-| LionHub | 353 | 300 | 53 | 95,415 | 690 | 44,769 |
-| Total | 687 | 572 | 115 | 198,214 | 1,299 | 94,937 |
+A `PermissionError` at CPython's `os.uname()` call cut short 72 imports.
+Another 43 ended with 40 missing-module errors and three optional-feature
+import errors. Effect counts for both groups cover only the import steps
+before the reported error. The paired control covered two modules, and both
+imports completed when platform identification was available.
 
-The 115 errors comprise 72 `PermissionError` results (37 Core and 35
-LionHub) at CPython's `os.uname()` operating-system call, 40 missing-module
-errors and three optional-feature import errors. Both imports in a paired
-control completed when platform identification was available. The table
-reports the original baseline outcomes.
+| Source | Outcome | Imports | Filesystem reads | Logger mutations | Dropped reads |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Core | Completed | 272 | 87,133 | 537 | 43,116 |
+| LionHub | Completed | 300 | 80,880 | 595 | 36,496 |
+| Both | Completed | 572 | 168,013 | 1,132 | 79,612 |
+| Core | Cut short at `os.uname()` | 37 | 12,159 | 42 | 6,269 |
+| LionHub | Cut short at `os.uname()` | 35 | 13,009 | 92 | 7,640 |
+| Both | Cut short at `os.uname()` | 72 | 25,168 | 134 | 13,909 |
+| Core | Other import errors | 25 | 3,507 | 30 | 783 |
+| LionHub | Other import errors | 18 | 1,526 | 3 | 633 |
+| Both | Other import errors | 43 | 5,033 | 33 | 1,416 |
+| Both | All attempts | 687 | 198,214 | 1,299 | 94,937 |
 
 The probe counted the following attempts before applying its event retention
 limits. It recorded zero retained events marked as blocked by the probe in
@@ -89,7 +97,8 @@ assertion.
 
 | Probe-recorded attempt | Core | LionHub |
 | --- | ---: | ---: |
-| Filesystem write | 0 | 0 |
+| Filesystem write (`filesystem.write`) | 0 | 0 |
+| Filesystem read and write (`filesystem.read_write`) | 0 | 0 |
 | Directory change | 0 | 0 |
 | Account-home access | 0 | 0 |
 | Network operation | 0 | 0 |
@@ -98,18 +107,21 @@ assertion.
 | Background thread start | 0 | 0 |
 | Background task creation | 0 | 0 |
 
-Snapshots recorded changes to logger state, selected registries and the import
-finder list. The probe compares the environment before and after import, so
-it records persistent changes and leaves individual environment reads
-unobserved. The audit covers instrumented Python events during module import
-in the baseline dependency profile. Native activity outside those channels,
-code beyond a stopped import, feature activation and other dependency profiles
-were outside the measurement.
+Across all attempts, the before-and-after snapshots showed differences in
+logger state for 627 attempts, selected registries for 277, and the import
+finder list for 624. They showed zero persistent differences in the
+environment, `sys.path`, or the working directory. Individual environment reads
+fall outside the snapshots. The audit covers instrumented Python events during
+module import in the baseline dependency profile. Native activity outside those
+channels, feature activation and other dependency profiles were outside the
+measurement.
 
 For another capture, pin the source, interpreter and dependency profile.
 Build separate sorted UTF-8 lists for Core and LionHub from the tracked
-Python files. Convert paths to dotted module names, using each package
-initializer's package name. Write one name per line with a final newline.
+Python files. Use repository-relative paths for Core and strip the
+`lionhub/src/` import root for LionHub before converting the paths into dotted
+module names. Use each package initializer's package name. Write one name
+per line with a final newline.
 Compare the regenerated baseline module lists with these SHA-256 hashes.
 
 | Source | Module-list SHA-256 |
