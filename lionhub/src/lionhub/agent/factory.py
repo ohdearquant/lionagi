@@ -411,9 +411,9 @@ async def create_agent(
             # Unset is not "no opinion": codex would read the global config's
             # effort, tuned for that config's own model, and 400 when it
             # exceeds this one's ceiling. Same seam the CLI builders use.
-            from lionagi.service.providers import codex_unset_effort_default
+            from lionhub.providers.openai._codex_profile import codex_unset_effort_from_config
 
-            effort = codex_unset_effort_default(model_name)
+            effort = codex_unset_effort_from_config(model_name)
             derived = effort is not None
         if effort:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider_key)

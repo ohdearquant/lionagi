@@ -2764,6 +2764,7 @@
       "uses_developer_messages"
     ],
     "lionagi/service/connections/_provider_compat.py": [
+      "codex_unset_effort_1x",
       "default_provider_catalog"
     ],
     "lionagi/service/connections/agentic_endpoint.py": [
@@ -4498,6 +4499,7 @@
       "codex_config_defining_profile",
       "codex_config_setting_default_permissions",
       "codex_home_for_env",
+      "codex_unset_effort_from_config",
       "configured_codex_profile",
       "global_codex_reasoning_effort",
       "is_generated_codex_profile",

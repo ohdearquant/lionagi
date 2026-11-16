@@ -41,11 +41,11 @@ from lionagi.service.providers import (
     ModelSpec,
     _clamp_claude_effort,
     _clamp_codex_effort,
-    codex_unset_effort_default,
     normalize_effort,
     parse_model_spec,
 )
 from lionhub.providers.openai._codex_profile import (
+    codex_unset_effort_from_config,
     refuse_codex_profile_run_settings,
     resolve_codex_config_profile,
 )
@@ -283,7 +283,7 @@ def build_imodel_from_spec(
     if ignore_user_config and provider == "codex":
         extra["ignore_user_config"] = True
     if effort is None and provider == "codex" and not ignore_user_config:
-        effort = codex_unset_effort_default(ms.model, codex_profile_overrides)
+        effort = codex_unset_effort_from_config(ms.model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:
@@ -417,7 +417,7 @@ def build_chat_model(
         # The derived default exists to keep the user config's own effort under the
         # model's ceiling. A request that ignores the user config never loads that
         # value, so there is nothing to derive from it.
-        effort = codex_unset_effort_default(model, codex_profile_overrides)
+        effort = codex_unset_effort_from_config(model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
         if kwarg is not None:
