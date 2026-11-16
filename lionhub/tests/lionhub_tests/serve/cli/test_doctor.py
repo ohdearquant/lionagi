@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -335,6 +336,56 @@ def test_run_doctor_text_output(capsys: pytest.CaptureFixture) -> None:
     captured = capsys.readouterr()
     assert "lionagi_version:" in captured.out
     assert rc in (0, 1)
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "detail"),
+    [
+        (
+            ModuleNotFoundError("No module named 'fastmcp'", name="fastmcp"),
+            "warn",
+            'pip install "lionagi[mcp]"',
+        ),
+        (
+            ModuleNotFoundError("No module named 'mcp'", name="mcp"),
+            "fail",
+            "ModuleNotFoundError: No module named 'mcp'",
+        ),
+        (
+            ImportError("cannot import FastMCP"),
+            "fail",
+            "ImportError: cannot import FastMCP",
+        ),
+    ],
+    ids=["missing-extra", "missing-transitive-dependency", "broken-import"],
+)
+def test_run_doctor_reports_mcp_extra(
+    error: ImportError,
+    status: str,
+    detail: str,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_import_module = importlib.import_module
+
+    def import_module(name, *args, **kwargs):
+        if name == "fastmcp":
+            raise error
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", import_module)
+    monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", tmp_path / "lionagi")
+    monkeypatch.setattr(
+        "lionhub.serve.cli.doctor._check_studio_daemon",
+        lambda: {"status": "warn", "detail": "offline"},
+    )
+
+    run_doctor(SimpleNamespace(json=True))
+
+    check = json.loads(capsys.readouterr().out)["extra:mcp"]
+    assert check["status"] == status
+    assert detail in check["detail"]
 
 
 def test_run_doctor_exits_nonzero_on_hard_failure(monkeypatch: pytest.MonkeyPatch) -> None:
