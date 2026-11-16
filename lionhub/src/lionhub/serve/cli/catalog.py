@@ -67,7 +67,7 @@ _CLI_SEEDS: tuple[CliSeed, ...] = (
     ),
     CliSeed(
         name="remote",
-        help="Run an agent leg on a leg-host Studio daemon on another machine.",
+        help="Run agent legs on a remote leg host.",
         module="lionhub.serve.cli.remote",
     ),
     CliSeed(

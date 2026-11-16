@@ -276,7 +276,7 @@ def add_remote_subparser(subparsers: argparse._SubParsersAction) -> argparse.Arg
     """Register `li remote`. Returns the `remote` parser."""
     remote = subparsers.add_parser(
         "remote",
-        help="Run an agent leg on a leg-host Studio daemon on another machine.",
+        help="Run agent legs on a remote leg host.",
         description=(
             "Run agent legs on a remote leg host, named in ~/.lionagi/remotes.yaml. "
             "See docs/guides/remote-legs.md."

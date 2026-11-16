@@ -171,6 +171,10 @@
     "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py": [
       "os.environ.get:\"LIONAGI_SESSION_ID\""
     ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "os.environ.get:STUDIO_TOKEN_ENV",
+      "os.environ.get:token_env"
+    ],
     "lionhub/src/lionhub/serve/cli/studio.py": [
       "os.environ.get:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
@@ -1593,6 +1597,9 @@
     ],
     "lionhub/src/lionhub/serve/cli/orchestrate/_round_records.py": [
       "__all__ = (\n    \"ROUND_VERSION\",\n    \"ROUND_STATE_PENDING\",\n    \"ROUND_STATE_COMPLETE\",\n    \"RESULT_COMPLETED\",\n    \"RESULT_PARTIAL\",\n    \"RESULT_FAILED\",\n    \"LEG_SUCCEEDED\",\n    \"LEG_FAILED\",\n    \"LEG_TIMED_OUT\",\n    \"LEG_CANCELLED\",\n    \"LEG_KILLED\",\n    \"RECORDED_BY_RUNNER\",\n    \"RECORDED_BY_KILL_REAPER\",\n    \"RECORDED_BY_ORPHAN_REAPER\",\n    \"LegDispatch\",\n    \"legs_dir\",\n    \"round_path\",\n    \"write_leg_dispatch\",\n    \"complete_leg_record\",\n    \"read_leg_records\",\n    \"ControlGroupDomain\",\n    \"control_group_domain\",\n    \"recorded_control_groups\",\n    \"write_round_summary\",\n    \"read_round_summary\",\n    \"flip_round_complete\",\n    \"round_result\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "__all__ = (\n    \"RemoteError\",\n    \"add_remote_subparser\",\n    \"load_remote\",\n    \"run_remote\",\n)"
     ],
     "lionhub/src/lionhub/serve/cli/state.py": [
       "__all__ = [\n    # import helpers\n    \"RUNS_ROOT\",\n    \"_mtime_as_float\",\n    \"_msg_from_collection_entry\",\n    \"_import_runs\",\n    \"_STATUS_MAP\",\n    \"_EXIT_CODE_STATUS_MAP\",\n    \"_derive_import_status\",\n    \"_derive_timestamps\",\n    \"_import_one_run\",\n    \"_import_teams\",\n    # ops helpers\n    \"_format_bytes\",\n    \"_list_sessions\",\n    \"_print_stats\",\n    \"_collect_message_breakdown\",\n    \"_checkpoint\",\n    \"_vacuum\",\n    \"_prune\",\n    \"_prune_candidates\",\n    \"_null_content\",\n    \"_null_content_candidates\",\n    \"_null_content_targets\",\n    \"_doctor\",\n    # CLI entrypoints\n    \"add_state_subparser\",\n    \"run_state\",\n    \"machine_result\",\n]"
@@ -4792,6 +4799,13 @@
       "add_plugin_subparser",
       "machine_result",
       "run_plugin"
+    ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "Remote",
+      "RemoteError",
+      "add_remote_subparser",
+      "load_remote",
+      "run_remote"
     ],
     "lionhub/src/lionhub/serve/cli/schedule.py": [
       "run_schedule",

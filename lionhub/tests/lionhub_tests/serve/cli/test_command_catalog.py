@@ -67,7 +67,7 @@ def _cleanup_fake_modules():
         del sys.modules[name]
 
 
-def test_cli_seeds_are_fixed_22_in_order():
+def test_cli_seeds_are_fixed_in_order():
     seeds = _catalog.iter_cli_seeds()
     assert len(seeds) == 22
     actual = tuple((s.name, s.aliases, s.module) for s in seeds)

@@ -407,9 +407,9 @@ def test_mcp_projections_match_baseline():
 def test_mcp_projects_every_available_path():
     live = _capture.capture_mcp()
     assert live["projection_count"] + live["projection_error_count"] == live["available_path_count"]
-    assert live["available_path_count"] == 78
+    assert live["available_path_count"] == 83
     assert live["projection_count"] == 64
-    assert live["projection_error_count"] == 14
+    assert live["projection_error_count"] == 19
 
 
 def test_mcp_terminal_consumer_exposes_only_list():

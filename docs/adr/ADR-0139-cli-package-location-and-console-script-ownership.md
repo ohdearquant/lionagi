@@ -876,7 +876,7 @@ catalog suites.
    scheduling, plugin-management and casts selection with no earlier import.
    Preserve duplicate-token/marker failures and selected-only loading.
    Existing catalog tests provide characterization fixtures
-   (`lionhub/tests/lionhub_tests/serve/cli/test_command_catalog.py::test_cli_seeds_are_fixed_21_in_order`,
+   (`lionhub/tests/lionhub_tests/serve/cli/test_command_catalog.py::test_cli_seeds_are_fixed_in_order`,
    `lionhub/tests/lionhub_tests/serve/cli/test_command_catalog.py::test_build_cli_parser_with_no_selection_registers_every_seed_as_stub`).
 
 4. **1.x upgrade and subprocess targets (D4):**
