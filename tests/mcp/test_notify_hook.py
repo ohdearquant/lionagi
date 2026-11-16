@@ -253,8 +253,16 @@ def test_flow_terminal_reason_reaches_mcp_status_and_delivery(job, monkeypatch):
     assert json.loads(captured["proc"].input)["reason_code"] == "run.completed.spawn_refused"
 
 
-@pytest.mark.parametrize("label", ["t1", None], ids=["label", "unlabeled"])
-def test_command_override_substitutes_and_delivers(job, monkeypatch, label):
+@pytest.mark.parametrize(
+    ("label_fields", "expected_label"),
+    [
+        ({"kind": "agent", "label": "t1"}, "t1"),
+        ({"kind": "agent", "label": None}, "agent"),
+        ({}, "run"),
+    ],
+    ids=["explicit-label", "kind-fallback", "run-fallback"],
+)
+def test_command_override_substitutes_and_delivers(job, monkeypatch, label_fields, expected_label):
     captured: dict = {}
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_SENDER", raising=False)
     monkeypatch.delenv("LIONAGI_NOTIFY_PAYLOAD", raising=False)
@@ -265,7 +273,10 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch, label):
         return captured["proc"]
 
     monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
-    jobs._write_job({**jobs._read_job(job), "label": label})
+    record = jobs._read_job(job)
+    del record["kind"], record["label"]
+    record.update(label_fields)
+    jobs._write_job(record)
 
     command = json.dumps(["notify", "{run_id}", "{status}", "{label}", "{target}"])
     rc = _notify_hook.main(
@@ -274,7 +285,7 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch, label):
     assert rc == 0
     rec = jobs._read_job(job)
     assert rec["status"] == "failed"
-    assert captured["argv"] == ["notify", job, "failed", label or "agent", "downstream"]
+    assert captured["argv"] == ["notify", job, "failed", expected_label, "downstream"]
     # The notifier receives the common fields and the MCP target on stdin.
     payload = json.loads(captured["proc"].input)
     assert payload == {
@@ -282,7 +293,7 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch, label):
         "run_id": job,
         "status": "failed",
         "reason_code": None,
-        "label": label,
+        "label": expected_label,
         "target": "downstream",
         "sender": None,
         "cwd": None,

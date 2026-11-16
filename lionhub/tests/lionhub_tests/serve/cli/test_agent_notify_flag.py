@@ -51,7 +51,7 @@ def test_agent_notify_flag_defaults_to_none_when_absent():
 @pytest.mark.parametrize(
     ("sender_args", "expected_sender"),
     [
-        pytest.param(["--sender", "CI reviewer"], "CI reviewer", id="explicit"),
+        pytest.param(["--notify-sender", "CI reviewer"], "CI reviewer", id="explicit"),
         pytest.param([], None, id="omitted"),
     ],
 )

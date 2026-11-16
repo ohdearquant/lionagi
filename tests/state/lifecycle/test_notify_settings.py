@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import psutil
@@ -32,7 +33,9 @@ from lionagi.state.lifecycle.callbacks import (
 from lionagi.state.lifecycle.notify_settings import (
     NotifyConfigResolution,
     ResolvedNotifyHandler,
+    TerminalNoticeContext,
     build_handler,
+    build_terminal_notice_payload,
     register_settings_terminal_callback,
     resolve_notify_config,
 )
@@ -47,6 +50,15 @@ def _envelope() -> RunTerminalEnvelope:
         reason_code="run.completed.ok",
         occurred_at=0.0,
     )
+
+
+def test_executable_notice_and_lifecycle_envelope_share_a_schema_version():
+    envelope = _envelope()
+    common_notice = build_terminal_notice_payload(status=envelope.terminal_status)
+    assert common_notice["schema_version"] == envelope.schema_version
+
+    newer = replace(envelope, schema_version=envelope.schema_version + 1)
+    assert TerminalNoticeContext().payload(newer)["schema_version"] == newer.schema_version
 
 
 # String form

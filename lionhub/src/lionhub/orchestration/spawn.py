@@ -557,7 +557,7 @@ def add_common_cli_args(
         ),
     )
     parser.add_argument(
-        "--sender",
+        "--notify-sender",
         metavar="LABEL",
         help="Include this sender label in the configured terminal notice.",
     )

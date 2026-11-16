@@ -172,7 +172,7 @@ def add_engine_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     run_parser.add_argument(
-        "--sender",
+        "--notify-sender",
         metavar="LABEL",
         help="Include this sender label in the configured terminal notice.",
     )
@@ -252,7 +252,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
     run_id = uuid.uuid4().hex
     started_at = time.time()
     invocation_id = getattr(args, "invocation_id", None)
-    notify_sender = getattr(args, "sender", None)
+    notify_sender = getattr(args, "notify_sender", None)
 
     db = None
     # engine_runs.session_id carries the user's --session-id; signal_session_id

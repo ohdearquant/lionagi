@@ -192,10 +192,8 @@ flow` / `li play` additionally finalize and scope to an **invocation** when
 `--invocation` is set, because flow owns that finalization. This is
 separate from the settings-level `notify.on_terminal` handler, which sends
 the [executable terminal notice](runtime.md#executable-terminal-notices).
-Run commands accept `--sender LABEL` for the configured notice. The flag
-supplies a routing label. In playbooks, use a different name for an argument
-that previously used the now-reserved `--sender` spelling. The `--notify` override
-carries the legacy payload. It
+Run commands accept `--notify-sender LABEL` as a routing label for the
+configured notice. The `--notify` override carries the legacy payload. It
 registers as an *override* (`TerminalCallbackRegistry.register`), so it
 replaces the settings-resolved handler for this one run's entity only;
 other runs still get the settings-level handler unaffected. For backward

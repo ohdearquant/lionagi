@@ -368,18 +368,19 @@ def test_detached_submit_keeps_sender_attestation_server_owned(verb, a_playbook,
     properties = help_reply["schema"]["properties"]
     assert "sender" not in properties
     assert properties["notify_sender"]["x-server-owned"] is True
+    assert "x-flag" not in properties["notify_sender"]
 
     op = {"op": verb, "schema_fingerprint": help_reply["schema_fingerprint"]}
     refused = call(ops=[{**op, "args": {**args, "sender": "local reviewer"}}])["ops"][0]
     assert refused["ok"] is False
     assert refused["error"]["kind"] == "invalid_input"
-    assert "notify_sender" in refused["error"]["message"]
+    assert "sender" in refused["error"]["message"]
     assert submitted == {}
 
     accepted = call(ops=[{**op, "args": args}])["ops"][0]
     assert accepted["ok"] is True, accepted
     assert submitted["notify_sender"] == sender
-    assert not any(flag.split("=", 1)[0] == "--sender" for flag in submitted["flags"])
+    assert not any(flag.split("=", 1)[0] == "--notify-sender" for flag in submitted["flags"])
 
 
 def test_a_missing_required_parameter_names_itself(submitted):
@@ -545,6 +546,37 @@ def a_playbook(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     return "remedy-fixture"
+
+
+@pytest.mark.parametrize("verb", ["flow.submit", "play.submit"])
+def test_detached_playbook_sender_stays_distinct_from_notify_sender(
+    verb, a_playbook, submitted, tmp_path
+):
+    path = tmp_path / ".lionagi" / "playbooks" / f"{a_playbook}.playbook.yaml"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    spec["args"]["sender"] = {"type": "str", "default": "scheduled"}
+    path.write_text(json.dumps(spec), encoding="utf-8")
+
+    help_reply = call(help={"verb": verb, "playbook": a_playbook})
+    assert help_reply["schema"]["properties"]["sender"]["x-flag"] == "--sender"
+
+    reply = call(
+        ops=[
+            {
+                "op": verb,
+                "args": {
+                    "playbook": a_playbook,
+                    "sender": "release bot",
+                    "notify_sender": "agent:reviewer",
+                },
+                "schema_fingerprint": help_reply["schema_fingerprint"],
+            }
+        ]
+    )["ops"][0]
+    assert reply["ok"] is True, reply
+    assert "--sender=release bot" in submitted["flags"]
+    assert not any(flag.split("=", 1)[0] == "--notify-sender" for flag in submitted["flags"])
+    assert submitted["notify_sender"] == "agent:reviewer"
 
 
 @pytest.fixture

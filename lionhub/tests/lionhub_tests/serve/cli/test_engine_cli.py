@@ -860,7 +860,7 @@ def test_engine_run_terminal_notice_uses_cli_sender(
         "run",
         "hypothesis",
         "Finding: X causes Y",
-        "--sender",
+        "--notify-sender",
         "Review desk",
         "--export-dir",
         str(output_dir),

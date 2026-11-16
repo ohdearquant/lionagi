@@ -61,6 +61,11 @@
         "type": "string",
         "x-flag": "--notify"
       },
+      "notify_sender": {
+        "description": "Include this sender label in the configured terminal notice.",
+        "type": "string",
+        "x-flag": "--notify-sender"
+      },
       "num_workers": {
         "default": 3,
         "description": "Maximum assignments the orchestrator generates (default 3). It may generate fewer if the task does not divide that far, and `workers` specs beyond this cap go unused.",
@@ -108,11 +113,6 @@
         "description": "Directory to write each worker's output and the run's artifacts into. Without it they land in the run's own artifacts directory.",
         "type": "string",
         "x-flag": "--save"
-      },
-      "sender": {
-        "description": "Include this sender label in the configured terminal notice.",
-        "type": "string",
-        "x-flag": "--sender"
       },
       "synthesis_prompt": {
         "description": "What the merged answer should be \u2014 a ranked list, a decision, a single patch. Implies synthesis.",

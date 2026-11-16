@@ -3913,7 +3913,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 context_from=getattr(args, "context_from", None),
                 context_budget=getattr(args, "context_budget", None),
                 notify=getattr(args, "notify", None),
-                notify_sender=getattr(args, "sender", None),
+                notify_sender=getattr(args, "notify_sender", None),
                 images=image_uris,
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),

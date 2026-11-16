@@ -549,12 +549,12 @@ following fields. A nullable value is `null` when the producer lacks that fact.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | integer | Version of this JSON contract, currently `1`. |
+| `schema_version` | integer | Shared version of the common fields and lifecycle envelope extensions, currently `1`. |
 | `run_id` | string or null | The execution's run ID. Session and invocation IDs remain separate. |
 | `status` | string | The producer's terminal status. |
 | `reason_code` | string or null | The recorded terminal reason code, when available. |
-| `label` | string or null | The run label, when supplied. |
-| `sender` | string or null | Sender label for routing. CLI `--sender` is caller-supplied and carries no attestation. MCP submit retains its sender validation. |
+| `label` | string or null | The run label. MCP falls back to the job kind, then `run`, when the label is empty. |
+| `sender` | string or null | Sender label for routing. CLI `--notify-sender` is caller-supplied and carries no attestation. MCP submit retains its sender validation. |
 | `cwd` | string or null | The run's working directory. MCP may launch the notifier from a different directory for signing. |
 | `output_dir` | string or null | The known artifact root or recorded run output directory. |
 

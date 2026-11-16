@@ -562,7 +562,7 @@ def deliver_terminal_notice(
     asked = bool(target) or bool(sender)
     target = target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
     sender = sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
-    label = (job or {}).get("label")
+    label = (job or {}).get("label") or (job or {}).get("kind") or "run"
     run_cwd = (job or {}).get("cwd")
     template, unusable = _resolve_command(
         command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
@@ -591,7 +591,7 @@ def deliver_terminal_notice(
         fields = {
             "run_id": run_id,
             "status": status,
-            "label": label or (job or {}).get("kind") or "run",
+            "label": label,
             "target": target,
             "sender": sender,
         }

@@ -36,6 +36,7 @@ from .callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
     EXECUTION_ENTITY_KINDS,
     HANDLER_BUDGET_SECONDS,
+    SCHEMA_VERSION,
     RunTerminalEnvelope,
     TerminalCallbackHandler,
     TerminalCallbackRegistry,
@@ -644,8 +645,8 @@ def build_terminal_notice_payload(
 ) -> dict[str, Any]:
     """Build the common executable-notifier fields and retain existing extension fields."""
     payload = dict(extensions or {})
+    payload.setdefault("schema_version", SCHEMA_VERSION)
     payload.update(
-        schema_version=1,
         run_id=run_id,
         status=status,
         reason_code=reason_code,

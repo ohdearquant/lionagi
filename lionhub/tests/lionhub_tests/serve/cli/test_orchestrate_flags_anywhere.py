@@ -54,7 +54,9 @@ def _run_with_fanout_mock(argv: list[str]):
     ids=["flow", "fanout"],
 )
 def test_orchestrate_sender_label_threads_into_run(command, run_with_mock):
-    code, run = run_with_mock(["o", command, "codex", "--sender", "CI reviewer", "do the thing"])
+    code, run = run_with_mock(
+        ["o", command, "codex", "--notify-sender", "CI reviewer", "do the thing"]
+    )
 
     assert code == 0
     run.assert_awaited_once()
@@ -67,7 +69,7 @@ def test_sender_label_threads_into_flow_resume(command):
     with patch.object(
         orch_mod, "_resume_flow", AsyncMock(return_value=("resumed output", "completed"))
     ) as resume_flow:
-        code = main([*command, "--resume", "abc123", "--sender", "CI reviewer"])
+        code = main([*command, "--resume", "abc123", "--notify-sender", "CI reviewer"])
 
     assert code == 0
     resume_flow.assert_awaited_once()
@@ -212,14 +214,23 @@ class TestPlayFlagsAnywhere:
         ("argv", "prompt"),
         [
             pytest.param(
-                ["--sender", "CI reviewer", "hello", "a thing"],
-                "Do a thing (routine)",
-                id="sender-before-name",
+                ["--notify-sender", "CI reviewer", "hello", "a thing"],
+                "Do a thing (routine, scheduled)",
+                id="notify-sender-before-name",
             ),
             pytest.param(
-                ["hello", "--sender", "CI reviewer", "--label", "nightly", "a thing"],
-                "Do a thing (nightly)",
-                id="playbook-label",
+                [
+                    "hello",
+                    "--notify-sender",
+                    "CI reviewer",
+                    "--sender",
+                    "release bot",
+                    "--label",
+                    "nightly",
+                    "a thing",
+                ],
+                "Do a thing (nightly, release bot)",
+                id="playbook-sender-and-label",
             ),
         ],
     )
@@ -227,8 +238,11 @@ class TestPlayFlagsAnywhere:
         self._make_playbook(
             tmp_path,
             monkeypatch,
-            args={"label": {"type": "str", "default": "routine"}},
-            prompt="Do {input} ({label})",
+            args={
+                "label": {"type": "str", "default": "routine"},
+                "sender": {"type": "str", "default": "scheduled"},
+            },
+            prompt="Do {input} ({label}, {sender})",
         )
         code, run_flow = _run_with_flow_mock(["play", *argv])
 

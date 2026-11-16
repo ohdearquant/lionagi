@@ -103,6 +103,11 @@
         "type": "string",
         "x-flag": "--notify"
       },
+      "notify_sender": {
+        "description": "Include this sender label in the configured terminal notice.",
+        "type": "string",
+        "x-flag": "--notify-sender"
+      },
       "preset": {
         "description": "Apply a built-in agent configuration preset. Supported values: coding. 'coding' wires CodingToolkit with path-guard hooks and a coding system prompt; cwd defaults to the invocation directory.",
         "enum": [
@@ -147,11 +152,6 @@
         "description": "If the run terminates on `timeout`, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
         "type": "boolean",
         "x-flag": "--resume-on-timeout"
-      },
-      "sender": {
-        "description": "Include this sender label in the configured terminal notice.",
-        "type": "string",
-        "x-flag": "--sender"
       },
       "theme": {
         "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
