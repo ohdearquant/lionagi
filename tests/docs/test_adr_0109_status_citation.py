@@ -1,8 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Pin the cited status API to its caller-supplied provenance fields."""
+"""Verify the status API and terminal readers cited by ADR-0109."""
 
 import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,3 +38,33 @@ def test_status_update_citation_points_to_source_and_actor_parameters() -> None:
     actor = _source_of("lionagi/state/lifecycle/models.py", "ActorRecord")
     assert actor.startswith("class ActorRecord:")
     assert "id: str" in actor
+
+
+def test_terminal_status_consumers_name_the_reading_functions() -> None:
+    record = RECORD.read_text(encoding="utf-8")
+    _, heading, section = record.partition("\n## Consumers keying on session terminal status\n")
+    assert heading
+    table = section.partition("\n## ")[0]
+    sites = [line.split("|", 2)[1] for line in table.splitlines() if line.startswith("| `")]
+    paths = [
+        (path, name)
+        for site in sites
+        for path, name in re.findall(r"`([^ `]+\.py)::([^ `]+)`", site)
+    ]
+    cli = "lionhub/src/lionhub/serve/cli"
+    assert [name for path, name in paths if path == f"{cli}/monitor.py"] == [
+        "_effective_session_status",
+        "_poll_pending_sessions_once",
+    ]
+    assert [name for path, name in paths if path == f"{cli}/agent.py"] == [
+        "_tombstone_pending_steers",
+        "_run_agent",
+    ]
+    for path, name in paths:
+        tree = ast.parse(_source_of(path, name))
+        assert any(
+            isinstance(node, ast.Name)
+            and node.id == "SESSION_TERMINAL_STATUSES"
+            and isinstance(node.ctx, ast.Load)
+            for node in ast.walk(tree)
+        ), f"{path}::{name} does not read SESSION_TERMINAL_STATUSES"
