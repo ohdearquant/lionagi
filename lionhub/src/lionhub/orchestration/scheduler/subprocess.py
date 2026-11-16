@@ -11,6 +11,7 @@ import math
 import os
 import re
 import shutil
+import socket
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
@@ -23,7 +24,13 @@ from lionagi.ln import (
     observe_process_group_leader,
     prepare_process_group_env,
 )
-from lionagi.ln._proc import env_without_state_db_url
+from lionagi.ln._proc import (
+    _group_has_members,
+    _RecordedWorkerIdentity,
+    env_without_state_db_url,
+    safe_pgid_value,
+)
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionhub.orchestration.schedule.action_validation import (
     _COMMAND_ALLOWLIST_ENV,  # noqa: F401
     _COMMAND_RE,  # noqa: F401
@@ -429,6 +436,49 @@ class SubprocessDeadlineExceededError(TimeoutError):
         )
 
 
+class _CommandProcessPublicationError(RuntimeError):
+    """A scheduled command could not be given a durable process identity."""
+
+
+class _CommandProcessPublicationRefusedError(_CommandProcessPublicationError):
+    """The invocation changed before the process identity write could land."""
+
+
+async def _publish_command_process(
+    proc: asyncio.subprocess.Process,
+    leader_created: float | None,
+    publish: Callable[[_RecordedWorkerIdentity], Awaitable[bool]],
+) -> None:
+    if leader_created is None:
+        # A short command can exit before observation. Continue only if the
+        # owned handle has reaped it and the group is gone too.
+        pgid = safe_pgid_value(proc.pid)
+        if proc.returncode is not None and pgid is not None and not _group_has_members(pgid):
+            return
+        raise _CommandProcessPublicationError("Could not identify the scheduled command process.")
+
+    try:
+        import psutil
+
+        host = socket.gethostname()
+        boot_time = psutil.boot_time()
+        if not host.strip() or not math.isfinite(boot_time):
+            raise ValueError("Incomplete local host identity")
+        published = await publish(
+            _RecordedWorkerIdentity(proc.pid, proc.pid, leader_created, host, boot_time, "local")
+        )
+    except Exception:
+        # Storage errors can include request context. The scheduler records
+        # this error on the run, so carry only the stable diagnostic.
+        raise _CommandProcessPublicationError(
+            "Could not record the scheduled command process."
+        ) from None
+    if not published:
+        raise _CommandProcessPublicationRefusedError(
+            "Invocation changed before the scheduled command process could be recorded."
+        )
+
+
 def _validated_deadline_seconds(value: str | int | float) -> float:
     try:
         seconds = float(value)
@@ -487,6 +537,7 @@ async def spawn_and_wait(
     cwd: str | None = None,
     action_kind: str | None = None,
     on_launched: Callable[[], Awaitable[None]] | None = None,
+    publish_command_process: Callable[[_RecordedWorkerIdentity], Awaitable[bool]] | None = None,
     deadline_seconds: float | None = None,
     env: Mapping[str, str] | None = None,
     stdout_sink: Callable[[bytes, int], None] | None = None,
@@ -504,6 +555,10 @@ async def spawn_and_wait(
     to fail an already-launched process. See docs/internals/studio.md for
     the allow-list re-check race this closes and why streams can't drain
     sequentially.
+
+    *publish_command_process*, if given, records the owned command identity
+    after the dispatch callback. A refused or failed publish ends the group
+    before reporting the launch failure.
 
     *deadline_seconds* defaults to the validated global/per-action-kind
     Studio setting; expiry terminates the owned process group before
@@ -597,11 +652,16 @@ async def spawn_and_wait(
                         "is already running regardless",
                         invocation_id,
                     )
+            if publish_command_process is not None:
+                await _publish_command_process(proc, leader_created, publish_command_process)
             stdout_tail, stderr_tail = await drain
             await proc.wait()
             return stdout_tail, stderr_tail
 
         stdout, stderr = await asyncio.wait_for(_wait_for_exit(), timeout=deadline_seconds)
+    except _CommandProcessPublicationError:
+        await shield_quietly(_stop_child())
+        raise
     except asyncio.TimeoutError as exc:
         _log.warning(
             "spawn_and_wait deadline exceeded; terminating child for %s after %ss",

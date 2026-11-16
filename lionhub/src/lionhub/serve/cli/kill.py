@@ -6,11 +6,19 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln._proc import (
+    _admit_recorded_worker_group,
+    _RecordedGroupWitness,
+    _RecordedWorkerIdentity,
     current_pid_markers,  # noqa: F401  (re-exported: the kill command's historical import path)
+    group_member_pids,
+    process_create_time,
 )
 from lionagi.state._quarantine_identity import (
     QuarantineProbeError,
@@ -19,9 +27,14 @@ from lionagi.state._quarantine_identity import (
     quarantine_identity,
 )
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
-from lionagi.state.db import SESSION_TERMINAL_STATUSES
+from lionagi.state.db import (
+    SESSION_TERMINAL_STATUSES,
+    read_only_open_supported,
+    state_db_known_absent,
+)
+from lionagi.state.db import StateDB as _StateDB
 from lionhub.orchestration.console import log_error, warn
-from lionhub.orchestration.job import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
+from lionhub.orchestration.job import _TABLE_TO_ENTITY_TYPE, BOOT_TIME_TOLERANCE, AmbiguousIdError
 from lionhub.orchestration.job import pid_alive as _pid_alive
 from lionhub.orchestration.job import resolve_entity as _resolve_entity
 from lionhub.orchestration.kill import (
@@ -30,11 +43,17 @@ from lionhub.orchestration.kill import (
     NOT_JUDGEABLE_HERE,
     NOT_STOPPED_SIGNALS,
     _degraded_run,
+    _degraded_termination_target,
     _imported_degraded_process_identity,
+    _inspect_cancel_command_group,
     _kill_degraded_run,
     _persist_cancel,
     _pid_addressability,
+    _prepare_cancel_attempt,
     _same_cleanup_session,
+    _snapshot_cancel_target,
+    _termination_identity,
+    _TerminationTarget,
     _try_recorded_worker_cleanup,
     check_pid_identity,
     kill_one,
@@ -143,6 +162,26 @@ async def _resolve_quarantine(id_or_short: str, *, target: str, reason: str) -> 
         return 0
 
 
+async def _kill_children(
+    db: Any, entity_type: str, entity_id: str, *, recursive: bool
+) -> list[tuple[str, str, dict[str, Any]]]:
+    if entity_type == "show":
+        if recursive:
+            warn(
+                f"show {entity_id[:12]}: --recursive does not reap a show's "
+                "plays or their workers (deferred per ADR-0104) — kill the "
+                "play or session ids directly to stop a show's workers"
+            )
+        return []
+    if entity_type == "play" or recursive:
+        return await list_running_children(db, entity_type, entity_id)
+    return []
+
+
+def _killable_status(entity_type: str) -> str:
+    return "active" if entity_type == "show" else "running"
+
+
 async def _do_kill(
     id_or_short: str,
     *,
@@ -199,12 +238,7 @@ async def _do_kill(
                 ):
                     log_error(f"session {row['id'][:12]} changed during cleanup")
                     return 1
-        # Shows never reach "running" (they persist as 'active' per the
-        # shows.status vocabulary in state/db.py); every other entity type
-        # uses "running" as its only killable status.
-        killable_status = "active" if entity_type == "show" else "running"
-
-        if current_status != killable_status:
+        if current_status != _killable_status(entity_type):
             log_error(
                 f"{entity_type} {row['id'][:12]} is already in terminal state: "
                 f"{current_status!r} — nothing to kill"
@@ -214,29 +248,8 @@ async def _do_kill(
         results = []
         blocked = []
 
-        play_workers_unreachable = False
-
-        if entity_type == "show":
-            # ADR-0104 explicitly defers show-level reaping: a show kill only
-            # marks the show row terminal. --recursive is a documented no-op
-            # here rather than a partial reap of the show's plays/workers.
-            children = []
-            if recursive:
-                warn(
-                    f"show {row['id'][:12]}: --recursive does not reap a show's "
-                    "plays or their workers (deferred per ADR-0104) — kill the "
-                    "play or session ids directly to stop a show's workers"
-                )
-        elif entity_type == "play":
-            # A play row carries no PID of its own, so its whole effect on the
-            # running system is through the sessions it started. Resolving them
-            # is the kill, not an extra step behind --recursive.
-            children = await list_running_children(db, entity_type, row["id"])
-            play_workers_unreachable = not children
-        elif recursive:
-            children = await list_running_children(db, entity_type, row["id"])
-        else:
-            children = []
+        children = await _kill_children(db, entity_type, row["id"], recursive=recursive)
+        play_workers_unreachable = entity_type == "play" and not children
 
         if children:
             for _child_table, child_type, child_row in children:
@@ -294,7 +307,10 @@ async def _do_kill(
         elif r["signal"] in NOT_STOPPED_SIGNALS:
             blocked.append(r)
         else:
-            print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")
+            group = f", pgid={r['pgid']}" if r.get("pgid") is not None else ""
+            print(
+                f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']}{group})"
+            )
 
         if play_workers_unreachable:
             log_error(
@@ -314,6 +330,228 @@ async def _do_kill(
             return 1
 
     return 1 if blocked else 0
+
+
+class _PreviewPostgresDB(_StateDB):
+    """Reuse StateDB reads in PostgreSQL transactions without writable schema setup."""
+
+    async def _open(self) -> None:
+        from lionagi.state.engine import make_engine
+
+        if self._engine is None:
+            self._engine = make_engine(self.url)
+            self._schema_applied = True
+
+    @asynccontextmanager
+    async def _read(self):
+        async with self.read_snapshot() as connection:
+            yield connection
+
+    def _tx(self):
+        raise RuntimeError("the kill preview cannot write to the state store")
+
+
+@asynccontextmanager
+async def _open_kill_preview_store() -> AsyncIterator[_StateDB | None]:
+    if state_db_known_absent():
+        yield None
+        return
+    db = _StateDB(readonly=True)
+    if db.dialect == "postgresql":
+        db = _PreviewPostgresDB(readonly=True)
+    elif not read_only_open_supported():
+        yield None
+        return
+    async with db:
+        yield db
+
+
+def _print_kill_preview(
+    label: str,
+    outcome: str,
+    *,
+    grace_seconds: float,
+    pid: int | None = None,
+    pgid: int | None = None,
+) -> bool:
+    targets = [
+        f"{name}={value}" for name, value in (("pid", pid), ("pgid", pgid)) if value is not None
+    ]
+    target = f" ({', '.join(targets)})" if targets else ""
+    if outcome == "verified":
+        grace = max(0.0, grace_seconds)
+        print(
+            f"(dry-run) {label}{target}: would send SIGTERM, then SIGKILL if still live after {grace:g}s"
+        )
+        return True
+    print(f"(dry-run) {label}{target}: no signal (signal={outcome})")
+    return outcome in {"already_dead", "no_pid"}
+
+
+def _preview_pid(process: _TerminationTarget) -> str:
+    if process.pid <= 1:
+        return "identity_unverifiable"
+    state, _ = process_create_time(process.pid)
+    if state == "gone":
+        return "already_dead"
+    if state != "found":
+        return "identity_unverifiable"
+    return _termination_identity(process, after_term=False) or "verified"
+
+
+def _preview_degraded_run(path: Path, manifest: dict[str, Any], *, grace_seconds: float) -> int:
+    label = f"run {path.parent.name}"
+    status = manifest.get("status")
+    if status != "running":
+        log_error(f"{label} is already in terminal state: {status!r} — nothing to kill")
+        return 1
+    pid, refusal, process = _degraded_termination_target(manifest, observational=True)
+    outcome = _preview_pid(process) if process is not None else refusal or "identity_unverifiable"
+    return int(not _print_kill_preview(label, outcome, grace_seconds=grace_seconds, pid=pid))
+
+
+def _preview_kill_target(kind: str, row: dict[str, Any], *, grace_seconds: float) -> int:
+    entity_id = row["id"]
+    label = f"{kind} {entity_id}"
+    if (group := _inspect_cancel_command_group(kind, row)) is not None:
+        return int(
+            not _print_kill_preview(
+                label, group.outcome, grace_seconds=grace_seconds, pid=group.pid, pgid=group.pgid
+            )
+        )
+    snapshot = _snapshot_cancel_target(kind, entity_id, row)
+    try:
+        attempt = _prepare_cancel_attempt(snapshot, observational=True)
+    except OverflowError:
+        return int(
+            not _print_kill_preview(label, "identity_unverifiable", grace_seconds=grace_seconds)
+        )
+    if attempt.degraded is not None:
+        return _preview_degraded_run(*attempt.degraded, grace_seconds=grace_seconds)
+    outcome = (
+        _preview_pid(attempt.process) if attempt.process is not None else attempt.result.signal
+    )
+    return int(
+        not _print_kill_preview(label, outcome, grace_seconds=grace_seconds, pid=attempt.result.pid)
+    )
+
+
+def _preview_worker_group(record: dict[str, Any]) -> str:
+    identity = _RecordedWorkerIdentity(
+        pid=record["pid"],
+        pgid=record["pgid"],
+        pid_create_time=record["pid_create_time"],
+        pid_host=record["pid_host"],
+        pid_boot_time=record["pid_boot_time"],
+        process_identity_mode=record["process_identity_mode"],
+    )
+    admission = _admit_recorded_worker_group(identity, boot_time_tolerance=BOOT_TIME_TOLERANCE)
+    if isinstance(admission, _RecordedGroupWitness):
+        return "verified"
+    if admission.reason == "leader_not_live":
+        members, complete = group_member_pids(identity.pgid)
+        return "already_dead" if complete and not members else "identity_unverifiable"
+    return admission.reason
+
+
+async def _preview_recorded_workers(
+    db: _StateDB, row: dict[str, Any], *, grace_seconds: float
+) -> int | None:
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    session_id = row["id"]
+    label = f"session {session_id}"
+    try:
+        snapshot = await db.snapshot_cli_worker_spawns(session_id)
+    except StateCompatibilityRefused:
+        return None
+    except Exception as exc:
+        log_error(f"{label}: worker records could not be read ({type(exc).__name__})")
+        return 1
+    if snapshot is None or not _same_cleanup_session(row, snapshot["session"]):
+        log_error(f"{label} changed during preview")
+        return 1
+    records = snapshot["spawns"]
+    if not records:
+        return None
+
+    if row["status"] == "running":
+        metadata = row.get("node_metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        if unaddressable_pid_reason(metadata) is not None:
+            return None
+        raw_pid = metadata.get("pid")
+        try:
+            pid = int(raw_pid)
+            if isinstance(raw_pid, bool) or (isinstance(raw_pid, float) and raw_pid != pid):
+                raise ValueError("invalid runner PID")
+            if not 1 < pid < 2**31:
+                raise ValueError("invalid runner PID")
+        except (TypeError, ValueError, OverflowError):
+            log_error(f"{label}: recorded runner identity could not be verified")
+            return 1
+        state, _ = process_create_time(pid)
+        if state == "found":
+            return None
+        if state != "gone":
+            log_error(f"{label}: recorded runner identity could not be verified")
+            return 1
+        _print_kill_preview(label, "already_dead", grace_seconds=grace_seconds, pid=pid)
+
+    refused = False
+    for worker in records:
+        visible = _print_kill_preview(
+            f"{label} worker {worker['spawn_id']}",
+            _preview_worker_group(worker),
+            grace_seconds=grace_seconds,
+            pid=worker["pid"],
+            pgid=worker["pgid"],
+        )
+        refused |= not visible
+    return int(refused)
+
+
+async def _do_kill_preview(id_or_short: str, *, recursive: bool, grace_seconds: float) -> int:
+    """Resolve the same targets as a kill without signalling or settling anything."""
+    async with _open_kill_preview_store() as db:
+        try:
+            resolved = await _resolve_entity(db, id_or_short) if db is not None else None
+        except AmbiguousIdError as exc:
+            log_error(str(exc))
+            return 1
+        if resolved is None:
+            if (degraded := _degraded_run(id_or_short)) is not None:
+                return _preview_degraded_run(*degraded, grace_seconds=grace_seconds)
+            log_error(f"entity not found for id: {id_or_short!r}")
+            return 1
+
+        _, kind, row = resolved
+        status = row.get("status")
+        if kind == "session" and status in SESSION_TERMINAL_STATUSES:
+            recorded = await _preview_recorded_workers(db, row, grace_seconds=grace_seconds)
+            if recorded is not None:
+                return recorded
+        if status != _killable_status(kind):
+            log_error(
+                f"{kind} {row['id'][:12]} is already in terminal state: {status!r} — nothing to kill"
+            )
+            return 1
+
+        children = await _kill_children(db, kind, row["id"], recursive=recursive)
+        refused = 0
+        for _, child_kind, child in children:
+            refused |= _preview_kill_target(child_kind, child, grace_seconds=grace_seconds)
+        if kind == "session":
+            recorded = await _preview_recorded_workers(db, row, grace_seconds=grace_seconds)
+            if recorded is not None:
+                return refused | recorded
+        refused |= _preview_kill_target(kind, row, grace_seconds=grace_seconds)
+        if kind == "play" and not children:
+            log_error(
+                f"play {row['id'][:12]} records no running session. Find workers with `li monitor`."
+            )
+            return 1
+        return refused
 
 
 async def _play_child_stale(db: Any, play_row: dict[str, Any]) -> bool | None:
@@ -394,6 +632,62 @@ async def _do_kill_all_stale(
                     f"unverifiable ({reason or 'unknown'}) — retained"
                 )
 
+        async def settle_stale(
+            entity_type: str,
+            row: dict[str, Any],
+            started: float,
+            *,
+            pid: int | None,
+            pid_alive: bool,
+            verdict: str | None,
+            pgid: int | None = None,
+        ) -> None:
+            nonlocal killed
+            entity_id = row["id"]
+            target = f"pid={pid}" if pgid is None else f"pid={pid}, pgid={pgid}"
+            if dry_run:
+                print(
+                    f"  (dry-run) would cancel {entity_type} {entity_id[:12]} "
+                    f"({target}, started_at={started:.0f})"
+                )
+                killed += 1
+                return
+
+            # A launch may publish its identity after the sweep read a PID-less row.
+            # Bind command-group settlement to the same invocation snapshot too.
+            guard_version = entity_type == "invocation" and (pid is None or pgid is not None)
+            version = row.get("updated_at") if guard_version else None
+            if guard_version and version is None:
+                return
+            evidence: dict[str, Any] = {
+                "kind": "stale_kill",
+                "pid": pid,
+                "pid_alive": pid_alive,
+                "identity_verdict": verdict,
+                "killed_at": time.time(),
+                "threshold_seconds": threshold_seconds,
+            }
+            if pgid is not None:
+                evidence["pgid"] = pgid
+            if user_reason:
+                evidence["user_reason"] = user_reason
+            reason = "command group empty" if pgid is not None else "process dead or no PID"
+            applied = await _persist_cancel(
+                db,
+                entity_type,
+                entity_id,
+                reason_code=RunReasons.CANCELLED_STALE_AUTO,
+                reason_summary=f"Stale auto-cancel: {reason}. {user_reason}".strip(),
+                evidence=evidence,
+                expected_updated_at=version,
+            )
+            if not applied and guard_version:
+                if verbose:
+                    print(f"  skip {entity_type} {entity_id[:12]}: row changed during sweep")
+                return
+            killed += 1
+            print(f"  cancelled stale {entity_type} {entity_id[:12]} ({target})")
+
         for table in _STALE_SWEEP_ORDER:
             entity_type = _TABLE_TO_ENTITY_TYPE[table]
             live_status = live_status_for[table]
@@ -420,6 +714,36 @@ async def _do_kill_all_stale(
                             f"  skip {entity_type} {entity_id[:12]}: "
                             f"started recently (< {threshold_seconds}s ago)"
                         )
+                    continue
+
+                if (group := _inspect_cancel_command_group(entity_type, row_dict)) is not None:
+                    if group.outcome == "already_dead":
+                        await settle_stale(
+                            entity_type,
+                            row_dict,
+                            started,
+                            pid=group.pid,
+                            pgid=group.pgid,
+                            pid_alive=False,
+                            verdict="already_dead",
+                        )
+                    elif group.outcome == "verified":
+                        skipped_live += 1
+                        if verbose:
+                            print(
+                                f"  skip {entity_type} {entity_id[:12]}: "
+                                f"command group {group.pgid} is still alive"
+                            )
+                    else:
+                        if group.outcome in NOT_JUDGEABLE_HERE:
+                            skipped_unjudgeable += 1
+                        else:
+                            skipped_unverifiable += 1
+                        if verbose:
+                            print(
+                                f"  skip {entity_type} {entity_id[:12]}: "
+                                f"command group retained ({group.outcome})"
+                            )
                     continue
 
                 row_meta_for_host = (
@@ -508,40 +832,14 @@ async def _do_kill_all_stale(
                     # both mean the recorded run is gone: fall through and
                     # sweep the row.
 
-                if dry_run:
-                    print(
-                        f"  (dry-run) would cancel {entity_type} {entity_id[:12]} "
-                        f"(pid={pid}, started_at={started:.0f})"
-                    )
-                    killed += 1
-                    continue
-
-                evidence: dict[str, Any] = {
-                    "kind": "stale_kill",
-                    "pid": pid,
-                    # Numeric liveness and identity are two different questions
-                    # (issue: a live-but-recycled pid used to hardcode False
-                    # here, indistinguishable from a genuinely dead pid).
-                    "pid_alive": pid_alive_now,
-                    "identity_verdict": verdict,
-                    "killed_at": time.time(),
-                    "threshold_seconds": threshold_seconds,
-                }
-                if user_reason:
-                    evidence["user_reason"] = user_reason
-
-                reason_summary = f"Stale auto-cancel: process dead or no PID. {user_reason}".strip()
-
-                await _persist_cancel(
-                    db,
+                await settle_stale(
                     entity_type,
-                    entity_id,
-                    reason_code=RunReasons.CANCELLED_STALE_AUTO,
-                    reason_summary=reason_summary,
-                    evidence=evidence,
+                    row_dict,
+                    started,
+                    pid=pid,
+                    pid_alive=pid_alive_now,
+                    verdict=verdict,
                 )
-                killed += 1
-                print(f"  cancelled stale {entity_type} {entity_id[:12]} (pid={pid})")
 
         # Resolve all probes before writing: if this sweep found the same
         # process both live and unverifiable, the live result wins.
@@ -866,8 +1164,9 @@ def run_kill(args: argparse.Namespace) -> int:
         return 1
 
     if args.dry_run:
-        log_error("--dry-run is only meaningful with --all-stale")
-        return 1
+        return run_async(
+            _do_kill_preview(args.id, recursive=args.recursive, grace_seconds=args.grace)
+        )
 
     return run_async(
         _do_kill(
