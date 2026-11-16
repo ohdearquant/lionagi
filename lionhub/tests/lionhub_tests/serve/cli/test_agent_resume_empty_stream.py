@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -77,6 +78,108 @@ def _make_branch_json(tmp_path: Path) -> tuple[str, Path]:
     p = tmp_path / f"{branch_id}.json"
     p.write_text(json.dumps(b.to_dict()))
     return branch_id, p
+
+
+@pytest.fixture
+def resume_snapshots(tmp_path, monkeypatch):
+    from lionagi import Branch, iModel
+    from lionhub.orchestration import runs
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runs, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(runs, "_LEGACY_AGENTS_ROOT", tmp_path / "legacy")
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="resumed")
+    branch = Branch(
+        id="aaaaaaaa-0000-4000-8000-000000000001",
+        chat_model=iModel(
+            provider="codex", endpoint="query_cli", model="synthetic", api_key="dummy"
+        ),
+    )
+
+    def write(version, *, legacy=False, branch_id=None):
+        data = branch.to_dict()
+        data["metadata"]["snapshot_version"] = version
+        if branch_id is not None:
+            data["id"] = branch_id
+        if legacy:
+            path = runs._LEGACY_AGENTS_ROOT / "codex" / str(branch.id)
+            data = {"old_identity": {"id": data.pop("id")}, **data}
+        else:
+            run = runs.RUNS_ROOT / version
+            path = run / "branches" / f"{branch.id}.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+        if not legacy:
+            timestamp = 1_000 if version == "older" else 2_000
+            os.utime(run, (timestamp, timestamp))
+        return path
+
+    return str(branch.id), write
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_snapshot", ["wrong-id", "broken-json"])
+async def test_canonical_resume_refuses_a_bad_newest_snapshot(
+    monkeypatch, resume_snapshots, bad_snapshot
+):
+    from lionagi._errors import ConfigurationError
+    from lionagi.service.manager import iModelManager
+    from lionhub.serve.cli import agent as agent_mod
+
+    def unexpected_allocation():
+        pytest.fail("the rejected snapshot reached run allocation")
+
+    monkeypatch.setattr(agent_mod, "allocate_run", unexpected_allocation)
+
+    branch_id, write = resume_snapshots
+    write("older")
+    newest = write("newest", branch_id="bbbbbbbb-0000-4000-8000-000000000002")
+    if bad_snapshot == "broken-json":
+        newest.write_text("[", encoding="utf-8")
+        expected = pytest.raises(json.JSONDecodeError)
+    else:
+        expected = pytest.raises(
+            ConfigurationError, match="saved branch ID does not match the requested branch ID"
+        )
+
+    with expected:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id, no_mcp_config=True)
+
+    if bad_snapshot == "wrong-id":
+        iModelManager.shutdown.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference", ["canonical", "prefix", "legacy"])
+async def test_resume_uses_the_matching_latest_snapshot_or_legacy_branch(
+    monkeypatch, resume_snapshots, reference
+):
+    from lionagi import Branch
+    from lionhub.serve.cli import agent as agent_mod
+
+    branch_id, write = resume_snapshots
+    if reference == "legacy":
+        write("legacy", legacy=True)
+        expected_version = "legacy"
+    else:
+        if reference == "canonical":
+            write("older")
+        write("newest")
+        expected_version = "newest"
+    operated = []
+
+    async def operate(self, *args, **kwargs):
+        operated.append((str(self.id), self.metadata["snapshot_version"]))
+        return "resumed"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    selector = branch_id[:8] if reference == "prefix" else branch_id
+    reply, _, resumed_id, terminal, _ = await agent_mod._run_agent(
+        None, "follow up", resume=selector, no_mcp_config=True
+    )
+
+    assert (reply, resumed_id, terminal) == ("resumed", branch_id, "completed")
+    assert operated == [(branch_id, expected_version)]
 
 
 # Test: resume with empty stream → non-zero exit + actionable message

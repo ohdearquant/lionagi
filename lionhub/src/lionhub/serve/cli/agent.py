@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, field_validator
 
@@ -1950,10 +1951,20 @@ async def _run_agent(
             branch = Branch.from_dict(json.loads(branch_path.read_text()))
         elif resume:
             _, branch_path = find_branch(resume)
+            branch = Branch.from_dict(json.loads(branch_path.read_text()))
+            if str(branch.id) != resume:
+                try:
+                    is_full_id = str(UUID(resume)) == resume
+                except ValueError:
+                    is_full_id = False
+                if is_full_id:
+                    await branch.mdls.shutdown()
+                    raise ConfigurationError(
+                        "The saved branch ID does not match the requested branch ID."
+                    )
             resolved_branch_id = branch_path.stem
             if resolved_branch_id != resume:
                 hint(f"[resume] prefix-matched {resume} → {resolved_branch_id}")
-            branch = Branch.from_dict(json.loads(branch_path.read_text()))
 
         # Capture before the new-branch block below reassigns `branch`: the only
         # reliable "reopened existing" vs "minting new" signal once that block runs.
