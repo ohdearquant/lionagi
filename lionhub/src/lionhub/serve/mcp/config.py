@@ -23,7 +23,7 @@ RUNS_DIR = RUNS_ROOT
 JOBS_DIR = LIONAGI_HOME / "mcp" / "jobs"
 
 # The env var the CLI reads to inherit a caller-chosen run_id (subprocess
-# handoff, lionagi/cli/_runs.py). Setting it lets submit() name the run before
+# handoff, lionhub.orchestration.runs). Setting it lets submit() name the run before
 # the child starts, so the id we return is race-free.
 RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 

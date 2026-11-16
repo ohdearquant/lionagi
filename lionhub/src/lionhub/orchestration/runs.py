@@ -1794,7 +1794,7 @@ async def teardown_orchestration_persist(*args, **kwargs) -> str:
     """Deprecated alias for :func:`teardown_persist`; delegates unchanged."""
     warnings.warn(
         "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
-        "use lionagi.cli._runs.teardown_persist instead.",
+        "use lionhub.orchestration.runs.teardown_persist instead.",
         DeprecationWarning,
         stacklevel=2,
     )

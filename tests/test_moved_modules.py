@@ -1051,7 +1051,7 @@ def _module_of(path: Path) -> str | None:
 _RETAINED_DEPRECATION_MESSAGES = {
     "lionhub.orchestration.runs": {
         "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
-        "use lionagi.cli._runs.teardown_persist instead."
+        "use lionhub.orchestration.runs.teardown_persist instead."
     }
 }
 
@@ -1135,7 +1135,7 @@ def test_reference_check_preserves_only_the_original_own_deprecation_text():
     other = path.with_name("_probe.py")
     message = (
         "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
-        "use lionagi.cli._runs.teardown_persist instead."
+        "use lionhub.orchestration.runs.teardown_persist instead."
     )
     warning = f"warnings.warn({message!r}, DeprecationWarning)\n"
     changed_message = message + " "
