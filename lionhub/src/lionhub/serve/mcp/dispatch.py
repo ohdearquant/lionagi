@@ -230,6 +230,21 @@ def _describe_fingerprint(
     entry["schema_fingerprint"] = schema_fingerprint(schema)
 
 
+# The one statement of how a caller recovers from a stale_schema refusal. Spawn-verb help
+# and both refusal branches carry this text; docs/reference/mcp-server.md states the rule.
+_SPAWN_RETRY_RULE = (
+    "Send schema_fingerprint beside 'args'. If the server returns stale_schema and your "
+    "arguments match the schema it returns (error.schema, or error.schema_ref naming the "
+    "op_index whose error already carries that schema in the same response), retry once "
+    "with error.detail.schema_fingerprint."
+)
+# Help for a verb whose fingerprint depends on an argument help was not given.
+_FINGERPRINT_NEEDS_ARGUMENT = (
+    "This verb's fingerprint depends on the parameters in schema_fingerprint_varies_with; "
+    "pass them to help to get the fingerprint its ops carry. "
+)
+
+
 def _require_fingerprint(
     name: str,
     verb: Verb,
@@ -268,16 +283,15 @@ def _require_fingerprint(
     if supplied is None:
         raise OpError(
             "stale_schema",
-            f"{name!r} requires a schema_fingerprint. Retry with the value in "
-            f"error.detail.schema_fingerprint as a sibling of 'args'. Use {shape}. "
-            f"For help with the schema, ask for {ask}.",
+            f"{name!r} requires a schema_fingerprint, as a sibling of 'args': {shape}. "
+            f"{_SPAWN_RETRY_RULE} The schema alone: {ask}.",
             remedy,
         )
     raise OpError(
         "stale_schema",
         f"{name!r} was called with schema_fingerprint {supplied!r}, which is not the "
         f"current {current!r}; the parameters changed since that schema was read. "
-        f"Re-read {ask} and send: {shape}",
+        f"{_SPAWN_RETRY_RULE} Send: {shape}. The schema alone: {ask}.",
         remedy,
     )
 
@@ -1104,11 +1118,10 @@ def _help(target: Any) -> dict[str, Any]:
     answer: dict[str, Any] = {"verb": name, "schema": schema}
     if verb.executor == "spawn":
         _describe_fingerprint(answer, verb, schema, playbook=playbook)
-    if name == "agent.submit":
         answer["help_usage"] = (
-            "Send schema_fingerprint beside 'args'. If the server returns stale_schema "
-            "and your arguments match the returned schema, retry once with "
-            "error.detail.schema_fingerprint."
+            _SPAWN_RETRY_RULE
+            if "schema_fingerprint" in answer
+            else _FINGERPRINT_NEEDS_ARGUMENT + _SPAWN_RETRY_RULE
         )
     return answer
 
