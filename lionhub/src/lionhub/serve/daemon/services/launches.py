@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from lionagi.ln import short_id
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.state.db import StateDB
 from lionhub.orchestration.schedule.execution_root import _is_usable_execution_root
 from lionhub.orchestration.scheduler import settings as config
@@ -333,7 +334,7 @@ async def _remove_leg_worktree(leg: leg_host.LegLaunch | None, inv_id: str) -> N
     if leg is None:
         return
     try:
-        if not await asyncio.shield(leg_host.remove_worktree(leg.repo, inv_id)):
+        if not await shield_quietly(leg_host.remove_worktree(leg.repo, inv_id)):
             _log.warning("Leg worktree for invocation %s was not removed", inv_id)
     except Exception:
         _log.exception("Removing the leg worktree for invocation %s failed", inv_id)

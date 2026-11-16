@@ -90,6 +90,8 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/identity"),
     ("GET", "/api/invocations/"),
     ("GET", "/api/invocations/{invocation_id}"),
+    ("GET", "/api/launches/capabilities"),
+    ("GET", "/api/launches/{invocation_id}/result"),
     ("GET", "/api/mcp/servers/"),
     ("GET", "/api/mcp/servers/{name}"),
     ("GET", "/api/operator/conversations"),
@@ -284,7 +286,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 145
+    assert len(_GOLDEN_ROUTES) == 147
 
 
 def _compiled_match_shape(path_template: str) -> str:
