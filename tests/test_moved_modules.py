@@ -1198,7 +1198,7 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
 # import a hub orchestration or serve module. Every other package never names
 # lionhub. The set must match what the tree does, and it shrinks as each interim edge is
 # removed, so a package that stops naming lionhub is removed from it too.
-LIONHUB_USERS_UNDER_LIONAGI = frozenset({"operations", "service", "studio"})
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"service", "studio"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
@@ -1372,7 +1372,6 @@ def _provider_inventory() -> dict[str, list[str]]:
 # table changes when an edge is removed or a new one is added, never as a side effect.
 PROVIDER_INTERIM_EDGES = {
     # Every import here is inside a function (see the test of that below).
-    "operations/run/run.py": ["lionhub.providers.google.gemini_code"],
     "service/accounts/_router.py": ["lionhub.providers.anthropic._prompt_cache"] * 2,
     "service/providers.py": ["lionhub.providers.openai._codex_profile"],
     # ``_MANIFEST_MODULE`` in the compatibility loader: the hub's manifest module, imported on

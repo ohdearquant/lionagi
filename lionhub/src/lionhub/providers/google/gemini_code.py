@@ -779,6 +779,24 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         super().__init__(config=config, **kwargs)
         self._init_handlers(handlers)
 
+    def prepare_run_request(
+        self, request_kwargs: dict[str, Any], *, stream_timeout: int | float | None
+    ) -> None:
+        if (
+            self._request_model is not GeminiCodeRequest
+            or request_kwargs.get("print_timeout") is not None
+            or self.config.kwargs.get("print_timeout") is not None
+        ):
+            return
+        if stream_timeout is not None:
+            request_kwargs["print_timeout"] = derive_print_timeout(stream_timeout)
+        else:
+            from lionagi.config import settings
+
+            request_kwargs["print_timeout"] = format_print_timeout(
+                settings.LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT
+            )
+
     @property
     def gemini_handlers(self):
         return self._handlers
