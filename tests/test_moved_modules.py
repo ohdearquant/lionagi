@@ -524,25 +524,81 @@ def test_a_moved_module_keeps_the_logger_name_it_had():
 
 
 @pytest.mark.parametrize(
-    ("module_name", "logger_name"),
+    ("module_name", "logger_attr", "logger_name"),
     [
-        ("lionhub.agent.context_fold", "lionagi.agent.context_fold"),
-        ("lionhub.agent.factory", "lionagi.agent.factory"),
-        ("lionhub.agent.hooks", "lionagi.agent.hooks"),
-        ("lionhub.agent.nudge", "lionagi.agent.nudge"),
-        ("lionhub.agent.permissions", "lionagi.agent.permissions"),
-        ("lionhub.agent.settings", "lionagi.agent.settings"),
-        ("lionhub.tools.coding", "lionagi.tools.coding"),
-        ("lionhub.tools.communication.messenger", "lionagi.tools.communication.messenger"),
-        ("lionhub.tools.khive_injection", "lionagi.tools.khive_injection"),
-        ("lionhub.serve.cli._notify_outcomes", "lionagi.cli._notify_outcomes"),
-        ("lionhub.serve.cli.orchestrate._notify", "lionagi.cli.orchestrate._notify"),
-        ("lionhub.serve.cli.orchestrate.flow", "lionagi.cli.orchestrate.flow"),
+        ("lionhub.agent.context_fold", "logger", "lionagi.agent.context_fold"),
+        ("lionhub.agent.factory", "logger", "lionagi.agent.factory"),
+        ("lionhub.agent.hooks", "logger", "lionagi.agent.hooks"),
+        ("lionhub.agent.nudge", "logger", "lionagi.agent.nudge"),
+        ("lionhub.agent.permissions", "logger", "lionagi.agent.permissions"),
+        ("lionhub.agent.settings", "logger", "lionagi.agent.settings"),
+        ("lionhub.hooks.external", "logger", "lionagi.hooks.external"),
+        ("lionhub.lndl.middle.lndl_middle", "logger", "lionagi.operations.lndl_middle.lndl_middle"),
+        ("lionhub.orchestration.dispatch.outbox", "_log", "lionagi.dispatch.outbox"),
+        ("lionhub.orchestration.engines.coding", "logger", "lionagi.engines"),
+        ("lionhub.orchestration.engines.engine", "logger", "lionagi.engines"),
+        ("lionhub.orchestration.engines.hypothesis", "logger", "lionagi.engines"),
+        ("lionhub.orchestration.patterns", "logger", "lionagi.orchestration.patterns"),
+        ("lionhub.orchestration.runs", "_log", "lionagi.cli"),
+        (
+            "lionhub.orchestration.scheduler.db_maintenance",
+            "_log",
+            "lionagi.studio.services.db_maintenance",
+        ),
+        ("lionhub.orchestration.scheduler.engine", "_log", "lionagi.studio.scheduler.engine"),
+        ("lionhub.orchestration.scheduler.github", "_log", "lionagi.studio.scheduler.github"),
+        ("lionhub.orchestration.scheduler.lifecycle", "_log", "lionagi.studio.services.lifecycle"),
+        ("lionhub.orchestration.scheduler.liveness", "_log", "lionagi.studio.services.admin"),
+        (
+            "lionhub.orchestration.scheduler.scheduler_state",
+            "_log",
+            "lionagi.studio.services.scheduler_state",
+        ),
+        ("lionhub.orchestration.scheduler.signals", "_log", "lionagi.studio.scheduler.signals"),
+        (
+            "lionhub.orchestration.scheduler.subprocess",
+            "_log",
+            "lionagi.studio.scheduler.subprocess",
+        ),
+        (
+            "lionhub.orchestration.scheduler.terminal_reconciliation",
+            "logger",
+            "lionagi.studio.services.terminal_reconciliation",
+        ),
+        ("lionhub.orchestration.scheduler.worker", "_log", "lionagi.studio.scheduler.worker"),
+        ("lionhub.orchestration.state_store", "_log", "lionagi.studio.services._db"),
+        ("lionhub.providers.ag2.agent", "logger", "lionagi.providers.ag2.agent"),
+        ("lionhub.providers.ag2.groupchat", "logger", "lionagi.providers.ag2.groupchat"),
+        ("lionhub.providers.ag2.nlip", "logger", "lionagi.providers.ag2.nlip"),
+        ("lionhub.providers.anthropic.messages", "logger", "lionagi.providers.anthropic.messages"),
+        ("lionhub.providers.ollama.chat", "logger", "lionagi.providers.ollama.chat"),
+        ("lionhub.providers.ollama.generate", "logger", "lionagi.providers.ollama.generate"),
+        (
+            "lionhub.providers.openai._codex_profile",
+            "logger",
+            "lionagi.providers.openai._codex_profile",
+        ),
+        ("lionhub.serve.cli._notify_outcomes", "logger", "lionagi.cli._notify_outcomes"),
+        ("lionhub.serve.cli.orchestrate._notify", "logger", "lionagi.cli.orchestrate._notify"),
+        ("lionhub.serve.cli.orchestrate.flow", "logger", "lionagi.cli.orchestrate.flow"),
+        ("lionhub.serve.daemon.services._io", "_log", "lionagi.studio.services._io"),
+        ("lionhub.serve.daemon.services.launches", "_log", "lionagi.studio.services.launches"),
+        ("lionhub.serve.daemon.services.run_resume", "_log", "lionagi.studio.services.run_resume"),
+        ("lionhub.serve.daemon.services.schedules", "_log", "lionagi.studio.services.schedules"),
+        ("lionhub.serve.mcp.jobs", "_log", "lionagi.mcp.jobs"),
+        ("lionhub.serve.mirror", "_log", "lionagi.cli.mirror"),
+        ("lionhub.tools.coding", "logger", "lionagi.tools.coding"),
+        (
+            "lionhub.tools.communication.messenger",
+            "logger",
+            "lionagi.tools.communication.messenger",
+        ),
+        ("lionhub.tools.khive_injection", "logger", "lionagi.tools.khive_injection"),
     ],
 )
-def test_agent_and_tool_loggers_keep_their_original_names(module_name, logger_name):
+def test_moved_loggers_keep_their_original_names(module_name, logger_attr, logger_name):
     module = importlib.import_module(module_name)
-    assert module.logger.name == logger_name
+    assert getattr(module, logger_attr).name == logger_name
 
 
 @pytest.mark.parametrize("contract", CORE_MODULE_CONTRACTS, ids=_old_name)
@@ -1089,6 +1145,11 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
                             path == ROOT / "lionagi/protocols/action/gate.py"
                             and name == "lionagi.agent.gate"
                         )
+                        # The admin helpers were extracted into scheduler liveness.
+                        or (
+                            own == "lionhub.orchestration.scheduler.liveness"
+                            and name == "lionagi.studio.services.admin"
+                        )
                         or name.startswith("lionagi.studio.scheduler.")
                         or name == "lionagi.studio.scheduler"
                         or name.startswith("lionagi.studio.services.scheduler_state")
@@ -1191,6 +1252,11 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
     other_core = ROOT / "lionagi" / "protocols" / "action" / "tool.py"
     claimed = _old_references(other_core, 'logging.getLogger("lionagi.agent.hooks")')
     assert len(claimed) == 1, claimed
+    liveness = SOURCE_ROOTS[1] / "orchestration/scheduler/liveness.py"
+    admin = "lionagi.studio.services.admin"
+    assert _old_references(liveness, f"logging.getLogger({admin!r})") == []
+    assert _old_references(liveness, f"import {admin}")
+    assert _old_references(liveness.with_name("_probe.py"), f"logging.getLogger({admin!r})")
 
 
 # The core packages under lionagi/ that name a lionhub module: they hold a listed
