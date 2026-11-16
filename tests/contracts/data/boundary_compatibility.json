@@ -162,8 +162,9 @@
       "os.environ.get:SEAT_PROFILES_ENV"
     ],
     "lionhub/src/lionhub/serve/cli/agent.py": [
-      "os.environ.get:JOB_MARKER_ENV_VAR",
-      "os.environ.get:_API_ACCOUNT_ENV"
+      "os.environ.get:_API_ACCOUNT_ENV",
+      "os.environ.get:_MCP_JOB_RUN_ID_ENV_VAR",
+      "os.environ.get:_MCP_JOB_RUN_ID_ENV_VAR"
     ],
     "lionhub/src/lionhub/serve/cli/engine.py": [
       "os.getenv:\"LIONAGI_INVOCATION_ID\""

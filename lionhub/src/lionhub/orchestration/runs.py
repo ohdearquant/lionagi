@@ -57,6 +57,8 @@ __all__ = (
 _LEGACY_AGENTS_ROOT = LIONAGI_HOME / "logs" / "agents"
 _LAST_BRANCH_POINTER = LIONAGI_HOME / "last_branch.json"
 _RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
+_MCP_JOB_RUN_ID_ENV_VAR = "LIONAGI_MCP_JOB_RUN_ID"
+_MCP_FINAL_RESPONSE_FILENAME = "job-final-response.md"
 PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 # The terminal status a run decided and its store did not take, with the reason code and the time
 TERMINAL_WRITE_LOST_FIELD = "terminal_write_lost"
@@ -376,6 +378,10 @@ class RunDir:
         path = self.state_root / "notify-final-response.txt"
         _atomic_write_bytes(path, data)
         return path.absolute()
+
+    def _write_mcp_final_response(self, text: str) -> None:
+        """Atomically publish the original job's answer in a mode-0600 file."""
+        _atomic_write_bytes(self.state_root / _MCP_FINAL_RESPONSE_FILENAME, text.encode("utf-8"))
 
     @property
     def notify_stderr_path(self) -> Path:
@@ -2684,7 +2690,7 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
             _log.warning("session recovery database close did not complete: %s", close_error)
 
 
-def _resolved_run_state_dir(run_id: str) -> Path | None:
+def _resolved_run_state_dir(run_id: str, *, runs_root: Path | None = None) -> Path | None:
     """Resolve a single run ID only when it names its own direct child directory."""
     if (
         not isinstance(run_id, str)
@@ -2696,7 +2702,7 @@ def _resolved_run_state_dir(run_id: str) -> Path | None:
         or (os.altsep is not None and os.altsep in run_id)
     ):
         return None
-    root = RUNS_ROOT.resolve()
+    root = (RUNS_ROOT if runs_root is None else runs_root).resolve()
     path = root / run_id
     if path.resolve() != path:
         return None

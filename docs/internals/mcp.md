@@ -19,6 +19,14 @@ before the child starts (no polling to discover it). `status()` / `output()` /
 `kill()` / `list_jobs()` / `wait()` then operate on that id by reading the
 run state the CLI persists plus the MCP server's own small per-job record.
 
+`output()` reads the final reply of a known terminal agent job from
+`job-final-response.md` under its original submitted run directory. It checks
+the run directory and opens the fixed file without following symlinks. Captures
+are independent of notification delivery, and the run's terminal outcome is
+reported separately. The read serves the full UTF-8 reply up to 1 MiB. A larger
+capture returns its path with a null inline reply. On platforms without
+no-follow directory descriptors, both result fields are null.
+
 The detached child gets its own session/pgid (`start_new_session`), so it
 survives an MCP-server restart and can still be signalled as a group. That is why
 job state lives on disk rather than in server memory.
