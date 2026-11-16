@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[5]
+from ..._test_support_repo import lionagi_pyproject
+
+PYPROJECT = lionagi_pyproject(Path(__file__).resolve())
+assert PYPROJECT is not None, "CLI catalog tests require a LionAGI source checkout"
+ROOT = PYPROJECT.parent
 CORE = ROOT / "lionagi"
 CATALOG = ROOT / "lionhub" / "src" / "lionhub" / "serve" / "cli" / "catalog.py"
 
