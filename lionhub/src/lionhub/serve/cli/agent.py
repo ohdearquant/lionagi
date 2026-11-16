@@ -34,6 +34,7 @@ from lionagi.ln.concurrency import (
     cancelled_exc_classes,
     fail_after,
     run_async,
+    run_sync,
     sleep,
 )
 from lionagi.protocols.generic.log import DataLoggerConfig
@@ -67,6 +68,7 @@ from lionhub.orchestration.mcp_config import (
     resolve_spawn_mcp_servers,
 )
 from lionhub.orchestration.runs import (
+    _MCP_JOB_RUN_ID_ENV_VAR,
     SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
     TERMINAL_WRITE_LOST_FIELD,
     RunDir,
@@ -74,6 +76,7 @@ from lionhub.orchestration.runs import (
     _write_signal_persistence_degraded_at,
     _write_terminal_write_lost,
     allocate_run,
+    current_run_id,
     find_branch,
     load_last_branch,
     lost_terminal_write,
@@ -105,7 +108,6 @@ from lionhub.orchestration.spawn import (
     resolve_account_integrations,
     resolve_persisted_effort,
 )
-from lionhub.serve.mcp.config import JOB_MARKER_ENV_VAR
 
 from ._agent_depth import stamp_agent_depth
 from ._api_usage import APIUsageCollector
@@ -341,7 +343,7 @@ _KHIVE_INJECTION_COUNTERS = (
 
 def _apply_detached_execution_boundary(prompt: str) -> str:
     """Tell detached MCP legs which interactive wait channel they do not have."""
-    if not os.environ.get(JOB_MARKER_ENV_VAR):
+    if not os.environ.get(_MCP_JOB_RUN_ID_ENV_VAR):
         return prompt
     if prompt.startswith(_DETACHED_EXECUTION_BOUNDARY):
         return prompt
@@ -1781,13 +1783,15 @@ async def _run_agent(
     _parent_marker: Callable[[], None] | None = None,
     _lost_write_out: dict[str, Any] | None = None,
     _worker_spawn_continuation: object | None = None,
+    _job_result_run: RunDir | None = None,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
 
     session_id is None whenever live persistence never started. An auto-resumed leg runs in a
     run directory of its own while the job reads the first run's run.json, so the first run hands
     it *_parent_marker*, which records a signal persistence skip window on that run.json too, and
-    *_lost_write_out*, where the leg leaves a terminal write its store refused.
+    *_lost_write_out*, where the leg leaves a terminal write its store refused. *_job_result_run*
+    names the original MCP run directory where the last leg publishes its final reply.
     """
     async with AsyncExitStack() as _worker_spawn_bindings:
         _worker_spawn_bindings.enter_context(_bind_cli_worker_recorder(None))
@@ -2661,6 +2665,8 @@ async def _run_agent(
             preamble = build_deadline_preamble(timeout)
             prompt = preamble + prompt
 
+        inherited_run_id = current_run_id()
+        job_run_id = os.environ.get(_MCP_JOB_RUN_ID_ENV_VAR)
         run = allocate_run()
         if isinstance(run, RunDir):
             run = run.with_execution_provenance(
@@ -2668,6 +2674,10 @@ async def _run_agent(
                 mcp_resolution=mcp_resolution,
                 mcp_disabled=no_mcp_config,
             )
+            # Descendants inherit the job marker. Only the first leg also consumes
+            # the matching launch ID when it allocates the job's run directory.
+            if not _auto_resumed and inherited_run_id == job_run_id == run.run_id:
+                _job_result_run = run
         branch_id = str(branch.id)
         resolved_model_spec = _provenance.resolve_model_spec(provider, model)
         run_manifest = {
@@ -2773,8 +2783,12 @@ async def _run_agent(
             await _seed_injection_stats(live, _injection_totals)
 
         # A resumed branch can already contain an assistant reply from an earlier leg.
-        before_notify_leg = {message.id for message in branch.msgs.messages} if notify else set()
-        notify_final_response: str | None = None
+        before_leg = (
+            {message.id for message in branch.msgs.messages}
+            if notify or _job_result_run is not None
+            else set()
+        )
+        final_response: str | None = None
 
         # Session-scoped: teardown_agent_persist terminalizes only the session;
         # invocation records are finalized externally and would never fire. Deferred
@@ -2817,7 +2831,7 @@ async def _run_agent(
                 started_at=run_manifest["started_at"],
                 on_rejection=_notify_override_refused,
                 run=run,
-                final_response=lambda: notify_final_response,
+                final_response=lambda: final_response,
             )
 
         # Bind this run into the notify.on_terminal handler at registration time so
@@ -2885,7 +2899,7 @@ async def _run_agent(
                         terminal_status=_terminal_status,
                         reason_code=_reason_code,
                         occurred_at=time.time(),
-                        final_response=notify_final_response,
+                        final_response=final_response,
                     )
                 except Exception as _notify_exc:  # noqa: BLE001 — a notifier failure must never affect the run
                     log_error(f"direct-path notify.on_terminal delivery failed: {_notify_exc!r}")
@@ -3298,10 +3312,18 @@ async def _run_agent(
             # Shield teardown so iModel shutdown always runs (avoids leaked
             # rate-limit replenisher tasks that hang anyio.run forever).
             with CancelScope(shield=True):
-                if notify:
-                    replies = _new_assistant_replies(branch, before_notify_leg)
+                job_result_run = None if will_auto_resume else _job_result_run
+                if notify or job_result_run is not None:
+                    replies = _new_assistant_replies(branch, before_leg)
                     if replies:
-                        notify_final_response = replies[-1].response
+                        final_response = replies[-1].response
+                # Teardown can send the terminal notice while this process is live.
+                # Publish the answer before that notice can mark the job finished.
+                if job_result_run is not None and final_response and final_response.strip():
+                    try:
+                        await run_sync(job_result_run._write_mcp_final_response, final_response)
+                    except (OSError, UnicodeEncodeError):
+                        log_error("Could not write the final reply for the MCP job.")
                 # Engine session id, used by teardown to tell a genuine failure
                 # from a wrapper exception racing a still-live engine session. Only an
                 # id the CLI reported in this process: one restored from the saved
@@ -3552,6 +3574,7 @@ async def _run_agent(
                         else None
                     ),
                     _lost_write_out=_resumed_lost,
+                    _job_result_run=_job_result_run,
                 )
             finally:
                 # The marker's own write runs on a daemon thread that can fail or not finish, and this

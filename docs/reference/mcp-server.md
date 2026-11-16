@@ -178,7 +178,7 @@ python -c "from lionhub.serve.mcp import verbs as v; print(len(v.VERBS)); [print
 | `invoke.list` | Recent skill-level invocations, newest first. |
 | `job.kill` | Stop a background job by signalling the process group this server created. |
 | `job.list` | Recent background jobs, newest first, optionally filtered by status. |
-| `job.output` | Console tail and artifact list of a background run. |
+| `job.output` | Console tail, artifact list, and any captured final agent reply. |
 | `job.status` | Current state of a background run: liveness, job record, CLI manifest. |
 | `job.wait` | Observe runs until terminal or the window closes; partial results, never a bool. |
 | `lifecycle` | What the lifecycle store records about one run: whether every session it opened has ended, and with what outcome. |
@@ -321,6 +321,14 @@ The reply carries the allocated `run_id`. Poll it, or read what it wrote:
 ```json
 {"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
 ```
+
+For a finished `agent.submit` job, `final` contains the last assistant reply
+captured for the leg that ended the job. `final_path` points to the UTF-8 file
+holding the same text on the server. An automatic resume keeps the result under
+the original submitted run ID. If the file exceeds 1 MiB, `final` is null and
+`final_path` still points to the full reply. Both fields are null while the job
+is live or when a reply file is unavailable. The `tail_chars` argument only
+affects the console tail.
 
 To block instead of polling, use `job.wait`, which observes runs until they are
 terminal or the window closes and returns partial results rather than a bare

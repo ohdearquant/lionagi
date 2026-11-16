@@ -42,6 +42,7 @@ from lionagi.ln._proc import (
 from lionagi.ln.concurrency import current_time, sleep
 from lionagi.service._subagent_admission import refuse_nested_agent
 from lionhub.agent.khive_actor import MINTED_CHILD_ACTOR_ENV
+from lionhub.orchestration.runs import _MCP_FINAL_RESPONSE_FILENAME, _resolved_run_state_dir
 
 from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
@@ -2530,10 +2531,50 @@ _NO_RECORD_ERROR = {
 }
 
 
+_MAX_FINAL_RESPONSE_BYTES = 1_048_576
+
+
+def _read_final_response(run_id: str) -> tuple[str | None, str | None]:
+    """Read the dedicated result without following links or returning a partial reply."""
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        return None, None
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        run_dir = _resolved_run_state_dir(run_id, runs_root=config.RUNS_DIR)
+        if run_dir is None:
+            return None, None
+        with contextlib.ExitStack() as descriptors:
+            root_fd = os.open(run_dir.parent, directory_flags)
+            descriptors.callback(os.close, root_fd)
+            run_fd = os.open(run_dir.name, directory_flags, dir_fd=root_fd)
+            descriptors.callback(os.close, run_fd)
+            fd = os.open(_MCP_FINAL_RESPONSE_FILENAME, file_flags, dir_fd=run_fd)
+            descriptors.callback(os.close, fd)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None, None
+
+            chunks = []
+            remaining = _MAX_FINAL_RESPONSE_BYTES + 1
+            while remaining:
+                chunk = os.read(fd, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        path = str(run_dir / _MCP_FINAL_RESPONSE_FILENAME)
+        if not remaining:
+            return None, path
+        return b"".join(chunks).decode("utf-8"), path
+    except (OSError, RuntimeError, ValueError):
+        return None, None
+
+
 def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
-    """Terminal output of *run_id*: the console (an agent's final response prints
-    here) plus any persisted artifacts. ``record_state``/``artifacts_state``
-    distinguish "wrote none" from "listing failed", same as ``status()``.
+    """Read the console tail, artifact list and captured final agent reply.
+
+    ``final`` contains the entire reply when it fits. ``final_path`` also names
+    a larger reply's on-disk file, for which ``final`` is null.
     """
     job, record_state = _read_job_state(run_id)
     if job is None:
@@ -2545,6 +2586,11 @@ def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
         }
     st = status(run_id)
     artifacts, artifacts_state = _list_artifacts(run_id)
+    final, final_path = (
+        _read_final_response(run_id)
+        if st["terminal"] and job.get("kind") == "agent" and job.get("run_id") == run_id
+        else (None, None)
+    )
     return {
         "run_id": run_id,
         "known": True,
@@ -2556,6 +2602,8 @@ def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
         "console": _tail(job.get("log"), limit=tail_chars),
         "artifacts": artifacts,
         "artifacts_state": artifacts_state,
+        "final": final,
+        "final_path": final_path,
         "run_dir": str(config.run_dir(run_id)),
     }
 

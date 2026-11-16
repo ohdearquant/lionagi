@@ -602,6 +602,107 @@ async def test_auto_resume_real_teardown_no_terminal_guard_rejection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reply_state", ["fresh-reply", "empty-resume", "write-error"])
+async def test_mcp_job_output_uses_only_the_terminal_leg_reply(monkeypatch, tmp_path, reply_state):
+    from lionagi import Branch
+    from lionagi.protocols.messages import AssistantResponse
+    from lionhub.orchestration import runs
+    from lionhub.serve.cli import agent as agent_cli
+    from lionhub.serve.mcp import config, jobs
+    from lionhub.serve.mcp.dispatch import request
+
+    _wire_agent_stubs_real_persist(monkeypatch, tmp_path, operate_side_effect=lambda _: None)
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(runs, "RUNS_ROOT", config.RUNS_DIR)
+    monkeypatch.setattr(agent_cli, "allocate_run", runs.allocate_run)
+    monkeypatch.setattr(agent_cli, "find_branch", runs.find_branch)
+    monkeypatch.setattr(
+        jobs, "_run_process_liveness", lambda *_: jobs.ProcessLiveness(True, "alive", "pid_match")
+    )
+
+    run_id = jobs.new_run_id()
+    monkeypatch.setenv(config.RUN_ID_ENV_VAR, run_id)
+    monkeypatch.setenv(config.JOB_MARKER_ENV_VAR, run_id)
+    console = tmp_path / "console.log"
+    console.write_text("resuming\nformatted terminal summary\n", encoding="utf-8")
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running", "log": str(console)})
+    artifact = config.run_dir(run_id) / "job-final-response.md"
+    final = "  The resumed answer ✓.\nThe second line stays.\n"
+    leg_ids = []
+    terminal_deferred = []
+    if reply_state == "write-error":
+
+        def refuse_write(self, text):
+            raise OSError("synthetic artifact write failure")
+
+        monkeypatch.setattr(runs.RunDir, "_write_mcp_final_response", refuse_write)
+
+    async def job_output():
+        answer = await request(
+            ops=[{"op": "job.output", "args": {"run_id": run_id, "tail_chars": 8}}]
+        )
+        assert answer["status"] == "success", answer
+        return answer["ops"][0]["result"]
+
+    async def operate(branch, instruction=None, **kwargs):
+        snapshot = Path(kwargs["snapshot_dir"])
+        leg_ids.append(snapshot.parent.name)
+        if len(leg_ids) == 1:
+            await branch.msgs.a_add_message(assistant_response="Interim answer before timeout.")
+            snapshot.mkdir(parents=True, exist_ok=True)
+            (snapshot / f"{branch.id}.json").write_text(json.dumps(branch.to_dict()))
+            raise TimeoutError("start the resumed leg")
+
+        live = await job_output()
+        assert live["terminal"] is False and live["final"] is None and live["final_path"] is None
+        assert not artifact.exists()
+        assert branch.msgs.last_response.response == "Interim answer before timeout."
+        if reply_state == "empty-resume":
+            return ""
+        reply = await branch.msgs.a_add_message(assistant_response=final)
+        await branch.msgs.a_add_message(
+            assistant_response=AssistantResponse(
+                content={"assistant_response": "Clipped representation."},
+                metadata={"clipped_from": str(reply.id)},
+            )
+        )
+        return "formatted terminal summary"
+
+    real_teardown = agent_cli.teardown_agent_persist
+
+    async def observe_teardown(*args, **kwargs):
+        deferred = kwargs["defer_terminal"]
+        terminal_deferred.append(deferred)
+        if reply_state == "fresh-reply" and not deferred:
+            assert artifact.read_bytes() == final.encode("utf-8")
+        else:
+            assert not artifact.exists()
+        return await real_teardown(*args, **kwargs)
+
+    monkeypatch.setattr(agent_cli, "teardown_agent_persist", observe_teardown)
+    monkeypatch.setattr(Branch, "operate", operate)
+    _, _, _, status, _ = await agent_cli._run_agent(
+        "claude_code/sonnet",
+        "return a synthetic value",
+        timeout=30,
+        resume_on_timeout=True,
+        no_mcp_config=True,
+    )
+    assert terminal_deferred == [True, False]
+    assert len(leg_ids) == 2 and leg_ids[0] == run_id and leg_ids[1] != run_id
+    assert status == ("failed" if reply_state == "empty-resume" else "completed")
+
+    jobs.mark_terminal(run_id, status)
+    view = await job_output()
+    assert view["known"] and view["terminal"] and view["status"] == status
+    assert view["console"] == "summary\n"
+    assert view["final"] == (final if reply_state == "fresh-reply" else None)
+    assert view["final_path"] == (str(artifact) if reply_state == "fresh-reply" else None)
+    assert not (config.run_dir(leg_ids[1]) / artifact.name).exists()
+
+
+@pytest.mark.asyncio
 async def test_manual_resume_accumulates_persisted_injection_stats(
     monkeypatch,
     tmp_path,

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from lionagi._paths import LIONAGI_HOME, RUNS_ROOT
+from lionhub.orchestration.runs import _MCP_JOB_RUN_ID_ENV_VAR
 
 # Authoritative per-run state written by the CLI (run.json, branches, artifacts).
 RUNS_DIR = RUNS_ROOT
@@ -32,7 +33,7 @@ RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 # not RUN_ID_ENV_VAR, which the CLI consumes to pick a run directory and which
 # a descendant is free to rewrite for its own sub-run: a kill decision must not
 # rest on a variable another subsystem owns and can reassign.
-JOB_MARKER_ENV_VAR = "LIONAGI_MCP_JOB_RUN_ID"
+JOB_MARKER_ENV_VAR = _MCP_JOB_RUN_ID_ENV_VAR
 
 # Where a run writes the typed class of the exception that ended it, for the
 # terminal hook to lift into the job record (lionhub/src/lionhub/serve/mcp/_terminal_cause.py).
