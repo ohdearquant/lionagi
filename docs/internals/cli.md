@@ -1173,6 +1173,12 @@ a real degradation rate — see the printed note in `_dispatch_audit`.
 
 ## `agent.py` — `li agent` run dispatch
 
+The profile loader reads tool settings from leading YAML frontmatter. In a readable
+block later in the prompt, it refuses tool keys on mappings reached through YAML
+sequences and reports the declaration's original line. Mapping values remain prompt
+material. The final unclosed Markdown fence remains part of the prompt. A paired
+YAML block with a tool list in that fence emits one warning with its declaration line.
+
 **`_run_agent` role-key validation** — a declared profile `role:` key is validated up front,
 before the resume/new-branch split: a malformed profile must fail loudly on every invocation
 shape, not only when a new branch is composed. The value itself is only USED when composing a

@@ -410,17 +410,101 @@ def test_hyphenated_tool_setting_names_the_supported_spelling(prefix, line, spel
     [
         "A plain example:\nallowed_tools: [Example]",
         "A fenced example:\n```yaml\n---\nallowed_tools: [Example]\n---\n```\nEnd.",
-        "An unclosed fence:\n```yaml\n---\nallowed_tools: [Example]\n---\nEnd.",
-        "A nested list:\n---\n- - allowed_tools: [Example]\n---\nEnd.",
+        "An unclosed fence:\n```yaml\nallowed_tools: [Example]\nEnd.",
+        "A mapping value:\n---\ndescription:\n  - - allowed_tools: [Example]\n---\nEnd.",
         "A scalar example:\n---\ndescription: |\n  allowed_tools: [Example]\n---\nEnd.",
     ],
-    ids=["plain", "fenced", "unclosed-fence", "nested-list", "scalar"],
+    ids=["plain", "fenced", "unclosed-fence", "mapping-value", "scalar"],
 )
-def test_tool_examples_leave_valid_leading_settings_and_prompt_intact(body):
+def test_tool_examples_leave_valid_leading_settings_and_prompt_intact(body, monkeypatch):
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
     text = f"---\nallowed_tools: [Read]\n---\n{body}"
     profile = _parse_profile("reviewer", text)
     assert profile.extra == {"allowed_tools": ["Read"]}
     assert profile.raw_body == body
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    ("leading", "prompt", "line", "settings"),
+    [
+        ("", "Review.\n", 4, {}),
+        ("\n---\nallowed_tools: [Read]\n---\n", "Review.\n", 8, {"allowed_tools": ["Read"]}),
+        ("", "Review ---\n---\nPrompt.\n", 6, {}),
+    ],
+    ids=["prompt-only", "after-leading-settings", "prose-opener"],
+)
+@pytest.mark.parametrize(
+    ("opener", "incomplete_closer"),
+    [("```", ""), ("~~~", "```"), ("````", "```")],
+    ids=["unclosed", "other-fence", "short-closer"],
+)
+def test_final_unclosed_fence_with_tool_settings_warns_once(
+    monkeypatch, leading, prompt, line, settings, opener, incomplete_closer
+):
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    body = (
+        f"{prompt}{opener}yaml\n---\nallowed_tools: [Example]\n---\n"
+        f"{incomplete_closer}\n---\ndisallowed_tools: [Other]\n---\nEnd."
+    )
+
+    profile = _parse_profile("reviewer", leading + body)
+
+    assert profile.raw_body == body
+    assert profile.extra == settings
+    assert len(warnings) == 1
+    [warning] = warnings
+    assert f"tool settings on line {line} " in warning
+    assert "unclosed code fence" in warning
+    assert "leading frontmatter" in warning
+    assert "Example" not in warning and "Other" not in warning
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Example:\n~~~yaml\n---\ntools: [Example]\n---\n~~~",
+        "Example:\n```yaml\n---\ndescription: |\n  tools: [Example]\n---",
+        "Example:\n```yaml\n---\ntools: Use Read to open files.\n---",
+        "Example:\n```yaml\n---\ntools: [Example]",
+    ],
+    ids=["closed-tilde", "scalar-example", "prose", "unpaired-rule"],
+)
+def test_fence_without_a_paired_tool_declaration_stays_silent(body, monkeypatch):
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    assert _parse_profile("reviewer", body).raw_body == body
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    ("prefix", "first_content_line"),
+    [
+        ("Review.\n---\n", 3),
+        ("\n---\nallowed_tools: [Read]\n---\nReview.\n---\n", 7),
+        ("\nReview ---\n", 3),
+    ],
+    ids=["prompt-only", "after-leading-settings", "prose-opener"],
+)
+@pytest.mark.parametrize(
+    ("declaration", "key", "offset"),
+    [
+        ("- - allowed_tools: [Example]", "allowed_tools", 0),
+        ("- - - disallowed_tools: [Example]", "disallowed_tools", 0),
+        ("- &restrictions\n  - tools: [Example]\n- *restrictions", "tools", 1),
+    ],
+    ids=["two-levels", "three-levels", "shared-sequence"],
+)
+def test_misplaced_tool_settings_in_nested_sequences_are_refused(
+    prefix, first_content_line, declaration, key, offset
+):
+    text = f"{prefix}{declaration}\n---\nEnd."
+    with pytest.raises(
+        ConfigurationError, match=rf"{key} declaration on line {first_content_line + offset}\b"
+    ):
+        _parse_profile("reviewer", text)
 
 
 def test_tool_example_as_a_scalar_after_a_prose_opener_loads():
