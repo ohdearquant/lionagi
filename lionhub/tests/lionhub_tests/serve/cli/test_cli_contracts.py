@@ -118,6 +118,7 @@ AGENT_HELP_FLAGS = [
     "--mcp-submit-snapshot",
     "--no-mcp-config",
     "--notify",
+    "--notify-sender",
     "--preset",
     "--project",
     "--prompt",

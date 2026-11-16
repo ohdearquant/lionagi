@@ -429,6 +429,11 @@
             "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
             "x-flag": "--cwd"
           },
+          "notify_sender": {
+            "type": "string",
+            "description": "Include this sender label in the configured terminal notice.",
+            "x-flag": "--notify-sender"
+          },
           "timeout": {
             "type": "integer",
             "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
@@ -713,6 +718,11 @@
             "type": "string",
             "description": "Parent Studio invocation id. Defaults to LIONAGI_INVOCATION_ID; an explicit value takes precedence.",
             "x-flag": "--invocation"
+          },
+          "notify_sender": {
+            "type": "string",
+            "description": "Include this sender label in the configured terminal notice.",
+            "x-flag": "--notify-sender"
           },
           "no_persist": {
             "type": "boolean",
@@ -1434,6 +1444,11 @@
             "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
             "x-flag": "--cwd"
           },
+          "notify_sender": {
+            "type": "string",
+            "description": "Include this sender label in the configured terminal notice.",
+            "x-flag": "--notify-sender"
+          },
           "timeout": {
             "type": "integer",
             "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
@@ -1693,6 +1708,11 @@
             "type": "string",
             "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
             "x-flag": "--cwd"
+          },
+          "notify_sender": {
+            "type": "string",
+            "description": "Include this sender label in the configured terminal notice.",
+            "x-flag": "--notify-sender"
           },
           "timeout": {
             "type": "integer",

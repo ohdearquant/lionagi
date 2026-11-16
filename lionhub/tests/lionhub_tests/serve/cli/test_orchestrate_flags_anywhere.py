@@ -45,6 +45,38 @@ def _run_with_fanout_mock(argv: list[str]):
     return code, run_fanout
 
 
+@pytest.mark.parametrize(
+    ("command", "run_with_mock"),
+    [
+        ("flow", _run_with_flow_mock),
+        ("fanout", _run_with_fanout_mock),
+    ],
+    ids=["flow", "fanout"],
+)
+def test_orchestrate_sender_label_threads_into_run(command, run_with_mock):
+    code, run = run_with_mock(
+        ["o", command, "codex", "--notify-sender", "CI reviewer", "do the thing"]
+    )
+
+    assert code == 0
+    run.assert_awaited_once()
+    assert run.call_args.kwargs["prompt"] == "do the thing"
+    assert run.call_args.kwargs["notify_sender"] == "CI reviewer"
+
+
+@pytest.mark.parametrize("command", [("o", "flow"), ("play",)], ids=["flow", "play"])
+def test_sender_label_threads_into_flow_resume(command):
+    with patch.object(
+        orch_mod, "_resume_flow", AsyncMock(return_value=("resumed output", "completed"))
+    ) as resume_flow:
+        code = main([*command, "--resume", "abc123", "--notify-sender", "CI reviewer"])
+
+    assert code == 0
+    resume_flow.assert_awaited_once()
+    assert resume_flow.await_args.args == ("abc123",)
+    assert resume_flow.await_args.kwargs["notify_sender"] == "CI reviewer"
+
+
 class TestFlowFlagsAnywhere:
     def test_flags_before_prompt_previously_lost_it(self):
         """The exact reported regression: --dry-run before the prompt used to
@@ -177,6 +209,48 @@ class TestPlayFlagsAnywhere:
         code, run_flow = _run_with_flow_mock(["play", "hello", "--tabs", "9", "do a thing"])
         assert code == 0
         assert run_flow.call_args.kwargs["prompt"] == "Run 9. Task: do a thing"
+
+    @pytest.mark.parametrize(
+        ("argv", "prompt"),
+        [
+            pytest.param(
+                ["--notify-sender", "CI reviewer", "hello", "a thing"],
+                "Do a thing (routine, scheduled)",
+                id="notify-sender-before-name",
+            ),
+            pytest.param(
+                [
+                    "hello",
+                    "--notify-sender",
+                    "CI reviewer",
+                    "--sender",
+                    "release bot",
+                    "--label",
+                    "nightly",
+                    "a thing",
+                ],
+                "Do a thing (nightly, release bot)",
+                id="playbook-sender-and-label",
+            ),
+        ],
+    )
+    def test_sender_threads_into_playbook_run(self, tmp_path, monkeypatch, argv, prompt):
+        self._make_playbook(
+            tmp_path,
+            monkeypatch,
+            args={
+                "label": {"type": "str", "default": "routine"},
+                "sender": {"type": "str", "default": "scheduled"},
+            },
+            prompt="Do {input} ({label}, {sender})",
+        )
+        code, run_flow = _run_with_flow_mock(["play", *argv])
+
+        assert code == 0
+        run_flow.assert_awaited_once()
+        assert run_flow.call_args.kwargs["playbook_name"] == "hello"
+        assert run_flow.call_args.kwargs["prompt"] == prompt
+        assert run_flow.call_args.kwargs["notify_sender"] == "CI reviewer"
 
     def test_help_after_flags_reaches_playbook_help(self, tmp_path, monkeypatch, capsys):
         """--help alongside pre-NAME flags must print the playbook's own help,

@@ -424,6 +424,17 @@
           },
           {
             "option_strings": [
+              "--notify-sender"
+            ],
+            "dest": "notify_sender",
+            "required": false,
+            "nargs": null,
+            "default": null,
+            "choices": null,
+            "help": "Include this sender label in the configured terminal notice."
+          },
+          {
+            "option_strings": [
               "--timeout"
             ],
             "dest": "timeout",
@@ -855,6 +866,17 @@
             "default": null,
             "choices": null,
             "help": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory."
+          },
+          {
+            "option_strings": [
+              "--notify-sender"
+            ],
+            "dest": "notify_sender",
+            "required": false,
+            "nargs": null,
+            "default": null,
+            "choices": null,
+            "help": "Include this sender label in the configured terminal notice."
           },
           {
             "option_strings": [
@@ -1417,6 +1439,17 @@
           "default": null,
           "choices": null,
           "help": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory."
+        },
+        {
+          "option_strings": [
+            "--notify-sender"
+          ],
+          "dest": "notify_sender",
+          "required": false,
+          "nargs": null,
+          "default": null,
+          "choices": null,
+          "help": "Include this sender label in the configured terminal notice."
         },
         {
           "option_strings": [
@@ -2324,6 +2357,17 @@
                   "default": null,
                   "choices": null,
                   "help": "Parent Studio invocation id. Defaults to LIONAGI_INVOCATION_ID; an explicit value takes precedence."
+                },
+                {
+                  "option_strings": [
+                    "--notify-sender"
+                  ],
+                  "dest": "notify_sender",
+                  "required": false,
+                  "nargs": null,
+                  "default": null,
+                  "choices": null,
+                  "help": "Include this sender label in the configured terminal notice."
                 },
                 {
                   "option_strings": [
