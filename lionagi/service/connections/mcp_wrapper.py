@@ -49,6 +49,8 @@ _SENSITIVE_ENV_PATTERNS = frozenset(
         "REFRESH_TOKEN",
         "SECRET_KEY",
         "SERVICE_TOKEN",
+        # Every remote Studio's token variable (`li remote`).
+        "LIONAGI_REMOTE_",
     }
 )
 

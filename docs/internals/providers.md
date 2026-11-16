@@ -534,6 +534,32 @@ structure to walk, and it refuses (`TypeError`, not `ValueError` — pydantic
 quotes a `ValueError` verbatim into the validation error) when the raw
 input is immutable and can't be substituted in place.
 
+### What a CLI child's environment holds
+
+A CLI child hands its environment to every command it runs, so the spawn decides which
+credentials it gets. `ndjson_from_cli()` removes from it:
+
+- `LIONAGI_STUDIO_AUTH_TOKEN` and every `LIONAGI_REMOTE_*` variable, always;
+- every other variable whose name reads as a credential (a `TOKEN`, `SECRET`, `PASSWORD`,
+  `PASSWD`, `CREDENTIAL(S)`, `API_KEY`, `APIKEY`, `ACCESS_KEY`, `PRIVATE_KEY`, `DATABASE_URL`
+  or `AUTH` ending a `_`-separated part, a whole `PAT` part, or a name ending in `_KEY`), except
+  the names the provider reads its own login from (`auth_env`): Claude Code's
+  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, plus the AWS or
+  Google names when the run selects Bedrock or Vertex; Gemini's `GEMINI_API_KEY`,
+  `GOOGLE_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`; for Pi, the key variable of the run's
+  provider.
+
+Every name the [declared secret lookup](#declared-secret-lookup) declares is removed the same
+way whatever it is called, filled or inherited, so it reaches a child only when it is one of that
+child's login names. `SSH_AUTH_SOCK` is removed too, so a child cannot use the
+launcher's SSH agent.
+
+There is no setting that turns the removal off. Codex children keep the launcher's credential
+variables for now: codex reads a key from the variable its configured model provider's
+`env_key` names, and those names are spread over config layers this module does not resolve
+(#4563).
+Removed values are still given to the log redactor.
+
 ## CLI agent admission
 
 **`providers/_subagent_admission.py`** (design: ADR-0133)

@@ -188,19 +188,21 @@ def _check_studio_daemon(url: str | None = None, timeout: float = 1.5) -> dict[s
     import urllib.request
 
     from lionagi.ln._ssrf import open_url
-    from lionhub.orchestration.schedule.parsing import STUDIO_UNAUTHORIZED_HINT, with_studio_bearer
+    from lionhub.serve.cli.studio_client import studio_request, with_unauthorized_hint
 
     target = url or _STUDIO_READINESS_URL_DEFAULT
     try:
-        req = with_studio_bearer(urllib.request.Request(target, method="GET"))  # noqa: S310
+        req = studio_request(target)
         with open_url(req, timeout=timeout) as resp:
             if resp.status != 200:
                 return _result("warn", f"Studio daemon at {target} returned HTTP {resp.status}")
             body = resp.read()
     except urllib.error.HTTPError as exc:
-        if exc.code == 401:
-            return _result("warn", f"Studio daemon at {target}: {STUDIO_UNAUTHORIZED_HINT}")
-        return _unreachable(target, exc)
+        # The daemon answered, so it is reachable: report what it said.
+        return _result(
+            "warn",
+            with_unauthorized_hint(exc.code, f"Studio daemon at {target} returned HTTP {exc.code}"),
+        )
     except Exception as exc:  # noqa: BLE001 — connection refused, timeout, DNS, etc.
         return _unreachable(target, exc)
     return _readiness_verdict(target, body)

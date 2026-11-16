@@ -994,8 +994,23 @@ def test_help_for_a_spawn_verb_returns_a_fingerprint(submitted):
     answer = call(help="agent.submit")
     assert answer["schema_fingerprint"]
     assert answer["schema_fingerprint"] == call(help="agent.submit")["schema_fingerprint"]
-    assert "retry once" in answer["help_usage"]
-    assert "error.detail.schema_fingerprint" in answer["help_usage"]
+
+
+@pytest.mark.parametrize("verb", ["agent.submit", "flow.submit", "fanout.submit"])
+def test_help_for_every_spawn_verb_states_the_retry_rule(submitted, verb):
+    answer = call(help=verb)
+    assert answer["schema_fingerprint"]
+    assert answer["help_usage"] == dispatch._SPAWN_RETRY_RULE
+
+
+def test_help_without_the_argument_a_fingerprint_needs_says_to_pass_it(submitted):
+    """play.submit quotes no fingerprint without a playbook, so its help says how to get one."""
+    answer = call(help="play.submit")
+    assert "schema_fingerprint" not in answer
+    assert answer["schema_fingerprint_varies_with"] == ["playbook"]
+    assert answer["help_usage"] == (
+        dispatch._FINGERPRINT_NEEDS_ARGUMENT + dispatch._SPAWN_RETRY_RULE
+    )
 
 
 @pytest.mark.parametrize("verb", ["job.status", "job.wait", "job.kill", "server.info"])
@@ -1003,6 +1018,7 @@ def test_a_verb_that_is_not_a_spawn_neither_offers_nor_demands_one(verb):
     # The kill path is the deliberate exemption: a discovery round-trip in front
     # of stopping a runaway run is friction at the moment it is most expensive.
     assert "schema_fingerprint" not in call(help=verb)
+    assert "help_usage" not in call(help=verb)
     answer = call(ops=[{"op": verb, "args": {"run_id": "nope"} if verb != "server.info" else {}}])
     error = answer["ops"][0].get("error") or {}
     assert error.get("kind") != "stale_schema"
@@ -1014,8 +1030,14 @@ def test_a_spawn_op_without_a_fingerprint_is_refused_with_the_call_that_fixes_it
     assert first["ok"] is False
     error = first["error"]
     assert error["kind"] == "stale_schema"
-    assert error["detail"]["help"] == "agent.submit"
-    assert "error.detail.schema_fingerprint" in error["message"]
+    help_answer = call(help="agent.submit")
+    assert error["detail"] == {
+        "help": "agent.submit",
+        "schema_fingerprint": help_answer["schema_fingerprint"],
+    }
+    # The schema the retry rule tells the caller to check its arguments against.
+    assert error["schema"] == help_answer["schema"]
+    assert dispatch._SPAWN_RETRY_RULE in error["message"]
     assert submitted == {}
 
     retry = call(ops=[{**op, "schema_fingerprint": error["detail"]["schema_fingerprint"]}])
@@ -1035,8 +1057,40 @@ def test_a_stale_fingerprint_is_refused_and_says_it_is_the_schema_that_moved(sub
         ]
     )
     error = answer["ops"][0]["error"]
+    help_answer = call(help="agent.submit")
     assert error["kind"] == "stale_schema"
+    assert error["detail"]["schema_fingerprint"] == help_answer["schema_fingerprint"]
+    assert error["schema"] == help_answer["schema"]
+    # Both refusal branches state the same rule; the stale one used to drop its condition.
+    assert dispatch._SPAWN_RETRY_RULE in error["message"]
     assert "changed since that schema was read" in error["message"]
+    assert submitted == {}
+
+
+def test_a_refusal_points_at_an_earlier_error_of_another_kind_holding_the_schema(submitted):
+    fingerprint = call(help="agent.submit")["schema_fingerprint"]
+    bad_args = {
+        "op": "agent.submit",
+        "args": {"query": ["m"], "prompt": "work", "not_a_parameter": 1},
+        "schema_fingerprint": fingerprint,
+    }
+    missing = {"op": "agent.submit", "args": {"query": ["m"], "prompt": "work"}}
+    first, second = call(ops=[bad_args, missing])["ops"]
+    assert first["error"]["kind"] != "stale_schema"
+    assert first["error"]["schema"] == call(help="agent.submit")["schema"]
+    assert second["error"]["kind"] == "stale_schema"
+    assert "schema" not in second["error"]
+    assert second["error"]["schema_ref"] == {"op_index": 0, "schema_fingerprint": fingerprint}
+    assert submitted == {}
+
+
+def test_later_identical_refusals_point_at_the_first_copy_of_the_schema(submitted):
+    op = {"op": "agent.submit", "args": {"query": ["m"], "prompt": "work"}}
+    first, second = call(ops=[op, op])["ops"]
+    fingerprint = first["error"]["detail"]["schema_fingerprint"]
+    assert first["error"]["schema"] == call(help="agent.submit")["schema"]
+    assert "schema" not in second["error"]
+    assert second["error"]["schema_ref"] == {"op_index": 0, "schema_fingerprint": fingerprint}
     assert submitted == {}
 
 

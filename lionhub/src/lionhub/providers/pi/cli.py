@@ -274,13 +274,16 @@ class PiCodeRequest(BaseModel):
         "xai": "XAI_API_KEY",
     }
 
+    def auth_env_name(self) -> str:
+        """The variable Pi reads this run's provider key from."""
+        provider = self.provider or "google"
+        return self._PI_ENV_KEY_MAP.get(provider, f"{provider.upper()}_API_KEY")
+
     def env(self) -> dict[str, str] | None:
         """Environment overrides for the subprocess (API key injection)."""
         if not self.api_key:
             return None
-        provider = self.provider or "google"
-        key = self._PI_ENV_KEY_MAP.get(provider, f"{provider.upper()}_API_KEY")
-        return {key: self.api_key}
+        return {self.auth_env_name(): self.api_key}
 
     def _build_declarative_args(self) -> list[str]:
         return build_declarative_cli_args(self)
@@ -344,6 +347,7 @@ async def _ndjson_from_cli(request: PiCodeRequest):
             stdin=_INHERIT_STDIN,
             engine="pi",
             workload=request.workload,
+            auth_env=frozenset({request.auth_env_name()}),
         )
     ) as stream:
         async for obj in stream:

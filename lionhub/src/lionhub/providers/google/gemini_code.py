@@ -35,6 +35,7 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
+    GEMINI_AUTH_ENV,
     _resolve_cli_path,
     discover_cli,
     ndjson_from_cli,
@@ -560,7 +561,13 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
     # agy resolves relative --add-dir entries against process cwd (no '-C' flag).
     # Default stdin DEVNULL — print mode reads nothing from stdin.
     async with contextlib.aclosing(
-        ndjson_from_cli(cmd, cwd=workspace, engine="gemini", workload=request.workload)
+        ndjson_from_cli(
+            cmd,
+            cwd=workspace,
+            engine="gemini",
+            workload=request.workload,
+            auth_env=GEMINI_AUTH_ENV,
+        )
     ) as stream:
         async for obj in stream:
             yield obj
@@ -778,6 +785,24 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         handlers = kwargs.pop("gemini_handlers", None)
         super().__init__(config=config, **kwargs)
         self._init_handlers(handlers)
+
+    def prepare_run_request(
+        self, request_kwargs: dict[str, Any], *, stream_timeout: int | float | None
+    ) -> None:
+        if (
+            self._request_model is not GeminiCodeRequest
+            or request_kwargs.get("print_timeout") is not None
+            or self.config.kwargs.get("print_timeout") is not None
+        ):
+            return
+        if stream_timeout is not None:
+            request_kwargs["print_timeout"] = derive_print_timeout(stream_timeout)
+        else:
+            from lionagi.config import settings
+
+            request_kwargs["print_timeout"] = format_print_timeout(
+                settings.LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT
+            )
 
     @property
     def gemini_handlers(self):
