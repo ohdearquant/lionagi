@@ -118,8 +118,8 @@ nothing more. A caller without it gets 401 from every route except `/health`.
 - **No MCP servers**: the leg runs with `--no-mcp-config`, and the start-up check above refuses a
   host that configures any.
 - **The child sandbox** from the host's global `~/.lionagi/settings.yaml`, which must be enabled.
-  Its default read denials (credential files, `~/.secrets`, the Claude and Codex logins, khive's
-  home) apply to every leg; a repository's settings cannot relax them, and no profile exemption
+  Its default read denials (credential files, `~/.secrets`, the Claude and Codex logins, and the
+  other locations listed under `child_sandbox` in the CLI reference) apply to every leg; a repository's settings cannot relax them, and no profile exemption
   is accepted.
 
 ## What a leg host does not return
