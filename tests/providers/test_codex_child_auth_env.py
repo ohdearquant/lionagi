@@ -131,8 +131,27 @@ async def test_a_codex_home_the_secret_lookup_supplies_is_kept_and_its_config_re
     stub.chmod(0o755)
     monkeypatch.setattr(codex, "CODEX_CLI", str(stub))
 
-    request = codex.CodexCodeRequest(prompt="hi", repo=tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    request = codex.CodexCodeRequest(prompt="hi", repo=repo)
     async with contextlib.aclosing(codex._ndjson_from_cli(request)) as stream:
         lines = [obj async for obj in stream]
 
     assert lines == [{"seen": ["CODEX_HOME", "OPENROUTER_API_KEY"]}]
+
+
+def test_a_later_override_that_replaces_a_provider_drops_its_earlier_env_key(
+    codex_home: Path, tmp_path: Path
+) -> None:
+    plain = _plain(
+        tmp_path,
+        config_overrides={
+            "model_providers.lab.env_key": "OLD_LAB_TOKEN",
+            "model_providers.lab": {"name": "Lab", "env_key": "NEW_LAB_TOKEN"},
+        },
+    )
+
+    keep = codex._codex_auth_env(plain, os.environ)
+
+    assert "NEW_LAB_TOKEN" in keep
+    assert "OLD_LAB_TOKEN" not in keep

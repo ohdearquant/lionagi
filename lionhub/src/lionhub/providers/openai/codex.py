@@ -2963,16 +2963,9 @@ def _codex_auth_env(plain: _PlainRequest, env: Mapping[str, str]) -> frozenset[s
         # An unreadable config is codex's own refusal to make; this child keeps no key it names.
         config = {}
     names |= _provider_env_keys(config.get("model_providers"))
-    for key, value in plain.overrides:
-        path = str(key).strip(_TRIMMED).split(".")
-        if path[0] != "model_providers":
-            continue
-        if len(path) == 1:
-            names |= _provider_env_keys(value)
-        elif len(path) == 2:
-            names |= _provider_env_keys({path[1]: value})
-        elif len(path) == 3 and path[2] == "env_key" and isinstance(value, str):
-            names.add(value.strip().strip("\"'"))
+    # The overrides as codex's loader builds them, so a later override that replaces a
+    # provider table also drops the env_key the earlier one named.
+    names |= _provider_env_keys(_command_line_layer(plain).get("model_providers"))
     return frozenset(names)
 
 

@@ -1497,8 +1497,8 @@ async def ndjson_from_cli(
     # A child keeps its own provider's login and no other credential the launcher holds: the
     # commands it runs inherit what it holds. A name the secret lookup declares reaches the child
     # only when it is one of those login names, whatever it is called and whether it was filled
-    # or inherited; the lookup declares where a value comes from, not which child may hold it. ``auth_env=None`` is the one provider whose login names are
-    # not yet known here (see its call site).
+    # or inherited; the lookup declares where a value comes from, not which child may hold it.
+    # ``auth_env=None`` skips the removal; no provider passes it.
     if auth_env is not None:
         names = auth_env(spawn_env) if callable(auth_env) else auth_env
         withheld.update(_withhold_credentials(spawn_env, frozenset(names), declared))
