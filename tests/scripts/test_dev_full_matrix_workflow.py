@@ -114,15 +114,15 @@ def test_the_only_issue_writer_runs_after_scheduled_failure_on_the_workflow_sour
 def test_nightly_and_required_tests_share_setup_and_keep_timed_suite_steps():
     nightly = _workflow("dev-full-matrix.yml")["jobs"]["test"]
     required = _workflow("ci.yml")["jobs"]["test"]
-    for job, uses, options in [
-        (nightly, f"./.github/.workflow-source/{SETUP}", {"cache-prefix": "nightly-uv"}),
-        (required, f"./{SETUP}", {}),
+    for job, uses in [
+        (nightly, f"./.github/.workflow-source/{SETUP}"),
+        (required, f"./{SETUP}"),
     ]:
         setup = next(step for step in job["steps"] if step.get("uses") == uses)
         suite = next(
             step for step in job["steps"] if step.get("run") == "scripts/ci.sh test-python"
         )
-        assert setup["with"] == {"python-version": MATRIX_VERSION, **options}
+        assert setup["with"] == {"python-version": MATRIX_VERSION}
         assert job["runs-on"] == "ubuntu-24.04"
         assert job["steps"].index(setup) < job["steps"].index(suite)
         assert suite["timeout-minutes"] == 45
@@ -143,6 +143,28 @@ def test_nightly_and_required_tests_share_setup_and_keep_timed_suite_steps():
     )
     assert coverage["timeout-minutes"] == 60
     assert coverage["timeout-minutes"] < required["timeout-minutes"]
+
+
+def test_only_required_python_tests_use_the_uv_actions_cache():
+    action = yaml.safe_load((GITHUB / SETUP.removeprefix(".github/") / "action.yml").read_text())
+    nightly = _workflow("dev-full-matrix.yml")
+    nightly_steps = [step for job in nightly["jobs"].values() for step in job.get("steps", [])]
+    assert all(
+        not step.get("uses", "").startswith("actions/cache")
+        for step in [*action["runs"]["steps"], *nightly_steps]
+    )
+
+    steps = _workflow("ci.yml")["jobs"]["test"]["steps"]
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    [cache] = [step for step in steps if step.get("uses", "").startswith("actions/cache")]
+    setup = next(step for step in steps if step.get("uses") == f"./{SETUP}")
+    assert steps.index(checkout) < steps.index(cache) < steps.index(setup)
+    assert "if" not in cache
+    assert cache["with"] == {
+        "path": "~/.cache/uv",
+        "key": "uv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}",
+        "restore-keys": "uv-${{ runner.os }}-py${{ matrix.python-version }}-\n",
+    }
 
 
 def _postgres_setup_problems(workflows, action):
