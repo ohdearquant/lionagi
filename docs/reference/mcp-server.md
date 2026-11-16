@@ -22,15 +22,15 @@ server is registered. A verb's parameters are fetched by asking for them.
 
 ## Install and client registration
 
-The server needs the optional `mcp` extra:
+Use Python 3.10 or later and install the optional `mcp` extra.
 
 ```bash
-pip install 'lionagi[mcp]'
+pip install "lionagi[mcp]"
 ```
 
-Importing `lionhub.serve.mcp` does not pull that dependency. Only serving does, so a
-missing extra surfaces when you run `li mcp`, with a message naming the install
-command.
+You can import `lionhub.serve.mcp` without the extra. `li doctor` checks whether
+`fastmcp` is available, and `li mcp` gives the install command if the extra is
+missing.
 
 Register it with any MCP client, for example in an `.mcp.json`:
 
