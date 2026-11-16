@@ -15,6 +15,7 @@ import locale
 import logging
 import math
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -27,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 
 from lionagi import ln
 from lionagi.ln import coerce_created_at, now_utc, short_id
@@ -2079,6 +2081,59 @@ def _read_run_json_bounded(run_id: str) -> dict[str, Any] | None:
     return loaded
 
 
+_AGENT_JOB_ID = re.compile(r"[0-9]{8}T[0-9]{6}-[0-9a-f]{6}")
+_AGENT_JOB_PREFIX = re.compile(r"[0-9]{8}T")
+
+
+def _read_resume_record(run_dir: Path, name: str) -> dict[str, Any] | None:
+    with _open_exact_run_file(run_dir, name) as fd:
+        raw = _read_file_bounded(fd, _MAX_RUN_MANIFEST_BYTES)
+    if len(raw) > _MAX_RUN_MANIFEST_BYTES:
+        return None
+    record = json.loads(raw)
+    return record if isinstance(record, dict) else None
+
+
+def _job_resume_id(run_id: str, *, require_snapshot: bool = False) -> str | None:
+    """Return the branch assigned to an exact agent job in this server's home."""
+    if _AGENT_JOB_ID.fullmatch(run_id) is None:
+        return None
+    try:
+        job_dir = _resolved_run_state_dir(run_id, runs_root=config.JOBS_DIR)
+        if job_dir is None:
+            return None
+        job = _read_resume_record(job_dir, "job.json")
+        if job is None or job.get("run_id") != run_id or job.get("kind") != "agent":
+            return None
+        run_dir = _resolved_run_state_dir(run_id)
+        if run_dir is None:
+            return None
+        manifest = _read_resume_record(run_dir, "run.json")
+        if manifest is None or manifest.get("run_id") != run_id:
+            return None
+        branch_id = manifest.get("branch_id")
+        if not isinstance(branch_id, str) or str(UUID(branch_id)) != branch_id:
+            return None
+        if require_snapshot:
+            with _open_exact_run_file(run_dir, "branches", f"{branch_id}.json"):
+                pass
+        return branch_id
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _resolve_agent_resume_id(resume: str) -> str | None:
+    """Resolve a full job run ID. Let the CLI keep resolving legacy branch references."""
+    if _AGENT_JOB_PREFIX.match(resume) is None:
+        return None
+    if _AGENT_JOB_ID.fullmatch(resume) is None:
+        raise SubmitInputError("Use a full run ID to resume an agent job.")
+    branch_id = _job_resume_id(resume, require_snapshot=True)
+    if branch_id is not None:
+        return branch_id
+    raise SubmitInputError("That run does not have a saved agent branch in this server's home.")
+
+
 def _terminal_write_lost_record(value: Any) -> dict[str, Any] | None:
     """The ``terminal_write_lost`` record of a run.json, or None unless every field has its shape.
 
@@ -2471,6 +2526,7 @@ def status(run_id: str) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "kind": (job or {}).get("kind"),
+        **({"resume_id": _job_resume_id(run_id)} if job and job.get("kind") == "agent" else {}),
         "label": (job or {}).get("label"),
         "status": derived["status"],
         "terminal": derived["terminal"],
@@ -2531,38 +2587,50 @@ _NO_RECORD_ERROR = {
 _MAX_FINAL_RESPONSE_BYTES = 1_048_576
 
 
-def _read_final_response(run_id: str) -> tuple[str | None, str | None]:
-    """Read the dedicated result without following links or returning a partial reply."""
+@contextlib.contextmanager
+def _open_exact_run_file(run_dir: Path, *parts: str) -> Iterator[int]:
+    """Open a regular file under a resolved storage root without following links."""
     if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
-        return None, None
+        raise OSError("no-follow storage reads are unavailable")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    with contextlib.ExitStack() as descriptors:
+        directory_fd = os.open(run_dir.parent, directory_flags)
+        descriptors.callback(os.close, directory_fd)
+        for part in (run_dir.name, *parts[:-1]):
+            directory_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+            descriptors.callback(os.close, directory_fd)
+        fd = os.open(parts[-1], file_flags, dir_fd=directory_fd)
+        descriptors.callback(os.close, fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("storage entry is not a regular file")
+        yield fd
+
+
+def _read_file_bounded(fd: int, limit: int) -> bytes:
+    chunks = []
+    remaining = limit + 1
+    while remaining:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _read_final_response(run_id: str) -> tuple[str | None, str | None]:
+    """Read the dedicated result without following links or returning a partial reply."""
     try:
         run_dir = _resolved_run_state_dir(run_id)
         if run_dir is None:
             return None, None
-        with contextlib.ExitStack() as descriptors:
-            root_fd = os.open(run_dir.parent, directory_flags)
-            descriptors.callback(os.close, root_fd)
-            run_fd = os.open(run_dir.name, directory_flags, dir_fd=root_fd)
-            descriptors.callback(os.close, run_fd)
-            fd = os.open(_MCP_FINAL_RESPONSE_FILENAME, file_flags, dir_fd=run_fd)
-            descriptors.callback(os.close, fd)
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                return None, None
-
-            chunks = []
-            remaining = _MAX_FINAL_RESPONSE_BYTES + 1
-            while remaining:
-                chunk = os.read(fd, remaining)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
+        with _open_exact_run_file(run_dir, _MCP_FINAL_RESPONSE_FILENAME) as fd:
+            raw = _read_file_bounded(fd, _MAX_FINAL_RESPONSE_BYTES)
         path = str(run_dir / _MCP_FINAL_RESPONSE_FILENAME)
-        if not remaining:
+        if len(raw) > _MAX_FINAL_RESPONSE_BYTES:
             return None, path
-        return b"".join(chunks).decode("utf-8"), path
+        return raw.decode("utf-8"), path
     except (OSError, RuntimeError, ValueError):
         return None, None
 

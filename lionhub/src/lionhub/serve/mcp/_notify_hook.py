@@ -616,7 +616,11 @@ def deliver_terminal_notice(
                 if isinstance(artifact_root, str) and os.path.isabs(artifact_root)
                 else None
             ),
-            extensions=fields,
+            extensions=(
+                {**fields, "resume_id": jobs._job_resume_id(run_id)}
+                if job and job.get("kind") == "agent"
+                else fields
+            ),
         )
         return _deliver(
             _substitute(template, fields),

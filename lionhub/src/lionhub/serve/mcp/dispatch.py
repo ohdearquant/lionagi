@@ -93,6 +93,15 @@ def verb_schema(verb: Verb, *, playbook: str | None = None) -> dict[str, Any]:
             continue
         properties[name] = spec
     properties.update({name: dict(spec) for name, spec in verb.server_params.items()})
+    if verb.name == "agent.submit" and "resume" in properties:
+        resume = properties["resume"]
+        properties["resume"] = {
+            **resume,
+            "description": (
+                f"{resume['description']} A full run ID from an agent job in this "
+                "server's home is also accepted when its branch has been saved."
+            ),
+        }
 
     required = [name for name in schema.get("required", []) if name in properties]
     required += [name for name in verb.requires if name not in required]
@@ -867,9 +876,14 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             default_name = selected
     profile = _refuse_unknown_profile(args, cwd, default_name=default_name)
     write_capable = _write_capable(verb, args, profile)
-    flags = render_argv(schema, args)
     assert verb.job_kind is not None
+    resume_id = None
     try:
+        if verb.job_kind == "agent" and args.get("resume"):
+            resume_id = jobs._resolve_agent_resume_id(args["resume"])
+            if resume_id is not None:
+                args = {**args, "resume": resume_id}
+        flags = render_argv(schema, args)
         result = jobs.submit(
             verb.job_kind,
             flags,
@@ -901,6 +915,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
         # A submission this spawn refuses on its own terms (an exclusion it
         # cannot honour) is the caller's input to correct, not a server outage.
         raise OpError("invalid_input", str(exc)) from exc
+    if verb.job_kind == "agent":
+        result["resume_id"] = resume_id
     fingerprint = schema.get("x-playbook-fingerprint")
     if fingerprint is not None:
         result["playbook"] = schema.get("x-playbook")
