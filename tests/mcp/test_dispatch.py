@@ -994,6 +994,8 @@ def test_help_for_a_spawn_verb_returns_a_fingerprint(submitted):
     answer = call(help="agent.submit")
     assert answer["schema_fingerprint"]
     assert answer["schema_fingerprint"] == call(help="agent.submit")["schema_fingerprint"]
+    assert "retry once" in answer["help_usage"]
+    assert "error.detail.schema_fingerprint" in answer["help_usage"]
 
 
 @pytest.mark.parametrize("verb", ["job.status", "job.wait", "job.kill", "server.info"])
@@ -1007,12 +1009,19 @@ def test_a_verb_that_is_not_a_spawn_neither_offers_nor_demands_one(verb):
 
 
 def test_a_spawn_op_without_a_fingerprint_is_refused_with_the_call_that_fixes_it(submitted):
-    answer = call(ops=[{"op": "agent.submit", "args": {"query": ["m"]}}])
-    error = answer["ops"][0]["error"]
+    op = {"op": "agent.submit", "args": {"query": ["m"], "prompt": "work"}}
+    first = call(ops=[op])["ops"][0]
+    assert first["ok"] is False
+    error = first["error"]
     assert error["kind"] == "stale_schema"
     assert error["detail"]["help"] == "agent.submit"
-    assert error["detail"]["schema_fingerprint"] == call(help="agent.submit")["schema_fingerprint"]
+    assert "error.detail.schema_fingerprint" in error["message"]
     assert submitted == {}
+
+    retry = call(ops=[{**op, "schema_fingerprint": error["detail"]["schema_fingerprint"]}])
+    assert retry["ops"][0]["ok"] is True
+    assert retry["ops"][0]["result"]["run_id"] == "rid"
+    assert submitted["kind"] == "agent"
 
 
 def test_a_stale_fingerprint_is_refused_and_says_it_is_the_schema_that_moved(submitted):
