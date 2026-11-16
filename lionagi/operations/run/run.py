@@ -713,27 +713,9 @@ async def run(
         if isinstance(_timeout, int | float) and _timeout > 0:
             _stream_deadline = current_time() + float(_timeout)
 
-        request_model = getattr(endpoint, "_request_model", None)
-        if request_model is not None:
-            from lionhub.providers.google.gemini_code import (
-                GeminiCodeRequest,
-                derive_print_timeout,
-                format_print_timeout,
-            )
-
-            endpoint_kwargs = getattr(getattr(endpoint, "config", None), "kwargs", {})
-            if (
-                request_model is GeminiCodeRequest
-                and kw.get("print_timeout") is None
-                and endpoint_kwargs.get("print_timeout") is None
-            ):
-                if _stream_deadline is not None:
-                    kw["print_timeout"] = derive_print_timeout(_timeout)
-                else:
-                    from lionagi.config import settings as _app_settings  # noqa: PLC0415
-
-                    default_cap = _app_settings.LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT
-                    kw["print_timeout"] = format_print_timeout(default_cap)
+        prepare_request = getattr(endpoint, "prepare_run_request", None)
+        if callable(prepare_request):
+            prepare_request(kw, stream_timeout=_timeout if _stream_deadline is not None else None)
 
         # Explicit values always honored; absent values fall back to configured
         # defaults only for endpoints declaring streams_first_output_early. A
