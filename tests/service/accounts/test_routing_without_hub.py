@@ -8,7 +8,6 @@ def test_account_router_uses_adapter_evidence_without_lionhub(tmp_path):
     report = _run_blocked(
         """
 import asyncio
-import inspect
 from uuid import uuid4
 
 from pydantic import SecretStr
@@ -63,15 +62,19 @@ async def run():
         accounts=(AccountSpec("alpha", "ALPHA_KEY", 10**15),),
         revision=CURRENT_REVISION,
     )
-    # On the old signature this same request reaches the former hub import.
-    supplied = (
-        {"cache_evidence_for": cache_evidence_for}
-        if "cache_evidence_for" in inspect.signature(router.begin).parameters
-        else {}
-    )
+    scope = Scope("branch", uuid4(), "anthropic")
+    try:
+        positional = router.begin(
+            scope, request, [], {}, endpoint=None, request_kwargs={}, body_kwargs={},
+        )
+    except TypeError as exc:
+        assert "positional" in str(exc)
+    else:
+        positional.close()
+        raise AssertionError("AccountRouter.begin accepted a fourth positional argument")
     attempt = await router.begin(
-        Scope("branch", uuid4(), "anthropic"), request, [],
-        endpoint=None, request_kwargs={}, body_kwargs={}, **supplied,
+        scope, request, [],
+        endpoint=None, request_kwargs={}, body_kwargs={}, cache_evidence_for=cache_evidence_for,
     )
     seen["request_body"] = json.loads(attempt.body)
     await router.settle_response(

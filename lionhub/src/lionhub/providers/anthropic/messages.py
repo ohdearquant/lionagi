@@ -750,6 +750,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                 attempt_id=exc.attempt_id,
                 http_status=exc.http_status,
             ) from None
+
+        # Keep this import local because ._prompt_cache imports _is_blank_text from this module.
         from ._prompt_cache import routed_cache_evidence
 
         router = get_router()
@@ -1079,6 +1081,8 @@ class AnthropicMessagesEndpoint(Endpoint):
             url=url,
             method=method,
         )
+
+        # Keep this import local because ._prompt_cache imports _is_blank_text from this module.
         from ._prompt_cache import routed_cache_evidence
 
         router = get_router()
