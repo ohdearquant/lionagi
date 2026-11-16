@@ -1776,6 +1776,7 @@ async def _run_agent(
     idle_timeout: int | None = None,
     workload: str | None = None,
     *,
+    notify_sender: str | None = None,
     mcp_submit_snapshot: str | None = None,
     _parent_marker: Callable[[], None] | None = None,
     _lost_write_out: dict[str, Any] | None = None,
@@ -2695,7 +2696,9 @@ async def _run_agent(
             agent_defaults=profile.artifact_defaults if profile else None,
         )
         from lionagi.state.compat import StateCompatibilityRefused
+        from lionhub.serve.cli.orchestrate._notify import notice_context_for_run
 
+        notice_context = notice_context_for_run(run, cwd=cwd, sender=notify_sender)
         try:
             live = await setup_agent_persist(
                 branch,
@@ -2826,6 +2829,7 @@ async def _run_agent(
                 entity_kind="session",
                 entity_id=_notify_session_id,
                 project_dir=cwd,
+                notice_context=notice_context,
             )
 
         _terminal_status = "completed"
@@ -3525,6 +3529,7 @@ async def _run_agent(
                     idle_timeout=idle_timeout,
                     workload=workload,
                     notify=notify,
+                    notify_sender=notify_sender,
                     mcp_config=mcp_config,
                     no_mcp_config=no_mcp_config,
                     **(
@@ -3902,6 +3907,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 context_from=getattr(args, "context_from", None),
                 context_budget=getattr(args, "context_budget", None),
                 notify=getattr(args, "notify", None),
+                notify_sender=getattr(args, "sender", None),
                 images=image_uris,
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),

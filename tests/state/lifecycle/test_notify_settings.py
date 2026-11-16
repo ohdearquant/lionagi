@@ -1831,8 +1831,17 @@ def test_python_adapter_resolves_the_real_handler_through_the_shared_importer(
     )
 
     assert handler is sys.modules[target].on_terminal
-    marker = object()
-    assert handler(marker) is marker
+    envelope = _envelope()
+    delivered = handler(envelope)
+    assert delivered is envelope
+    assert json.dumps(delivered.to_dict()).encode() == (
+        b'{"schema": "lionagi.run-terminal", "schema_version": 1, "event_id": "ev-1", '
+        b'"durable": true, "entity": {"kind": "invocation", "id": "inv-1"}, '
+        b'"previous_status": "running", "terminal_status": "completed", '
+        b'"reason_code": "run.completed.ok", "occurred_at": 0.0, '
+        b'"correlation": {"invocation_id": null, "session_id": null, '
+        b'"schedule_run_id": null, "run_id": null}, "artifacts": []}'
+    )
     assert reasons == []
     assert bound_importer is import_module
     assert [call[0] for call in calls] == [target]

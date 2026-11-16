@@ -520,6 +520,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 project=getattr(args, "project", None),
                 pack=getattr(args, "pack", None),
                 notify=getattr(args, "notify", None),
+                notify_sender=getattr(args, "sender", None),
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),
                 **(
@@ -550,6 +551,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     dry_run=args.dry_run,
                     show_graph=getattr(args, "show_graph", False),
                     notify=getattr(args, "notify", None),
+                    notify_sender=getattr(args, "sender", None),
                 ),
                 verbose=args.verbose,
                 extra_handlers=((FlowResumeError, EXIT_CODE_BY_STATUS["failed"]),),
@@ -770,6 +772,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 project=getattr(args, "project", None),
                 pack=getattr(args, "pack", None),
                 notify=getattr(args, "notify", None),
+                notify_sender=getattr(args, "sender", None),
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),
                 **(

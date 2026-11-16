@@ -557,6 +557,11 @@ def add_common_cli_args(
         ),
     )
     parser.add_argument(
+        "--sender",
+        metavar="LABEL",
+        help="Include this sender label in the configured terminal notice.",
+    )
+    parser.add_argument(
         "--timeout",
         metavar="SECONDS",
         type=int,

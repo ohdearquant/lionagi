@@ -172,6 +172,11 @@ def add_engine_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     run_parser.add_argument(
+        "--sender",
+        metavar="LABEL",
+        help="Include this sender label in the configured terminal notice.",
+    )
+    run_parser.add_argument(
         "--no-persist",
         action="store_true",
         help="Skip writing the engine run record to StateDB.",
@@ -247,6 +252,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
     run_id = uuid.uuid4().hex
     started_at = time.time()
     invocation_id = getattr(args, "invocation_id", None)
+    notify_sender = getattr(args, "sender", None)
 
     db = None
     # engine_runs.session_id carries the user's --session-id; signal_session_id
@@ -368,6 +374,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
                 reason_code="import_failure",
             ),
             signal_session_id=signal_session_id,
+            notify_sender=notify_sender,
             _worker_spawn_owner=worker_spawn_owner,
         )
         return 1
@@ -428,6 +435,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
                 reason_code="exception",
             ),
             signal_session_id=signal_session_id,
+            notify_sender=notify_sender,
             _worker_spawn_owner=worker_spawn_owner,
         )
         return 1
@@ -449,6 +457,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
                 reason_code="cancelled",
             ),
             signal_session_id=signal_session_id,
+            notify_sender=notify_sender,
             _worker_spawn_owner=worker_spawn_owner,
         )
         raise
@@ -531,6 +540,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
             agent_failure=_total_agent_failure,
         ),
         signal_session_id=signal_session_id,
+        notify_sender=notify_sender,
         _worker_spawn_owner=worker_spawn_owner,
     )
     # A run where every agent terminally errored is a failure: exit non-zero so
@@ -548,6 +558,7 @@ async def _finish_engine_run(
     error: str | None = None,
     outcome: dict[str, Any] | None = None,
     signal_session_id: str | None = None,
+    notify_sender: str | None = None,
     _worker_spawn_owner: _WorkerSpawnOwner | None = None,
 ) -> None:
     """Drain ownership before final writes, preserving cancellation after close."""
@@ -580,6 +591,7 @@ async def _finish_engine_run(
         error=error,
         outcome=outcome,
         signal_session_id=signal_session_id,
+        notify_sender=notify_sender,
     )
     if db is not None:
         await db.close()
@@ -597,6 +609,7 @@ async def _maybe_update_db(
     error: str | None = None,
     outcome: dict[str, Any] | None = None,
     signal_session_id: str | None = None,
+    notify_sender: str | None = None,
 ) -> None:
     """Update the engine run row if a DB handle is open; swallow errors."""
     if db is None:
@@ -621,6 +634,18 @@ async def _maybe_update_db(
     # Mirror terminal status to the sessions row so Studio's SSE generator
     # knows the stream is done (same done-detection logic as agent/flow runs).
     if signal_session_id is not None and status in ("completed", "failed", "cancelled"):
+        from lionagi.state.lifecycle.notify_settings import (
+            TerminalNoticeContext,
+            bind_terminal_notice_context,
+        )
+
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            cwd = None
+        notice_context = TerminalNoticeContext(
+            run_id=run_id, sender=notify_sender, cwd=cwd, output_dir=export_dir
+        )
         _session_status = "completed" if status == "completed" else status
         try:
             from lionagi.state.reasons import RunReasons
@@ -632,13 +657,14 @@ async def _maybe_update_db(
                 if status == "failed"
                 else RunReasons.CANCELLED_SYSTEM
             )
-            await db.update_status(
-                "session",
-                signal_session_id,
-                new_status=_session_status,
-                reason_code=_reason,
-                extra_fields={"ended_at": ended_at or time.time(), "current_phase": None},
-            )
+            with bind_terminal_notice_context("session", signal_session_id, notice_context):
+                await db.update_status(
+                    "session",
+                    signal_session_id,
+                    new_status=_session_status,
+                    reason_code=_reason,
+                    extra_fields={"ended_at": ended_at or time.time(), "current_phase": None},
+                )
         except Exception as exc:  # noqa: BLE001
             warn(f"could not update engine session status in StateDB: {exc}")
 

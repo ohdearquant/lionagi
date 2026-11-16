@@ -109,6 +109,11 @@
         "type": "string",
         "x-flag": "--save"
       },
+      "sender": {
+        "description": "Include this sender label in the configured terminal notice.",
+        "type": "string",
+        "x-flag": "--sender"
+      },
       "synthesis_prompt": {
         "description": "What the merged answer should be \u2014 a ranked list, a decision, a single patch. Implies synthesis.",
         "type": "string",

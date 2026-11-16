@@ -355,6 +355,33 @@ def test_a_flag_a_detached_run_cannot_honour_is_refused_with_its_reason(submitte
     assert "job.output" in answer["ops"][0]["error"]["message"]
 
 
+@pytest.mark.parametrize("verb", ["agent.submit", "flow.submit", "fanout.submit", "play.submit"])
+def test_detached_submit_keeps_sender_attestation_server_owned(verb, a_playbook, submitted):
+    sender = "agent:reviewer"
+    if verb == "play.submit":
+        help_target = {"verb": verb, "playbook": a_playbook}
+        args = {"playbook": a_playbook, "notify_sender": sender}
+    else:
+        help_target = verb
+        args = {"query": ["m", "do it"], "notify_sender": sender}
+    help_reply = call(help=help_target)
+    properties = help_reply["schema"]["properties"]
+    assert "sender" not in properties
+    assert properties["notify_sender"]["x-server-owned"] is True
+
+    op = {"op": verb, "schema_fingerprint": help_reply["schema_fingerprint"]}
+    refused = call(ops=[{**op, "args": {**args, "sender": "local reviewer"}}])["ops"][0]
+    assert refused["ok"] is False
+    assert refused["error"]["kind"] == "invalid_input"
+    assert "notify_sender" in refused["error"]["message"]
+    assert submitted == {}
+
+    accepted = call(ops=[{**op, "args": args}])["ops"][0]
+    assert accepted["ok"] is True, accepted
+    assert submitted["notify_sender"] == sender
+    assert not any(flag.split("=", 1)[0] == "--sender" for flag in submitted["flags"])
+
+
 def test_a_missing_required_parameter_names_itself(submitted):
     # No fingerprint is sent, deliberately: for a verb that requires a playbook and
     # was given none, the missing playbook is the error the caller can act on, and

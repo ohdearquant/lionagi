@@ -48,6 +48,21 @@ def test_agent_notify_flag_defaults_to_none_when_absent():
     assert _CAPTURED["agent"]["notify"] is None
 
 
+@pytest.mark.parametrize(
+    ("sender_args", "expected_sender"),
+    [
+        pytest.param(["--sender", "CI reviewer"], "CI reviewer", id="explicit"),
+        pytest.param([], None, id="omitted"),
+    ],
+)
+def test_agent_sender_label_threads_into_run_agent(sender_args, expected_sender):
+    rc = _run(["agent", "claude", *sender_args, "do the thing"])
+
+    assert rc == 0
+    assert _CAPTURED["agent"]["prompt"] == "do the thing"
+    assert _CAPTURED["agent"].get("notify_sender") == expected_sender
+
+
 @pytest.mark.asyncio
 async def test_notify_scope_is_session_even_with_invocation_id(monkeypatch, tmp_path):
     """Notification remains session-scoped when `--invocation` is set."""

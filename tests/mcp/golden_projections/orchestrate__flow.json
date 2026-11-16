@@ -165,6 +165,11 @@
         "type": "string",
         "x-flag": "--save"
       },
+      "sender": {
+        "description": "Include this sender label in the configured terminal notice.",
+        "type": "string",
+        "x-flag": "--sender"
+      },
       "show_graph": {
         "default": false,
         "description": "Render DAG as matplotlib visualization. With `save`, saves PNG to save dir.",

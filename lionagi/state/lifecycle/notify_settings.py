@@ -13,7 +13,9 @@ import logging
 import os
 import re
 import shlex
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -597,8 +599,86 @@ ArgvBuilder = Callable[[tuple[str, ...], RunTerminalEnvelope], Sequence[str]]
 EnvBuilder = Callable[[RunTerminalEnvelope], Mapping[str, str]]
 
 
+@dataclass(frozen=True)
+class TerminalNoticeContext:
+    """Optional run facts supplied by the execution surface."""
+
+    run_id: str | None = None
+    label: str | None = None
+    sender: str | None = None
+    cwd: str | None = None
+    output_dir: str | None = None
+
+    def payload(self, envelope: RunTerminalEnvelope) -> dict[str, Any]:
+        output_dir = self.output_dir or next(
+            (
+                artifact["location"]
+                for artifact in envelope.artifacts
+                if artifact.get("kind") in {"run_dir", "artifact_root"}
+                and isinstance(artifact.get("location"), str)
+            ),
+            None,
+        )
+        return build_terminal_notice_payload(
+            run_id=self.run_id or envelope.correlation.run_id,
+            status=envelope.terminal_status,
+            reason_code=envelope.reason_code,
+            label=self.label,
+            sender=self.sender,
+            cwd=self.cwd,
+            output_dir=output_dir,
+            extensions=envelope.to_dict(),
+        )
+
+
+def build_terminal_notice_payload(
+    *,
+    status: str,
+    run_id: str | None = None,
+    reason_code: str | None = None,
+    label: str | None = None,
+    sender: str | None = None,
+    cwd: str | None = None,
+    output_dir: str | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the common executable-notifier fields and retain existing extension fields."""
+    payload = dict(extensions or {})
+    payload.update(
+        schema_version=1,
+        run_id=run_id,
+        status=status,
+        reason_code=reason_code,
+        label=label,
+        sender=sender,
+        cwd=cwd,
+        output_dir=output_dir,
+    )
+    return payload
+
+
+_notice_scope: ContextVar[tuple[str, str, TerminalNoticeContext] | None] = ContextVar(
+    "terminal_notice_scope", default=None
+)
+
+
+@contextmanager
+def bind_terminal_notice_context(
+    entity_kind: str, entity_id: str, context: TerminalNoticeContext
+) -> Iterator[None]:
+    """Supply exec payload context for one entity without changing handler selection."""
+    token = _notice_scope.set((entity_kind, entity_id, context))
+    try:
+        yield
+    finally:
+        _notice_scope.reset(token)
+
+
 def _default_payload(envelope: RunTerminalEnvelope) -> dict[str, Any]:
-    return envelope.to_dict()
+    scope = _notice_scope.get()
+    if scope is not None and (envelope.entity.kind, envelope.entity.id) == scope[:2]:
+        return scope[2].payload(envelope)
+    return TerminalNoticeContext().payload(envelope)
 
 
 def _noop_outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
@@ -869,10 +949,12 @@ def register_run_notify_outcome_scope(
     entity_id: str,
     registry: TerminalCallbackRegistry = DEFAULT_TERMINAL_CALLBACKS,
     project_dir: str | None = None,
+    notice_context: TerminalNoticeContext | None = None,
 ) -> str | None:
-    """Bind the settings-driven notify.on_terminal exec adapter's outcome to
-    *run*, scoped to this run's own terminal entity. An override registration,
-    so it takes over dispatch for this entity from the process-wide default.
+    """Bind a settings notifier to one terminal entity and record the outcome on *run*.
+
+    The scoped registration takes over dispatch for that entity from the
+    process-wide default.
     Returns the registration name (pass to
     ``unregister_run_notify_outcome_scope`` in a ``finally`` block), or
     ``None`` if disabled or filtered out (never raises); a notifier this run
@@ -900,7 +982,12 @@ def register_run_notify_outcome_scope(
     def _build_failure(reason: str) -> None:
         record_notify_rejection_to_run(run, reason)
 
-    handler = build_handler(resolved, outcome_fn=_outcome_fn, on_build_failure=_build_failure)
+    handler = build_handler(
+        resolved,
+        payload_fn=notice_context.payload if notice_context is not None else _default_payload,
+        outcome_fn=_outcome_fn,
+        on_build_failure=_build_failure,
+    )
     if handler is None:
         return None
     name = f"notify.settings.on_terminal.{entity_kind}.{entity_id}"

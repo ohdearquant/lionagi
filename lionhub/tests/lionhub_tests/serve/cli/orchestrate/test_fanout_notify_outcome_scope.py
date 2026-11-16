@@ -16,6 +16,7 @@ import yaml
 
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+from lionagi.state.reasons import RunReasons
 from lionhub.serve.cli.orchestrate import fanout as fanout_module
 
 from .test_fanout_artifacts import _fanout_env
@@ -56,7 +57,11 @@ def _write_project_settings(project_dir: Path, argv: list[str]) -> None:
 
 
 async def _run_settings_only_fanout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, notify: str | None = None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    notify: str | None = None,
+    notify_sender: str | None = None,
 ):
     """Fan-out with a settings-configured exec adapter and no `--notify`,
     short-circuited to an empty plan so only the terminal path runs."""
@@ -77,6 +82,7 @@ async def _run_settings_only_fanout(
             "prompt",
             cwd=str(repo_dir),
             notify=notify,
+            notify_sender=notify_sender,
         )
     finally:
         DEFAULT_TERMINAL_CALLBACKS.unregister("notify.settings.on_terminal")
@@ -88,11 +94,24 @@ async def test_settings_only_fanout_records_adapter_outcome_against_its_run(
 ):
     """The adapter fires and its exec outcome lands in this run's own
     notify_outcome.json — the run-bound scope is what attributes it."""
-    _env, run, out_file, status = await _run_settings_only_fanout(tmp_path, monkeypatch)
+    env, run, out_file, status = await _run_settings_only_fanout(
+        tmp_path, monkeypatch, notify_sender="Review desk"
+    )
 
     assert status == "completed"
     payload = json.loads(out_file.read_text())
-    assert payload["entity"]["kind"] == "session"
+    assert payload["entity"] == {"kind": "session", "id": str(env.session.id)}
+    expected = {
+        "schema_version": 1,
+        "run_id": run.run_id,
+        "status": "completed",
+        "reason_code": RunReasons.COMPLETED_OK,
+        "label": None,
+        "sender": "Review desk",
+        "cwd": str(tmp_path / "repo"),
+        "output_dir": str(run.artifact_root),
+    }
+    assert {field: payload[field] for field in expected} == expected
     assert run.notify_outcome_path.exists(), "adapter outcome was not attributed to the run"
     outcome = json.loads(run.notify_outcome_path.read_text())
     assert outcome["ok"] is True

@@ -148,6 +148,11 @@
         "type": "boolean",
         "x-flag": "--resume-on-timeout"
       },
+      "sender": {
+        "description": "Include this sender label in the configured terminal notice.",
+        "type": "string",
+        "x-flag": "--sender"
+      },
       "theme": {
         "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
         "enum": [

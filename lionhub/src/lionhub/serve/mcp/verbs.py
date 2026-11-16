@@ -199,6 +199,7 @@ _SPAWN_REFUSALS: Mapping[str, str] = {
     "theme": "colours terminal output; a detached run writes to a plain log file",
     "prompt_flag": "use the prompt parameter, which is snapshotted at submit time",
     "notify": "the server wires the terminal hook; use notify_command and notify_seat",
+    "sender": "use notify_sender to supply an attested sender",
 }
 
 _PURGE_SWEEP_REFUSALS: Mapping[str, str] = {

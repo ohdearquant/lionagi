@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import traceback
 import uuid
@@ -25,6 +26,7 @@ from lionagi.state.lifecycle.callbacks import (
     TerminalCallbackRegistry,
 )
 from lionagi.state.lifecycle.notify_settings import (
+    TerminalNoticeContext,
     build_handler,
     record_notify_outcome_to_run,
     record_notify_rejection_to_run,
@@ -51,6 +53,17 @@ _STATUS_ENV = "LIONAGI_NOTIFY_STATUS"
 _INVOCATION_ID_ENV = "LIONAGI_NOTIFY_INVOCATION_ID"
 _ARG_PLACEHOLDER = re.compile(r"\{(?:payload|status|invocation_id)\}")
 _FINAL_RESPONSE_MAX_BYTES = 4096
+
+
+def notice_context_for_run(
+    run: RunDir, *, cwd: str | None, sender: str | None
+) -> TerminalNoticeContext:
+    return TerminalNoticeContext(
+        run_id=run.run_id,
+        sender=sender,
+        cwd=os.path.abspath(os.path.expanduser(cwd or os.getcwd())),
+        output_dir=str(run.artifact_root),
+    )
 
 
 def _legacy_payload_builder(
