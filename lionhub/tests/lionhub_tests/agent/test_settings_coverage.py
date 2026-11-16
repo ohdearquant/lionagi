@@ -20,29 +20,29 @@ from lionhub.agent.spec import AgentSpec
 
 
 def test_import_hook_no_colon_returns_none():
-    result = _import_hook("lionagi.agent.hooks", trusted_hook_modules={"lionagi.agent.hooks"})
+    result = _import_hook("lionhub.agent.hooks", trusted_hook_modules={"lionhub.agent.hooks"})
     assert result is None
 
 
 def test_import_hook_untrusted_module_raises():
     with pytest.raises(PermissionError, match="Untrusted hook module"):
-        _import_hook("evil.module:function", trusted_hook_modules={"lionagi.agent.hooks"})
+        _import_hook("evil.module:function", trusted_hook_modules={"lionhub.agent.hooks"})
 
 
 def test_import_hook_trusted_module_import_error_returns_none():
     result = _import_hook(
         "lionhub.agent.hooks:nonexistent_function_xyz_abc",
-        trusted_hook_modules={"lionagi.agent.hooks"},
+        trusted_hook_modules={"lionhub.agent.hooks"},
     )
     assert result is None
 
 
-def test_import_hook_trusted_module_returns_callable():
+def test_current_hook_spec_resolves_with_legacy_trust():
     result = _import_hook(
         "lionhub.agent.hooks:guard_destructive",
         trusted_hook_modules={"lionagi.agent.hooks"},
     )
-    assert callable(result)
+    assert result is guard_destructive
 
 
 def test_import_hook_warns_and_skips_nonexistent_trusted_module(caplog):
@@ -92,7 +92,7 @@ def test_resolve_hook_spec_string_shorthand_trusted():
         "lionhub.agent.hooks:guard_destructive",
         phase="pre",
         tool_name="bash",
-        trusted_hook_modules={"lionagi.agent.hooks"},
+        trusted_hook_modules={"lionhub.agent.hooks"},
     )
     assert callable(result)
 
@@ -102,7 +102,7 @@ def test_resolve_hook_spec_unknown_dict_returns_none():
         {"unknown_key": "value"},
         phase="pre",
         tool_name="bash",
-        trusted_hook_modules={"lionagi.agent.hooks"},
+        trusted_hook_modules={"lionhub.agent.hooks"},
     )
     assert result is None
 
@@ -112,7 +112,7 @@ def test_resolve_hook_spec_dict_python_returns_callable():
         {"python": "lionhub.agent.hooks:guard_destructive"},
         phase="pre",
         tool_name="bash",
-        trusted_hook_modules={"lionagi.agent.hooks"},
+        trusted_hook_modules={"lionhub.agent.hooks"},
     )
     assert callable(result)
 
@@ -122,7 +122,7 @@ def test_resolve_hook_spec_dict_command_returns_callable():
         {"command": ["echo", "hello"]},
         phase="pre",
         tool_name="bash",
-        trusted_hook_modules={"lionagi.agent.hooks"},
+        trusted_hook_modules={"lionhub.agent.hooks"},
     )
     assert callable(result)
 
