@@ -186,7 +186,7 @@ Every module under `lionagi/studio/` that F3 does not allocate has an owner, giv
 | --- | --- | --- |
 | `_host.py`, `reconnect.py`, `daemon_log.py`, `_traceback_dump.py` | Daemon | Daemon startup uses these modules for host admission, same-user reconnect (F4), scheduler logging, and stack-dump diagnostics. The LionHub launcher also imports `_host.py` and `reconnect.py` directly, so it needs them before selecting the application (`lionhub/src/lionhub/serve/cli/studio.py:27@c83e53d7`, `lionhub/src/lionhub/serve/cli/studio.py:313@c83e53d7`). |
 | `launch_access.py` | Daemon | The epoch and capability store (F4). Imports come from the application startup, Operator coordinator, and Operator and pairing services (`lionagi/studio/app.py:27@c83e53d7`, `lionagi/studio/operator/coordinator.py:24@c83e53d7`, `lionagi/studio/services/operator.py:15@c83e53d7`, `lionagi/studio/services/pairing.py:21@c83e53d7`). |
-| `services/_io.py` | Daemon | Imported by `services/invocations.py` and `services/sessions.py`, and by the shows and MCP server services (`lionagi/studio/services/shows.py:33@c83e53d7`, `lionagi/studio/services/mcp_servers.py:46@c83e53d7`). |
+| `services/_io.py` | Daemon | Imported by `services/invocations.py` and `services/sessions.py`. |
 | `services/_session_tail.py`, `services/artifact_verification.py` | Daemon | Imported by `services/sessions.py`. |
 | `services/signals.py` | Daemon | Imported by `services/sessions.py` and `services/_session_tail.py`. |
 | `services/_sse.py`, `services/_path_safety.py` | Daemon | The stream transport helper and safe path handling of the execution inspection row; imported by `services/sessions.py`, and by `services/runs.py` and `services/admin.py`, respectively. |
