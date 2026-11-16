@@ -76,15 +76,15 @@ def test_cli_module_invocations_in_fresh_processes(argv, status, tmp_path):
         assert new.stdout
     assert old.stdout == new.stdout
     assert "DeprecationWarning" not in new.stderr
-    # The old name adds one deprecation warning, which names the new module, and the
-    # source line the warning quotes; the rest of stderr is the new name's.
+    # The old invocation adds one command-line warning; the remaining stderr matches.
     lines = old.stderr.splitlines()
     marks = [index for index, line in enumerate(lines) if "DeprecationWarning" in line]
     assert len(marks) == 1, old.stderr
     (mark,) = marks
-    assert f"moved to {NEW}." in lines[mark]
-    assert lines[mark + 1].startswith("  ")
-    assert lines[:mark] + lines[mark + 2 :] == new.stderr.splitlines()
+    assert lines[mark].startswith(
+        f"<command line>:1: DeprecationWarning: {OLD}.__main__ moved to {NEW}.__main__;"
+    )
+    assert lines[:mark] + lines[mark + 1 :] == new.stderr.splitlines()
 
 
 def test_every_specific_cli_row_keeps_its_destination_next_to_the_parent_row():

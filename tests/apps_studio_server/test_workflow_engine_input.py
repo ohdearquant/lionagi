@@ -1,8 +1,10 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Keep legacy shared-context input behavior explicit before typed bindings migrate it."""
+"""Cover Studio workflow engine inputs and outputs."""
 
 from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -68,3 +70,38 @@ async def test_legacy_context_reaches_engine_unchanged_as_derived_input(
     assert received == [(expected, session, branch_created)]
     assert context == before
     assert result["result"] == "ok"
+
+
+async def test_workflow_engine_nodes_return_distinct_span_ids(monkeypatch) -> None:
+    import lionhub.orchestration.engine_definitions as engine_mod
+    from lionagi.studio.services.workflow_compile import make_engine_operation
+    from lionhub.orchestration.engines.engine import EngineResult
+
+    counter = 0
+
+    class FakeEngine:
+        _total_agent_failure = False
+
+        def __init__(self, **_kwargs):
+            nonlocal counter
+            counter += 1
+            self.span_id = f"engine-span-{counter}"
+
+        async def run(self, _spec, **_kwargs):
+            return EngineResult(
+                "ok",
+                events_by_type=lambda _kind: [],
+                skipped=[],
+                degraded=False,
+                run=SimpleNamespace(run_id=self.span_id),
+            )
+
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda *_a: FakeEngine)
+    operation = make_engine_operation(MagicMock())
+
+    first = await operation(context={"input": "one"}, engine_kind="research")
+    second = await operation(context={"input": "two"}, engine_kind="research")
+
+    assert first["engine_span_id"] == "engine-span-1"
+    assert second["engine_span_id"] == "engine-span-2"
+    assert first["engine_span_id"] != second["engine_span_id"]
