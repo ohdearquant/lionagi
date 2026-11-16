@@ -750,6 +750,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                 attempt_id=exc.attempt_id,
                 http_status=exc.http_status,
             ) from None
+        from ._prompt_cache import routed_cache_evidence
+
         router = get_router()
         scope = self._account_scope(_routing_scope)
         attempt = await router.begin(
@@ -757,6 +759,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             payload,
             request_pairs,
             endpoint=self,
+            cache_evidence_for=routed_cache_evidence,
             request_kwargs=request_kwargs,
             body_kwargs=body_kwargs,
             client_kwargs=session_kwargs,
@@ -1076,6 +1079,8 @@ class AnthropicMessagesEndpoint(Endpoint):
             url=url,
             method=method,
         )
+        from ._prompt_cache import routed_cache_evidence
+
         router = get_router()
         scope = self._account_scope(_routing_scope)
         body_kwargs = {"json": payload}
@@ -1084,6 +1089,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             payload,
             request_pairs,
             endpoint=self,
+            cache_evidence_for=routed_cache_evidence,
             request_kwargs=kwargs,
             body_kwargs=body_kwargs,
             client_kwargs=session_kwargs,
