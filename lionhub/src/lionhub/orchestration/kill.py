@@ -446,15 +446,13 @@ def _terminate_pid(
     expected_create_time: float | None = None,
     _signal_record: list[int] | None = None,
 ) -> str:
-    """SIGTERM then SIGKILL, with the one-target command's existing result labels."""
+    """SIGTERM then SIGKILL, returning the observed outcome for one target."""
     target = _TerminationTarget(pid, expected_cmd, expected_session_id, expected_create_time)
     signals = _signal_record if _signal_record is not None else []
     outcome = _begin_termination(target, signals)
     if outcome is not None:
         return outcome
-    outcome = _finish_terminations(((target, signals),), grace_seconds=grace_seconds)[0]
-    # The command has historically reported an attempted escalation in these races.
-    return "sigkill" if outcome in {"already_dead", "permission_denied"} else outcome
+    return _finish_terminations(((target, signals),), grace_seconds=grace_seconds)[0]
 
 
 # Only sessions/invocations carry PIDs; plays/shows are orchestrators.
