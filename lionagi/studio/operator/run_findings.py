@@ -8,7 +8,7 @@ their verification state. Bounded and redacted on the same rules as
 ``run_progress``/the existing read tools — see ``redact.py`` and
 docs/internals/studio.md ("Bounded read projections"). Tool-call outcomes
 are inferred from message content via the shared ``_detect_status`` heuristic
-in ``lionagi.studio.services.runs``. The helper is also used by Session-backed
+in ``lionhub.serve.daemon.services.runs``. The helper is also used by Session-backed
 operator projections; a plain session's ActionRequest/ActionResponse messages
 carry no structured ``ok: bool``.
 """
@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .redact import (
+from lionhub.serve.daemon.services.redact import (
     ARTIFACT_BYTE_CAP,
     MESSAGE_BYTE_CAP,
     PER_ITEM_TEXT_CAP,
@@ -30,6 +30,7 @@ from .redact import (
     redact_arguments,
     scrub_text,
 )
+
 from .run_progress import resolve_run
 
 __all__ = ("RunFindingsInput", "run_findings")
@@ -139,7 +140,7 @@ def _collect_messages(branches: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _short_class(lion_class: str) -> str:
-    from lionagi.studio.services.sessions import _short_lion_class
+    from lionhub.serve.daemon.services.sessions import _short_lion_class
 
     return _short_lion_class(lion_class or "")
 
@@ -154,7 +155,7 @@ def _derive_tool_calls(branches: list[dict[str, Any]]) -> tuple[list[dict[str, A
     reports whether, not how many, and the caller says so rather than
     publishing a total it would have to invent.
     """
-    from lionagi.studio.services.runs import _detect_status
+    from lionhub.serve.daemon.services.runs import _detect_status
 
     clipped = False
     out: list[dict[str, Any]] = []
@@ -319,7 +320,7 @@ async def run_findings(arguments: dict[str, Any]) -> dict[str, Any]:
             "truncated": resolution.get("truncated", False),
         }
 
-    from lionagi.studio.services.sessions import get_session
+    from lionhub.serve.daemon.services.sessions import get_session
 
     session = await get_session(resolution["session_id"], message_limit=PER_KIND_ITEM_CAP)
     if session is None:

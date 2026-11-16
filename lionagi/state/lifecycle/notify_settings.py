@@ -13,8 +13,11 @@ import logging
 import os
 import re
 import shlex
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -23,16 +26,17 @@ from lionagi.ln import (
     aterminate_process_group,
     capture_group_witnesses,
     import_module,
-    observe_process_group_leader,
     prepare_process_group_env,
 )
-from lionagi.ln._proc import env_without_state_db_url
+from lionagi.ln._proc import _end_abandoned_spawn, _spawn_in_group, env_without_state_db_url
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
+from lionagi.ln.concurrency.errors import shield_quietly
 
 from .callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
     EXECUTION_ENTITY_KINDS,
     HANDLER_BUDGET_SECONDS,
+    SCHEMA_VERSION,
     RunTerminalEnvelope,
     TerminalCallbackHandler,
     TerminalCallbackRegistry,
@@ -596,8 +600,86 @@ ArgvBuilder = Callable[[tuple[str, ...], RunTerminalEnvelope], Sequence[str]]
 EnvBuilder = Callable[[RunTerminalEnvelope], Mapping[str, str]]
 
 
+@dataclass(frozen=True)
+class TerminalNoticeContext:
+    """Optional run facts supplied by the execution surface."""
+
+    run_id: str | None = None
+    label: str | None = None
+    sender: str | None = None
+    cwd: str | None = None
+    output_dir: str | None = None
+
+    def payload(self, envelope: RunTerminalEnvelope) -> dict[str, Any]:
+        output_dir = self.output_dir or next(
+            (
+                artifact["location"]
+                for artifact in envelope.artifacts
+                if artifact.get("kind") in {"run_dir", "artifact_root"}
+                and isinstance(artifact.get("location"), str)
+            ),
+            None,
+        )
+        return build_terminal_notice_payload(
+            run_id=self.run_id or envelope.correlation.run_id,
+            status=envelope.terminal_status,
+            reason_code=envelope.reason_code,
+            label=self.label,
+            sender=self.sender,
+            cwd=self.cwd,
+            output_dir=output_dir,
+            extensions=envelope.to_dict(),
+        )
+
+
+def build_terminal_notice_payload(
+    *,
+    status: str,
+    run_id: str | None = None,
+    reason_code: str | None = None,
+    label: str | None = None,
+    sender: str | None = None,
+    cwd: str | None = None,
+    output_dir: str | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the common executable-notifier fields and retain existing extension fields."""
+    payload = dict(extensions or {})
+    payload.setdefault("schema_version", SCHEMA_VERSION)
+    payload.update(
+        run_id=run_id,
+        status=status,
+        reason_code=reason_code,
+        label=label,
+        sender=sender,
+        cwd=cwd,
+        output_dir=output_dir,
+    )
+    return payload
+
+
+_notice_scope: ContextVar[tuple[str, str, TerminalNoticeContext] | None] = ContextVar(
+    "terminal_notice_scope", default=None
+)
+
+
+@contextmanager
+def bind_terminal_notice_context(
+    entity_kind: str, entity_id: str, context: TerminalNoticeContext
+) -> Iterator[None]:
+    """Supply exec payload context for one entity without changing handler selection."""
+    token = _notice_scope.set((entity_kind, entity_id, context))
+    try:
+        yield
+    finally:
+        _notice_scope.reset(token)
+
+
 def _default_payload(envelope: RunTerminalEnvelope) -> dict[str, Any]:
-    return envelope.to_dict()
+    scope = _notice_scope.get()
+    if scope is not None and (envelope.entity.kind, envelope.entity.id) == scope[:2]:
+        return scope[2].payload(envelope)
+    return TerminalNoticeContext().payload(envelope)
 
 
 def _noop_outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
@@ -606,6 +688,10 @@ def _noop_outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None
     With no run directory there is nowhere owner-only to put the adapter's
     stderr, so it is dropped rather than routed to a shared surface."""
     return None
+
+
+# The event loop keeps only weak references to its scheduled tasks.
+_pending_exec_spawns: set[asyncio.Task[tuple[asyncio.subprocess.Process, float | None]]] = set()
 
 
 def _make_exec_handler(
@@ -619,9 +705,12 @@ def _make_exec_handler(
     on_timeout: Callable[[], None] | None = None,
     on_exec_failure: Callable[[str], None] | None = None,
 ) -> TerminalCallbackHandler:
+    """Build an exec adapter whose late spawn cleanup requires a running loop, as in
+    ``communicate_in_process_group``.
+    """
     static_argv = tuple(argv)
 
-    async def _exec_handler_safe(envelope: RunTerminalEnvelope) -> None:
+    async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
         payload = json.dumps(payload_fn(envelope)).encode()
         launch_argv = tuple(argv_fn(static_argv, envelope)) if argv_fn is not None else static_argv
         base_env = env_without_state_db_url()
@@ -633,17 +722,14 @@ def _make_exec_handler(
         primary: BaseException | None = None
         stderr_bytes = b""
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *launch_argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-                start_new_session=True,
-            )
-            leader_created = observe_process_group_leader(
-                getattr(proc, "pid", None), expected_marker=group_marker
-            )
+            spawn = asyncio.create_task(_spawn_in_group(launch_argv, env, group_marker))
+            _pending_exec_spawns.add(spawn)
+            spawn.add_done_callback(_pending_exec_spawns.discard)
+            try:
+                proc, leader_created = await shield_quietly(spawn)
+            except get_cancelled_exc_class():
+                spawn.add_done_callback(partial(_end_abandoned_spawn, group_marker))
+                raise
             _, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(payload), timeout=HANDLER_BUDGET_SECONDS
             )
@@ -669,15 +755,24 @@ def _make_exec_handler(
                     )
                 except Exception:  # noqa: BLE001 -- still attempt to reap the child
                     logger.warning("notify.on_terminal global adapter: exec_cleanup_unconfirmed")
-                await _await_proc_dead(proc, safe_logging=True)
+                await _await_proc_dead(proc, safe_logging=safe_logging)
         if isinstance(primary, (asyncio.TimeoutError, get_cancelled_exc_class())):
             if isinstance(primary, get_cancelled_exc_class()):
                 raise primary
-            logger.warning("notify.on_terminal global adapter: exec_adapter_timeout")
+            if safe_logging:
+                logger.warning("notify.on_terminal global adapter: exec_adapter_timeout")
+            else:
+                logger.warning(
+                    "notify.on_terminal exec adapter %s timed out", _adapter_label(launch_argv)
+                )
             if on_timeout is not None:
                 on_timeout()
             else:
                 outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            if not safe_logging:
+                _warn_adapter_failure(
+                    f"notify.on_terminal adapter {_adapter_label(launch_argv)} timed out"
+                )
             return
         if primary is not None:
             if not isinstance(primary, Exception):
@@ -687,128 +782,51 @@ def _make_exec_handler(
                 if proc is not None
                 else "exec_adapter_launch_failed"
             )
-            logger.warning("notify.on_terminal global adapter: %s", reason)
+            if safe_logging:
+                logger.warning("notify.on_terminal global adapter: %s", reason)
+            else:
+                logger.warning(
+                    "notify.on_terminal exec adapter %s failed to run: %s",
+                    _adapter_label(launch_argv),
+                    _first_line(str(primary), launch_argv),
+                )
             if on_exec_failure is not None:
                 on_exec_failure(reason)
             else:
                 outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            if not safe_logging:
+                detail = _first_line(str(primary), launch_argv)
+                suffix = f": {detail}" if detail else ""
+                _warn_adapter_failure(
+                    f"notify.on_terminal adapter {_adapter_label(launch_argv)} failed to run{suffix}"
+                )
             return
         assert proc is not None
         if proc.returncode != 0:
             stderr_text = stderr_bytes.decode(errors="replace").strip()
-            outcome_fn(ok=False, exit_code=proc.returncode, stderr_text=stderr_text or None)
-            logger.warning("notify.on_terminal global adapter: exec_adapter_nonzero_exit")
-        else:
-            outcome_fn(ok=True, exit_code=0, stderr_text=None)
-
-    async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
-        if safe_logging:
-            return await _exec_handler_safe(envelope)
-        payload = json.dumps(payload_fn(envelope)).encode()
-        launch_argv = tuple(argv_fn(static_argv, envelope)) if argv_fn is not None else static_argv
-        # A notify command never inherits the state-store URL (see env_without_state_db_url);
-        # what env_fn names for it is passed as given.
-        base_env = env_without_state_db_url()
-        if env_fn is not None:
-            base_env.update(env_fn(envelope))
-        env, group_marker = prepare_process_group_env(base_env)
-        proc = None
-        leader_created = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *launch_argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-                start_new_session=True,
-            )
-            leader_created = observe_process_group_leader(
-                getattr(proc, "pid", None),
-                expected_marker=group_marker,
-            )
-            _, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(payload), timeout=HANDLER_BUDGET_SECONDS
-            )
-        except asyncio.TimeoutError:
-            if proc is not None:
-                group_witnesses = (
-                    capture_group_witnesses(
-                        proc,
-                        expected_leader_created=leader_created,
-                    )
-                    if leader_created is not None
-                    else ()
-                )
-                await aterminate_process_group(
-                    proc,
-                    grace=None,
-                    group_witnesses=group_witnesses,
-                )
-                await _await_proc_dead(proc)
-            logger.warning(
-                "notify.on_terminal exec adapter %s timed out", _adapter_label(launch_argv)
-            )
-            outcome_fn(ok=False, exit_code=None, stderr_text=None)
-            _warn_adapter_failure(
-                f"notify.on_terminal adapter {_adapter_label(launch_argv)} timed out"
-            )
-            return
-        except get_cancelled_exc_class():
-            # deadline race: child must still be reaped, shielded since scope is cancelled
-            if proc is not None:
-                with CancelScope(shield=True):
-                    group_witnesses = (
-                        capture_group_witnesses(
-                            proc,
-                            expected_leader_created=leader_created,
-                        )
-                        if leader_created is not None
-                        else ()
-                    )
-                    await aterminate_process_group(
-                        proc,
-                        grace=None,
-                        group_witnesses=group_witnesses,
-                    )
-                    await _await_proc_dead(proc)
-            raise
-        except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
-            detail = _first_line(str(exc), launch_argv)
-            logger.warning(
-                "notify.on_terminal exec adapter %s failed to run: %s",
-                _adapter_label(launch_argv),
-                detail,
-            )
-            outcome_fn(ok=False, exit_code=None, stderr_text=None)
-            warn_suffix = f": {detail}" if detail else ""
-            _warn_adapter_failure(
-                f"notify.on_terminal adapter {_adapter_label(launch_argv)} failed to run{warn_suffix}"
-            )
-            return
-        if proc.returncode != 0:
-            # raw stderr never reaches log/warn/outcome -- captured to an owner-only
-            # file and referenced by path instead, see docs/internals/runtime.md
-            stderr_text = stderr_bytes.decode(errors="replace").strip()
             stderr_path = outcome_fn(
                 ok=False, exit_code=proc.returncode, stderr_text=stderr_text or None
             )
-            if stderr_path:
-                where = f"; stderr captured at {stderr_path}"
-            elif stderr_text:
-                where = "; stderr not captured (no run directory bound to this handler)"
+            if safe_logging:
+                logger.warning("notify.on_terminal global adapter: exec_adapter_nonzero_exit")
             else:
-                where = ""
-            logger.warning(
-                "notify.on_terminal exec adapter %s exited %s%s",
-                _adapter_label(launch_argv),
-                proc.returncode,
-                where,
-            )
-            _warn_adapter_failure(
-                f"notify.on_terminal adapter {_adapter_label(launch_argv)} exited "
-                f"{proc.returncode}{where}"
-            )
+                if stderr_text:
+                    if stderr_path:
+                        where = f"; stderr captured at {stderr_path}"
+                    else:
+                        where = "; stderr not captured (no run directory bound to this handler)"
+                else:
+                    where = ""
+                logger.warning(
+                    "notify.on_terminal exec adapter %s exited %s%s",
+                    _adapter_label(launch_argv),
+                    proc.returncode,
+                    where,
+                )
+                _warn_adapter_failure(
+                    f"notify.on_terminal adapter {_adapter_label(launch_argv)} exited "
+                    f"{proc.returncode}{where}"
+                )
         else:
             outcome_fn(ok=True, exit_code=0, stderr_text=None)
 
@@ -932,10 +950,12 @@ def register_run_notify_outcome_scope(
     entity_id: str,
     registry: TerminalCallbackRegistry = DEFAULT_TERMINAL_CALLBACKS,
     project_dir: str | None = None,
+    notice_context: TerminalNoticeContext | None = None,
 ) -> str | None:
-    """Bind the settings-driven notify.on_terminal exec adapter's outcome to
-    *run*, scoped to this run's own terminal entity. An override registration,
-    so it takes over dispatch for this entity from the process-wide default.
+    """Bind a settings notifier to one terminal entity and record the outcome on *run*.
+
+    The scoped registration takes over dispatch for that entity from the
+    process-wide default.
     Returns the registration name (pass to
     ``unregister_run_notify_outcome_scope`` in a ``finally`` block), or
     ``None`` if disabled or filtered out (never raises); a notifier this run
@@ -963,7 +983,12 @@ def register_run_notify_outcome_scope(
     def _build_failure(reason: str) -> None:
         record_notify_rejection_to_run(run, reason)
 
-    handler = build_handler(resolved, outcome_fn=_outcome_fn, on_build_failure=_build_failure)
+    handler = build_handler(
+        resolved,
+        payload_fn=notice_context.payload if notice_context is not None else _default_payload,
+        outcome_fn=_outcome_fn,
+        on_build_failure=_build_failure,
+    )
     if handler is None:
         return None
     name = f"notify.settings.on_terminal.{entity_kind}.{entity_id}"

@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB  # noqa: E402
-from lionagi.studio.services.schedules import (  # noqa: E402
+from lionhub.serve.daemon.services.schedules import (  # noqa: E402
     _UNCLASSIFIED_ERROR,
     create_schedule,
 )
@@ -75,7 +75,7 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
     """Point both the StateDB default and the schedules service's own bound
     name at the temp path -- must run before any seeding, or seed writes
     land in the real default DB."""
-    import lionagi.studio.services.schedules as schedules_mod
+    import lionhub.serve.daemon.services.schedules as schedules_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -322,7 +322,7 @@ def test_every_error_class_the_server_serves_has_a_translation():
     import json as _json
     from pathlib import Path as _Path
 
-    from lionagi.studio.services.schedules import _ERROR_CLASS_PATTERNS
+    from lionhub.serve.daemon.services.schedules import _ERROR_CLASS_PATTERNS
 
     source = _Path("apps/studio/frontend/src/messages/en.json")
     if not source.exists():  # the frontend is not vendored into every checkout
@@ -402,7 +402,7 @@ def test_the_seeded_schedule_really_carries_the_private_columns(tmp_path, monkey
     """Positive control: without this, the sweep below passes on an empty schedule."""
     schedule_id = _seed_rich_schedule(monkeypatch, tmp_path / "state.db")
 
-    from lionagi.studio.services.schedules import get_schedule
+    from lionhub.serve.daemon.services.schedules import get_schedule
 
     row = asyncio.run(get_schedule(schedule_id))
     unset = sorted(name for name in _PRIVATE_SCHEDULE_COLUMNS if not row.get(name))
@@ -468,7 +468,7 @@ def test_the_schedule_allow_list_serves_everything_the_client_declares():
     import re as _re
     from pathlib import Path as _Path
 
-    from lionagi.studio.services.schedules import (
+    from lionhub.serve.daemon.services.schedules import (
         _SCHEDULE_RECORD_FIELDS,
         _SCHEDULE_SUMMARY_FIELDS,
     )
@@ -546,7 +546,7 @@ def test_the_run_view_outcome_really_carries_the_raw_text_before_projection(tmp_
     """
     schedule_id, _ = _seed_failed_run_with_sentinel(monkeypatch, tmp_path / "state.db")
 
-    from lionagi.studio.services.schedules import list_schedule_run_views
+    from lionhub.serve.daemon.services.schedules import list_schedule_run_views
 
     rows = asyncio.run(list_schedule_run_views(schedule_id))
     assert rows, "no run views built"
@@ -624,7 +624,7 @@ def test_the_schedule_list_still_serves_what_the_cli_renders(tmp_path, monkeypat
 
 @pytest.mark.parametrize("query, included", [("", False), ("false", False), ("true", True)])
 def test_recent_run_summary_requires_explicit_http_opt_in(tmp_path, monkeypatch, query, included):
-    from lionagi.studio.services import schedules
+    from lionhub.serve.daemon.services import schedules
 
     schedule_id = _seed_capped_schedule_with_run(monkeypatch, tmp_path / "state.db")
     original = schedules._recent_run_summaries
@@ -676,7 +676,7 @@ def test_the_status_view_still_serves_what_the_cli_renders(tmp_path, monkeypatch
 def _seed_run_linked_to(
     monkeypatch, db_path: Path, *, invocation, sessions, error_detail: str | None = None
 ) -> tuple[str, str]:
-    from lionagi.studio.services import run_view
+    from lionhub.serve.daemon.services import run_view
 
     _patch_db(monkeypatch, db_path)
 
@@ -710,7 +710,7 @@ def _terminal_invocation_status() -> str:
 
 def test_a_session_reported_summary_really_reaches_the_outcome(tmp_path, monkeypatch):
     """The control. Without it the sweep below passes on an outcome nothing populated."""
-    from lionagi.studio.services.run_view import build_outcome
+    from lionhub.serve.daemon.services.run_view import build_outcome
 
     session = {
         "id": "sess-1",
@@ -768,8 +768,8 @@ def test_a_generated_summary_is_served_verbatim(tmp_path, monkeypatch):
 
     A summary this module generated carries no caller text, so it stays readable.
     """
-    from lionagi.studio.services.run_view import build_outcome
-    from lionagi.studio.services.schedules import _run_view
+    from lionhub.serve.daemon.services.run_view import build_outcome
+    from lionhub.serve.daemon.services.schedules import _run_view
 
     outcome = build_outcome(
         {"status": "completed", "exit_code": 0}, {"id": "inv-1", "status": "completed"}, []
@@ -787,7 +787,7 @@ def test_no_list_surface_serves_the_record_only_schedule_fields(tmp_path, monkey
     They are named fields rather than private columns, so the key sweep over the
     private set cannot see them; this names them directly.
     """
-    from lionagi.studio.services.schedules import _SCHEDULE_RECORD_FIELDS
+    from lionhub.serve.daemon.services.schedules import _SCHEDULE_RECORD_FIELDS
 
     # Named here rather than imported: a watch set taken from the constant under test
     # follows that constant, so moving a field out of it moves the field out of the
@@ -836,7 +836,7 @@ def test_the_served_class_describes_the_outcome_the_surface_serves(tmp_path, mon
     client = _make_client()
 
     # The contradiction needs both layers populated and classifying differently.
-    from lionagi.studio.services.schedules import _error_class
+    from lionhub.serve.daemon.services.schedules import _error_class
 
     assert _error_class("ConnectionError: connection refused") == "network"
     assert _error_class(f"PermissionError: {_RAW_ERROR_SENTINEL}") == "permission"
@@ -894,7 +894,7 @@ def test_the_record_route_serves_the_persisted_execution_root(tmp_path, monkeypa
     record = _make_client().get(f"/api/schedules/{schedule_id}").json()
     assert "action_cwd" in record
 
-    source = _Path("lionagi/cli/machine_schedule.py").read_text()
+    source = _Path("lionhub/src/lionhub/serve/cli/machine_schedule.py").read_text()
     create = _re.search(r"^def _create\(argv.*?^def ", source, _re.S | _re.M)
     assert create, "_create not found"
     assert '_studio(f"/{_quote(schedule_id)}")' in create.group(0), (
@@ -927,7 +927,7 @@ def test_the_seeded_run_really_carries_the_private_run_columns(tmp_path, monkeyp
     the columns, which is the shape a broken seeder fails in."""
     schedule_id = _seed_run_with_private_columns(monkeypatch, tmp_path / "state.db")
 
-    from lionagi.studio.services.schedules import list_schedule_run_views
+    from lionhub.serve.daemon.services.schedules import list_schedule_run_views
 
     rows = asyncio.run(list_schedule_run_views(schedule_id))
     assert len(rows) == 1
@@ -977,7 +977,7 @@ def test_the_record_path_really_carries_the_private_run_columns(tmp_path, monkey
     comes from a different service function and adds the child rows."""
     parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
 
-    from lionagi.studio.services.schedules import get_schedule_run
+    from lionhub.serve.daemon.services.schedules import get_schedule_run
 
     row = asyncio.run(get_schedule_run(parent_id))
     unset = sorted(name for name in _PRIVATE_RUN_COLUMNS if not row.get(name))

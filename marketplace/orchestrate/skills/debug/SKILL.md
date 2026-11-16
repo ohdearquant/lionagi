@@ -52,7 +52,7 @@ table, phase-by-phase MCP calls, and escalation template.
 These are the CLI-side entry points; read them if you're working inside a lionagi
 checkout. A plugin install has no access to them — it only sees the MCP server.
 
-- `lionagi/cli/agent.py` — `li agent`, the CLI counterpart of `agent.submit`
-- `lionagi/cli/orchestrate/fanout.py` — `li o fanout`, the CLI counterpart of `fanout.submit`
+- `lionhub/src/lionhub/serve/cli/agent.py` — `li agent`, the CLI counterpart of `agent.submit`
+- `lionhub/src/lionhub/serve/cli/orchestrate/fanout.py` — `li o fanout`, the CLI counterpart of `fanout.submit`
 - `lionhub/src/lionhub/orchestration/runs.py` — run persistence at `~/.lionagi/runs/`, also readable
   through `job.status` / `job.output`

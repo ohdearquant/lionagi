@@ -15,11 +15,13 @@ import shutil
 import signal
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from concurrent.futures import Future
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
 from pathlib import Path
+from threading import Thread
 from typing import Any
 from urllib.parse import unquote
 
@@ -39,6 +41,7 @@ from lionagi.libs.path_safety import (
 )
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
+    _PROCESS_GROUP_MARKER,
     SignalGate,
     _group_has_members,
     aterminate_process_group,
@@ -71,6 +74,89 @@ log = logging.getLogger("lionagi.providers._cli_subprocess")
 # Sentinel that means "do not pass stdin to create_subprocess_exec at all"
 # (inherits the parent process stdin, matching the old Gemini/Pi behaviour).
 _INHERIT_STDIN = object()
+
+#: The Studio daemon's bearer, and the prefix of every remote Studio's token variable. With
+#: either, a child could ask a daemon to launch further runs, here or on another machine, so
+#: no CLI child is handed them, whatever environment its caller passed.
+_STUDIO_TOKEN_ENV = "LIONAGI_STUDIO_AUTH_TOKEN"  # noqa: S105 — a variable name, not a value
+_REMOTE_STUDIO_ENV_PREFIX = "LIONAGI_REMOTE_"
+
+
+def _withhold_studio_credentials(env: dict[str, str]) -> dict[str, str]:
+    """Remove the Studio credential variables from *env* in place and return what was removed.
+
+    Names compare without regard to case, as the command-environment scrub compares them.
+    """
+    withheld = {
+        name: value
+        for name, value in env.items()
+        if name.upper() == _STUDIO_TOKEN_ENV or name.upper().startswith(_REMOTE_STUDIO_ENV_PREFIX)
+    }
+    for name in withheld:
+        del env[name]
+    return withheld
+
+
+#: A variable whose name has one of these ending a ``_``-separated part, or that ends in
+#: ``_KEY``, holds a credential as far as a CLI child is concerned. The part must end there, so
+#: ``TOKENIZERS_PARALLELISM``, ``XAUTHORITY`` and ``GIT_AUTHOR_NAME`` are not one, while
+#: ``GH_TOKEN``, ``NPMTOKEN`` and ``SSH_AUTH_SOCK`` (the agent that signs in elsewhere) are.
+#: ``PAT`` must be a whole part, so ``GITHUB_PAT`` is one and ``COMPAT_MODE`` and ``PATH`` are not.
+_CREDENTIAL_NAME_RE = re.compile(
+    r"(?i)(?:TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|APIKEY|API_KEY|ACCESS_KEY"
+    r"|PRIVATE_KEY|DATABASE_URL|AUTH)(?:_|$)|(?:^|_)PAT(?:_|$)|_KEY$"
+)
+
+#: The names each CLI provider reads its own login or key from. A child keeps these and no
+#: other credential-named variable. Bedrock and Vertex names count only when the run selects
+#: that backend.
+CLAUDE_CODE_AUTH_ENV = frozenset(
+    {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+)
+_CLAUDE_CODE_BACKEND_AUTH_ENV = {
+    "CLAUDE_CODE_USE_BEDROCK": frozenset(
+        {
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        }
+    ),
+    "CLAUDE_CODE_USE_VERTEX": frozenset({"GOOGLE_APPLICATION_CREDENTIALS"}),
+}
+GEMINI_AUTH_ENV = frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"})
+
+
+def claude_code_auth_env(env: Mapping[str, str] | None) -> frozenset[str]:
+    """The Claude Code login names, plus a cloud backend's when *env* selects that backend."""
+    source = os.environ if env is None else env
+    names = set(CLAUDE_CODE_AUTH_ENV)
+    for switch, backend in _CLAUDE_CODE_BACKEND_AUTH_ENV.items():
+        if source.get(switch, "").strip().lower() not in ("", "0", "false"):
+            names |= backend
+    return frozenset(names)
+
+
+def _withhold_credentials(
+    env: dict[str, str], auth_env: frozenset[str], declared: Iterable[str] = ()
+) -> dict[str, str]:
+    """Remove every credential variable outside *auth_env* from *env*; return them.
+
+    A credential is a name that reads as one, or a name in *declared*: the secret lookup's
+    names, which are secrets because the operator declared them, whatever they are called.
+    The process-group marker this module sets is kept: it names the child's group, it is not a
+    credential. Names compare without regard to case, as the Studio withhold compares them.
+    """
+    keep = {name.upper() for name in auth_env} | {_PROCESS_GROUP_MARKER}
+    secret = {name.upper() for name in declared}
+    withheld = {
+        name: value
+        for name, value in env.items()
+        if name.upper() not in keep and (name.upper() in secret or _CREDENTIAL_NAME_RE.search(name))
+    }
+    for name in withheld:
+        del env[name]
+    return withheld
 
 
 def spawned_pgid(pid: int) -> int:
@@ -748,6 +834,34 @@ async def end_child_group(
     return _group_cleanup_outcome(proc, spawned)
 
 
+def _consume_future_outcome(future: asyncio.Future) -> None:
+    """Retrieve a late outcome so an abandoned future is not logged as unretrieved."""
+    if not future.cancelled():
+        future.exception()
+
+
+def _capture_cli_cleanup_witnesses(
+    proc: Any, spawned: SpawnedProcess
+) -> asyncio.Future[tuple[tuple[int, float], ...]]:
+    """Collect spawn-bound identities without occupying the loop's executor."""
+    result: Future[tuple[tuple[int, float], ...]] = Future()
+
+    def collect() -> None:
+        if not result.set_running_or_notify_cancel():
+            return
+        try:
+            witnesses = _witnesses_for_spawn(proc, spawned)
+        except BaseException as exc:
+            result.set_exception(exc)
+        else:
+            result.set_result(witnesses)
+
+    # A walk that misses the cutoff may still be in a process-table read.
+    # It has no signalling authority and does not need to delay shutdown.
+    Thread(target=collect, name="cli-cleanup-witnesses", daemon=True).start()
+    return asyncio.wrap_future(result)
+
+
 @dataclass
 class _BoundedCleanupResult:
     witnesses: tuple[tuple[int, float], ...] = ()
@@ -759,7 +873,7 @@ class _BoundedCleanupResult:
 
 async def _bounded_cli_cleanup(
     proc: Any,
-    spawned: SpawnedProcess,
+    spawned: SpawnedProcess | None,
     *,
     helpers: tuple[tuple[str, asyncio.Task | None], ...] = (),
     stderr_task: asyncio.Task | None = None,
@@ -771,24 +885,65 @@ async def _bounded_cli_cleanup(
 
     The deadline bounds asynchronous waits, not synchronous identity checks or
     an already-running signal syscall. Only spawn-bound witnesses authorize the
-    final synchronous backstop; no fresh scan is used on the cutoff path.
+    final synchronous backstop; no fresh scan is used on the cutoff path. The
+    spawn-bound witness walk runs off the event loop and can use the group
+    cleanup budget up to the grace period reserved for termination.
+    ``spawned`` is None when no identity could be read for the child; there is
+    then no group authority, and only the direct child is signalled.
     """
     result = _BoundedCleanupResult()
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 3 * grace + 1.0
     group_deadline = deadline - 1.0  # diagnostic and collective join reservations
     gate = SignalGate()
+    cancellations = 0
+
+    async def wait_until(tasks: set[asyncio.Future], until: float) -> None:
+        nonlocal cancellations
+        while tasks and cancellations < 2:
+            remaining = max(0.0, until - loop.time())
+            if not remaining:
+                return
+            try:
+                done, _ = await asyncio.wait(tasks, timeout=remaining)
+            except asyncio.CancelledError as exc:
+                cancellations += 1
+                if result.cancellation is None:
+                    result.cancellation = exc
+                continue
+            tasks.difference_update(done)
+            if not done:
+                return
+
     witness_error = None
+    witness_unconfirmed = False
+    witnesses: tuple[tuple[int, float], ...] = ()
+    capture: asyncio.Future | None = None
     try:
-        witnesses = _witnesses_for_spawn(proc, spawned)
+        if spawned is not None:
+            # Reserve time to act on the identities. An inherited AnyIO deadline
+            # does not interrupt the wait, and wait_until records direct cancels.
+            capture = _capture_cli_cleanup_witnesses(proc, spawned)
+            with CancelScope(shield=True):
+                await wait_until({capture}, group_deadline - grace)
+            if capture.done():
+                witnesses = capture.result()
+            else:
+                # A walk that outlives its budget yields no group authority; its late
+                # result is discarded rather than trusted after the fact.
+                witness_unconfirmed = True
+                capture.add_done_callback(_consume_future_outcome)
+                log.warning("CLI cleanup witness capture exceeded its budget (pid %s)", proc.pid)
     except BaseException as exc:
         # No group authority can be derived after a failed observation, but the
         # direct child and helper tasks still need bounded, gated cleanup.
         witness_error = exc
         witnesses = ()
         result.error = exc
-        if isinstance(exc, asyncio.CancelledError):
+        if isinstance(exc, asyncio.CancelledError) and result.cancellation is None:
             result.cancellation = exc
+        if capture is not None and not capture.done():
+            capture.add_done_callback(_consume_future_outcome)
         log.warning("CLI cleanup witness capture failed (%s)", type(exc).__name__)
     result.witnesses = witnesses
     log.debug("CLI cleanup starting (pid %s, frozen witnesses: %s)", proc.pid, witnesses)
@@ -813,24 +968,7 @@ async def _bounded_cli_cleanup(
             result.cancellation = exc
         if group_coro is not None:
             group_coro.close()
-    cancellations = int(result.cancellation is not None)
-
-    async def wait_until(tasks: set[asyncio.Task], until: float) -> None:
-        nonlocal cancellations
-        while tasks and cancellations < 2:
-            remaining = max(0.0, until - loop.time())
-            if not remaining:
-                return
-            try:
-                done, _ = await asyncio.wait(tasks, timeout=remaining)
-            except asyncio.CancelledError as exc:
-                cancellations += 1
-                if result.cancellation is None:
-                    result.cancellation = exc
-                continue
-            tasks.difference_update(done)
-            if not done:
-                return
+    cancellations = max(cancellations, int(result.cancellation is not None))
 
     # A shield prevents the inherited AnyIO deadline from repeatedly cancelling
     # this cleanup. Direct Task.cancel still reaches wait_until and is recorded.
@@ -902,7 +1040,7 @@ async def _bounded_cli_cleanup(
                 log.warning("CLI %s helper remains owned after cutoff (pid %s)", name, proc.pid)
             elif not task.cancelled():
                 task.exception()
-    if cancellations >= 2 or witness_error is not None:
+    if cancellations >= 2 or witness_error is not None or witness_unconfirmed:
         result.outcome = _ChildGroupCleanup.UNCONFIRMED
     if result.outcome is _ChildGroupCleanup.CONFIRMED_EMPTY:
         log.debug(
@@ -1306,6 +1444,7 @@ async def ndjson_from_cli(
     engine: str | None = None,
     workload: str = DEFAULT_WORKLOAD,
     secret_fill_skip: frozenset[str] = frozenset(),
+    auth_env: Iterable[str] | Callable[[Mapping[str, str]], Iterable[str]] | None = frozenset(),
     _prepare_argv: Callable[[dict[str, str]], list[str]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
@@ -1318,7 +1457,12 @@ async def ndjson_from_cli(
     ``workload`` (see ``lionagi.service._subagent_admission``), held until the child's group
     has ended. ``secret_fill_skip`` names variables the configured secret lookup
     must not fill into this child, on top of the routed account key names; empty
-    leaves the fill as it is. See docs/internals/providers.md#cli-subprocess-lifecycle.
+    leaves the fill as it is. ``auth_env`` names the variables the provider reads its own
+    login from; every other credential-named variable is removed from the child's environment,
+    and so from every command the child runs. A callable ``auth_env`` is given the child's
+    environment after the secret fill, for a provider whose login names depend on what that
+    environment holds. See
+    docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # An agent lionagi started cannot start another through lionagi, by its shell or by an
     # MCP server it was given; refused here, before any slot is waited for.
@@ -1349,16 +1493,26 @@ async def ndjson_from_cli(
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env, spawn_marker = prepare_process_group_env(child_env)
+    withheld = _withhold_studio_credentials(spawn_env)
+    # A child keeps its own provider's login and no other credential the launcher holds: the
+    # commands it runs inherit what it holds. A name the secret lookup declares reaches the child
+    # only when it is one of those login names, whatever it is called and whether it was filled
+    # or inherited; the lookup declares where a value comes from, not which child may hold it.
+    # ``auth_env=None`` skips the removal; no provider passes it.
+    if auth_env is not None:
+        names = auth_env(spawn_env) if callable(auth_env) else auth_env
+        withheld.update(_withhold_credentials(spawn_env, frozenset(names), declared))
     # Every agent lionagi starts carries a depth, so a lionagi it runs refuses to start
     # another (refuse_nested_agent). Set over whatever the environment held: only a
     # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).
     spawn_env[AGENT_DEPTH_ENV] = str(child_agent_depth())
     redaction_env: Mapping[str, str] = {
-        **_secret_candidates(spawn_env, declared),
+        **_secret_candidates({**spawn_env, **withheld}, declared),
         **_cmd_secret_values(cmd),
     }
-    opaque_env: Mapping[str, str] = _opaque_env_values(spawn_env, redaction_env)
-    bounded_env: Mapping[str, str] = _bounded_env_values(spawn_env, redaction_env)
+    # A withheld value is still one this process holds, so it stays redacted wherever it appears.
+    opaque_env: Mapping[str, str] = _opaque_env_values({**spawn_env, **withheld}, redaction_env)
+    bounded_env: Mapping[str, str] = _bounded_env_values({**spawn_env, **withheld}, redaction_env)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=spawn_env,
@@ -1419,11 +1573,11 @@ async def ndjson_from_cli(
                     raise refusal
                 _require_cli_executable(cmd, cwd=cwd, env=spawn_env)
                 redaction_env = {
-                    **_secret_candidates(spawn_env, declared),
+                    **_secret_candidates({**spawn_env, **withheld}, declared),
                     **_cmd_secret_values(cmd),
                 }
-                opaque_env = _opaque_env_values(spawn_env, redaction_env)
-                bounded_env = _bounded_env_values(spawn_env, redaction_env)
+                opaque_env = _opaque_env_values({**spawn_env, **withheld}, redaction_env)
+                bounded_env = _bounded_env_values({**spawn_env, **withheld}, redaction_env)
             attempted = True
             child = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             try:
@@ -1446,25 +1600,42 @@ async def ndjson_from_cli(
             if admission is not None:
                 await admission.record(_worker_spawn_identity(observed))
             return child, observed
-        except BaseException:
-            try:
-                if not attempted:
-                    lease.release()
-                elif child is None:
-                    # An exception with no handle can occur after OS launch.
-                    # Without positive provenance it proves no group absence.
-                    _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED, launch_outcome=True)
-                else:
-                    outcome = _ChildGroupCleanup.UNCONFIRMED
-                    try:
-                        outcome = await end_child_group(child, spawned=observed)
-                    except BaseException:
-                        log.warning("failed worker admission cleanup remains unconfirmed")
-                    _finish_child_lease(lease, outcome)
-            finally:
-                if admission is not None:
-                    admission.finish()
-            raise
+        except BaseException as exc:
+            spawn_error = exc
+        # The handler is closed before cleanup awaits, so the failure is not the
+        # exception under handling while the child's group is being ended.
+        cleanup = None
+        cleanup_error = None
+        outcome = _ChildGroupCleanup.UNCONFIRMED
+        try:
+            if not attempted:
+                lease.release()
+            elif child is None:
+                # An exception with no handle can occur after OS launch.
+                # Without positive provenance it proves no group absence.
+                _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED, launch_outcome=True)
+            else:
+                # Shielded from this task's own cancellation and bounded by one
+                # budget, so a cancelled launch still ends the child's group.
+                try:
+                    cleanup = await _bounded_cli_cleanup(child, observed)
+                except BaseException as exc:
+                    cleanup_error = exc
+                if cleanup_error is not None or (cleanup is not None and cleanup.error is not None):
+                    log.warning("failed worker admission cleanup remains unconfirmed")
+                outcome = _finish_bounded_lease(lease, cleanup)
+        finally:
+            if admission is not None:
+                admission.finish()
+        _raise_bounded_cleanup_result(
+            cleanup,
+            cleanup_error,
+            spawn_error,
+            outcome,
+            admission,
+            label="worker admission cleanup",
+        )
+        raise spawn_error
 
     spawn_coro = _spawn_and_register()
     try:

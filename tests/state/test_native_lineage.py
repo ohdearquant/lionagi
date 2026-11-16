@@ -11,7 +11,6 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-import aiosqlite
 import pytest
 from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -56,6 +55,12 @@ async def _open_and_close(path: Path) -> None:
     await db.close()
 
 
+async def _migrate_and_close(path: Path) -> None:
+    db = StateDB(path)
+    await db.migrate()
+    await db.close()
+
+
 async def test_a_new_store_records_lionagi_as_its_lineage(tmp_path):
     path = tmp_path / "new.db"
     await _open_and_close(path)
@@ -72,7 +77,10 @@ async def test_a_store_from_before_the_lineage_row_is_adopted_and_stamped(tmp_pa
         f"DELETE FROM schema_meta WHERE key = 'lineage';"
         f"UPDATE schema_meta SET value = '{version}' WHERE key = 'version';",
     )
-    await _open_and_close(path)
+    if version == SCHEMA_VERSION:
+        await _open_and_close(path)
+    else:
+        await _migrate_and_close(path)
     assert _rows(path, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
     assert _rows(path, "SELECT value FROM schema_meta WHERE key = 'version'") == [(SCHEMA_VERSION,)]
 
@@ -152,14 +160,14 @@ async def test_a_store_without_the_lineage_row_and_a_higher_version_is_too_new(t
     assert _rows(path, "PRAGMA journal_mode") == [("delete",)]
 
 
-async def test_a_lionagi_store_with_a_version_it_cannot_order_is_stamped(tmp_path):
-    """The lineage row says the store is this package's, so a version that cannot be compared is
-    replaced by the stamp, as before the row existed."""
+async def test_a_lionagi_store_with_an_unrecognized_version_is_unchanged(tmp_path):
     path = tmp_path / "native.db"
     await _open_and_close(path)
     _execute(path, "UPDATE schema_meta SET value = 'not-a-version' WHERE key = 'version';")
-    await _open_and_close(path)
-    assert _rows(path, "SELECT value FROM schema_meta WHERE key = 'version'") == [(SCHEMA_VERSION,)]
+    before = _files(path)
+    with pytest.raises(UnrecognizedStoreError, match="not-a-version"):
+        await _open_and_close(path)
+    assert _files(path) == before
 
 
 def _created_tables(path: Path) -> set[str]:
@@ -299,7 +307,7 @@ async def test_a_store_without_the_lineage_row_is_adopted_by_its_sessions_or_its
         _execute(
             path, str(CreateTable(metadata.tables["sessions"]).compile(dialect=sqlite_dialect()))
         )
-    await _open_and_close(path)
+    await _migrate_and_close(path)
     assert _rows(path, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
 
 
@@ -312,20 +320,17 @@ async def _refusal(path: Path, reader: str) -> UnrecognizedStoreError:
         elif reader == "connection":
             with closing(sqlite3.connect(path)) as conn:
                 db._refuse_a_managed_store(conn)
-        elif reader == "migration":
+        else:
             engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
             try:
                 async with engine.connect() as conn:
                     await db._refuse_newer_schema(conn)
             finally:
                 await engine.dispose()
-        else:
-            async with aiosqlite.connect(path) as driver:
-                await db._refuse_newer_sqlite_schema(driver)
     return caught.value
 
 
-_READERS = ["before-any-connection", "connection", "migration", "rebuild"]
+_READERS = ["before-any-connection", "connection", "migration"]
 
 
 @pytest.mark.parametrize("reader", _READERS)
@@ -371,12 +376,8 @@ async def test_the_backup_before_a_rebuild_refuses_a_store_first(tmp_path, monke
         "CHECK (kind IN ('agent','playbook')));",
     )
 
-    async def nothing(self):
-        return None
-
     monkeypatch.setattr(StateDB, "_read_lineage_without_writing", lambda self, held: None)
     monkeypatch.setattr(StateDB, "_refuse_a_managed_store", lambda self, dbapi_conn: None)
-    monkeypatch.setattr(StateDB, "_reconcile_columns", nothing)
     with pytest.raises(UnrecognizedStoreError, match="no lineage or version row"):
         await _open_and_close(path)
     assert sorted(p.name for p in tmp_path.iterdir() if ".bak" in p.name) == []
@@ -640,11 +641,13 @@ async def test_a_kept_engine_whose_schema_committed_reads_a_replaced_store_as_an
     settings change it, and left as it was."""
     path = tmp_path / "kept.db"
     db = StateDB(path)
-    monkeypatch.setattr(
-        StateDB,
-        "_backfill_session_ended_at_once",
-        lambda self: _raise(RuntimeError("after the schema")),
-    )
+    apply_schema = db._apply_schema
+
+    async def fail_after_commit():
+        await apply_schema()
+        raise RuntimeError("after the schema")
+
+    monkeypatch.setattr(db, "_apply_schema", fail_after_commit)
     with pytest.raises(RuntimeError, match="after the schema"):
         await db.open()
     assert db._engine is not None and db._schema_committed and not db._schema_applied
@@ -670,20 +673,15 @@ async def test_a_kept_engine_whose_schema_committed_reads_a_replaced_store_as_an
 
 
 async def test_a_connection_opened_after_the_schema_is_applied_does_not_refuse_a_newer_version(
-    tmp_path, monkeypatch
+    tmp_path,
 ):
     """The schema transaction committed and its lineage row is written, so a version another
     writer records afterwards is refused by an open, never by an ordinary call: a connection this
     open makes later reads the store and refuses only a lineage row naming another application."""
     path = tmp_path / "applied.db"
     db = StateDB(path)
-    monkeypatch.setattr(
-        StateDB, "_backfill_session_ended_at_once", lambda self: _raise(RuntimeError("later"))
-    )
-    with pytest.raises(RuntimeError, match="later"):
-        await db.open()
-    assert db._engine is not None and not db._schema_applied
-    monkeypatch.undo()
+    await db.open()
+    assert db._engine is not None and db._schema_applied
     await db._engine.dispose()
     _execute(
         path,

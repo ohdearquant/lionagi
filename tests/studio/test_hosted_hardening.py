@@ -869,7 +869,7 @@ _DISCONNECT = "/api/studio/disconnect"
 @pytest.fixture()
 def fresh_launch(monkeypatch):
     """A process with no launch bearer and no codes yet."""
-    import lionagi.studio.launch_access as launch_access
+    import lionhub.serve.daemon.launch_access as launch_access
 
     monkeypatch.setattr(launch_access, "_bearer", None)
     monkeypatch.setattr(launch_access, "_codes", {})
@@ -1140,7 +1140,7 @@ class TestPairingWithToken:
         bearer = {**_LOOPBACK, "Authorization": "Bearer studio-test-token"}
 
         assert client.post(_MINT, json={}, headers=bearer).status_code == 410
-        import lionagi.studio.launch_access as launch_access
+        import lionhub.serve.daemon.launch_access as launch_access
 
         assert (
             launch_access.resolve_decision_capability("studio-test-token", origin=_HOSTED) is None
@@ -1163,7 +1163,7 @@ class TestPairingWithToken:
 
 
 def test_health_signs_a_challenge_with_the_port_the_request_reached(make_client):
-    from lionagi.studio.reconnect import port_proof
+    from lionhub.serve.daemon.reconnect import port_proof
 
     client = make_client()
     key = bytes(range(32))

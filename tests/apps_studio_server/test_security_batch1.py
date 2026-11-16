@@ -33,8 +33,8 @@ class TestPublicPath:
     def test_repo_relative_path(self, tmp_path):
         """public_path() with a path under the repo root returns relative posix."""
         # Simulate a path under the repo root (parents[4] from _path_safety.py)
-        import lionagi.studio.services._path_safety as mod
-        from lionagi.studio.services._path_safety import public_path
+        import lionhub.serve.daemon.services._path_safety as mod
+        from lionhub.serve.daemon.services._path_safety import public_path
 
         repo_root = Path(mod.__file__).resolve().parents[3]
         target = repo_root / "lionagi" / "studio" / "dummy.md"
@@ -44,7 +44,7 @@ class TestPublicPath:
 
     def test_home_relative_path(self, tmp_path):
         """public_path() with a path under home returns home-relative posix."""
-        from lionagi.studio.services._path_safety import public_path
+        from lionhub.serve.daemon.services._path_safety import public_path
 
         target = Path.home() / ".lionagi" / "agents" / "test.md"
         result = public_path(target)
@@ -53,7 +53,7 @@ class TestPublicPath:
 
     def test_unknown_path_returns_filename(self, tmp_path):
         """public_path() with an unrelated path returns just the filename."""
-        from lionagi.studio.services._path_safety import public_path
+        from lionhub.serve.daemon.services._path_safety import public_path
 
         # Use a path that is definitely outside repo and home
         target = Path("/var/log/system.log")

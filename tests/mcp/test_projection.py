@@ -141,19 +141,19 @@ def test_resume_on_timeout_is_still_offered_where_it_is_inert_but_says_so() -> N
 
 _ATTRIBUTE_IMPORT_PROBE = """\
 import sys
-from lionagi.cli import main as attribute_import
-import lionagi.cli.main as dotted_import
+from lionhub.serve.cli import main as attribute_import
+import lionhub.serve.cli.main as dotted_import
 from importlib import import_module
 
 print(type(attribute_import).__name__)
 print(type(dotted_import).__name__)
-print(type(import_module("lionagi.cli.main")).__name__)
-print(getattr(import_module("lionagi.cli.main"), "build_cli_parser", None) is not None)
+print(type(import_module("lionhub.serve.cli.main")).__name__)
+print(getattr(import_module("lionhub.serve.cli.main"), "build_cli_parser", None) is not None)
 """
 
 
 def test_attribute_style_import_of_cli_main_yields_the_function(tmp_path) -> None:
-    """`lionagi.cli.__init__` resolves `main` lazily and pins the *callable*
+    """`lionhub.serve.cli.__init__` resolves `main` lazily and pins the *callable*
     into its own globals. A process that reaches for the name that way first
     gets the function from then on, from both spellings, so the registry looks
     absent. `import_module` reads `sys.modules` and is unaffected by the order,
@@ -173,7 +173,7 @@ def test_attribute_style_import_of_cli_main_yields_the_function(tmp_path) -> Non
 
 
 def test_command_registry_is_reached_through_the_module() -> None:
-    module = import_module("lionagi.cli.main")
+    module = import_module("lionhub.serve.cli.main")
     assert callable(module.build_cli_parser)
     assert callable(module.seed_for)
 

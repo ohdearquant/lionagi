@@ -12,7 +12,7 @@ import uuid
 import pytest
 
 from lionagi.state.db import StateDB
-from lionagi.state.lifecycle import notify_settings
+from lionagi.state.lifecycle import notify_settings, settings_delivery
 from lionagi.state.lifecycle import reconciler as reconciliation
 from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
 from lionagi.state.lifecycle.deliveries import is_acknowledged
@@ -68,16 +68,16 @@ async def test_settings_and_import_stalls_keep_one_worker_until_late_ack(
 
     if stall == "settings":
 
-        def load_settings(**_kwargs):
+        def load_global_settings():
             block()
             return {}  # No configured notifier is an explicit no-op.
 
-        monkeypatch.setattr(terminal, "load_settings", load_settings)
+        monkeypatch.setattr(settings_delivery, "load_global_settings_layer", load_global_settings)
     else:
         monkeypatch.setattr(
-            terminal,
-            "load_settings",
-            lambda **_kwargs: {
+            settings_delivery,
+            "load_global_settings_layer",
+            lambda: {
                 "notify": {
                     "on_terminal": {
                         "adapter": {"kind": "python", "ref": "test_stall_adapter:handle"}
@@ -101,10 +101,10 @@ async def test_settings_and_import_stalls_keep_one_worker_until_late_ack(
     try:
         event_id = await _offline_transition(first_db)
         first = TerminalReconciler(
-            terminal.CONSUMER_NAME, terminal._prepare_settings_delivery, timeout=0.25
+            terminal.CONSUMER_NAME, terminal.prepare_global_settings_delivery, timeout=0.25
         )
         second = TerminalReconciler(
-            terminal.CONSUMER_NAME, terminal._prepare_settings_delivery, timeout=0.25
+            terminal.CONSUMER_NAME, terminal.prepare_global_settings_delivery, timeout=0.25
         )
         first_task = asyncio.create_task(first.run_pass(first_db))
 

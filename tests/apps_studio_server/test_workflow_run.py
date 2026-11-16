@@ -166,7 +166,7 @@ async def test_workflow_run_end_to_end(patched_env):
     run_id = result["run_id"]
     assert run_id == str(session.id)
 
-    from lionagi.studio.services.sessions import get_session
+    from lionhub.serve.daemon.services.sessions import get_session
 
     session_row = await get_session(run_id)
     assert session_row is not None
@@ -225,7 +225,7 @@ async def test_workflow_run_all_agents_failed_reports_failed_not_completed(
 
     assert result["status"] == "failed"
 
-    from lionagi.studio.services.sessions import get_session
+    from lionhub.serve.daemon.services.sessions import get_session
 
     session_row = await get_session(result["run_id"])
     assert session_row is not None
@@ -324,7 +324,7 @@ async def test_cancelled_run_is_recorded_as_cancelled(patched_env, monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await run_workflow_def(def_id, {"topic": "GQA"}, _session=session)
 
-    from lionagi.studio.services.sessions import get_session
+    from lionhub.serve.daemon.services.sessions import get_session
 
     row = await get_session(str(session.id))
     assert row is not None

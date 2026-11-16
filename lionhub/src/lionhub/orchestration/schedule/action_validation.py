@@ -9,6 +9,7 @@ import re
 import shlex
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.orchestration.engine_definitions import _is_registered_engine_kind
 from lionhub.orchestration.schedule.parsing import (
     _ALIAS_ACTION_KINDS,
     _MODEL_RE,
@@ -122,7 +123,7 @@ def _command_allowlist() -> frozenset[str]:
 def _validate_command_allowlisted(command: str) -> None:
     """Raise ValueError if *command* is not on ``LIONAGI_SCHEDULER_COMMAND_ALLOWLIST``.
 
-    Called at schedule build/validation time (lionagi.studio.services.schedules,
+    Called at schedule build/validation time (lionhub.serve.daemon.services.schedules,
     lionhub.orchestration.schedule.declaration) and again here inside ``build_argv`` at
     actual spawn time, since the environment variable can change between
     schedule creation and fire.
@@ -350,6 +351,8 @@ def validate_launch_fields(schedule: dict) -> str:
         # action_agent = engine kind (e.g. "research"); action_prompt = spec.
         if not agent:
             raise ValueError("engine launches require action_agent (the engine kind)")
+        if not _is_registered_engine_kind(agent):
+            raise ValueError(f"action_agent {agent!r} is not a registered engine kind")
         if not schedule.get("action_prompt"):
             raise ValueError("engine launches require action_prompt (the engine spec)")
         # The engine CLI exits nonzero for 'coding' without --test-cmd (and a blank command

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.studio.services.run_view import (
+from lionhub.serve.daemon.services.run_view import (
     build_outcome,
     build_run_view,
     exit_code_for_view,
@@ -239,7 +239,7 @@ def test_a_session_still_in_flight_withholds_the_session_level_grade():
     the sessions have no terminal outcome to give and the caller falls through
     to the surfaces that know it is still running. Grading the finished one
     would report a live run as done."""
-    from lionagi.cli.status import EXIT_RUNNING
+    from lionhub.serve.cli.status import EXIT_RUNNING
 
     run = _run(status="running", exit_code=None, ended_at=None, invocation_id="inv1")
     invocation = {"id": "inv1", "status": "running"}
@@ -361,14 +361,14 @@ def test_exit_code_reflects_session_terminal_status(session_status, expected):
 
 
 def test_exit_code_running_is_exit_running():
-    from lionagi.cli.status import EXIT_RUNNING
+    from lionhub.serve.cli.status import EXIT_RUNNING
 
     run = _run(status="running", ended_at=None)
     assert exit_code_for_view(run, None, []) == EXIT_RUNNING
 
 
 def test_exit_code_no_run_is_exit_unknown():
-    from lionagi.cli.status import EXIT_UNKNOWN
+    from lionhub.serve.cli.status import EXIT_UNKNOWN
 
     assert exit_code_for_view(None, None, []) == EXIT_UNKNOWN
 
@@ -409,7 +409,7 @@ def test_every_outcome_this_module_returns_declares_its_summary_provenance():
     import ast
     import inspect
 
-    from lionagi.studio.services import run_view
+    from lionhub.serve.daemon.services import run_view
 
     tree = ast.parse(inspect.getsource(run_view))
     outcomes = []
@@ -426,7 +426,7 @@ def test_every_outcome_this_module_returns_declares_its_summary_provenance():
 
 
 def test_an_outcome_that_declares_nothing_is_treated_as_reported():
-    from lionagi.studio.services.schedules import _reported_summary_class
+    from lionhub.serve.daemon.services.schedules import _reported_summary_class
 
     undeclared = {
         "code": "x",

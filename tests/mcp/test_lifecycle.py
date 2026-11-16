@@ -42,7 +42,7 @@ _LI_SHIM = """
 import sys
 
 if len(sys.argv) > 1 and sys.argv[1] != "agent":
-    from lionagi.cli.main import main
+    from lionhub.serve.cli.main import main
 
     sys.exit(main(sys.argv[1:]))
 

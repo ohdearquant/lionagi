@@ -94,6 +94,21 @@ def test_a_role_declares_its_workload(text, expected):
     assert "workload" not in profile.extra
 
 
+@pytest.mark.parametrize(
+    ("declaration", "contained"),
+    [("light", True), ('"light"', True), ("'light'", True), ("heavy", False), (None, False)],
+)
+def test_a_role_with_unreadable_metadata_keeps_light_workload_containment(declaration, contained):
+    workload_line = f"workload: {declaration}  # worker class\n" if declaration else ""
+    profile = _parse_profile("role", f"---\ncreated: 2026-02-30\n{workload_line}---\nRead.\n")
+
+    model = build_imodel_from_spec("codex/gpt-5.5", workload=profile.workload)
+    payload, _ = model.endpoint.create_payload({"prompt": "Read."})
+    request = payload["request"]
+    assert request.workload == ("light" if contained else "heavy")
+    assert request._contains_account_integrations() is contained
+
+
 @pytest.mark.parametrize("raw", ["lite", "LIGHT", "true", "[light]"])
 def test_a_workload_the_role_misspells_reads_as_heavy_with_a_warning(raw, caplog):
     profile = _parse_profile("role", f"---\nworkload: {raw}\n---\n")

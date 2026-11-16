@@ -22,7 +22,7 @@ durable queue:
   and `schedule_runs.schedule_id` is `NOT NULL` with `ON DELETE CASCADE`
   (`lionagi/state/schema.sql`), so no run can exist without a parent schedule.
 - Ad-hoc submission (`POST /api/launches/`) admits via an in-memory
-  `asyncio.Semaphore` (`lionagi/studio/services/launches.py`) — no pending state, no
+  `asyncio.Semaphore` (`lionhub/src/lionhub/serve/daemon/services/launches.py`) — no pending state, no
   durability; a capacity reject is just "retry later", and queued intent does not
   survive a daemon restart.
 - The generalized lifecycle and queue mechanics are already designed in ADR-0061

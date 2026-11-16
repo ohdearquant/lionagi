@@ -41,6 +41,14 @@ class GateResult:
     mutated_args: dict | None = None
     errored: bool = False
 
+    def __post_init__(self) -> None:
+        if type(self.allowed) is not bool:
+            raise TypeError("allowed must be a bool")
+        if type(self.errored) is not bool:
+            raise TypeError("errored must be a bool")
+        if self.allowed and self.errored:
+            raise ValueError("an errored gate result cannot allow the action")
+
 
 GateEvaluator = Callable[[str, str, dict], Awaitable[GateResult]]
 

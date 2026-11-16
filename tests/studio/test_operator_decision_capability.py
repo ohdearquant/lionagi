@@ -25,8 +25,8 @@ from pathlib import Path
 
 import pytest
 
-import lionagi.studio.launch_access as launch_access
-import lionagi.studio.reconnect as reconnect
+import lionhub.serve.daemon.launch_access as launch_access
+import lionhub.serve.daemon.reconnect as reconnect
 
 _HOSTED = "https://lion-studio.khive.ai"
 
@@ -199,9 +199,10 @@ def test_a_named_address_with_credentials_or_a_bad_port_is_kept_as_written(fresh
 
 def test_a_code_bound_to_the_admitted_origins_keeps_them_as_configured(fresh, monkeypatch):
     import lionagi.studio.config as config
+    import lionhub.serve.daemon.settings as daemon_settings
 
     configured = "https://Studio.Example:443/"
-    monkeypatch.setattr(config, "CORS_ORIGINS", [configured])
+    monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", [configured])
     code = fresh.mint_pairing_code()
 
     assert fresh.redeem_pairing_grant(code, origin="https://studio.example") is None
@@ -360,7 +361,7 @@ def test_a_socket_another_user_serves_is_not_read(short_dir, served_by):
 
 _ANSWER_A_CLOSED_PEER = """
 import os, signal, socket
-import lionagi.studio.reconnect as reconnect
+import lionhub.serve.daemon.reconnect as reconnect
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 channel = reconnect.ReconnectChannel("unused.sock", lambda: "code", _uid_reader=lambda _c: os.getuid())
@@ -592,9 +593,9 @@ def test_the_serving_daemon_signs_with_the_key_its_reconnect_socket_hands_out(
     from fastapi.testclient import TestClient
 
     import lionagi.studio.app as app_mod
-    import lionagi.studio.services.launches as launches_mod
     import lionagi.studio.services.operator as operator_mod
     import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
+    import lionhub.serve.daemon.services.launches as launches_mod
     import lionhub.serve.diagnostics as code_identity
     from lionhub.orchestration.scheduler.engine import scheduler
 

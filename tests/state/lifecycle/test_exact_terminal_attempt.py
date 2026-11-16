@@ -268,12 +268,14 @@ async def test_failed_effect_remains_owed(tmp_path):
 async def test_cancel_resistant_async_effect_keeps_event_admission_until_finished(
     tmp_path, adapter, delivery_kind, late_outcome, acknowledged
 ):
-    entered, release = asyncio.Event(), asyncio.Event()
+    entered, release, second_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
     calls = []
 
     async def prepare(_row, _db):
         async def deliver():
             calls.append("effect")
+            if len(calls) > 1:
+                second_started.set()
             entered.set()
             try:
                 await release.wait()
@@ -303,6 +305,8 @@ async def test_cancel_resistant_async_effect_keeps_event_admission_until_finishe
             assert await is_acknowledged(db, event_id, "async-late") is acknowledged
             next_result = await getattr(second, adapter)(db, event_id)
             assert next_result.status == ("not_owed" if acknowledged else "failed")
+            if not acknowledged:
+                await asyncio.wait_for(second_started.wait(), 2)
             assert len(calls) == (1 if acknowledged else 2)
         finally:
             release.set()
@@ -619,6 +623,7 @@ async def test_late_async_private_memory_close_does_not_ack_new_generation(caplo
         )
         result = await _first_attempt(runner, "attempt_exact", db, event_id, key, started)
         assert result.status == "failed"
+        await asyncio.wait_for(asyncio.to_thread(started.wait), 2)
         assert calls == ["effect"]
         await db.close()
         await db.open()
@@ -637,10 +642,55 @@ async def test_late_async_private_memory_close_does_not_ack_new_generation(caplo
 
 
 @pytest.mark.asyncio
-async def test_late_async_shared_memory_keeper_survives_closed_handle():
+@pytest.mark.parametrize("lookup_fails", [False, True], ids=["late-delivery", "lookup-error"])
+async def test_late_async_shared_memory_keeper_survives_closed_handle(
+    monkeypatch, caplog, lookup_fails
+):
     name = "late-async-" + uuid.uuid4().hex
     url = f"sqlite+aiosqlite:///file:{name}?mode=memory&cache=shared&uri=true"
-    release, calls, started = asyncio.Event(), [], threading.Event()
+    release, calls, started = asyncio.Event(), [], asyncio.Event()
+    expired = False
+
+    class AttemptAsyncio:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def wait_for(self, awaitable, timeout):
+            nonlocal expired
+            if (
+                getattr(awaitable, "__qualname__", "")
+                != "TerminalReconciler._attempt_one.<locals>.perform"
+            ):
+                return await asyncio.wait_for(awaitable, timeout)
+            attempt = asyncio.create_task(awaitable)
+            effect = asyncio.create_task(started.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {attempt, effect}, timeout=10, return_when=asyncio.FIRST_COMPLETED
+                )
+                if attempt in done:
+                    return attempt.result()
+                if effect not in done:
+                    pytest.fail("Delivery hook did not start within the test's startup timeout")
+                expired = True
+                return await asyncio.wait_for(attempt, timeout=0)
+            finally:
+                effect.cancel()
+                attempt.cancel()
+                await asyncio.gather(effect, attempt, return_exceptions=True)
+
+    # Keep the preparation and hook waits real. Set the outer deadline only after
+    # delivery starts, so admission and state reads can take their own time.
+    monkeypatch.setattr(reconciliation, "asyncio", AttemptAsyncio())
+    failed_lookups = []
+    if lookup_fails:
+
+        async def fail_lookup(_db, _consumer, transition_id):
+            failed_lookups.append(transition_id)
+            raise LookupError("cannot read the owed transition")
+
+        monkeypatch.setattr(reconciliation, "get_owed_transition", fail_lookup)
+
     first = StateDB(url=url)
     await first.open()
     try:
@@ -648,17 +698,26 @@ async def test_late_async_shared_memory_keeper_survives_closed_handle():
         await register_consumer(first, "late-shared", start="all")
         key = (reconciliation._store_identity(first), "late-shared", event_id)
         runner = TerminalReconciler(
-            "late-shared", _late_async_prepare(release, calls, started), timeout=1.0
+            "late-shared", _late_async_prepare(release, calls, started), timeout=30.0
         )
-        result = await _first_attempt(runner, "attempt_exact", first, event_id, key, started)
+        result = await runner.attempt_exact(first, event_id)
         assert result.status == "failed"
+        if lookup_fails:
+            assert failed_lookups == [event_id]
+            assert not result.attempted
+            assert not expired and not calls
+            assert f"Terminal delivery failed for {event_id}: LookupError" in caplog.text
+            await asyncio.wait_for(_wait_for_attempt_release(key), timeout=10)
+            assert not await is_acknowledged(first, event_id, "late-shared")
+            return
+        assert expired and result.attempted, result
         assert calls == ["effect"]
         await first.close()
         # Reconnect while the reservation's keeper pins the original generation.
         async with StateDB(url=url) as observer:
             assert not await is_acknowledged(observer, event_id, "late-shared")
             release.set()
-            await _wait_for_attempt_release(key)
+            await asyncio.wait_for(_wait_for_attempt_release(key), timeout=10)
             assert await is_acknowledged(observer, event_id, "late-shared")
             assert calls == ["effect"]
     finally:

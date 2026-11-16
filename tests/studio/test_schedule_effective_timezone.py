@@ -56,7 +56,7 @@ def _pin_scheduler_tz(monkeypatch: pytest.MonkeyPatch, name: str, source: str) -
 
 
 async def _create_cron_schedule(name: str, **extra) -> str:
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     created = await create_schedule(
         {
@@ -161,7 +161,7 @@ async def test_declared_zone_on_the_row_wins_and_is_attributed_to_the_row(
 async def test_non_cron_schedules_are_not_stamped(temp_db_path, monkeypatch):
     """An interval trigger computes its fire time from an offset, so no zone
     is in play. Stamping one would record a fact that was never used."""
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     _pin_scheduler_tz(monkeypatch, "America/New_York", "env:LIONAGI_SCHEDULER_TZ")
     created = await create_schedule(

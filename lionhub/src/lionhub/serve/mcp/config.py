@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from lionagi._paths import LIONAGI_HOME, RUNS_ROOT
+from lionhub.orchestration.runs import _MCP_JOB_RUN_ID_ENV_VAR
 
 # Authoritative per-run state written by the CLI (run.json, branches, artifacts).
 RUNS_DIR = RUNS_ROOT
@@ -23,7 +24,7 @@ RUNS_DIR = RUNS_ROOT
 JOBS_DIR = LIONAGI_HOME / "mcp" / "jobs"
 
 # The env var the CLI reads to inherit a caller-chosen run_id (subprocess
-# handoff, lionagi/cli/_runs.py). Setting it lets submit() name the run before
+# handoff, lionhub.orchestration.runs). Setting it lets submit() name the run before
 # the child starts, so the id we return is race-free.
 RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 
@@ -32,7 +33,7 @@ RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 # not RUN_ID_ENV_VAR, which the CLI consumes to pick a run directory and which
 # a descendant is free to rewrite for its own sub-run: a kill decision must not
 # rest on a variable another subsystem owns and can reassign.
-JOB_MARKER_ENV_VAR = "LIONAGI_MCP_JOB_RUN_ID"
+JOB_MARKER_ENV_VAR = _MCP_JOB_RUN_ID_ENV_VAR
 
 # Where a run writes the typed class of the exception that ended it, for the
 # terminal hook to lift into the job record (lionhub/src/lionhub/serve/mcp/_terminal_cause.py).
@@ -98,7 +99,7 @@ def li_command() -> list[str]:
 
     Resolution order: 1) ``LIONAGI_MCP_LI_BIN`` override, split on whitespace;
     2) the ``li`` console script next to ``sys.executable``, by absolute path;
-    3) ``<this-interpreter> -m lionagi.cli`` as a last resort.
+    3) ``<this-interpreter> -m lionhub.serve.cli`` as a last resort.
     """
     override = os.environ.get(LI_BIN_ENV_VAR)
     if override:
@@ -113,7 +114,7 @@ def li_command() -> list[str]:
         if bin_li.exists():
             return [str(bin_li)]
 
-    return [sys.executable, "-m", "lionagi.cli"]
+    return [sys.executable, "-m", "lionhub.serve.cli"]
 
 
 def run_dir(run_id: str) -> Path:

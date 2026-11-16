@@ -590,6 +590,8 @@ async def test_existing_http_create_with_omitted_options_is_available(catalog_ap
 
 async def test_catalog_excludes_legacy_null_ids_but_keeps_empty_id(catalog_app):
     """Legacy SQLite permits NULL primary keys, which the catalog excludes."""
+    from lionagi.state.db import StateDB
+
     db_path, client = catalog_app
     schema = Path(__file__).resolve().parents[2] / "lionagi/state/schema.sql"
     with sqlite3.connect(db_path) as conn:
@@ -602,6 +604,11 @@ async def test_catalog_excludes_legacy_null_ids_but_keeps_empty_id(catalog_app):
             ("", "supported-empty-id", "research", "{}"),
         ],
     )
+    db = StateDB(db_path)
+    try:
+        await db.migrate()
+    finally:
+        await db.close()
     async with client as ac:
         page = await ac.get("/api/engine-catalog/presets")
         detail = await ac.get("/api/engine-catalog/preset", params={"id": ""})

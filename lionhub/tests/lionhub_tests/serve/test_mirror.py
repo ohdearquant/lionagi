@@ -1835,7 +1835,8 @@ def test_mirror_service_imports_neither_a_command_module_nor_the_studio() -> Non
     from pathlib import Path
 
     from lionhub.serve import mirror
-    from tests.cli._import_guard import command_module_imports, resolved_imports
+
+    from .cli._import_guard import command_module_imports, resolved_imports
 
     source = Path(mirror.__file__)
     imported = resolved_imports(source, "lionhub.serve")

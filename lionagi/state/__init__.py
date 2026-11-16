@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from .compat import CompatibilityProfile, StateCompatibilityRefused
     from .db import (
         ForeignLineageError,
+        SchemaMigrationRequiredError,
         SchemaTooNewError,
         StateDB,
         UnreadableStoreError,
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 __all__ = (
     "CompatibilityProfile",
     "ForeignLineageError",
+    "SchemaMigrationRequiredError",
     "SchemaTooNewError",
     "StateCompatibilityRefused",
     "StateDB",
@@ -28,6 +30,7 @@ __all__ = (
 _MODULES = {
     "CompatibilityProfile": ("compat", "CompatibilityProfile"),
     "ForeignLineageError": ("db", "ForeignLineageError"),
+    "SchemaMigrationRequiredError": ("db", "SchemaMigrationRequiredError"),
     "SchemaTooNewError": ("db", "SchemaTooNewError"),
     "StateCompatibilityRefused": ("compat", "StateCompatibilityRefused"),
     "StateDB": ("db", "StateDB"),

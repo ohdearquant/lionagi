@@ -64,6 +64,24 @@ def test_prepare_run_kwargs_kw_contains_messages_key():
     assert isinstance(kw["messages"], list)
 
 
+def test_system_context_blocks_are_separated_from_system_and_guidance():
+    branch = Branch(system="SYSTEM")
+
+    _ins, kwargs = _prepare_run_kwargs(branch, "task", ChatParam(), context_blocks=["CTX"])
+
+    content = kwargs["messages"][0]["content"]
+    assert "SYSTEM\n\n  CTX" in content
+    assert content.endswith("Instruction: task")
+
+
+def test_system_without_context_blocks_preserves_existing_guidance():
+    branch = Branch(system="SYSTEM")
+
+    _ins, kwargs = _prepare_run_kwargs(branch, "task", ChatParam())
+
+    assert kwargs["messages"][0]["content"] == "Guidance: SYSTEM\nInstruction: task"
+
+
 async def test_prepare_run_kwargs_accepts_compaction_of_earliest_instruction():
     branch = Branch(system="System policy")
     branch.msgs.add_message(instruction="old task")

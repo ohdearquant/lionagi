@@ -3,7 +3,7 @@
 """The agent roster: which profile names exist here, and what one of them runs.
 
 Both verbs call ``load_agent_profile``/``build_agent_profile_catalog`` from
-:mod:`lionagi.cli._providers` — the same functions ``li agent -a NAME`` uses
+:mod:`lionhub.orchestration.spawn` — the same functions ``li agent -a NAME`` uses
 — rather than reading the profile files a second time, so a verb's answer
 never drifts from what a submitted run actually does.
 

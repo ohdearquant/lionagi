@@ -1,17 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Concurrency-safety tests for the legacy CHECK-constraint table-rebuild
-migrations in ``lionagi/state/db.py`` (``_drop_legacy_*_check``).
-
-These migrations rebuild a table (DROP/CREATE/INSERT/RENAME) when they find
-a stale CHECK constraint. Two processes cold-opening the same legacy DB can
-both observe the stale CHECK and enter the same rebuild; SQLite's write lock
-serializes the two attempts, but the loser can still surface an
-OperationalError instead of quietly recognizing that the winner already
-finished the identical rebuild. Mirrors the multi-process harness in
-``test_migrations.py`` (``test_concurrent_statedb_opens_reconcile_cc_session_column``).
-"""
+"""Legacy CHECK rebuilds share the migration transaction and its serialization lock."""
 
 from __future__ import annotations
 
@@ -20,15 +10,13 @@ import multiprocessing
 import queue
 import sqlite3
 import traceback
-from contextlib import asynccontextmanager
 from pathlib import Path
 
-import aiosqlite
 import pytest
-from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import event
 
-from lionagi.state.db import StateDB
+import lionagi.state.db as state_db_module
+from lionagi.state.db import SCHEMA_VERSION, StateDB
 
 _NUM_CONCURRENT_WORKERS = 4
 _BARRIER_TIMEOUT_SECONDS = 15
@@ -37,12 +25,7 @@ _BARRIER_TIMEOUT_SECONDS = 15
 
 
 def _create_legacy_session_status_db(db_path: Path) -> None:
-    """Full current schema, except sessions.status still carries the legacy
-    4-value CHECK constraint that ``_rebuild_legacy_sessions_table``
-    rebuilds away. Every column already matches the current schema, so
-    ``_reconcile_columns`` is a no-op and the session-status rebuild's own
-    write is the first (and only) write transaction ``open()`` performs.
-    """
+    """A historical schema stamp with the legacy 4-value sessions.status CHECK."""
     from lionagi.state.db import _SCHEMA_PATH
 
     schema_sql = _SCHEMA_PATH.read_text()
@@ -69,6 +52,7 @@ def _create_legacy_session_status_db(db_path: Path) -> None:
     legacy_sql = schema_sql.replace(legacy_status_col, legacy_status_col_with_check, 1)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(legacy_sql)
+        conn.execute("UPDATE schema_meta SET value='5' WHERE key='version'")
 
 
 def _create_legacy_invocations_status_db(db_path: Path) -> None:
@@ -98,115 +82,70 @@ def _create_legacy_invocations_status_db(db_path: Path) -> None:
         conn.executescript(legacy_sql)
 
 
-# Multi-process race: sessions status CHECK rebuild
-
-
-def _open_state_db_worker_synchronized_begin(
+def _migrate_state_db_worker(
     db_path: str,
     start_barrier,
-    inspection_barrier,
+    writer_barrier,
     result_queue,
 ) -> None:
-    """Open and close one StateDB in a spawned process, synchronizing every
-    worker's first ``engine.begin()`` call so they all enter the rebuild's
-    write transaction at (as close as SQLite allows) the same instant."""
-    import lionagi.state.db as state_db_module
-    import lionagi.state.engine as state_engine_module
-    from lionagi.state.db import StateDB
-
-    # A shorter-than-production busy_timeout makes lock contention surface
-    # as an OperationalError within this test's patience instead of quietly
-    # blocking it out. Tuned to 500ms (vs. production's 5000ms default,
-    # engine.py:SQLITE_BUSY_TIMEOUT_MS): low enough that the barrier-forced
-    # pileup on the sessions rebuild's write lock can still exceed it under
-    # load, but high enough to stay clear of a separate, pre-existing
-    # SQLite characteristic — a bare SELECT against sqlite_master can itself
-    # transiently contend with another connection's in-flight DDL transaction
-    # (schema-lock, not just the write-reservation lock) — which every one of
-    # these migrations' un-guarded marker-check reads is exposed to, same as
-    # ``_reconcile_columns``'s own pre-ALTER reads. That's out of scope here
-    # (this fix only guards the mutations); at very aggressive timeouts it
-    # was observed to fail the harness on those unrelated reads rather than
-    # on the write path this test targets.
-    state_engine_module.SQLITE_BUSY_TIMEOUT_MS = 500
-
+    """Have every migration reach the writer reservation together."""
     original_make_engine = state_db_module.make_engine
-
-    class _SynchronizedEngine:
-        def __init__(self, engine) -> None:
-            self._engine = engine
-            self._synchronized = False
-
-        def begin(self):
-            if not self._synchronized:
-                self._synchronized = True
-
-                @asynccontextmanager
-                async def synchronized_begin():
-                    inspection_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
-                    async with self._engine.begin() as connection:
-                        yield connection
-
-                return synchronized_begin()
-            return self._engine.begin()
-
-        def __getattr__(self, name: str):
-            return getattr(self._engine, name)
+    original_rebuild = StateDB._sqlite_rebuild_table
+    rebuilt = []
 
     def synchronized_make_engine(*args, **kwargs):
-        return _SynchronizedEngine(original_make_engine(*args, **kwargs))
+        engine = original_make_engine(*args, **kwargs)
+        waiting = True
 
-    # This fixture has every migration column already present, so
-    # _reconcile_columns never calls engine.begin(); the first begin() is
-    # the sessions CHECK-rebuild's own write transaction.
+        @event.listens_for(engine.sync_engine, "before_cursor_execute")
+        def synchronize(_conn, _cursor, statement, *_args):
+            nonlocal waiting
+            if waiting and statement == "BEGIN IMMEDIATE":
+                waiting = False
+                writer_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+
+        return engine
+
+    async def record_rebuild(conn, table, *args, **kwargs):
+        rebuilt.append(table)
+        await original_rebuild(conn, table, *args, **kwargs)
+
     state_db_module.make_engine = synchronized_make_engine
+    StateDB._sqlite_rebuild_table = staticmethod(record_rebuild)
 
-    async def _open() -> None:
+    async def migrate_store():
         state = StateDB(db_path)
-        await state.open()
-        await state.close()
+        try:
+            await state.migrate()
+        finally:
+            await state.close()
 
     try:
         start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
-        asyncio.run(_open())
-    except Exception:  # noqa: BLE001
-        result_queue.put(traceback.format_exc())
+        asyncio.run(migrate_store())
+    except Exception:  # noqa: BLE001 -- report child failure to parent
+        result_queue.put((traceback.format_exc(), rebuilt))
     else:
-        result_queue.put(None)
+        result_queue.put((None, rebuilt))
 
 
-def test_concurrent_statedb_opens_rebuild_session_status_check(tmp_path: Path) -> None:
-    """Concurrent first opens of a legacy-CHECK sessions table tolerate
-    another process winning the rebuild race instead of crashing.
-
-    Against the unguarded rebuild (no catch-and-reinspect guard), lowering
-    ``SQLITE_BUSY_TIMEOUT_MS`` far enough (~50ms, well below this test's
-    500ms) reliably reproduces the bug this fix closes: N processes racing
-    the same DROP/CREATE/INSERT/RENAME transaction see a loser surface an
-    OperationalError that isn't caught, failing that worker's whole
-    ``open()``. At 500ms the race window is narrow enough that this test
-    passes reliably even against the unguarded code on a lightly loaded
-    machine — the guard is still exercised (and required) under real
-    contention; see the busy_timeout comment on the worker below for why
-    500ms was chosen over a more aggressive value that reproduces the bug
-    more reliably.
-    """
+def test_concurrent_statedb_migrations_rebuild_session_status_check(tmp_path: Path) -> None:
+    """The waiting writers see the rebuilt CHECK and do not rebuild it again."""
     db_path = tmp_path / "concurrent-legacy-session-status.db"
     _create_legacy_session_status_db(db_path)
-
     context = multiprocessing.get_context("spawn")
     start_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS + 1)
-    inspection_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS)
+    writer_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS)
     result_queue = context.Queue()
     processes = [
         context.Process(
-            target=_open_state_db_worker_synchronized_begin,
-            args=(str(db_path), start_barrier, inspection_barrier, result_queue),
+            target=_migrate_state_db_worker,
+            args=(str(db_path), start_barrier, writer_barrier, result_queue),
         )
         for _ in range(_NUM_CONCURRENT_WORKERS)
     ]
 
-    results: list[str | None] = []
+    results = []
     try:
         for process in processes:
             process.start()
@@ -217,7 +156,7 @@ def test_concurrent_statedb_opens_rebuild_session_status_check(tmp_path: Path) -
             try:
                 results.append(result_queue.get(timeout=2))
             except queue.Empty:
-                results.append("worker exited without reporting a result")
+                results.append(("worker exited without reporting a result", []))
     finally:
         for process in processes:
             if process.is_alive():
@@ -226,305 +165,112 @@ def test_concurrent_statedb_opens_rebuild_session_status_check(tmp_path: Path) -
         result_queue.close()
         result_queue.join_thread()
 
-    exit_codes = [process.exitcode for process in processes]
-    assert all(code == 0 for code in exit_codes), exit_codes
-    assert results == [None] * len(processes), results
+    assert all(process.exitcode == 0 for process in processes)
+    assert [error for error, _ in results] == [None] * len(processes)
+    assert [table for _, rebuilt in results for table in rebuilt] == ["sessions"]
 
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"
-        ).fetchone()
-    create_sql = row[0]
-    # Rebuilt exactly once: the legacy 4-value CHECK is gone, and there is
-    # only one `sessions` table definition left (no stray sessions_new).
-    assert "'running', 'completed', 'failed', 'aborted'" not in create_sql
-    with sqlite3.connect(db_path) as conn:
-        table_names = [
-            r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'sessions%'"
-            )
-        ]
-    assert table_names == ["sessions"], table_names
+        tables = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' AND name LIKE 'sessions%'"
+        ).fetchall()
+    assert [name for name, _ in tables] == ["sessions"]
+    assert "'running', 'completed', 'failed', 'aborted'" not in tables[0][1]
 
 
-# Guard-helper unit tests (table/marker-agnostic)
-
-
-async def test_rebuild_check_constraint_swallows_error_when_winner_already_rebuilt():
-    """When the rebuild raises OperationalError but a fresh inspection shows
-    the table already carries the target (widened) CHECK, the guard treats
-    a concurrent winner's completed rebuild as success.
-
-    The ``already_rebuilt`` predicate is exercised directly (unconditionally
-    True) rather than depending on a real legacy-schema DB, because
-    ``state.open()`` on a genuinely legacy DB would self-heal it via the
-    real (already-passing) migration before this synthetic race ever runs.
-    """
-    state = StateDB(":memory:")
-    await state.open()
-    try:
-        called = False
-
-        async def _boom() -> None:
-            nonlocal called
-            called = True
-            raise OperationalError("statement", {}, Exception("database is locked"))
-
-        # Should not raise: the predicate proves the marker is gone,
-        # regardless of the table's actual on-disk content.
-        await state._rebuild_check_constraint("sessions", lambda sql: True, _boom)
-        assert called
-    finally:
-        await state.close()
-
-
-async def test_rebuild_check_constraint_reraises_when_still_legacy():
-    """When the rebuild raises OperationalError and a fresh inspection shows
-    the table genuinely still on the legacy CHECK (no concurrent winner),
-    the guard re-raises — this is a real failure, not a race we can paper
-    over."""
-    state = StateDB(":memory:")
-    await state.open()
-    try:
-
-        async def _boom() -> None:
-            raise OperationalError("statement", {}, Exception("database is locked"))
-
-        with pytest.raises(OperationalError):
-            await state._rebuild_check_constraint("sessions", lambda sql: False, _boom)
-    finally:
-        await state.close()
-
-
-async def test_rebuild_check_constraint_handles_raw_sqlite_operational_error():
-    """Five of the six rebuilds execute through the raw aiosqlite driver,
-    which raises ``sqlite3.OperationalError`` directly — NOT SQLAlchemy's
-    wrapper. The guard must treat both types identically: swallow when a
-    concurrent winner provably landed the rebuild, re-raise when the table
-    is genuinely still legacy."""
-    state = StateDB(":memory:")
-    await state.open()
-    try:
-
-        async def _raw_boom() -> None:
-            raise sqlite3.OperationalError("database is locked")
-
-        # Winner already rebuilt -> raw error suppressed.
-        await state._rebuild_check_constraint("sessions", lambda sql: True, _raw_boom)
-
-        # Still legacy -> raw error re-raised untouched.
-        with pytest.raises(sqlite3.OperationalError):
-            await state._rebuild_check_constraint("sessions", lambda sql: False, _raw_boom)
-    finally:
-        await state.close()
-
-
-async def test_rebuild_check_constraint_reraises_on_non_sqlite_dialect():
-    """The guard only ever suppresses errors on sqlite — other dialects
-    always re-raise, matching ``_reconcile_columns``'s guard."""
-    state = StateDB(":memory:")
-    await state.open()
-    try:
-        state.dialect = "postgresql"
-
-        async def _boom() -> None:
-            raise OperationalError("statement", {}, Exception("connection reset"))
-
-        with pytest.raises(OperationalError):
-            await state._rebuild_check_constraint("sessions", lambda sql: True, _boom)
-    finally:
-        state.dialect = "sqlite"
-        await state.close()
-
-
-# Raw-driver (FK-toggling) rebuild wiring: invocations
-
-
-async def test_drop_legacy_invocations_status_check_tolerates_concurrent_winner(tmp_path):
-    """``_drop_legacy_invocations_status_check`` uses the raw-driver
-    BEGIN IMMEDIATE + FK-toggle rebuild path (distinct from the plain
-    ``engine.begin()`` path the sessions rebuild uses). Simulate a
-    concurrent winner finishing the identical rebuild first, then force
-    our own attempt to surface OperationalError, and confirm the guard
-    recognizes the already-completed rebuild instead of failing ``open()``.
-    """
-    db_path = tmp_path / "legacy-invocations.db"
-    _create_legacy_invocations_status_db(db_path)
-
-    state = StateDB(db_path)
-    await state.open()
-    try:
-        async with state._read() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invocations'"
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        assert "'completed_empty'" in row["sql"]
-    finally:
-        await state.close()
-
-
-async def test_drop_legacy_invocations_status_check_swallows_operational_error(tmp_path):
-    """Directly exercise the invocations rebuild's guard wiring: when the
-    write raises OperationalError but another process already landed the
-    'completed_empty' CHECK, the migration must not fail ``open()``."""
-    db_path = tmp_path / "legacy-invocations-race.db"
-    _create_legacy_invocations_status_db(db_path)
-
-    state = StateDB(db_path)
-    call_count = 0
-    original = state._rebuild_check_constraint
-
-    async def _patched(table, already_rebuilt, rebuild):
-        nonlocal call_count
-        if table == "invocations":
-            call_count += 1
-
-            async def _winner_then_boom() -> None:
-                # A concurrent winner completes the exact same rebuild via
-                # an independent raw connection first...
-                async with aiosqlite.connect(str(db_path)) as raw:
-                    await raw.execute("PRAGMA foreign_keys = OFF")
-                    await raw.execute(
-                        """
-                        CREATE TABLE invocations_new (
-                          id              TEXT    PRIMARY KEY,
-                          skill           TEXT    NOT NULL,
-                          plugin          TEXT,
-                          prompt          TEXT,
-                          started_at      REAL    NOT NULL,
-                          ended_at        REAL,
-                          status          TEXT    NOT NULL DEFAULT 'running'
-                                          CHECK(status IN ('running', 'completed',
-                                                'completed_empty', 'failed',
-                                                'timed_out', 'aborted', 'cancelled')),
-                          session_count   INTEGER NOT NULL DEFAULT 0,
-                          created_at      REAL    NOT NULL,
-                          updated_at      REAL    NOT NULL,
-                          node_metadata   JSON,
-                          status_reason_code     TEXT,
-                          status_reason_summary  TEXT,
-                          status_evidence_refs   JSON
-                        )
-                        """
-                    )
-                    cols = "id, skill, plugin, prompt, started_at, ended_at, status, session_count, created_at, updated_at, node_metadata, status_reason_code, status_reason_summary, status_evidence_refs"
-                    await raw.execute(
-                        f"INSERT INTO invocations_new ({cols}) SELECT {cols} FROM invocations"
-                    )
-                    await raw.execute("DROP TABLE invocations")
-                    await raw.execute("ALTER TABLE invocations_new RENAME TO invocations")
-                    await raw.execute("PRAGMA foreign_keys = ON")
-                    await raw.commit()
-                # ...then our own attempt collides with a REAL raw-driver lock
-                # error: a holder connection takes the write reservation and a
-                # near-zero busy timeout makes the contending BEGIN IMMEDIATE
-                # raise sqlite3.OperationalError exactly as it does in
-                # production, rather than a hand-constructed SQLAlchemy
-                # exception the raw path never produces.
-                async with aiosqlite.connect(str(db_path)) as holder:
-                    await holder.execute("BEGIN IMMEDIATE")
-                    async with aiosqlite.connect(str(db_path)) as contender:
-                        await contender.execute("PRAGMA busy_timeout = 1")
-                        await contender.execute("BEGIN IMMEDIATE")
-
-            await original(table, already_rebuilt, _winner_then_boom)
-        else:
-            await original(table, already_rebuilt, rebuild)
-
-    state._rebuild_check_constraint = _patched
-    await state.open()
-    try:
-        assert call_count == 1
-        async with state._read() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invocations'"
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        assert "'completed_empty'" in row["sql"]
-    finally:
-        await state.close()
-
-
-async def test_invocations_rebuild_crash_mid_sequence_rolls_back_atomically(tmp_path):
-    """The raw-driver rebuild must be one BEGIN IMMEDIATE transaction. A crash
-    injected between DROP and RENAME must roll the whole rebuild back —
-    leaving the legacy table intact with its rows and no stray
-    ``invocations_new`` — so a later open() can heal the DB. Under
-    per-statement autocommit the same crash strands the data in
-    ``invocations_new`` with ``invocations`` gone, an unrecoverable state."""
-    import aiosqlite
-
+async def test_invocations_rebuild_crash_mid_sequence_rolls_back_atomically(
+    tmp_path: Path, monkeypatch
+):
     db_path = tmp_path / "legacy-invocations-crash.db"
     _create_legacy_invocations_status_db(db_path)
     with sqlite3.connect(db_path) as seed:
+        seed.execute("UPDATE schema_meta SET value='5' WHERE key='version'")
         seed.execute(
             "INSERT INTO invocations (id, skill, started_at, created_at, updated_at, status)"
             " VALUES ('inv-1', 'demo', 0, 0, 0, 'running')"
         )
-        seed.commit()
 
-    real_execute = aiosqlite.Connection.execute
-    crash = {"armed": True}
+    original_make_engine = state_db_module.make_engine
 
-    def _crashing_execute(self, sql, *args, **kwargs):
-        if crash["armed"] and "RENAME TO invocations" in str(sql):
-            raise sqlite3.OperationalError("disk I/O error")
-        return real_execute(self, sql, *args, **kwargs)
+    def crashing_make_engine(*args, **kwargs):
+        engine = original_make_engine(*args, **kwargs)
 
-    aiosqlite.Connection.execute = _crashing_execute
-    try:
+        @event.listens_for(engine.sync_engine, "before_cursor_execute")
+        def fail_before_rename(_conn, _cursor, statement, *_args):
+            if statement == "ALTER TABLE invocations_new RENAME TO invocations":
+                raise RuntimeError("injected failure during invocations rebuild")
+
+        return engine
+
+    with monkeypatch.context() as patched:
+        patched.setattr(state_db_module, "make_engine", crashing_make_engine)
         state = StateDB(db_path)
-        with pytest.raises(sqlite3.OperationalError):
-            await state.open()
-        await state.close()
-    finally:
-        aiosqlite.Connection.execute = real_execute
+        try:
+            with pytest.raises(RuntimeError, match="injected failure during invocations rebuild"):
+                await state.migrate()
+        finally:
+            await state.close()
 
-    # Atomic rollback: legacy table intact with its row, no stray _new table.
     with sqlite3.connect(db_path) as check:
-        tables = {
-            r[0]
-            for r in check.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'invocations%'"
-            )
-        }
-        assert tables == {"invocations"}, tables
-        rows = list(check.execute("SELECT id FROM invocations"))
-        assert rows == [("inv-1",)]
+        tables = check.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' AND name LIKE 'invocations%'"
+        ).fetchall()
+        assert [name for name, _ in tables] == ["invocations"]
+        assert "completed_empty" not in tables[0][1]
+        assert check.execute("SELECT id FROM invocations").fetchall() == [("inv-1",)]
+        assert check.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone() == (
+            "5",
+        )
 
-    # And the DB is healable: a clean re-open completes the rebuild.
-    crash["armed"] = False
     state = StateDB(db_path)
-    await state.open()
     try:
+        await state.migrate()
         async with state._read() as conn:
+            assert (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one() == 1
+            assert (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all() == []
             sql = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invocations'"
-                        )
-                    )
+                await conn.exec_driver_sql(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='invocations'"
                 )
-                .mappings()
-                .first()
-            )["sql"]
-        assert "completed_empty" in sql
+            ).scalar_one()
+        assert "'completed_empty'" in sql
+        assert await state.schema_version() == SCHEMA_VERSION
     finally:
         await state.close()
+
+
+@pytest.mark.parametrize(
+    ("table", "predicate"),
+    [
+        ("schedule_runs", "_schedule_runs_rebuild_needed"),
+        ("definitions", "_definitions_rebuild_needed"),
+    ],
+)
+async def test_rebuild_uses_the_same_decision_as_its_backup(
+    tmp_path, monkeypatch, table, predicate
+):
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path):
+        pass
+    with sqlite3.connect(db_path) as seed:
+        seed.execute("UPDATE schema_meta SET value='5' WHERE key='version'")
+
+    # Change just the selected table's decision on a schema that normally needs neither rebuild.
+    monkeypatch.setattr(
+        StateDB, predicate, staticmethod(lambda create_sql: create_sql is not None), raising=False
+    )
+    rebuilt = []
+
+    async def record_rebuild(_conn, table_name, *_args, **_kwargs):
+        backups = list(tmp_path.glob(f"{db_path.name}.pre-{table_name}.*.bak"))
+        assert len(backups) == 1, "create the backup before rebuilding its table"
+        rebuilt.append(table_name)
+
+    monkeypatch.setattr(StateDB, "_sqlite_rebuild_table", staticmethod(record_rebuild))
+    state = StateDB(db_path)
+    try:
+        await state.migrate()
+    finally:
+        await state.close()
+
+    assert rebuilt == [table]
+    assert len(list(tmp_path.glob(f"{db_path.name}.pre-*.bak"))) == 1

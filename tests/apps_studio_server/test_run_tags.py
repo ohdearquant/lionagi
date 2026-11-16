@@ -340,7 +340,7 @@ def test_list_runs_tag_filter_on_fresh_install_does_not_create_db(tmp_path, monk
     _patch_db(monkeypatch, db_path)
     assert not db_path.exists()
 
-    import lionagi.studio.services.runs as runs_mod
+    import lionhub.serve.daemon.services.runs as runs_mod
 
     result = _run(runs_mod.list_runs(tag=["x"]))
 
@@ -385,7 +385,7 @@ def test_add_tag_on_fresh_install_initializes_full_schema_not_just_run_tags(tmp_
     assert not db_path.exists()
 
     import lionagi.studio.services.run_tags as run_tags
-    import lionagi.studio.services.sessions as sessions_mod
+    import lionhub.serve.daemon.services.sessions as sessions_mod
 
     sid = str(uuid.uuid4())
     # No session row exists yet, so the tag insert trips the FK -- but only
@@ -416,8 +416,8 @@ def test_pruning_a_session_cascades_its_tags(tmp_path, monkeypatch):
     # admin freezes its own _DB / DEFAULT_DB_PATH at import; _patch_db does not
     # touch them, so point prune at the tmp db too.
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.admin as admin
     import lionagi.studio.services.run_tags as run_tags
+    import lionhub.serve.daemon.services.admin as admin
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 

@@ -19,6 +19,7 @@ from lionhub.orchestration.schedule._timezone_rules import (
     rules_equal,
     tzif_rules,
 )
+from lionhub.orchestration.schedule.validation import merged_page_limit
 
 _logger = logging.getLogger("lionagi.studio.config")
 
@@ -470,3 +471,41 @@ def resolve_schedule_cadence_seconds(schedule: dict) -> float | None:
     if trigger_type == "github_poll":
         return schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300
     return None
+
+
+def resolve_merged_poll_page_limit(schedule: dict) -> int | None:
+    """Return the effective cap of a merged-PR poll, when its filter is valid."""
+    poll_filter = schedule.get("github_filter")
+    if (
+        schedule.get("trigger_type") != "github_poll"
+        or not isinstance(poll_filter, dict)
+        or poll_filter.get("event") != "pr_merged"
+    ):
+        return None
+    try:
+        return merged_page_limit(poll_filter.get("merged_page_limit"))
+    except ValueError:
+        return None
+
+
+_MAX_MERGED_POLL_BACKOFF_SECONDS = 3600
+
+
+def resolve_github_poll_cadence_seconds(schedule: dict) -> float | None:
+    """Return a backed-off interval after capped scans at the current or a larger cap."""
+    cadence = resolve_schedule_cadence_seconds(schedule)
+    page_limit = resolve_merged_poll_page_limit(schedule)
+    capped_at = schedule.get("poller_last_capped_page_limit")
+    streak = schedule.get("poller_consecutive_cap_no_dispatch")
+    if (
+        page_limit is None
+        or type(capped_at) is not int
+        or not page_limit <= capped_at <= 100
+        or type(streak) is not int
+        or streak < 1
+        or type(cadence) not in (int, float)
+        or not 0 < cadence < _MAX_MERGED_POLL_BACKOFF_SECONDS
+    ):
+        return cadence
+    # Twelve doublings reach the one-hour ceiling even at a one-second cadence.
+    return min(cadence * 2 ** min(streak, 12), _MAX_MERGED_POLL_BACKOFF_SECONDS)

@@ -813,8 +813,8 @@ everything since; facts past the range belong to the next wake.
 - No per-subscriber cursor exists. The durable reader positions nearest to one exist and none is a
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
-  not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round`, `lionagi/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.build_round_operations`;
-  `lionagi/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`). A schedule holds `github_cursor`, a reader
+  not a per-subscriber position (`lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round`, `lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.build_round_operations`;
+  `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:493`, `:564-572`; `lionagi/state/db.py::StateDB._build_update_schedule_stmt`, `lionagi/state/db.py::StateDB.create_schedule_run_and_advance`;

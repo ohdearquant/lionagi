@@ -159,7 +159,7 @@ async def test_list_sessions_row_cap_reports_truncation(db_path):
 
 async def test_list_sessions_redacts_secret_shaped_name(db_path):
     from lionagi.studio.operator.application_mcp import list_sessions
-    from lionagi.studio.services import runs as runs_service
+    from lionhub.serve.daemon.services import runs as runs_service
 
     sid = str(uuid.uuid4())
     await seed_session(
@@ -244,7 +244,7 @@ async def test_session_detail_message_limit_caps_and_reports_truncation(db_path)
 
 async def test_session_detail_redacts_secret_shaped_message_content(db_path):
     from lionagi.studio.operator.application_mcp import session_detail
-    from lionagi.studio.services import sessions as sessions_service
+    from lionhub.serve.daemon.services import sessions as sessions_service
 
     sid = str(uuid.uuid4())
     await seed_session(db_path, session_id=sid, status="completed")
@@ -327,7 +327,7 @@ async def test_session_signals_limit_caps_and_reports_truncation(db_path):
 
 async def test_session_signals_redacts_secret_shaped_payload_value(db_path):
     from lionagi.studio.operator.application_mcp import session_signals
-    from lionagi.studio.services import signals as signals_service
+    from lionhub.serve.daemon.services import signals as signals_service
 
     sid = str(uuid.uuid4())
     await seed_session(db_path, session_id=sid, status="running")

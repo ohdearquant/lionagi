@@ -468,7 +468,7 @@ def test_a_traversal_component_is_refused_by_the_guard():
     """
     from fastapi import HTTPException
 
-    from lionagi.studio.services._path_safety import safe_path_join
+    from lionhub.serve.daemon.services._path_safety import safe_path_join
 
     root = Path("/srv/shows")
     for component in ("../../../etc", "..", "../etc", "a/../../b", "/etc/passwd"):

@@ -27,7 +27,7 @@ import pytest
 )
 def test_router_reexports_the_same_validation_objects(name):
     import lionhub.orchestration.schedule.validation as schedule_validation
-    from lionagi.studio.services import schedules
+    from lionhub.serve.daemon.services import schedules
 
     assert getattr(schedules, name) is getattr(schedule_validation, name)
 
@@ -132,7 +132,7 @@ def test_declaration_validators_run_without_importing_router(tmp_path):
         import sys
         from pathlib import Path
 
-        router = "lionagi.studio.services.schedules"
+        router = "lionhub.serve.daemon.services.schedules"
         attempts = []
 
         class BlockRouter(importlib.abc.MetaPathFinder):

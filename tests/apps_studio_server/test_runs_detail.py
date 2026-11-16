@@ -97,7 +97,7 @@ def patched_runs_svc(tmp_path: Path, monkeypatch: Any):
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
-    import lionagi.studio.services.runs as runs_svc
+    import lionhub.serve.daemon.services.runs as runs_svc
 
     return runs_svc, db_path
 

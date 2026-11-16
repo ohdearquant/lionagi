@@ -797,10 +797,10 @@ async def test_an_open_that_fails_after_its_connection_read_the_store_keeps_its_
     path = tmp_path / "state.db"
     handle = StateDB(path)
 
-    async def fail(self):
+    async def fail(self, conn):
         raise RuntimeError("after the connection read the store")
 
-    monkeypatch.setattr(StateDB, "_backfill_session_ended_at_once", fail)
+    monkeypatch.setattr(StateDB, "_apply_schema_changes", fail)
     try:
         with pytest.raises(RuntimeError, match="after the connection read the store"):
             await handle.open()
@@ -826,12 +826,14 @@ async def test_a_kept_engine_whose_store_is_refused_on_the_next_open_is_disposed
     )
 
     path = tmp_path / "state.db"
+    async with StateDB(path):
+        pass
     handle = StateDB(path)
 
-    async def fail(self):
+    async def fail(self, conn):
         raise RuntimeError("after the connection read the store")
 
-    monkeypatch.setattr(StateDB, "_backfill_session_ended_at_once", fail)
+    monkeypatch.setattr(StateDB, "_apply_schema_changes", fail)
     with pytest.raises(RuntimeError):
         await handle.open()
     monkeypatch.undo()
@@ -2047,6 +2049,19 @@ async def test_a_live_message_joins_the_runs_session_branch_and_progressions(db,
     assert _rows(store, "SELECT last_message_at FROM sessions WHERE id = 's1'") == [(started + 10,)]
 
 
+@pytest.mark.parametrize("message_id", [12, "", None])
+async def test_live_message_rejects_invalid_progression_ids_in_compatibility_mode(
+    db, store, message_id
+):
+    await _setup_run(db)
+    msg = _live_message()
+    msg["id"] = message_id
+    with pytest.raises(ValueError, match="non-empty string message IDs"):
+        await db._persist_live_message(msg, session_id="s1", branch_progression_id="bp")
+    assert _rows(store, "SELECT id FROM messages WHERE id = ?", (str(message_id),)) == []
+    assert _rows(store, "SELECT collection FROM progressions WHERE id = 'bp'") == [("[]",)]
+
+
 async def test_a_live_message_written_again_is_rewritten_and_listed_once(db, store):
     await _setup_run(db)
     for content in ("first", "second"):
@@ -2791,8 +2806,8 @@ async def test_a_refused_setup_finishes_the_runs_record(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    import lionagi.cli.agent as agent_mod
     import lionhub.orchestration.runs as runs_mod
+    import lionhub.serve.cli.agent as agent_mod
     from lionagi.service.manager import iModelManager
     from lionhub.orchestration.runs import allocate_run
 
@@ -2818,7 +2833,7 @@ async def test_a_refused_setup_finishes_the_runs_record(tmp_path, monkeypatch):
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", refused_setup)
 
-    from lionagi.cli.agent import _run_agent
+    from lionhub.serve.cli.agent import _run_agent
 
     with pytest.raises(StateCompatibilityRefused):
         await _run_agent("codex/model", "do the thing")
@@ -2839,7 +2854,7 @@ async def test_an_orchestrate_run_json_names_the_reason_in_compatibility_mode(
 ):
     from types import SimpleNamespace
 
-    from lionagi.cli.orchestrate import _orchestration
+    from lionhub.serve.cli.orchestrate import _orchestration
 
     async def teardown(ctx, **kwargs):
         ctx["terminal_reason"] = ("failed", "The store refused a write: x")

@@ -19,6 +19,7 @@ from lionagi.ln.concurrency._compat import BaseExceptionGroup, ExceptionGroup
 from lionagi.protocols.generic import Event, EventStatus, Execution, Log
 from lionagi.protocols.ids import to_uuid
 
+from ._api_telemetry import _record_response_usage, record_served_model
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
 from .connections.agentic_endpoint import _UNHELD_SESSION_TEXT
 from .connections.endpoint import (
@@ -42,6 +43,26 @@ if TYPE_CHECKING:
 
 # A request under this many counted tokens does not calibrate input_token_scale.
 _CALIBRATION_FLOOR = 4_000
+
+
+def _reaches_a_frame(error: BaseException) -> bool:
+    """Whether ``error`` or any exception it links to carries a traceback (and so frame locals)."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if BaseException.__traceback__.__get__(current, type(current)) is not None:
+            return True
+        for descriptor in (BaseException.__cause__, BaseException.__context__):
+            linked = descriptor.__get__(current, type(current))
+            if linked is not None:
+                pending.append(linked)
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+    return False
 
 
 def _derive_safe_exception_group(
@@ -68,13 +89,17 @@ def _derive_safe_exception_group(
                 ExceptionGroup if isinstance(source, ExceptionGroup) else BaseExceptionGroup
             )
             replacement = group_type(source.message, members)
-    for descriptor in (
-        BaseException.__cause__,
-        BaseException.__context__,
-        BaseException.__traceback__,
-        BaseException.__suppress_context__,
-    ):
-        descriptor.__set__(replacement, descriptor.__get__(source, type(source)))
+    # A traceback retains frame locals. Keep a linked exception only when nothing it reaches,
+    # through its own causes, contexts and group members, carries a frame.
+    for descriptor in (BaseException.__cause__, BaseException.__context__):
+        linked = descriptor.__get__(source, type(source))
+        if linked is not None and _reaches_a_frame(linked):
+            linked = None
+        descriptor.__set__(replacement, linked)
+    BaseException.__traceback__.__set__(replacement, None)
+    BaseException.__suppress_context__.__set__(
+        replacement, BaseException.__suppress_context__.__get__(source, type(source))
+    )
     if hasattr(source, "__notes__"):
         replacement.__notes__ = list(source.__notes__)
     return replacement
@@ -791,12 +816,14 @@ class iModel:  # noqa: N801
         api_call: APICalling | None,
         served_model: str | None,
     ) -> None:
-        """Record the provider's report on the call and on the model.
+        """Record the provider's report on the call, on the model and in the run record.
 
         ``APICalling.metadata`` is the call-correlated evidence. The model-level
         value holds what the last invoke or stream on this model to write it
         wrote, so under concurrency it is never evidence about a particular call.
-        Recording none clears both values. A call that failed records none. A
+        When the call carries a telemetry frame, the same value is written to that
+        request's row in the run's API usage section. Recording none clears the call
+        and model values and writes ``null`` to the row. A call that failed records none. A
         stream its consumer closed early, and a stream cancelled after the provider
         named its model (a timeout that cancels it included), have not failed: each
         keeps the model read from what it delivered. A timeout raised inside the
@@ -819,6 +846,8 @@ class iModel:  # noqa: N801
             api_call.metadata.pop("served_model", None)
             if served_model is not None:
                 api_call.metadata["served_model"] = served_model
+            # A call built outside the request path has no telemetry frame.
+            record_served_model(getattr(api_call, "_telemetry_frame", None), served_model)
         if served_model is None:
             self.provider_metadata.pop("served_model", None)
         else:
@@ -942,6 +971,20 @@ class iModel:  # noqa: N801
             raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
         if not failed and api_call.status == EventStatus.COMPLETED:
             self._calibrate_input_scale(api_call, usage)
+            self._observe_response_usage(api_call, served_model, usage)
+
+    @staticmethod
+    def _observe_response_usage(call: APICalling, served_model: str | None, usage: Any) -> None:
+        frame = getattr(call, "_telemetry_frame", None)
+        if frame is not None:
+            _record_response_usage(
+                frame,
+                usage,
+                provider=call.endpoint.config.provider,
+                endpoint=call.endpoint.config.endpoint,
+                served_model=served_model,
+                payload=call.payload,
+            )
 
     def _calibrate_input_scale(self, call: APICalling, usage: Any) -> None:
         """Raise input_token_scale to the provider's reported input per token the cap counted.
@@ -1013,16 +1056,19 @@ class iModel:  # noqa: N801
 
             completed_call = self.executor.pile.pop(api_call.id)
             response = completed_call.response if completed_call else None
-            self._store_served_model(
-                completed_call,
-                self._reported_served_model(response),
-            )
+            served_model = self._reported_served_model(response)
+            self._store_served_model(completed_call, served_model)
             if (
                 completed_call is not None
                 and completed_call.status == EventStatus.COMPLETED
                 and isinstance(response, dict)
             ):
-                self._calibrate_input_scale(completed_call, response.get("usage"))
+                usage = response.get("usage")
+                self._calibrate_input_scale(completed_call, usage)
+                if getattr(
+                    completed_call, "_uncached_response", False
+                ) and not self._reports_failure(response):
+                    self._observe_response_usage(completed_call, served_model, usage)
             if (
                 restored_resume is not None
                 and completed_call is not None

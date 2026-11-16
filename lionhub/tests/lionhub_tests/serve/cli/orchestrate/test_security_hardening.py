@@ -1,0 +1,440 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for CLI security hardening: spec validation and save-path containment."""
+
+import argparse
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import yaml
+
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.serve.cli.orchestrate import (
+    _load_flow_spec,
+    _validate_spec_fields,
+    add_orchestrate_subparser,
+    run_orchestrate,
+)
+
+
+def _parse_flow_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="li")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    add_orchestrate_subparser(subparsers)
+    return parser.parse_args(["o", "flow", *argv])
+
+
+# Spec field validation
+
+
+class TestSpecValidationRejectsBadTypes:
+    def test_workers_as_string(self):
+        err = _validate_spec_fields({"workers": "8"})
+        assert err is not None
+        assert "workers" in err
+
+    def test_workers_negative(self):
+        err = _validate_spec_fields({"workers": -1})
+        assert err is not None
+        assert "workers" in err
+
+    def test_workers_zero(self):
+        err = _validate_spec_fields({"workers": 0})
+        assert err is not None
+
+    def test_workers_too_large(self):
+        err = _validate_spec_fields({"workers": 999999999})
+        assert err is not None
+        assert "workers" in err
+
+    def test_workers_bool_rejected(self):
+        # bool is a subclass of int in Python — must be rejected
+        err = _validate_spec_fields({"workers": True})
+        assert err is not None
+
+    def test_max_agents_as_string(self):
+        err = _validate_spec_fields({"max_agents": "10"})
+        assert err is not None
+        assert "max_agents" in err
+
+    def test_max_agents_too_large(self):
+        err = _validate_spec_fields({"max_agents": 51})
+        assert err is not None
+
+    def test_max_ops_range_error_describes_planning_and_spawn_limits(self):
+        err = _validate_spec_fields({"max_ops": 51})
+        assert err == (
+            "spec field 'max_ops' must be in [0, 50] "
+            "(0 = no shared ceiling; reactive spawns are capped at 20), got 51"
+        )
+
+    def test_effort_invalid_value(self):
+        err = _validate_spec_fields({"effort": "extreme"})
+        assert err is not None
+        assert "effort" in err
+
+    def test_effort_accepts_all_provider_levels(self):
+        # Spec validation must match lionhub.orchestration.spawn EFFORT_LEVELS so
+        # playbooks can't be rejected for values the CLI itself accepts.
+        for level in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            assert _validate_spec_fields({"effort": level}) is None, level
+
+    def test_effort_as_int(self):
+        err = _validate_spec_fields({"effort": 3})
+        assert err is not None
+
+    def test_bare_as_string(self):
+        err = _validate_spec_fields({"bare": "true"})
+        assert err is not None
+        assert "bare" in err
+
+    def test_dry_run_as_int(self):
+        err = _validate_spec_fields({"dry_run": 1})
+        assert err is not None
+
+    def test_with_synthesis_accepts_string_model_spec(self):
+        # `--with-synthesis [MODEL]` takes an optional model spec; spec
+        # validation must accept both bool and str for parity.
+        assert _validate_spec_fields({"with_synthesis": True}) is None
+        assert _validate_spec_fields({"with_synthesis": False}) is None
+        assert _validate_spec_fields({"with_synthesis": "claude-code/opus-4-7"}) is None
+
+    def test_with_synthesis_rejects_non_bool_non_str(self):
+        err = _validate_spec_fields({"with_synthesis": [1, 2]})
+        assert err is not None
+        assert "with_synthesis" in err
+        err = _validate_spec_fields({"with_synthesis": 42})
+        assert err is not None
+
+    def test_prompt_too_long(self):
+        err = _validate_spec_fields({"prompt": "x" * (MAX_SPEC_PROMPT_CHARS + 1)})
+        assert err is not None
+        assert "prompt" in err
+
+    def test_prompt_as_int(self):
+        err = _validate_spec_fields({"prompt": 42})
+        assert err is not None
+
+    def test_save_as_int(self):
+        err = _validate_spec_fields({"save": 123})
+        assert err is not None
+
+    def test_model_as_int(self):
+        err = _validate_spec_fields({"model": 42})
+        assert err is not None
+
+    def test_agent_as_list(self):
+        err = _validate_spec_fields({"agent": ["a"]})
+        assert err is not None
+
+    def test_team_mode_as_bool(self):
+        err = _validate_spec_fields({"team_mode": True})
+        assert err is not None
+
+    # Present-null values must be rejected (YAML `null` → Python None)
+
+    def test_workers_null_rejected(self):
+        err = _validate_spec_fields({"workers": None})
+        assert err is not None
+        assert "workers" in err
+
+    def test_max_agents_null_rejected(self):
+        err = _validate_spec_fields({"max_agents": None})
+        assert err is not None
+        assert "max_agents" in err
+
+    def test_bare_null_rejected(self):
+        err = _validate_spec_fields({"bare": None})
+        assert err is not None
+        assert "bare" in err
+
+    def test_dry_run_null_rejected(self):
+        err = _validate_spec_fields({"dry_run": None})
+        assert err is not None
+
+    def test_with_synthesis_null_rejected(self):
+        err = _validate_spec_fields({"with_synthesis": None})
+        assert err is not None
+
+    def test_prompt_null_rejected(self):
+        err = _validate_spec_fields({"prompt": None})
+        assert err is not None
+        assert "prompt" in err
+
+    def test_save_null_rejected(self):
+        err = _validate_spec_fields({"save": None})
+        assert err is not None
+        assert "save" in err
+
+    def test_model_null_rejected(self):
+        err = _validate_spec_fields({"model": None})
+        assert err is not None
+        assert "model" in err
+
+    def test_agent_null_rejected(self):
+        err = _validate_spec_fields({"agent": None})
+        assert err is not None
+
+    def test_team_mode_null_rejected(self):
+        err = _validate_spec_fields({"team_mode": None})
+        assert err is not None
+
+
+class TestSpecValidationRejectsUnknownFields:
+    def test_unknown_field_names_key_and_accepted_fields(self):
+        err = _validate_spec_fields({"reactve": "off"})
+        assert err == (
+            "unknown spec field 'reactve'; accepted fields: agent, args, argument-hint, "
+            "artifacts, bare, bypass, description, dry_run, effort, links, max_agents, max_ops, "
+            "model, name, pack, permission_mode, prompt, reactive, save, show_graph, "
+            "steps, team_attach, team_mode, use, with_synthesis, workers, yolo"
+        )
+
+    def test_dead_critic_model_field_is_rejected(self):
+        err = _validate_spec_fields({"critic_model": "claude-code/opus-4-7"})
+        assert err is not None
+        assert "critic_model" in err
+
+
+class TestSpecValidationAcceptsValidFields:
+    def test_empty_spec(self):
+        assert _validate_spec_fields({}) is None
+
+    def test_valid_workers(self):
+        assert _validate_spec_fields({"workers": 8}) is None
+
+    def test_workers_boundary_values(self):
+        assert _validate_spec_fields({"workers": 1}) is None
+        assert _validate_spec_fields({"workers": 32}) is None
+
+    def test_valid_max_agents(self):
+        assert _validate_spec_fields({"max_agents": 12}) is None
+
+    def test_max_agents_boundary_values(self):
+        assert _validate_spec_fields({"max_agents": 1}) is None
+        assert _validate_spec_fields({"max_agents": 50}) is None
+
+    def test_max_ops_zero_allows_uncapped_planning(self):
+        # Zero removes the shared planner/spawn ceiling while the executor
+        # retains its separate 20-spawn safety cap.
+        assert _validate_spec_fields({"max_ops": 0}) is None
+        assert _validate_spec_fields({"max_agents": 0}) is None
+
+    def test_args_field_remains_accepted(self):
+        assert _validate_spec_fields({"args": {"mode": {"type": "str"}}}) is None
+
+    def test_argument_hint_field_remains_accepted(self):
+        assert _validate_spec_fields({"argument-hint": "[--mode MODE]"}) is None
+
+    def test_description_field_remains_accepted(self):
+        assert _validate_spec_fields({"description": "Review a target"}) is None
+
+    def test_pack_field_remains_accepted(self):
+        assert _validate_spec_fields({"pack": "./routing.yaml"}) is None
+
+    def test_name_metadata_field_remains_accepted(self):
+        assert _validate_spec_fields({"name": "repo-review"}) is None
+
+    # Named one at a time on purpose. Looping over the implementation's own
+    # accepted set would pass no matter which key was dropped from it.
+    def test_yolo_field_remains_accepted(self):
+        assert _validate_spec_fields({"yolo": True}) is None
+
+    def test_bypass_field_remains_accepted(self):
+        assert _validate_spec_fields({"bypass": True}) is None
+
+    def test_permission_mode_field_remains_accepted(self):
+        assert _validate_spec_fields({"permission_mode": "acceptEdits"}) is None
+
+    def test_valid_effort_values(self):
+        for effort in ("low", "medium", "high", "xhigh"):
+            assert _validate_spec_fields({"effort": effort}) is None
+
+    def test_effort_null_accepted(self):
+        # effort: null means "use profile default" — explicitly allowed
+        assert _validate_spec_fields({"effort": None}) is None
+
+    def test_valid_booleans(self):
+        assert (
+            _validate_spec_fields({"bare": True, "dry_run": False, "with_synthesis": True}) is None
+        )
+
+    def test_valid_prompt(self):
+        assert _validate_spec_fields({"prompt": "Do the thing"}) is None
+
+    def test_prompt_at_max_length(self):
+        assert _validate_spec_fields({"prompt": "x" * MAX_SPEC_PROMPT_CHARS}) is None
+
+    def test_valid_string_fields(self):
+        spec = {
+            "save": "./results",
+            "model": "claude-code/opus-4-7",
+            "agent": "orchestrator",
+            "team_mode": "ws-terminal",
+        }
+        assert _validate_spec_fields(spec) is None
+
+    def test_full_valid_spec(self):
+        spec = {
+            "agent": "orchestrator",
+            "workers": 8,
+            "max_agents": 20,
+            "effort": "xhigh",
+            "bare": False,
+            "dry_run": False,
+            "with_synthesis": True,
+            "prompt": "Build the thing",
+            "save": "./out",
+            "model": "claude-code/opus-4-7",
+            "team_mode": "ws-terminal",
+        }
+        assert _validate_spec_fields(spec) is None
+
+    def test_every_playbook_this_repo_ships_validates(self):
+        """The accepted set has to cover the playbooks we ourselves ship.
+
+        Enumerating keys by hand is what lets a real, widely-used field go
+        missing: unit tests over hand-written dicts only ever check the keys
+        someone remembered. This walks the actual files through the same
+        loader the CLI uses, so a field that real playbooks depend on cannot
+        drop out of the accepted set unnoticed.
+        """
+        root = Path(__file__).resolve().parents[6]
+        playbooks = sorted(root.glob("examples/playbooks/*.playbook.yaml")) + sorted(
+            root.glob("lionagi/studio/builtin_playbooks/*.playbook.yaml")
+        )
+        assert playbooks, "found no shipped playbooks — the glob is wrong, not the repo"
+
+        rejected = {}
+        for path in playbooks:
+            spec = _load_flow_spec(str(path))
+            assert spec is not None, f"{path.name} failed to load"
+            error = _validate_spec_fields(spec)
+            if error is not None:
+                rejected[path.name] = error
+        assert not rejected, f"shipped playbooks rejected by the validator: {rejected}"
+
+    def test_run_orchestrate_rejects_bad_spec(self, tmp_path, caplog):
+        spec_file = tmp_path / "bad.yaml"
+        spec_file.write_text(
+            yaml.dump({"model": "claude/opus", "workers": "not-an-int", "prompt": "hi"})
+        )
+        args = _parse_flow_args(["-f", str(spec_file)])
+        code = run_orchestrate(args)
+        assert code == 1
+        assert "workers" in caplog.text
+
+    def test_run_orchestrate_rejects_null_workers(self, tmp_path, caplog):
+        # YAML `workers: null` is a present field with NoneType — must be rejected
+        spec_file = tmp_path / "null_workers.yaml"
+        spec_file.write_text("model: claude/opus\nprompt: hi\nworkers: null\n")
+        args = _parse_flow_args(["-f", str(spec_file)])
+        code = run_orchestrate(args)
+        assert code == 1
+        assert "workers" in caplog.text
+
+
+# Save path containment
+
+
+class TestSavePathContainment:
+    def test_save_path_rejects_escape(self, tmp_path, caplog):
+        allowed_roots = (Path.cwd().resolve(), Path.home().resolve())
+        escape = Path(Path.cwd().anchor).resolve() / "li_sec_test_escape_dir"
+        assert all(not escape.is_relative_to(root) for root in allowed_roots)
+        escape_path = str(escape)
+        spec_file = tmp_path / "spec.yaml"
+        spec_file.write_text(
+            yaml.dump({"model": "claude/opus", "prompt": "task", "save": escape_path})
+        )
+        args = _parse_flow_args(["-f", str(spec_file)])
+
+        with patch(
+            "lionhub.serve.cli.orchestrate._run_flow",
+            AsyncMock(return_value=("should not reach", "completed")),
+        ) as run_flow:
+            code = run_orchestrate(args)
+
+        assert code == 1
+        assert "escapes allowed roots" in caplog.text
+        run_flow.assert_not_called()
+
+    def test_save_path_accepts_relative_subdirectory(self, tmp_path, caplog):
+        # Use a true cwd-relative path — exercises the Path.cwd() branch of containment.
+        save_dir = "./li_sec_test_output_hardening"
+        spec_file = tmp_path / "spec.yaml"
+        spec_file.write_text(
+            yaml.dump({"model": "claude/opus", "prompt": "task", "save": save_dir})
+        )
+        args = _parse_flow_args(["-f", str(spec_file)])
+
+        with patch(
+            "lionhub.serve.cli.orchestrate._run_flow",
+            AsyncMock(return_value=("flow done", "completed")),
+        ) as run_flow:
+            code = run_orchestrate(args)
+
+        assert code == 0
+        run_flow.assert_called_once()
+
+
+# ADR-0064: artifacts: field validation in _validate_spec_fields
+
+
+class TestArtifactsFieldValidation:
+    def test_valid_artifacts_passes(self):
+        spec = {
+            "model": "codex/gpt-4o",
+            "prompt": "do it",
+            "artifacts": {"expected": [{"id": "report", "path": "report.md"}]},
+        }
+        assert _validate_spec_fields(spec) is None
+
+    def test_none_artifacts_rejected(self):
+        spec = {"model": "x", "prompt": "p", "artifacts": None}
+        err = _validate_spec_fields(spec)
+        assert err is not None
+        assert "artifacts" in err
+
+    def test_absolute_path_in_artifacts_rejected(self):
+        spec = {
+            "model": "x",
+            "prompt": "p",
+            "artifacts": {"expected": [{"id": "x", "path": "/etc/passwd"}]},
+        }
+        err = _validate_spec_fields(spec)
+        assert err is not None
+        assert "artifacts" in err.lower() or "absolute" in err.lower()
+
+    def test_glob_in_artifact_path_rejected(self):
+        spec = {
+            "model": "x",
+            "prompt": "p",
+            "artifacts": {"expected": [{"id": "x", "path": "*.md"}]},
+        }
+        err = _validate_spec_fields(spec)
+        assert err is not None
+
+    def test_duplicate_id_in_artifacts_rejected(self):
+        spec = {
+            "model": "x",
+            "prompt": "p",
+            "artifacts": {
+                "expected": [
+                    {"id": "report", "path": "report.md"},
+                    {"id": "report", "path": "other.md"},
+                ]
+            },
+        }
+        err = _validate_spec_fields(spec)
+        assert err is not None
+
+    def test_non_bool_required_in_artifacts_rejected(self):
+        spec = {
+            "model": "x",
+            "prompt": "p",
+            "artifacts": {"expected": [{"id": "x", "path": "x.md", "required": "yes"}]},
+        }
+        err = _validate_spec_fields(spec)
+        assert err is not None

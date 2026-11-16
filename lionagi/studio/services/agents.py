@@ -1,20 +1,32 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, replace
 from functools import partial
+from pathlib import Path
 from typing import Annotated, Any
 
 import yaml
 from fastapi import Body, HTTPException
 
 from lionagi._paths import LIONAGI_HOME
+from lionagi.libs.frontmatter import (
+    _FM_SPLIT,
+    _load_frontmatter_yaml,
+    _strip_frontmatter_prefix,
+    parse_frontmatter_strict,
+)
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.ln.concurrency import run_sync
 from lionhub.agent.casts.pattern import list_modes as _list_modes
 from lionhub.agent.casts.pattern import list_roles as _list_roles
+from lionhub.serve.daemon.services._path_safety import (
+    public_path,
+    safe_path_join,
+    validate_name_component,
+)
 
 from ..registry import studio_route
-from ._path_safety import public_path, safe_path_join, validate_name_component
 from .redaction import (
     RedactedPayloadError,
     demo_mode_enabled,
@@ -35,13 +47,13 @@ def _is_protected_system(fm: dict[str, Any]) -> bool:
 
     ``lion_system`` already exists as a frontmatter flag (get_agent() has always
     surfaced it, defaulting True, for CLI parity -- see
-    ``AgentProfile``/``AgentSpec.compose`` in ``lionagi/cli``). Write-protection
+    ``AgentProfile``/``AgentSpec.compose`` in ``lionhub/src/lionhub/serve/cli``). Write-protection
     reuses that same flag rather than inventing a new one. Two things matter here:
 
     - Present and truthy counts, whatever its YAML type -- ``true``, ``"true"``,
       or any other value Python considers truthy -- so this agrees with the
-      runtime's own ``bool(frontmatter.get("lion_system", True))`` check in
-      ``lionagi/cli/_providers.py`` for every value that's actually there.
+      runtime profile loader's own ``bool(frontmatter.get("lion_system", True))``
+      check for every value that's actually there.
     - An *absent* key does not count as protected: treating a missing key as
       protected would silently lock down every agent file that predates this
       feature (plain markdown with no frontmatter at all is common -- see the
@@ -49,21 +61,94 @@ def _is_protected_system(fm: dict[str, Any]) -> bool:
       cannot be edited" means. Agents created through the Studio API stamp
       ``lion_system: false`` explicitly, so they are unambiguously
       editable/deletable by their owner.
-
-    This is the single place both write-protection call sites (this module and
-    ``definitions.py``'s agent save path) resolve the predicate, so they cannot
-    drift apart from each other or from the runtime again.
     """
     return "lion_system" in fm and bool(fm["lion_system"])
 
 
-def _read_frontmatter(path) -> dict[str, Any]:
+@dataclass(frozen=True)
+class _AgentWriteRead:
+    frontmatter: dict[str, Any]
+    body: str
+    protection: str | None = None
+    unreadable_block: bool = False
+
+
+def _is_empty_yaml_document(block: str) -> bool:
+    try:
+        return _load_frontmatter_yaml(block) is None
+    except (yaml.YAMLError, RecursionError):
+        return False
+
+
+def _read_unreadable_agent_block(
+    block: str, body: str, *, allow_empty: bool = False
+) -> _AgentWriteRead:
+    if "lion_system" in block:
+        return _AgentWriteRead(
+            {},
+            "",
+            "may be a system agent because its frontmatter could not be read",
+            unreadable_block=True,
+        )
+    if allow_empty and _is_empty_yaml_document(block):
+        # A closed block that is empty, only comments, or an explicit null
+        # holds no settings, so a partial update has nothing to discard.
+        return _AgentWriteRead({}, body)
+    return _AgentWriteRead({}, body, unreadable_block=True)
+
+
+def _read_agent_for_write(text: str) -> _AgentWriteRead:
+    """Classify frontmatter for agent writes.
+
+    Protect a profile if its unreadable header mentions ``lion_system``, if an
+    unreadable or unclosed block after a malformed opener mentions it, or if the
+    profile loaders read an explicit, truthy value. Partial updates
+    require a readable mapping or a block with bare opening and closing
+    delimiters and no settings, including an explicit null. A malformed
+    opener always refuses partial updates. Whole-file writes use the
+    system-agent protection.
+    """
+    normalized = _strip_frontmatter_prefix(text)
+    unreadable_header = None
+    if normalized.startswith("---"):
+        text = normalized
+        if _FM_SPLIT.match(text) is None:
+            # Check the malformed opening block itself. The profile loaders
+            # can also read a closed block between the first two bare delimiters.
+            block, *rest = _FM_SPLIT.split(text, maxsplit=1)
+            unreadable_header = _read_unreadable_agent_block(block, rest[0].strip() if rest else "")
+            if unreadable_header.protection is not None or not rest:
+                return unreadable_header
+    try:
+        fm, body = parse_frontmatter_strict(text)
+    except (yaml.YAMLError, RecursionError):
+        # A closed block may be empty. Without a closing delimiter, inspect
+        # everything through the end of the file and refuse partial updates.
+        parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
+        if unreadable_header is not None and len(parts) < 3:
+            # After a malformed opener, the text past the single bare delimiter may be a
+            # block that never closes; where it was meant to end is not known, so inspect
+            # it through the end of the file, as an unclosed block after a bare opener is.
+            if len(parts) == 2 and "lion_system" in parts[1]:
+                return _read_unreadable_agent_block(parts[1], "")
+            return unreadable_header
+        block = parts[1] if len(parts) > 1 else text
+        rest = parts[2].strip() if len(parts) > 2 else ""
+        return _read_unreadable_agent_block(
+            block, rest, allow_empty=unreadable_header is None and len(parts) > 2
+        )
+    reason = "is a system agent" if _is_protected_system(fm) else None
+    if unreadable_header is not None:
+        return replace(unreadable_header, protection=reason)
+    return _AgentWriteRead(fm, body, reason)
+
+
+def _read_agent_file_for_write(path: Path, name: str) -> _AgentWriteRead:
     try:
         text = path.read_text()
-    except OSError:
-        return {}
-    fm, _ = _parse_frontmatter(text)
-    return _normalize_frontmatter(fm)
+    except OSError as exc:
+        raise AgentProtectedError(f"Agent '{name}' file could not be read") from exc
+    return _read_agent_for_write(text)
 
 
 def _normalize_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
@@ -310,9 +395,9 @@ def delete_agent(name: str) -> bool:
     if stem == DEFAULT_AGENT_NAME:
         raise AgentProtectedError(f"Agent '{stem}' is the default agent and cannot be deleted")
 
-    fm = _read_frontmatter(path)
-    if _is_protected_system(fm):
-        raise AgentProtectedError(f"Agent '{stem}' is a system agent and cannot be deleted")
+    protection = _read_agent_file_for_write(path, stem).protection
+    if protection:
+        raise AgentProtectedError(f"Agent '{stem}' {protection} and cannot be deleted")
 
     path.unlink()
     return True
@@ -326,15 +411,12 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if not path.exists():
         return None
 
-    try:
-        existing_text = path.read_text()
-    except OSError:
-        existing_text = ""
-    existing_fm, existing_body = _parse_frontmatter(existing_text)
-    existing_fm = _normalize_frontmatter(existing_fm)
-
-    if _is_protected_system(existing_fm):
-        raise AgentProtectedError(f"Agent '{stem}' is a system agent and cannot be edited")
+    existing = _read_agent_file_for_write(path, stem)
+    if existing.protection:
+        raise AgentProtectedError(f"Agent '{stem}' {existing.protection} and cannot be edited")
+    if existing.unreadable_block:
+        raise AgentProtectedError(f"Agent '{stem}' frontmatter could not be read")
+    existing_fm = _normalize_frontmatter(existing.frontmatter)
 
     # While demo mode is on, a client that fetched the redacted view and posted
     # it back unmodified must not be able to overwrite the real file with the
@@ -367,7 +449,7 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 
     new_body = data.get("system_prompt")
     if new_body is None:
-        new_body = existing_body
+        new_body = existing.body
     new_body = (new_body or "").strip()
 
     if fm:

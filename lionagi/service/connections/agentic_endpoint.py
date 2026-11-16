@@ -1,6 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import re
 from typing import Any, ClassVar
 
@@ -39,6 +41,11 @@ class AgenticEndpoint(Endpoint):
         super().__init__(config=config, **kwargs)
         self._session_id: str | None = None
         self._session_id_reported = False
+
+    def prepare_run_request(
+        self, request_kwargs: dict[str, Any], *, stream_timeout: int | float | None
+    ) -> None:
+        """Prepare streaming run arguments in place before the SDK builds a request."""
 
     @property
     def provider_session_id(self) -> str | None:

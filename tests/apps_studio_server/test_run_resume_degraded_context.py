@@ -54,7 +54,7 @@ async def _seed_flow_session(db_path: Path, *, session_id: str, cli_run_id: str)
 
 # Two pending ops that need inherited conversational context resume cannot
 # restore (v1 restores results-context only) -- the exact scenario
-# `_apply_checkpoint_precompletion` (lionagi/cli/orchestrate/flow.py) refuses
+# `_apply_checkpoint_precompletion` (lionhub/src/lionhub/serve/cli/orchestrate/flow.py) refuses
 # unless --allow-degraded-context is passed.
 _PENDING_INHERIT_CONTEXT_OPS = ["reviewer-1", "reviewer-2"]
 
@@ -106,10 +106,10 @@ def real_launch_harness(tmp_path: Path, monkeypatch: Any):
     subprocess spawn is stubbed, driven by the checkpoint actually on disk so
     the refusal text is genuinely computed from the plan, not hardcoded."""
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.invocations as invocations_svc
-    import lionagi.studio.services.run_resume as resume_svc
     import lionhub.orchestration.flow.checkpoint as ckmod
     import lionhub.orchestration.scheduler.subprocess as subprocess_mod
+    import lionhub.serve.daemon.services.invocations as invocations_svc
+    import lionhub.serve.daemon.services.run_resume as resume_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -185,7 +185,7 @@ async def _await_invocation_terminal(inv_id: str, *, timeout: float = 5.0) -> di
     cannot be awaited directly -- polling the persisted row is the only
     cross-loop-safe way to wait for it.
     """
-    import lionagi.studio.services.invocations as invocations_svc
+    import lionhub.serve.daemon.services.invocations as invocations_svc
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

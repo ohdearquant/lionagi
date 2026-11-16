@@ -264,11 +264,6 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    node_meta = schedule.get("node_metadata") or {}
-    etag = node_meta.get("github_etag") if isinstance(node_meta, dict) else None
-    if etag and not merged_mode:
-        headers["If-None-Match"] = etag
-
     params: dict[str, str] = {
         # pr_merged is only ever true on a closed PR, so merged mode always
         # polls closed PRs regardless of any (nonsensical) explicit state.

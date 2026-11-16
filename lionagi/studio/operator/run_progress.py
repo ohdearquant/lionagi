@@ -21,8 +21,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.state.session_naming import resolve_display_name
-
-from .redact import MAX_CANDIDATES, public_project, scrub_text
+from lionhub.serve.daemon.services.redact import MAX_CANDIDATES, public_project, scrub_text
 
 # A full canonical UUID (36 characters, 8-4-4-4-12 hex). A reference in this
 # form identifies at most one row and cannot enumerate anything, which is what
@@ -146,7 +145,7 @@ async def _fetch_ambiguous_candidates(
     dropping any row ``project`` may not see.
 
     fetch_unique_row()/AmbiguousIdError only carry ids (see
-    lionagi/cli/_util.py) — enough to disambiguate on the CLI, not enough to
+    lionhub.orchestration.job) — enough to disambiguate on the CLI, not enough to
     show a project/status card here, so this does one bounded follow-up read.
     A foreign-project row is stripped out entirely rather than merely
     de-emphasized: it must not appear as a candidate at all.
@@ -209,7 +208,7 @@ async def _find_sessions_by_text(
     """Sessions whose name or playbook name contains ``ref`` (case-insensitive),
     scoped to ``project`` when the calling turn names one — a name/playbook
     substring search must not enumerate another project's runs."""
-    from lionagi.studio.services.sessions import SessionFilter, list_sessions
+    from lionhub.serve.daemon.services.sessions import SessionFilter, list_sessions
 
     by_name = await list_sessions(limit=limit, where=SessionFilter(search=ref, project=project))
     by_playbook = await list_sessions(
@@ -327,7 +326,7 @@ async def resolve_run(ref: str, *, allow_unscoped_exact_id: bool = True) -> dict
             if len(owned) == 1:
                 return {"found": True, "ambiguous": False, "session_id": owned[0]["id"]}
             # The scoped prefix scan stops one row past the CLI helper's
-            # listing size (lionagi/cli/_util.py::_CANDIDATES_SHOWN), so a
+            # listing size (lionhub.orchestration.job::_CANDIDATES_SHOWN), so a
             # full window is the only honest truncation signal -- and it now
             # means more than that many rows THIS turn may see.
             return {
@@ -617,7 +616,7 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
         }
 
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
-    from lionagi.studio.services.runs import get_run
+    from lionhub.serve.daemon.services.runs import get_run
 
     run = await get_run(resolution["session_id"])
     if run is None:

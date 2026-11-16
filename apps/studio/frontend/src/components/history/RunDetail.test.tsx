@@ -15,6 +15,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import RunStepCard from "@/components/RunStepCard";
 import enMessages from "@/messages/en.json";
+import type { SessionDetail } from "@/lib/api";
 import type { RunStep, WorkerGraph } from "@/lib/types";
 
 vi.mock("@/components/ui/Markdown", () => ({
@@ -1857,6 +1858,26 @@ describe("stale-write guard predicate (mirrors the done handler's merge conditio
 
   it("no-ops when there is no current session", () => {
     expect(mergeIfSameSession(null, { id: "run-a", status: "completed" })).toBeNull();
+  });
+});
+
+describe("history/RunDetail.tsx — failure evidence", () => {
+  it("ignores a chain decision while using the failed operation id", async () => {
+    const { evidenceFailedNodeIds } = await import("./RunDetail");
+    const chainDecision = { kind: "chain_decision", v: 1, ref: "on_fail", id: "unrelated-node" };
+    const session: SessionDetail = {
+      id: "session",
+      name: "Example",
+      created_at: 100,
+      updated_at: 200,
+      branches: [],
+      status_evidence_refs: [chainDecision, { kind: "failed_operation", id: "failed-node" }],
+    };
+
+    expect(evidenceFailedNodeIds(session)).toEqual(new Set(["failed-node"]));
+    expect(
+      evidenceFailedNodeIds({ ...session, status_evidence_refs: [chainDecision] }),
+    ).toBeUndefined();
   });
 });
 

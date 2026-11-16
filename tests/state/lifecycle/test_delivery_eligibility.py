@@ -440,6 +440,6 @@ def test_production_inserts_explicitly_supply_eligibility():
                 assert declared, f"{path}:{line} {kind} does not explicitly write eligibility"
     assert set(found) == {
         "lionagi/state/lifecycle/service.py",
-        "lionagi/studio/services/admin.py",
+        "lionhub/src/lionhub/serve/daemon/services/admin.py",
         "lionhub/src/lionhub/orchestration/dispatch/outbox.py",
     }

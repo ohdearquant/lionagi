@@ -72,6 +72,7 @@ class AgentSpec(HooksMixin):
     """Universal runtime spec: Profile (identity) plus model, tools, hooks, and permissions."""
 
     _effort_origin: ClassVar[str] = "explicit"
+    _effort_in_supplied_model: ClassVar[bool] = False
     _model_origin: ClassVar[str] = "explicit"
 
     profile: Profile
@@ -113,6 +114,7 @@ class AgentSpec(HooksMixin):
     def __setattr__(self, name: str, value: Any) -> None:
         if name == "effort" and hasattr(self, "_effort_origin"):
             object.__setattr__(self, "_effort_origin", "explicit")
+            object.__setattr__(self, "_effort_in_supplied_model", False)
         if name == "model" and hasattr(self, "_model_origin"):
             object.__setattr__(self, "_model_origin", "explicit")
         super().__setattr__(name, value)

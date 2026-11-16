@@ -13,6 +13,7 @@ import anyio.lowlevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lionagi.ln.concurrency import CancelScope
+from lionagi.service.accounts._types import _PROVIDER_ERROR_TYPES, _REJECTION_CLASSES
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
@@ -580,8 +581,6 @@ def _classify_rejection(body: bytes) -> tuple[str, str]:
     after one debug log that names only the type of the exception.
     """
     try:
-        from lionagi.service.accounts._types import _PROVIDER_ERROR_TYPES, _REJECTION_CLASSES
-
         if len(body) > _REJECTION_BODY_LIMIT:
             return "other", "other"
         decoded = json.loads(body)
@@ -751,6 +750,10 @@ class AnthropicMessagesEndpoint(Endpoint):
                 attempt_id=exc.attempt_id,
                 http_status=exc.http_status,
             ) from None
+
+        # Keep this import local because ._prompt_cache imports _is_blank_text from this module.
+        from ._prompt_cache import routed_cache_evidence
+
         router = get_router()
         scope = self._account_scope(_routing_scope)
         attempt = await router.begin(
@@ -758,6 +761,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             payload,
             request_pairs,
             endpoint=self,
+            cache_evidence_for=routed_cache_evidence,
             request_kwargs=request_kwargs,
             body_kwargs=body_kwargs,
             client_kwargs=session_kwargs,
@@ -1077,6 +1081,10 @@ class AnthropicMessagesEndpoint(Endpoint):
             url=url,
             method=method,
         )
+
+        # Keep this import local because ._prompt_cache imports _is_blank_text from this module.
+        from ._prompt_cache import routed_cache_evidence
+
         router = get_router()
         scope = self._account_scope(_routing_scope)
         body_kwargs = {"json": payload}
@@ -1085,6 +1093,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             payload,
             request_pairs,
             endpoint=self,
+            cache_evidence_for=routed_cache_evidence,
             request_kwargs=kwargs,
             body_kwargs=body_kwargs,
             client_kwargs=session_kwargs,

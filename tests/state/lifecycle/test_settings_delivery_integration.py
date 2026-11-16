@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from lionagi.state.db import StateDB
-from lionagi.state.lifecycle import notify_settings
+from lionagi.state.lifecycle import notify_settings, settings_delivery
 from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
 from lionagi.state.lifecycle.deliveries import is_acknowledged, reconcile_unacknowledged
 from lionagi.state.lifecycle.reconciler import TerminalReconciler
@@ -45,12 +45,90 @@ async def _seed(db):
 def _settings(monkeypatch, adapter):
     calls = []
 
-    def load_settings(*, include_project):
-        calls.append(include_project)
+    def load_global_settings_layer():
+        calls.append(adapter)
         return {"notify": {"on_terminal": {"enabled": True, "adapter": adapter}}}
 
-    monkeypatch.setattr(terminal_reconciliation, "load_settings", load_settings)
+    monkeypatch.setattr(settings_delivery, "load_global_settings_layer", load_global_settings_layer)
     return calls
+
+
+async def test_exec_replay_of_historical_transition_uses_null_run_context(tmp_path, monkeypatch):
+    store = tmp_path / "state.db"
+    async with StateDB(store) as db:
+        transition_id = await _seed(db)
+        transition = await db.fetch_one(
+            "SELECT entity_id, created_at, CAST(metadata AS TEXT) AS metadata "
+            "FROM status_transitions WHERE id = :id",
+            {"id": transition_id},
+        )
+        assert transition is not None
+        assert json.loads(transition["metadata"]) == {}
+
+    adapter = {"kind": "exec", "argv": ["fake-test-adapter"]}
+    settings_calls = _settings(monkeypatch, adapter)
+    launches = []
+    payloads = []
+
+    class FakeProcess:
+        pid = None
+        returncode = 0
+
+        async def communicate(self, payload):
+            payloads.append(json.loads(payload))
+            return b"", b""
+
+    async def launch(*argv, **kwargs):
+        launches.append(argv)
+        return FakeProcess()
+
+    monkeypatch.setattr(notify_settings.asyncio, "create_subprocess_exec", launch)
+    monkeypatch.setattr("lionagi.ln._proc.observe_process_group_leader", lambda *a, **k: None)
+
+    async with StateDB(store) as db:
+        reconciler = TerminalReconciler(
+            CONSUMER, terminal_reconciliation.prepare_global_settings_delivery
+        )
+        result = await reconciler.run_pass(db)
+        assert result["attempted"] == result["acknowledged"] == 1
+        assert result["failed"] == 0
+        assert await is_acknowledged(db, transition_id, CONSUMER)
+        assert await reconcile_unacknowledged(db, CONSUMER) == []
+
+        restarted = TerminalReconciler(
+            CONSUMER, terminal_reconciliation.prepare_global_settings_delivery
+        )
+        result = await restarted.run_pass(db)
+        assert result["attempted"] == result["acknowledged"] == 0
+
+    assert settings_calls == [adapter]
+    assert launches == [("fake-test-adapter",)]
+    assert payloads == [
+        {
+            "schema": "lionagi.run-terminal",
+            "schema_version": 1,
+            "event_id": transition_id,
+            "durable": True,
+            "entity": {"kind": "session", "id": transition["entity_id"]},
+            "previous_status": "running",
+            "terminal_status": "failed",
+            "status": "failed",
+            "reason_code": "session.stale.no_heartbeat",
+            "occurred_at": transition["created_at"],
+            "correlation": {
+                "invocation_id": None,
+                "session_id": transition["entity_id"],
+                "schedule_run_id": None,
+                "run_id": None,
+            },
+            "artifacts": [],
+            "run_id": None,
+            "label": None,
+            "sender": None,
+            "cwd": None,
+            "output_dir": None,
+        }
+    ]
 
 
 async def _failure_then_retry(db, reconciler, transition_id, clock, seen):
@@ -108,20 +186,20 @@ async def test_exec_failure_is_not_acked_and_successful_retry_is_acked(
         terminated.append(proc)
 
     monkeypatch.setattr(notify_settings.asyncio, "create_subprocess_exec", launch)
-    monkeypatch.setattr(notify_settings, "observe_process_group_leader", lambda *a, **k: None)
+    monkeypatch.setattr("lionagi.ln._proc.observe_process_group_leader", lambda *a, **k: None)
     monkeypatch.setattr(notify_settings, "aterminate_process_group", terminate)
     async with StateDB(tmp_path / "state.db") as db:
         transition_id = await _seed(db)
         clock = [100.0]
         reconciler = TerminalReconciler(
             CONSUMER,
-            terminal_reconciliation._prepare_settings_delivery,
+            terminal_reconciliation.prepare_global_settings_delivery,
             batch_size=1,
             clock=lambda: clock[0],
         )
         await _failure_then_retry(db, reconciler, transition_id, clock, events)
     assert launches == [("fake-test-adapter",), ("fake-test-adapter",)]
-    assert calls == [False, False]
+    assert len(calls) == 2
     assert len(terminated) == (1 if failure == "timeout" else 0)
     assert events == ([transition_id] if failure == "spawn" else [transition_id, transition_id])
 
@@ -149,13 +227,13 @@ async def test_python_failure_is_not_acked_and_normal_retry_is_acked(
         clock = [100.0]
         reconciler = TerminalReconciler(
             CONSUMER,
-            terminal_reconciliation._prepare_settings_delivery,
+            terminal_reconciliation.prepare_global_settings_delivery,
             batch_size=1,
             clock=lambda: clock[0],
         )
         await _failure_then_retry(db, reconciler, transition_id, clock, events)
     assert events == [transition_id, transition_id]
-    assert calls == [False, False]
+    assert len(calls) == 2
 
 
 async def test_python_normal_return_is_acknowledged_on_first_attempt(tmp_path, monkeypatch):
@@ -172,7 +250,7 @@ async def test_python_normal_return_is_acknowledged_on_first_attempt(tmp_path, m
     async with StateDB(tmp_path / "state.db") as db:
         transition_id = await _seed(db)
         reconciler = TerminalReconciler(
-            CONSUMER, terminal_reconciliation._prepare_settings_delivery, batch_size=1
+            CONSUMER, terminal_reconciliation.prepare_global_settings_delivery, batch_size=1
         )
         result = await reconciler.run_pass(db)
         assert result["attempted"] == result["acknowledged"] == 1
@@ -180,4 +258,4 @@ async def test_python_normal_return_is_acknowledged_on_first_attempt(tmp_path, m
         assert await is_acknowledged(db, transition_id, CONSUMER)
         assert await reconcile_unacknowledged(db, CONSUMER) == []
         assert events == [transition_id]
-        assert calls == [False]
+        assert len(calls) == 1

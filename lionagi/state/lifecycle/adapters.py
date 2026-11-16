@@ -15,7 +15,13 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from . import LifecycleNotFoundError, LifecycleValidationError
-from .models import ActorRecord, OverrideRecord, ReasonRecord, TransitionCommand
+from .models import (
+    ActorRecord,
+    OverrideRecord,
+    ReasonRecord,
+    TransitionCommand,
+    TransitionRejectionReason,
+)
 from .service import SQLAlchemyLifecycleService
 
 __all__ = (
@@ -27,8 +33,7 @@ __all__ = (
 
 
 class TransitionRejectedError(RuntimeError):
-    """Raised by update_status() when a write would move an entity out of a
-    terminal status without an explicit, justified override."""
+    """Raised when an applicable status write fails a lifecycle policy."""
 
     def __init__(
         self,
@@ -36,16 +41,25 @@ class TransitionRejectedError(RuntimeError):
         entity_id: str,
         previous_status: str | None,
         attempted_status: str,
+        *,
+        reason: TransitionRejectionReason | None = None,
     ) -> None:
         self.entity_type = entity_type
         self.entity_id = entity_id
         self.previous_status = previous_status
         self.attempted_status = attempted_status
-        super().__init__(
-            f"transition rejected: {entity_type} {entity_id!r} is terminal "
-            f"at {previous_status!r}; refusing to write {attempted_status!r} "
-            "without override=True"
-        )
+        self.reason = reason or "no_override"
+        if self.reason == "no_override":
+            super().__init__(
+                f"transition rejected: {entity_type} {entity_id!r} is terminal "
+                f"at {previous_status!r}; refusing to write {attempted_status!r} "
+                "without override=True"
+            )
+        else:
+            super().__init__(
+                f"transition rejected: {entity_type} {entity_id!r} at {previous_status!r}; "
+                f"refusing to write {attempted_status!r} ({self.reason})"
+            )
 
 
 async def run_update_status(
@@ -68,6 +82,7 @@ async def run_update_status(
     override_justification: str | None,
     fill_only_if_absent: frozenset[str] = frozenset(),
     owned_links: tuple[tuple[str, str, str], ...] = (),
+    record_chain_decision: bool = False,
 ) -> bool:
     """Route StateDB.update_status()'s kwargs through the lifecycle service
     and map the TransitionOutcome onto its legacy bool/raise contract."""
@@ -86,6 +101,7 @@ async def run_update_status(
         expected_statuses=(frozenset(expected_statuses) if expected_statuses is not None else None),
         expected_version=expected_updated_at,
         patch=extra_fields or {},
+        record_chain_decision=record_chain_decision,
         override=(
             OverrideRecord(actor=override_actor or "", justification=override_justification or "")
             if override
@@ -101,7 +117,13 @@ async def run_update_status(
     if outcome.result == "applied":
         return True
     if outcome.result == "rejected":
-        raise TransitionRejectedError(entity_type, entity_id, outcome.previous_status, new_status)
+        raise TransitionRejectedError(
+            entity_type,
+            entity_id,
+            outcome.previous_status,
+            new_status,
+            reason=outcome.rejection_reason,
+        )
     # conflict: reachable here only for a guarded lost race; an unguarded
     # zero-row write raises RuntimeError instead (raise_on_unguarded_conflict)
     return False
