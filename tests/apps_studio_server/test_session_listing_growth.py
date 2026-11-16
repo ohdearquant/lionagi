@@ -25,12 +25,12 @@ def listing_store(tmp_path, monkeypatch, request):
                 "last_msg_id     TEXT    REFERENCES messages(id),\n"
                 "  updated_at      REAL    NOT NULL,"
             )
-            index = "ON sessions(updated_at DESC);"
+            index = "ON sessions(updated_at ASC);"
             assert schema.count(column) == 1 and schema.count(index) == 1
             schema = schema.replace(
                 column, column.replace("REAL    NOT NULL", "REAL COLLATE NOCASE NOT NULL")
             )
-            schema = schema.replace(index, "ON sessions(updated_at COLLATE BINARY DESC);")
+            schema = schema.replace(index, "ON sessions(updated_at COLLATE BINARY ASC);")
         conn.executescript(schema)
         conn.executemany(
             "INSERT INTO progressions (id, created_at, collection) VALUES (?, 0, ?)",
@@ -264,7 +264,7 @@ async def test_visible_index_fallback_preserves_complete_page(listing_store, ind
         conn.execute("DROP INDEX IF EXISTS idx_sessions_recent_visible")
         if index_kind == "wrong_predicate":
             conn.execute(
-                "CREATE INDEX idx_sessions_recent_visible ON sessions(updated_at DESC) "
+                "CREATE INDEX idx_sessions_recent_visible ON sessions(updated_at ASC) "
                 "WHERE status = 'running'"
             )
     rows = await sessions.list_sessions(limit=5, offset=3, sort="recent")
@@ -338,15 +338,31 @@ async def test_recent_listing_visibility_follows_parent_value_not_truthiness(lis
     ]
 
 
-async def test_recent_listing_preserves_equal_timestamp_order(listing_store, monkeypatch):
-    """A partial-index scan must preserve the old scan's tie order and page boundary."""
+@pytest.mark.parametrize(
+    "historical_direction",
+    [None, "ASC", "DESC"],
+    ids=["fresh", "historical-asc", "historical-desc"],
+)
+async def test_recent_listing_preserves_equal_timestamp_order(
+    listing_store, monkeypatch, record_property, historical_direction
+):
+    """Keep the ordering index's tie order when switching to a compatible partial index."""
+    direction = historical_direction or "ASC"
+    if historical_direction is not None:
+        # Complete the runtime's end-time repair before recreating the historical index layout.
+        store = db_module.StateDB(listing_store)
+        await store.migrate()
+        await store.close()
     with sqlite3.connect(listing_store) as conn:
         conn.execute("UPDATE sessions SET updated_at = 100000 WHERE id LIKE 'page-%'")
-        definition = conn.execute(
+        reference_definition = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'idx_sessions_recent_visible'"
         ).fetchone()[0]
         conn.execute("DROP INDEX idx_sessions_recent_visible")
-    statements = []
+        if historical_direction is not None:
+            conn.execute("DROP INDEX idx_sessions_updated")
+            conn.execute(f"CREATE INDEX idx_sessions_updated ON sessions(updated_at {direction})")
+    plans = []
     real_open = sessions._open_db
 
     @asynccontextmanager
@@ -356,32 +372,49 @@ async def test_recent_listing_preserves_equal_timestamp_order(listing_store, mon
 
             async def capture(sql, parameters=None):
                 if "AS branch_count" in sql and "AS message_count" in sql:
-                    statements.append(" ".join(sql.lower().split()))
+                    cursor = await execute("EXPLAIN QUERY PLAN " + sql, parameters)
+                    plans.append([row[3] for row in await cursor.fetchall()])
+                    await cursor.close()
                 return await execute(sql, parameters)
 
             monkeypatch.setattr(conn, "execute", capture)
             yield conn
 
     monkeypatch.setattr(sessions, "_open_db", capture_listing)
+    tie_order = range(3, 10) if direction == "DESC" else range(16, 9, -1)
+    expected = [f"page-{i:02}" for i in tie_order]
     baseline = await sessions.list_sessions(limit=7, offset=3, sort="recent")
-    expected = [row["id"] for row in baseline]
-    assert len(expected) == 7 and all(name.startswith("page-") for name in expected)
-    with sqlite3.connect(listing_store) as conn:
-        conn.execute(definition)
+    assert [row["id"] for row in baseline] == expected
+    if historical_direction is None:
+        with sqlite3.connect(listing_store) as conn:
+            conn.execute(reference_definition)
+    else:
+        async with db_module.StateDB(listing_store):
+            pass
     compatible = await sessions.list_sessions(limit=7, offset=3, sort="recent")
     assert [row["id"] for row in compatible] == expected
-    assert "indexed by idx_sessions_recent_visible" in statements[-1]
     with sqlite3.connect(listing_store) as conn:
+        definition = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'idx_sessions_recent_visible'"
+        ).fetchone()[0]
+        assert f"updated_at {direction}" in definition
         conn.execute("DROP INDEX idx_sessions_recent_visible")
-        if "updated_at ASC" in definition:
-            incompatible = definition.replace("updated_at ASC", "updated_at DESC")
-        else:
-            assert "updated_at DESC" in definition
-            incompatible = definition.replace("updated_at DESC", "updated_at ASC")
-        conn.execute(incompatible)
+        opposite = "ASC" if direction == "DESC" else "DESC"
+        conn.execute(definition.replace(f"updated_at {direction}", f"updated_at {opposite}"))
     fallback = await sessions.list_sessions(limit=7, offset=3, sort="recent")
     assert [row["id"] for row in fallback] == expected
-    assert "indexed by idx_sessions_recent_visible" not in statements[-1]
+    expected_indexes = (
+        "idx_sessions_updated",
+        "idx_sessions_recent_visible",
+        "idx_sessions_updated",
+    )
+    record_property("tied_listing_plans", json.dumps({"ids": expected, "plans": plans}))
+    assert len(plans) == len(expected_indexes)
+    for plan, index in zip(plans, expected_indexes):
+        assert any(f"using index {index}" in detail.lower() for detail in plan), plan
+        assert not any(
+            "TEMP B-TREE" in detail.upper() and "ORDER BY" in detail.upper() for detail in plan
+        ), plan
 
 
 @pytest.mark.parametrize("message", ["no query solution", "disk I/O error"])
@@ -442,16 +475,16 @@ async def test_visible_index_wrong_shape_falls_back(listing_store, monkeypatch, 
             "SELECT sql FROM sqlite_master WHERE name = 'idx_sessions_recent_visible'"
         ).fetchone()[0]
         conn.execute("DROP INDEX idx_sessions_recent_visible")
-        assert "updated_at DESC" in definition
+        assert "updated_at ASC" in definition
         if replacement == "broader_predicate":
             conn.execute(definition + " OR status = 'completed'")
         else:
             index_key = (
-                "updated_at DESC, id"
+                "updated_at ASC, id"
                 if replacement == "extra_key"
-                else "updated_at COLLATE NOCASE DESC"
+                else "updated_at COLLATE NOCASE ASC"
             )
-            conn.execute(definition.replace("updated_at DESC", index_key))
+            conn.execute(definition.replace("updated_at ASC", index_key))
     real_open = sessions._open_db
     statements = []
 
