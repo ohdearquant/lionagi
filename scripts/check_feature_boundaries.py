@@ -591,6 +591,77 @@ def validate_exception_edges(findings: list[dict[str, Any]], manifest: dict[str,
             )
 
 
+def read_moved_aliases(path: Path | None) -> dict[str, str]:
+    """Read the literal MOVED table without running its package or resolver."""
+    if path is None:
+        return {}
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeError) as exc:
+        raise ManifestError(f"cannot parse lionagi._moved: {exc}") from exc
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            names = [node.target]
+        else:
+            continue
+        if not any(dotted(name) == "MOVED" for name in names):
+            continue
+        if not isinstance(node.value, (ast.Tuple, ast.List)):
+            return {}
+        aliases: dict[str, str] = {}
+        for row in node.value.elts:
+            match row:
+                case ast.Call(
+                    func=ast.Name(id="Moved"),
+                    args=[ast.Constant(value=str(old)), ast.Constant(value=str(new)), _, _],
+                    keywords=[],
+                ) if NAME.fullmatch(old) and NAME.fullmatch(new):
+                    aliases.setdefault(old, new)
+                case _:
+                    return {}
+        return aliases
+    return {}
+
+
+def resolve_alias(target: str, aliases: dict[str, str], modules: set[str]) -> str | None:
+    prefix = target
+    while prefix:
+        if prefix in aliases:
+            canonical = aliases[prefix] + target[len(prefix) :]
+            return canonical if canonical in modules else None
+        prefix, _, _ = prefix.rpartition(".")
+    return None
+
+
+def report_internal_targets(
+    edges: list[dict[str, Any]],
+    files: dict[str, Path],
+    targets: set[str],
+    manifest: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    modules = set(files) | targets
+    aliases = read_moved_aliases(files.get("lionagi._moved"))
+    unresolved = []
+    resolved = []
+    for edge in edges:
+        target = edge["target"]
+        if not target.startswith(("lionagi.", "lionhub.")) or target in modules:
+            continue
+        canonical = resolve_alias(target, aliases, modules)
+        if canonical is None:
+            unresolved.append(edge)
+            continue
+        destination = manifest["modules"].get(canonical)
+        if destination is None:
+            destination = manifest["external_targets"]["lionhub"]
+        resolved.append(
+            {**edge, "canonical_target": canonical, "target_owner": destination["owner"]}
+        )
+    return unresolved, resolved
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
@@ -608,24 +679,30 @@ def main(argv: list[str] | None = None) -> int:
         edges = scan(files, targets)
         findings = classify(edges, manifest, targets)
         validate_exception_edges(findings, manifest)
+        unresolved, resolved = report_internal_targets(edges, files, targets, manifest)
     except (ManifestError, OSError) as exc:
         print(f"feature boundary error: {exc}", file=sys.stderr)
         return 1
-    unresolved = [
-        edge
-        for edge in edges
-        if (edge["target"].startswith("lionagi.") and edge["target"] not in files)
-        or (edge["target"].startswith("lionhub.") and edge["target"] not in targets)
-    ]
     if args.json:
         print(
             json.dumps(
-                {"edges": edges, "findings": findings, "unresolved_internal": unresolved},
+                {
+                    "edges": edges,
+                    "findings": findings,
+                    "unresolved_internal": unresolved,
+                    "resolved_aliases": resolved,
+                },
                 indent=2,
                 sort_keys=True,
             )
         )
     else:
+        for edge in resolved:
+            print(
+                f"compatibility alias: {edge['source']}:{edge['line']} -> {edge['target']} "
+                f"(canonical={edge['canonical_target']}, owner={edge['target_owner']}, "
+                f"kind={edge['kind']})"
+            )
         for edge in unresolved:
             print(
                 f"unresolved: {edge['source']}:{edge['line']} -> {edge['target']} (kind={edge['kind']})"
@@ -636,7 +713,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         counts = Counter(finding["violation"] for finding in findings)
         print(
-            f"modules={len(files)} requirements={len(declared)} edges={len(edges)} unresolved={len(unresolved)} findings={len(findings)} classes={dict(sorted(counts.items()))} exceptions={len(manifest['exceptions'])}"
+            f"modules={len(files)} requirements={len(declared)} edges={len(edges)} "
+            f"unresolved={len(unresolved)} findings={len(findings)} "
+            f"classes={dict(sorted(counts.items()))} exceptions={len(manifest['exceptions'])} "
+            f"resolved_aliases={len(resolved)}"
         )
     return 0
 

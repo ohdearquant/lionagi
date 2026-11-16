@@ -32,6 +32,13 @@ dynamic imports, aliases the scanner cannot resolve and native imports require
 separate inspection. Internal names that could not be resolved are reported.
 An alias rebound in one file resolves to its last binding within that scope.
 
+An internal import that resolves through the literal `MOVED` table appears in
+`resolved_aliases` with its original edge, canonical module and target owner.
+Physical modules take precedence. The longest matching alias prefix selects
+the canonical destination, and any missing destination stays unresolved.
+The edge list retains the source spelling and the boundary findings use
+direct imports as before.
+
 `tests/contracts/test_boundary_compatibility.py` records package declarations,
 public definitions, moved-module mappings, settings fields, direct environment
 lookups, extras and console-script wiring; the existing CLI surface tests
