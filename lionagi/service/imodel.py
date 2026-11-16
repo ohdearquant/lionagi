@@ -846,8 +846,9 @@ class iModel:  # noqa: N801
             api_call.metadata.pop("served_model", None)
             if served_model is not None:
                 api_call.metadata["served_model"] = served_model
-            # The telemetry frame is None outside the request path.
-            record_served_model(api_call._telemetry_frame, served_model)
+            if isinstance(api_call, APICalling):
+                # The telemetry frame is None outside the request path.
+                record_served_model(api_call._telemetry_frame, served_model)
         if served_model is None:
             self.provider_metadata.pop("served_model", None)
         else:
