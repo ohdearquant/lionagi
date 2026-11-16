@@ -108,6 +108,13 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.studio.services.schedules` | `lionhub.serve.daemon.services.schedules` |
 | `lionagi.studio.services._session_tail` | `lionhub.serve.daemon.services._session_tail` |
 
+## Logger names
+
+Moved modules keep their original logger names so existing log handlers and filters
+still match. New modules use `logging.getLogger(__name__)` by default and follow an
+existing logging namespace where their package documents one. The scheduler documents
+its namespace in the [orchestration README](src/lionhub/orchestration/README.md).
+
 ## Tests
 
 From the repository root, install the project dependencies and run:
