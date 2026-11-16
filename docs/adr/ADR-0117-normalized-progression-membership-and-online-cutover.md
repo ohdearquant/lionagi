@@ -72,10 +72,11 @@ sources (`lionagi/studio/config.py::_mirror_import_ambient_default`, `lionagi/st
 the embedded task. A recent-file window does not cap an active transcript's lifetime length. These line numbers are at `317e6b4cfd4bb8f05d2bfc6a947d9fc1dcd28add`.
 
 Other writers also have no lifetime ceiling. Resume reuses existing progression IDs
-(`lionagi/cli/_runs.py:2236-2237@e1800c3b`); flow branches share a session progression
-(`lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py::setup_orchestration_persist`, `lionagi/cli/_runs.py:1922@e1800c3b`); run import creates complete
-unbounded orders (`lionhub/src/lionhub/serve/cli/state.py::_import_one_run`). The small current population justifies a
-staged rollout, not a permanent assumption that these histories remain small. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+(`lionagi/cli/_runs.py:2236-2237@e1800c3b`). Flow branches share a session progression
+(`lionagi/cli/orchestrate/_orchestration.py:2268@e1800c3b`, `lionagi/cli/_runs.py:1922@e1800c3b`).
+Run import creates complete unbounded orders (`lionagi/cli/state.py:507@e1800c3b`,
+`lionagi/cli/state.py:555@e1800c3b`, `lionagi/cli/state.py:560@e1800c3b`). The small current
+population justifies a staged rollout, not a permanent assumption that these histories remain small.
 
 Read amplification persists for idle histories. A detail page loads entire arrays before taking
 a tail window (`lionhub/src/lionhub/serve/daemon/services/sessions.py::get_session`), counts expand JSON (`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions.listing_sql`),
