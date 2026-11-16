@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import signal
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -104,6 +105,7 @@ def command_child(monkeypatch, tmp_path):
     monkeypatch.setattr(_proc, "pinned_member", child.observe_member)
     monkeypatch.setattr(scheduler_process, "capture_group_witnesses", child.capture_witnesses)
     monkeypatch.setattr(scheduler_process, "_group_has_members", child.group_has_members)
+    monkeypatch.setattr(scheduler_process, "live_group_members", lambda *a, **k: ([], False))
     monkeypatch.setattr(_proc, "_group_has_members", child.group_has_members)
     monkeypatch.setattr(_proc, "_signal_group_outcome", child.signal_group)
     monkeypatch.setattr(scheduler_process.socket, "gethostname", lambda: "test-host")
@@ -115,6 +117,57 @@ def command_child(monkeypatch, tmp_path):
     monkeypatch.setattr(os, "kill", unexpected_signal)
     monkeypatch.setattr(os, "killpg", unexpected_signal, raising=False)
     return child
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX session and group checks")
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        ("live-owned", "fresh"),
+        ("different-parent", None),
+        ("different-session", None),
+        ("caller-group", None),
+        ("reaped-marked", "witnessed"),
+        ("reaped-unverified", None),
+    ],
+)
+def test_unpublished_command_group_signals_only_its_own_session(monkeypatch, scenario, expected):
+    child = _CommandChild()
+    if scenario.startswith("reaped"):
+        child.returncode = 0
+    monkeypatch.setattr(os, "getpgrp", lambda: child.pid if scenario == "caller-group" else 100)
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(os, "getsid", lambda pid: 100 if scenario == "different-session" else pid)
+    monkeypatch.setattr(
+        psutil,
+        "Process",
+        lambda pid: SimpleNamespace(
+            ppid=lambda: 1 if scenario == "different-parent" else os.getpid()
+        ),
+    )
+    marker = "own-spawn" if scenario == "reaped-marked" else "another-spawn"
+    member = (child.pid + 1, child.started, marker, True)
+    monkeypatch.setattr(scheduler_process, "live_group_members", lambda *a, **k: ([member], True))
+    sent = []
+
+    def kill_fresh(pgid):
+        assert pgid == child.pid
+        sent.append("fresh")
+        return True
+
+    def kill_witnessed(pgid, witnesses, sig):
+        assert pgid == child.pid and sig == signal.SIGKILL
+        if not witnesses:
+            return False
+        assert witnesses == (member[:2],)
+        sent.append("witnessed")
+        return True
+
+    monkeypatch.setattr(scheduler_process, "kill_group_now", kill_fresh)
+    monkeypatch.setattr(scheduler_process, "signal_group_if_witnessed", kill_witnessed)
+
+    assert scheduler_process._kill_unpublished_command_group(child, "own-spawn") is bool(expected)
+    assert sent == ([expected] if expected else [])
 
 
 async def _fire_command(tmp_path):

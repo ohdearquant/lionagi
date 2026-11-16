@@ -11,6 +11,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import socket
 import sys
 import tempfile
@@ -25,10 +26,16 @@ from lionagi.ln import (
     prepare_process_group_env,
 )
 from lionagi.ln._proc import (
+    _PROCESS_GROUP_MARKER,
+    _await_child_exit,
     _group_has_members,
+    _marker_matches,
     _RecordedWorkerIdentity,
     env_without_state_db_url,
+    kill_group_now,
+    live_group_members,
     safe_pgid_value,
+    signal_group_if_witnessed,
 )
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionhub.orchestration.schedule.action_validation import (
@@ -444,6 +451,38 @@ class _CommandProcessPublicationRefusedError(_CommandProcessPublicationError):
     """The invocation changed before the process identity write could land."""
 
 
+def _kill_unpublished_command_group(proc: asyncio.subprocess.Process, group_marker: str) -> bool:
+    """End a command session from this producer's own successful spawn."""
+    pgid = safe_pgid_value(proc.pid)
+    if os.name != "posix" or pgid is None:
+        return False
+
+    # A direct child still leading the session it started anchors the group
+    # even when its durable identity could not be read or committed.
+    if proc.returncode is None:
+        import psutil
+
+        try:
+            owns_session = (
+                os.getsid(pgid) == pgid == os.getpgid(pgid)
+                and psutil.Process(pgid).ppid() == os.getpid()
+            )
+        except (OSError, psutil.Error):
+            owns_session = False
+        if owns_session:
+            return kill_group_now(pgid)
+
+    # Once the leader is gone, only a live member carrying the marker from this
+    # launch can distinguish our old group from a reused numeric ID.
+    members, _ = live_group_members(pgid, marker_var=_PROCESS_GROUP_MARKER)
+    marked = tuple(
+        (pid, created)
+        for pid, created, marker, marker_read in members
+        if marker_read and _marker_matches(marker, group_marker)
+    )
+    return signal_group_if_witnessed(pgid, marked, signal.SIGKILL)
+
+
 async def _publish_command_process(
     proc: asyncio.subprocess.Process,
     leader_created: float | None,
@@ -618,13 +657,20 @@ async def spawn_and_wait(
         _drain_tail(proc.stderr, _TAIL_BYTES),
     )
 
-    async def _stop_child() -> None:
-        # SIGTERM then SIGKILL the whole group. The readers are cancelled first: they
-        # are blocked on pipes belonging to the process being killed, and an
-        # un-cancelled reader outlives it.
+    async def _stop_child(*, failed_publication: bool = False) -> None:
+        # Send the launch-abort signal while the dedicated session still has its
+        # original child. Stop the readers before the ordinary termination path.
+        group_killed = (
+            failed_publication
+            and action_kind == "command"
+            and _kill_unpublished_command_group(proc, group_marker)
+        )
         drain.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await drain
+        if group_killed:
+            await _await_child_exit(proc)
+            return
         group_witnesses = (
             capture_group_witnesses(
                 proc,
@@ -660,7 +706,7 @@ async def spawn_and_wait(
 
         stdout, stderr = await asyncio.wait_for(_wait_for_exit(), timeout=deadline_seconds)
     except _CommandProcessPublicationError:
-        await shield_quietly(_stop_child())
+        await shield_quietly(_stop_child(failed_publication=True))
         raise
     except asyncio.TimeoutError as exc:
         _log.warning(

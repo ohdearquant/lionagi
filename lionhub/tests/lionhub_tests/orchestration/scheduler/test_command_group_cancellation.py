@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import socket
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 from lionagi.ln._proc import process_create_time
 from lionagi.state import db as db_module
 from lionagi.state.reasons import RunReasons
+from lionhub.orchestration.scheduler import subprocess as scheduler_process
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
 from lionhub.serve.cli.kill import _do_kill
@@ -148,3 +150,91 @@ async def test_cli_kill_reaps_a_scheduled_command_group(tmp_path, monkeypatch, c
     finally:
         released.set()
         await asyncio.wait_for(engine.stop(), timeout=10)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups and fork")
+@pytest.mark.parametrize("failure", ["identity-unavailable", "store-failure"])
+async def test_command_launch_failure_reaps_the_spawned_group(
+    tmp_path, monkeypatch, stable_boot_time, failure
+):
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", _COMMAND)
+    monkeypatch.setattr(scheduler_process, "_PROCESS_TERMINATION_GRACE_SECONDS", 0.1)
+    (tmp_path / _COMMAND).symlink_to(sys.executable)
+    script = tmp_path / "sleeping_group.py"
+    script.write_text(_PROGRAM, encoding="utf-8")
+    ready = tmp_path / "launch-group.ready"
+    spawned = []
+    members = []
+    original_spawn = asyncio.create_subprocess_exec
+
+    async def spawn(*argv, **kwargs):
+        assert argv[0] == _COMMAND and kwargs["start_new_session"] is True
+        child = await original_spawn(*argv, **kwargs)
+        spawned.append(child)
+        return child
+
+    def observe_leader(pid, **kwargs):
+        if failure == "identity-unavailable":
+            return None
+        state, birth = process_create_time(pid)
+        assert state == "found" and birth is not None
+        return birth
+
+    async def confirm_dispatch():
+        while not ready.is_file():
+            await asyncio.sleep(0.01)
+        worker, descendant = (int(value) for value in ready.read_text().split())
+        assert worker == spawned[0].pid and worker != os.getpgrp()
+        for pid in (worker, descendant):
+            state, birth = process_create_time(pid)
+            assert state == "found" and birth is not None and os.getpgid(pid) == worker
+            members.append((pid, birth))
+
+    publish_attempts = []
+
+    async def publish(identity):
+        publish_attempts.append(identity)
+        raise RuntimeError("synthetic store failure")
+
+    monkeypatch.setattr(scheduler_process.asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(scheduler_process, "observe_process_group_leader", observe_leader)
+    try:
+        with pytest.raises(
+            scheduler_process._CommandProcessPublicationError, match="scheduled command process"
+        ):
+            await scheduler_process.spawn_and_wait(
+                [_COMMAND, script.name, ready.name],
+                "failed-publication",
+                action_kind="command",
+                cwd=str(tmp_path),
+                deadline_seconds=5,
+                on_launched=confirm_dispatch,
+                publish_command_process=publish,
+                env={"PATH": str(tmp_path)},
+            )
+        assert len(members) == 2
+        assert len(publish_attempts) == (1 if failure == "store-failure" else 0)
+        assert spawned[0].returncode is not None
+        await asyncio.wait_for(
+            asyncio.gather(*(_await_exit(pid, birth) for pid, birth in members)),
+            timeout=1,
+        )
+    finally:
+        if spawned:
+            child = spawned[0]
+            for pid, birth in members:
+                if process_create_time(pid) != ("found", birth):
+                    continue
+                try:
+                    if os.getpgid(pid) == child.pid:
+                        os.killpg(child.pid, signal.SIGKILL)
+                        break
+                except ProcessLookupError:
+                    continue
+            if child.returncode is None:
+                try:
+                    child.kill()
+                except ProcessLookupError:
+                    pass
+            await asyncio.wait_for(child.wait(), timeout=5)
