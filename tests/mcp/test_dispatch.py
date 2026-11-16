@@ -20,20 +20,9 @@ import pytest
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.serve.mcp import dispatch, jobs, verbs
+from tests.mcp._removed_surface import REMOVED_VERB_ALIASES
 
-# The flat names of the earlier one-tool-per-operation surface, now removed.
-PREVIOUS_SURFACE_NAMES = (
-    "submit_agent",
-    "submit_flow",
-    "submit_fanout",
-    "submit_play",
-    "job_status",
-    "job_output",
-    "job_kill",
-    "job_wait",
-    "jobs_list",
-    "server_info",
-)
+PREVIOUS_SURFACE_NAMES = tuple(REMOVED_VERB_ALIASES)
 
 
 def call(**kwargs):
@@ -443,6 +432,11 @@ def test_a_previous_surface_name_is_refused_as_an_unknown_verb(old):
     assert answer["ops"][0]["error"]["kind"] == "not_found"
     with pytest.raises(ValueError, match="no such verb"):
         call(help=old)
+
+
+def test_each_removed_name_has_a_registered_replacement():
+    listed = {entry["verb"] for entry in call(help=True)["verbs"]}
+    assert set(REMOVED_VERB_ALIASES.values()) <= listed
 
 
 def test_neither_the_catalog_nor_server_info_reports_a_synonym_sunset():

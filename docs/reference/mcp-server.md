@@ -403,10 +403,21 @@ an outcome — read each entry's `outcome` for that.
 
 An earlier version of this server advertised one tool per operation, with flat
 names such as `submit_agent`, `job_status` and `server_info`. Those names were
-accepted inside `ops` for one release and are now removed: an op that uses one is
-refused as `not_found`, like any other unknown verb. Each maps to the namespaced
-verb with the same words, `submit_agent` to `agent.submit` and `jobs_list` to
-`job.list`; `help=true` lists them all.
+accepted inside `ops` for one release. The server now refuses them as `not_found`.
+Use the following namespaced verbs when migrating a script.
+
+| Removed name | Namespaced verb |
+| --- | --- |
+| `submit_agent` | `agent.submit` |
+| `submit_flow` | `flow.submit` |
+| `submit_fanout` | `fanout.submit` |
+| `submit_play` | `play.submit` |
+| `job_status` | `job.status` |
+| `job_output` | `job.output` |
+| `job_kill` | `job.kill` |
+| `job_wait` | `job.wait` |
+| `jobs_list` | `job.list` |
+| `server_info` | `server.info` |
 
 If your client shows a single entry in `tools/list`, that is correct and
 current. The operations are behind `request`, and `help=true` lists them.
