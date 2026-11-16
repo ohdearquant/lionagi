@@ -92,6 +92,11 @@ config was found. A set read from a file named with `--mcp-config` is exclusive:
 starts with those servers and no others. A set found by the `.mcp.json` lookup is additive and
 joins the servers the provider already configures.
 
+To silence the `li agent` warning when no MCP configuration file is found, set
+`mcp.quiet_discovery` to the YAML boolean `true` in `~/.lionagi/settings.yaml`. The nearest
+`.lionagi/settings.yaml` from the leg's working directory can override it with `true` or
+`false`. The provider still discovers its own configuration normally.
+
 **Model spec**: `provider/model[-effort]` — for example
 `claude/opus-4-7-high` or `codex/gpt-5.4-xhigh`. Current bare aliases include
 `claude` → `claude_code/sonnet`, `codex` → `codex/gpt-5.3-codex-spark`,
