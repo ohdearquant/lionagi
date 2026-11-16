@@ -629,9 +629,9 @@ or launch targets. The existing old-reference checker distinguishes imports/call
 arguments from set data (`tests/test_moved_modules.py::_old_references`); keep canonical
 execution targets and test both recognition forms explicitly.
 
-The D2 exemption is exactly `{cli, studio}` before step 6, `{studio}` afterward
-through 1.x, and empty at 2.0. The core gains no new exception or hub-dependent facade
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:102`).
+ADR-0136 Amendment 3 C2 and Amendment 5 G4 govern the D2 exemption set. The CLI leaves
+it at step 6. The remaining entries expire at the steps recorded there, and the set is
+empty at 2.0. Any new CLI facade that depends on the hub belongs in `lionhub`.
 
 **Failure tests:** `test_1x_upgrade_replaces_li_target_once`,
 `test_saved_1x_wrapper_uses_alias`,
