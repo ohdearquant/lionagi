@@ -465,22 +465,36 @@ class _AliasLoader(importlib.abc.Loader):
 
     def exec_module(self, module: ModuleType) -> None:
         moved = _import_new(self._new_name)
+        self._warn_moved(module.__name__)
+        sys.modules[module.__name__] = moved
+
+    def _warn_moved(self, old_name: str) -> None:
         warnings.warn(
-            f"{module.__name__} moved to {self._new_name}; the old import path is removed "
+            f"{old_name} moved to {self._new_name}; the old import path is removed "
             f"in lionagi {self._row.removed_in}. Import from {self._new_name} instead.",
             DeprecationWarning,
             stacklevel=_caller_stacklevel(),
         )
-        sys.modules[module.__name__] = moved
 
     def get_data(self, path: str) -> bytes:
         # Resource readers such as ``pkgutil.get_data`` ask the old name's loader.
         return importlib.import_module(self._new_name).__spec__.loader.get_data(path)
 
     def get_code(self, fullname: str) -> CodeType | None:
-        # ``python -m <old name>`` runs a module's code instead of importing it, so runpy
-        # asks the old name's loader for the code of the module at the new name.
-        return importlib.util.find_spec(self._new_name).loader.get_code(self._new_name)
+        code = importlib.util.find_spec(self._new_name).loader.get_code(self._new_name)
+        # runpy executes the code without calling exec_module. An aliased parent
+        # already warned during import, while a parent kept on disk did not.
+        parent_name = fullname.rpartition(".")[0]
+        parent = sys.modules.get(parent_name)
+        canonical_parent = resolve(parent_name)
+        parent_is_alias = (
+            parent is not None
+            and canonical_parent is not None
+            and parent is sys.modules.get(canonical_parent)
+        )
+        if code is not None and not parent_is_alias:
+            self._warn_moved(fullname)
+        return code
 
 
 class _MovedFinder(importlib.abc.MetaPathFinder):
