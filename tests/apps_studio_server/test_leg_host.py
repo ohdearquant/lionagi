@@ -214,7 +214,7 @@ def test_an_unknown_head_is_a_setup_failure(tmp_path: Path) -> None:
 def test_the_leg_environment_is_the_allow_list() -> None:
     parent = {
         "PATH": "/usr/bin",
-        "HOME": "/home/legs",
+        "HOME": "/home/agent",
         "CLAUDE_CODE_OAUTH_TOKEN": "login",
         "LIONAGI_STUDIO_AUTH_TOKEN": TOKEN,
         "LIONAGI_REMOTE_LEGBOX_TOKEN": TOKEN,
@@ -224,7 +224,7 @@ def test_the_leg_environment_is_the_allow_list() -> None:
     }
     assert leg_host.leg_env(parent) == {
         "PATH": "/usr/bin",
-        "HOME": "/home/legs",
+        "HOME": "/home/agent",
         "CLAUDE_CODE_OAUTH_TOKEN": "login",
     }
 

@@ -19,8 +19,8 @@ On the machine that runs the legs, under the account they run as:
 
     ```yaml
     lionagi:
-      clone: /Users/legs/repos/lionagi
-      worktrees: /Users/legs/leg-worktrees/lionagi
+      clone: /home/agent/repos/lionagi
+      worktrees: /home/agent/leg-worktrees/lionagi
     ```
 
 3. Put the agent profiles legs may run as in `~/.lionagi/agents/`. They must be Claude Code
