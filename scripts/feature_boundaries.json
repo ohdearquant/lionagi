@@ -117,204 +117,6 @@
       "layer": "adapter",
       "owner": "data_adapters"
     },
-    "lionagi.cli": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.__main__": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli._agent_depth": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli._api_usage": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli._context_from": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli._notify_outcomes": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli._pid_quarantine": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.agent": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.dispatch": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.doctor": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.engine": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.engine_definitions"
-    },
-    "lionagi.cli.hooks": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.invoke": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.kill": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.kill"
-    },
-    "lionagi.cli.machine": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.machine_schedule": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.main": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.mcp": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.mirror": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.serve.mirror"
-    },
-    "lionagi.cli.monitor": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)",
-      "additional_targets": [
-        "lionhub.orchestration.flow.parsing"
-      ]
-    },
-    "lionagi.cli.orchestrate._common": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate._control": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate._finalize": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate._harvest": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate._manifest": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate._notify": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate._orchestration": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.runs"
-    },
-    "lionagi.cli.orchestrate._quiescence": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate._round_records": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate.fanout": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.orchestrate.flow": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.plugin": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.skill": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.state": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.stats": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
-    "lionagi.cli.status": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.inspection"
-    },
-    "lionagi.cli.team": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "lionhub.orchestration.team"
-    },
-    "lionagi.cli.wait": {
-      "layer": "root",
-      "owner": "cli",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
-    },
     "lionagi.config": {
       "layer": "sdk",
       "owner": "configuration"
@@ -342,26 +144,6 @@
     "lionagi.hooks.persist": {
       "layer": "adapter",
       "owner": "hooks"
-    },
-    "lionagi.integrations": {
-      "layer": "adapter",
-      "owner": "integrations",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.integrations.ruvector": {
-      "layer": "adapter",
-      "owner": "ruvector",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.integrations.ruvector.memory": {
-      "layer": "adapter",
-      "owner": "ruvector",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.integrations.ruvector.store": {
-      "layer": "adapter",
-      "owner": "ruvector",
-      "target_owner": "lionhub (destination not yet recorded)"
     },
     "lionagi.libs": {
       "layer": "foundation",
@@ -752,6 +534,10 @@
       "owner": "operations"
     },
     "lionagi.operations.run.run": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.run.stream_buffer": {
       "layer": "sdk",
       "owner": "operations"
     },
@@ -1323,14 +1109,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio._host": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio._traceback_dump": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.app": {
       "layer": "root",
       "owner": "studio"
@@ -1338,17 +1116,9 @@
     "lionagi.studio.cli": {
       "layer": "root",
       "owner": "studio",
-      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+      "target_owner": "lionhub.serve.cli"
     },
     "lionagi.studio.config": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.daemon_log": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.launch_access": {
       "layer": "root",
       "owner": "studio"
     },
@@ -1388,10 +1158,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.operator.redact": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.operator.rename_session": {
       "layer": "root",
       "owner": "studio"
@@ -1424,10 +1190,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.reconnect": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.registry": {
       "layer": "root",
       "owner": "studio"
@@ -1436,36 +1198,11 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services._io": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services._path_safety": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services._session_tail": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services._sse": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.admin": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
     "lionagi.studio.services.agents": {
       "layer": "root",
       "owner": "studio"
     },
     "lionagi.studio.services.approvals": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.artifact_verification": {
       "layer": "root",
       "owner": "studio"
     },
@@ -1485,29 +1222,9 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.engine_runs": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
     "lionagi.studio.services.hooks_library": {
       "layer": "root",
       "owner": "studio"
-    },
-    "lionagi.studio.services.identity": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
-    "lionagi.studio.services.invocations": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
-    "lionagi.studio.services.launches": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
     },
     "lionagi.studio.services.leo": {
       "layer": "root",
@@ -1525,11 +1242,6 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.pairing": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
     "lionagi.studio.services.playbooks": {
       "layer": "root",
       "owner": "studio"
@@ -1546,46 +1258,11 @@
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.run_resume": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
-    "lionagi.studio.services.run_resume_worker": {
-      "layer": "root",
-      "owner": "studio"
-    },
     "lionagi.studio.services.run_tags": {
       "layer": "root",
       "owner": "studio"
     },
-    "lionagi.studio.services.run_view": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.runs": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
-    "lionagi.studio.services.schedules": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.orchestration.schedule",
-      "additional_targets": [
-        "lionhub.serve"
-      ]
-    },
-    "lionagi.studio.services.sessions": {
-      "layer": "root",
-      "owner": "studio",
-      "target_owner": "lionhub.serve"
-    },
     "lionagi.studio.services.shows": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.signals": {
       "layer": "root",
       "owner": "studio"
     },
@@ -1594,10 +1271,6 @@
       "owner": "studio"
     },
     "lionagi.studio.services.stats": {
-      "layer": "root",
-      "owner": "studio"
-    },
-    "lionagi.studio.services.task_applications": {
       "layer": "root",
       "owner": "studio"
     },

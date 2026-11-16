@@ -10,9 +10,9 @@ from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import has_traversal
 from lionagi.ln.concurrency import run_sync
 from lionhub.orchestration.scheduler.show_artifacts import read_json_file as _read_json
+from lionhub.serve.daemon.services._path_safety import public_path, safe_path_join
 
 from ..registry import studio_route
-from ._path_safety import public_path, safe_path_join
 from .redaction import abbreviate_path, demo_mode_enabled, project_agent_fields
 
 _THIS = Path(__file__).resolve()

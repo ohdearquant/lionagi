@@ -422,6 +422,7 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
   identity in one statement without deleting its acknowledgements. Reactivating
   explicitly resumes the same identity and applies `start` to its unacknowledged
   history; a late acknowledgement after retirement is accepted.
+
 - Terminal reconciliation — with `LIONAGI_STUDIO_TERMINAL_RECONCILE` on (it is
   off by default), the Studio daemon runs a settings-consumer pass at startup,
   awaited before it serves, and on its periodic tick, inside the scheduler tick. The consumer registers with `start="now"` on its first pass,
@@ -468,15 +469,16 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
   does not cancel attempts that have already passed the check. No lock is held
   over the handler and there is no exclusive delivery claim.
 
-  At delivery time, a session transition uses that session and a play uses its
-  linked session. For invocation and schedule-run transitions, the distinct
-  non-NULL projects of linked sessions must contain exactly one project; zero
-  or several means no session context. Without context, the settings consumer
-  acknowledges the event as not applicable and counts no-session and ambiguous
-  project cases separately. The project decides only that classification: replay
-  always loads global settings (`load_settings(include_project=False)`), never a
-  project's settings file and never the daemon's working directory, so a
-  repository cannot name a command the daemon runs. A notifier configured only in
+  After the ACK decision, the settings consumer may inspect the session, the
+  session linked to a play, or the sessions linked through an invocation or
+  schedule run. The pass summary reports optional context separately from the
+  delivery outcome as `context_no_session`, `context_ambiguous_project`,
+  `context_null_project`, `context_read_failure`, and `context_budget_exhausted`.
+  A lookup that raises counts as a read failure. A lookup with no remaining
+  budget or whose deadline expires counts as budget exhaustion. These diagnostics
+  leave delivery and acknowledgement unchanged. Replay loads global settings
+  without reading a project's settings file or the daemon's working directory,
+  so a repository cannot name a command the daemon runs. A notifier configured only in
   project settings is push-only: a missed push for it is replayed through the
   global notifier when one is configured, and is otherwise acknowledged as not
   applicable. Kind and ID filters apply after resolution. Per-run `--notify` overrides and the no-session
@@ -538,6 +540,28 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
   registration is an override, so it dispatches on its own match rather than
   deferring to the process-wide registration's filter, and therefore
   re-applies the configured filter itself.
+
+### Executable terminal notices
+
+Configured terminal executables receive a JSON object on stdin for CLI runs,
+MCP completion and reaping, and durable replay. Every notice includes the
+following fields. A nullable value is `null` when the producer lacks that fact.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema_version` | integer | Shared version of the common fields and lifecycle envelope extensions, currently `1`. |
+| `run_id` | string or null | The execution's run ID. Session and invocation IDs remain separate. |
+| `status` | string | The producer's terminal status. |
+| `reason_code` | string or null | The recorded terminal reason code, when available. |
+| `label` | string or null | The run label. MCP falls back to the job kind, then `run`, when the label is empty. |
+| `sender` | string or null | Sender label for routing. CLI `--notify-sender` is caller-supplied and carries no attestation. MCP submit retains its sender validation. |
+| `cwd` | string or null | The run's working directory. MCP may launch the notifier from a different directory for signing. |
+| `output_dir` | string or null | The known artifact root or recorded run output directory. |
+
+Existing payload fields remain available as extensions, including `entity`,
+`correlation` and `artifacts` on lifecycle notices, and `target` on MCP
+notices. The explicit flow/play `--notify` override keeps its legacy payload.
+Python callbacks receive the existing `RunTerminalEnvelope`.
 
 ### `state/artifact_verifier.py`
 

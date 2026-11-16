@@ -110,7 +110,7 @@ Plays fired through `play.submit` are not grouped this way, and don't need to be
 play's `run_id` is already recoverable from its own `_meta.json`, and `job.status`/
 `job.output`/`job.wait` key on `run_id` directly rather than on an invocation.
 
-Source: `lionagi/cli/invoke.py`.
+Source: `lionhub/src/lionhub/serve/cli/invoke.py`.
 
 ---
 

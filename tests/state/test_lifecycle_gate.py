@@ -10,12 +10,13 @@ per-entity status vocabulary drift across its three sources of truth,
 reaper pattern (``expected_statuses`` + ``expected_updated_at``). See
 ``docs/internals/state-lifecycle.md`` for the regression detail behind each.
 
-Everything here runs against a temp-dir sqlite ``StateDB`` (``tmp_path /
-"state.db"``) — never ``~/.lionagi/state.db``, never any shared path.
+Tests use a temp-dir SQLite ``StateDB`` (``tmp_path / "state.db"``) or the
+isolated PostgreSQL test fixture.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -29,10 +30,16 @@ from lionagi.state.db import (
     StateDB,
     TransitionRejectedError,
 )
-from lionagi.state.lifecycle import ActorRecord, ReasonRecord, TransitionCommand
+from lionagi.state.lifecycle import (
+    ActorRecord,
+    LifecycleValidationError,
+    ReasonRecord,
+    TransitionCommand,
+)
 from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
 from lionagi.state.reasons import PlayReasons, RunReasons, SessionReasons
+from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 
 _SCHEMA_PATH = Path(__file__).resolve().parents[2] / "lionagi" / "state" / "schema.sql"
 
@@ -60,6 +67,17 @@ async def db(tmp_path):
     await state.open()
     yield state
     await state.close()
+
+
+@pytest_asyncio.fixture(params=["sqlite", "postgresql"], loop_scope="function")
+async def schedule_gate_db(request, tmp_path):
+    state = (
+        StateDB(tmp_path / "state.db")
+        if request.param == "sqlite"
+        else StateDB(url=request.getfixturevalue("pg_url"))
+    )
+    async with state:
+        yield state
 
 
 def _uid() -> str:
@@ -134,6 +152,21 @@ async def _make_schedule_run(db: StateDB, *, status: str) -> str:
         }
     )
     return run_id
+
+
+async def _schedule_run_history(db: StateDB, run_id: str) -> list[dict]:
+    return await db.fetch_all(
+        "SELECT * FROM status_transitions WHERE entity_type = 'schedule_run' "
+        "AND entity_id = ? ORDER BY created_at, id",
+        (run_id,),
+    )
+
+
+async def _schedule_run_audit(db: StateDB, run_id: str) -> list[dict]:
+    return await db.fetch_all(
+        "SELECT action, actor, details FROM admin_events WHERE target_id = ? ORDER BY created_at, id",
+        (run_id,),
+    )
 
 
 async def _make_entity(entity_type: str, db: StateDB, status: str) -> str:
@@ -367,6 +400,39 @@ async def test_undeclared_edge_sample_rejected_not_raised(
     assert transitions == []
 
 
+@pytest.mark.asyncio
+async def test_legacy_schedule_run_undeclared_nonterminal_edge_raises_without_audit(
+    schedule_gate_db: StateDB,
+) -> None:
+    db = schedule_gate_db
+    run_id = await _make_schedule_run(db, status="queued")
+    before = await db.get_schedule_run(run_id)
+    history = await _schedule_run_history(db, run_id)
+    assert [row["status"] for row in history] == ["queued"]
+
+    with pytest.raises(LifecycleValidationError) as rejection:
+        await transition(
+            db,
+            TransitionRequest(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                from_state="queued",
+                to_state="completed",
+                reason=StateReason(code=RunReasons.COMPLETED_OK),
+                actor=Actor(type="scheduler", id="gate-test-scheduler"),
+                idempotency_key=_uid(),
+            ),
+        )
+
+    assert str(rejection.value) == (
+        "transition(): schedule_run 'queued' -> 'completed' is not in the declared transition "
+        "vocabulary (allowed targets: ['cancelled', 'running', 'skipped', 'waiting_dependency'])"
+    )
+    assert await _schedule_run_audit(db, run_id) == []
+    assert await db.get_schedule_run(run_id) == before
+    assert await _schedule_run_history(db, run_id) == history
+
+
 # 3. CAS behavior: silent False vs raised TransitionRejectedError
 
 
@@ -456,6 +522,50 @@ async def test_terminal_overwrite_without_override_raises_not_returns_false(db: 
     assert exc_info.value.attempted_status == "running"
     row = await db.get_session(sid)
     assert row["status"] == "completed"  # untouched — the write never landed
+
+
+@pytest.mark.asyncio
+async def test_schedule_run_terminal_update_without_override_raises_and_audits(
+    schedule_gate_db: StateDB,
+) -> None:
+    db = schedule_gate_db
+    run_id = await _make_schedule_run(db, status="failed")
+    before = await db.get_schedule_run(run_id)
+    history = await _schedule_run_history(db, run_id)
+    assert [row["status"] for row in history] == ["failed"]
+    assert await _schedule_run_audit(db, run_id) == []
+
+    with pytest.raises(TransitionRejectedError) as rejection:
+        await db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            source="executor",
+            actor="gate-test-scheduler",
+        )
+
+    assert rejection.value.reason == "no_override"
+    assert str(rejection.value) == (
+        f"transition rejected: schedule_run {run_id!r} is terminal "
+        "at 'failed'; refusing to write 'completed' without override=True"
+    )
+    (event,) = await _schedule_run_audit(db, run_id)
+    assert event["action"] == "status_transition_rejected"
+    assert event["actor"] == "gate-test-scheduler"
+    details = event["details"]
+    if isinstance(details, str):
+        details = json.loads(details)
+    assert details == {
+        "entity_type": "schedule_run",
+        "previous_status": "failed",
+        "attempted_status": "completed",
+        "reason_code": RunReasons.COMPLETED_OK,
+        "source": "executor",
+        "rejection_reason": "no_override",
+    }
+    assert await db.get_schedule_run(run_id) == before
+    assert await _schedule_run_history(db, run_id) == history
 
 
 @pytest.mark.asyncio

@@ -4846,6 +4846,58 @@ def _stored_certificates(path) -> set[str]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["invoke", "stream"])
+async def test_the_provider_evidence_reader_receives_the_frozen_body_sent(
+    monkeypatch, tmp_path, streamed
+):
+    from lionhub.providers.anthropic import _prompt_cache
+
+    path = _install_accounts(monkeypatch, tmp_path)
+    response = (
+        StubResponse(pieces=[_sse([_HOUR_MESSAGE_START, _FINAL_COUNT, _MESSAGE_STOP])])
+        if streamed
+        else _response(usage=_hour_write_usage())
+    )
+    model, transport = _model(monkeypatch, [response])
+    requests_frozen = []
+    requests_read = []
+    freeze_request = router_module.freeze_request
+    read_evidence = _prompt_cache.routed_cache_evidence
+
+    def observe_freeze(payload):
+        frozen = freeze_request(payload)
+        requests_frozen.append((payload, frozen))
+        return frozen
+
+    def observe_reader(decoded):
+        evidence = read_evidence(decoded)
+        requests_read.append((decoded, evidence))
+        return evidence
+
+    monkeypatch.setattr(router_module, "freeze_request", observe_freeze)
+    monkeypatch.setattr(_prompt_cache, "routed_cache_evidence", observe_reader)
+
+    if streamed:
+        async for _ in model.endpoint.stream(copy.deepcopy(HOUR_REQUEST)):
+            pass
+    else:
+        await model.invoke(**copy.deepcopy(HOUR_REQUEST))
+
+    [sent] = transport.calls
+    [(before_freeze, frozen)] = requests_frozen
+    [(decoded, evidence)] = requests_read
+    assert decoded is not before_freeze
+    assert sent["data"] == frozen
+    assert decoded == json.loads(frozen)
+    assert decoded["service_tier"] == "standard_only"
+    assert bool(decoded.get("stream")) is streamed
+    assert evidence.cert == _system_certificate(decoded)
+    assert evidence.hour_after_key is False
+    assert evidence.server_tools is False
+    assert _stored_certificates(path) == {evidence.cert}
+
+
+@pytest.mark.asyncio
 async def test_a_pre_invoke_hook_that_rewrites_the_system_text_is_keyed_by_the_body_sent(
     monkeypatch, tmp_path
 ):

@@ -494,17 +494,17 @@ def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_
     ("old_module", "name", "owner"),
     [
         (
-            "lionagi.studio.services.admin",
+            "lionhub.serve.daemon.services.admin",
             "_PS_SNAPSHOT_CACHE",
             "lionhub.orchestration.scheduler.liveness",
         ),
         (
-            "lionagi.studio.services.admin",
+            "lionhub.serve.daemon.services.admin",
             "_PS_SNAPSHOT_METRICS",
             "lionhub.orchestration.scheduler.liveness",
         ),
         (
-            "lionagi.studio.services.admin",
+            "lionhub.serve.daemon.services.admin",
             "_PS_SNAPSHOT_SEQUENCE",
             "lionhub.orchestration.scheduler.liveness",
         ),
@@ -524,22 +524,81 @@ def test_a_moved_module_keeps_the_logger_name_it_had():
 
 
 @pytest.mark.parametrize(
-    ("module_name", "logger_name"),
+    ("module_name", "logger_attr", "logger_name"),
     [
-        ("lionhub.agent.context_fold", "lionagi.agent.context_fold"),
-        ("lionhub.agent.factory", "lionagi.agent.factory"),
-        ("lionhub.agent.hooks", "lionagi.agent.hooks"),
-        ("lionhub.agent.nudge", "lionagi.agent.nudge"),
-        ("lionhub.agent.permissions", "lionagi.agent.permissions"),
-        ("lionhub.agent.settings", "lionagi.agent.settings"),
-        ("lionhub.tools.coding", "lionagi.tools.coding"),
-        ("lionhub.tools.communication.messenger", "lionagi.tools.communication.messenger"),
-        ("lionhub.tools.khive_injection", "lionagi.tools.khive_injection"),
+        ("lionhub.agent.context_fold", "logger", "lionagi.agent.context_fold"),
+        ("lionhub.agent.factory", "logger", "lionagi.agent.factory"),
+        ("lionhub.agent.hooks", "logger", "lionagi.agent.hooks"),
+        ("lionhub.agent.nudge", "logger", "lionagi.agent.nudge"),
+        ("lionhub.agent.permissions", "logger", "lionagi.agent.permissions"),
+        ("lionhub.agent.settings", "logger", "lionagi.agent.settings"),
+        ("lionhub.hooks.external", "logger", "lionagi.hooks.external"),
+        ("lionhub.lndl.middle.lndl_middle", "logger", "lionagi.operations.lndl_middle.lndl_middle"),
+        ("lionhub.orchestration.dispatch.outbox", "_log", "lionagi.dispatch.outbox"),
+        ("lionhub.orchestration.engines.coding", "logger", "lionagi.engines"),
+        ("lionhub.orchestration.engines.engine", "logger", "lionagi.engines"),
+        ("lionhub.orchestration.engines.hypothesis", "logger", "lionagi.engines"),
+        ("lionhub.orchestration.patterns", "logger", "lionagi.orchestration.patterns"),
+        ("lionhub.orchestration.runs", "_log", "lionagi.cli"),
+        (
+            "lionhub.orchestration.scheduler.db_maintenance",
+            "_log",
+            "lionagi.studio.services.db_maintenance",
+        ),
+        ("lionhub.orchestration.scheduler.engine", "_log", "lionagi.studio.scheduler.engine"),
+        ("lionhub.orchestration.scheduler.github", "_log", "lionagi.studio.scheduler.github"),
+        ("lionhub.orchestration.scheduler.lifecycle", "_log", "lionagi.studio.services.lifecycle"),
+        ("lionhub.orchestration.scheduler.liveness", "_log", "lionagi.studio.services.admin"),
+        (
+            "lionhub.orchestration.scheduler.scheduler_state",
+            "_log",
+            "lionagi.studio.services.scheduler_state",
+        ),
+        ("lionhub.orchestration.scheduler.signals", "_log", "lionagi.studio.scheduler.signals"),
+        (
+            "lionhub.orchestration.scheduler.subprocess",
+            "_log",
+            "lionagi.studio.scheduler.subprocess",
+        ),
+        (
+            "lionhub.orchestration.scheduler.terminal_reconciliation",
+            "logger",
+            "lionagi.studio.services.terminal_reconciliation",
+        ),
+        ("lionhub.orchestration.scheduler.worker", "_log", "lionagi.studio.scheduler.worker"),
+        ("lionhub.orchestration.state_store", "_log", "lionagi.studio.services._db"),
+        ("lionhub.providers.ag2.agent", "logger", "lionagi.providers.ag2.agent"),
+        ("lionhub.providers.ag2.groupchat", "logger", "lionagi.providers.ag2.groupchat"),
+        ("lionhub.providers.ag2.nlip", "logger", "lionagi.providers.ag2.nlip"),
+        ("lionhub.providers.anthropic.messages", "logger", "lionagi.providers.anthropic.messages"),
+        ("lionhub.providers.ollama.chat", "logger", "lionagi.providers.ollama.chat"),
+        ("lionhub.providers.ollama.generate", "logger", "lionagi.providers.ollama.generate"),
+        (
+            "lionhub.providers.openai._codex_profile",
+            "logger",
+            "lionagi.providers.openai._codex_profile",
+        ),
+        ("lionhub.serve.cli._notify_outcomes", "logger", "lionagi.cli._notify_outcomes"),
+        ("lionhub.serve.cli.orchestrate._notify", "logger", "lionagi.cli.orchestrate._notify"),
+        ("lionhub.serve.cli.orchestrate.flow", "logger", "lionagi.cli.orchestrate.flow"),
+        ("lionhub.serve.daemon.services._io", "_log", "lionagi.studio.services._io"),
+        ("lionhub.serve.daemon.services.launches", "_log", "lionagi.studio.services.launches"),
+        ("lionhub.serve.daemon.services.run_resume", "_log", "lionagi.studio.services.run_resume"),
+        ("lionhub.serve.daemon.services.schedules", "_log", "lionagi.studio.services.schedules"),
+        ("lionhub.serve.mcp.jobs", "_log", "lionagi.mcp.jobs"),
+        ("lionhub.serve.mirror", "_log", "lionagi.cli.mirror"),
+        ("lionhub.tools.coding", "logger", "lionagi.tools.coding"),
+        (
+            "lionhub.tools.communication.messenger",
+            "logger",
+            "lionagi.tools.communication.messenger",
+        ),
+        ("lionhub.tools.khive_injection", "logger", "lionagi.tools.khive_injection"),
     ],
 )
-def test_agent_and_tool_loggers_keep_their_original_names(module_name, logger_name):
+def test_moved_loggers_keep_their_original_names(module_name, logger_attr, logger_name):
     module = importlib.import_module(module_name)
-    assert module.logger.name == logger_name
+    assert getattr(module, logger_attr).name == logger_name
 
 
 @pytest.mark.parametrize("contract", CORE_MODULE_CONTRACTS, ids=_old_name)
@@ -1048,7 +1107,7 @@ def _module_of(path: Path) -> str | None:
 _RETAINED_DEPRECATION_MESSAGES = {
     "lionhub.orchestration.runs": {
         "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
-        "use lionagi.cli._runs.teardown_persist instead."
+        "use lionhub.orchestration.runs.teardown_persist instead."
     }
 }
 
@@ -1086,9 +1145,19 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
                             path == ROOT / "lionagi/protocols/action/gate.py"
                             and name == "lionagi.agent.gate"
                         )
+                        # The admin helpers were extracted into scheduler liveness.
+                        or (
+                            own == "lionhub.orchestration.scheduler.liveness"
+                            and name == "lionagi.studio.services.admin"
+                        )
                         or name.startswith("lionagi.studio.scheduler.")
                         or name == "lionagi.studio.scheduler"
                         or name.startswith("lionagi.studio.services.scheduler_state")
+                        # The CLI's logger names stay as they were (D5): its channel loggers,
+                        # the package logger other modules log through, and the names its
+                        # modules had before the move. A module moved by a row of its own
+                        # keeps only its own old name, as above.
+                        or ((row := _moved._row(name)) is not None and row.old == "lionagi.cli")
                         or (
                             own
                             and (new := _moved.resolve(name))
@@ -1127,7 +1196,7 @@ def test_reference_check_preserves_only_the_original_own_deprecation_text():
     other = path.with_name("_probe.py")
     message = (
         "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
-        "use lionagi.cli._runs.teardown_persist instead."
+        "use lionhub.orchestration.runs.teardown_persist instead."
     )
     warning = f"warnings.warn({message!r}, DeprecationWarning)\n"
     changed_message = message + " "
@@ -1183,14 +1252,19 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
     other_core = ROOT / "lionagi" / "protocols" / "action" / "tool.py"
     claimed = _old_references(other_core, 'logging.getLogger("lionagi.agent.hooks")')
     assert len(claimed) == 1, claimed
+    liveness = SOURCE_ROOTS[1] / "orchestration/scheduler/liveness.py"
+    admin = "lionagi.studio.services.admin"
+    assert _old_references(liveness, f"logging.getLogger({admin!r})") == []
+    assert _old_references(liveness, f"import {admin}")
+    assert _old_references(liveness.with_name("_probe.py"), f"logging.getLogger({admin!r})")
 
 
 # The core packages under lionagi/ that name a lionhub module: they hold a listed
-# interim edge into the hub (see test_provider_interim_edge_inventory) or, for cli and
-# studio, import a hub orchestration or serve module. Every other package never names
+# interim edge into the hub (see test_provider_interim_edge_inventory) or, for studio,
+# import a hub orchestration or serve module. Every other package never names
 # lionhub. The set must match what the tree does, and it shrinks as each interim edge is
 # removed, so a package that stops naming lionhub is removed from it too.
-LIONHUB_USERS_UNDER_LIONAGI = frozenset({"cli", "operations", "service", "studio"})
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"service", "studio"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
@@ -1200,7 +1274,7 @@ def _deprecated_catalog_target_nodes(path: Path, tree: ast.Module) -> set[int]:
     if path != ROOT / "lionagi" / "_auto.py":
         return set()
     expected = {
-        name: f"lionhub.cli.catalog.{name}"
+        name: f"lionhub.serve.cli.catalog.{name}"
         for name in (
             "build_cli_parser",
             "command_exists",
@@ -1288,16 +1362,16 @@ def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
         "load_cli_command",
         "seed_for",
     )
-    aliases = {name: (f"lionhub.cli.catalog.{name}", "2.0.0") for name in names}
+    aliases = {name: (f"lionhub.serve.cli.catalog.{name}", "2.0.0") for name in names}
     source = f"_DEPRECATED_ALIASES = {aliases!r}\n"
     assert _lionhub_names(path, source) == []
-    additional = "import lionhub.cli.catalog\nEXTRA = 'lionhub.cli.catalog.seed_for'\n"
+    additional = "import lionhub.serve.cli.catalog\nEXTRA = 'lionhub.serve.cli.catalog.seed_for'\n"
     assert [hit.rsplit(": ", 1)[1] for hit in _lionhub_names(path, source + additional)] == [
-        "lionhub.cli.catalog",
-        "lionhub.cli.catalog.seed_for",
+        "lionhub.serve.cli.catalog",
+        "lionhub.serve.cli.catalog.seed_for",
     ]
     assert len(_lionhub_names(ROOT / "lionagi" / "_other.py", source)) == len(names)
-    aliases["other"] = ("lionhub.cli.catalog.other", "2.0.0")
+    aliases["other"] = ("lionhub.serve.cli.catalog.other", "2.0.0")
     assert len(_lionhub_names(path, f"_DEPRECATED_ALIASES = {aliases!r}\n")) == len(aliases)
 
 
@@ -1364,14 +1438,10 @@ def _provider_inventory() -> dict[str, list[str]]:
 # table changes when an edge is removed or a new one is added, never as a side effect.
 PROVIDER_INTERIM_EDGES = {
     # Every import here is inside a function (see the test of that below).
-    "operations/run/run.py": ["lionhub.providers.google.gemini_code"],
-    "service/accounts/_router.py": ["lionhub.providers.anthropic._prompt_cache"] * 2,
     "service/providers.py": ["lionhub.providers.openai._codex_profile"],
     # ``_MANIFEST_MODULE`` in the compatibility loader: the hub's manifest module, imported on
     # the first call that needs the default provider catalog.
     "service/connections/_provider_compat.py": ["lionhub.providers.manifest"],
-    "cli/agent.py": ["lionhub.providers.google.gemini_code"],
-    "cli/orchestrate/_orchestration.py": ["lionhub.providers.openai._codex_profile"],
     "studio/operator/engine.py": [
         "lionhub.providers.anthropic.claude_code",
         "lionhub.providers.google.gemini_code",
@@ -1700,8 +1770,9 @@ def test_a_root_lndl_export_is_the_moved_object_and_warns_at_the_callers_line():
 
 
 # Every lionhub.lndl module a file under lionagi/ names, by file (relative to lionagi/). The CLI's
-# API leg builds the LNDL Middle lazily until the CLI move; no other file names the language.
-LNDL_INTERIM_EDGES = {"cli/agent.py": ["lionhub.lndl.middle"]}
+# API leg built the LNDL Middle lazily until the CLI moved to the hub; no file under lionagi/
+# names the language now.
+LNDL_INTERIM_EDGES: dict[str, list[str]] = {}
 
 _HUB_LNDL = re.compile(r"lionhub\.lndl(\.[A-Za-z_][A-Za-z0-9_]*)*")
 

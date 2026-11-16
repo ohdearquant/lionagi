@@ -18,7 +18,7 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from unittest.mock import AsyncMock, patch
 
-from lionagi.studio.services.schedules import (
+from lionhub.serve.daemon.services.schedules import (
     UpdateScheduleRequest,
     _svc_validate_github_cursor,
     update_schedule,
@@ -38,7 +38,7 @@ def _patched_db():
     mock_db = AsyncMock()
     mock_db.get_schedule = AsyncMock(return_value=dict(_EXISTING))
     mock_db.update_schedule = AsyncMock()
-    ctx = patch("lionagi.studio.services.schedules.StateDB")
+    ctx = patch("lionhub.serve.daemon.services.schedules.StateDB")
     return ctx, mock_db
 
 

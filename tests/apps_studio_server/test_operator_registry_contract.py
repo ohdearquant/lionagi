@@ -189,8 +189,8 @@ SAMPLE_ARTIFACT_ROW = {"id": "art-1", "name": "demo.txt", "content": "hello"}
 
 
 async def _exercise_list_sessions(monkeypatch: pytest.MonkeyPatch, store: _WriteMethodTrap) -> None:
-    from lionagi.studio.services import runs as runs_service
-    from lionagi.studio.services import sessions as sessions_service
+    from lionhub.serve.daemon.services import runs as runs_service
+    from lionhub.serve.daemon.services import sessions as sessions_service
 
     async def list_runs(**_kwargs: Any) -> list[dict[str, Any]]:
         return [dict(SAMPLE_SESSION_ROW)]
@@ -207,7 +207,7 @@ async def _exercise_list_sessions(monkeypatch: pytest.MonkeyPatch, store: _Write
 async def _exercise_session_detail(
     monkeypatch: pytest.MonkeyPatch, store: _WriteMethodTrap
 ) -> None:
-    from lionagi.studio.services import sessions as sessions_service
+    from lionhub.serve.daemon.services import sessions as sessions_service
 
     async def get_session(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return dict(SAMPLE_SESSION_ROW)
@@ -220,7 +220,7 @@ async def _exercise_session_detail(
 async def _exercise_session_signals(
     monkeypatch: pytest.MonkeyPatch, store: _WriteMethodTrap
 ) -> None:
-    from lionagi.studio.services import signals as signals_service
+    from lionhub.serve.daemon.services import signals as signals_service
 
     async def get_signals_after(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return []
@@ -233,7 +233,7 @@ async def _exercise_session_signals(
 async def _exercise_get_invocation(
     monkeypatch: pytest.MonkeyPatch, store: _WriteMethodTrap
 ) -> None:
-    from lionagi.studio.services import invocations as invocations_service
+    from lionhub.serve.daemon.services import invocations as invocations_service
 
     async def get_invocation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return dict(SAMPLE_INVOCATION_ROW)
@@ -247,7 +247,7 @@ async def _exercise_list_artifacts(
     monkeypatch: pytest.MonkeyPatch, store: _WriteMethodTrap
 ) -> None:
     from lionagi.state import db as db_module
-    from lionagi.studio.services import invocations as invocations_service
+    from lionhub.serve.daemon.services import invocations as invocations_service
 
     store.list_artifacts_for_session = AsyncMock(return_value=[dict(SAMPLE_ARTIFACT_ROW)])
     store.list_artifacts_for_invocation = AsyncMock(return_value=[dict(SAMPLE_ARTIFACT_ROW)])
@@ -260,7 +260,7 @@ async def _exercise_list_artifacts(
 
 
 async def _exercise_get_artifact(monkeypatch: pytest.MonkeyPatch, store: _WriteMethodTrap) -> None:
-    from lionagi.studio.services import invocations as invocations_service
+    from lionhub.serve.daemon.services import invocations as invocations_service
 
     async def get_artifact(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return dict(SAMPLE_ARTIFACT_ROW)

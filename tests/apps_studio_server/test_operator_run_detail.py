@@ -194,8 +194,8 @@ async def test_run_detail_rejects_run_id_over_length_cap(db_path, monkeypatch):
 
 
 async def test_run_detail_status_reason_summary_over_text_cap_is_truncated_and_redacted(db_path):
-    from lionagi.studio.operator.redact import PER_ITEM_TEXT_CAP
     from lionagi.studio.operator.run_detail import run_detail
+    from lionhub.serve.daemon.services.redact import PER_ITEM_TEXT_CAP
 
     sid = str(uuid.uuid4())
     await seed_session(db_path, session_id=sid, status="failed")
@@ -214,7 +214,7 @@ async def test_run_detail_status_reason_summary_over_text_cap_is_truncated_and_r
     # The cap runs on the SCRUBBED string, not the raw one, so the raw length
     # above does not establish that this fixture drives past the cap. State the
     # precondition in the frame the cap actually reads.
-    from lionagi.studio.operator.redact import scrub_text
+    from lionhub.serve.daemon.services.redact import scrub_text
 
     assert len(scrub_text(raw_summary)) > PER_ITEM_TEXT_CAP
 
@@ -259,8 +259,8 @@ async def test_run_detail_summary_flag_follows_the_capped_string_not_the_raw_one
     Nothing is cut, so the honest answer is False -- a raw-derived flag
     would answer True, telling the reader a complete string was clipped.
     """
-    from lionagi.studio.operator.redact import PER_ITEM_TEXT_CAP, scrub_text
     from lionagi.studio.operator.run_detail import run_detail
+    from lionhub.serve.daemon.services.redact import PER_ITEM_TEXT_CAP, scrub_text
 
     sid = str(uuid.uuid4())
     await seed_session(db_path, session_id=sid, status="failed")
@@ -339,8 +339,8 @@ async def test_run_detail_long_relative_project_is_clamped_and_says_nothing(db_p
 
 
 async def test_project_manifest_over_byte_cap_is_replaced_and_flagged():
-    from lionagi.studio.operator.redact import ARTIFACT_BYTE_CAP
     from lionagi.studio.operator.run_detail import _project
+    from lionhub.serve.daemon.services.redact import ARTIFACT_BYTE_CAP
 
     # Each value exceeds the per-item text cap, so this also pins the order the
     # two caps compose in: per-item first, aggregate byte cap on the result.
@@ -637,7 +637,7 @@ async def test_every_projection_that_emits_an_end_also_emits_its_provenance():
 
     roots = [
         Path(__file__).resolve().parents[2] / "lionagi" / "studio",
-        Path(__file__).resolve().parents[2] / "lionagi" / "cli",
+        Path(__file__).resolve().parents[2] / "lionhub" / "src" / "lionhub" / "serve" / "cli",
     ]
     files = [p for root in roots for p in root.rglob("*.py")]
     assert files, "no source files found -- the walk is broken, not the code"

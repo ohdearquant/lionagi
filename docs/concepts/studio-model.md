@@ -43,7 +43,7 @@ capability, but this release does not yet require one: a decision request
 without it, including one that carries only the token, is still accepted and is
 recorded unattributed.
 These behaviors follow `lionagi/studio/app.py`, `lionagi/studio/config.py`,
-`lionagi/studio/services/pairing.py`, and
+`lionhub/src/lionhub/serve/daemon/services/pairing.py`, and
 `lionagi/studio/services/operator.py`; frontend credential handling is in
 `apps/studio/frontend/src/lib/api.ts`.
 
@@ -91,7 +91,7 @@ checkpoint must still exist after retention or cleanup. Unsupported kinds or
 missing state produce an explained refusal. Durable records do not mean that
 an active process continues through every daemon shutdown. These continuation
 paths follow `apps/studio/frontend/src/components/history/ResumeRun.tsx` and
-`lionagi/studio/services/run_resume.py`.
+`lionhub/src/lionhub/serve/daemon/services/run_resume.py`.
 
 See [durable operations](../guides/durable-operations.md) for monitoring,
 control, and recovery, and the [Operator guide](../guides/studio-operator.md)

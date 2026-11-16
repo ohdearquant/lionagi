@@ -449,7 +449,7 @@ scope of work described below.
 | **Scope** | Implement canonical DSL Pydantic models, YAML parser, schema validation, legacy variant rejection with migration diagnostics, and JSON Schema export for IDE hints. Must handle all required blocks, optional `break_glass`, enforcement enum normalization, and constraint binding exclusivity check. |
 | **Dependencies** | P12 |
 | **Measurement** | Unit tests for parser; property tests for schema round-trips; fixtures cover three canonical charter examples; wildcards and legacy `apiVersion` keys are rejected with line-specific error messages; JSON Schema output passes VS Code schema validation |
-| **Files Modified** | `lionagi/protocols/governance/charter.py`, `lionagi/protocols/governance/dsl.py`, `lionagi/cli/orchestrate/charter.py`, `tests/governance/test_charter_dsl.py` |
+| **Files Modified** | `lionagi/protocols/governance/charter.py`, `lionagi/protocols/governance/dsl.py`, `lionhub/src/lionhub/serve/cli/orchestrate/charter.py`, `tests/governance/test_charter_dsl.py` |
 
 ### P14 — Charter Compiler and Runtime Targets
 
@@ -461,7 +461,7 @@ scope of work described below.
 | **Scope** | Compile DSL through all six phases. Emit `GateRegistration`, `RegistryEntry`, `SoDRule`, `EvidenceRequirement`, `TraceExpectation`, `PermissionPolicy`, and `PolicyPin` objects. Activation must verify SHA-256 hash against `metadata.ratification.hash`; unresolved targets fail closed. |
 | **Dependencies** | P13 |
 | **Measurement** | Golden compile snapshots stable across Python versions; activation fails closed on hash mismatch; activation fails closed on unresolved gate or hook target; coverage across all seven runtime target families; adversarial test: tampered charter hash is rejected |
-| **Files Modified** | `lionagi/protocols/governance/compiler.py`, `lionagi/protocols/governance/runtime.py`, `lionagi/cli/orchestrate/charter.py`, `tests/governance/test_charter_compile.py` |
+| **Files Modified** | `lionagi/protocols/governance/compiler.py`, `lionagi/protocols/governance/runtime.py`, `lionhub/src/lionhub/serve/cli/orchestrate/charter.py`, `tests/governance/test_charter_compile.py` |
 
 ### P15 — Evidence Chain and Log Tiers
 
@@ -509,7 +509,7 @@ scope of work described below.
 | **Scope** | Define and implement `TaskCertificate` type (minting, grade computation, evidence chain head embedding). Wire charter activation into `Session.flow()` entry; enforce role allowlists and op limits from compiled charter; validate artifact contracts in `FlowPlan`; attach per-operation evidence sidecars via `Branch.operate(middle=...)`; mint run-end `TaskCertificate` after artifact verification; expose `li charter activate` and `li flow run --charter` CLI paths. |
 | **Dependencies** | P17 |
 | **Measurement** | Integration fixture proves: op limit exceeded → run blocked; role not in allowlist → op blocked; artifact missing → certificate not minted; break-glass event recorded in immutable evidence; run certificate contains evidence chain head hash and policy version |
-| **Files Modified** | `lionagi/session/session.py`, `lionagi/operations/flow.py`, `lionagi/operations/types.py`, `lionagi/cli/orchestrate/flow.py`, `lionagi/cli/orchestrate/_orchestration.py`, `tests/governance/test_flow_governance.py` |
+| **Files Modified** | `lionagi/session/session.py`, `lionagi/operations/flow.py`, `lionagi/operations/types.py`, `lionhub/src/lionhub/serve/cli/orchestrate/flow.py`, `lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py`, `tests/governance/test_flow_governance.py` |
 
 ### P19 — Certificates, Break-Glass, JIT, Registry, SoD
 
@@ -637,7 +637,7 @@ well-defined extension points only. New modules will live in `lionagi/protocols/
 Branch gains governance state that is initialized when a charter is activated. Ungoverned branches
 remain unchanged — governance is opt-in at the `Session.flow()` or `Branch.activate_charter()` call.
 
-### 8.3 `lionagi/cli/orchestrate/`
+### 8.3 `lionhub/src/lionhub/serve/cli/orchestrate/`
 
 | File | Change |
 |------|--------|

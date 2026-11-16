@@ -194,8 +194,8 @@ def test_runs_list_invalid_page_rejected(tmp_path, monkeypatch):
 
 async def test_list_runs_offloads_process_snapshot(tmp_path, monkeypatch):
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.runs as runs_mod
+    import lionhub.serve.daemon.services.admin as admin_mod
+    import lionhub.serve.daemon.services.runs as runs_mod
 
     db_path = tmp_path / "state.db"
     await _seed_sessions(db_path, [{"id": str(uuid.uuid4()), "status": "running"}])
@@ -466,7 +466,9 @@ def test_runs_list_threshold_crossing_alive_session_reports_unresponsive(tmp_pat
     # Pin liveness to True so the classifier yields UNRESPONSIVE (alive + past
     # threshold), not the process-dead STALE path — the seeded session has no
     # real process to probe.
-    monkeypatch.setattr("lionagi.studio.services.runs._session_liveness", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "lionhub.serve.daemon.services.runs._session_liveness", lambda *a, **k: True
+    )
 
     r = client.get("/api/runs")
     assert r.status_code == 200
@@ -493,7 +495,9 @@ def test_runs_list_confirmed_dead_process_reports_stale_despite_recent_activity(
         )
     )
     client = _make_client(tmp_path, monkeypatch, db_path)
-    monkeypatch.setattr("lionagi.studio.services.runs._session_liveness", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "lionhub.serve.daemon.services.runs._session_liveness", lambda *a, **k: False
+    )
 
     r = client.get("/api/runs")
     assert r.status_code == 200
@@ -513,7 +517,9 @@ def test_runs_list_unknown_liveness_recent_activity_stays_healthy(tmp_path, monk
         )
     )
     client = _make_client(tmp_path, monkeypatch, db_path)
-    monkeypatch.setattr("lionagi.studio.services.runs._session_liveness", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "lionhub.serve.daemon.services.runs._session_liveness", lambda *a, **k: None
+    )
 
     r = client.get("/api/runs")
     assert r.status_code == 200

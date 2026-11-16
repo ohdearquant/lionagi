@@ -83,7 +83,7 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
     # transition_sessions() opens StateDB() which resolves the latter at call time.
     import lionagi.state.db as state_db_mod
     import lionagi.state.health as health_mod
-    import lionagi.studio.services.admin as adm
+    import lionhub.serve.daemon.services.admin as adm
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
@@ -142,7 +142,7 @@ def test_transition_sessions_populates_duration_ms(tmp_path, monkeypatch):
     update_status()/_transition()), so it must compute duration_ms itself --
     this call site is not covered by the centralized derivation."""
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.admin as adm
+    import lionhub.serve.daemon.services.admin as adm
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -177,7 +177,7 @@ def test_transition_sessions_clears_the_live_phase(tmp_path, monkeypatch):
     """The admin CAS ends a session like every other terminal writer: the live
     phase goes in the same statement as the terminal status."""
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.admin as adm
+    import lionhub.serve.daemon.services.admin as adm
     from lionagi.state.db import StateDB
 
     db_path = tmp_path / "state.db"
@@ -243,7 +243,7 @@ async def _seed_terminal_session(
 
 
 def test_transition_sessions_leaves_already_terminal_session_untouched(tmp_path, monkeypatch):
-    """The reconcile's `WHERE status='running'` CAS (lionagi/studio/services/admin.py,
+    """The reconcile's `WHERE status='running'` CAS (lionhub/src/lionhub/serve/daemon/services/admin.py,
     transition_sessions) is the ADR-0035 integrity-floor guard for this write path:
     a session already in a terminal status must never be moved, and no spurious
     status_transitions row may be recorded for it.
@@ -261,7 +261,7 @@ def test_transition_sessions_leaves_already_terminal_session_untouched(tmp_path,
     _run(_seed_terminal_session(db_path, sid, status="completed", reason_code=terminal_reason_code))
 
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.admin as adm
+    import lionhub.serve.daemon.services.admin as adm
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 

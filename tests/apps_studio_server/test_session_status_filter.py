@@ -15,7 +15,7 @@ import pytest_asyncio
 from lionagi.state import db as db_module
 from lionagi.state.db import StateDB
 from lionagi.state.schema_migrations import MIGRATION_INDEXES
-from lionagi.studio.services import sessions
+from lionhub.serve.daemon.services import sessions
 
 
 @pytest_asyncio.fixture

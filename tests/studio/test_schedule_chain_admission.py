@@ -130,7 +130,7 @@ def test_chain_patch_reports_invalid_untouched_sibling(edited, stored_sibling, m
 
     from fastapi.testclient import TestClient
 
-    import lionagi.studio.services.schedules as schedules
+    import lionhub.serve.daemon.services.schedules as schedules
     from lionagi.studio.app import app
 
     stored = _existing(**{stored_sibling: _chain(1, model="-legacy")})

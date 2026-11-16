@@ -229,7 +229,7 @@ def _parser_to_dict(p: argparse.ArgumentParser) -> dict[str, Any]:
 
 
 def capture_cli() -> dict[str, Any]:
-    from lionhub.cli.catalog import build_cli_parser, iter_cli_seeds
+    from lionhub.serve.cli.catalog import build_cli_parser, iter_cli_seeds
 
     seeds = iter_cli_seeds()
     top_level = [
@@ -271,7 +271,7 @@ def capture_cli() -> dict[str, Any]:
 
 def _run_cli(argv: list[str], timeout: float = 20.0) -> dict[str, Any]:
     proc = subprocess.run(
-        [sys.executable, "-m", "lionagi.cli.main", *argv],
+        [sys.executable, "-m", "lionhub.serve.cli.main", *argv],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -297,7 +297,7 @@ def _run_cli_env(
     either."""
     env = {**os.environ, **(env_overrides or {})}
     proc = subprocess.run(
-        [sys.executable, "-m", "lionagi.cli.main", *argv],
+        [sys.executable, "-m", "lionhub.serve.cli.main", *argv],
         cwd=cwd or REPO_ROOT,
         capture_output=True,
         text=True,
@@ -541,7 +541,7 @@ def _classify_projection_error(exc: Exception) -> str:
 
 
 def _seed_alias_map() -> dict[str, tuple[str, ...]]:
-    from lionhub.cli.catalog import iter_cli_seeds
+    from lionhub.serve.cli.catalog import iter_cli_seeds
 
     return {seed.name: seed.aliases for seed in iter_cli_seeds() if seed.aliases}
 
@@ -678,30 +678,33 @@ def capture_machine() -> list[dict[str, Any]]:
 
 # Fresh-process import-laziness trace: self-contained subprocess payload that
 # imports only the named seed via `load_cli_command`, then reports which
-# *other* seeds' modules leaked in, whether the HTTP registry got realized as
-# a side effect, and which seed(s) ended up in `_cli_realized`. Comparing
+# *other* seeds' modules leaked in, whether the Studio route registry got
+# realized as a side effect, and which seed(s) ended up in `_cli_realized`. Comparing
 # against modules belonging to other seeds catches an adapter loaded as a
-# side effect of selecting a different command.
+# side effect of selecting a different command. The comparison takes every
+# newly imported module, whatever its package: seed modules live under
+# lionhub, so a lionagi-only filter would see no leak at all.
 _IMPORT_TRACE_SCRIPT = (
     "import sys, json\n"
-    "from lionagi._auto import _http\n"
-    "from lionhub.cli.catalog import load_cli_command, seed_for, iter_cli_seeds, _cli_realized\n"
+    "from lionhub.serve.cli.catalog import load_cli_command, seed_for, iter_cli_seeds, _cli_realized\n"
     "name = sys.argv[1]\n"
     "seed = seed_for(name)\n"
     "other_modules = {s.module for s in iter_cli_seeds() if s.module != seed.module}\n"
     "before = set(sys.modules)\n"
     "load_cli_command(seed)\n"
+    "registry = sys.modules.get('lionagi.studio.registry')\n"
+    "routes = len(registry._ROUTES) if registry is not None else 0\n"
     "after = set(sys.modules)\n"
     "new_lionagi = sorted(m for m in (after - before) if m.startswith('lionagi.'))\n"
-    "leaked = sorted(other_modules & set(new_lionagi))\n"
+    "leaked = sorted(other_modules & (after - before))\n"
     "result = {\n"
     "    'seed': name,\n"
     "    'module': seed.module,\n"
     "    'new_lionagi_module_count': len(new_lionagi),\n"
     "    'other_seed_modules_imported': leaked,\n"
     "    'other_seed_modules_imported_count': len(leaked),\n"
-    "    'http_registry_realized': len(_http) > 0,\n"
-    "    'http_registry_count': len(_http),\n"
+    "    'http_registry_realized': routes > 0,\n"
+    "    'http_registry_count': routes,\n"
     "    'cli_realized_names': sorted(_cli_realized.keys()),\n"
     "}\n"
     "print(json.dumps(result))\n"
@@ -778,14 +781,14 @@ def _run_compat_trace(module_name: str, timeout: float = 20.0) -> dict[str, Any]
 def capture_import_laziness() -> dict[str, Any]:
     """Fresh-process ``sys.modules`` traces proving selected-only CLI loading.
 
-    For each of the 21 canonical CLI seeds, launches a fresh subprocess that
+    For each of the 22 canonical CLI seeds, launches a fresh subprocess that
     imports only that seed through the registry (``load_cli_command``), never
     the whole CLI. In-process checks (``capture_imports`` below) cannot prove
     this: pytest itself has already imported most of the tree by the time a
     test runs, so only a fresh interpreter can show what one seed selection
     actually pulls in.
     """
-    from lionhub.cli.catalog import iter_cli_seeds
+    from lionhub.serve.cli.catalog import iter_cli_seeds
 
     seeds = [s.name for s in iter_cli_seeds()]
     traces = {name: _run_import_trace(name) for name in seeds}

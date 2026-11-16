@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lionagi.ln import compute_hash
+from lionhub.serve.daemon.services.redact import redact_arguments
 
-from .redact import redact_arguments
 from .types import OperatorEngineEvent, OperatorEngineTurn
 
 if TYPE_CHECKING:
@@ -292,6 +292,9 @@ def _render_operator_context(context: Any) -> str | None:
         if value is None or value == {} or value == "":
             return
         text = value if isinstance(value, str) else _canonical_json(value)
+        # One line per field: JSON escapes CR and LF but, with ensure_ascii off, not the other
+        # characters splitlines() breaks on (U+0085, U+2028, U+2029), so split on all of them.
+        text = " ".join(text.splitlines())
         if len(text) > _CONTEXT_VALUE_BYTE_LIMIT:
             text = text[:_CONTEXT_VALUE_BYTE_LIMIT] + "… (truncated)"
         lines.append(f"- {label}: {text}")

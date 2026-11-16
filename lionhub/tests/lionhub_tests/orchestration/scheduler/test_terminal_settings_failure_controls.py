@@ -225,7 +225,7 @@ async def test_exec_outcome_records_once_and_post_spawn_is_cleaned(
         calls.append("reap")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    monkeypatch.setattr(notify_settings, "observe_process_group_leader", lambda *_a, **_k: 1.0)
+    monkeypatch.setattr("lionagi.ln._proc.observe_process_group_leader", lambda *a, **k: 1.0)
     monkeypatch.setattr(
         notify_settings, "capture_group_witnesses", lambda *_a, **_k: ((4242, 1.0),)
     )

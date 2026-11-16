@@ -8,11 +8,12 @@ missing owner, and neither the turn nor the request frame retains its collector.
 
 from __future__ import annotations
 
+import math
 import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Iterator, Literal, Protocol
+from typing import Any, Iterator, Literal, Protocol
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,18 @@ class APIUsageSink(Protocol):
 
     def record_cache_usage(
         self, request_index: int, *, read: int | None, write: int | None
+    ) -> None: ...
+
+    def record_served_model(self, request_index: int, model: str | None) -> None: ...
+
+    def record_token_usage(
+        self,
+        request_index: int,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        estimated_cost_nusd: int | None,
+        price_table_version: str | None,
     ) -> None: ...
 
     def record_selected_attempt(
@@ -159,6 +172,116 @@ def record_cache_usage(frame: RequestFrame | None, *, read: int | None, write: i
                 collector.record_cache_usage(frame.request_index, read=read, write=write)
         except Exception:
             return
+
+
+def record_served_model(frame: RequestFrame | None, model: str | None) -> None:
+    if frame is not None:
+        try:
+            if collector := _live(frame.owner):
+                collector.record_served_model(frame.request_index, model)
+        except Exception:
+            return
+
+
+def _usage_token_counts(usage: Any) -> tuple[int | float | None, int | float | None]:
+    """Read the two provider count aliases while preserving missing values."""
+    if not isinstance(usage, dict):
+        return None, None
+
+    def number(*keys: str) -> int | float | None:
+        for key in keys:
+            value = usage.get(key)
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                if isinstance(value, float) and not math.isfinite(value):
+                    continue
+                return value
+        return None
+
+    return number("input_tokens", "prompt_tokens"), number("output_tokens", "completion_tokens")
+
+
+def _estimate_response_cost(
+    served_model: str, usage: dict, payload: dict
+) -> tuple[int | None, str | None]:
+    from .accounts._pricing import CURRENT_REVISION, price_usage, request_ttls
+    from .accounts._types import AccountRoutingError
+
+    if served_model not in CURRENT_REVISION.models:
+        return None, None
+
+    # With no reported serving tier, only a standard_only request can be
+    # priced at the standard rate.
+    if usage.get("service_tier") is None and payload.get("service_tier") != "standard_only":
+        return None, None
+
+    # Read the submitted cache markers for any cache write lifetime.
+    try:
+        ttls = request_ttls({"service_tier": "standard_only", **payload})
+    except AccountRoutingError:
+        # The response can describe all cache activity even if the request
+        # shape cannot be used to infer a write lifetime.
+        if any(
+            usage.get(key) is None
+            for key in ("cache_read_input_tokens", "cache_creation_input_tokens")
+        ):
+            return None, None
+        ttls = frozenset()
+    priced = price_usage(CURRENT_REVISION, ttls, served_model, usage)
+    if priced is None:
+        return None, None
+    return priced.cost_nusd, CURRENT_REVISION.id
+
+
+def _record_response_usage(
+    frame: RequestFrame | None,
+    usage: Any,
+    *,
+    provider: str,
+    endpoint: str,
+    served_model: str | None,
+    payload: dict,
+) -> None:
+    if frame is None:
+        return
+
+    try:
+        collector = _live(frame.owner)
+        if collector is None:
+            return
+        provider_input, provider_output = _usage_token_counts(usage)
+        input_tokens = (
+            provider_input if type(provider_input) is int and 0 <= provider_input < 2**63 else None
+        )
+        output_tokens = (
+            provider_output
+            if type(provider_output) is int and 0 <= provider_output < 2**63
+            else None
+        )
+        if input_tokens is None and output_tokens is None:
+            return
+        cost = version = None
+        if (
+            provider == "anthropic"
+            and endpoint == "messages"
+            and served_model is not None
+            and input_tokens is not None
+            and output_tokens is not None
+        ):
+            try:
+                cost, version = _estimate_response_cost(served_model, usage, payload)
+            except Exception:
+                # A price estimate is optional even when counts are available.
+                cost, version = None, None
+        collector.record_token_usage(
+            frame.request_index,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated_cost_nusd=cost,
+            price_table_version=version,
+        )
+    except Exception:
+        # Observation must not replace a result or a cancellation.
+        return
 
 
 def record_selected_attempt(*, attempt_id: str, provider: str, account_label: str | None) -> None:

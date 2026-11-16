@@ -142,7 +142,7 @@ class TestPageBoundsTheWork:
         conn.close()
 
         import lionagi.state.db as db_mod
-        from lionagi.studio.services import sessions as sessions_svc
+        from lionhub.serve.daemon.services import sessions as sessions_svc
 
         monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
 
@@ -153,7 +153,7 @@ class TestPageBoundsTheWork:
     def test_second_page_is_disjoint_and_ordered(self, seeded):
         import asyncio
 
-        from lionagi.studio.services import sessions as sessions_svc
+        from lionhub.serve.daemon.services import sessions as sessions_svc
 
         first = asyncio.run(sessions_svc.list_sessions(limit=5, offset=0))
         second = asyncio.run(sessions_svc.list_sessions(limit=5, offset=5))
@@ -166,7 +166,7 @@ class TestPageBoundsTheWork:
     def test_limit_is_clamped_not_honoured_unbounded(self, seeded):
         import asyncio
 
-        from lionagi.studio.services import sessions as sessions_svc
+        from lionhub.serve.daemon.services import sessions as sessions_svc
 
         rows = asyncio.run(sessions_svc.list_sessions(limit=10_000))
         assert len(rows) <= sessions_svc.MAX_SESSION_PAGE
@@ -174,7 +174,7 @@ class TestPageBoundsTheWork:
     def test_message_count_still_aggregates_over_branches(self, seeded):
         import asyncio
 
-        from lionagi.studio.services import sessions as sessions_svc
+        from lionhub.serve.daemon.services import sessions as sessions_svc
 
         rows = asyncio.run(sessions_svc.list_sessions(limit=3))
         assert all(r["branch_count"] == 1 for r in rows)
@@ -265,19 +265,19 @@ class TestBoundedAnswersSaySo:
 
 class TestOversizedPageIsRefused:
     def test_per_page_above_cap_is_refused(self, client):
-        from lionagi.studio.services import sessions as sessions_svc
+        from lionhub.serve.daemon.services import sessions as sessions_svc
 
         r = client.get("/api/runs/", params={"per_page": sessions_svc.MAX_SESSION_PAGE + 1})
         assert r.status_code == 422
 
     def test_per_page_at_cap_is_served(self, client):
-        from lionagi.studio.services import sessions as sessions_svc
+        from lionhub.serve.daemon.services import sessions as sessions_svc
 
         r = client.get("/api/runs/", params={"per_page": sessions_svc.MAX_SESSION_PAGE})
         assert r.status_code == 200
 
     def test_sessions_limit_above_cap_is_refused(self, client):
-        from lionagi.studio.services import sessions as sessions_svc
+        from lionhub.serve.daemon.services import sessions as sessions_svc
 
         r = client.get("/api/sessions/", params={"limit": sessions_svc.MAX_SESSION_PAGE + 1})
         assert r.status_code == 422
@@ -373,7 +373,7 @@ class TestStoreProbe:
             async def close(self):
                 return None
 
-        from lionagi.studio.services import admin as admin_svc
+        from lionhub.serve.daemon.services import admin as admin_svc
 
         # Only the probe's own connection is the locked one: the app opens the store for its
         # startup work as well, which must get the real driver.
@@ -421,7 +421,7 @@ class TestStoreProbe:
 
         import aiosqlite
 
-        from lionagi.studio.services import admin as admin_svc
+        from lionhub.serve.daemon.services import admin as admin_svc
 
         db_path, _ = seeded
 
@@ -487,7 +487,7 @@ class TestStoreProbe:
         import anyio
         from aiosqlite.core import _connection_worker_thread
 
-        from lionagi.studio.services import admin as admin_svc
+        from lionhub.serve.daemon.services import admin as admin_svc
 
         caller_deadline_s = 0.05
         busy_timeout_ms = 1_000
@@ -615,7 +615,7 @@ class TestStoreProbe:
 
         import aiosqlite
 
-        from lionagi.studio.services import admin as admin_svc
+        from lionhub.serve.daemon.services import admin as admin_svc
 
         monkeypatch.setattr(aiosqlite, "connect", lambda *a, **kw: _SlowToConnect())
 
@@ -665,7 +665,7 @@ class TestStoreProbe:
 
         Order-dependent by nature -- it only catches the leak when something
         that changed the policy ran earlier in this same process (run this
-        file after ``tests/cli`` with ``-n 0`` to see it fail without the
+        file after ``lionhub/tests/lionhub_tests/serve/cli`` with ``-n 0`` to see it fail without the
         fixture). Distributed across workers it may pass without proving
         anything, so it is written to never fail falsely.
         """

@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from lionhub.agent.khive_actor import MINTED_CHILD_ACTOR_ENV
 from lionhub.serve.mcp import _child_actor, config, dispatch, jobs
 from lionhub.serve.mcp._child_actor import (
     ChildActorError,
@@ -878,3 +879,37 @@ def test_a_submit_refused_after_its_reservation_takes_back_the_config_it_minted(
     assert spawned == []
     assert _run_dirs(tmp_path) == []
     assert not (child / ".khive").exists()
+
+
+def _capture_minted_env(monkeypatch) -> list[str | None]:
+    """Record the minted-actor variable each run child is started with."""
+    seen: list[str | None] = []
+    inner = jobs.subprocess.Popen
+
+    def wrap(argv, **kw):
+        if argv[0] == "echo":
+            seen.append((kw.get("env") or {}).get(MINTED_CHILD_ACTOR_ENV))
+        return inner(argv, **kw)
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", wrap)
+    return seen
+
+
+def test_a_minted_child_is_told_its_actor(submit_sandbox, monkeypatch):
+    _submitter, child, _spawned = submit_sandbox
+    seen = _capture_minted_env(monkeypatch)
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+
+    jobs.submit("agent", [], prompt="work", cwd=str(child), no_mcp_config=True, write_capable=True)
+
+    assert seen == ["agent:x:worker"]
+
+
+def test_a_child_minted_nothing_never_inherits_a_minted_actor(submit_sandbox, monkeypatch):
+    _submitter, child, _spawned = submit_sandbox
+    seen = _capture_minted_env(monkeypatch)
+    monkeypatch.setenv(MINTED_CHILD_ACTOR_ENV, "agent:x:stale")
+
+    jobs.submit("agent", [], prompt="work", cwd=str(child), no_mcp_config=True)
+
+    assert seen == [None]

@@ -34,7 +34,7 @@ from lionagi.service.accounts._types import (
     Scope,
     UnknownOutcome,
 )
-from lionhub.providers.anthropic._prompt_cache import place, points
+from lionhub.providers.anthropic._prompt_cache import place, points, routed_cache_evidence
 
 pytestmark = pytest.mark.asyncio
 
@@ -142,7 +142,13 @@ async def make_env(monkeypatch, tmp_path: Path, resolve=None) -> Env:
 
 async def begin(router: AccountRouter, payload: dict) -> RouterAttempt:
     return await router.begin(
-        scope(), payload, [], endpoint=None, request_kwargs={}, body_kwargs={}
+        scope(),
+        payload,
+        [],
+        endpoint=None,
+        request_kwargs={},
+        body_kwargs={},
+        cache_evidence_for=routed_cache_evidence,
     )
 
 
@@ -277,10 +283,20 @@ async def test_begin_reports_a_later_hour_mark(monkeypatch, tmp_path, payload, e
 async def test_a_one_hour_mark_inside_a_document_source_counts_as_later():
     parsed = request(system=RULES, messages=[user(DOCUMENT)])
 
-    cert, later = router_module._warm_evidence(parsed)
+    evidence = routed_cache_evidence(parsed)
 
-    assert cert == cert_at(parsed, 0)
-    assert later is True
+    assert evidence.cert == cert_at(parsed, 0)
+    assert evidence.hour_after_key is True
+
+
+async def test_server_tool_evidence_is_available_without_pricing_the_request():
+    parsed = request(tools=[{"type": "web_search_20250305", "name": "web_search"}])
+
+    evidence = routed_cache_evidence(parsed)
+
+    assert evidence.cert is None
+    assert evidence.hour_after_key is False
+    assert evidence.server_tools is True
 
 
 async def test_a_priced_request_has_no_server_tools(monkeypatch, tmp_path):

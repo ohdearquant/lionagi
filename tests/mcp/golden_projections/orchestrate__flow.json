@@ -102,6 +102,11 @@
         "type": "string",
         "x-flag": "--notify"
       },
+      "notify_sender": {
+        "description": "Include this sender label in the configured terminal notice.",
+        "type": "string",
+        "x-flag": "--notify-sender"
+      },
       "output": {
         "default": "text",
         "description": "Result format: 'text' (default) for reading, 'json' for a machine-readable run.",

@@ -27,12 +27,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lionagi.service import _prompt_cache as ledger_mod
 
 from .messages import _is_blank_text
+
+if TYPE_CHECKING:
+    from lionagi.service.accounts._router import RoutedCacheEvidence
 
 __all__ = ("CERT_VERSION", "LOOKBACK", "MAX_MARKS", "Point", "place")
 
@@ -187,6 +191,71 @@ def _server_tools(payload: dict) -> bool:
         if isinstance(kind, str) and kind.startswith(_SERVER_TOOL_PREFIXES):
             return True
     return False
+
+
+def _has_hour_mark(value: Any) -> bool:
+    """Whether ``value`` holds a cache mark of one hour at any depth."""
+    if isinstance(value, dict):
+        mark = value.get("cache_control")
+        if isinstance(mark, dict) and mark.get("ttl") == "1h":
+            return True
+        return any(_has_hour_mark(inner) for inner in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_hour_mark(inner) for inner in value)
+    return False
+
+
+def _warm_evidence(parsed: Mapping[str, Any]) -> tuple[str | None, bool]:
+    """The cache point a request is certified by, and whether a one-hour mark follows it.
+
+    The point is the last block of the tools or the system that takes a mark and carries a
+    one-hour one, and its certificate names the prefix up to and including that block. A request
+    with no such block has no point and yields ``(None, False)``. The flag is true when a block
+    read after the point carries a one-hour mark, at any depth, or when the request's own
+    top-level one-hour mark has a block after the point to land on. A system or message content
+    given as a string carries no mark.
+    """
+    blocks, _ = points(parsed)
+    keys = [
+        point
+        for point in blocks
+        if point.tier in ("tools", "system") and point.markable and point.mark == "1h"
+    ]
+    if not keys:
+        return None, False
+    key = keys[-1]
+    tools = parsed.get("tools")
+    system = parsed.get("system")
+    later: list[Any] = []
+    if key.tier == "tools":
+        if isinstance(tools, list):
+            later.extend(tools[key.slot + 1 :])
+        if isinstance(system, list):
+            later.extend(system)
+    elif isinstance(system, list):
+        later.extend(system[key.slot + 1 :])
+    for message in parsed.get("messages") or ():
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            later.extend(content)
+    if _has_hour_mark(later):
+        return key.cert, True
+    top = parsed.get("cache_control")
+    if isinstance(top, dict) and top.get("ttl") == "1h":
+        return key.cert, any(point.markable and point.index > key.index for point in blocks)
+    return key.cert, False
+
+
+def routed_cache_evidence(parsed: dict[str, Any]) -> RoutedCacheEvidence:
+    """Describe cache and server-tool evidence from the body the router froze."""
+    from lionagi.service.accounts._router import RoutedCacheEvidence
+
+    cert, hour_after_key = _warm_evidence(parsed)
+    return RoutedCacheEvidence(
+        cert=cert,
+        hour_after_key=hour_after_key,
+        server_tools=_server_tools(parsed),
+    )
 
 
 def place(payload: dict, call: ledger_mod.PromptCacheCall | None) -> dict:

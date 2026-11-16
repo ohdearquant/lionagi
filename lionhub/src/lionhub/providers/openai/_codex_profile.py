@@ -400,6 +400,32 @@ def codex_config_defining_profile(
     return None
 
 
+def _codex_config_turning_sandbox_off(
+    env: Mapping[str, str] | None, cwd: Path, profile: str | None
+) -> str | None:
+    """Where a codex config sets ``sandbox_mode = "danger-full-access"`` for a run, or None.
+
+    The configs read are those :func:`codex_config_defining_profile` reads. Both a root
+    ``sandbox_mode`` and one in the profile the run applies count: ``profile`` when the run passes
+    ``-p``, otherwise the root ``profile`` key the first of those configs sets. A file that cannot
+    be read or parsed raises ValueError.
+    """
+    paths = [codex_home_for_env(env) / "config.toml"]
+    paths += [directory / ".codex" / "config.toml" for directory in _project_config_dirs(cwd)]
+    configs = [(path, data) for path in paths if (data := _read_codex_config(path)) is not None]
+    active = profile
+    if active is None:
+        active = next((d["profile"] for _, d in configs if isinstance(d.get("profile"), str)), None)
+    for path, data in configs:
+        if data.get("sandbox_mode") == "danger-full-access":
+            return f"{str(path)!r} sets sandbox_mode = 'danger-full-access'"
+        profiles = data.get("profiles")
+        table = profiles.get(active) if isinstance(profiles, dict) and active else None
+        if isinstance(table, dict) and table.get("sandbox_mode") == "danger-full-access":
+            return f"{str(path)!r} sets sandbox_mode = 'danger-full-access' in profile {active!r}"
+    return None
+
+
 def codex_config_setting_default_permissions(
     env: Mapping[str, str] | None, cwd: Path
 ) -> Path | None:

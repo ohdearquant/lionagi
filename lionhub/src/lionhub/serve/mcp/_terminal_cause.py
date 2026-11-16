@@ -116,7 +116,7 @@ def provider_status(exc: BaseException) -> tuple[str, int | None]:
 def _provider_error_in(exc: BaseException) -> BaseException:
     """*exc*, or the provider error it wraps. iModel re-raises every stream failure as a
     ``ValueError`` whose ``__cause__`` is the provider's typed error, so this is the same
-    walk the run row's reason takes (``lionagi/cli/_runs.py``)."""
+    walk the run row's reason takes (``lionhub.orchestration.runs``)."""
     cause: BaseException | None = exc
     seen: set[int] = set()
     while cause is not None and not isinstance(cause, ProviderError) and id(cause) not in seen:

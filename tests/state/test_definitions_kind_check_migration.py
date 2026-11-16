@@ -18,17 +18,18 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
+import lionagi.state.db as state_db
 from lionagi.state.db import StateDB
 
 # Legacy fixture builders
 
 
 def _create_legacy_definitions_db(db_path: Path, *, unrelated_skill_literal: bool = False) -> None:
-    """Full current schema, except ``definitions.kind`` still carries the
-    legacy 2-value CHECK that predates the skill editor. When
-    ``unrelated_skill_literal`` is set, the (untouched) ``message`` column
+    """A historical schema stamp and the legacy 2-value ``definitions.kind`` CHECK.
+
+    When ``unrelated_skill_literal`` is set, the ``message`` column
     definition is also given a ``'skill'`` default literal -- a value that
     has nothing to do with the CHECK constraint, but which the old
     substring-based detector would misread as "already migrated"."""
@@ -54,6 +55,7 @@ def _create_legacy_definitions_db(db_path: Path, *, unrelated_skill_literal: boo
 
     with sqlite3.connect(db_path) as conn:
         conn.executescript(legacy_sql)
+        conn.execute("UPDATE schema_meta SET value='5' WHERE key='version'")
 
 
 async def _definitions_create_sql(db_path: Path) -> str:
@@ -71,7 +73,7 @@ async def _definitions_create_sql(db_path: Path) -> str:
 
 async def test_exact_legacy_schema_migrates(tmp_path: Path) -> None:
     """A definitions table with exactly the legacy 2-value CHECK is rebuilt
-    on open() to admit 'skill', and a skill can then be saved."""
+    on migration to admit 'skill', and a skill can then be saved."""
     db_path = tmp_path / "legacy-definitions.db"
     _create_legacy_definitions_db(db_path)
 
@@ -81,7 +83,7 @@ async def test_exact_legacy_schema_migrates(tmp_path: Path) -> None:
     )
 
     state = StateDB(db_path)
-    await state.open()
+    await state.migrate()
     try:
         version = await state.save_definition(
             kind="skill", name="demo-skill", path="skills/demo.md", content="# demo"
@@ -108,6 +110,10 @@ async def test_current_schema_skips_rebuild(tmp_path: Path) -> None:
         from lionagi.state.db import _SCHEMA_PATH
 
         conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES (?, '1')",
+            (state_db._SESSION_ENDED_AT_BACKFILL_KEY,),
+        )
 
     create_sql_before = await _definitions_create_sql(db_path)
     assert StateDB._definitions_kind_check_values(create_sql_before) == frozenset(
@@ -151,7 +157,7 @@ async def test_legacy_schema_with_unrelated_skill_literal_still_migrates(tmp_pat
     )
 
     state = StateDB(db_path)
-    await state.open()
+    await state.migrate()
     try:
         version = await state.save_definition(
             kind="skill", name="demo-skill", path="skills/demo.md", content="# demo"
@@ -186,11 +192,13 @@ async def test_old_substring_detector_would_have_false_positived(tmp_path: Path)
 # Arm 4: failed copy retries
 
 
-async def test_rebuild_crash_mid_sequence_rolls_back_and_reopen_completes(tmp_path: Path) -> None:
-    """The raw-driver rebuild is one BEGIN IMMEDIATE transaction. A crash
+async def test_rebuild_crash_mid_sequence_rolls_back_and_retry_completes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The rebuild shares the BEGIN IMMEDIATE transaction. A crash
     injected during the INSERT..SELECT copy must roll the whole rebuild
-    back -- leaving the legacy table intact with its rows -- so a later
-    open() can retry and complete the migration cleanly."""
+    back, leaving the legacy table intact with its rows so a retry can
+    complete the migration cleanly."""
     db_path = tmp_path / "legacy-definitions-crash.db"
     _create_legacy_definitions_db(db_path)
     with sqlite3.connect(db_path) as seed:
@@ -200,22 +208,26 @@ async def test_rebuild_crash_mid_sequence_rolls_back_and_reopen_completes(tmp_pa
         )
         seed.commit()
 
-    real_execute = aiosqlite.Connection.execute
-    crash = {"armed": True}
+    make_engine = state_db.make_engine
 
-    def _crashing_execute(self, sql, *args, **kwargs):
-        if crash["armed"] and "INSERT INTO definitions_new" in str(sql):
-            raise sqlite3.OperationalError("disk I/O error")
-        return real_execute(self, sql, *args, **kwargs)
+    def crashing_make_engine(*args, **kwargs):
+        engine = make_engine(*args, **kwargs)
 
-    aiosqlite.Connection.execute = _crashing_execute
-    try:
+        @event.listens_for(engine.sync_engine, "before_cursor_execute")
+        def fail_before_copy(_conn, _cursor, statement, *_args):
+            if statement.startswith("INSERT INTO definitions_new"):
+                raise RuntimeError("injected failure during definitions copy")
+
+        return engine
+
+    with monkeypatch.context() as patched:
+        patched.setattr(state_db, "make_engine", crashing_make_engine)
         state = StateDB(db_path)
-        with pytest.raises(sqlite3.OperationalError):
-            await state.open()
-        await state.close()
-    finally:
-        aiosqlite.Connection.execute = real_execute
+        try:
+            with pytest.raises(RuntimeError, match="injected failure during definitions copy"):
+                await state.migrate()
+        finally:
+            await state.close()
 
     # Atomic rollback: legacy table intact with its row, no stray _new table.
     with sqlite3.connect(db_path) as check:
@@ -229,11 +241,9 @@ async def test_rebuild_crash_mid_sequence_rolls_back_and_reopen_completes(tmp_pa
         rows = list(check.execute("SELECT id FROM definitions"))
         assert rows == [("def-1",)]
 
-    # And the DB is healable: a clean re-open completes the rebuild, and the
-    # pre-existing row survives the rebuild.
-    crash["armed"] = False
+    # A retry completes the rebuild and preserves the pre-existing row.
     state = StateDB(db_path)
-    await state.open()
+    await state.migrate()
     try:
         create_sql = await _definitions_create_sql(db_path)
         assert StateDB._definitions_kind_check_values(create_sql) == frozenset(

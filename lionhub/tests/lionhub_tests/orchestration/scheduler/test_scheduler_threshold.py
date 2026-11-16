@@ -136,13 +136,13 @@ def test_compare_rejects_unknown_op():
 
 
 def test_svc_validate_threshold_config_accepts_none():
-    from lionagi.studio.services.schedules import _svc_validate_threshold_config
+    from lionhub.serve.daemon.services.schedules import _svc_validate_threshold_config
 
     _svc_validate_threshold_config(None)  # does not raise
 
 
 def test_svc_validate_threshold_config_rejects_bad_metric():
-    from lionagi.studio.services.schedules import _svc_validate_threshold_config
+    from lionhub.serve.daemon.services.schedules import _svc_validate_threshold_config
 
     with pytest.raises(ValueError, match="metric"):
         _svc_validate_threshold_config(
@@ -151,7 +151,7 @@ def test_svc_validate_threshold_config_rejects_bad_metric():
 
 
 def test_svc_validate_threshold_config_rejects_unknown_key():
-    from lionagi.studio.services.schedules import _svc_validate_threshold_config
+    from lionhub.serve.daemon.services.schedules import _svc_validate_threshold_config
 
     with pytest.raises(ValueError, match="unknown key"):
         _svc_validate_threshold_config(
@@ -325,7 +325,7 @@ async def test_maybe_fire_breach_fires_with_trigger_context():
     assert ctx["threshold"] == 5
     assert ctx["window_minutes"] == 30
     # A threshold alert is a fire of the schedule's own timer, so its run reads as scheduled.
-    from lionagi.studio.services.schedules import _run_trigger_facts
+    from lionhub.serve.daemon.services.schedules import _run_trigger_facts
 
     assert _run_trigger_facts({"trigger_context": ctx})["scheduled"] is True
 
@@ -569,7 +569,11 @@ def _last_alert_calls(svc: AsyncMock) -> list:
     insert -- not a standalone update_schedule() call."""
     return [
         c
-        for c in svc.create_schedule_run_and_advance.await_args_list
+        for writer in (
+            svc.create_schedule_run_and_advance,
+            svc.create_failed_schedule_run_and_advance,
+        )
+        for c in writer.await_args_list
         if "last_alert_at" in c.kwargs.get("schedule_fields", {})
     ]
 
@@ -663,7 +667,7 @@ async def test_fire_invalid_action_still_stamps_last_alert_at_after_failed_run_p
         await fire_with_claim(engine, schedule, "run-alert-2", trigger_context=_threshold_ctx())
 
     svc.create_schedule_run.assert_not_awaited()
-    svc.create_schedule_run_and_advance.assert_awaited_once()
+    svc.create_failed_schedule_run_and_advance.assert_awaited_once()
     calls = _last_alert_calls(svc)
     assert len(calls) == 1
 
@@ -703,7 +707,7 @@ async def test_fire_invalid_action_releases_threshold_cooldown_claim():
         )
 
     svc.create_schedule_run.assert_not_awaited()
-    svc.create_schedule_run_and_advance.assert_awaited_once()
+    svc.create_failed_schedule_run_and_advance.assert_awaited_once()
     assert sid not in engine._threshold_pending
 
 

@@ -22,7 +22,7 @@ from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 class TestIsSessionStreamDone:
     def test_running_status_returns_false(self):
         """A session with 'running' status must never trigger done, regardless of staleness."""
-        from lionagi.studio.services.sessions import is_session_stream_done
+        from lionhub.serve.daemon.services.sessions import is_session_stream_done
 
         state = {"status": "running", "updated_at": 0.0}
         # now is very large — stale condition would fire if status were terminal
@@ -30,7 +30,7 @@ class TestIsSessionStreamDone:
 
     def test_completed_but_fresh_returns_false(self):
         """Terminal status alone is not enough — updated_at must also be > 60s ago."""
-        from lionagi.studio.services.sessions import (
+        from lionhub.serve.daemon.services.sessions import (
             SESSION_DONE_STABLE_SECS,
             is_session_stream_done,
         )
@@ -42,7 +42,7 @@ class TestIsSessionStreamDone:
 
     def test_completed_and_stale_returns_true(self):
         """Both conditions met → done."""
-        from lionagi.studio.services.sessions import (
+        from lionhub.serve.daemon.services.sessions import (
             SESSION_DONE_STABLE_SECS,
             is_session_stream_done,
         )
@@ -53,7 +53,7 @@ class TestIsSessionStreamDone:
 
     def test_failed_and_stale_returns_true(self):
         """'failed' is also a terminal status."""
-        from lionagi.studio.services.sessions import (
+        from lionhub.serve.daemon.services.sessions import (
             SESSION_DONE_STABLE_SECS,
             is_session_stream_done,
         )
@@ -64,7 +64,7 @@ class TestIsSessionStreamDone:
 
     def test_aborted_and_stale_returns_true(self):
         """'aborted' is also a terminal status."""
-        from lionagi.studio.services.sessions import (
+        from lionhub.serve.daemon.services.sessions import (
             SESSION_DONE_STABLE_SECS,
             is_session_stream_done,
         )
@@ -75,7 +75,7 @@ class TestIsSessionStreamDone:
 
     def test_none_state_returns_false(self):
         """Missing/unknown session must keep the stream alive (not close it)."""
-        from lionagi.studio.services.sessions import is_session_stream_done
+        from lionhub.serve.daemon.services.sessions import is_session_stream_done
 
         assert not is_session_stream_done(None, now=9_999_999.0)
 
@@ -87,7 +87,7 @@ class TestGetSessionStreamState:
 
     def test_returns_none_when_db_missing(self, tmp_path, monkeypatch):
         """When the DB file does not exist, return None (keep stream alive)."""
-        import lionagi.studio.services.sessions as svc
+        import lionhub.serve.daemon.services.sessions as svc
 
         self._patch_db(monkeypatch, svc, tmp_path / "nonexistent.db")
         result = _run(svc.get_session_stream_state("fake-id"))
@@ -95,7 +95,7 @@ class TestGetSessionStreamState:
 
     def test_returns_none_for_unknown_session(self, tmp_path, monkeypatch):
         """Row not found → None (not an error)."""
-        import lionagi.studio.services.sessions as svc
+        import lionhub.serve.daemon.services.sessions as svc
 
         db_path = tmp_path / "test.db"
 
@@ -116,7 +116,7 @@ class TestGetSessionStreamState:
 
     def test_returns_state_dict_for_known_session(self, tmp_path, monkeypatch):
         """Existing row returns {updated_at, status}."""
-        import lionagi.studio.services.sessions as svc
+        import lionhub.serve.daemon.services.sessions as svc
 
         db_path = tmp_path / "test.db"
 
@@ -143,7 +143,7 @@ class TestGetSessionStreamState:
 
     def test_null_status_becomes_completed(self, tmp_path, monkeypatch):
         """Legacy rows with NULL status must map to 'completed' (not None)."""
-        import lionagi.studio.services.sessions as svc
+        import lionhub.serve.daemon.services.sessions as svc
 
         db_path = tmp_path / "test.db"
 

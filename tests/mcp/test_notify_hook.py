@@ -31,6 +31,7 @@ from lionhub.serve.mcp import _notify_hook, config, jobs
 @pytest.fixture
 def job(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_TARGET", raising=False)
     rid = jobs.new_run_id()
@@ -252,8 +253,19 @@ def test_flow_terminal_reason_reaches_mcp_status_and_delivery(job, monkeypatch):
     assert json.loads(captured["proc"].input)["reason_code"] == "run.completed.spawn_refused"
 
 
-def test_command_override_substitutes_and_delivers(job, monkeypatch):
+@pytest.mark.parametrize(
+    ("label_fields", "expected_label"),
+    [
+        ({"kind": "agent", "label": "t1"}, "t1"),
+        ({"kind": "agent", "label": None}, "agent"),
+        ({}, "run"),
+    ],
+    ids=["explicit-label", "kind-fallback", "run-fallback"],
+)
+def test_command_override_substitutes_and_delivers(job, monkeypatch, label_fields, expected_label):
     captured: dict = {}
+    monkeypatch.delenv("LIONAGI_MCP_NOTIFY_SENDER", raising=False)
+    monkeypatch.delenv("LIONAGI_NOTIFY_PAYLOAD", raising=False)
 
     def fake_popen(argv, **kw):
         captured["argv"] = argv
@@ -261,6 +273,10 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
         return captured["proc"]
 
     monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
+    record = jobs._read_job(job)
+    del record["kind"], record["label"]
+    record.update(label_fields)
+    jobs._write_job(record)
 
     command = json.dumps(["notify", "{run_id}", "{status}", "{label}", "{target}"])
     rc = _notify_hook.main(
@@ -269,17 +285,19 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
     assert rc == 0
     rec = jobs._read_job(job)
     assert rec["status"] == "failed"
-    assert captured["argv"] == ["notify", job, "failed", "t1", "downstream"]
-    # the same fields are offered as a JSON payload on stdin
+    assert captured["argv"] == ["notify", job, "failed", expected_label, "downstream"]
+    # The notifier receives the common fields and the MCP target on stdin.
     payload = json.loads(captured["proc"].input)
     assert payload == {
+        "schema_version": 1,
         "run_id": job,
         "status": "failed",
-        "label": "t1",
+        "reason_code": None,
+        "label": expected_label,
         "target": "downstream",
-        # Empty, not absent: no sender was given, and the notifier is told that
-        # rather than left to fill the gap from its working directory.
-        "sender": "",
+        "sender": None,
+        "cwd": None,
+        "output_dir": None,
     }
     assert rec["notify_delivery"] == {
         "attempted": True,
@@ -859,12 +877,15 @@ sys.stdout.write("ordinary final output\\n")
 """
 
 
-_LI_SHIM_WITH_A_SHORT_OUTER_NOTIFY_BUDGET = """\
+_LI_SHIM_WITH_A_DELIVERY_GATED_NOTIFY_TIMEOUT = """\
 import asyncio, json, os, sys, time
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
-from lionagi.cli.orchestrate._notify import register_flow_notify_scope
+from anyio import current_time, move_on_after
+from lionhub.serve.cli.orchestrate._notify import register_flow_notify_scope
 from lionhub.serve.mcp import config
+from lionagi.state.lifecycle import callbacks
 from lionagi.state.lifecycle.callbacks import (
     EntityRef,
     RunTerminalEnvelope,
@@ -882,7 +903,8 @@ def _write_manifest(manifest, payload):
 
 
 async def main():
-    argv = sys.argv[1:]
+    delivered = Path(sys.argv[1])
+    argv = sys.argv[2:]
     template = argv[argv.index("--notify") + 1]
     run_id = os.environ[config.RUN_ID_ENV_VAR]
     run_dir = config.run_dir(run_id)
@@ -890,7 +912,7 @@ async def main():
     manifest = run_dir / "run.json"
     _write_manifest(manifest, {"status": "running"})
 
-    registry = TerminalCallbackRegistry(budget_seconds=1.0)
+    registry = TerminalCallbackRegistry(budget_seconds=30)
     register_flow_notify_scope(
         registry,
         override=template,
@@ -903,17 +925,44 @@ async def main():
         cwd=os.getcwd(),
         started_at=time.time(),
     )
-    await registry.emit(
-        RunTerminalEnvelope(
-            event_id="event-1",
-            entity=EntityRef(kind="session", id="session-1"),
-            previous_status="running",
-            terminal_status="completed",
-            reason_code="run.completed.ok",
-            occurred_at=time.time(),
+    scope_ready = asyncio.get_running_loop().create_future()
+
+    @contextmanager
+    def track_scope(budget):
+        with move_on_after(budget) as scope:
+            scope_ready.set_result(scope)
+            yield scope
+
+    async def expire_after_delivery():
+        scope = await scope_ready
+        while not delivered.exists():
+            await asyncio.sleep(0.01)
+        scope.deadline = current_time()
+
+    # Let the real registry scope cancel the hook after the delivery signal.
+    # The registry's initial budget bounds startup only.
+    callbacks.move_on_after = track_scope
+    expiry = asyncio.create_task(expire_after_delivery())
+    try:
+        await registry.emit(
+            RunTerminalEnvelope(
+                event_id="event-1",
+                entity=EntityRef(kind="session", id="session-1"),
+                previous_status="running",
+                terminal_status="completed",
+                reason_code="run.completed.ok",
+                occurred_at=time.time(),
+            )
         )
-    )
-    _write_manifest(manifest, {"status": "completed"})
+    finally:
+        expiry.cancel()
+        with suppress(asyncio.CancelledError):
+            await expiry
+    _write_manifest(manifest, {
+        "status": "completed",
+        "cancelled_after_delivery": expiry.done() and not expiry.cancelled()
+        and scope_ready.result().cancelled_caught,
+    })
     print("terminal manifest written", flush=True)
 
 
@@ -921,23 +970,27 @@ asyncio.run(main())
 """
 
 
-_DELIVERY_THAT_SIGNALS_THEN_HANGS = """\
+_DELIVERY_THAT_WAITS_FOR_RELEASE = """\
 import sys, time
 from pathlib import Path
 
-Path(sys.argv[1]).write_text("delivered")
-time.sleep(5)
+delivered, release, stopped = map(Path, sys.argv[1:])
+ready = delivered.with_suffix(".tmp")
+ready.write_text("delivered")
+ready.replace(delivered)
+deadline = time.monotonic() + 35
+while not release.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+stopped.touch()
 """
 
 
 def test_outer_notify_timeout_keeps_an_attempt_record_after_delivery(monkeypatch, tmp_path):
     """A delivered notice cannot become null when the CLI times out its hook.
 
-    The CLI callback owns a shorter deadline than the hook's delivery command.
-    The delivery signals its externally visible side effect, then remains alive
-    until the outer callback cancels the hook process group. The CLI writes its
-    terminal manifest only after that callback returns, matching production
-    ordering rather than calling the two writers sequentially in the test.
+    The callback deadline expires after the delivery signals its side effect.
+    The delivery runs in a separate process group and waits for test cleanup.
+    The CLI writes its terminal manifest after the callback returns.
     """
     monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
     monkeypatch.setenv(
@@ -950,41 +1003,62 @@ def test_outer_notify_timeout_keeps_an_attempt_record_after_delivery(monkeypatch
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
 
     shim = tmp_path / "li_shim.py"
-    shim.write_text(_LI_SHIM_WITH_A_SHORT_OUTER_NOTIFY_BUDGET)
+    shim.write_text(_LI_SHIM_WITH_A_DELIVERY_GATED_NOTIFY_TIMEOUT)
     delivery = tmp_path / "delivery.py"
-    delivery.write_text(_DELIVERY_THAT_SIGNALS_THEN_HANGS)
+    delivery.write_text(_DELIVERY_THAT_WAITS_FOR_RELEASE)
     delivered = tmp_path / "delivered"
+    release = tmp_path / "release"
+    stopped = tmp_path / "stopped"
 
     def _li_command():
-        return [sys.executable, str(shim)]
+        return [sys.executable, str(shim), str(delivered)]
 
     monkeypatch.setattr(config, "li_command", _li_command)
 
-    handle = jobs.submit(
-        "agent",
-        [],
-        notify_command=json.dumps([sys.executable, str(delivery), str(delivered)]),
-        no_mcp_config=True,
-    )
-    run_id = handle["run_id"]
-    manifest = tmp_path / "runs" / run_id / "run.json"
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if delivered.exists() and manifest.exists():
-            if json.loads(manifest.read_text()).get("status") == "completed":
+    try:
+        handle = jobs.submit(
+            "agent",
+            [],
+            notify_command=json.dumps(
+                [sys.executable, str(delivery), str(delivered), str(release), str(stopped)]
+            ),
+            no_mcp_config=True,
+        )
+        run_id = handle["run_id"]
+        manifest = tmp_path / "runs" / run_id / "run.json"
+        deadline = time.monotonic() + 60
+        observed = {}
+        while time.monotonic() < deadline:
+            if manifest.exists():
+                observed = json.loads(manifest.read_text())
+            if observed.get("status") == "completed":
                 break
-        time.sleep(0.05)
-    else:
-        raise AssertionError(f"the timeout race did not complete; log:\n{_console_log(run_id)}")
+            time.sleep(0.05)
+        marker = delivered.read_text() if delivered.exists() else None
+        assert (
+            observed.get("status") == "completed"
+            and marker == "delivered"
+            and observed.get("cancelled_after_delivery") is True
+        ), (
+            f"manifest status={observed.get('status')!r}, delivery marker={marker!r}, "
+            f"cancelled after delivery={observed.get('cancelled_after_delivery')!r}; "
+            f"shim log:\n{_console_log(run_id)}"
+        )
 
-    assert delivered.read_text() == "delivered"
-    status = jobs.status(run_id)
-    assert status["terminal_source"] == jobs.TERMINAL_SOURCE_HOOK
-    assert status["notify_delivery"]["attempted"] is True
-    assert status["notify_delivery"]["ok"] is None
-    assert status["notify_delivery"]["error"] == "delivery_outcome_unknown"
-    row = next(item for item in jobs.list_jobs() if item["run_id"] == run_id)
-    assert row["notify_delivery_state"] == "unknown"
+        status = jobs.status(run_id)
+        assert status["terminal_source"] == jobs.TERMINAL_SOURCE_HOOK
+        assert status["notify_delivery"]["attempted"] is True
+        assert status["notify_delivery"]["ok"] is None
+        assert status["notify_delivery"]["error"] == "delivery_outcome_unknown"
+        row = next(item for item in jobs.list_jobs() if item["run_id"] == run_id)
+        assert row["notify_delivery_state"] == "unknown"
+    finally:
+        release.touch()
+
+    deadline = time.monotonic() + 5
+    while not stopped.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert stopped.exists(), "the detached delivery did not acknowledge release"
 
 
 def test_the_delivery_timeout_fits_inside_the_deadline_that_kills_the_hook():
@@ -1243,42 +1317,83 @@ def test_delivery_runs_where_the_run_was_submitted_not_where_it_ran(monkeypatch,
     assert captured["cwd"] != str(run_dir)
 
 
-def test_both_callers_deliver_from_the_same_directory(monkeypatch, tmp_path):
-    """The hook and the reap path sign the same notice the same way.
-
-    They never share a working directory — the hook runs in the run's dying
-    process, the reap path inside the server — so a delivery that inherits gives
-    one run two possible senders depending on which caller got there first. The
-    record is what makes them agree.
-    """
+@pytest.mark.parametrize("explicit_run_cwd", [True, False], ids=["submit-cwd", "recorded-cwd"])
+def test_both_callers_deliver_from_the_same_directory(monkeypatch, tmp_path, explicit_run_cwd):
+    """The hook and the reaper deliver the same run details from the signing directory."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.delenv("LIONAGI_NOTIFY_PAYLOAD", raising=False)
     submit_dir = tmp_path / "seat"
     submit_dir.mkdir()
+    signing_dir = tmp_path / "sender"
+    signing_dir.mkdir()
     run_dir = tmp_path / "worktree"
     run_dir.mkdir()
-    command = json.dumps(["notify", "{run_id}"])
+    artifact_root = tmp_path / "custom-output"
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **_: NotifyConfigResolution(
+            handler=ResolvedNotifyHandler(argv=("notify", "{run_id}", "{sender}", "{target}"))
+        ),
+    )
     rid = _job_with(
         monkeypatch,
         tmp_path,
-        cwd=str(run_dir),
+        cwd=str(run_dir) if explicit_run_cwd else None,
         submit_cwd=str(submit_dir),
-        notify_command=command,
+        sender_cwd=str(signing_dir),
+        notify_sender="reviewer-a",
+        notify_target="reviewer-b",
         status="exited",
     )
-
-    seen: list = []
-    monkeypatch.setattr(
-        _notify_hook.subprocess,
-        "Popen",
-        lambda *_a, **kw: seen.append(kw.get("cwd")) or _FakeCompleted(0),
+    manifest = config.run_manifest(rid)
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"run_id": rid, "cwd": str(run_dir), "artifact_root": str(artifact_root)}),
+        encoding="utf-8",
     )
 
+    seen = []
+
+    def fake_popen(argv, **kwargs):
+        proc = _FakeCompleted(0)
+        seen.append((argv, kwargs, proc))
+        return proc
+
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
+
     # caller 1: the run's own terminal hook
-    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    result = _notify_hook.main(
+        [
+            "--run-id",
+            rid,
+            "--status",
+            "completed",
+            "--sender",
+            "reviewer-a",
+            "--target",
+            "reviewer-b",
+        ]
+    )
+    assert result == 0
     # caller 2: the observer publishing an end for a run whose process never got there
     jobs._deliver_reap_notice(rid, jobs._read_job(rid))
 
     assert len(seen) == 2
-    assert seen[0] == seen[1] == str(submit_dir)
+    for argv, kwargs, proc in seen:
+        assert argv == ["notify", rid, "reviewer-a", "reviewer-b"]
+        assert kwargs["cwd"] == str(signing_dir)
+        assert kwargs["env"]["LIONAGI_NOTIFY_SENDER"] == "reviewer-a"
+        assert json.loads(proc.input) == {
+            "schema_version": 1,
+            "run_id": rid,
+            "status": "completed",
+            "reason_code": None,
+            "label": "t1",
+            "sender": "reviewer-a",
+            "target": "reviewer-b",
+            "cwd": str(run_dir),
+            "output_dir": str(artifact_root),
+        }
 
 
 def test_an_operator_can_override_the_delivery_directory(monkeypatch, tmp_path):

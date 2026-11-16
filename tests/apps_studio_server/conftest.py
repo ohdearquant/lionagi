@@ -13,8 +13,9 @@ def _disable_claude_mirror(monkeypatch):
     and spin a background task that leaks writes into the temp DB and slows tests.
     """
     import lionagi.studio.config as config_mod
+    import lionhub.serve.daemon.settings as daemon_settings
 
-    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", False)
+    monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ENABLED", False)
 
 
 @pytest.fixture()

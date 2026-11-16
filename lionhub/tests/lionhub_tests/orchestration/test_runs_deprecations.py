@@ -23,8 +23,10 @@ class TestTeardownOrchestrationPersistDeprecation:
 
         deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert len(deprecations) == 1
-        assert "teardown_orchestration_persist" in str(deprecations[0].message)
-        assert "teardown_persist" in str(deprecations[0].message)
+        assert str(deprecations[0].message) == (
+            "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
+            "use lionhub.orchestration.runs.teardown_persist instead."
+        )
 
     async def test_stacklevel_identifies_caller(self):
         with warnings.catch_warnings(record=True) as caught:

@@ -110,7 +110,7 @@ arm with the sentence, and one task split that way in both passes.
 ## Context
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
-max_extensions=N)` (`lionagi/cli/agent.py::_api_loop_pass`, ADR-0041 Amendment 1). Each ReAct analysis round
+max_extensions=N)` (`lionhub/src/lionhub/serve/cli/agent.py::_api_loop_pass`, ADR-0041 Amendment 1). Each ReAct analysis round
 is at least one model request, and a reply that fails to parse costs more, since it is sent back to
 the model to be reformatted (`lionagi/operations/communicate/communicate.py::communicate`,
 `lionagi/operations/parse/parse.py::parse._inner_parse`). A round's tool calls run through `act()`, concurrently
@@ -122,7 +122,7 @@ the last analysis round ReAct always makes one more request for the answer
 (`lionagi/operations/ReAct/ReAct.py::ReActStream`). A ReAct turn therefore costs its analysis rounds plus one. A model that asks for a read cannot see the result in that round, so it
 usually asks for another round to look at it before saying it is done: the leg's own test of a
 one-read task scripts three requests, the read round, a round that sees the result and stops, and
-the answer (`tests/cli/test_agent_api_provider.py::test_a_profile_with_the_read_set_runs_the_tool_loop_to_an_answer`).
+the answer (`lionhub/tests/lionhub_tests/serve/cli/test_agent_api_provider.py::test_a_profile_with_the_read_set_runs_the_tool_loop_to_an_answer`).
 
 The LNDL Middle has no separate answer request. In a round a model declares tool calls as `<lact>`
 aliases and may write its answer as an `OUT{}` block. A round with no `OUT{}` runs every declared
