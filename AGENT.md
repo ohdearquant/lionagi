@@ -203,7 +203,7 @@ li schedule runs <name>                               # Execution history
 
 The CLI writes directly to `state.db` — Studio server does not need to be running for CRUD. Schedules only fire while the Studio server is running.
 
-**Trigger types**: `cron` (5-field), `interval` (seconds), `github_poll` (polls PR events, cursor-based, ETag-cached).
+**Trigger types**: `cron` (5-field), `interval` (seconds), `github_poll` (polls PR events using a cursor).
 
 **Action kinds**: `agent`, `flow`, `fanout`, `play` — each maps to the corresponding `li` subcommand, spawned via `asyncio.create_subprocess_exec`.
 
