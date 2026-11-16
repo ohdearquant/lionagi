@@ -464,6 +464,109 @@ class TestLaunchArgvPath:
         _validate_request({"action_kind": "play", "action_playbook": "my-playbook"})
 
 
+# action_cwd: the directory an on-demand launch runs in
+
+
+def _record_spawns(monkeypatch) -> list[dict]:
+    """Replace _spawn_detached with a recorder.
+
+    It records at call time, because the stubbed create_task closes the coroutine
+    it is handed without running it.
+    """
+    calls: list[dict] = []
+
+    def _recorded(argv, inv_id, **kwargs):
+        calls.append(kwargs)
+        return asyncio.sleep(0)
+
+    monkeypatch.setattr("lionhub.serve.daemon.services.launches._spawn_detached", _recorded)
+    return calls
+
+
+_AGENT = {"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hello"}
+
+
+@pytest.mark.integration
+class TestLaunchActionCwd:
+    def test_a_valid_cwd_reaches_the_spawn_and_the_row(self, tmp_path, monkeypatch):
+        workdir = tmp_path / "checkout"
+        workdir.mkdir()
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        spawns = _record_spawns(monkeypatch)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post("/api/launches", json={**_AGENT, "action_cwd": str(workdir)})
+        assert resp.status_code == 202, resp.text
+
+        assert [call["cwd"] for call in spawns] == [str(workdir)]
+        (payload,), _kwargs = mock_db.create_invocation.await_args
+        assert payload["node_metadata"] == {"cwd": str(workdir), "action_kind": "agent"}
+
+    def test_no_cwd_keeps_the_daemons_own_directory(self, tmp_path, monkeypatch):
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        spawns = _record_spawns(monkeypatch)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post("/api/launches", json=_AGENT)
+        assert resp.status_code == 202, resp.text
+
+        assert [call["cwd"] for call in spawns] == [None]
+        (payload,), _kwargs = mock_db.create_invocation.await_args
+        assert payload["node_metadata"] == {"action_kind": "agent"}
+
+    @pytest.mark.parametrize("shape", ["relative", "missing", "file", "empty"])
+    def test_an_unusable_cwd_is_refused_and_nothing_starts(self, shape, tmp_path, monkeypatch):
+        a_file = tmp_path / "not-a-dir.txt"
+        a_file.write_text("x")
+        cwd = {
+            "relative": "some/checkout",
+            "missing": str(tmp_path / "pruned-worktree"),
+            "file": str(a_file),
+            "empty": "",
+        }[shape]
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        spawns = _record_spawns(monkeypatch)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post("/api/launches", json={**_AGENT, "action_cwd": cwd})
+
+        assert resp.status_code == 422, resp.text
+        assert "action_cwd" in resp.json()["detail"]
+        mock_db.create_invocation.assert_not_awaited()
+        assert spawns == []
+
+    def test_a_nul_byte_is_refused_before_any_filesystem_check(self):
+        from lionhub.serve.daemon.services import launches
+
+        with pytest.raises(ValueError, match="action_cwd"):
+            launches._validate_request({**_AGENT, "action_cwd": "/tmp\x00/elsewhere"})
+
+    def test_spawn_detached_hands_the_cwd_to_the_process(self):
+        from lionhub.serve.daemon.services import launches
+
+        seen: dict = {}
+        mock_db = AsyncMock()
+
+        async def _fake_spawn(argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None):
+            seen["cwd"] = cwd
+            return (0, "")
+
+        with patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB:
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+            with patch(
+                "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
+                side_effect=_fake_spawn,
+            ):
+                asyncio.run(
+                    launches._spawn_detached(
+                        ["li", "agent"], "inv-cwd1", tmp_path=None, cwd="/srv/checkout"
+                    )
+                )
+
+        assert seen == {"cwd": "/srv/checkout"}
+
+
 # _spawn_detached terminal update uses registered reason codes
 
 

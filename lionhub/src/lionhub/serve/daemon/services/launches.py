@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB
+from lionhub.orchestration.schedule.execution_root import _is_usable_execution_root
 from lionhub.orchestration.scheduler import settings as config
 from lionhub.orchestration.scheduler.subprocess import build_argv, resolve_li_executable
 from lionhub.serve.daemon.routes import studio_route
@@ -55,6 +56,21 @@ def _get_semaphore() -> asyncio.Semaphore:
     return _launch_semaphore
 
 
+def _validate_action_cwd(cwd: object) -> None:
+    """Refuse a working directory that is not an existing absolute directory on this host.
+
+    The rule is the one a schedule's ``action_cwd`` is held to. A launch that names a
+    directory runs there or not at all: there is no fallback to the daemon's own.
+    """
+    if cwd is None:
+        return
+    if not isinstance(cwd, str) or "\x00" in cwd or not _is_usable_execution_root(cwd):
+        raise ValueError(
+            f"action_cwd {cwd!r} is not usable: it must be an existing absolute directory "
+            "on the Studio daemon's host"
+        )
+
+
 def _validate_request(data: dict[str, Any]) -> None:
     """Raise ValueError if *data* fails security or structural checks."""
     kind = data.get("action_kind") or ""
@@ -68,6 +84,7 @@ def _validate_request(data: dict[str, Any]) -> None:
     _svc_validate_identifier(data.get("action_agent"), "action_agent")
     _svc_validate_identifier(data.get("action_project"), "action_project")
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
+    _validate_action_cwd(data.get("action_cwd"))
     _svc_validate_extra_args(data.get("action_extra_args"))
     if data.get("action_playbook_args"):
         from lionhub.orchestration.schedule.action_validation import _validate_playbook_args
@@ -125,6 +142,7 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         "action_command": data.get("action_command"),
         "action_command_args": data.get("action_command_args") or [],
     }
+    cwd = data.get("action_cwd")
     if data["action_kind"] == "engine":
         defn = await _resolve_engine_def(data["action_engine_def"])
         if not is_registered_engine_kind(defn.get("kind")):
@@ -162,6 +180,8 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         prompt=data.get("action_prompt") or data.get("action_playbook"),
         tmp_path=tmp_path,
         action_kind=data["action_kind"],
+        node_metadata={"cwd": cwd} if cwd else None,
+        cwd=cwd,
     )
 
     return {
@@ -192,12 +212,14 @@ async def launch_detached_argv(
     tmp_path: str | None = None,
     action_kind: str | None = None,
     node_metadata: dict[str, Any] | None = None,
+    cwd: str | None = None,
 ) -> str:
     """Record and supervise one already-validated argv launch.
 
-    Callers own argv construction and validation. This helper owns the shared
-    launch admission cap, canonical invocation row, detached task retention,
-    cancellation lookup, and terminal status update.
+    Callers own argv construction and validation, including *cwd*, the directory
+    the process starts in (``None`` inherits the daemon's own). This helper owns
+    the shared launch admission cap, canonical invocation row, detached task
+    retention, cancellation lookup, and terminal status update.
     """
     if not argv or any(not isinstance(token, str) or "\x00" in token for token in argv):
         raise ValueError("argv must be a non-empty list of NUL-free string tokens")
@@ -228,7 +250,7 @@ async def launch_detached_argv(
             )
 
         task = asyncio.create_task(
-            _spawn_detached(argv, inv_id, tmp_path=tmp_path, action_kind=action_kind),
+            _spawn_detached(argv, inv_id, tmp_path=tmp_path, action_kind=action_kind, cwd=cwd),
             name=f"launch-{inv_id}",
         )
     except BaseException:
@@ -282,7 +304,12 @@ def _failure_reason_summary(status: str, output_tail: str) -> str:
 
 
 async def _spawn_detached(
-    argv: list[str], inv_id: str, *, tmp_path: str | None, action_kind: str | None = None
+    argv: list[str],
+    inv_id: str,
+    *,
+    tmp_path: str | None,
+    action_kind: str | None = None,
+    cwd: str | None = None,
 ) -> None:
     """Spawn the process and update the invocation row when it exits."""
     from lionagi.state.reasons import RunReasons
@@ -294,7 +321,7 @@ async def _spawn_detached(
     output_tail = ""
     try:
         exit_code, output_tail = await spawn_and_wait(
-            argv, inv_id, tmp_path=tmp_path, action_kind=action_kind
+            argv, inv_id, tmp_path=tmp_path, cwd=cwd, action_kind=action_kind
         )
         if exit_code == 0:
             status, reason = "completed", RunReasons.COMPLETED_OK
@@ -392,6 +419,7 @@ class LaunchRequest(BaseModel):
     action_extra_args: list[str] | None = None
     action_command: str | None = None
     action_command_args: list[str] | None = None
+    action_cwd: str | None = None
 
 
 @studio_route("/launches/", method="POST", area="launches", status_code=202)

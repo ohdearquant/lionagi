@@ -14627,6 +14627,17 @@
               }
             ],
             "title": "Action Command Args"
+          },
+          "action_cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Cwd"
           }
         },
         "type": "object",
