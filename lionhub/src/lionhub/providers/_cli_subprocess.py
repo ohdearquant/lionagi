@@ -137,17 +137,22 @@ def claude_code_auth_env(env: Mapping[str, str] | None) -> frozenset[str]:
     return frozenset(names)
 
 
-def _withhold_credentials(env: dict[str, str], auth_env: frozenset[str]) -> dict[str, str]:
-    """Remove every credential-named variable outside *auth_env* from *env*; return them.
+def _withhold_credentials(
+    env: dict[str, str], auth_env: frozenset[str], declared: Iterable[str] = ()
+) -> dict[str, str]:
+    """Remove every credential variable outside *auth_env* from *env*; return them.
 
+    A credential is a name that reads as one, or a name in *declared*: the secret lookup's
+    names, which are secrets because the operator declared them, whatever they are called.
     The process-group marker this module sets is kept: it names the child's group, it is not a
     credential. Names compare without regard to case, as the Studio withhold compares them.
     """
     keep = {name.upper() for name in auth_env} | {_PROCESS_GROUP_MARKER}
+    secret = {name.upper() for name in declared}
     withheld = {
         name: value
         for name, value in env.items()
-        if name.upper() not in keep and _CREDENTIAL_NAME_RE.search(name)
+        if name.upper() not in keep and (name.upper() in secret or _CREDENTIAL_NAME_RE.search(name))
     }
     for name in withheld:
         del env[name]
@@ -1488,12 +1493,12 @@ async def ndjson_from_cli(
     spawn_env, spawn_marker = prepare_process_group_env(child_env)
     withheld = _withhold_studio_credentials(spawn_env)
     # A child keeps its own provider's login and no other credential the launcher holds: the
-    # commands it runs inherit what it holds. A name the secret lookup fills reaches the child
-    # only when it is one of those login names; the lookup declares where a value comes from,
-    # not which child may hold it. ``auth_env=None`` is the one provider whose login names are
+    # commands it runs inherit what it holds. A name the secret lookup declares reaches the child
+    # only when it is one of those login names, whatever it is called and whether it was filled
+    # or inherited; the lookup declares where a value comes from, not which child may hold it. ``auth_env=None`` is the one provider whose login names are
     # not yet known here (see its call site).
     if auth_env is not None:
-        withheld.update(_withhold_credentials(spawn_env, frozenset(auth_env)))
+        withheld.update(_withhold_credentials(spawn_env, frozenset(auth_env), declared))
     # Every agent lionagi starts carries a depth, so a lionagi it runs refuses to start
     # another (refuse_nested_agent). Set over whatever the environment held: only a
     # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).

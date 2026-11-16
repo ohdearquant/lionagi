@@ -732,6 +732,59 @@ class TestAFilledNameReachesOnlyAChildWhoseProviderReadsIt:
 
         assert seen == [{"seen": False}]
 
+    @staticmethod
+    def _webhook_cmd():
+        return [
+            sys.executable,
+            "-c",
+            "import os, json; print(json.dumps({'seen': 'SLACK_WEBHOOK_URL' in os.environ}))",
+        ]
+
+    async def test_a_declared_name_that_does_not_read_as_a_credential_is_withheld(
+        self, lionagi_home, tmp_path, monkeypatch
+    ):
+        """The declaration makes it a secret; the name-shape rule would let this one through."""
+        from lionhub.providers._cli_subprocess import _CREDENTIAL_NAME_RE
+
+        assert not _CREDENTIAL_NAME_RE.search("SLACK_WEBHOOK_URL")
+        monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+        monkeypatch.chdir(tmp_path)
+        _write_global(lionagi_home, _block(_PRINTS_A_VALUE, names=["SLACK_WEBHOOK_URL"]))
+        claude_login = frozenset({"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"})
+
+        seen = [obj async for obj in _ndjson_from_cli(self._webhook_cmd(), auth_env=claude_login)]
+
+        assert seen == [{"seen": False}]
+
+    async def test_a_declared_name_the_launcher_already_holds_is_withheld_too(
+        self, lionagi_home, tmp_path, monkeypatch
+    ):
+        """Inherited, not filled: the lookup skips it, but it is still a declared secret."""
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.example.invalid/x")
+        monkeypatch.chdir(tmp_path)
+        _write_global(lionagi_home, _block(_PRINTS_A_VALUE, names=["SLACK_WEBHOOK_URL"]))
+        claude_login = frozenset({"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"})
+
+        seen = [obj async for obj in _ndjson_from_cli(self._webhook_cmd(), auth_env=claude_login)]
+
+        assert seen == [{"seen": False}]
+
+    async def test_a_declared_name_that_is_the_providers_login_is_kept(
+        self, lionagi_home, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+        monkeypatch.chdir(tmp_path)
+        _write_global(lionagi_home, _block(_PRINTS_A_VALUE, names=["SLACK_WEBHOOK_URL"]))
+
+        seen = [
+            obj
+            async for obj in _ndjson_from_cli(
+                self._webhook_cmd(), auth_env=frozenset({"SLACK_WEBHOOK_URL"})
+            )
+        ]
+
+        assert seen == [{"seen": True}]
+
     async def test_pi_on_openrouter_keeps_the_filled_openrouter_key(
         self, lionagi_home, tmp_path, monkeypatch
     ):

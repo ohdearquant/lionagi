@@ -549,8 +549,9 @@ credentials it gets. `ndjson_from_cli()` removes from it:
   `GOOGLE_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`; for Pi, the key variable of the run's
   provider.
 
-A name the [declared secret lookup](#declared-secret-lookup) fills reaches a child only when it
-is one of that child's login names. `SSH_AUTH_SOCK` is removed too, so a child cannot use the
+Every name the [declared secret lookup](#declared-secret-lookup) declares is removed the same
+way whatever it is called, filled or inherited, so it reaches a child only when it is one of that
+child's login names. `SSH_AUTH_SOCK` is removed too, so a child cannot use the
 launcher's SSH agent.
 
 There is no setting that turns the removal off. Codex children keep the launcher's credential
