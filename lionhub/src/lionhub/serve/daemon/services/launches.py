@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import time
 from typing import Any
 
@@ -17,6 +19,7 @@ from lionagi.state.db import StateDB
 from lionhub.orchestration.schedule.execution_root import _is_usable_execution_root
 from lionhub.orchestration.scheduler import settings as config
 from lionhub.orchestration.scheduler.subprocess import build_argv, resolve_li_executable
+from lionhub.serve.daemon import leg_host
 from lionhub.serve.daemon.routes import studio_route
 from lionhub.serve.daemon.services import engine_lookup
 from lionhub.serve.daemon.services.engine_lookup import is_registered_engine_kind
@@ -52,7 +55,8 @@ def _get_semaphore() -> asyncio.Semaphore:
     """Return (creating on first call) the module-level admission semaphore."""
     global _launch_semaphore  # noqa: PLW0603
     if _launch_semaphore is None:
-        _launch_semaphore = asyncio.Semaphore(config.MAX_LAUNCHES)
+        cap = leg_host.max_launches() if leg_host.enabled() else config.MAX_LAUNCHES
+        _launch_semaphore = asyncio.Semaphore(cap)
     return _launch_semaphore
 
 
@@ -73,6 +77,12 @@ def _validate_action_cwd(cwd: object) -> None:
 
 def _validate_request(data: dict[str, Any]) -> None:
     """Raise ValueError if *data* fails security or structural checks."""
+    if leg_host.enabled():
+        leg_host.validate_launch(data)
+    elif data.get("action_repo") or data.get("action_head"):
+        raise ValueError(
+            "action_repo and action_head are served only by a Studio daemon in leg-host mode"
+        )
     kind = data.get("action_kind") or ""
     if kind not in _LAUNCH_VALID_KINDS:
         raise ValueError(
@@ -173,6 +183,13 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
             executable_prefix=executable_prefix,
         )
 
+    leg = leg_host.validate_launch(data) if leg_host.enabled() else None
+    if leg is not None:
+        # The leg reaches no MCP server: none is configured on a leg host, and this
+        # turns off the search for one from the worktree upward.
+        argv.insert(argv.index("--"), "--no-mcp-config")
+        # A worktree a crash or restart left behind goes before another is made.
+        await leg_host.sweep_worktrees(leg.repo, live=_live_invocation_ids())
     inv_id = await launch_detached_argv(
         argv,
         skill=f"launch:{data['action_kind']}",
@@ -180,14 +197,19 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         prompt=data.get("action_prompt") or data.get("action_playbook"),
         tmp_path=tmp_path,
         action_kind=data["action_kind"],
-        node_metadata={"cwd": cwd} if cwd else None,
+        node_metadata=(
+            {"repo": leg.repo.name, "head": leg.head}
+            if leg is not None
+            else ({"cwd": cwd} if cwd else None)
+        ),
         cwd=cwd,
+        leg=leg,
     )
 
-    return {
-        "invocation_id": inv_id,
-        "action_kind": data["action_kind"],
-    }
+    response = {"invocation_id": inv_id, "action_kind": data["action_kind"]}
+    if leg is not None:
+        response["action_head"] = leg.head
+    return response
 
 
 def _with_action_kind(
@@ -213,6 +235,7 @@ async def launch_detached_argv(
     action_kind: str | None = None,
     node_metadata: dict[str, Any] | None = None,
     cwd: str | None = None,
+    leg: leg_host.LegLaunch | None = None,
 ) -> str:
     """Record and supervise one already-validated argv launch.
 
@@ -250,7 +273,9 @@ async def launch_detached_argv(
             )
 
         task = asyncio.create_task(
-            _spawn_detached(argv, inv_id, tmp_path=tmp_path, action_kind=action_kind, cwd=cwd),
+            _spawn_detached(
+                argv, inv_id, tmp_path=tmp_path, action_kind=action_kind, cwd=cwd, leg=leg
+            ),
             name=f"launch-{inv_id}",
         )
     except BaseException:
@@ -303,6 +328,22 @@ def _failure_reason_summary(status: str, output_tail: str) -> str:
     return tail
 
 
+async def _remove_leg_worktree(leg: leg_host.LegLaunch | None, inv_id: str) -> None:
+    """Remove a leg's worktree, shielded so a second cancel cannot leave it half removed."""
+    if leg is None:
+        return
+    try:
+        if not await asyncio.shield(leg_host.remove_worktree(leg.repo, inv_id)):
+            _log.warning("Leg worktree for invocation %s was not removed", inv_id)
+    except Exception:
+        _log.exception("Removing the leg worktree for invocation %s failed", inv_id)
+
+
+def _live_invocation_ids() -> set[str]:
+    """The invocation ids of launches still running in this process."""
+    return {t.get_name().removeprefix("launch-") for t in _detached_tasks if not t.done()}
+
+
 async def _spawn_detached(
     argv: list[str],
     inv_id: str,
@@ -310,8 +351,14 @@ async def _spawn_detached(
     tmp_path: str | None,
     action_kind: str | None = None,
     cwd: str | None = None,
+    leg: leg_host.LegLaunch | None = None,
 ) -> None:
-    """Spawn the process and update the invocation row when it exits."""
+    """Spawn the process and update the invocation row when it exits.
+
+    A leg-host launch (*leg*) first gets a worktree at its head, runs there with the
+    leg's allow-listed environment, keeps its standard output as the result, and has the
+    worktree removed on every way out, cancellation included.
+    """
     from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.subprocess import (
         SubprocessDeadlineExceededError,
@@ -320,9 +367,25 @@ async def _spawn_detached(
 
     output_tail = ""
     try:
-        exit_code, output_tail = await spawn_and_wait(
-            argv, inv_id, tmp_path=tmp_path, cwd=cwd, action_kind=action_kind
-        )
+        if leg is not None:
+            worktree = await leg_host.make_worktree(leg, inv_id)
+            refusal = leg_host.worktree_refusal(worktree)
+            if refusal is not None:
+                raise leg_host.LegSetupError(refusal)
+            exit_code, output_tail = await spawn_and_wait(
+                argv,
+                inv_id,
+                tmp_path=tmp_path,
+                cwd=str(worktree),
+                action_kind=action_kind,
+                env=leg_host.leg_env(os.environ),
+                stdout_sink=lambda out, total: leg_host.write_result(inv_id, out, total=total),
+                stdout_sink_bytes=leg_host.RESULT_CAP_BYTES,
+            )
+        else:
+            exit_code, output_tail = await spawn_and_wait(
+                argv, inv_id, tmp_path=tmp_path, cwd=cwd, action_kind=action_kind
+            )
         if exit_code == 0:
             status, reason = "completed", RunReasons.COMPLETED_OK
         else:
@@ -367,13 +430,19 @@ async def _spawn_detached(
                 "Failed to record cancellation for launch invocation %s",
                 inv_id,
             )
+        with contextlib.suppress(asyncio.CancelledError):
+            await _remove_leg_worktree(leg, inv_id)
         raise
     except SubprocessDeadlineExceededError as exc:
         status, reason = "timed_out", RunReasons.TIMED_OUT_DEADLINE
         output_tail = str(exc)
+    except leg_host.LegSetupError as exc:
+        status, reason = "failed", RunReasons.FAILED_EXCEPTION
+        output_tail = str(exc)
     except Exception:
         _log.exception("Detached launch failed for invocation %s", inv_id)
         status, reason = "failed", RunReasons.FAILED_EXCEPTION
+    await _remove_leg_worktree(leg, inv_id)
 
     try:
         async with StateDB() as db:
@@ -420,6 +489,8 @@ class LaunchRequest(BaseModel):
     action_command: str | None = None
     action_command_args: list[str] | None = None
     action_cwd: str | None = None
+    action_repo: str | None = None
+    action_head: str | None = None
 
 
 @studio_route("/launches/", method="POST", area="launches", status_code=202)
@@ -436,6 +507,37 @@ async def launch_run(body: LaunchRequest) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@studio_route("/launches/capabilities", method="GET", area="launches")
+async def launch_capabilities() -> dict[str, Any]:
+    """What this daemon launches: a client of a leg host refuses a daemon that is not one."""
+    return leg_host.capabilities()
+
+
+@studio_route("/launches/{invocation_id}/result", method="GET", area="launches")
+async def launch_result(invocation_id: str) -> dict[str, Any]:
+    """A leg-host launch's result: the last part of the leg's standard output, once it exits.
+
+    ``result`` is null while the leg runs, and stays null for a leg that never started.
+    Only a leg host keeps results; any other daemon answers 404.
+    """
+    if not leg_host.enabled():
+        raise HTTPException(status_code=404, detail="Only a leg host keeps launch results")
+    try:
+        stored = leg_host.read_result(invocation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    async with StateDB() as db:
+        row = await db.get_invocation(invocation_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No invocation {invocation_id!r}")
+    return {
+        "invocation_id": invocation_id,
+        "status": row["status"],
+        "result": stored["result"] if stored else None,
+        "truncated": bool(stored and stored["truncated"]),
+    }
 
 
 @studio_route(

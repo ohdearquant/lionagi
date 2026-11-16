@@ -349,6 +349,25 @@ async def _finalize_warmup(task: asyncio.Task | None) -> None:
         _log.warning("Startup warmup task failed (non-fatal)", exc_info=True)
 
 
+async def _refuse_or_prepare_leg_host() -> None:
+    """In leg-host mode, refuse an unsafe start, then remove worktrees a previous run left."""
+    from lionhub.serve.daemon import leg_host
+
+    if not leg_host.enabled():
+        return
+    bind_host = normalize_host(os.getenv("LIONAGI_STUDIO_HOST", HOST))
+    refusals = leg_host.startup_refusals(host=bind_host)
+    if refusals:
+        raise RuntimeError("Leg-host mode refused to start: " + "; ".join(refusals))
+    for repo in leg_host.load_repos().values():
+        await leg_host.sweep_worktrees(repo, live=set())
+
+
+#: The write routes a leg host serves: a launch and its cancellation. Every other write
+#: answers 403 there, so a caller holding the bearer can launch, read and cancel, nothing more.
+_LEG_HOST_WRITE_PATHS = re.compile(r"/api/launches/?|/api/invocations/[0-9a-f]{8,32}/cancel")
+
+
 @asynccontextmanager
 async def lifespan(app_instance):
     from lionhub.orchestration.scheduler.engine import scheduler
@@ -373,6 +392,7 @@ async def lifespan(app_instance):
     arm_traceback_dump()
 
     _emit_startup_warnings()
+    await _refuse_or_prepare_leg_host()
     # The second of the two settings-driven notify bootstrap points (CLI is the first).
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
 
@@ -592,6 +612,23 @@ def create_app() -> FastAPI:
                 "backend": exc.backend,
             },
         )
+
+    # Added before the bearer check, so it runs inside it: an unauthenticated caller
+    # gets 401 and learns nothing about which routes a leg host serves.
+    @application.middleware("http")
+    async def refuse_leg_host_writes(request: Request, call_next):
+        from lionhub.serve.daemon import leg_host
+
+        if (
+            request.method not in ("GET", "HEAD", "OPTIONS")
+            and leg_host.enabled()
+            and not _LEG_HOST_WRITE_PATHS.fullmatch(request.url.path)
+        ):
+            return JSONResponse(
+                {"detail": "A leg host accepts only launches and their cancellation"},
+                status_code=403,
+            )
+        return await call_next(request)
 
     @application.middleware("http")
     async def require_studio_bearer_token(request: Request, call_next):
