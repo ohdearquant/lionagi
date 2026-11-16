@@ -61,10 +61,10 @@ jobs:
           path: .github/.workflow-source
           sparse-checkout: .github/actions/setup-python-tests
           persist-credentials: false
+      # Keep the tested dev revision's downloads local to this job.
       - uses: ./.github/.workflow-source/.github/actions/setup-python-tests
         with:
           python-version: ${{ matrix.python-version }}
-          cache-prefix: nightly-uv
       - name: Run tests
         timeout-minutes: 45
         env:
