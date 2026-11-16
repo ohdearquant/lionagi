@@ -93,17 +93,7 @@ TARGET_RULES = {
     "lionhub.serve.cli.engine": "lionhub.orchestration.engine_definitions",
     "lionhub.serve.cli.mirror": "lionhub.serve.mirror",
     "lionhub.orchestration.scheduler": "lionhub.orchestration.scheduler",
-    "lionagi.studio.services.schedules": "lionhub.orchestration.schedule",
     "lionagi.studio.cli": "lionhub.serve.cli",
-    "lionagi.studio.services.runs": "lionhub.serve",
-    "lionagi.studio.services.run_resume": "lionhub.serve",
-    "lionagi.studio.services.engine_runs": "lionhub.serve",
-    "lionagi.studio.services.invocations": "lionhub.serve",
-    "lionagi.studio.services.launches": "lionhub.serve",
-    "lionagi.studio.services.identity": "lionhub.serve",
-    "lionagi.studio.services.pairing": "lionhub.serve",
-    "lionagi.studio.services.sessions": "lionhub.serve",
-    "lionagi.studio.services.admin": "lionhub.serve",
     "lionagi.tools.khive_injection": "lionhub (destination not yet recorded)",
     "lionagi.tools.context.context": "lionhub (destination not yet recorded)",
     "lionagi.tools.code.bash": "lionhub (destination not yet recorded)",
@@ -114,7 +104,6 @@ TARGET_RULES = {
 # Mixed modules retain their existing owner while multiple portions move.
 ADDITIONAL_TARGETS = {
     "lionhub.serve.cli.orchestrate": ["lionhub.orchestration.flow.parsing"],
-    "lionagi.studio.services.schedules": ["lionhub.serve"],
 }
 
 REQUIREMENT_GROUPS = {

@@ -12,8 +12,8 @@ import pytest
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.studio.services.schedules import create_schedule, update_schedule
 from lionhub.orchestration.scheduler.subprocess import render_action_prompt
+from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
 
 def _schedule_data(prompt: str) -> dict:
@@ -28,7 +28,7 @@ def _schedule_data(prompt: str) -> dict:
 
 def test_create_rejects_prompt_over_shared_limit_before_db_write():
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
             state_db.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -41,7 +41,7 @@ def test_create_rejects_prompt_over_shared_limit_before_db_write():
 
 def test_update_rejects_prompt_over_shared_limit_before_db_write():
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             db.get_schedule.return_value = _schedule_data("old") | {"id": "sched-1"}
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
@@ -80,7 +80,7 @@ def _play_data(prompt: str, **overrides) -> dict:
 @pytest.mark.parametrize("kind", ["play", "playbook"])
 def test_create_rejects_a_play_prompt_that_opens_with_a_dash_before_db_write(kind):
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
             state_db.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -95,7 +95,7 @@ def test_create_rejects_a_play_prompt_that_opens_with_a_dash_before_db_write(kin
 def test_create_keeps_a_dash_prompt_on_a_play_without_a_playbook(kind):
     # Without a playbook the launch sends no prompt, so nothing re-parses it as a flag.
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
             state_db.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -116,7 +116,7 @@ def test_create_keeps_a_dash_prompt_on_a_play_without_a_playbook(kind):
 )
 def test_update_rejects_a_play_prompt_that_opens_with_a_dash_before_db_write(stored, fields):
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             db.get_schedule.return_value = stored | {"id": "sched-1"}
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
@@ -131,7 +131,7 @@ def test_update_rejects_a_play_prompt_that_opens_with_a_dash_before_db_write(sto
 @pytest.mark.parametrize("kind", ["play", "playbook"])
 def test_create_rejects_a_play_playbook_named_for_a_subcommand_before_db_write(kind):
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
             state_db.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -151,7 +151,7 @@ def test_create_rejects_a_play_playbook_named_for_a_subcommand_before_db_write(k
 )
 def test_update_rejects_a_play_playbook_named_for_a_subcommand_before_db_write(stored, fields):
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             db.get_schedule.return_value = stored | {"id": "sched-1"}
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
@@ -166,7 +166,7 @@ def test_update_rejects_a_play_playbook_named_for_a_subcommand_before_db_write(s
 def test_update_of_another_field_on_a_stored_dash_play_prompt_is_written():
     # A row stored before the check stays editable; it is refused when it fires.
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             db.get_schedule.return_value = _play_data("--bypass") | {"id": "sched-1"}
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
@@ -185,7 +185,7 @@ def test_create_rejects_extra_args_that_open_with_a_play_subcommand_before_db_wr
 ):
     # With no playbook, the first extra argument is the word `li play` reads first.
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
             state_db.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -213,7 +213,7 @@ def test_create_rejects_extra_args_that_open_with_a_play_subcommand_before_db_wr
 )
 def test_create_keeps_extra_args_that_li_play_does_not_read_as_a_subcommand(overrides):
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)
             state_db.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -233,7 +233,7 @@ def test_create_keeps_extra_args_that_li_play_does_not_read_as_a_subcommand(over
 )
 def test_update_rejects_extra_args_that_open_with_a_play_subcommand_before_db_write(stored, fields):
     async def _run() -> None:
-        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as state_db:
             db = AsyncMock()
             db.get_schedule.return_value = stored | {"id": "sched-1"}
             state_db.return_value.__aenter__ = AsyncMock(return_value=db)

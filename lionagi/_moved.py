@@ -258,6 +258,71 @@ MOVED: tuple[Moved, ...] = (
     Moved(
         "lionagi.studio.operator.redact", "lionhub.serve.daemon.services.redact", "0.38.0", "2.0.0"
     ),
+    Moved("lionagi.studio.launch_access", "lionhub.serve.daemon.launch_access", "0.38.0", "2.0.0"),
+    Moved("lionagi.studio.services.runs", "lionhub.serve.daemon.services.runs", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.studio.services.run_resume",
+        "lionhub.serve.daemon.services.run_resume",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.run_resume_worker",
+        "lionhub.serve.daemon.services.run_resume_worker",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.engine_runs",
+        "lionhub.serve.daemon.services.engine_runs",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.invocations",
+        "lionhub.serve.daemon.services.invocations",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.launches",
+        "lionhub.serve.daemon.services.launches",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.identity",
+        "lionhub.serve.daemon.services.identity",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.pairing",
+        "lionhub.serve.daemon.services.pairing",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.sessions",
+        "lionhub.serve.daemon.services.sessions",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.admin", "lionhub.serve.daemon.services.admin", "0.38.0", "2.0.0"
+    ),
+    Moved(
+        "lionagi.studio.services.schedules",
+        "lionhub.serve.daemon.services.schedules",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services._session_tail",
+        "lionhub.serve.daemon.services._session_tail",
+        "0.38.0",
+        "2.0.0",
+    ),
 )
 
 

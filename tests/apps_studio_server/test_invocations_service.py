@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """Round-trip tests: status_reason_code/status_reason_summary flow through
-both serializer paths in lionagi.studio.services.invocations."""
+both serializer paths in lionhub.serve.daemon.services.invocations."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import lionhub.orchestration.scheduler.liveness as scheduler_liveness
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
 import lionagi.state.db as state_db_mod  # noqa: E402
-import lionagi.studio.services.invocations as invocations_mod  # noqa: E402
+import lionhub.serve.daemon.services.invocations as invocations_mod  # noqa: E402
 from lionagi.state.db import StateDB  # noqa: E402
 from lionagi.state.reasons import RunReasons  # noqa: E402
 
@@ -363,7 +363,7 @@ async def test_list_invocations_offloads_process_snapshot(tmp_path, monkeypatch)
         snapshot_threads.append(threading.get_ident())
         return ""
 
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.serve.daemon.services.admin as admin_mod
 
     monkeypatch.setattr(scheduler_liveness, "_ps_snapshot", fake_snapshot)
 
@@ -489,7 +489,7 @@ async def test_get_invocation_health_reflects_dead_child_process(tmp_path, monke
             }
         )
 
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.serve.daemon.services.admin as admin_mod
 
     monkeypatch.setattr(scheduler_liveness, "process_liveness", lambda *_a, **_k: False)
 

@@ -37,7 +37,7 @@ def _minimal_schedule(**kwargs) -> dict:
 
 def test_validate_flow_yaml_spec_accepts_valid_spec():
     """A valid flow spec returns None (no error)."""
-    from lionagi.studio.services.schedules import _validate_flow_yaml_spec
+    from lionhub.serve.daemon.services.schedules import _validate_flow_yaml_spec
 
     yaml_text = textwrap.dedent("""\
         prompt: Run a quick summary
@@ -49,7 +49,7 @@ def test_validate_flow_yaml_spec_accepts_valid_spec():
 
 def test_validate_flow_yaml_spec_rejects_invalid_yaml():
     """Malformed YAML is rejected with a clear error."""
-    from lionagi.studio.services.schedules import _validate_flow_yaml_spec
+    from lionhub.serve.daemon.services.schedules import _validate_flow_yaml_spec
 
     result = _validate_flow_yaml_spec("key: [unclosed")
     assert result is not None
@@ -58,7 +58,7 @@ def test_validate_flow_yaml_spec_rejects_invalid_yaml():
 
 def test_validate_flow_yaml_spec_rejects_non_mapping():
     """A YAML list is rejected because a flow spec must be a mapping."""
-    from lionagi.studio.services.schedules import _validate_flow_yaml_spec
+    from lionhub.serve.daemon.services.schedules import _validate_flow_yaml_spec
 
     result = _validate_flow_yaml_spec("- item1\n- item2\n")
     assert result is not None
@@ -67,7 +67,7 @@ def test_validate_flow_yaml_spec_rejects_non_mapping():
 
 def test_validate_flow_yaml_spec_rejects_invalid_field():
     """Out-of-range spec field is rejected at validation time."""
-    from lionagi.studio.services.schedules import _validate_flow_yaml_spec
+    from lionhub.serve.daemon.services.schedules import _validate_flow_yaml_spec
 
     # workers > 32 is invalid
     result = _validate_flow_yaml_spec("workers: 999\n")
@@ -87,7 +87,7 @@ def test_validate_flow_yaml_spec_rejects_invalid_field():
 )
 def test_validate_flow_yaml_spec_rejects_fields_execution_rejects(yaml_text):
     """Fields the CLI execution validator rejects must also fail Studio validation."""
-    from lionagi.studio.services.schedules import _validate_flow_yaml_spec
+    from lionhub.serve.daemon.services.schedules import _validate_flow_yaml_spec
 
     result = _validate_flow_yaml_spec(yaml_text)
     assert result is not None, f"{yaml_text!r} should be rejected"
@@ -95,7 +95,7 @@ def test_validate_flow_yaml_spec_rejects_fields_execution_rejects(yaml_text):
 
 def test_validate_flow_yaml_spec_rejects_non_string_key():
     """A YAML mapping with a non-string key must return an error, not raise TypeError."""
-    from lionagi.studio.services.schedules import _validate_flow_yaml_spec
+    from lionhub.serve.daemon.services.schedules import _validate_flow_yaml_spec
 
     result = _validate_flow_yaml_spec("1: value\n")
     assert result is not None
@@ -106,7 +106,7 @@ def test_create_schedule_rejects_empty_flow_yaml():
     """create_schedule raises ValueError when action_flow_yaml is missing."""
     import asyncio
 
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     data = {
         "name": "bad-sched",
@@ -130,7 +130,7 @@ def test_create_schedule_rejects_malformed_flow_yaml():
     """create_schedule raises ValueError on malformed YAML spec."""
     import asyncio
 
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     data = {
         "name": "bad-yaml-sched",
@@ -163,7 +163,7 @@ def _minimal_command_schedule(name: str) -> dict:
 def test_create_schedule_route_duplicate_name_returns_409(tmp_path, monkeypatch):
     """Creating a schedule with a name that already exists must return 409,
     not a generic server error."""
-    import lionagi.studio.services.schedules as schedules_mod
+    import lionhub.serve.daemon.services.schedules as schedules_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -183,7 +183,7 @@ def test_create_schedule_route_duplicate_name_returns_409(tmp_path, monkeypatch)
 def test_create_schedule_route_storage_failure_is_not_409(tmp_path, monkeypatch):
     """A non-conflict exception from the storage layer (e.g. RuntimeError)
     must not be reported to the client as a 409 name conflict."""
-    import lionagi.studio.services.schedules as schedules_mod
+    import lionhub.serve.daemon.services.schedules as schedules_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -416,7 +416,7 @@ def test_update_schedule_rejects_patch_to_flow_yaml_without_yaml():
     """PATCH action_kind=flow_yaml with no action_flow_yaml raises ValueError (before DB write)."""
     import asyncio
 
-    from lionagi.studio.services.schedules import update_schedule
+    from lionhub.serve.daemon.services.schedules import update_schedule
 
     # Existing schedule has action_kind=agent and no action_flow_yaml
     existing = {
@@ -430,7 +430,7 @@ def test_update_schedule_rejects_patch_to_flow_yaml_without_yaml():
     }
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=existing)
             mock_db.update_schedule = AsyncMock()
@@ -453,7 +453,7 @@ def test_update_schedule_rejects_patch_with_malformed_yaml():
     """PATCH action_flow_yaml with malformed YAML raises ValueError (before DB write)."""
     import asyncio
 
-    from lionagi.studio.services.schedules import update_schedule
+    from lionhub.serve.daemon.services.schedules import update_schedule
 
     # Existing schedule is already flow_yaml with valid spec
     existing = {
@@ -465,7 +465,7 @@ def test_update_schedule_rejects_patch_with_malformed_yaml():
     }
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=existing)
             mock_db.update_schedule = AsyncMock()
@@ -489,7 +489,7 @@ def test_create_schedule_github_poll_requires_repo():
     DB write, so no state fixture is needed."""
     import asyncio
 
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     data = {
         "name": "gh-no-repo",
@@ -513,7 +513,7 @@ def test_create_schedule_rejects_non_positive_poll_interval():
     """create_schedule raises ValueError when poll_interval_sec < 1 (fires pre-DB-write)."""
     import asyncio
 
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     data = {
         "name": "gh-bad-poll",

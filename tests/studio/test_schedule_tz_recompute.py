@@ -45,7 +45,7 @@ def _pin_scheduler_tz(monkeypatch: pytest.MonkeyPatch):
 async def test_patch_cron_expr_recomputes_next_fire_immediately(temp_db_path, caplog):
     """(c2) PATCH cron_expr must recompute next_fire_at under the new
     expression right away, not wait for the next fire."""
-    from lionagi.studio.services.schedules import create_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
     created = await create_schedule(
         {
@@ -83,8 +83,8 @@ async def test_patch_cron_expr_recomputes_next_fire_immediately(temp_db_path, ca
 async def test_patch_unrelated_field_does_not_log_shift(temp_db_path, caplog):
     """A PATCH that doesn't touch cron_expr/trigger fields recomputes to the
     *same* next_fire_at, so no shift is logged (requirement d)."""
-    from lionagi.studio.services.schedules import create_schedule, update_schedule
     from lionhub.orchestration.scheduler.engine import scheduler
+    from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
     created = await create_schedule(
         {
@@ -121,7 +121,7 @@ async def test_disable_enable_recomputes_stale_next_fire(temp_db_path, caplog, m
     """(c3) disable -> enable recomputes next_fire_at; a stale past value
     never fires immediately on enable unless the fresh computation says so."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import (
+    from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
@@ -168,7 +168,7 @@ async def test_patch_invalid_cron_expr_rejected_before_commit(temp_db_path):
     """An invalid cron_expr in a PATCH is a clean ValueError; the DB row is
     left untouched rather than committing bad data ahead of a recompute."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import create_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
     created = await create_schedule(
         {
@@ -193,7 +193,7 @@ async def test_patch_invalid_cron_expr_rejected_before_commit(temp_db_path):
 async def test_create_invalid_cron_expr_rejected(temp_db_path):
     """An invalid cron_expr at create time is a clean ValueError and nothing
     is committed — bad data can't enter the DB at the POST boundary either."""
-    from lionagi.studio.services.schedules import create_schedule, get_schedule_by_name
+    from lionhub.serve.daemon.services.schedules import create_schedule, get_schedule_by_name
 
     with pytest.raises(ValueError, match="Invalid cron expression"):
         await create_schedule(
@@ -214,8 +214,8 @@ async def test_patch_recompute_retry_recovers_transient_failure(temp_db_path, ca
     """A recompute that fails once then succeeds still lands a fresh
     next_fire_at — the guarded retry absorbs transient DB contention."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import create_schedule, update_schedule
     from lionhub.orchestration.scheduler.engine import scheduler
+    from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
     created = await create_schedule(
         {
@@ -261,8 +261,8 @@ async def test_patch_recompute_failure_does_not_raise(temp_db_path, caplog, monk
     """A recompute failure after a valid, already-committed PATCH degrades to
     a warning log instead of propagating out of update_schedule()."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import create_schedule, update_schedule
     from lionhub.orchestration.scheduler.engine import scheduler
+    from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
     created = await create_schedule(
         {
@@ -300,12 +300,12 @@ async def test_enable_recompute_failure_does_not_raise(temp_db_path, caplog, mon
     """A recompute failure after a valid, already-committed enable degrades
     to a warning log instead of propagating out of enable_schedule()."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import (
+    from lionhub.orchestration.scheduler.engine import scheduler
+    from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
     )
-    from lionhub.orchestration.scheduler.engine import scheduler
 
     created = await create_schedule(
         {
@@ -339,7 +339,7 @@ async def test_create_cron_empty_string_expr_rejected(temp_db_path):
     """A cron-triggered create with an empty cron_expr must not commit — the
     falsy early-return in the validator used to let this through, producing a
     schedule whose next_fire_at is never set."""
-    from lionagi.studio.services.schedules import create_schedule, get_schedule_by_name
+    from lionhub.serve.daemon.services.schedules import create_schedule, get_schedule_by_name
 
     with pytest.raises(ValueError, match="cron_expr is required"):
         await create_schedule(
@@ -358,7 +358,7 @@ async def test_create_cron_empty_string_expr_rejected(temp_db_path):
 @pytest.mark.asyncio
 async def test_create_cron_none_expr_rejected(temp_db_path):
     """Same as above but cron_expr omitted entirely (None)."""
-    from lionagi.studio.services.schedules import create_schedule, get_schedule_by_name
+    from lionhub.serve.daemon.services.schedules import create_schedule, get_schedule_by_name
 
     with pytest.raises(ValueError, match="cron_expr is required"):
         await create_schedule(
@@ -379,7 +379,7 @@ async def test_patch_flip_to_cron_without_expr_rejected(temp_db_path):
     was never set) on the effective row must also be rejected — the
     touches_trigger gate fires on trigger_type alone."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import create_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
     created = await create_schedule(
         {
@@ -405,7 +405,7 @@ async def test_patch_blank_expr_on_cron_schedule_rejected(temp_db_path):
     """A PATCH that blanks cron_expr on an existing cron schedule is rejected —
     the touches_trigger gate fires on cron_expr alone."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import create_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
     created = await create_schedule(
         {
@@ -430,7 +430,7 @@ async def test_patch_blank_expr_on_cron_schedule_rejected(temp_db_path):
 async def test_create_cron_valid_expr_still_accepted(temp_db_path):
     """A valid cron_expr on a cron-triggered create still passes (regression
     guard for the required=True change)."""
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     created = await create_schedule(
         {
@@ -448,7 +448,7 @@ async def test_create_cron_valid_expr_still_accepted(temp_db_path):
 async def test_create_non_cron_empty_expr_still_accepted(temp_db_path):
     """A non-cron trigger with an empty/absent cron_expr is unaffected — the
     required check only applies when trigger_type == 'cron'."""
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     created = await create_schedule(
         {
@@ -471,7 +471,7 @@ async def test_patch_route_all_null_body_no_longer_404s(temp_db_path):
     """An UpdateScheduleRequest built from a body whose only field is
     explicitly null must reach update_schedule with that field present (not
     stripped to {}), so an existing schedule is never misreported as 404."""
-    from lionagi.studio.services.schedules import (
+    from lionhub.serve.daemon.services.schedules import (
         UpdateScheduleRequest,
         create_schedule,
         update_schedule_route,
@@ -493,7 +493,7 @@ async def test_patch_route_all_null_body_no_longer_404s(temp_db_path):
     result = await update_schedule_route(sid, body)
     assert result == {"ok": True, "updated": ["description"]}
 
-    from lionagi.studio.services.schedules import get_schedule
+    from lionhub.serve.daemon.services.schedules import get_schedule
 
     row = await get_schedule(sid)
     assert row["description"] is None
@@ -503,7 +503,11 @@ async def test_patch_route_all_null_body_no_longer_404s(temp_db_path):
 async def test_patch_explicit_null_clears_nullable_field(temp_db_path):
     """Explicitly setting a nullable optional field to null via the service
     layer clears it in the DB."""
-    from lionagi.studio.services.schedules import create_schedule, get_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import (
+        create_schedule,
+        get_schedule,
+        update_schedule,
+    )
 
     created = await create_schedule(
         {
@@ -529,7 +533,7 @@ async def test_patch_absent_field_untouched(temp_db_path):
     """A field never mentioned in the PATCH body (not present in `fields`)
     is left at its prior value — exercised at the pydantic layer via
     model_dump(exclude_unset=True)."""
-    from lionagi.studio.services.schedules import (
+    from lionhub.serve.daemon.services.schedules import (
         UpdateScheduleRequest,
         create_schedule,
         get_schedule,
@@ -553,7 +557,7 @@ async def test_patch_absent_field_untouched(temp_db_path):
     assert "description" not in fields
     assert fields == {"action_model": "gpt-4"}
 
-    from lionagi.studio.services.schedules import update_schedule
+    from lionhub.serve.daemon.services.schedules import update_schedule
 
     ok = await update_schedule(sid, fields)
     assert ok is True
@@ -566,7 +570,11 @@ async def test_patch_reject_clearing_non_nullable_field(temp_db_path):
     """Explicitly nulling a NOT NULL column (name, trigger_type, action_kind,
     missed_fire_policy, overlap_policy) is rejected with a clear ValueError
     rather than reaching the DB constraint."""
-    from lionagi.studio.services.schedules import create_schedule, get_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import (
+        create_schedule,
+        get_schedule,
+        update_schedule,
+    )
 
     created = await create_schedule(
         {
@@ -590,7 +598,7 @@ async def test_patch_reject_clearing_non_nullable_field(temp_db_path):
 async def test_patch_empty_body_on_existing_schedule_is_noop_not_404(temp_db_path):
     """A PATCH body with zero fields set (`{}`) on a schedule that exists is
     a genuine no-op — it must not be misreported as 404."""
-    from lionagi.studio.services.schedules import create_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
     created = await create_schedule(
         {
@@ -611,7 +619,7 @@ async def test_patch_empty_body_on_existing_schedule_is_noop_not_404(temp_db_pat
 async def test_patch_unknown_schedule_still_404(temp_db_path):
     """A PATCH (empty or otherwise) against a schedule id that does not
     exist is still a genuine 404 — the no-op fix must not mask that."""
-    from lionagi.studio.services.schedules import update_schedule
+    from lionhub.serve.daemon.services.schedules import update_schedule
 
     ok = await update_schedule("no-such-schedule-id", {})
     assert ok is False
@@ -626,7 +634,7 @@ async def test_enable_dead_cron_schedule_rejected(temp_db_path):
     dead row) is rejected with a 400-worthy ValueError instead of flipping
     enabled=1 on a schedule that can never fire."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import (
+    from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
@@ -665,7 +673,7 @@ async def test_enable_route_dead_cron_schedule_returns_400(temp_db_path):
     from fastapi import HTTPException
 
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import (
+    from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule_route,
@@ -694,7 +702,7 @@ async def test_enable_route_dead_cron_schedule_returns_400(temp_db_path):
 async def test_enable_healthy_cron_schedule_still_works(temp_db_path):
     """Regression guard: enabling a cron schedule with a valid cron_expr is
     unaffected by the dead-cron guard."""
-    from lionagi.studio.services.schedules import (
+    from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
@@ -726,8 +734,8 @@ async def test_startup_recompute_warns_on_dead_cron_row(temp_db_path, caplog):
     schedule id for an enabled cron row with an empty cron_expr, instead of
     silently skipping it via recompute_next_fire's falsy early-return."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import create_schedule
     from lionhub.orchestration.scheduler.engine import scheduler
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     created = await create_schedule(
         {
@@ -759,7 +767,11 @@ async def test_patch_null_interval_sec_on_interval_schedule_rejected(temp_db_pat
     rejected — it would strand the schedule enabled-but-dead (next-fire
     computation returns None without an interval), the same shape the cron
     guard closes for empty expressions."""
-    from lionagi.studio.services.schedules import create_schedule, get_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import (
+        create_schedule,
+        get_schedule,
+        update_schedule,
+    )
 
     created = await create_schedule(
         {
@@ -782,7 +794,7 @@ async def test_patch_null_interval_sec_on_interval_schedule_rejected(temp_db_pat
 @pytest.mark.asyncio
 async def test_patch_nonpositive_interval_sec_rejected(temp_db_path):
     """Zero or negative interval_sec is rejected on update."""
-    from lionagi.studio.services.schedules import create_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
     created = await create_schedule(
         {
@@ -803,7 +815,7 @@ async def test_patch_nonpositive_interval_sec_rejected(temp_db_path):
 async def test_create_interval_without_interval_sec_rejected(temp_db_path):
     """Creating an interval-triggered schedule without interval_sec is
     rejected instead of committing a schedule that can never fire."""
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     with pytest.raises(ValueError, match="interval_sec is required"):
         await create_schedule(
@@ -821,7 +833,11 @@ async def test_patch_trigger_flip_away_from_interval_allows_clearing_interval(te
     """Flipping trigger_type to cron in the same PATCH that clears
     interval_sec is legal — the interval requirement only binds while the
     effective trigger_type is 'interval'."""
-    from lionagi.studio.services.schedules import create_schedule, get_schedule, update_schedule
+    from lionhub.serve.daemon.services.schedules import (
+        create_schedule,
+        get_schedule,
+        update_schedule,
+    )
 
     created = await create_schedule(
         {
@@ -849,7 +865,11 @@ async def test_enable_dead_interval_schedule_rejected(temp_db_path):
     """Enabling an interval schedule whose interval_sec was lost (legacy row)
     is rejected the same way as enabling a dead cron schedule."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import create_schedule, disable_schedule, enable_schedule
+    from lionhub.serve.daemon.services.schedules import (
+        create_schedule,
+        disable_schedule,
+        enable_schedule,
+    )
 
     created = await create_schedule(
         {
@@ -879,7 +899,11 @@ async def test_enable_exhausted_max_runs_schedule_rejected(temp_db_path):
     counter (there is no per-enable-cycle counting — max_runs is a lifetime
     cap on the schedule id)."""
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.schedules import create_schedule, disable_schedule, enable_schedule
+    from lionhub.serve.daemon.services.schedules import (
+        create_schedule,
+        disable_schedule,
+        enable_schedule,
+    )
 
     created = await create_schedule(
         {
@@ -920,7 +944,11 @@ async def test_enable_exhausted_max_runs_schedule_rejected(temp_db_path):
 async def test_enable_bounded_schedule_under_budget_succeeds(temp_db_path):
     """A bounded schedule that has NOT yet consumed its max_runs budget
     re-enables normally."""
-    from lionagi.studio.services.schedules import create_schedule, disable_schedule, enable_schedule
+    from lionhub.serve.daemon.services.schedules import (
+        create_schedule,
+        disable_schedule,
+        enable_schedule,
+    )
 
     created = await create_schedule(
         {

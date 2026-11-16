@@ -6,7 +6,7 @@
 reconnect socket, and opens the hosted page with it in the URL fragment. The page
 exchanges it for the bearer it then sends: the configured
 ``LIONAGI_STUDIO_AUTH_TOKEN`` when there is one, else this launch's in-memory
-bearer (``lionagi.studio.launch_access``); and for a decision capability bound
+bearer (``lionhub.serve.daemon.launch_access``); and for a decision capability bound
 to the page's origin, which the two Operator decision routes read.
 """
 

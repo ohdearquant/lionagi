@@ -44,7 +44,7 @@ def _assert_private_input_is_removed(result, source):
 @pytest.mark.asyncio
 async def test_list_sessions_caps_rows_and_projects_public_fields(monkeypatch):
     from lionagi.studio.operator.application_mcp import list_sessions
-    from lionagi.studio.services import runs, sessions
+    from lionhub.serve.daemon.services import runs, sessions
 
     rows = [
         {
@@ -87,7 +87,7 @@ async def test_list_sessions_caps_rows_and_projects_public_fields(monkeypatch):
 @pytest.mark.asyncio
 async def test_session_detail_preserves_window_flags_and_redacts_messages(monkeypatch):
     from lionagi.studio.operator.application_mcp import session_detail
-    from lionagi.studio.services import sessions
+    from lionhub.serve.daemon.services import sessions
 
     next_cursor = sessions._encode_message_cursor(
         "session-1",
@@ -162,7 +162,7 @@ async def test_session_detail_preserves_window_flags_and_redacts_messages(monkey
 @pytest.mark.asyncio
 async def test_session_detail_labels_cursor_fallback(monkeypatch):
     from lionagi.studio.operator.application_mcp import session_detail
-    from lionagi.studio.services import sessions
+    from lionhub.serve.daemon.services import sessions
 
     calls = []
 
@@ -229,7 +229,7 @@ async def test_session_signals_caps_rows_and_each_payload(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_invocation_caps_children_and_artifact_content(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_invocation
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     source = {
         "id": "invocation-1",
@@ -302,7 +302,7 @@ async def test_list_artifacts_caps_rows_and_drops_storage_fields(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_artifact_caps_and_redacts_content(monkeypatch):
     from lionagi.studio.operator.application_mcp import get_artifact
-    from lionagi.studio.services import invocations
+    from lionhub.serve.daemon.services import invocations
 
     source = {
         "id": "a-1",
@@ -337,7 +337,7 @@ async def test_get_artifact_caps_and_redacts_content(monkeypatch):
 async def test_list_sessions_reports_unknown_when_the_store_cannot_be_opened(monkeypatch):
     import lionhub.orchestration.state_store as state_store
     from lionagi.studio.operator.application_mcp import list_sessions
-    from lionagi.studio.services import runs
+    from lionhub.serve.daemon.services import runs
 
     consulted = False
 
@@ -360,7 +360,7 @@ async def test_list_sessions_reports_unknown_when_the_store_cannot_be_opened(mon
 
 async def test_list_sessions_reports_known_for_a_readable_but_empty_store(monkeypatch):
     from lionagi.studio.operator.application_mcp import list_sessions
-    from lionagi.studio.services import runs, sessions
+    from lionhub.serve.daemon.services import runs, sessions
 
     async def fake_list_runs(**_kwargs):
         return []

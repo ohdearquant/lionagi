@@ -283,8 +283,8 @@ async def test_old_session_check_rebuild_keeps_the_new_label_column(tmp_path):
 
 
 async def test_persisted_label_reaches_cli_and_admin_display_names(label_client, monkeypatch):
-    from lionagi.studio.services import admin
     from lionhub.serve.cli.state import _collect_sessions
+    from lionhub.serve.daemon.services import admin
 
     async def no_live_process(_session, _artifacts):
         return False

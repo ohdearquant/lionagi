@@ -31,7 +31,7 @@ class TagBody(BaseModel):
 async def add_run_tag(session_id: str, body: TagBody) -> dict[str, Any]:
     # Reject tagging a nonexistent session: list_runs() only surfaces rows
     # joined from `sessions`, so a tag on a stale id would be a silent orphan.
-    from .sessions import session_exists
+    from lionhub.serve.daemon.services.sessions import session_exists
 
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")

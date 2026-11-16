@@ -5,7 +5,7 @@
 A bounded, single-run counterpart to ``run_progress``/``run_findings`` --
 unlike those two, this tool takes a bare run/session id rather than a
 resolvable reference (no ``resolve_run`` indirection), and projects the
-carrier's (``lionagi.studio.services.runs.get_run``) own detail fields
+carrier's (``lionhub.serve.daemon.services.runs.get_run``) own detail fields
 directly. See docs/internals/studio.md ("Bounded read projections") for the
 ``known``/``source`` availability contract and the redaction rules shared
 with ``run_progress``/``run_findings``.
@@ -18,7 +18,6 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.state.db import read_only_open_supported, state_db_known_absent
-from lionagi.studio.services.runs import get_run
 from lionhub.orchestration.state_store import StoreNotAddressableError
 from lionhub.serve.daemon.services.redact import (
     ARTIFACT_BYTE_CAP,
@@ -29,6 +28,7 @@ from lionhub.serve.daemon.services.redact import (
     redact_scalar,
     scrub_text,
 )
+from lionhub.serve.daemon.services.runs import get_run
 
 from .run_progress import _terminal_safe_health
 

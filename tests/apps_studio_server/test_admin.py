@@ -126,7 +126,7 @@ def test_db_health_reports_only_numbers_it_can_actually_measure(tmp_path, monkey
     predicate. Both come from the same helper ``/api/stats`` uses, so the
     two surfaces agree by construction.
     """
-    from lionagi.studio.services.admin import db_health
+    from lionhub.serve.daemon.services.admin import db_health
 
     health = db_health()
 
@@ -241,7 +241,7 @@ def test_admin_prune_rejects_empty_body(tmp_path, monkeypatch):
 
 def test_fresh_running_session_missing_artifacts_not_reaped(tmp_path):
     """A fresh running session whose artifacts dir doesn't exist yet is not a phantom."""
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     now = time.time()
     missing = str(tmp_path / "not_yet_written")
@@ -253,7 +253,7 @@ def test_fresh_running_session_missing_artifacts_not_reaped(tmp_path):
 
 def test_stale_dead_session_missing_artifacts_still_reaped(tmp_path):
     """Cleanup is preserved: a stale, not-live session with missing artifacts still reaps."""
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     now = time.time()
     missing = str(tmp_path / "ghost")
@@ -265,7 +265,7 @@ def test_stale_dead_session_missing_artifacts_still_reaped(tmp_path):
 
 def test_alive_session_never_reaped(tmp_path):
     """Liveness wins over both staleness and missing artifacts."""
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     now = time.time()
     missing = str(tmp_path / "ghost2")
@@ -279,7 +279,7 @@ def test_alive_session_never_reaped(tmp_path):
 
 def test_stale_session_live_recorded_pid_not_reaped(tmp_path):
     """A recorded node_metadata pid that is live wins even with an empty ps snapshot."""
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     now = time.time()
     missing = str(tmp_path / "ghost3")
@@ -302,7 +302,7 @@ def test_stale_lock_gated_on_staleness(tmp_path):
     passed on the strength of the suffix alone and would have kept passing for
     any file at all ending in ``.lock``.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
@@ -352,7 +352,7 @@ def test_dependency_lockfile_is_not_evidence_of_a_dead_process(tmp_path):
     root and the search is recursive, so one checked-in ``uv.lock`` classified
     every completed session in that repository as a zombie.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     artifacts_dir = tmp_path / "repo"
     artifacts_dir.mkdir()
@@ -377,7 +377,7 @@ def test_dependency_lockfile_does_not_mask_a_real_runtime_lock(tmp_path):
     dependency lockfile is present, which would suppress the true positives the
     evidence exists to find.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     artifacts_dir = tmp_path / "repo"
     artifacts_dir.mkdir()
@@ -402,7 +402,7 @@ def test_finalize_lock_is_also_runtime_evidence(tmp_path):
     Named explicitly so a fix that hardcodes only ``job.lock`` fails here rather
     than silently narrowing the evidence to one of the two real locks.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     artifacts_dir = tmp_path / "repo"
     artifacts_dir.mkdir()
@@ -428,7 +428,7 @@ def test_stale_session_empty_but_existing_artifact_root_not_missing_artifacts(tm
     artifact_contract) must never classify as missing_artifacts -- only a
     genuinely absent directory counts as that evidence. It still reaps
     (process_dead), preserving cleanup for true positives."""
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()  # exists, but empty -- no lock file, no output written
@@ -483,7 +483,7 @@ def test_admin_health_running_bucket_excludes_confirmed_dead_running_session(tmp
     db_path = tmp_path / "state.db"
     _run(_seed_running_session(db_path, str(uuid.uuid4())))
 
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.serve.daemon.services.admin as admin_mod
 
     monkeypatch.setattr(scheduler_liveness, "process_liveness", lambda *a, **k: False)
 
@@ -591,7 +591,7 @@ def test_admin_transition_requires_reason(tmp_path, monkeypatch):
 
 def test_admin_transition_rejects_healthy_session(tmp_path, monkeypatch):
     """Health guard: fresh running session with recent activity must return 422."""
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.serve.daemon.services.admin as admin_mod
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -619,7 +619,7 @@ def test_admin_transition_rejects_healthy_session(tmp_path, monkeypatch):
 
 def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypatch):
     """Health guard reads current DB state on each call, not a pre-computed snapshot."""
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.serve.daemon.services.admin as admin_mod
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -680,7 +680,7 @@ def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
     _run(_seed_running_session(db_path, sid))
     # Pin classifier: no phantom cause, IDLE health → operator's code wins.
     import lionagi.state.health as health_mod
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
     from lionagi.state.health import SessionHealth
 
     monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *a, **kw: None)
@@ -773,7 +773,7 @@ def test_admin_transition_phantom_classifier_override(
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
     import lionagi.state.health as health_mod
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
     from lionagi.state.health import SessionHealth
 
     monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *a, **kw: phantom_reason)
@@ -838,7 +838,7 @@ def test_admin_transition_legacy_reason_backwards_compat(tmp_path, monkeypatch):
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
     import lionagi.state.health as health_mod
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
     from lionagi.state.health import SessionHealth
 
     monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *a, **kw: None)
@@ -907,7 +907,7 @@ def test_admin_health_names_a_session_the_way_every_other_surface_does(tmp_path,
 
     _run(_seed())
 
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.serve.daemon.services.admin as admin_mod
 
     # No artifacts and no messages classify this ORPHANED, which is what puts
     # it in the `unhealthy` list this test reads.
@@ -961,7 +961,7 @@ def test_admin_health_prefers_the_play_name_like_the_session_list_does(tmp_path,
 
     _run(_seed())
 
-    import lionagi.studio.services.admin as admin_mod
+    import lionhub.serve.daemon.services.admin as admin_mod
 
     monkeypatch.setattr(scheduler_liveness, "process_liveness", lambda *a, **k: False)
 
@@ -997,7 +997,7 @@ def test_a_lock_inside_a_dependency_tree_is_not_searched(tmp_path):
     lionagi writes puts a run directory inside ``node_modules``, so the subtree
     is cost with no evidence in it.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     buried = tmp_path / "repo" / "node_modules" / "pkg"
     buried.mkdir(parents=True)
@@ -1030,7 +1030,7 @@ def test_one_scan_answers_once_per_artifact_root(tmp_path):
     500 recent sessions on one machine -- and uncached, that root is re-walked
     152 times in one pass to produce one answer.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     root = tmp_path / "repo"
     (root / "run-1").mkdir(parents=True)
@@ -1128,7 +1128,7 @@ def test_a_lock_scan_walks_off_the_loop_that_serves_every_other_request(
     ``test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop``.
     """
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     db_path = tmp_path / "state.db"
     artifacts = tmp_path / "artifacts"
@@ -1265,7 +1265,7 @@ def test_a_scan_that_runs_out_of_time_says_so_instead_of_reporting_clean(tmp_pat
     gets believed: a scan cut short would hand back a clean bill of health for a
     tree it never finished reading.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     root = tmp_path / "repo"
     (root / "run-1").mkdir(parents=True)
@@ -1303,7 +1303,7 @@ def test_health_counts_the_rows_whose_lock_scan_did_not_finish(tmp_path, monkeyp
     budget, and all three come back truncated. A per-row ceiling is not a bound
     on the endpoint at all, because the row count is the thing that grows.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     db_path = tmp_path / "state.db"
     for i in range(3):
@@ -1342,7 +1342,7 @@ def test_a_finalize_lock_beside_the_artifact_root_reaches_the_classifier(tmp_pat
     fell through to ``process_dead``. The run directory itself has to be
     checked as well as the artifact subtree under it.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     run_dir = tmp_path / "run-1"
     artifacts_dir = run_dir / "artifacts"
@@ -1368,7 +1368,7 @@ def test_a_finalize_lock_names_the_phantom_reason_a_caller_reads(tmp_path, monke
     stale ``finalize.lock`` must be reported with the lock's reason, not the
     generic dead-process one.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     db_path = tmp_path / "state.db"
     run_dir = tmp_path / "run-1"
@@ -1397,7 +1397,7 @@ def test_a_job_lock_under_the_job_directory_reaches_the_classifier(tmp_path, mon
     not under any run's artifact root either, so it needs the same explicit
     look-up.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
     import lionhub.serve.mcp.config as mcp_config
 
     jobs_dir = tmp_path / "jobs"
@@ -1427,7 +1427,7 @@ def test_a_spent_budget_reads_as_unfinished_before_the_locks_beside_the_root(tmp
     """The locks beside an artifact root are part of the budgeted scan: once the
     budget is spent the scan reports that it did not finish, rather than reading
     those locks and answering as if it had looked everywhere."""
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     run_dir = tmp_path / "run-1"
     artifacts_dir = run_dir / "artifacts"

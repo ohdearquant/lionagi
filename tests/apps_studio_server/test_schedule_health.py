@@ -23,7 +23,7 @@ import pytest
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from lionagi.state.db import StateDB  # noqa: E402
-from lionagi.studio.services.schedules import (  # noqa: E402
+from lionhub.serve.daemon.services.schedules import (  # noqa: E402
     compute_schedule_health,
     create_schedule,
     get_schedule,
@@ -270,7 +270,7 @@ def test_failing_threshold_contract_is_exactly_one():
     docstring -- a demo-facing badge treats a single failed/timed_out run as
     worth a glance, not a placeholder to be raised into a streak threshold
     later."""
-    from lionagi.studio.services.schedules import _HEALTH_FAILING_THRESHOLD
+    from lionhub.serve.daemon.services.schedules import _HEALTH_FAILING_THRESHOLD
 
     assert _HEALTH_FAILING_THRESHOLD == 1
 

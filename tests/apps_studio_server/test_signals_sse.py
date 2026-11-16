@@ -216,7 +216,7 @@ async def test_service_get_signals_after_seq_filter(patched_signals_db):
 
 async def test_signals_stream_starts_after_requested_resume_cursor(monkeypatch):
     """A reconnect must not replay the session's full durable signal log."""
-    from lionagi.studio.services import sessions as sessions_svc
+    from lionhub.serve.daemon.services import sessions as sessions_svc
     from lionhub.serve.daemon.services import signals as signals_svc
 
     seen: list[tuple[str, int]] = []
@@ -704,7 +704,7 @@ async def test_hook_signal_full_payload_is_preserved_through_persistence_and_sse
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from lionagi.hooks.bus import HookPoint, HookSignal
     from lionagi.session.session import Session
-    from lionagi.studio.services.sessions import stream_signals
+    from lionhub.serve.daemon.services.sessions import stream_signals
 
     _svc, db_path = patched_signals_db
     session_id = "hook-sse-contract"
@@ -898,7 +898,7 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     # Import the handler directly from the service module.
-    from lionagi.studio.services.sessions import stream_signals
+    from lionhub.serve.daemon.services.sessions import stream_signals
 
     # The endpoint function builds a StreamingResponse whose body is the
     # generate() async-generator.  We call it directly to get the generator.

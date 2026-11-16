@@ -38,7 +38,7 @@ def launch(monkeypatch, capsys):
 
     import webbrowser
 
-    import lionagi.studio.launch_access as launch_access
+    import lionhub.serve.daemon.launch_access as launch_access
 
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", lambda port: None)
     monkeypatch.setattr(launch_access, "mint_pairing_code", mint)

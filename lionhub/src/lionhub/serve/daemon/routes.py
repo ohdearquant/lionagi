@@ -71,16 +71,16 @@ _DEDUP_KEYS: set[tuple[str, str, str, str]] = set()
 
 #: The route modules the daemon serves with or without an attached application.
 DAEMON_ROUTE_MODULES: tuple[RouteModule, ...] = (
-    RouteModule(1, "lionagi.studio.services.runs"),
-    RouteModule(2, "lionagi.studio.services.run_resume"),
-    RouteModule(3, "lionagi.studio.services.engine_runs"),
-    RouteModule(12, "lionagi.studio.services.invocations"),
-    RouteModule(13, "lionagi.studio.services.launches"),
-    RouteModule(15, "lionagi.studio.services.identity"),
-    RouteModule(16, "lionagi.studio.services.pairing"),
-    RouteModule(19, "lionagi.studio.services.sessions"),
-    RouteModule(25, "lionagi.studio.services.admin"),
-    RouteModule(26, "lionagi.studio.services.schedules"),
+    RouteModule(1, "lionhub.serve.daemon.services.runs"),
+    RouteModule(2, "lionhub.serve.daemon.services.run_resume"),
+    RouteModule(3, "lionhub.serve.daemon.services.engine_runs"),
+    RouteModule(12, "lionhub.serve.daemon.services.invocations"),
+    RouteModule(13, "lionhub.serve.daemon.services.launches"),
+    RouteModule(15, "lionhub.serve.daemon.services.identity"),
+    RouteModule(16, "lionhub.serve.daemon.services.pairing"),
+    RouteModule(19, "lionhub.serve.daemon.services.sessions"),
+    RouteModule(25, "lionhub.serve.daemon.services.admin"),
+    RouteModule(26, "lionhub.serve.daemon.services.schedules"),
 )
 
 

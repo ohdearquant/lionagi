@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-import lionagi.studio.launch_access as launch_access
+import lionhub.serve.daemon.launch_access as launch_access
 import lionhub.serve.daemon.reconnect as reconnect
 
 _HOSTED = "https://lion-studio.khive.ai"
@@ -593,9 +593,9 @@ def test_the_serving_daemon_signs_with_the_key_its_reconnect_socket_hands_out(
     from fastapi.testclient import TestClient
 
     import lionagi.studio.app as app_mod
-    import lionagi.studio.services.launches as launches_mod
     import lionagi.studio.services.operator as operator_mod
     import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
+    import lionhub.serve.daemon.services.launches as launches_mod
     import lionhub.serve.diagnostics as code_identity
     from lionhub.orchestration.scheduler.engine import scheduler
 

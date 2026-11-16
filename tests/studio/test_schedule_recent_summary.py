@@ -11,7 +11,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services import schedules
+from lionhub.serve.daemon.services import schedules
 
 
 @pytest.fixture

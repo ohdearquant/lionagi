@@ -426,7 +426,7 @@ def test_every_outcome_this_module_returns_declares_its_summary_provenance():
 
 
 def test_an_outcome_that_declares_nothing_is_treated_as_reported():
-    from lionagi.studio.services.schedules import _reported_summary_class
+    from lionhub.serve.daemon.services.schedules import _reported_summary_class
 
     undeclared = {
         "code": "x",

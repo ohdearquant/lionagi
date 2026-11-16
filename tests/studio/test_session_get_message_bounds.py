@@ -22,7 +22,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 @pytest.fixture
 def store(monkeypatch, tmp_path: Path) -> Path:
-    import lionagi.studio.services.sessions as sessions_mod
+    import lionhub.serve.daemon.services.sessions as sessions_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -78,7 +78,7 @@ async def _seed(db_path: Path, *, messages: int) -> tuple[str, str]:
 
 
 async def test_branch_activity_spans_the_history_not_only_the_page(store):
-    from lionagi.studio.services import sessions as sessions_mod
+    from lionhub.serve.daemon.services import sessions as sessions_mod
 
     session_id, branch_id = await _seed(store, messages=3)
 
@@ -91,7 +91,7 @@ async def test_branch_activity_spans_the_history_not_only_the_page(store):
 
 
 async def test_a_session_with_no_messages_reports_no_activity(store):
-    from lionagi.studio.services import sessions as sessions_mod
+    from lionhub.serve.daemon.services import sessions as sessions_mod
 
     session_id, branch_id = await _seed(store, messages=0)
 

@@ -17,7 +17,7 @@ import pytest_asyncio
 
 import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import NO_CURSOR_CLAIM
-from lionagi.studio.services.schedules import _run_trigger_facts
+from lionhub.serve.daemon.services.schedules import _run_trigger_facts
 from tests._scheduler_claims import claim_holds, fire_with_claim, persisting_update_schedule
 
 NY = ZoneInfo("America/New_York")

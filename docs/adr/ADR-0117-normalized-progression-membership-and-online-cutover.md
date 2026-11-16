@@ -78,8 +78,8 @@ unbounded orders (`lionhub/src/lionhub/serve/cli/state.py::_import_one_run`). Th
 staged rollout, not a permanent assumption that these histories remain small. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 
 Read amplification persists for idle histories. A detail page loads entire arrays before taking
-a tail window (`lionagi/studio/services/sessions.py::get_session`), counts expand JSON (`lionagi/studio/services/sessions.py::list_sessions.listing_sql`),
-and streaming expands membership (`lionagi/studio/services/sessions.py::get_session_messages_after`). The measured 8.127 ms read is only a warmed full-list
+a tail window (`lionhub/src/lionhub/serve/daemon/services/sessions.py::get_session`), counts expand JSON (`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions.listing_sql`),
+and streaming expands membership (`lionhub/src/lionhub/serve/daemon/services/sessions.py::get_session_messages_after`). The measured 8.127 ms read is only a warmed full-list
 read near 100k, not endpoint latency at the observed maximum. These are reachable read costs;
 the supplied evidence does not measure how often the idle large histories are read.
 
@@ -398,15 +398,15 @@ Keeping that column current would retain the performance defect.
 #### Required consumer changes
 
 1. **Detail and ordinal windows.** Replace the full-array read at
-   `lionagi/studio/services/sessions.py::get_session` with bounded membership reads. Preserve current
-   first-occurrence message anchors (`lionagi/studio/services/sessions.py::_window_message_ids`) with indexed lowest-ordinal lookup, generation
+   `lionhub/src/lionhub/serve/daemon/services/sessions.py::get_session` with bounded membership reads. Preserve current
+   first-occurrence message anchors (`lionhub/src/lionhub/serve/daemon/services/sessions.py::_window_message_ids`) with indexed lowest-ordinal lookup, generation
    checks for new cursor formats, missing-message handling and existing hydration budgets.
-2. **Counts.** Replace JSON length queries at `lionagi/studio/services/sessions.py::list_sessions.listing_sql`,
-   `lionagi/studio/services/admin.py::health_report`, and full-list counts at `lionhub/src/lionhub/serve/cli/state.py::_collect_sessions`
+2. **Counts.** Replace JSON length queries at `lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions.listing_sql`,
+   `lionhub/src/lionhub/serve/daemon/services/admin.py::health_report`, and full-list counts at `lionhub/src/lionhub/serve/cli/state.py::_collect_sessions`
    with cached membership counts. Preserve branch aggregation versus session-order semantics.
    Role counts and surviving-message counts remain distinct and must not be replaced by the
-   membership count (`lionagi/studio/services/sessions.py::get_session`). The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
-3. **Timestamp streaming.** `lionagi/studio/services/sessions.py::get_session_messages_after` orders by message time,
+   membership count (`lionhub/src/lionhub/serve/daemon/services/sessions.py::get_session`). The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
+3. **Timestamp streaming.** `lionhub/src/lionhub/serve/daemon/services/sessions.py::get_session_messages_after` orders by message time,
    message ID and branch ID, not ordinal. Preserve that cursor contract. Replace JSON expansion
    with relational membership and a timestamp-seeking query. A messages-driven seek on a
    composite `(created_at, id)` index with progression/message membership probes is permitted;

@@ -29,7 +29,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import lionagi.state.db as state_db_mod  # noqa: E402
 from lionagi.state.db import StateDB  # noqa: E402
-from lionagi.studio.services.schedules import create_schedule  # noqa: E402
+from lionhub.serve.daemon.services.schedules import create_schedule  # noqa: E402
 
 HEALTHY_AT = 1_700_000_000.0
 

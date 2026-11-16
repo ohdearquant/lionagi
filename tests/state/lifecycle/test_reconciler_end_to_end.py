@@ -50,9 +50,10 @@ async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypa
     pytest.importorskip("fastapi")
     import lionagi.state.db as state_db_module
     from lionagi.state.lifecycle import notify_settings
-    from lionagi.studio.services import launches, lifecycle, operator
+    from lionagi.studio.services import lifecycle, operator
     from lionhub.orchestration.scheduler.engine import scheduler
     from lionhub.serve import diagnostics
+    from lionhub.serve.daemon.services import launches
 
     app_module = importlib.import_module("lionagi.studio.app")
     home = tmp_path / "home"

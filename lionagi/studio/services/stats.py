@@ -13,13 +13,13 @@ from lionhub.orchestration.state_store import (
     store_path,
 )
 from lionhub.orchestration.state_store import open_db as _open_db
+from lionhub.serve.daemon.services import sessions as sessions_svc
 from lionhub.serve.daemon.services._path_safety import public_path
 
 from ..registry import studio_route
 from . import agents as agents_svc
 from . import playbooks as playbooks_svc
 from . import plugins as plugins_svc
-from . import sessions as sessions_svc
 from . import shows as shows_svc
 from . import skills as skills_svc
 

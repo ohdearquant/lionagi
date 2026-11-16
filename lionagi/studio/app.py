@@ -22,6 +22,12 @@ from lionagi.version import __version__
 from lionhub.orchestration.state_store import StoreNotAddressableError
 from lionhub.serve.daemon._host import admitted_host_names, normalize_host
 from lionhub.serve.daemon._traceback_dump import arm_traceback_dump, disarm_traceback_dump
+from lionhub.serve.daemon.launch_access import (
+    PAIRING_REDEEM_PATH,
+    begin_serving,
+    launch_bearer,
+    mint_pairing_code,
+)
 from lionhub.serve.daemon.reconnect import (
     ReconnectChannel,
     default_socket_path,
@@ -30,12 +36,6 @@ from lionhub.serve.daemon.reconnect import (
 )
 from lionhub.serve.daemon.settings import CORS_ORIGINS, HOST
 
-from .launch_access import (
-    PAIRING_REDEEM_PATH,
-    begin_serving,
-    launch_bearer,
-    mint_pairing_code,
-)
 from .registry import iter_studio_routes, load_studio_route_modules
 
 _log = logging.getLogger(__name__)
@@ -399,8 +399,7 @@ async def lifespan(app_instance):
             yield
         finally:
             from lionagi.ln.concurrency import CancelScope, ExceptionGroup
-
-            from .services.launches import shutdown_launches
+            from lionhub.serve.daemon.services.launches import shutdown_launches
 
             failures: list[Exception] = []
 

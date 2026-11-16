@@ -582,7 +582,7 @@ class TestSchedulePatchRouterValidation:
         """Patch sched_svc.update_schedule and return a TestClient."""
         from fastapi.testclient import TestClient
 
-        import lionagi.studio.services.schedules as sched_svc
+        import lionhub.serve.daemon.services.schedules as sched_svc
         from lionagi.studio.app import app
 
         monkeypatch.setattr(sched_svc, "update_schedule", mock_fn)
@@ -646,7 +646,7 @@ class TestScheduleArgvInjectionRouterValidation:
         """Patch sched_svc.update_schedule and return a TestClient."""
         from fastapi.testclient import TestClient
 
-        import lionagi.studio.services.schedules as sched_svc
+        import lionhub.serve.daemon.services.schedules as sched_svc
         from lionagi.studio.app import app
 
         monkeypatch.setattr(sched_svc, "update_schedule", mock_fn)
@@ -657,7 +657,7 @@ class TestScheduleArgvInjectionRouterValidation:
         """Patch sched_svc.create_schedule and return a TestClient."""
         from fastapi.testclient import TestClient
 
-        import lionagi.studio.services.schedules as sched_svc
+        import lionhub.serve.daemon.services.schedules as sched_svc
         from lionagi.studio.app import app
 
         monkeypatch.setattr(sched_svc, "create_schedule", mock_fn)

@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from lionagi.studio.services.schedules import (
+from lionhub.serve.daemon.services.schedules import (
     CreateScheduleRequest,
     UpdateScheduleRequest,
     update_schedule_route,
@@ -70,7 +70,7 @@ async def test_the_response_names_what_landed(monkeypatch):
         seen["fields"] = fields
         return True
 
-    monkeypatch.setattr("lionagi.studio.services.schedules.update_schedule", fake_update)
+    monkeypatch.setattr("lionhub.serve.daemon.services.schedules.update_schedule", fake_update)
     body = UpdateScheduleRequest(github_cursor="2026-07-26T00:00:00Z", name="renamed")
     result = await update_schedule_route("sched-001", body)
 
@@ -85,7 +85,7 @@ async def test_an_empty_body_is_still_a_no_op_but_says_so(monkeypatch):
     async def fake_update(schedule_id, fields):
         return True
 
-    monkeypatch.setattr("lionagi.studio.services.schedules.update_schedule", fake_update)
+    monkeypatch.setattr("lionhub.serve.daemon.services.schedules.update_schedule", fake_update)
     result = await update_schedule_route("sched-001", UpdateScheduleRequest())
 
     assert result == {"ok": True, "updated": []}

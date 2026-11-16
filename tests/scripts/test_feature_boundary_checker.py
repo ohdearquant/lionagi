@@ -272,9 +272,8 @@ def test_target_notes_use_recorded_destinations_only():
         "lionhub.orchestration.scheduler"
     )
     assert builder.match(builder.TARGET_RULES, "lionagi.tools.khive_injection") == fallback
-    assert (
-        builder.match(builder.TARGET_RULES, "lionagi.studio.services.sessions") == "lionhub.serve"
-    )
+    # A module that has arrived at its destination carries no target note.
+    assert builder.match(builder.TARGET_RULES, "lionhub.serve.daemon.services.sessions") is None
     assert builder.ADDITIONAL_TARGETS["lionhub.serve.cli.orchestrate"] == [
         "lionhub.orchestration.flow.parsing"
     ]

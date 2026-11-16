@@ -9,10 +9,10 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from lionagi.studio.services import schedules
 from lionhub.orchestration.scheduler import github as github_module
 from lionhub.orchestration.scheduler import subprocess as subprocess_module
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
+from lionhub.serve.daemon.services import schedules
 
 from .test_github_poll_stagnation import (
     _NOW,

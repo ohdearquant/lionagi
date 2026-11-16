@@ -494,17 +494,17 @@ def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_
     ("old_module", "name", "owner"),
     [
         (
-            "lionagi.studio.services.admin",
+            "lionhub.serve.daemon.services.admin",
             "_PS_SNAPSHOT_CACHE",
             "lionhub.orchestration.scheduler.liveness",
         ),
         (
-            "lionagi.studio.services.admin",
+            "lionhub.serve.daemon.services.admin",
             "_PS_SNAPSHOT_METRICS",
             "lionhub.orchestration.scheduler.liveness",
         ),
         (
-            "lionagi.studio.services.admin",
+            "lionhub.serve.daemon.services.admin",
             "_PS_SNAPSHOT_SEQUENCE",
             "lionhub.orchestration.scheduler.liveness",
         ),
