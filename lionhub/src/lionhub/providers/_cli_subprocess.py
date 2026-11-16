@@ -99,10 +99,12 @@ def _withhold_studio_credentials(env: dict[str, str]) -> dict[str, str]:
 
 #: A variable whose name has one of these ending a ``_``-separated part, or that ends in
 #: ``_KEY``, holds a credential as far as a CLI child is concerned. The part must end there, so
-#: ``TOKENIZERS_PARALLELISM`` is not one, while ``GH_TOKEN`` and ``NPMTOKEN`` are.
+#: ``TOKENIZERS_PARALLELISM``, ``XAUTHORITY`` and ``GIT_AUTHOR_NAME`` are not one, while
+#: ``GH_TOKEN``, ``NPMTOKEN`` and ``SSH_AUTH_SOCK`` (the agent that signs in elsewhere) are.
+#: ``PAT`` must be a whole part, so ``GITHUB_PAT`` is one and ``COMPAT_MODE`` and ``PATH`` are not.
 _CREDENTIAL_NAME_RE = re.compile(
     r"(?i)(?:TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|APIKEY|API_KEY|ACCESS_KEY"
-    r"|PRIVATE_KEY|DATABASE_URL)(?:_|$)|_KEY$"
+    r"|PRIVATE_KEY|DATABASE_URL|AUTH)(?:_|$)|(?:^|_)PAT(?:_|$)|_KEY$"
 )
 
 #: The names each CLI provider reads its own login or key from. A child keeps these and no
@@ -1486,13 +1488,12 @@ async def ndjson_from_cli(
     spawn_env, spawn_marker = prepare_process_group_env(child_env)
     withheld = _withhold_studio_credentials(spawn_env)
     # A child keeps its own provider's login and no other credential the launcher holds: the
-    # commands it runs inherit what it holds. A name the operator's secret lookup declares for
-    # CLI children is kept too, that declaration being a named allow in global settings; a
-    # routed account's key and a name this request keeps from the fill are not. ``auth_env=None``
-    # is the one provider whose login names are not yet known here (see its call site).
+    # commands it runs inherit what it holds. A name the secret lookup fills reaches the child
+    # only when it is one of those login names; the lookup declares where a value comes from,
+    # not which child may hold it. ``auth_env=None`` is the one provider whose login names are
+    # not yet known here (see its call site).
     if auth_env is not None:
-        filled_for_children = frozenset(declared) - _routed_account_key_names() - secret_fill_skip
-        withheld.update(_withhold_credentials(spawn_env, frozenset(auth_env) | filled_for_children))
+        withheld.update(_withhold_credentials(spawn_env, frozenset(auth_env)))
     # Every agent lionagi starts carries a depth, so a lionagi it runs refuses to start
     # another (refuse_nested_agent). Set over whatever the environment held: only a
     # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).

@@ -85,9 +85,22 @@ _CREDENTIALS = (
     "GOOGLE_APPLICATION_CREDENTIALS",
     "SIGNING_KEY",
     "NPMTOKEN",
+    "SSH_AUTH_SOCK",
+    "DOCKER_AUTH_CONFIG",
+    "REGISTRY_BASIC_AUTH",
+    "OAUTH_CLIENT",
+    "GITHUB_PAT",
 )
 #: Names a substring rule would wrongly take; a child must still get them.
-_LOOKALIKES = ("TOKENIZERS_PARALLELISM", "KEYCHAIN_PATH", "MONKEYPATCH_MODE")
+_LOOKALIKES = (
+    "TOKENIZERS_PARALLELISM",
+    "KEYCHAIN_PATH",
+    "MONKEYPATCH_MODE",
+    "GIT_AUTHOR_NAME",
+    "XAUTHORITY",
+    "MANPATH",
+    "COMPAT_MODE",
+)
 _PRINT_NAMES = (
     "import json, os, sys; "
     "names = json.loads(sys.argv[1]); "

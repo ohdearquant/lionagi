@@ -30,7 +30,19 @@ from lionagi.service.accounts._secret_resolution import (
     fill_declared_secrets_and_names,
     resolve_secret_lookup_config,
 )
-from lionhub.providers._cli_subprocess import ndjson_from_cli
+from lionhub.providers._cli_subprocess import ndjson_from_cli as _ndjson_from_cli
+
+#: The spawn tests below stand for a provider that reads the filled names as its own login: a
+#: CLI child keeps only its provider's login names, so a filled name reaches it only then.
+_FILLED_LOGIN_NAMES = frozenset(
+    {"LIONAGI_TEST_SECRET", "LIONAGI_TEST_SECRET_TWO", "OPENROUTER_API_KEY"}
+)
+
+
+def ndjson_from_cli(cmd, **kwargs):
+    kwargs.setdefault("auth_env", _FILLED_LOGIN_NAMES)
+    return _ndjson_from_cli(cmd, **kwargs)
+
 
 NAME = "LIONAGI_TEST_SECRET"
 OTHER = "LIONAGI_TEST_SECRET_TWO"
@@ -693,3 +705,43 @@ class TestARequestCanKeepTheLookupFromFillingNamesIntoItsChild:
         env = {"PATH": os.environ.get("PATH", os.defpath)}
         seen = [obj async for obj in ndjson_from_cli(self._cmd(), env=env)]
         assert seen == [{"skipped": True, "other": True}]
+
+
+@pytest.mark.asyncio
+class TestAFilledNameReachesOnlyAChildWhoseProviderReadsIt:
+    """The lookup says where a value comes from, not which child may hold it."""
+
+    @staticmethod
+    def _cmd():
+        return [
+            sys.executable,
+            "-c",
+            "import os, json; print(json.dumps({'seen': "
+            "os.environ.get('OPENROUTER_API_KEY') == 'resolved::OPENROUTER_API_KEY'}))",
+        ]
+
+    async def test_a_filled_key_the_provider_does_not_read_is_withheld(
+        self, lionagi_home, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+        _write_global(lionagi_home, _block(_PRINTS_A_VALUE, names=["OPENROUTER_API_KEY"]))
+        claude_login = frozenset({"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"})
+
+        seen = [obj async for obj in _ndjson_from_cli(self._cmd(), auth_env=claude_login)]
+
+        assert seen == [{"seen": False}]
+
+    async def test_pi_on_openrouter_keeps_the_filled_openrouter_key(
+        self, lionagi_home, tmp_path, monkeypatch
+    ):
+        from lionhub.providers.pi.cli import PiCodeRequest
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+        _write_global(lionagi_home, _block(_PRINTS_A_VALUE, names=["OPENROUTER_API_KEY"]))
+        pi_login = frozenset({PiCodeRequest(prompt="hi", provider="openrouter").auth_env_name()})
+
+        seen = [obj async for obj in _ndjson_from_cli(self._cmd(), auth_env=pi_login)]
+
+        assert seen == [{"seen": True}]

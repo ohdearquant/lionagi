@@ -541,15 +541,17 @@ credentials it gets. `ndjson_from_cli()` removes from it:
 
 - `LIONAGI_STUDIO_AUTH_TOKEN` and every `LIONAGI_REMOTE_*` variable, always;
 - every other variable whose name reads as a credential (a `TOKEN`, `SECRET`, `PASSWORD`,
-  `PASSWD`, `CREDENTIAL(S)`, `API_KEY`, `APIKEY`, `ACCESS_KEY`, `PRIVATE_KEY` or
-  `DATABASE_URL` ending a `_`-separated part, or a name ending in `_KEY`), except:
-  - the names the provider reads its own login from (`auth_env`): Claude Code's
-    `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, plus the AWS or
-    Google names when the run selects Bedrock or Vertex; Gemini's `GEMINI_API_KEY`,
-    `GOOGLE_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`; for Pi, the key variable of the run's
-    provider;
-  - names the [declared secret lookup](#declared-secret-lookup) lists for CLI children, other
-    than a routed account's key and a name the request keeps from the fill.
+  `PASSWD`, `CREDENTIAL(S)`, `API_KEY`, `APIKEY`, `ACCESS_KEY`, `PRIVATE_KEY`, `DATABASE_URL`
+  or `AUTH` ending a `_`-separated part, a whole `PAT` part, or a name ending in `_KEY`), except
+  the names the provider reads its own login from (`auth_env`): Claude Code's
+  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, plus the AWS or
+  Google names when the run selects Bedrock or Vertex; Gemini's `GEMINI_API_KEY`,
+  `GOOGLE_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`; for Pi, the key variable of the run's
+  provider.
+
+A name the [declared secret lookup](#declared-secret-lookup) fills reaches a child only when it
+is one of that child's login names. `SSH_AUTH_SOCK` is removed too, so a child cannot use the
+launcher's SSH agent.
 
 There is no setting that turns the removal off. Codex children keep the launcher's credential
 variables for now: codex reads a key from the variable its configured model provider's
