@@ -59,11 +59,13 @@ means it raised, and 2 indicates an invalid invocation or account boundary.
 
 ## Default-runtime import-effects baseline
 
-The baseline used revision `02d867120fb9de7bab09b2f953259defab879c04`,
-CPython 3.14.7 on Darwin arm64, and 31 locked default-runtime distributions.
-The probe attempted each tracked production module's import in a fresh
-process across `lionagi/` and `lionhub/src/lionhub/`. The reconciliation
-matched every module index, name, list hash and exit status.
+The baseline used revision `02d867120fb9de7bab09b2f953259defab879c04`
+and CPython 3.14.7 on Darwin arm64. It staged 31 third-party distributions
+from the lock file and loaded LionAGI from the source checkout. The
+interpreter was staged outside the operating-system account's home
+directory. Each tracked production module under `lionagi/` and
+`lionhub/src/lionhub/` was attempted in a fresh interpreter started with
+`-B`, which disabled bytecode cache writes.
 
 The pinned `scripts/probe_import_effects.py` has SHA-256
 `d609ddce18d66e5f65cbb6515df3874db3197d344d4f855b7a939a4e86b8e479`.
@@ -74,37 +76,46 @@ The pinned `scripts/probe_import_effects.py` has SHA-256
 | LionHub | 353 | 300 | 53 | 95,415 | 690 | 44,769 |
 | Total | 687 | 572 | 115 | 198,214 | 1,299 | 94,937 |
 
-The 115 errors comprise 72 permission errors during platform identification,
-40 missing-module errors and three optional-feature import errors. The paired
-run varied platform-identification access under independently checked
-containment, and both representative imports completed. The table preserves
-the original baseline outcomes.
+The 115 errors comprise 72 `PermissionError` results (37 Core and 35
+LionHub) at CPython's `os.uname()` operating-system call, 40 missing-module
+errors and three optional-feature import errors. Both imports in a paired
+control completed when platform identification was available. The table
+reports the original baseline outcomes.
 
-Synthetic checks verified the operating-system containment separately from
-the production imports. The probe recorded no filesystem write, network,
-SQLite connection or background-work attempts through the instrumented
-channels. Snapshots recorded changes to logger state, selected registries
-and the import finder list. The probe compares the environment before and
-after import, so it records persistent changes and leaves individual
-environment reads unobserved. The audit covers the instrumented Python
-events. Native activity outside those channels and code beyond a stopped
-import are outside the recording. These results cover module import in
-the tested dependency profile. Feature activation and other dependency
-profiles were outside the measurement.
+The probe counted the following attempts before applying its event retention
+limits. It recorded zero retained events marked as blocked by the probe in
+either source set. The probe records operating-system containment as a caller
+assertion.
+
+| Probe-recorded attempt | Core | LionHub |
+| --- | ---: | ---: |
+| Filesystem write | 0 | 0 |
+| Directory change | 0 | 0 |
+| Account-home access | 0 | 0 |
+| Network operation | 0 | 0 |
+| SQLite connection | 0 | 0 |
+| Subprocess or process creation | 0 | 0 |
+| Background thread start | 0 | 0 |
+| Background task creation | 0 | 0 |
+
+Snapshots recorded changes to logger state, selected registries and the import
+finder list. The probe compares the environment before and after import, so
+it records persistent changes and leaves individual environment reads
+unobserved. The audit covers instrumented Python events during module import
+in the baseline dependency profile. Native activity outside those channels,
+code beyond a stopped import, feature activation and other dependency profiles
+were outside the measurement.
 
 For another capture, pin the source, interpreter and dependency profile.
 Build separate sorted UTF-8 lists for Core and LionHub from the tracked
 Python files. Convert paths to dotted module names, using each package
 initializer's package name. Write one name per line with a final newline.
-Verify the module-list hashes before probing and reconcile each result's
-index, name, list hash and exit status afterwards. The baseline lists had
-these SHA-256 hashes.
+Compare the regenerated baseline module lists with these SHA-256 hashes.
 
 | Source | Module-list SHA-256 |
 | --- | --- |
 | Core | `0d2d7066584431eb0c73fcfb3f33e2a05b13ca4cc4a72e36b409c38c28590e70` |
 | LionHub | `87a0141d42c20454ff045b7a46294eb98052084d2d40b173032a668cd20b4ac8` |
 
-Totals include observations counted before the filesystem-read retention
-cap. Dropped records limit individual read inspection, so the run reports
-aggregate counts alongside the retained evidence.
+Dropped read records limit individual inspection. The aggregate read totals
+include reads counted before the filesystem-read retention cap.
