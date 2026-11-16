@@ -25,7 +25,15 @@ from lionhub.serve.mcp import dispatch, jobs, projection, verbs
 
 # Named by the operation an agent could otherwise perform on itself, not by a
 # spelling: a rename that keeps the capability must still fail this.
-FENCED_PATHS = ("state migrate", "plugin trust", "hooks trust")
+FENCED_PATHS = (
+    "state migrate",
+    "plugin trust",
+    "hooks trust",
+    "remote run",
+    "remote status",
+    "remote output",
+    "remote cancel",
+)
 
 # The previous surface's names for the same capabilities: a fenced capability
 # must not be reachable by an old name either.

@@ -39,6 +39,7 @@ worker.
 | `li invoke {start,end,list}` | Group sessions under one higher-level invocation |
 | `li studio [start]` | Start the Studio backend and selected frontend mode |
 | `li schedule {list,get,limits,create,enable,disable,trigger,delete,runs}` | Manage schedules through the Studio API |
+| `li remote {run,status,output,cancel}` | Run agent legs on a remote leg host ([guide](guides/remote-legs.md)) |
 | `li state {import,import-teams,ls,stats,checkpoint,vacuum,prune,doctor,migrate}` | Inspect and maintain StateDB |
 | `li dispatch {ls,show,ack,retry,purge}` | Operate the durable dispatch outbox |
 | `li stats runs` | Aggregate run reporting from StateDB |

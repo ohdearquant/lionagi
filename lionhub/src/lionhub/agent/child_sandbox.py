@@ -90,6 +90,7 @@ DEFAULT_DENY_READ: tuple[str, ...] = (
     "~/.config/rclone",
     "~/.pgpass",
     "~/.my.cnf",
+    "~/.secrets",
     "~/.codex/auth.json",
     "~/.claude/.credentials.json",
     "~/.claude.json",

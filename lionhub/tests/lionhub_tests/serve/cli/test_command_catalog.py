@@ -34,6 +34,7 @@ _EXPECTED_CLI_SEEDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("team", (), "lionhub.serve.cli.team"),
     ("studio", (), "lionhub.serve.cli.studio"),
     ("schedule", (), "lionhub.serve.cli.schedule"),
+    ("remote", (), "lionhub.serve.cli.remote"),
     ("state", (), "lionhub.serve.cli.state"),
     ("invoke", (), "lionhub.serve.cli.invoke"),
     ("kill", (), "lionhub.serve.cli.kill"),
@@ -66,9 +67,9 @@ def _cleanup_fake_modules():
         del sys.modules[name]
 
 
-def test_cli_seeds_are_fixed_21_in_order():
+def test_cli_seeds_are_fixed_in_order():
     seeds = _catalog.iter_cli_seeds()
-    assert len(seeds) == 21
+    assert len(seeds) == 22
     actual = tuple((s.name, s.aliases, s.module) for s in seeds)
     assert actual == _EXPECTED_CLI_SEEDS
 
@@ -191,7 +192,7 @@ def test_build_cli_parser_with_no_selection_registers_every_seed_as_stub():
     choices = build.parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
     assert "orchestrate" in choices
     assert "o" in choices  # alias registered
-    assert len(_catalog.iter_cli_seeds()) == 21
+    assert len(_catalog.iter_cli_seeds()) == 22
 
 
 def test_build_cli_parser_with_selection_uses_its_parser_factory(monkeypatch):

@@ -142,6 +142,7 @@ TOP_LEVEL_COMMANDS = [
     "o",
     "orchestrate",
     "plugin",
+    "remote",
     "runs",
     "schedule",
     "state",

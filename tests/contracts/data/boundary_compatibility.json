@@ -45,6 +45,7 @@
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.getenv:\"LIONAGI_STUDIO_HOST\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
       "os.getenv:\"LIONAGI_STUDIO_HOST\""
     ],
     "lionagi/studio/config.py": [
@@ -170,6 +171,10 @@
     "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py": [
       "os.environ.get:\"LIONAGI_SESSION_ID\""
     ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "os.environ.get:STUDIO_TOKEN_ENV",
+      "os.environ.get:token_env"
+    ],
     "lionhub/src/lionhub/serve/cli/studio.py": [
       "os.environ.get:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
@@ -185,6 +190,10 @@
     "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
       "os.environ.get:_ENV_INTERVAL",
       "os.environ.get:_ENV_PATH"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "os.environ.get:_MAX_LAUNCHES_ENV",
+      "os.environ.get:_TOKEN_ENV"
     ],
     "lionhub/src/lionhub/serve/daemon/services/identity.py": [
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
@@ -1589,6 +1598,9 @@
     "lionhub/src/lionhub/serve/cli/orchestrate/_round_records.py": [
       "__all__ = (\n    \"ROUND_VERSION\",\n    \"ROUND_STATE_PENDING\",\n    \"ROUND_STATE_COMPLETE\",\n    \"RESULT_COMPLETED\",\n    \"RESULT_PARTIAL\",\n    \"RESULT_FAILED\",\n    \"LEG_SUCCEEDED\",\n    \"LEG_FAILED\",\n    \"LEG_TIMED_OUT\",\n    \"LEG_CANCELLED\",\n    \"LEG_KILLED\",\n    \"RECORDED_BY_RUNNER\",\n    \"RECORDED_BY_KILL_REAPER\",\n    \"RECORDED_BY_ORPHAN_REAPER\",\n    \"LegDispatch\",\n    \"legs_dir\",\n    \"round_path\",\n    \"write_leg_dispatch\",\n    \"complete_leg_record\",\n    \"read_leg_records\",\n    \"ControlGroupDomain\",\n    \"control_group_domain\",\n    \"recorded_control_groups\",\n    \"write_round_summary\",\n    \"read_round_summary\",\n    \"flip_round_complete\",\n    \"round_result\",\n)"
     ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "__all__ = (\n    \"RemoteError\",\n    \"add_remote_subparser\",\n    \"load_remote\",\n    \"run_remote\",\n)"
+    ],
     "lionhub/src/lionhub/serve/cli/state.py": [
       "__all__ = [\n    # import helpers\n    \"RUNS_ROOT\",\n    \"_mtime_as_float\",\n    \"_msg_from_collection_entry\",\n    \"_import_runs\",\n    \"_STATUS_MAP\",\n    \"_EXIT_CODE_STATUS_MAP\",\n    \"_derive_import_status\",\n    \"_derive_timestamps\",\n    \"_import_one_run\",\n    \"_import_teams\",\n    # ops helpers\n    \"_format_bytes\",\n    \"_list_sessions\",\n    \"_print_stats\",\n    \"_collect_message_breakdown\",\n    \"_checkpoint\",\n    \"_vacuum\",\n    \"_prune\",\n    \"_prune_candidates\",\n    \"_null_content\",\n    \"_null_content_candidates\",\n    \"_null_content_targets\",\n    \"_doctor\",\n    # CLI entrypoints\n    \"add_state_subparser\",\n    \"run_state\",\n    \"machine_result\",\n]"
     ],
@@ -1612,6 +1624,9 @@
     ],
     "lionhub/src/lionhub/serve/daemon/launch_access.py": [
       "__all__ = (\n    \"DECISION_CAPABILITY_TTL_S\",\n    \"DECISION_SCOPE\",\n    \"DECISION_TOKEN_HEADER\",\n    \"DecisionPrincipal\",\n    \"PAIRING_CODE_TTL_S\",\n    \"PAIRING_REDEEM_PATH\",\n    \"begin_serving\",\n    \"daemon_epoch\",\n    \"is_launch_origin\",\n    \"launch_bearer\",\n    \"mint_decision_capability\",\n    \"mint_pairing_code\",\n    \"redeem_pairing_code\",\n    \"redeem_pairing_grant\",\n    \"reset_launch_access\",\n    \"resolve_decision_capability\",\n    \"revoke_decision_capability\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "__all__ = (\n    \"LEG_HOST_ENV\",\n    \"LegLaunch\",\n    \"LegSetupError\",\n    \"LegRepo\",\n    \"capabilities\",\n    \"enabled\",\n    \"leg_env\",\n    \"load_repos\",\n    \"make_worktree\",\n    \"max_launches\",\n    \"read_result\",\n    \"remove_worktree\",\n    \"result_path\",\n    \"startup_refusals\",\n    \"sweep_worktrees\",\n    \"validate_launch\",\n    \"worktree_refusal\",\n    \"write_result\",\n)"
     ],
     "lionhub/src/lionhub/serve/daemon/reconnect.py": [
       "__all__ = (\n    \"ReconnectChannel\",\n    \"current_uid\",\n    \"default_socket_path\",\n    \"peer_uid\",\n    \"port_proof\",\n    \"read_reconnect_reply\",\n    \"state_dir\",\n    \"unix_sockets_supported\",\n)"
@@ -4785,6 +4800,13 @@
       "machine_result",
       "run_plugin"
     ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "Remote",
+      "RemoteError",
+      "add_remote_subparser",
+      "load_remote",
+      "run_remote"
+    ],
     "lionhub/src/lionhub/serve/cli/schedule.py": [
       "run_schedule",
       "run_schedule_quick_create"
@@ -4866,6 +4888,25 @@
       "reset_launch_access",
       "resolve_decision_capability",
       "revoke_decision_capability"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "LegLaunch",
+      "LegRepo",
+      "LegSetupError",
+      "capabilities",
+      "enabled",
+      "leg_env",
+      "load_repos",
+      "make_worktree",
+      "max_launches",
+      "read_result",
+      "remove_worktree",
+      "result_path",
+      "startup_refusals",
+      "sweep_worktrees",
+      "validate_launch",
+      "worktree_refusal",
+      "write_result"
     ],
     "lionhub/src/lionhub/serve/daemon/reconnect.py": [
       "ReconnectChannel",
@@ -4962,7 +5003,9 @@
       "TooManyLaunchesError",
       "cancel_launch",
       "launch",
+      "launch_capabilities",
       "launch_detached_argv",
+      "launch_result",
       "launch_run",
       "shutdown_launches"
     ],
