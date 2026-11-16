@@ -3077,7 +3077,10 @@
       "NotifyProvenance",
       "ResolvedNotifyHandler",
       "RunNotifyRecord",
+      "TerminalNoticeContext",
+      "bind_terminal_notice_context",
       "build_handler",
+      "build_terminal_notice_payload",
       "classify_notify_provenance",
       "record_notify_outcome_to_run",
       "record_notify_rejection_to_run",
@@ -4714,6 +4717,7 @@
     ],
     "lionhub/src/lionhub/serve/cli/orchestrate/_notify.py": [
       "deliver_flow_notify_now",
+      "notice_context_for_run",
       "register_flow_notify_scope",
       "unregister_flow_notify_scope"
     ],
