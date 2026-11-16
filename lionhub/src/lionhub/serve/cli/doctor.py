@@ -116,6 +116,19 @@ def _check_core_deps() -> dict[str, dict[str, str]]:
     return results
 
 
+def _check_mcp_extra() -> dict[str, str]:
+    try:
+        importlib.import_module("fastmcp")
+    except Exception as exc:  # noqa: BLE001 — report the cause of a broken install
+        if isinstance(exc, ModuleNotFoundError) and exc.name == "fastmcp":
+            return _result(
+                "warn",
+                'fastmcp is missing. Install the MCP extra with pip install "lionagi[mcp]"',
+            )
+        return _result("fail", f"{type(exc).__name__}: {exc}")
+    return _result("ok", "fastmcp importable")
+
+
 def _readiness_verdict(target: str, body: bytes) -> dict[str, str]:
     """Turn a readiness response body into a check result.
 
@@ -280,6 +293,7 @@ def collect_checks() -> dict[str, dict[str, str]]:
         checks[f"import:{mod}"] = result
     for dep, result in _check_core_deps().items():
         checks[f"dep:{dep}"] = result
+    checks["extra:mcp"] = _check_mcp_extra()
     checks["studio_daemon"] = _check_studio_daemon()
     checks["lionagi_home"] = _check_lionagi_home()
     return checks

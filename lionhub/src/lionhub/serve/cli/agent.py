@@ -2148,12 +2148,18 @@ async def _run_agent(
             if canonical == "codex" and not yolo and not bypass:
                 from lionhub.orchestration.console import warn
 
-                warn(
+                message = (
                     "codex models need file access enabled or the agent may hang "
-                    "silently on its first tool call. Re-run with --yolo for the "
-                    "sandboxed default, or use an agent profile (-a). --bypass also "
-                    "works but disables the sandbox."
+                    "silently on its first tool call."
                 )
+                if profile is None:
+                    message += (
+                        " Re-run with --yolo for the sandboxed default, or use an agent "
+                        "profile (-a). --bypass also works but disables the sandbox."
+                    )
+                else:
+                    message += " Set yolo: true in the agent profile for sandboxed file access."
+                warn(message)
             chat_model = build_chat_model(
                 provider,
                 model,

@@ -22,15 +22,15 @@ server is registered. A verb's parameters are fetched by asking for them.
 
 ## Install and client registration
 
-The server needs the optional `mcp` extra:
+Use Python 3.10 or later and install the optional `mcp` extra.
 
 ```bash
-pip install 'lionagi[mcp]'
+pip install "lionagi[mcp]"
 ```
 
-Importing `lionhub.serve.mcp` does not pull that dependency. Only serving does, so a
-missing extra surfaces when you run `li mcp`, with a message naming the install
-command.
+You can import `lionhub.serve.mcp` without the extra. `li doctor` checks whether
+`fastmcp` is available, and `li mcp` gives the install command if the extra is
+missing.
 
 Register it with any MCP client, for example in an `.mcp.json`:
 
@@ -138,8 +138,11 @@ exclusion.
 ```
 
 A spawn verb's help also returns a `schema_fingerprint`, which that verb's ops
-must carry. `help={"verb": "<verb>", "playbook": "<name>"}` additionally
-resolves that playbook's own declared arguments into the schema.
+must carry beside `args`. A `stale_schema` refusal includes the current value at
+`error.detail.schema_fingerprint` and the schema it checked. If the arguments
+match that schema, retry the op once with the returned fingerprint.
+`help={"verb": "<verb>", "playbook": "<name>"}` resolves that playbook's own
+declared arguments into the schema.
 
 ## The catalog
 

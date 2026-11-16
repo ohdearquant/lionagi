@@ -9,16 +9,16 @@ For what the server exposes once connected, see the
 
 ## 1. Install
 
-The server needs the optional `mcp` extra:
+Use Python 3.10 or later and install the optional `mcp` extra.
 
 ```bash
-pip install 'lionagi[mcp]'
+pip install "lionagi[mcp]"
 ```
 
-or, with uv:
+With uv, use the equivalent command.
 
 ```bash
-uv pip install 'lionagi[mcp]'
+uv pip install "lionagi[mcp]"
 ```
 
 That installs two things you will use below: the `li` console script, and the
@@ -26,10 +26,9 @@ That installs two things you will use below: the `li` console script, and the
 `bin/` and `site-packages/`, so a virtualenv that contains nothing else is
 enough.
 
-Importing `lionhub.serve.mcp` does not pull the extra — only serving does. If the
-extra is missing, `li mcp` refuses to start with a message naming the install
-command and exits with the environment-error code, so a misconfigured client
-sees a failed launch rather than a server that half-works.
+You can import `lionhub.serve.mcp` without the extra. Run `li doctor` to check
+whether `fastmcp` is available. If the extra is missing, `li mcp` gives the
+install command and exits with the environment-error code.
 
 ## 2. Register it with your client
 

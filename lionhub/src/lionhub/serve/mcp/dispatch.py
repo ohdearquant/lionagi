@@ -238,7 +238,7 @@ def _require_fingerprint(
     *,
     playbook: str | None = None,
 ) -> None:
-    """Spawn ops carry the fingerprint targeted help returned for them.
+    """Spawn ops carry the current fingerprint from help or the refusal.
 
     Establishes that the schema the caller validated against is the schema
     about to run (not, in general, that the caller itself read it — a
@@ -268,9 +268,9 @@ def _require_fingerprint(
     if supplied is None:
         raise OpError(
             "stale_schema",
-            f"{name!r} needs the schema_fingerprint that help returns for it; ask for "
-            f"{ask} and send the fingerprint as a sibling of 'args', not a "
-            f"member of it: {shape}",
+            f"{name!r} requires a schema_fingerprint. Retry with the value in "
+            f"error.detail.schema_fingerprint as a sibling of 'args'. Use {shape}. "
+            f"For help with the schema, ask for {ask}.",
             remedy,
         )
     raise OpError(
@@ -1104,6 +1104,12 @@ def _help(target: Any) -> dict[str, Any]:
     answer: dict[str, Any] = {"verb": name, "schema": schema}
     if verb.executor == "spawn":
         _describe_fingerprint(answer, verb, schema, playbook=playbook)
+    if name == "agent.submit":
+        answer["help_usage"] = (
+            "Send schema_fingerprint beside 'args'. If the server returns stale_schema "
+            "and your arguments match the returned schema, retry once with "
+            "error.detail.schema_fingerprint."
+        )
     return answer
 
 

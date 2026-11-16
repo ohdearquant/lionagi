@@ -837,8 +837,8 @@ Serve an [MCP](https://modelcontextprotocol.io) server over stdio. The server is
 a control plane over this CLI: it submits `li` runs as **detached background
 jobs** and answers questions about them, so a submit returns a `run_id`
 immediately instead of blocking and the run keeps going in its own process
-group, surviving an MCP-server restart. Requires the `mcp` extra
-(`pip install 'lionagi[mcp]'`). Source: `lionhub/src/lionhub/serve/mcp/`.
+group, surviving an MCP-server restart. Requires Python 3.10 or later and the
+`mcp` extra (`pip install "lionagi[mcp]"`). Source: `lionhub/src/lionhub/serve/mcp/`.
 
 ```bash
 li mcp            # serve over stdio (same as: python -m lionhub.serve.mcp)
@@ -1220,7 +1220,7 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 |-------|-------|
 | `model` | Provider/model spec (e.g. `claude_code/opus`, `codex/gpt-5.4-xhigh`) |
 | `effort` | Reasoning effort level (e.g. `high`, `xhigh`) |
-| `yolo` | Auto-approve tool calls |
+| `yolo` | Auto-approve tool calls. For Codex, `yolo: true` enables sandboxed file access. |
 | `fast_mode` | Route via the OpenAI priority tier (codex only) |
 | `mcp` | Set to `none` to launch the agent or worker with no MCP servers, as with `--no-mcp-config`. Any other value is refused. An explicit `--mcp-config` conflicts with this setting and is refused before that agent starts. A resumed branch retains profile-origin containment and refuses `--mcp-config`, whether or not a profile is named on resume; a resumed flow retains its orchestrator's recorded choice. The flow planner runs under the orchestrator's profile and its containment; each worker uses its own profile. |
 | `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`); `false` leaves them as the account and config set them. When the key is omitted, a codex launch is contained unless the profile names `account_connectors`, and a launch with no profile, or a bare worker, is contained. Contained by default: `li agent` new runs and resumes, orchestration planners and workers, and branches cloned from the orchestrator (spawned nodes, fanout synthesis, retried nodes). Opt-in only, until #4267 changes their default: `AgentSpec` / `create_agent`, `OrchestrationEngine`, and a codex request built directly, which take `contain_account_integrations=True`. A branch cloned from the orchestrator does not carry its `account_connectors`; it is contained unless the orchestrator opted out with `false` and named no connectors, in which case the clone keeps that opt-out. A codex profile's resolved view in the agent roster reports the containment it gets, including when the key is omitted |
