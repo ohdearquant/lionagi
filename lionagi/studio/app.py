@@ -399,8 +399,20 @@ async def lifespan(app_instance):
     register_settings_terminal_callback()
     # The scheduler's INFO lines (a schedule firing) print on stderr however the app is
     # served: li studio, python -m lionagi.studio, or uvicorn pointed at this module.
+    from lionhub.serve.daemon import leg_host
+    from lionhub.serve.daemon.daemon_log import SCHEDULER_LOGGER
+
+    # A leg host runs only the legs its callers launch. The scheduler engine would fire this
+    # account's schedules, and the mirror would copy this account's other transcripts into the
+    # host's store, so neither starts there. Said on the daemon's own stderr logger.
+    quiet_host = leg_host.enabled()
     with daemon_log_handler():
-        await scheduler.start()
+        if quiet_host:
+            logging.getLogger(SCHEDULER_LOGGER).info(
+                "Leg host: the scheduler engine is not started"
+            )
+        else:
+            await scheduler.start()
         # Corrects phantom/stale-status rows /api routes read directly; must precede serving.
         await run_startup_reconciliation()
         # Recover any accepted Operator turn that was interrupted by a prior daemon
@@ -412,7 +424,13 @@ async def lifespan(app_instance):
         begin_serving()
         reconnect = _start_reconnect_channel()
         app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
-        mirror_stop, mirror_task = _start_claude_mirror()
+        if quiet_host:
+            logging.getLogger(SCHEDULER_LOGGER).info(
+                "Leg host: the transcript mirror is not started"
+            )
+            mirror_stop, mirror_task = None, None
+        else:
+            mirror_stop, mirror_task = _start_claude_mirror()
         # Pure maintenance; deferred so readiness isn't gated on it.
         warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
         try:
