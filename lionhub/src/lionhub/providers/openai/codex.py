@@ -2936,6 +2936,39 @@ def _exclusive_cmd_args(
     return cmd
 
 
+def _provider_env_keys(providers: Any) -> set[str]:
+    """The ``env_key`` of every table in a ``model_providers`` table."""
+    if not isinstance(providers, Mapping):
+        return set()
+    return {
+        table["env_key"]
+        for table in providers.values()
+        if isinstance(table, Mapping) and isinstance(table.get("env_key"), str)
+    }
+
+
+def _codex_auth_env(plain: _PlainRequest, env: Mapping[str, str]) -> frozenset[str]:
+    """The variables a codex child may read its key from: ``OPENAI_API_KEY``, every ``CODEX_*``
+    name, and the ``env_key`` of every model provider the user config or this run's ``-c``
+    overrides define. A profile file's providers arrive as overrides. The selected provider is
+    not resolved: a key one of these names is the operator's own, wherever it is defined.
+
+    *env* is the child's environment after the secret fill, so a ``CODEX_HOME`` the lookup
+    supplies is kept and its config is the one read."""
+    names = {"OPENAI_API_KEY"}
+    names |= {name for name in env if name.upper().startswith("CODEX_")}
+    try:
+        config = _read_codex_config(codex_home_for_env(env) / "config.toml") or {}
+    except ValueError:
+        # An unreadable config is codex's own refusal to make; this child keeps no key it names.
+        config = {}
+    names |= _provider_env_keys(config.get("model_providers"))
+    # The overrides as codex's loader builds them, so a later override that replaces a
+    # provider table also drops the env_key the earlier one named.
+    names |= _provider_env_keys(_command_line_layer(plain).get("model_providers"))
+    return frozenset(names)
+
+
 # TODO: migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
@@ -2979,10 +3012,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             on_spawn=request.on_spawn,
             engine="codex",
             workload=plain.workload,
-            # Codex reads a key from whatever variable its configured model provider's
-            # `env_key` names, across config layers this module does not resolve, so its
-            # children keep the launcher's credential variables until it does (#4563).
-            auth_env=None,
+            auth_env=functools.partial(_codex_auth_env, plain),
             **({"_prepare_argv": prepare_argv} if prepare_argv is not None else {}),
         )
     ) as stream:

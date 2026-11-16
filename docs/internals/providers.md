@@ -554,11 +554,15 @@ way whatever it is called, filled or inherited, so it reaches a child only when 
 child's login names. `SSH_AUTH_SOCK` is removed too, so a child cannot use the
 launcher's SSH agent.
 
-There is no setting that turns the removal off. Codex children keep the launcher's credential
-variables for now: codex reads a key from the variable its configured model provider's
-`env_key` names, and those names are spread over config layers this module does not resolve
-(#4563).
-Removed values are still given to the log redactor.
+Codex reads a key from the variable a model provider's `env_key` names, so a codex child keeps
+`OPENAI_API_KEY`, every `CODEX_*` variable, and the `env_key` of every model provider defined in
+`CODEX_HOME/config.toml` or in the run's own `-c` overrides (a config profile file's providers
+arrive as overrides). The selected provider is not resolved: every key one of those names is the
+operator's own. The names are read from the child's environment after the secret fill, so a
+`CODEX_HOME` the lookup supplies is kept and its config is the one read.
+
+There is no setting that turns the removal off. Removed values are still given to the log
+redactor.
 
 ## CLI agent admission
 
