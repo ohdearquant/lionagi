@@ -138,8 +138,11 @@ exclusion.
 ```
 
 A spawn verb's help also returns a `schema_fingerprint`, which that verb's ops
-must carry. `help={"verb": "<verb>", "playbook": "<name>"}` additionally
-resolves that playbook's own declared arguments into the schema.
+must carry beside `args`. A `stale_schema` refusal includes the current value at
+`error.detail.schema_fingerprint` and the schema it checked. If the arguments
+match that schema, retry the op once with the returned fingerprint.
+`help={"verb": "<verb>", "playbook": "<name>"}` resolves that playbook's own
+declared arguments into the schema.
 
 ## The catalog
 
