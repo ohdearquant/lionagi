@@ -264,19 +264,58 @@ def test_secondary_users_and_module_coverage_fail_closed(tmp_path):
         checker.load_manifest(manifest, checker.module_files(root), declared)
 
 
-def test_target_notes_use_recorded_destinations_only():
-    fallback = "lionhub (destination not yet recorded)"
-    assert builder.match(builder.TARGET_RULES, "lionhub.serve.cli.agent") == "lionhub.serve.cli"
-    assert builder.match(builder.TARGET_RULES, "lionagi.studio.cli") == "lionhub.serve.cli"
-    assert builder.match(builder.TARGET_RULES, "lionhub.orchestration.scheduler") == (
-        "lionhub.orchestration.scheduler"
+def _tracked_boundary_paths(root):
+    return set(
+        subprocess.check_output(
+            ["git", "ls-files", "-z", "--", "lionagi", "lionhub/src/lionhub"],
+            cwd=root,
+            encoding="utf-8",
+        ).split("\0")
     )
-    assert builder.match(builder.TARGET_RULES, "lionagi.tools.khive_injection") == fallback
-    # A module that has arrived at its destination carries no target note.
+
+
+def _tracked_lionhub_module(root, tracked, name):
+    path = Path("lionhub/src", *name.split("."))
+    return next(
+        (
+            candidate
+            for candidate in (path.with_suffix(".py"), path / "__init__.py")
+            if candidate.as_posix() in tracked and (root / candidate).is_file()
+        ),
+        None,
+    )
+
+
+def test_target_notes_use_recorded_destinations_only():
+    names = checker.module_files(builder.ROOT)
+    for label, rules in (
+        ("MODULE_RULES", builder.MODULE_RULES),
+        ("TARGET_RULES", builder.TARGET_RULES),
+    ):
+        unused = {
+            key
+            for key in rules
+            if not any(name == key or name.startswith(key + ".") for name in names)
+        }
+        assert not unused, f"{label} do not match current core source: {sorted(unused)}"
+
+    assert builder.match(builder.TARGET_RULES, "lionagi.studio.cli") == "lionhub.serve.cli"
     assert builder.match(builder.TARGET_RULES, "lionhub.serve.daemon.services.sessions") is None
-    assert builder.ADDITIONAL_TARGETS["lionhub.serve.cli.orchestrate"] == [
-        "lionhub.orchestration.flow.parsing"
-    ]
+
+
+def test_moved_feature_boundaries_use_tracked_lionhub_destinations():
+    root = builder.ROOT
+    tracked = _tracked_boundary_paths(root)
+    expected = {
+        "lionagi.agent": "lionhub.agent",
+        "lionagi.tools": "lionhub.tools",
+        "lionagi.tools.base": "lionhub.tools.base",
+        "lionagi.casts": "lionhub.agent.casts",
+        "lionagi.hooks.external": "lionhub.hooks.external",
+    }
+    for old, target in expected.items():
+        assert _moved.resolve(old) == target, old
+        assert _tracked_lionhub_module(root, tracked, target) is not None, target
 
 
 def _adr_0139_step_3_table(section, columns, label):
