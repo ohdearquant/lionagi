@@ -320,7 +320,8 @@ def _reserve_run_dir() -> tuple[str, Path]:
     """
     for _ in range(_RUN_ID_ATTEMPTS):
         run_id = new_run_id()
-        d = config.job_dir(run_id)
+        # The detached child opens files from this directory under its own cwd.
+        d = config.job_dir(run_id).absolute()
         try:
             d.mkdir(parents=True, exist_ok=False)
         except FileExistsError:
@@ -1535,12 +1536,7 @@ def submit(
                 }
                 mcp_config_source = str(resolution.source) if resolution.source else None
                 mcp_config_searched_from = resolution.searched_from
-                # Absolute: the child resolves the path from its own cwd,
-                # which is the submission's directory, not this server's. A
-                # relative jobs root would otherwise name a file the child
-                # cannot open. Symlinks are kept, so an absolute root reports
-                # the path it always did.
-                mcp_config_path = os.path.abspath(d / _MCP_SNAPSHOT_FILENAME)
+                mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
                 declared_mcp_servers = sorted(
                     mcp_servers
                 )  # readable order; child reads the snapshot file, not this list
@@ -1559,6 +1555,7 @@ def submit(
         # Drop the parent harness marker so the detached child does not inherit an
         # environment that claims it is running under an interactive harness.
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env["LIONAGI_HOME"] = str(config.LIONAGI_HOME)
         env[config.RUN_ID_ENV_VAR] = run_id
         # Inherited by every process the child spawns, so a live group member
         # can later be asked what it belongs to instead of guessed from timing.
@@ -2541,7 +2538,7 @@ def _read_final_response(run_id: str) -> tuple[str | None, str | None]:
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
-        run_dir = _resolved_run_state_dir(run_id, runs_root=config.RUNS_DIR)
+        run_dir = _resolved_run_state_dir(run_id)
         if run_dir is None:
             return None, None
         with contextlib.ExitStack() as descriptors:

@@ -1737,7 +1737,7 @@ def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypa
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
     monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 1)
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(config, "li_command", lambda: ["true"])
 
     def no_spawn(*args, **kwargs):
@@ -1762,7 +1762,7 @@ def test_a_play_inside_an_agent_is_refused_before_any_job_exists(a_playbook, mon
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
     monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 1)
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(config, "li_command", lambda: ["true"])
 
     def no_spawn(*args, **kwargs):

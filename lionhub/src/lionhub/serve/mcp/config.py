@@ -13,11 +13,11 @@ import os
 import sys
 from pathlib import Path
 
-from lionagi._paths import LIONAGI_HOME, RUNS_ROOT
-from lionhub.orchestration.runs import _MCP_JOB_RUN_ID_ENV_VAR
+from lionagi._paths import LIONAGI_HOME as _CONFIGURED_HOME
+from lionhub.orchestration import runs
 
-# Authoritative per-run state written by the CLI (run.json, branches, artifacts).
-RUNS_DIR = RUNS_ROOT
+# A detached child uses this home even when it starts in another directory.
+LIONAGI_HOME = _CONFIGURED_HOME.absolute()
 
 # The MCP server's own per-job records (pid, argv, console log) — data the CLI
 # does not keep because it never needed a background handle before.
@@ -33,7 +33,7 @@ RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 # not RUN_ID_ENV_VAR, which the CLI consumes to pick a run directory and which
 # a descendant is free to rewrite for its own sub-run: a kill decision must not
 # rest on a variable another subsystem owns and can reassign.
-JOB_MARKER_ENV_VAR = _MCP_JOB_RUN_ID_ENV_VAR
+JOB_MARKER_ENV_VAR = runs._MCP_JOB_RUN_ID_ENV_VAR
 
 # Where a run writes the typed class of the exception that ended it, for the
 # terminal hook to lift into the job record (lionhub/src/lionhub/serve/mcp/_terminal_cause.py).
@@ -119,7 +119,7 @@ def li_command() -> list[str]:
 
 def run_dir(run_id: str) -> Path:
     """Directory of authoritative CLI state for *run_id*."""
-    return RUNS_DIR / run_id
+    return runs.RUNS_ROOT.absolute() / run_id
 
 
 def run_manifest(run_id: str) -> Path:

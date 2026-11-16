@@ -28,8 +28,9 @@ from lionhub.serve.mcp import _notify_hook, config, jobs
 @pytest.fixture
 def sandbox(monkeypatch, tmp_path):
     """Point job/run state at a tmp dir so tests never touch the real ~/.lionagi."""
+    monkeypatch.setattr(config, "LIONAGI_HOME", tmp_path)
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(config, "li_command", lambda: ["echo"])
     # Popen is doubled for the whole module here, and subprocess.run goes
     # through Popen — so the lifecycle read cannot run in this file at all.
@@ -2142,6 +2143,67 @@ def test_output_reads_the_exact_final_response_without_a_notice(
     assert result["console"] == "console tail"
     assert result["final"] == text
     assert result["final_path"] == str(path.resolve())
+
+
+@pytest.mark.asyncio
+async def test_output_selects_the_job_and_reply_in_the_configured_home(sandbox, monkeypatch):
+    from lionhub.orchestration import runs
+    from lionhub.serve.mcp.dispatch import request
+
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("final response reads require no-follow directory descriptors")
+
+    shared_id = jobs.new_run_id()
+    foreign_id = jobs.new_run_id()
+    first, second = sandbox / "first-home", sandbox / "second-home"
+
+    def select_home(home):
+        monkeypatch.setattr(config, "LIONAGI_HOME", home)
+        monkeypatch.setattr(config, "JOBS_DIR", home / "mcp" / "jobs")
+        monkeypatch.setattr(runs, "RUNS_ROOT", home / "runs")
+
+    def write_detached_reply(run_id, text):
+        # Detached records from older clients carry no submitting identity.
+        jobs._write_job(
+            {"run_id": run_id, "kind": "agent", "status": "completed", "finished_at": 12}
+        )
+        path = runs.RUNS_ROOT / run_id / "job-final-response.md"
+        path.parent.mkdir(parents=True)
+        path.write_text(text, encoding="utf-8")
+        return path.resolve()
+
+    async def poll(run_id):
+        answer = await request(ops=[{"op": "job.output", "args": {"run_id": run_id}}])
+        [op] = answer["ops"]
+        assert op["ok"], answer
+        return op["result"]
+
+    async def check_reply(text, path):
+        result = await poll(shared_id)
+        assert result["known"] and result["terminal"]
+        assert result["final"] == text
+        assert result["final_path"] == str(path)
+        assert result["run_dir"] == str(path.parent)
+
+    select_home(first)
+    local_path = write_detached_reply(shared_id, "first store reply")
+    select_home(second)
+    foreign_path = write_detached_reply(shared_id, "second store reply")
+    write_detached_reply(foreign_id, "separate job")
+
+    select_home(first)
+    await check_reply("first store reply", local_path)
+    missing = await poll(foreign_id)
+    assert missing["known"] is False and missing["record_state"] == "absent"
+    assert "final" not in missing and "final_path" not in missing
+
+    select_home(second)
+    await check_reply("second store reply", foreign_path)
+    foreign_path.unlink()
+    absent_reply = await poll(shared_id)
+    assert absent_reply["known"] and absent_reply["terminal"]
+    assert absent_reply["final"] is None and absent_reply["final_path"] is None
+    assert local_path.read_text(encoding="utf-8") == "first store reply"
 
 
 @pytest.mark.parametrize(

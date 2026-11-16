@@ -20,7 +20,7 @@ from lionhub.serve.mcp import config, jobs
 def sandbox(monkeypatch, tmp_path):
     """Point job/run state at a tmp dir so tests never touch the real ~/.lionagi."""
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(config, "li_command", lambda: ["echo"])
     return tmp_path
 

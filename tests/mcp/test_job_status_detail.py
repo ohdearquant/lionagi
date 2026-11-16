@@ -33,7 +33,7 @@ def call(**kwargs):
 def isolated_state(monkeypatch, tmp_path: Path):
     """Job records and the StateDB both point at tmp_path; nothing real is touched."""
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     return db_path

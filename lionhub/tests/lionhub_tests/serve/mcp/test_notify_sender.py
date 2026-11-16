@@ -90,7 +90,7 @@ def test_submitter_identity_uses_the_canonical_khive_resolver(monkeypatch, tmp_p
 def _submit_sandbox(monkeypatch, tmp_path):
     submit_dir = _signing_dir(tmp_path / "submitter")
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(config, "li_command", lambda: ["echo"])
     monkeypatch.setattr(jobs, "_submit_cwd", lambda: str(submit_dir))
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda _run_id: None)
@@ -516,7 +516,7 @@ def test_without_configured_roots_the_server_directory_need_not_hold_an_actor_co
     submit_dir = tmp_path / "submitter"
     submit_dir.mkdir()
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(config, "li_command", lambda: ["echo"])
     monkeypatch.setattr(jobs, "_submit_cwd", lambda: str(submit_dir))
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda _run_id: None)
