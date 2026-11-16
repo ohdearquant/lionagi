@@ -20,9 +20,14 @@ from unittest.mock import patch
 
 import pytest
 
+from ..._test_support_repo import lionagi_pyproject
+
+_PYPROJECT = lionagi_pyproject(Path(__file__).resolve())
+assert _PYPROJECT is not None, "Studio CLI tests require a LionAGI source checkout"
+_REPOSITORY_ROOT = _PYPROJECT.parent
+
 # Real Vite fixture, so the binding tests read actual startup output rather
 # than a hand-built one that could hide a parsing defect.
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 _FRONTEND_DIR = _REPOSITORY_ROOT / "apps" / "studio" / "frontend"
 _VITE_BIN = _FRONTEND_DIR / "node_modules" / ".bin" / "vite"
 requires_real_vite = pytest.mark.skipif(
