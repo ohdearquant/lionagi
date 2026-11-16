@@ -1,5 +1,5 @@
 {
-  "count": 149,
+  "count": 151,
   "routes": [
     {
       "ordinal": 0,
@@ -6801,6 +6801,92 @@
       "handler_identity": {
         "module": "lionagi.studio.app",
         "qualname": "create_app.<locals>.health"
+      }
+    },
+    {
+      "ordinal": 28,
+      "path": "/api/launches/capabilities",
+      "methods": [
+        "GET"
+      ],
+      "name": "launch_capabilities",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Launch Capabilities Api Launches Capabilities Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "launches"
+      ],
+      "summary": null,
+      "description": "What this daemon launches: a client of a leg host refuses a daemon that is not one.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionhub.serve.daemon.services.launches",
+        "qualname": "launch_capabilities"
+      }
+    },
+    {
+      "ordinal": 29,
+      "path": "/api/launches/{invocation_id}/result",
+      "methods": [
+        "GET"
+      ],
+      "name": "launch_result",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Launch Result Api Launches  Invocation Id  Result Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "launches"
+      ],
+      "summary": null,
+      "description": "A leg-host launch's result: the last part of the leg's standard output, once it exits.\n\n``result`` is null while the leg runs, and stays null for a leg that never started.\nOnly a leg host keeps results; any other daemon answers 404.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionhub.serve.daemon.services.launches",
+        "qualname": "launch_result"
       }
     }
   ],
@@ -13786,9 +13872,76 @@
             }
           }
         }
+      },
+      "/api/launches/capabilities": {
+        "get": {
+          "tags": [
+            "launches"
+          ],
+          "summary": "Launch Capabilities",
+          "description": "What this daemon launches: a client of a leg host refuses a daemon that is not one.",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Launch Capabilities Api Launches Capabilities Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/launches/{invocation_id}/result": {
+        "get": {
+          "tags": [
+            "launches"
+          ],
+          "summary": "Launch Result",
+          "description": "A leg-host launch's result: the last part of the leg's standard output, once it exits.\n\n``result`` is null while the leg runs, and stays null for a leg that never started.\nOnly a leg host keeps results; any other daemon answers 404.",
+          "parameters": [
+            {
+              "name": "invocation_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Invocation Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Launch Result Api Launches  Invocation Id  Result Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
-    "path_count": 115,
+    "path_count": 117,
     "schemas": {
       "AcknowledgeEffectRequest": {
         "properties": {
@@ -14638,6 +14791,28 @@
               }
             ],
             "title": "Action Cwd"
+          },
+          "action_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Repo"
+          },
+          "action_head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Head"
           }
         },
         "type": "object",

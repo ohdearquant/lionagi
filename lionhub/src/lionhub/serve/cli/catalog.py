@@ -27,7 +27,7 @@ __all__ = (
     "seed_for",
 )
 
-# Fixed CLI seed tuple: the 21 canonical commands in their existing order.
+# Fixed CLI seed tuple: the 22 canonical commands in their existing order.
 _CLI_SEEDS: tuple[CliSeed, ...] = (
     CliSeed(
         name="orchestrate",
@@ -64,6 +64,11 @@ _CLI_SEEDS: tuple[CliSeed, ...] = (
         name="schedule",
         help="Manage lionagi Studio schedules.",
         module="lionhub.serve.cli.schedule",
+    ),
+    CliSeed(
+        name="remote",
+        help="Run an agent leg on a leg-host Studio daemon on another machine.",
+        module="lionhub.serve.cli.remote",
     ),
     CliSeed(
         name="state",

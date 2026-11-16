@@ -45,6 +45,7 @@
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.getenv:\"LIONAGI_STUDIO_HOST\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
       "os.getenv:\"LIONAGI_STUDIO_HOST\""
     ],
     "lionagi/studio/config.py": [
@@ -185,6 +186,10 @@
     "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
       "os.environ.get:_ENV_INTERVAL",
       "os.environ.get:_ENV_PATH"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "os.environ.get:_MAX_LAUNCHES_ENV",
+      "os.environ.get:_TOKEN_ENV"
     ],
     "lionhub/src/lionhub/serve/daemon/services/identity.py": [
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
@@ -1612,6 +1617,9 @@
     ],
     "lionhub/src/lionhub/serve/daemon/launch_access.py": [
       "__all__ = (\n    \"DECISION_CAPABILITY_TTL_S\",\n    \"DECISION_SCOPE\",\n    \"DECISION_TOKEN_HEADER\",\n    \"DecisionPrincipal\",\n    \"PAIRING_CODE_TTL_S\",\n    \"PAIRING_REDEEM_PATH\",\n    \"begin_serving\",\n    \"daemon_epoch\",\n    \"is_launch_origin\",\n    \"launch_bearer\",\n    \"mint_decision_capability\",\n    \"mint_pairing_code\",\n    \"redeem_pairing_code\",\n    \"redeem_pairing_grant\",\n    \"reset_launch_access\",\n    \"resolve_decision_capability\",\n    \"revoke_decision_capability\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "__all__ = (\n    \"LEG_HOST_ENV\",\n    \"LegLaunch\",\n    \"LegSetupError\",\n    \"LegRepo\",\n    \"capabilities\",\n    \"enabled\",\n    \"leg_env\",\n    \"load_repos\",\n    \"make_worktree\",\n    \"max_launches\",\n    \"read_result\",\n    \"remove_worktree\",\n    \"result_path\",\n    \"startup_refusals\",\n    \"sweep_worktrees\",\n    \"validate_launch\",\n    \"worktree_refusal\",\n    \"write_result\",\n)"
     ],
     "lionhub/src/lionhub/serve/daemon/reconnect.py": [
       "__all__ = (\n    \"ReconnectChannel\",\n    \"current_uid\",\n    \"default_socket_path\",\n    \"peer_uid\",\n    \"port_proof\",\n    \"read_reconnect_reply\",\n    \"state_dir\",\n    \"unix_sockets_supported\",\n)"
@@ -4867,6 +4875,25 @@
       "resolve_decision_capability",
       "revoke_decision_capability"
     ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "LegLaunch",
+      "LegRepo",
+      "LegSetupError",
+      "capabilities",
+      "enabled",
+      "leg_env",
+      "load_repos",
+      "make_worktree",
+      "max_launches",
+      "read_result",
+      "remove_worktree",
+      "result_path",
+      "startup_refusals",
+      "sweep_worktrees",
+      "validate_launch",
+      "worktree_refusal",
+      "write_result"
+    ],
     "lionhub/src/lionhub/serve/daemon/reconnect.py": [
       "ReconnectChannel",
       "current_uid",
@@ -4962,7 +4989,9 @@
       "TooManyLaunchesError",
       "cancel_launch",
       "launch",
+      "launch_capabilities",
       "launch_detached_argv",
+      "launch_result",
       "launch_run",
       "shutdown_launches"
     ],

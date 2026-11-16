@@ -39,6 +39,11 @@
     "plugin info",
     "plugin list",
     "plugin trust",
+    "remote",
+    "remote cancel",
+    "remote output",
+    "remote run",
+    "remote status",
     "runs",
     "schedule",
     "schedule apply",
@@ -79,7 +84,7 @@
     "team send",
     "team show"
   ],
-  "available_path_count": 78,
+  "available_path_count": 83,
   "catalog": {
     "verb_count": 71,
     "available_count": 45,
@@ -2878,6 +2883,31 @@
       "class": "unresolved_subcommand",
       "message": "cannot project 'plugin' action 'plugin_command': path stops at an unresolved subcommand; name one of ['disable', 'enable', 'info', 'list', 'trust']"
     },
+    "remote": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'remote' action 'remote_action': path stops at an unresolved subcommand; name one of ['cancel', 'output', 'run', 'status']"
+    },
+    "remote cancel": {
+      "kind": "SchemaProjectionError",
+      "class": "unsupported_argparse_type",
+      "message": "cannot project 'remote cancel' action 'invocation_id': type=_invocation_id has no scalar JSON counterpart"
+    },
+    "remote output": {
+      "kind": "SchemaProjectionError",
+      "class": "unsupported_argparse_type",
+      "message": "cannot project 'remote output' action 'invocation_id': type=_invocation_id has no scalar JSON counterpart"
+    },
+    "remote run": {
+      "kind": "SchemaProjectionError",
+      "class": "unsupported_argparse_type",
+      "message": "cannot project 'remote run' action '--head': type=_head has no scalar JSON counterpart"
+    },
+    "remote status": {
+      "kind": "SchemaProjectionError",
+      "class": "unsupported_argparse_type",
+      "message": "cannot project 'remote status' action 'invocation_id': type=_invocation_id has no scalar JSON counterpart"
+    },
     "schedule": {
       "kind": "SchemaProjectionError",
       "class": "unresolved_subcommand",
@@ -2909,7 +2939,7 @@
       "message": "cannot project 'team' action 'team_command': path stops at an unresolved subcommand; name one of ['create', 'list', 'ls', 'receive', 'recv', 'send', 'show']"
     }
   },
-  "projection_error_count": 14,
+  "projection_error_count": 19,
   "absent_verbs": [
     {
       "name": "casts",

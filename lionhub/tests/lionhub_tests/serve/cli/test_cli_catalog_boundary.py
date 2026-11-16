@@ -149,7 +149,7 @@ print(json.dumps({
     expected = json.loads((ROOT / "tests/contracts/data/cli.json").read_text())
     assert actual["top_level"] == expected["top_level"]
     assert actual["name_map"] == expected["name_map"]
-    assert len(actual["top_level"]) == 21
+    assert len(actual["top_level"]) == 22
 
     # Each command starts with only the composition root imported, independently.
     source = """
