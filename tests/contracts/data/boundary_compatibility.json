@@ -3221,8 +3221,11 @@
     ],
     "lionagi/studio/operator/cancel_run.py": [
       "AmbiguousRunReferenceError",
+      "CancelFailureReason",
       "CancelRunInput",
       "MissingOwnerContextError",
+      "apply_cancel_command",
+      "await_cancel_completion",
       "cancel_run",
       "execute_cancel_command"
     ],
@@ -4014,6 +4017,9 @@
       "validate_cwd_exists"
     ],
     "lionhub/src/lionhub/orchestration/kill.py": [
+      "CancelPersistenceError",
+      "CancelTargetResult",
+      "cancel_targets",
       "check_pid_identity",
       "imported_degraded_process_is_live",
       "kill_one",

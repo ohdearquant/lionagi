@@ -22,6 +22,7 @@ import pytest
 from lionagi.studio.operator.cancel_run import (
     CancelRunInput,
     MissingOwnerContextError,
+    apply_cancel_command,
     cancel_run,
     execute_cancel_command,
 )
@@ -94,6 +95,59 @@ def test_failed_proposal_does_not_claim_untouched_without_evidence():
     assert result["run_untouched"] is None
 
 
+async def test_stale_cancel_target_is_audited_without_touching_the_run(tmp_path, monkeypatch):
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator import coordinator as coordinator_module
+    from lionhub.orchestration import kill as kill_service
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_session(db)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store)
+    await coordinator.startup()
+    cid, request_id = await _make_running_turn(store)
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    async def stale(_proposal):
+        raise coordinator_module.ApplicationTargetConflictError("approved target changed")
+
+    async def unexpected_cancel(*_args, **_kwargs):
+        pytest.fail("a stale target must never reach cancellation")
+
+    monkeypatch.setattr(coordinator_module, "_verify_application_target", stale)
+    monkeypatch.setattr(kill_service, "cancel_targets", unexpected_cancel)
+    request = asyncio.create_task(cancel_run({"run": run_id}))
+    try:
+        proposal = await _wait_proposal(store, request_id)
+        await _wait_confirmation(store, cid)
+        await coordinator.decide(
+            cid,
+            proposal["id"],
+            allow=True,
+            expected_command_hash=proposal["commandHash"],
+            expected_target_version=proposal["targetVersion"],
+        )
+        saved = await store.get_proposal(proposal["id"])
+        assert saved["status"] == "conflict"
+        assert saved["errorCode"] == "stale_context"
+        assert saved["result"]["run_untouched"] is True
+        assert await asyncio.wait_for(request, timeout=2) == {
+            "cancelled": False,
+            "reason": "conflict",
+            "run_untouched": True,
+            "id": run_id,
+        }
+        async with StateDB() as db:
+            assert (await db.get_session(run_id))["status"] == "running"
+    finally:
+        request.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await request
+        await coordinator.shutdown()
+
+
 @pytest.mark.parametrize("degraded", [False, True])
 async def test_cancel_signal_wait_does_not_block_event_loop(tmp_path, monkeypatch, degraded):
     from lionagi.state.db import StateDB
@@ -111,16 +165,19 @@ async def test_cancel_signal_wait_does_not_block_event_loop(tmp_path, monkeypatc
     def wait_for_loop(*_args, **_kwargs):
         started.set()
         observed.append(release.wait(2))
-        return (1234, "sigterm") if degraded else "sigterm"
+        return "sigterm"
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
+    monkeypatch.setattr(_kill_service, "_begin_termination", wait_for_loop)
     if degraded:
-        monkeypatch.setattr(_kill_service, "_degraded_run", lambda _id: (path, {}))
-        monkeypatch.setattr(_kill_service, "_signal_degraded_process", wait_for_loop)
+        monkeypatch.setattr(
+            _kill_service,
+            "_degraded_run",
+            lambda _id: (path, {"pid": 1234, "pid_create_time": 1.0}),
+        )
         monkeypatch.setattr(_kill_service, "_settle_degraded_run", lambda *_args, **_kwargs: None)
     else:
         monkeypatch.setattr(_kill_service, "_degraded_run", lambda _id: None)
-        monkeypatch.setattr(_kill_service, "_terminate_pid", wait_for_loop)
 
     task = asyncio.create_task(
         execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
@@ -152,10 +209,10 @@ async def test_degraded_manifest_settlement_does_not_block_event_loop(tmp_path, 
         observed.append(release.wait(2))
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
-    monkeypatch.setattr(_kill_service, "_degraded_run", lambda _id: (path, {}))
     monkeypatch.setattr(
-        _kill_service, "_signal_degraded_process", lambda *_a, **_k: (1234, "sigterm")
+        _kill_service, "_degraded_run", lambda _id: (path, {"pid": 1234, "pid_create_time": 1.0})
     )
+    monkeypatch.setattr(_kill_service, "_begin_termination", lambda *_args: "sigterm")
     monkeypatch.setattr(_kill_service, "_settle_degraded_run", settle)
     task = asyncio.create_task(
         execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
@@ -199,7 +256,7 @@ async def test_cancel_wait_defers_task_cancellation_until_proposal_is_persisted(
         return "sigterm"
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
-    monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
     decision = asyncio.create_task(
         coordinator.decide(
             cid,
@@ -253,15 +310,17 @@ async def test_direct_cancel_waits_for_signal_and_persistence_before_cancellatio
         started.set()
         release.wait(5)
         finished.set()
-        return (1234, "sigterm") if degraded else "sigterm"
+        return "sigterm"
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
     if degraded:
-        monkeypatch.setattr(_kill_service, "_degraded_run", lambda _id: (path, {}))
-        monkeypatch.setattr(_kill_service, "_signal_degraded_process", terminate)
+        monkeypatch.setattr(
+            _kill_service,
+            "_degraded_run",
+            lambda _id: (path, {"pid": 1234, "pid_create_time": 1.0}),
+        )
         monkeypatch.setattr(_kill_service, "_settle_degraded_run", lambda *_args, **_kwargs: None)
-    else:
-        monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
     task = asyncio.create_task(
         execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     )
@@ -406,7 +465,7 @@ async def test_cancel_does_not_hide_failed_proposal_persistence(tmp_path, monkey
         raise OSError("audit unavailable")
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
-    monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
     monkeypatch.setattr(store, "complete_proposal", fail_persist)
     decision = asyncio.create_task(
         coordinator.decide(
@@ -475,7 +534,7 @@ async def test_cancel_during_child_signal_finishes_child_then_session(tmp_path, 
         return "sigterm"
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
-    monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
     task = asyncio.create_task(
         execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     )
@@ -549,16 +608,14 @@ async def test_cancel_reports_session_persistence_failure(
     failed = OSError("session write failed")
     audit_failure = OSError("proposal write failed")
 
-    def terminate(*_args, **_kwargs):
+    def terminate(_process, signals):
         started.set()
         release.wait(5)
         if signal_case in {"sigterm", "child", "degraded_write"}:
-            _kwargs["_signal_record"].append(_kill_service.signal.SIGTERM)
-        if signal_case == "degraded_write":
-            return 1234, "sigterm"
+            signals.append(_kill_service.signal.SIGTERM)
         if signal_case == "degraded_dead":
-            return 1234, "already_dead"
-        return "sigterm" if signal_case == "child" else signal_case
+            return "already_dead"
+        return "sigterm" if signal_case in {"child", "degraded_write"} else signal_case
 
     async def fail_persist(*_args, **_kwargs):
         if signal_case == "no_pid":
@@ -567,12 +624,15 @@ async def test_cancel_reports_session_persistence_failure(
         raise failed
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
-    monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
     if signal_case == "child":
         monkeypatch.setattr(_kill_service, "_persist_cancel", fail_persist)
     elif signal_case in {"degraded_write", "degraded_dead"}:
-        monkeypatch.setattr(_kill_service, "_degraded_run", lambda _id: (path, {}))
-        monkeypatch.setattr(_kill_service, "_signal_degraded_process", terminate)
+        monkeypatch.setattr(
+            _kill_service,
+            "_degraded_run",
+            lambda _id: (path, {"pid": 1234, "pid_create_time": 1.0}),
+        )
 
         def fail_manifest(*_args, **_kwargs):
             raise failed
@@ -622,9 +682,10 @@ async def test_cancel_reports_session_persistence_failure(
             assert result["error"]["code"] == "cancel_state_write_failed"
             assert "indeterminate" in result["error"]["message"]
         else:
-            with pytest.raises(RuntimeError, match="indeterminate") as caught:
+            with pytest.raises(
+                _kill_service.CancelPersistenceError, match="indeterminate"
+            ) as caught:
                 await task
-            assert type(caught.value).__name__ == "_CancelPersistenceError"
             assert caught.value.__cause__ is failed
             assert caught.value.signal_sent is (
                 signal_case in {"sigterm", "child", "degraded_write"}
@@ -636,7 +697,9 @@ async def test_cancel_reports_session_persistence_failure(
         async with StateDB() as db:
             row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
             assert row["status"] == (
-                "cancelled" if signal_case in {"degraded_write", "degraded_dead"} else "running"
+                "cancelled"
+                if signal_case in {"child", "degraded_write", "degraded_dead"}
+                else "running"
             )
         if coordinator is not None:
             saved = await store.get_proposal(proposal["id"])
@@ -677,14 +740,14 @@ async def test_resume_during_studio_signal_wait_keeps_new_generation(tmp_path, m
     started = threading.Event()
     release = threading.Event()
 
-    def terminate(*_args, **_kwargs):
-        _kwargs["_signal_record"].append(_kill_service.signal.SIGTERM)
+    def terminate(_process, signals):
+        signals.append(_kill_service.signal.SIGTERM)
         started.set()
         release.wait(5)
         return "sigterm"
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
-    monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
     monkeypatch.setattr(_kill_service, "_runner_process_create_time", lambda _pid: ("found", 100.0))
     monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: dict(identity))
     run_id = str(uuid.uuid4())
@@ -766,19 +829,26 @@ async def test_terminal_reread_from_new_generation_is_not_old_run_success(tmp_pa
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     async with StateDB() as db:
-        run_id = await _seed_session(db)
+        run_id = await _seed_session(db, pid=1234)
     new_generation = str(uuid.uuid4())
+    cancel_targets = _kill_service.cancel_targets
 
-    async def race_after_write(db, _kind, entity_id, _row, **kwargs):
-        kwargs["_signal_record"].append(_kill_service.signal.SIGTERM)
-        kwargs["_state_record"].append(True)
+    def terminate(_process, signals):
+        signals.append(_kill_service.signal.SIGTERM)
+        return "sigterm"
+
+    async def race_after_write(db, targets, **kwargs):
+        results = await cancel_targets(db, targets, **kwargs)
+        assert results[-1].state_committed
         await db.execute(
             "UPDATE sessions SET status = 'cancelled', cli_worker_generation = ? WHERE id = ?",
-            (new_generation, entity_id),
+            (new_generation, run_id),
         )
-        return {"signal": "sigterm", "cancel_status": "applied"}
+        return results
 
-    monkeypatch.setattr(_kill_service, "kill_one", race_after_write)
+    monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
+    monkeypatch.setattr(_kill_service, "cancel_targets", race_after_write)
     outcome = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert outcome["status"] == "not_stopped"
     assert outcome["reason"] == "conflict"
@@ -870,9 +940,7 @@ async def test_degraded_manifest_write_is_not_untouched(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
     monkeypatch.setattr(_kill_service, "_degraded_run", lambda _id: (manifest_path, manifest))
-    monkeypatch.setattr(
-        _kill_service, "_signal_degraded_process", lambda *_a, **_k: (1234, "already_dead")
-    )
+    monkeypatch.setattr(_kill_service, "_begin_termination", lambda *_args: "already_dead")
     monkeypatch.setattr(StateDB, "cancel_session_if_worker_generation", no_session_write)
     outcome = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert json.loads(manifest_path.read_text())["status"] == "cancelled"
@@ -890,44 +958,60 @@ async def test_missing_session_generation_is_a_nonwrite_refusal(tmp_path, monkey
     _patch_state_db(monkeypatch, path)
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
 
-    def terminate(*_args, **kwargs):
+    def terminate(_process, signals):
         if signal_case == "sigterm":
-            kwargs["_signal_record"].append(_kill_service.signal.SIGTERM)
+            signals.append(_kill_service.signal.SIGTERM)
         return signal_case
 
-    monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
-    manifest = tmp_path / "run.json"
-    monkeypatch.setattr(
-        _kill_service,
-        "_degraded_run",
-        lambda _id: (manifest, {}) if signal_case == "no_pid" else None,
-    )
-    monkeypatch.setattr(
-        _kill_service, "_signal_degraded_process", lambda *_a, **_kw: (None, "no_pid")
-    )
-    settled = []
-    monkeypatch.setattr(_kill_service, "_settle_degraded_run", lambda *_a, **_kw: settled.append(1))
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
     async with StateDB() as db:
         run_id = await _seed_session(db, pid=None if signal_case == "no_pid" else 1234)
         row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (run_id,))
         snapshot = db._row_to_dict(row)
         snapshot.pop("cli_worker_generation", None)
-        signals, writes = [], []
-        outcome = await _kill_service.kill_one(
-            db,
-            "session",
-            run_id,
-            snapshot,
-            user_reason="test",
-            offload_signals=True,
-            _signal_record=signals,
-            _state_record=writes,
+        (outcome,) = await _kill_service.cancel_targets(
+            db, [("session", run_id, snapshot)], user_reason="test"
         )
-        assert outcome["cancel_status"] == "generation_unavailable"
-        assert bool(signals) is (signal_case == "sigterm")
-        assert writes == [] and settled == []
+        assert outcome.cancel_status == "generation_unavailable"
+        assert outcome.signal_sent is (signal_case == "sigterm")
+        assert outcome.state_committed is False
         row = await db.get_session(run_id)
         assert row["status"] == "running"
+
+
+@pytest.mark.parametrize("batch", [False, True], ids=["cli", "studio"])
+async def test_missing_generation_still_settles_a_stopped_degraded_run(
+    tmp_path, monkeypatch, batch
+):
+    from lionagi.state.db import StateDB
+    from lionhub.orchestration import kill as kill_service
+
+    _patch_state_db(monkeypatch, tmp_path / "state.db")
+    manifest_path = tmp_path / "run.json"
+    manifest = {"status": "running", "pid": 1234, "pid_create_time": 1.0}
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(kill_service, "unaddressable_pid_reason", lambda _meta: None)
+    monkeypatch.setattr(kill_service, "_degraded_run", lambda _id: (manifest_path, manifest))
+    monkeypatch.setattr(kill_service, "_pid_alive", lambda _pid: False)
+
+    async with StateDB() as db:
+        run_id = await _seed_session(db)
+        original_row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (run_id,))
+        snapshot = db._row_to_dict(original_row)
+        del snapshot["cli_worker_generation"]
+        if batch:
+            (outcome,) = await kill_service.cancel_targets(
+                db, [("session", run_id, snapshot)], user_reason="test"
+            )
+            assert outcome.cancel_status == "generation_unavailable"
+            assert outcome.state_committed is True
+        else:
+            outcome = await kill_service.kill_one(
+                db, "session", run_id, snapshot, user_reason="test"
+            )
+            assert outcome["cancel_status"] == "unavailable"
+        assert (await db.get_session(run_id))["status"] == "running"
+    assert json.loads(manifest_path.read_text())["status"] == "cancelled"
 
 
 async def test_missing_generation_refusal_preserves_observed_signal(tmp_path, monkeypatch):
@@ -939,11 +1023,21 @@ async def test_missing_generation_refusal_preserves_observed_signal(tmp_path, mo
     async with StateDB() as db:
         run_id = await _seed_session(db, pid=1234)
 
-    async def refuse(*_args, **kwargs):
-        kwargs["_signal_record"].append(_kill_service.signal.SIGTERM)
-        return {"signal": "sigterm", "cancel_status": "generation_unavailable"}
+    cancel_targets = _kill_service.cancel_targets
 
-    monkeypatch.setattr(_kill_service, "kill_one", refuse)
+    def terminate(_process, signals):
+        signals.append(_kill_service.signal.SIGTERM)
+        return "sigterm"
+
+    async def omit_generation(db, targets, **kwargs):
+        [(kind, entity_id, row)] = targets
+        incomplete = dict(row)
+        del incomplete["cli_worker_generation"]
+        return await cancel_targets(db, [(kind, entity_id, incomplete)], **kwargs)
+
+    monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
+    monkeypatch.setattr(_kill_service, "cancel_targets", omit_generation)
     outcome = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert outcome == {
         "status": "not_stopped",
@@ -955,9 +1049,9 @@ async def test_missing_generation_refusal_preserves_observed_signal(tmp_path, mo
     }
 
 
-@pytest.mark.parametrize("sent_signal", [True, False], ids=["sent-signal", "no-signal"])
+@pytest.mark.parametrize("signalled", ["parent", "child", "none"])
 async def test_runner_cancelled_same_generation_reports_command_outcome(
-    tmp_path, monkeypatch, sent_signal
+    tmp_path, monkeypatch, signalled
 ):
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
@@ -968,18 +1062,35 @@ async def test_runner_cancelled_same_generation_reports_command_outcome(
     _patch_state_db(monkeypatch, path)
     started, release = threading.Event(), threading.Event()
 
-    def terminate(*_args, **kwargs):
-        if sent_signal:
-            kwargs["_signal_record"].append(_kill_service.signal.SIGTERM)
+    def terminate(process, signals):
+        if process.pid == 4321:
+            signals.append(_kill_service.signal.SIGTERM)
+            return "sigterm"
+        if signalled == "parent":
+            signals.append(_kill_service.signal.SIGTERM)
         started.set()
         if not release.wait(5):
             raise RuntimeError("timed out waiting for test")
-        return "sigterm" if sent_signal else "already_dead"
+        return "sigterm" if signalled == "parent" else "already_dead"
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
-    monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
     async with StateDB() as db:
-        run_id = await _seed_session(db, pid=1234)
+        invocation_id = None
+        if signalled == "child":
+            invocation_id = str(uuid.uuid4())
+            await db.create_invocation(
+                {
+                    "id": invocation_id,
+                    "skill": "resume:agent",
+                    "plugin": "studio_run_resume",
+                    "prompt": "continue",
+                    "started_at": time.time(),
+                    "status": "running",
+                    "node_metadata": {"pid": 4321},
+                }
+            )
+        run_id = await _seed_session(db, pid=1234, invocation_id=invocation_id)
         before = await db.get_session(run_id)
         task = asyncio.create_task(
             execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
@@ -999,9 +1110,13 @@ async def test_runner_cancelled_same_generation_reports_command_outcome(
             outcome = await task
             after = await db.get_session(run_id)
             assert after["cli_worker_generation"] == before["cli_worker_generation"]
-            assert outcome["status"] == ("terminal" if sent_signal else "already_terminal")
+            parent_signalled = signalled == "parent"
+            assert outcome["status"] == ("terminal" if parent_signalled else "already_terminal")
             public = _redacted_cancel_result({"status": "succeeded", "result": outcome}, run_id)
-            assert public["cancelled"] is sent_signal
+            assert public["cancelled"] is parent_signalled
+            if signalled == "child":
+                assert public["signal_sent"] is True
+                assert public["run_untouched"] is False
         finally:
             release.set()
 
@@ -1030,17 +1145,17 @@ async def test_parent_write_failure_reports_prior_child_signal(tmp_path, monkeyp
     started = threading.Event()
     release = threading.Event()
 
-    def terminate(*_args, **_kwargs):
+    def terminate(_process, signals):
         started.set()
         release.wait(5)
-        _kwargs["_signal_record"].append(_kill_service.signal.SIGTERM)
+        signals.append(_kill_service.signal.SIGTERM)
         return "sigterm"
 
     async def fail_session_write(*_args, **_kwargs):
         raise OSError("session write failed")
 
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
-    monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
+    monkeypatch.setattr(_kill_service, "_begin_termination", terminate)
     monkeypatch.setattr(StateDB, "cancel_session_if_worker_generation", fail_session_write)
     coordinator = None
     request = None
@@ -1067,7 +1182,7 @@ async def test_parent_write_failure_reports_prior_child_signal(tmp_path, monkeyp
         await _wait_thread_event(started)
         task.cancel()
         release.set()
-        with pytest.raises(_kill_service._CancelPersistenceError) as caught:
+        with pytest.raises(_kill_service.CancelPersistenceError) as caught:
             await task
         assert caught.value.signal_sent is True
         async with StateDB() as db:
@@ -1131,7 +1246,7 @@ async def test_parent_write_failure_remembers_term_before_child_identity_mismatc
         raise OSError("session write failed")
 
     monkeypatch.setattr(StateDB, "cancel_session_if_worker_generation", fail_session_write)
-    with pytest.raises(_kill_service._CancelPersistenceError) as caught:
+    with pytest.raises(_kill_service.CancelPersistenceError) as caught:
         await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert signals == [(1234, _kill_service.signal.SIGTERM)]
     assert caught.value.signal_sent is True
@@ -1203,15 +1318,12 @@ def _set_identity(monkeypatch, path: Path, cid: str, request_id: str) -> None:
 
 
 def _command_executor(calls: list):
-    """Simulates the step-7 coordinator wiring this module's adapter needs
-    (see cancel_run.py's module docstring): dispatches command_type=="cancel"
-    to `execute_cancel_command`, exactly what `_execute_application_command`
-    in coordinator.py must do once wired."""
+    """Record dispatch and apply the command within the coordinator's shield."""
 
     async def execute(command_type, command):
         calls.append((command_type, command))
         if command_type == "cancel":
-            return await execute_cancel_command(command)
+            return await apply_cancel_command(command)
         raise ValueError(f"unexpected command_type {command_type!r}")
 
     return execute
@@ -1579,7 +1691,7 @@ async def test_execute_cancel_command_missing_session_id_raises():
 async def test_execute_cancel_command_reaps_a_running_child_invocation(tmp_path, monkeypatch):
     """Cancelling a session must not leave its owning invocation's process
     running -- the same deepest-first traversal `li kill --recursive` uses
-    (lionhub/src/lionhub/serve/cli/kill.py::_list_running_children/_kill_one) must also run
+    (lionhub.orchestration.kill.list_running_children) must also run
     here, or the child process is orphaned."""
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
@@ -1692,8 +1804,7 @@ async def test_execute_cancel_command_a_terminal_child_invocation_is_left_alone(
 async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelled(
     tmp_path, monkeypatch
 ):
-    """An identity-mismatched process is never signalled and _kill_one never
-    persists a status change for it; the adapter must not claim otherwise."""
+    """An identity-mismatched process receives no signal or cancellation write."""
     from lionagi.state.db import StateDB
 
     path = tmp_path / "state.db"
@@ -1701,19 +1812,10 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
     async with StateDB() as db:
         run_id = await _seed_session(db, status="running", pid=999999)
 
-    async def fake_kill_one(db, entity_type, entity_id, row, **kwargs):
-        return {
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "signal": "identity_mismatch",
-            "pid": row.get("node_metadata", {}).get("pid"),
-        }
+    from lionhub.orchestration import kill as kill_service
 
-    import lionhub.orchestration.kill as kill_service
-    import lionhub.serve.cli.kill as kill_mod
-
-    monkeypatch.setattr(kill_mod, "kill_one", fake_kill_one)
-    monkeypatch.setattr(kill_service, "kill_one", fake_kill_one)
+    monkeypatch.setattr(kill_service, "unaddressable_pid_reason", lambda _meta: None)
+    monkeypatch.setattr(kill_service, "_begin_termination", lambda *_args: "identity_mismatch")
 
     result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert result == {
@@ -1768,12 +1870,9 @@ async def test_execute_cancel_command_terminalized_during_approval_is_not_cancel
     async with StateDB() as db:
         run_id = await _seed_session(db, status="running", pid=None)
 
-    real_kill_one = None
+    write = StateDB.cancel_session_if_worker_generation
 
-    async def racing_kill_one(db, entity_type, entity_id, row, **kwargs):
-        # Simulate the run completing naturally right before the real
-        # primitive would persist "cancelled" -- its own guard then makes
-        # the write a no-op.
+    async def complete_before_cancel(db, entity_id, *args, **kwargs):
         from lionagi.state.reasons import RunReasons
 
         await db.update_status(
@@ -1785,14 +1884,9 @@ async def test_execute_cancel_command_terminalized_during_approval_is_not_cancel
             source="system",
             actor="test",
         )
-        return await real_kill_one(db, entity_type, entity_id, row, **kwargs)
+        return await write(db, entity_id, *args, **kwargs)
 
-    import lionhub.orchestration.kill as kill_service
-    import lionhub.serve.cli.kill as kill_mod
-
-    real_kill_one = kill_mod.kill_one
-    monkeypatch.setattr(kill_mod, "kill_one", racing_kill_one)
-    monkeypatch.setattr(kill_service, "kill_one", racing_kill_one)
+    monkeypatch.setattr(StateDB, "cancel_session_if_worker_generation", complete_before_cancel)
 
     result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert result["status"] == "already_terminal"
@@ -1814,19 +1908,10 @@ async def test_cancel_run_allow_path_identity_mismatch_reports_not_cancelled(tmp
     async with StateDB() as db:
         run_id = await _seed_session(db, status="running", pid=999999)
 
-    async def fake_kill_one(db, entity_type, entity_id, row, **kwargs):
-        return {
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "signal": "identity_mismatch",
-            "pid": row.get("node_metadata", {}).get("pid"),
-        }
+    from lionhub.orchestration import kill as kill_service
 
-    import lionhub.orchestration.kill as kill_service
-    import lionhub.serve.cli.kill as kill_mod
-
-    monkeypatch.setattr(kill_mod, "kill_one", fake_kill_one)
-    monkeypatch.setattr(kill_service, "kill_one", fake_kill_one)
+    monkeypatch.setattr(kill_service, "unaddressable_pid_reason", lambda _meta: None)
+    monkeypatch.setattr(kill_service, "_begin_termination", lambda *_args: "identity_mismatch")
 
     store = OperatorStore(path)
     calls: list = []

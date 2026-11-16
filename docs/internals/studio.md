@@ -1581,20 +1581,17 @@ resolution time would let a race during that gap either write to a run that
 changed ownership or silently no-op in a way the caller couldn't
 distinguish from success.
 
-`cancel_run` additionally reuses `lionhub.orchestration.kill`'s exact primitives
-(`kill_one`, `list_running_children`) so a cancellation from the Operator
-is indistinguishable from one issued through `li kill --recursive`: running
-children are signalled deepest-first so none are orphaned, and
-`_persist_cancel`'s guard against a non-`running` row means a race that lets
-the same generation finish naturally degrades to `already_terminal` rather
-than a double cancel. A conflicting generation or rejected state update is
-reported as `not_stopped` with its reason and observed side effects. An
-indeterminate state-write failure reports an unknown `run_untouched` value.
-Process signalling
-waits off the Studio event loop. If the request task is cancelled while signalling,
-the command and its final audit finish before cancellation reaches the caller. Each
-target has its own TERM grace before escalation; the complete command has no fixed
-wall-clock bound because targets are processed in order and persistence can take time.
+`cancel_run` uses the identity checks and guarded writes in
+`lionhub.orchestration.kill`. The Operator dispatches TERM deepest first,
+waits off the event loop until the targets exit or one shared grace period
+elapses, then rechecks each surviving process's identity before escalating.
+Persistence follows in traversal order and can take additional time.
+A conflicting generation or rejected state update returns `not_stopped`
+with its reason and observed effects. A stale-context conflict before
+execution reports `run_untouched: true`. An indeterminate state-write
+failure leaves `run_untouched` unknown. If the request task is cancelled
+while the command is executing, settlement and its final audit finish
+before cancellation reaches the caller.
 `resume_run`
 is a distinct operation from un-pausing: the session lifecycle policy
 (`lionagi/state/lifecycle/policy.py`) has no edge back out of a terminal
