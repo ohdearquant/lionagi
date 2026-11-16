@@ -30,9 +30,11 @@ On the machine that runs the legs, under the account they run as:
     ```bash
     LIONAGI_STUDIO_LEG_HOST=1 \
     LIONAGI_STUDIO_AUTH_TOKEN=<a long random token> \
-    LIONAGI_STUDIO_HOST=<the host's tailnet address> \
-    li studio
+    li studio --host <the host's tailnet address>
     ```
+
+    The address goes in `--host`. `li studio` binds `127.0.0.1` unless `--host` names another
+    address, whatever `LIONAGI_STUDIO_HOST` holds.
 
 `LIONAGI_STUDIO_LEG_HOST_MAX_LAUNCHES` sets how many legs run at once (default 2). A launch
 beyond it is answered 429.
