@@ -4269,6 +4269,7 @@
       "Redacted",
       "SpawnedProcess",
       "build_declarative_cli_args",
+      "claude_code_auth_env",
       "cli_fallback_bin_dirs",
       "declarative_cli_flags",
       "discover_cli",

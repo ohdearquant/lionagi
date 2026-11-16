@@ -2979,6 +2979,10 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             on_spawn=request.on_spawn,
             engine="codex",
             workload=plain.workload,
+            # Codex reads a key from whatever variable its configured model provider's
+            # `env_key` names, across config layers this module does not resolve, so its
+            # children keep the launcher's credential variables until it does (#4563).
+            auth_env=None,
             **({"_prepare_argv": prepare_argv} if prepare_argv is not None else {}),
         )
     ) as stream:

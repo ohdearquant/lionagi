@@ -35,6 +35,7 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
+    GEMINI_AUTH_ENV,
     _resolve_cli_path,
     discover_cli,
     ndjson_from_cli,
@@ -560,7 +561,13 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
     # agy resolves relative --add-dir entries against process cwd (no '-C' flag).
     # Default stdin DEVNULL — print mode reads nothing from stdin.
     async with contextlib.aclosing(
-        ndjson_from_cli(cmd, cwd=workspace, engine="gemini", workload=request.workload)
+        ndjson_from_cli(
+            cmd,
+            cwd=workspace,
+            engine="gemini",
+            workload=request.workload,
+            auth_env=GEMINI_AUTH_ENV,
+        )
     ) as stream:
         async for obj in stream:
             yield obj

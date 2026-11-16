@@ -41,6 +41,7 @@ from lionagi.libs.path_safety import (
 )
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
+    _PROCESS_GROUP_MARKER,
     SignalGate,
     _group_has_members,
     aterminate_process_group,
@@ -90,6 +91,61 @@ def _withhold_studio_credentials(env: dict[str, str]) -> dict[str, str]:
         name: value
         for name, value in env.items()
         if name.upper() == _STUDIO_TOKEN_ENV or name.upper().startswith(_REMOTE_STUDIO_ENV_PREFIX)
+    }
+    for name in withheld:
+        del env[name]
+    return withheld
+
+
+#: A variable whose name has one of these ending a ``_``-separated part, or that ends in
+#: ``_KEY``, holds a credential as far as a CLI child is concerned. The part must end there, so
+#: ``TOKENIZERS_PARALLELISM`` is not one, while ``GH_TOKEN`` and ``NPMTOKEN`` are.
+_CREDENTIAL_NAME_RE = re.compile(
+    r"(?i)(?:TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|APIKEY|API_KEY|ACCESS_KEY"
+    r"|PRIVATE_KEY|DATABASE_URL)(?:_|$)|_KEY$"
+)
+
+#: The names each CLI provider reads its own login or key from. A child keeps these and no
+#: other credential-named variable. Bedrock and Vertex names count only when the run selects
+#: that backend.
+CLAUDE_CODE_AUTH_ENV = frozenset(
+    {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+)
+_CLAUDE_CODE_BACKEND_AUTH_ENV = {
+    "CLAUDE_CODE_USE_BEDROCK": frozenset(
+        {
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        }
+    ),
+    "CLAUDE_CODE_USE_VERTEX": frozenset({"GOOGLE_APPLICATION_CREDENTIALS"}),
+}
+GEMINI_AUTH_ENV = frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"})
+
+
+def claude_code_auth_env(env: Mapping[str, str] | None) -> frozenset[str]:
+    """The Claude Code login names, plus a cloud backend's when *env* selects that backend."""
+    source = os.environ if env is None else env
+    names = set(CLAUDE_CODE_AUTH_ENV)
+    for switch, backend in _CLAUDE_CODE_BACKEND_AUTH_ENV.items():
+        if source.get(switch, "").strip().lower() not in ("", "0", "false"):
+            names |= backend
+    return frozenset(names)
+
+
+def _withhold_credentials(env: dict[str, str], auth_env: frozenset[str]) -> dict[str, str]:
+    """Remove every credential-named variable outside *auth_env* from *env*; return them.
+
+    The process-group marker this module sets is kept: it names the child's group, it is not a
+    credential. Names compare without regard to case, as the Studio withhold compares them.
+    """
+    keep = {name.upper() for name in auth_env} | {_PROCESS_GROUP_MARKER}
+    withheld = {
+        name: value
+        for name, value in env.items()
+        if name.upper() not in keep and _CREDENTIAL_NAME_RE.search(name)
     }
     for name in withheld:
         del env[name]
@@ -1381,6 +1437,7 @@ async def ndjson_from_cli(
     engine: str | None = None,
     workload: str = DEFAULT_WORKLOAD,
     secret_fill_skip: frozenset[str] = frozenset(),
+    auth_env: Iterable[str] | None = frozenset(),
     _prepare_argv: Callable[[dict[str, str]], list[str]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
@@ -1393,7 +1450,10 @@ async def ndjson_from_cli(
     ``workload`` (see ``lionagi.service._subagent_admission``), held until the child's group
     has ended. ``secret_fill_skip`` names variables the configured secret lookup
     must not fill into this child, on top of the routed account key names; empty
-    leaves the fill as it is. See docs/internals/providers.md#cli-subprocess-lifecycle.
+    leaves the fill as it is. ``auth_env`` names the variables the provider reads its own
+    login from; every other credential-named variable is removed from the child's environment,
+    and so from every command the child runs. See
+    docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # An agent lionagi started cannot start another through lionagi, by its shell or by an
     # MCP server it was given; refused here, before any slot is waited for.
@@ -1425,6 +1485,14 @@ async def ndjson_from_cli(
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env, spawn_marker = prepare_process_group_env(child_env)
     withheld = _withhold_studio_credentials(spawn_env)
+    # A child keeps its own provider's login and no other credential the launcher holds: the
+    # commands it runs inherit what it holds. A name the operator's secret lookup declares for
+    # CLI children is kept too, that declaration being a named allow in global settings; a
+    # routed account's key and a name this request keeps from the fill are not. ``auth_env=None``
+    # is the one provider whose login names are not yet known here (see its call site).
+    if auth_env is not None:
+        filled_for_children = frozenset(declared) - _routed_account_key_names() - secret_fill_skip
+        withheld.update(_withhold_credentials(spawn_env, frozenset(auth_env) | filled_for_children))
     # Every agent lionagi starts carries a depth, so a lionagi it runs refuses to start
     # another (refuse_nested_agent). Set over whatever the environment held: only a
     # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).
@@ -1433,8 +1501,9 @@ async def ndjson_from_cli(
         **_secret_candidates({**spawn_env, **withheld}, declared),
         **_cmd_secret_values(cmd),
     }
-    opaque_env: Mapping[str, str] = _opaque_env_values(spawn_env, redaction_env)
-    bounded_env: Mapping[str, str] = _bounded_env_values(spawn_env, redaction_env)
+    # A withheld value is still one this process holds, so it stays redacted wherever it appears.
+    opaque_env: Mapping[str, str] = _opaque_env_values({**spawn_env, **withheld}, redaction_env)
+    bounded_env: Mapping[str, str] = _bounded_env_values({**spawn_env, **withheld}, redaction_env)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=spawn_env,
@@ -1495,11 +1564,11 @@ async def ndjson_from_cli(
                     raise refusal
                 _require_cli_executable(cmd, cwd=cwd, env=spawn_env)
                 redaction_env = {
-                    **_secret_candidates(spawn_env, declared),
+                    **_secret_candidates({**spawn_env, **withheld}, declared),
                     **_cmd_secret_values(cmd),
                 }
-                opaque_env = _opaque_env_values(spawn_env, redaction_env)
-                bounded_env = _bounded_env_values(spawn_env, redaction_env)
+                opaque_env = _opaque_env_values({**spawn_env, **withheld}, redaction_env)
+                bounded_env = _bounded_env_values({**spawn_env, **withheld}, redaction_env)
             attempted = True
             child = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             try:
