@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from lionhub.orchestration.engines.engine import emission_keys
 from lionhub.orchestration.engines.review import (
     DimensionClean,
     IssueFound,
@@ -20,6 +21,13 @@ from lionhub.orchestration.engines.review import (
     _verify_instruction,
     _verify_ref,
 )
+
+
+def test_emission_repair_hint_names_finding_fields():
+    hint = emission_keys((IssueFound,))
+    assert "dimension" in hint
+    assert "location" in hint
+    assert "description" in hint
 
 
 class _FakeAgent:
