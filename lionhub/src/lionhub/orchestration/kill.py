@@ -13,7 +13,9 @@ import json
 import os
 import signal
 import time
-from dataclasses import dataclass
+from collections.abc import Sequence
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -38,17 +40,41 @@ from lionhub.orchestration.job import recorded_identity_mode as _recorded_identi
 from lionhub.orchestration.job import recorded_pid_is_foreign as _recorded_pid_is_foreign
 
 
-class _CancelPersistenceError(RuntimeError):
+@dataclass(frozen=True)
+class CancelTargetResult:
+    """Observed process and persistence effects for one cancellation target."""
+
+    entity_type: str
+    entity_id: str
+    signal: str
+    pid: int | None
+    signals_sent: tuple[int, ...] = ()
+    cancel_status: str | None = None
+    cancel_error: str | None = None
+    state_committed: bool = False
+
+    @property
+    def signal_sent(self) -> bool:
+        return bool(self.signals_sent)
+
+
+class CancelPersistenceError(RuntimeError):
     """A cancellation state write failed, so the outcome is indeterminate."""
 
-    def __init__(self, *, entity_type: str, entity_id: str, signal_sent: bool) -> None:
+    def __init__(
+        self, *, entity_type: str, entity_id: str, results: tuple[CancelTargetResult, ...]
+    ) -> None:
         self.entity_type = entity_type
         self.entity_id = entity_id
-        self.signal_sent = signal_sent
+        self.results = results
+        self.signal_sent = any(result.signal_sent for result in results)
         super().__init__(
             f"Cancel-path state write failed for {entity_type} {entity_id}; "
             "termination outcome is indeterminate"
         )
+
+
+_CancelPersistenceError = CancelPersistenceError
 
 
 def read_pid_from_entity(entity: dict[str, Any]) -> int | None:
@@ -123,6 +149,9 @@ NOT_JUDGEABLE_HERE = frozenset({"host_mismatch", "in_process", "foreign_mode"})
 #: Identity modes this CLI can signal. ``in_process`` is excluded on purpose — the run shares
 #: a host process, so no signal reaches it alone.
 _LOCALLY_SIGNALLABLE_MODES = frozenset({"local"})
+
+# The supported process APIs take a signed 32-bit PID.
+_OS_PID_RANGE = range(-(2**31), 2**31)
 
 
 def unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
@@ -316,6 +345,98 @@ def check_pid_identity(
     return "ours" if _cmdline_is_lionagi(cmdline, expected_cmd) else "not_ours"
 
 
+@dataclass(frozen=True)
+class _TerminationTarget:
+    pid: int
+    expected_cmd: str | None
+    expected_session_id: str | None = None
+    expected_create_time: float | None = None
+
+
+def _termination_identity(target: _TerminationTarget, *, after_term: bool) -> str | None:
+    if target.expected_cmd is None:
+        return None
+    reasons: list[str] = []
+    verdict = check_pid_identity(
+        target.pid,
+        target.expected_cmd,
+        expected_session_id=target.expected_session_id,
+        expected_create_time=target.expected_create_time,
+        _reason_out=reasons,
+    )
+    if verdict == "zombie":
+        return "sigterm" if after_term else "already_dead"
+    if verdict == "unverifiable" and reasons == ["start_mismatch"]:
+        return "identity_unverifiable_after_sigterm" if after_term else "identity_unverifiable"
+    if verdict != "ours":
+        return "identity_mismatch"
+    return None
+
+
+def _process_exited(pid: int) -> bool:
+    # A zombie still answers kill -0, but has already exited.
+    return not _pid_alive(pid) or _pid_is_zombie(pid)
+
+
+def _begin_termination(target: _TerminationTarget, signals: list[int]) -> str | None:
+    if _process_exited(target.pid):
+        return "already_dead"
+    refused = _termination_identity(target, after_term=False)
+    if refused is not None:
+        return refused
+    try:
+        os.kill(target.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return "already_dead"
+    except PermissionError as exc:
+        raise RuntimeError(
+            f"cannot send SIGTERM to pid {target.pid}: {exc}. "
+            "Try again as root, or mark the entity cancelled manually."
+        ) from exc
+    signals.append(signal.SIGTERM)
+    return None
+
+
+def _finish_termination(target: _TerminationTarget, signals: list[int]) -> str:
+    if _process_exited(target.pid):
+        return "sigterm"
+    # The PID may have been reused during grace. Inspect it again just before escalating.
+    refused = _termination_identity(target, after_term=True)
+    if refused is not None:
+        return refused
+    try:
+        os.kill(target.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return "already_dead"
+    except PermissionError:
+        return "permission_denied"
+    signals.append(signal.SIGKILL)
+    return "sigkill"
+
+
+def _finish_terminations(
+    targets: Sequence[tuple[_TerminationTarget, list[int]]], *, grace_seconds: float
+) -> list[str]:
+    if not targets:
+        return []
+    deadline = time.monotonic() + grace_seconds
+    interval = 0.1
+    survivors = set(range(len(targets)))
+    while survivors:
+        if time.monotonic() >= deadline:
+            break
+        survivors = {index for index in survivors if not _process_exited(targets[index][0].pid)}
+        remaining = deadline - time.monotonic()
+        if not survivors or remaining <= 0:
+            break
+        time.sleep(min(remaining, interval))
+        interval = min(interval * 2, 0.5)
+    return [
+        _finish_termination(target, signals) if index in survivors else "sigterm"
+        for index, (target, signals) in enumerate(targets)
+    ]
+
+
 def _terminate_pid(
     pid: int,
     grace_seconds: float = 5.0,
@@ -325,89 +446,15 @@ def _terminate_pid(
     expected_create_time: float | None = None,
     _signal_record: list[int] | None = None,
 ) -> str:
-    """SIGTERM then SIGKILL, or return a refusal describing the observed identity."""
-    if not _pid_alive(pid):
-        return "already_dead"
-
-    if _pid_is_zombie(pid):
-        # Exited already, just not reaped by whoever started it. There is
-        # nothing left to signal, and no other process can be holding this pid
-        # until the reap happens, so this is a termination that is already
-        # complete rather than a process we failed to identify.
-        return "already_dead"
-
-    if expected_cmd is not None:
-        reasons: list[str] = []
-        verdict = check_pid_identity(
-            pid,
-            expected_cmd,
-            expected_session_id=expected_session_id,
-            expected_create_time=expected_create_time,
-            _reason_out=reasons,
-        )
-        if verdict == "zombie":
-            return "already_dead"
-        if verdict == "unverifiable" and reasons == ["start_mismatch"]:
-            return "identity_unverifiable"
-        if verdict != "ours":
-            return "identity_mismatch"
-
-    try:
-        os.kill(pid, signal.SIGTERM)
-        if _signal_record is not None:
-            _signal_record.append(signal.SIGTERM)
-    except ProcessLookupError:
-        return "already_dead"
-    except PermissionError as exc:
-        raise RuntimeError(
-            f"cannot send SIGTERM to pid {pid}: {exc}. "
-            "Try again as root, or mark the entity cancelled manually."
-        ) from exc
-
-    deadline = time.monotonic() + grace_seconds
-    interval = 0.1
-    while time.monotonic() < deadline:
-        # A process whose parent never reaps it stays visible to `kill -0`
-        # forever, so waiting on liveness alone would sit out the whole grace
-        # window for a process that obeyed the SIGTERM immediately.
-        if not _pid_alive(pid) or _pid_is_zombie(pid):
-            return "sigterm"
-        time.sleep(interval)
-        interval = min(interval * 2, 0.5)
-
-    if not _pid_alive(pid) or _pid_is_zombie(pid):
-        return "sigterm"
-
-    # Re-check identity before escalating: the pid may have been reused by an
-    # unrelated process in the grace_seconds since SIGTERM, and SIGKILL is not
-    # survivable, so this must not escalate onto a stranger. A pid that now belongs to a different process is
-    # reported the same way a mismatch at entry is.
-    if expected_cmd is not None:
-        reasons = []
-        verdict = check_pid_identity(
-            pid,
-            expected_cmd,
-            expected_session_id=expected_session_id,
-            expected_create_time=expected_create_time,
-            _reason_out=reasons,
-        )
-        if verdict == "zombie":
-            # It exited between the last poll and this check: the SIGTERM
-            # worked, and escalating would be aiming at a corpse.
-            return "sigterm"
-        if verdict == "unverifiable" and reasons == ["start_mismatch"]:
-            return "identity_unverifiable_after_sigterm"
-        if verdict != "ours":
-            return "identity_mismatch"
-
-    try:
-        os.kill(pid, signal.SIGKILL)
-        if _signal_record is not None:
-            _signal_record.append(signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-
-    return "sigkill"
+    """SIGTERM then SIGKILL, with the one-target command's existing result labels."""
+    target = _TerminationTarget(pid, expected_cmd, expected_session_id, expected_create_time)
+    signals = _signal_record if _signal_record is not None else []
+    outcome = _begin_termination(target, signals)
+    if outcome is not None:
+        return outcome
+    outcome = _finish_terminations(((target, signals),), grace_seconds=grace_seconds)[0]
+    # The command has historically reported an attempted escalation in these races.
+    return "sigkill" if outcome in {"already_dead", "permission_denied"} else outcome
 
 
 # Only sessions/invocations carry PIDs; plays/shows are orchestrators.
@@ -481,8 +528,7 @@ async def _persist_cancel(
     reason_code: str,
     reason_summary: str,
     evidence: dict[str, Any],
-    _state_record: list[bool] | None = None,
-) -> None:
+) -> bool:
     """Write the entity's terminal status + status_transition row.
 
     The status is per entity kind, not one word: a session or invocation goes
@@ -501,16 +547,16 @@ async def _persist_cancel(
     if entity_type == "play":
         row = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (entity_id,))
         if row is None:
-            return
+            return False
         if row["status"] in PLAY_TERMINAL_STATUSES:
-            return
+            return False
         target_status = "blocked"
     elif entity_type == "show":
         row = await db.fetch_one("SELECT status FROM shows WHERE id = ?", (entity_id,))
         if row is None:
-            return
+            return False
         if row["status"] in SHOW_TERMINAL_STATUSES:
-            return
+            return False
         target_status = "aborted"
     else:
         table = {
@@ -522,9 +568,9 @@ async def _persist_cancel(
             (entity_id,),
         )
         if row is None:
-            return
+            return False
         if row["status"] != "running":
-            return
+            return False
         target_status = "cancelled"
 
     try:
@@ -553,12 +599,261 @@ async def _persist_cancel(
                 else None
             ),
         )
-        if applied and _state_record is not None:
-            _state_record.append(True)
+        return bool(applied)
     except TransitionRejectedError:
         # The entity went terminal between the pre-check and this write —
         # nothing to cancel, same as the pre-check `return`s above.
-        pass
+        return False
+
+
+@dataclass(frozen=True)
+class _CancelSnapshot:
+    entity_type: str
+    entity_id: str
+    row: dict[str, Any]
+    runner_identity: dict[str, Any]
+    generation_present: bool
+    generation: str | None
+
+
+def _snapshot_cancel_target(
+    entity_type: str, entity_id: str, row: dict[str, Any]
+) -> _CancelSnapshot:
+    from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
+
+    row_metadata = row.get("node_metadata")
+    meta = dict(row_metadata) if isinstance(row_metadata, dict) else {}
+    # Persisted markers can contain malformed JSON values. Copy their values as well as
+    # the mapping so a mutable marker cannot change the captured write guard.
+    identity = deepcopy({key: meta[key] for key in _RUNNER_IDENTITY_FIELDS if key in meta})
+    return _CancelSnapshot(
+        entity_type,
+        entity_id,
+        {**row, "node_metadata": {**meta, **identity}},
+        identity,
+        "cli_worker_generation" in row,
+        row.get("cli_worker_generation"),
+    )
+
+
+@dataclass
+class _CancelAttempt:
+    target: _CancelSnapshot
+    result: CancelTargetResult
+    process: _TerminationTarget | None = None
+    degraded: tuple[Path, dict[str, Any]] | None = None
+
+
+def _prepare_cancel_attempt(target: _CancelSnapshot, *, verbose: bool = False) -> _CancelAttempt:
+    entity_type = target.entity_type
+    entity_id = target.entity_id
+    meta = target.row["node_metadata"]
+    result = CancelTargetResult(entity_type, entity_id, "no_pid", None)
+    # The mode and host matter even if the record has no PID.
+    unaddressable = unaddressable_pid_reason(meta)
+    if unaddressable in NOT_JUDGEABLE_HERE:
+        return _CancelAttempt(target, replace(result, signal=unaddressable))
+
+    pid = read_pid_from_entity(target.row)
+    if pid is not None and pid not in _OS_PID_RANGE:
+        return _CancelAttempt(target, replace(result, signal="identity_unverifiable", pid=pid))
+    if unaddressable == "boot_unverifiable":
+        unaddressable, _ = _pid_addressability(unaddressable, pid)
+        if unaddressable == "boot_unverifiable":
+            return _CancelAttempt(target, replace(result, signal=unaddressable))
+    if pid is not None:
+        result = replace(result, pid=pid)
+        if unaddressable is not None:
+            return _CancelAttempt(target, replace(result, signal=unaddressable))
+        raw_ct = meta.get("pid_create_time")
+        try:
+            expected_create_time = float(raw_ct) if raw_ct is not None else None
+        except (TypeError, ValueError):
+            expected_create_time = None
+        session_id = entity_id if entity_type == "session" else None
+        process = _TerminationTarget(pid, "lionagi", session_id, expected_create_time)
+        return _CancelAttempt(target, result, process=process)
+
+    if entity_type == "session":
+        # A degraded import has a process in its own run.json. A regular import has no
+        # process of its own and must be stopped via its separately persisted session.
+        if (degraded := _degraded_run(entity_id)) is not None:
+            return _CancelAttempt(target, result, degraded=degraded)
+        if target.row.get("source_kind") == "imported_fs":
+            return _CancelAttempt(target, replace(result, signal="imported_no_process"))
+    if verbose:
+        warn(f"  {entity_type} {entity_id[:12]}: no PID found — skipping OS signal")
+    return _CancelAttempt(target, result)
+
+
+def _signal_cancel_targets(
+    targets: Sequence[_CancelSnapshot], *, grace_seconds: float
+) -> list[_CancelAttempt]:
+    attempts = [_prepare_cancel_attempt(target) for target in targets]
+    for attempt in attempts:
+        if attempt.degraded is not None:
+            pid, refusal, process = _degraded_termination_target(attempt.degraded[1])
+            attempt.result = replace(attempt.result, pid=pid, signal=refusal or "no_pid")
+            attempt.process = process
+
+    pending: list[tuple[_TerminationTarget, list[int]]] = []
+    waiting: list[_CancelAttempt] = []
+    for attempt in attempts:
+        if attempt.process is None:
+            continue
+        signals: list[int] = []
+        try:
+            outcome = _begin_termination(attempt.process, signals)
+        except RuntimeError as exc:
+            warn(str(exc))
+            outcome = "permission_denied"
+        if outcome is None:
+            waiting.append(attempt)
+            pending.append((attempt.process, signals))
+        else:
+            attempt.result = replace(attempt.result, signal=outcome, signals_sent=tuple(signals))
+
+    outcomes = _finish_terminations(pending, grace_seconds=grace_seconds)
+    for attempt, (_, signals), outcome in zip(waiting, pending, outcomes, strict=True):
+        attempt.result = replace(attempt.result, signal=outcome, signals_sent=tuple(signals))
+    return attempts
+
+
+def _warn_cancel_refusal(result: CancelTargetResult) -> None:
+    message = _REFUSED_SIGNAL_REASONS[result.signal]
+    target = f"  {result.entity_type} {result.entity_id[:12]}: "
+    if result.signal in NOT_JUDGEABLE_HERE | {"boot_unverifiable"} and result.pid is None:
+        warn(f"{target}{message}")
+        return
+    action = (
+        "escalation skipped"
+        if result.signal == "identity_unverifiable_after_sigterm"
+        else "kill skipped"
+    )
+    pid = f"pid {result.pid} " if result.pid is not None else ""
+    warn(f"{target}{pid}{message} — {action}")
+
+
+async def _write_cancellation(
+    db: Any, target: _CancelSnapshot, result: CancelTargetResult, *, user_reason: str
+) -> CancelTargetResult:
+    from lionagi.state.reasons import RunReasons
+
+    if result.signal == "sigkill":
+        reason_code = RunReasons.CANCELLED_FORCE_KILL
+        reason_summary = f"Force-killed (SIGKILL after grace period). {user_reason}".strip()
+    else:
+        reason_code = RunReasons.CANCELLED_MANUAL_KILL
+        reason_summary = f"Manually cancelled via `li kill`. {user_reason}".strip()
+
+    evidence: dict[str, Any] = {
+        "kind": "kill_event",
+        "signal": result.signal,
+        "pid": result.pid,
+        "killed_at": time.time(),
+    }
+    if user_reason:
+        evidence["user_reason"] = user_reason
+
+    if target.entity_type != "session":
+        state_committed = await _persist_cancel(
+            db,
+            target.entity_type,
+            target.entity_id,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence=evidence,
+        )
+        return replace(result, state_committed=state_committed)
+    if not target.generation_present:
+        return replace(
+            result,
+            cancel_status="generation_unavailable",
+            cancel_error="session generation was not available in the snapshot",
+        )
+
+    # Use the snapshot taken before signalling. A resume can replace the worker during grace.
+    status = await db.cancel_session_if_worker_generation(
+        target.entity_id,
+        target.generation,
+        expected_runner_identity=target.runner_identity,
+        reason_code=reason_code,
+        reason_summary=reason_summary,
+        evidence=evidence,
+    )
+    error = None
+    if status not in ("applied", "already_terminal"):
+        error = {
+            "conflict": "session changed before cancellation was recorded",
+            "missing": "session no longer exists",
+            "rejected": "session cancellation was rejected",
+        }.get(status, f"guarded cancellation returned {status!r}")
+    return replace(
+        result, cancel_status=status, cancel_error=error, state_committed=status == "applied"
+    )
+
+
+async def _settle_cancel_attempt(
+    db: Any, attempt: _CancelAttempt, *, user_reason: str
+) -> tuple[CancelTargetResult, Exception | None, Exception | None]:
+    result = attempt.result
+    if result.signal in NOT_STOPPED_SIGNALS:
+        _warn_cancel_refusal(result)
+        return result, None, None
+
+    database_error = None
+    manifest_error = None
+    try:
+        result = await _write_cancellation(db, attempt.target, result, user_reason=user_reason)
+    except Exception as exc:
+        database_error = exc
+        result = replace(result, cancel_status="write_failed")
+
+    # The manifest has its own locked identity guard. A missing database generation
+    # does not preclude settlement when the recorded process was confirmed stopped.
+    if attempt.degraded is not None and result.signal in {"already_dead", "sigterm", "sigkill"}:
+        try:
+            if await asyncio.to_thread(_settle_degraded_run, *attempt.degraded):
+                result = replace(result, state_committed=True)
+        except Exception as exc:
+            manifest_error = exc
+    return result, database_error, manifest_error
+
+
+async def cancel_targets(
+    db: Any,
+    targets: Sequence[tuple[str, str, dict[str, Any]]],
+    *,
+    user_reason: str,
+    grace_seconds: float = 5.0,
+) -> tuple[CancelTargetResult, ...]:
+    """Cancel targets supplied deepest first with one process grace deadline.
+
+    Finish eligible settlements in that order and include the observed effects in a
+    typed error if any cancellation write fails. The caller owns request shielding.
+    """
+    snapshots = tuple(_snapshot_cancel_target(*target) for target in targets)
+    attempts = await asyncio.to_thread(
+        _signal_cancel_targets, snapshots, grace_seconds=grace_seconds
+    )
+    results: list[CancelTargetResult] = []
+    first_failure: tuple[_CancelSnapshot, Exception] | None = None
+    for attempt in attempts:
+        result, database_error, manifest_error = await _settle_cancel_attempt(
+            db, attempt, user_reason=user_reason
+        )
+        error = database_error if database_error is not None else manifest_error
+        if error is not None and first_failure is None:
+            first_failure = (attempt.target, error)
+        results.append(result)
+
+    report = tuple(results)
+    if first_failure is not None:
+        target, cause = first_failure
+        raise CancelPersistenceError(
+            entity_type=target.entity_type, entity_id=target.entity_id, results=report
+        ) from cause
+    return report
 
 
 async def kill_one(
@@ -570,223 +865,57 @@ async def kill_one(
     user_reason: str,
     grace_seconds: float = 5.0,
     verbose: bool = False,
-    offload_signals: bool = False,
-    _signal_record: list[int] | None = None,
-    _state_record: list[bool] | None = None,
 ) -> dict[str, Any]:
-    """Kill one entity: terminate process, persist cancellation."""
-    from lionagi.state.reasons import RunReasons
-
-    signal_record = _signal_record if _signal_record is not None else []
-    meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
-    if entity_type == "session":
-        from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
-
-        # Capture before signalling; missing keys and explicit nulls differ.
-        identity = {key: meta[key] for key in _RUNNER_IDENTITY_FIELDS if key in meta}
-        generation_present = "cli_worker_generation" in row
-        generation = row.get("cli_worker_generation")
-    # Asked before the pid is read, not only when one exists — a pid-less row from another
-    # host or runtime would otherwise fall through and get cancelled for work still running.
-    unaddressable = unaddressable_pid_reason(meta)
-    pid: int | None = None
-    pid_was_read = unaddressable == "boot_unverifiable"
-    if pid_was_read:
-        pid = read_pid_from_entity(row)
-        unaddressable, _ = _pid_addressability(unaddressable, pid)
-    if unaddressable in NOT_JUDGEABLE_HERE | {"boot_unverifiable"}:
-        warn(f"  {entity_type} {entity_id[:12]}: {_REFUSED_SIGNAL_REASONS[unaddressable]}")
-        return {
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "signal": unaddressable,
-            "pid": None,
-        }
-
-    if not pid_was_read:
-        pid = read_pid_from_entity(row)
-    signal_used = "no_pid"
-    # A degraded run that `li state import` gave a row while it still ran: the row has no pid,
-    # the run's own run.json does, and that is the process this kill stops (ADR-0104 Amendment 2).
-    degraded = _degraded_run(entity_id) if pid is None and entity_type == "session" else None
-
-    if degraded is not None:
-        if offload_signals:
-            pid, signal_used = await asyncio.to_thread(
-                _signal_degraded_process,
-                degraded[1],
+    """Kill one entity and return the command's dictionary result."""
+    target = _snapshot_cancel_target(entity_type, entity_id, row)
+    attempt = _prepare_cancel_attempt(target, verbose=verbose)
+    if attempt.degraded is not None:
+        pid, outcome = _signal_degraded_process(attempt.degraded[1], grace_seconds=grace_seconds)
+        attempt.result = replace(attempt.result, pid=pid, signal=outcome)
+    elif (process := attempt.process) is not None:
+        try:
+            outcome = _terminate_pid(
+                process.pid,
                 grace_seconds=grace_seconds,
-                _signal_record=signal_record,
+                expected_cmd=process.expected_cmd,
+                expected_session_id=process.expected_session_id,
+                expected_create_time=process.expected_create_time,
             )
-        else:
-            pid, signal_used = _signal_degraded_process(degraded[1], grace_seconds=grace_seconds)
-    elif pid is not None:
-        # Only boot_mismatch can still be pending here; it stays out of the early return
-        # because the stale sweep treats it as evidence the process is gone, unlike a kill.
-        if unaddressable is not None:
-            signal_used = unaddressable
-        else:
-            expected_session_id = entity_id if entity_type == "session" else None
-            raw_ct = meta.get("pid_create_time")
-            try:
-                expected_create_time = float(raw_ct) if raw_ct is not None else None
-            except (TypeError, ValueError):
-                expected_create_time = None
-            try:
-                kwargs = {
-                    "grace_seconds": grace_seconds,
-                    "expected_cmd": "lionagi",
-                    "expected_session_id": expected_session_id,
-                    "expected_create_time": expected_create_time,
-                }
-                if offload_signals:
-                    signal_used = await asyncio.to_thread(
-                        _terminate_pid, pid, **kwargs, _signal_record=signal_record
-                    )
-                else:
-                    signal_used = _terminate_pid(pid, **kwargs)
-            except RuntimeError as exc:
-                warn(str(exc))
-                signal_used = "permission_denied"
-    elif entity_type == "session" and row.get("source_kind") == "imported_fs":
-        # `li state import` names a row by the run id of every run.json it reads and puts no pid
-        # on it. Unless the run is a degraded one (above), its process belongs to the session the
-        # run wrote itself, so cancelling this row would stop nothing and say it had.
-        signal_used = "imported_no_process"
-    else:
-        if verbose:
-            warn(f"  {entity_type} {entity_id[:12]}: no PID found — skipping OS signal")
+        except RuntimeError as exc:
+            warn(str(exc))
+            outcome = "permission_denied"
+        attempt.result = replace(attempt.result, signal=outcome)
 
-    if signal_used == "sigkill":
-        reason_code = RunReasons.CANCELLED_FORCE_KILL
-        reason_summary = f"Force-killed (SIGKILL after grace period). {user_reason}".strip()
-    elif signal_used in _REFUSED_SIGNAL_REASONS:
-        action = (
-            "escalation skipped"
-            if signal_used == "identity_unverifiable_after_sigterm"
-            else "kill skipped"
+    result, database_error, manifest_error = await _settle_cancel_attempt(
+        db, attempt, user_reason=user_reason
+    )
+    if manifest_error is not None:
+        raise manifest_error
+    if database_error is not None:
+        if entity_type != "session":
+            raise database_error
+        error = (
+            "session cancellation did not finish before the deadline"
+            if isinstance(database_error, TimeoutError)
+            else f"guarded cancellation unavailable: {database_error}"
         )
-        warn(
-            f"  {entity_type} {entity_id[:12]}: {f'pid {pid} ' if pid is not None else ''}"
-            f"{_REFUSED_SIGNAL_REASONS[signal_used]} — {action}"
+        result = replace(result, cancel_status="unavailable", cancel_error=error)
+
+    wire = {
+        "entity_type": result.entity_type,
+        "entity_id": result.entity_id,
+        "signal": result.signal,
+        "pid": result.pid,
+    }
+    if result.cancel_status is not None:
+        wire["cancel_status"] = (
+            "unavailable"
+            if result.cancel_status == "generation_unavailable"
+            else result.cancel_status
         )
-        return {
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "signal": signal_used,
-            "pid": pid,
-        }
-    else:
-        reason_code = RunReasons.CANCELLED_MANUAL_KILL
-        reason_summary = f"Manually cancelled via `li kill`. {user_reason}".strip()
-
-    evidence: dict[str, Any] = {
-        "kind": "kill_event",
-        "signal": signal_used,
-        "pid": pid,
-        "killed_at": time.time(),
-    }
-    if user_reason:
-        evidence["user_reason"] = user_reason
-
-    cancel_status = None
-    cancel_error = None
-    if entity_type == "session":
-        # The process we signalled may have exited and the session been resumed
-        # during the grace period. Guard the write with the original snapshot,
-        # including absent identity keys, rather than re-reading after signalling.
-        if not generation_present:
-            if offload_signals:
-                return {
-                    "entity_type": entity_type,
-                    "entity_id": entity_id,
-                    "signal": signal_used,
-                    "pid": pid,
-                    "cancel_status": "generation_unavailable",
-                    "cancel_error": "session generation was not available in the snapshot",
-                }
-            cancel_status = "unavailable"
-            cancel_error = "session generation was not available in the snapshot"
-        else:
-            try:
-                cancel_status = await db.cancel_session_if_worker_generation(
-                    entity_id,
-                    generation,
-                    expected_runner_identity=identity,
-                    reason_code=reason_code,
-                    reason_summary=reason_summary,
-                    evidence=evidence,
-                )
-                if cancel_status == "applied" and _state_record is not None:
-                    _state_record.append(True)
-            except TimeoutError as exc:
-                if offload_signals:
-                    raise _CancelPersistenceError(
-                        entity_type=entity_type,
-                        entity_id=entity_id,
-                        signal_sent=bool(signal_record),
-                    ) from exc
-                cancel_status = "unavailable"
-                cancel_error = "session cancellation did not finish before the deadline"
-            except Exception as exc:
-                if offload_signals:
-                    raise _CancelPersistenceError(
-                        entity_type=entity_type,
-                        entity_id=entity_id,
-                        signal_sent=bool(signal_record),
-                    ) from exc
-                cancel_status = "unavailable"
-                cancel_error = f"guarded cancellation unavailable: {exc}"
-        # "already_terminal": the signalled execution recorded its own end during the
-        # grace period, so the kill worked and that record is kept as written.
-        if cancel_status not in ("applied", "already_terminal") and cancel_error is None:
-            cancel_error = {
-                "conflict": "session changed before cancellation was recorded",
-                "missing": "session no longer exists",
-                "rejected": "session cancellation was rejected",
-            }.get(cancel_status, f"guarded cancellation returned {cancel_status!r}")
-    else:
-        try:
-            kwargs = {
-                "reason_code": reason_code,
-                "reason_summary": reason_summary,
-                "evidence": evidence,
-            }
-            if offload_signals:
-                kwargs["_state_record"] = _state_record
-            await _persist_cancel(db, entity_type, entity_id, **kwargs)
-        except Exception as exc:
-            if offload_signals:
-                raise _CancelPersistenceError(
-                    entity_type=entity_type, entity_id=entity_id, signal_sent=bool(signal_record)
-                ) from exc
-            raise
-    if degraded is not None:
-        try:
-            if offload_signals:
-                await asyncio.to_thread(
-                    _settle_degraded_run, *degraded, _state_record=_state_record
-                )
-            else:
-                _settle_degraded_run(*degraded)
-        except Exception as exc:
-            if offload_signals:
-                raise _CancelPersistenceError(
-                    entity_type=entity_type, entity_id=entity_id, signal_sent=bool(signal_record)
-                ) from exc
-            raise
-
-    result = {
-        "entity_type": entity_type,
-        "entity_id": entity_id,
-        "signal": signal_used,
-        "pid": pid,
-    }
-    if cancel_status is not None:
-        result["cancel_status"] = cancel_status
-    if cancel_error is not None:
-        result["cancel_error"] = cancel_error
-    return result
+    if result.cancel_error is not None:
+        wire["cancel_error"] = result.cancel_error
+    return wire
 
 
 def _run_manifest_path(run_id: str) -> Path | None:
@@ -822,47 +951,53 @@ def _degraded_run(run_id: str) -> tuple[Path, dict[str, Any]] | None:
     return path, manifest
 
 
+def _degraded_termination_target(
+    manifest: dict[str, Any],
+) -> tuple[int | None, str | None, _TerminationTarget | None]:
+    try:
+        pid = int(manifest["pid"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None, "no_recorded_process", None
+    if pid not in _OS_PID_RANGE:
+        return pid, "identity_unverifiable", None
+    if pid <= 0:
+        return None, "no_recorded_process", None
+
+    refusal, _ = _pid_addressability(unaddressable_pid_reason(manifest), pid)
+    if refusal is not None:
+        return pid, refusal, None
+    try:
+        expected_create_time = float(manifest["pid_create_time"])
+    except (KeyError, TypeError, ValueError):
+        # A degraded run never recorded a session ID. The start time is its only
+        # process identity, even when the recorded PID is already gone.
+        return pid, "no_recorded_identity", None
+    return pid, None, _TerminationTarget(pid, "lionagi", expected_create_time=expected_create_time)
+
+
 def _signal_degraded_process(
     manifest: dict[str, Any],
     *,
     grace_seconds: float,
     _signal_record: list[int] | None = None,
 ) -> tuple[int | None, str]:
-    """Signal the process a degraded run recorded on its run.json; ``(pid, signal)``.
-
-    The checks are a session pid's, less the session id such a run never set: host, boot and
-    identity mode, then the recorded start time and a lionagi command line, refusing when the
-    start time is absent (``no_recorded_identity``, whether or not the pid is alive). A run that
-    recorded no pid answers ``(None, "no_recorded_process")``.
-    """
+    """Signal the process a degraded run recorded on its run.json."""
+    pid, refusal, process = _degraded_termination_target(manifest)
+    if process is None:
+        assert refusal is not None
+        return pid, refusal
     try:
-        pid = int(manifest["pid"])
-    except (KeyError, TypeError, ValueError):
-        return None, "no_recorded_process"
-    if pid <= 0:
-        return None, "no_recorded_process"
-
-    signal_used, _ = _pid_addressability(unaddressable_pid_reason(manifest), pid)
-    if signal_used is None:
-        try:
-            expected_create_time = float(manifest["pid_create_time"])
-        except (KeyError, TypeError, ValueError):
-            # The start time is the run's only recorded identity: it set no session id to read
-            # off the process. Without it the record cannot show which process the pid named, so
-            # the kill cannot say it stopped one, alive or dead: nothing is signalled or written.
-            return pid, "no_recorded_identity"
-        try:
-            kwargs = {
-                "grace_seconds": grace_seconds,
-                "expected_cmd": "lionagi",
-                "expected_create_time": expected_create_time,
-            }
-            if _signal_record is not None:
-                kwargs["_signal_record"] = _signal_record
-            signal_used = _terminate_pid(pid, **kwargs)
-        except RuntimeError as exc:
-            warn(str(exc))
-            signal_used = "permission_denied"
+        kwargs = {
+            "grace_seconds": grace_seconds,
+            "expected_cmd": process.expected_cmd,
+            "expected_create_time": process.expected_create_time,
+        }
+        if _signal_record is not None:
+            kwargs["_signal_record"] = _signal_record
+        signal_used = _terminate_pid(process.pid, **kwargs)
+    except RuntimeError as exc:
+        warn(str(exc))
+        signal_used = "permission_denied"
     return pid, signal_used
 
 
@@ -942,9 +1077,7 @@ def imported_degraded_process_is_live(run_id: str) -> bool:
     return verdict in ("ours", "unverifiable")
 
 
-def _settle_degraded_run(
-    path: Path, manifest: dict[str, Any], *, _state_record: list[bool] | None = None
-) -> None:
+def _settle_degraded_run(path: Path, manifest: dict[str, Any]) -> bool:
     """Mark a stopped degraded run cancelled on its run.json, unless it wrote its own end.
 
     A process that took the SIGTERM wrote its own terminal status on the way out; one that was
@@ -968,26 +1101,25 @@ def _settle_degraded_run(
             warn(
                 f"  run {path.parent.name}: run.json lock could not be taken ({exc}), left as it is"
             )
-            return
+            return False
         try:
             current = json.loads(path.read_text())
         except (OSError, ValueError) as exc:
             warn(f"  run {path.parent.name}: run.json could not be read ({exc}), left as it is")
-            return
+            return False
         if not isinstance(current, dict) or current.get("status") != "running":
-            return
+            return False
         stopped = (manifest.get("pid"), manifest.get("pid_create_time"))
         if (current.get("pid"), current.get("pid_create_time")) != stopped:
             warn(
                 f"  run {path.parent.name}: run.json now records another process "
                 f"(pid {current.get('pid')}), left as it is"
             )
-            return
+            return False
         current["status"] = "cancelled"
         current["ended_at"] = time.time()
         _atomic_write_json(path, current)
-        if _state_record is not None:
-            _state_record.append(True)
+        return True
 
 
 def _kill_degraded_run(path: Path, manifest: dict[str, Any], *, grace_seconds: float) -> int:
@@ -1108,10 +1240,12 @@ async def _try_recorded_worker_cleanup(
             if isinstance(raw_pid, bool) or not isinstance(raw_pid, (int, float, str)):
                 raise ValueError("invalid runner pid")
             pid = int(raw_pid)
-            # A float must denote the same integer, not be truncated to a
-            # different process. The supported POSIX pid_t is a signed 32-bit
-            # value; larger values cannot be passed safely to psutil's OS API.
-            if (isinstance(raw_pid, float) and raw_pid != pid) or not 1 < pid <= 2**31 - 1:
+            # A truncated float could name a different process.
+            if (
+                (isinstance(raw_pid, float) and raw_pid != pid)
+                or pid <= 1
+                or pid not in _OS_PID_RANGE
+            ):
                 raise ValueError("invalid runner pid")
         except (KeyError, ValueError, TypeError, OverflowError):
             if unjudgeable == "boot_unverifiable":

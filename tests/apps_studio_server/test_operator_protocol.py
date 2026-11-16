@@ -795,16 +795,19 @@ async def _seed_running_session(db, *, project: str = "/Users/admin/test-project
 async def test_application_mcp_cancel_run_allow_executes_via_the_real_default_coordinator(
     tmp_path, monkeypatch
 ):
-    """Unlike the `cancel_run` unit tests (which simulate the coordinator
-    wiring this integration step owns), this exercises the actual default
-    `OperatorCoordinator` -- no custom `command_executor` override -- proving
-    `coordinator.py::_execute_application_command`'s `cancel` branch really
-    dispatches to `cancel_run.execute_cancel_command` end to end. Mirrors
-    `test_application_mcp_launch_blocks_on_real_durable_human_proposal`
-    above: same real coordinator, same allow path, same durable proposal
-    gate, but for the lifecycle tool instead of the launch tool."""
+    """The default coordinator owns execution and audit in one cancellation scope."""
     from lionagi.state.db import StateDB
+    from lionagi.studio.operator import cancel_run as cancel_module
     from lionagi.studio.operator.cancel_run import cancel_run
+
+    wait_for_cancel = cancel_module.await_cancel_completion
+    scopes = []
+
+    async def track_scope(operation, **kwargs):
+        scopes.append(kwargs.get("audit_persistence_failure"))
+        return await wait_for_cancel(operation, **kwargs)
+
+    monkeypatch.setattr(cancel_module, "await_cancel_completion", track_scope)
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -851,6 +854,8 @@ async def test_application_mcp_cancel_run_allow_executes_via_the_real_default_co
     )
     result = await asyncio.wait_for(task, timeout=2)
 
+    assert len(scopes) == 1
+    assert callable(scopes[0])
     assert decision["status"] == "succeeded"
     assert result == {
         "cancelled": True,
@@ -877,7 +882,7 @@ async def test_application_mcp_cancel_run_deny_leaves_run_untouched_via_real_coo
 ):
     """Same real default wiring as the allow-path test above, but denied:
     proves the run is left exactly as it was and the coordinator's `cancel`
-    branch (and therefore `execute_cancel_command`) is never invoked -- a
+    branch (and therefore `apply_cancel_command`) is never invoked -- a
     denied proposal cannot reach the mutation regardless of which command
     type it names."""
     from lionagi.state.db import StateDB
