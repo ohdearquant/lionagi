@@ -19,10 +19,10 @@ import pytest
 
 import lionhub.orchestration.schedule.validation as schedule_validation
 from lionagi.state.db import NO_CURSOR_CLAIM
-from lionagi.studio.services.schedules import _run_trigger_facts
 from lionhub.orchestration.scheduler import github as gh_mod
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
+from lionhub.serve.daemon.services.schedules import _run_trigger_facts
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -956,4 +956,4 @@ async def test_a_poll_that_fires_nothing_waits_out_its_interval_before_the_next(
 
     assert counts == [1, 1, 1, 2]
     # The next turn is ordered by the same cadence the tick gates on.
-    assert engine._github_due_at(schedule) == 10_600.0
+    assert engine._github_due_at(schedule, 10_300.0) == 10_600.0

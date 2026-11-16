@@ -69,4 +69,7 @@ def test_operator_khive_servers_act_as_the_operator(tmp_path, monkeypatch):
         "OTHER": "kept",
     }
     assert servers["kernel"]["env"] == {"KHIVE_ACTOR": "studio:operator"}
+    assert servers["khive"]["args"] == ["mcp", "--actor", "studio:operator"]
+    assert servers["kernel"]["args"] == ["mcp", "--actor", "studio:operator"]
     assert servers["notes"]["env"] == {"KHIVE_ACTOR": "someone-else", "KHIVE_PACKS": "kg,comm"}
+    assert servers["notes"]["args"] == ["serve"]

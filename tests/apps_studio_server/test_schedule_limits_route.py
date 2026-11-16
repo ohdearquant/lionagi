@@ -24,7 +24,7 @@ import lionagi.state.db as state_db_mod
 
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
-    import lionagi.studio.services.schedules as schedules_mod
+    import lionhub.serve.daemon.services.schedules as schedules_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

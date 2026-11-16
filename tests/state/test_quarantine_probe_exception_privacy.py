@@ -107,7 +107,7 @@ def test_direct_hostname_failure_uses_public_error_without_exception_context(mon
 
     monkeypatch.setattr(socket, "gethostname", fail_hostname)
     with pytest.raises(QuarantineProbeError, match="probe failed") as captured:
-        is_current_quarantine(row, raise_on_scope_error=True)
+        is_current_quarantine(row, raise_on_probe_error=True)
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
     assert "private" not in str(captured.value)

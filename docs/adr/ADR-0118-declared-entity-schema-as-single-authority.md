@@ -423,7 +423,7 @@ used to bypass ownership.
 
 The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
 copy statement's column list from catalog-read names and re-executing index DDL strings taken from
-`sqlite_master` (`lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table`, `lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table._rebuild`, and the same shape in the six other rebuild paths).
+`sqlite_master` (`lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table`, `lionagi/state/db.py::StateDB._sqlite_rebuild_table`, and the same shape in the six other rebuild paths).
 That preserves catalog index DDL replayed by those paths, including objects nothing declares, so
 a rebuild can carry drift forward instead of resolving it. It is also the one place where
 identifiers reach SQL from a source no allow-list covers.

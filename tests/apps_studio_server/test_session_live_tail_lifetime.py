@@ -350,11 +350,11 @@ async def test_registry_close_error_does_not_bypass_other_application_cleanup(mo
 
     app = import_module("lionagi.studio.app")
     identity = import_module("lionhub.serve.diagnostics")
-    daemon_log = import_module("lionagi.studio.daemon_log")
+    daemon_log = import_module("lionhub.serve.daemon.daemon_log")
     engine = import_module("lionhub.orchestration.scheduler.engine")
     lifecycle = import_module("lionhub.orchestration.scheduler.lifecycle")
     operator = import_module("lionagi.studio.services.operator")
-    launches = import_module("lionagi.studio.services.launches")
+    launches = import_module("lionhub.serve.daemon.services.launches")
     notify = import_module("lionagi.state.lifecycle.notify_settings")
     calls = []
 
@@ -1154,7 +1154,7 @@ async def test_repeated_live_store_open_failure_has_one_resync_response(
 
 
 def _admission_only_registry(monkeypatch):
-    from lionagi.studio.services import _session_tail as tail
+    from lionhub.serve.daemon.services import _session_tail as tail
 
     registry = tail.SessionTailRegistry("unused")
     started = []

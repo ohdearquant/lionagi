@@ -6,14 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from types import SimpleNamespace
 
 import pytest
 
 from lionagi.state.db import StateDB
-from lionagi.state.lifecycle import settings_delivery
+from lionagi.state.lifecycle import notify_settings, settings_delivery
+from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
 from lionagi.state.lifecycle.deliveries import is_acknowledged
-from lionagi.state.lifecycle.notify_settings import ResolvedNotifyHandler
 from lionagi.state.lifecycle.reconciler import TerminalReconciler
 from lionhub.orchestration.scheduler import terminal_reconciliation as terminal
 
@@ -34,19 +33,18 @@ async def test_studio_replay_timeout_cancels_but_keeps_async_task_reserved(tmp_p
             await release.wait()
         return None
 
-    monkeypatch.setattr(terminal, "load_settings", lambda **_kwargs: {})
-    resolved = ResolvedNotifyHandler(python_ref="test:handler")
     monkeypatch.setattr(
-        terminal,
-        "resolve_notify_config",
-        lambda **_kwargs: SimpleNamespace(reason=None, handler=resolved),
+        settings_delivery,
+        "load_global_settings_layer",
+        lambda: {"notify": {"on_terminal": {"adapter": {"kind": "python", "ref": "test:handler"}}}},
     )
-    monkeypatch.setattr(settings_delivery, "build_handler", lambda _resolved: handler)
+    monkeypatch.setattr(notify_settings, "_make_python_handler", lambda _ref: handler)
 
     async with StateDB(tmp_path / "studio.db") as db:
         session, progression = str(uuid.uuid4()), str(uuid.uuid4())
         await db.create_progression(progression)
         await db.create_session({"id": session, "progression_id": progression, "status": "running"})
+        db._lifecycle_service()._terminal_callbacks = TerminalCallbackRegistry()
         assert await db.update_status(
             "session", session, new_status="failed", reason_code="session.stale.no_heartbeat"
         )
@@ -56,10 +54,16 @@ async def test_studio_replay_timeout_cancels_but_keeps_async_task_reserved(tmp_p
         )
         transition = row["id"]
         first = TerminalReconciler(
-            terminal.CONSUMER_NAME, terminal._prepare_settings_delivery, batch_size=1, timeout=0.05
+            terminal.CONSUMER_NAME,
+            terminal.prepare_global_settings_delivery,
+            batch_size=1,
+            timeout=0.05,
         )
         second = TerminalReconciler(
-            terminal.CONSUMER_NAME, terminal._prepare_settings_delivery, batch_size=1, timeout=0.05
+            terminal.CONSUMER_NAME,
+            terminal.prepare_global_settings_delivery,
+            batch_size=1,
+            timeout=0.05,
         )
         try:
             timed_out = await first.run_pass(db)

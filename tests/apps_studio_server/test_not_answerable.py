@@ -125,7 +125,7 @@ def test_signal_reads_refuse_a_server_backed_store_before_fallback(tmp_path, mon
     default = tmp_path / "state.db"
     _configure(monkeypatch, default=default, url="postgresql://user:secret@host/db")
 
-    from lionagi.studio.services.signals import get_signals_after
+    from lionhub.serve.daemon.services.signals import get_signals_after
 
     with pytest.raises(StoreNotAddressableError) as exc_info:
         _run(get_signals_after("session-1", 0))

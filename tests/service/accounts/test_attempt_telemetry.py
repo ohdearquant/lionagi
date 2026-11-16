@@ -6,11 +6,11 @@ import json
 
 import pytest
 
-from lionagi.cli._api_usage import APIUsageCollector
 from lionagi.service._api_telemetry import collect_api_turn
 from lionagi.service._prompt_cache import ledger_for, prompt_cache_call
 from lionagi.service.accounts._types import AccountRoutingError
 from lionagi.service.resilience import RetryConfig
+from lionhub.serve.cli._api_usage import APIUsageCollector
 from tests.service.accounts import test_routed_endpoint as routed
 
 

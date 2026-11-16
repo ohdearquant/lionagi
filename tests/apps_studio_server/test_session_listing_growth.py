@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from lionagi.state import db as db_module
-from lionagi.studio.services import sessions
+from lionhub.serve.daemon.services import sessions
 
 
 @pytest.fixture

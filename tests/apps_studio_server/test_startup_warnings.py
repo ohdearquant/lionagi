@@ -83,10 +83,10 @@ def _neutralize_heavy_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
     consistent OOM kills in xdist workers and leaked writes into DEFAULT_DB_PATH.
     The scheduler, reconciliation, and checkpoint paths are covered elsewhere.
     """
-    import lionagi.studio.services.launches as launches_mod
     import lionhub.orchestration.scheduler.db_maintenance as db_maintenance_mod
     import lionhub.orchestration.scheduler.engine as engine_mod
     import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
+    import lionhub.serve.daemon.services.launches as launches_mod
 
     monkeypatch.setattr(engine_mod.scheduler, "start", _anoop)
     monkeypatch.setattr(engine_mod.scheduler, "stop", _anoop)
@@ -207,8 +207,9 @@ class TestEscalatedWarningOnWildcardBind:
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
 
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
-        monkeypatch.setattr(config_mod, "HOST", "0.0.0.0")
+        monkeypatch.setattr(daemon_settings, "HOST", "0.0.0.0")
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
             with _lifespan_client(monkeypatch, tmp_path):
@@ -226,8 +227,9 @@ class TestEscalatedWarningOnWildcardBind:
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
 
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
-        monkeypatch.setattr(config_mod, "HOST", "0.0.0.0")
+        monkeypatch.setattr(daemon_settings, "HOST", "0.0.0.0")
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
             with _lifespan_client(monkeypatch, tmp_path):
@@ -529,8 +531,9 @@ class TestCORSWildcardOriginWarning:
         """CORS_ORIGINS containing '*' emits a startup WARNING."""
         import lionagi.studio.app as app_mod
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
-        monkeypatch.setattr(config_mod, "CORS_ORIGINS", ["*"])
+        monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", ["*"])
         monkeypatch.setattr(app_mod, "CORS_ORIGINS", ["*"])
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
@@ -548,9 +551,10 @@ class TestCORSWildcardOriginWarning:
         """No CORS warning when origins are explicitly listed (not wildcard)."""
         import lionagi.studio.app as app_mod
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
         explicit_origins = ["http://localhost:3000", "http://localhost:5173"]
-        monkeypatch.setattr(config_mod, "CORS_ORIGINS", explicit_origins)
+        monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", explicit_origins)
         monkeypatch.setattr(app_mod, "CORS_ORIGINS", explicit_origins)
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
@@ -572,7 +576,7 @@ class TestCLIHostWiring:
     """
 
     def test_backend_only_exports_resolved_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import lionhub.cli.studio as studio_cli
+        import lionhub.serve.cli.studio as studio_cli
 
         monkeypatch.delenv("LIONAGI_STUDIO_HOST", raising=False)
         monkeypatch.setattr(studio_cli, "_ensure_apps_importable", lambda: True)
@@ -604,7 +608,7 @@ class TestCLIHostWiring:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """_start_local must overwrite a stale LIONAGI_STUDIO_HOST before uvicorn.run."""
-        import lionhub.cli.studio as studio_cli
+        import lionhub.serve.cli.studio as studio_cli
 
         # Stale env claims 0.0.0.0; the CLI is about to bind 127.0.0.1.
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")

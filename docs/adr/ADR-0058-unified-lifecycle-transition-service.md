@@ -263,6 +263,10 @@ lionagi/state/lifecycle/
   with `transition_id=None` because no history row was written.
 - `rejected` returns the unchanged terminal status and `transition_id=None` after the rejection
   audit commits.
+  For an undeclared edge without an override, `SQLAlchemyLifecycleService.transition()` returns
+  `rejected` with the unchanged status, which can be nonterminal, after its rejection audit commits.
+  [ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+  defines the proposed schedule-run decision refusals and their typed and legacy outcomes.
 - Validation errors and not-found errors are exceptions, not `rejected`. Storage errors propagate
   after rollback; they are not converted into conflicts.
 
@@ -272,6 +276,9 @@ failed operations. Keeping exceptions for invalid commands and storage failure a
 inside a generic false result.
 
 ### D2 — One complete policy per managed entity
+
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+defines the proposed schedule-run terminal floor and decision refusals.
 
 One registry maps each entity type to its table, vocabulary, initial states, terminal set, allowed
 edges, same-status rule, allowed same-row patch fields, and reason-code namespace.
@@ -538,6 +545,11 @@ callers use the service. They do not retain independent policy.
 | `transitions.transition()` | `conflict` | `TransitionResult(applied=False, conflict=True, ...)` |
 | adapter validation/not found | exception | preserve current `ValueError`/`LookupError` class at wrapper boundary |
 
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+proposes one additional mapping: for `schedule_run`, `transitions.transition()` raises
+`TransitionRejectedError` on `rejected` after the audit commits. Other legacy mappings remain
+as above.
+
 Migration phases and gates are:
 
 ```text
@@ -665,6 +677,11 @@ Create and every committed state edge append to the existing `status_transitions
 the same transaction as the definition write. Metadata carries provenance and a small name
 snapshot, not a copy of the schedule prompt. The ledger entity id has no definition foreign
 key, so deletion retains its event and all previous history. No new table or column is needed.
+
+[ADR-0095's proposed enrollment amendment](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md#proposed-partial-amendment-commit-ordered-consumer-enrollment)
+keeps the deletion event in the live ledger to prevent definition ID reuse.
+Its own-history receipt records the prior history moved out of the live ledger
+by the same write transaction.
 
 The adapter uses `same_status=noop`: repeated enable/disable adds no event. Configuration,
 cursor, health and firing-time writes also add no state event. A typed same-state transition

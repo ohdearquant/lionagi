@@ -7,17 +7,20 @@ import logging
 
 import pytest
 
-_CLI_LOGGERS = (
+CLI_CHANNEL_LOGGERS = (
     "lionagi.cli.progress",
     "lionagi.cli.hint",
     "lionagi.cli.warn",
     "lionagi.cli.error",
+)
+PROVIDER_AND_LIBRARY_LOGGERS = (
     "claude-cli",
     "codex-cli",
     "pi-cli",
     "gemini-cli",
     "lionagi",
 )
+_CLI_LOGGERS = (*CLI_CHANNEL_LOGGERS, *PROVIDER_AND_LIBRARY_LOGGERS)
 
 
 @pytest.fixture(autouse=True)

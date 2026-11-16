@@ -68,7 +68,7 @@ Out of scope:
 The shipped contract is:
 
 ```python
-# lionagi/studio/services/task_applications.py
+# lionhub/src/lionhub/serve/daemon/services/task_applications.py
 @dataclass(frozen=True)
 class TaskApplication:
     action_kind: str
@@ -115,7 +115,7 @@ Why this way: one dataclass gives future CLI and HTTP bindings the same library 
 rejecting the dormant idempotency field is safer than accepting a contract the database does not
 enforce.
 
-Code anchor: `lionagi/studio/services/task_applications.py` (`TaskApplication`, `_validate`,
+Code anchor: `lionhub/src/lionhub/serve/daemon/services/task_applications.py` (`TaskApplication`, `_validate`,
 `submit_task`).
 
 ### D2 — Ad-hoc tasks reuse `schedule_runs`
@@ -259,6 +259,13 @@ completed, failed, timed_out, skipped, cancelled ──► no outgoing edges
 
 The registered terminal set carries all five terminal statuses, including `timed_out` and
 `skipped`. An undeclared edge raises `ValueError`.
+
+[ADR-0141 D1](ADR-0141-recorded-chain-decisions-for-schedule-runs.md#d1-the-scheduler-records-its-selection-in-the-terminal-write)
+proposes that a terminal-to-nonterminal schedule-run transition through
+`transitions.transition()` commits a rejection audit and raises
+`TransitionRejectedError` before the undeclared-edge `ValueError` check.
+That facade also commits a rejection audit and raises `TransitionRejectedError`
+when D1 refuses a decision change.
 
 Exact compare-and-swap semantics:
 

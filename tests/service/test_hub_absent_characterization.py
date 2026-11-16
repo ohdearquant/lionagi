@@ -89,6 +89,52 @@ print(json.dumps({
     assert report == {"core_loaded": True, "hub_modules": []}
 
 
+def test_run_with_an_injected_cli_endpoint_without_hub(tmp_path):
+    report = _run_blocked(
+        """
+import asyncio
+
+from pydantic import BaseModel
+
+from lionagi.operations.run.run import RunParam, run
+from lionagi.protocols.messages import AssistantResponse
+from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
+from lionagi.service.imodel import iModel
+from lionagi.service.types.stream_chunk import StreamChunk
+from lionagi.session.branch import Branch
+
+
+class _StubRequest(BaseModel):
+    messages: list[dict]
+
+
+class _StubCLIEndpoint(AgenticEndpoint):
+    _request_model = _StubRequest
+
+    async def stream(self, request, **kwargs):
+        yield StreamChunk(type="text", content="injected response")
+
+
+async def turn():
+    endpoint = _StubCLIEndpoint(
+        config={"name": "Stub CLI", "provider": "stub", "endpoint": "chat", "auth_type": "none"}
+    )
+    branch = Branch(chat_model=iModel(endpoint=endpoint))
+    return [
+        message.response
+        async for message in run(branch, "hello", RunParam())
+        if isinstance(message, AssistantResponse)
+    ]
+
+
+print(json.dumps({"responses": asyncio.run(turn())}))
+""",
+        tmp_path,
+    )
+
+    assert report == {"responses": ["injected response"]}
+
+
 def test_cold_registry_load_without_hub_logs_one_catalog_failure(tmp_path):
     report = _run_blocked(
         """

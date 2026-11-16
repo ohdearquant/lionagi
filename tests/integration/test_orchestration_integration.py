@@ -284,7 +284,10 @@ def test_error_handler_uses_cached_exc_class():
     import ast
     from pathlib import Path
 
-    orchestrate_init = Path(__file__).parent.parent.parent / "lionagi/cli/orchestrate/__init__.py"
+    orchestrate_init = (
+        Path(__file__).parent.parent.parent
+        / "lionhub/src/lionhub/serve/cli/orchestrate/__init__.py"
+    )
     source = orchestrate_init.read_text()
 
     tree = ast.parse(source)

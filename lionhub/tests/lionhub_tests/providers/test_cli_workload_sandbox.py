@@ -5,15 +5,17 @@
 workspace-write sandbox with no network and no extra writable roots, agy under
 ``--sandbox``, Claude Code without its file-writing tools. A setting that would undo
 that is refused, and Pi, which has no sandbox to pin, refuses ``light`` outright. A
-``heavy`` agent's command line is the one it had before workloads existed."""
+``heavy`` codex agent keeps its network and temporary directories, but its extra writable
+roots are the child sandbox's ``allow_write`` list, not whatever the user config lists."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
 
-from lionagi._errors import CLIInputRefusedError
+from lionagi._errors import CLIInputRefusedError, ConfigurationError
 from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 from lionhub.providers.google.gemini_code import GeminiCodeRequest
 from lionhub.providers.openai.codex import CodexCodeRequest
@@ -51,7 +53,96 @@ def test_a_heavy_codex_agent_is_given_neither_temp_directory_pin(tmp_path, kw):
         warnings.simplefilter("ignore")
         for workload in ({}, {"workload": "heavy"}):
             overrides = _pairs(_codex(tmp_path, **workload, **kw), "-c")
-            assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+            sandbox = [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+            assert not [o for o in sandbox if "writable_roots" not in o]
+
+
+def _heavy_roots_pin(roots) -> str:
+    from lionhub.providers.openai.codex import toml_override_value
+
+    return f"sandbox_workspace_write.writable_roots={toml_override_value(list(roots))}"
+
+
+@pytest.fixture
+def sandbox_on(monkeypatch):
+    """The child sandbox on with the default policy (the suite switches it off by default)."""
+    import lionhub.agent.child_sandbox as child_sandbox
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+
+
+def _default_roots():
+    import os
+
+    from lionhub.agent.child_sandbox import default_allow_write
+
+    return [os.path.expanduser(path) for path in default_allow_write()]
+
+
+@pytest.mark.parametrize(
+    "kw", [{}, {"full_auto": True}, {"sandbox": "workspace-write"}, {"workload": "heavy"}]
+)
+def test_a_heavy_codex_agent_writes_only_the_toolchain_caches_beyond_its_cwd(
+    tmp_path, kw, sandbox_on
+):
+    overrides = _pairs(_codex(tmp_path, **kw), "-c")
+    sandbox = [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+    assert sandbox == [_heavy_roots_pin(_default_roots())]
+    assert overrides[-1] == sandbox[0]
+    assert all(root.startswith("/") for root in _default_roots())
+
+
+def test_a_heavy_codex_agent_that_bypasses_the_sandbox_gets_no_pin(tmp_path):
+    # Only reachable with the child sandbox off; with it on the request is refused (below).
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        overrides = _pairs(_codex(tmp_path, bypass_approvals=True), "-c")
+    assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+
+
+def test_the_heavy_pin_beats_the_user_configs_writable_roots(tmp_path, sandbox_on):
+    env = _home_with_config(
+        tmp_path,
+        "[sandbox_workspace_write]\nnetwork_access = true\n"
+        f"writable_roots = [{str(tmp_path / 'everything')!r}]\n",
+    )
+    args = _codex(tmp_path, full_auto=True, ignore_user_config=True, env=env)
+    sandbox = [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write.")]
+    # The user config's roots are carried, and the pin, after them, has the last word.
+    assert any("everything" in o for o in sandbox[:-1])
+    assert "sandbox_workspace_write.network_access=true" in sandbox
+    assert sandbox[-1] == _heavy_roots_pin(_default_roots())
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"sandbox_workspace_write.writable_roots": ["/opt/build"]},
+        {"sandbox_workspace_write": {"writable_roots": ["/opt/build"]}},
+    ],
+)
+def test_writable_roots_the_caller_sets_are_kept(tmp_path, overrides, sandbox_on):
+    args = _codex(tmp_path, full_auto=True, config_overrides=overrides)
+    sandbox = [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write")]
+    assert len(sandbox) == 1
+    assert "/opt/build" in sandbox[0]
+
+
+def test_the_heavy_roots_follow_the_child_sandbox_settings(tmp_path, monkeypatch):
+    import lionhub.agent.child_sandbox as child_sandbox
+
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"allow_write": ["/opt/c"]}}
+    )
+    overrides = _pairs(_codex(tmp_path, full_auto=True), "-c")
+    assert overrides[-1] == _heavy_roots_pin([*_default_roots(), "/opt/c"])
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+    overrides = _pairs(_codex(tmp_path, full_auto=True), "-c")
+    assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
 
 
 @pytest.mark.parametrize("kw", [{}, {"enable_features": ["apps", "plugins"]}])
@@ -381,3 +472,258 @@ async def test_a_light_pi_agent_is_refused_before_anything_starts(tmp_path, monk
     with pytest.raises(CLIInputRefusedError, match="Pi has none"):
         async for _ in pi_cli._ndjson_from_cli(request):
             pass
+
+
+# --------------------------------------------------------------------------- sandbox off, heavy
+
+
+_SANDBOX_OFF = pytest.mark.parametrize(
+    "kw",
+    [
+        {"bypass_approvals": True},
+        {"sandbox": "danger-full-access"},
+        {"config_overrides": {"sandbox_mode": "danger-full-access"}},
+        {"config_overrides": {"profiles.p.sandbox_mode": "danger-full-access"}},
+        {"config_overrides": {"default_permissions": "open"}},
+    ],
+)
+
+
+@_SANDBOX_OFF
+def test_a_heavy_codex_agent_may_not_turn_its_sandbox_off_while_confined(tmp_path, kw, sandbox_on):
+    with pytest.raises(CLIInputRefusedError, match="child_sandbox: \\{enabled: false\\}"):
+        _codex(tmp_path, workload="heavy", **kw)
+
+
+@_SANDBOX_OFF
+def test_with_the_child_sandbox_off_the_request_runs_as_before(tmp_path, kw):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert _codex(tmp_path, workload="heavy", **kw)[:2] == ["exec", "--json"]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        'sandbox_mode = "danger-full-access"\n',
+        'profile = "p"\n[profiles.p]\nsandbox_mode = "danger-full-access"\n',
+        'default_permissions = "open"\n',
+        "sandbox_mode = \n",
+    ],
+)
+def test_a_codex_config_that_turns_the_sandbox_off_is_refused(tmp_path, config, sandbox_on):
+    env = _home_with_config(tmp_path, config)
+    with pytest.raises(CLIInputRefusedError, match="sandbox"):
+        _codex(tmp_path, env=env)
+
+
+def test_a_named_profile_that_turns_the_sandbox_off_is_refused(tmp_path, sandbox_on):
+    env = _home_with_config(tmp_path, '[profiles.p]\nsandbox_mode = "danger-full-access"\n')
+    with pytest.raises(CLIInputRefusedError, match="profile 'p'"):
+        _codex(tmp_path, env=env, profile="p")
+    assert _codex(tmp_path, env=env, profile="q")[:2] == ["exec", "--json"]
+
+
+def test_a_request_that_sets_its_own_mode_is_not_judged_by_the_configs_mode(tmp_path, sandbox_on):
+    env = _home_with_config(tmp_path, 'sandbox_mode = "danger-full-access"\n')
+    args = _codex(tmp_path, env=env, full_auto=True)
+    assert _pairs(args, "--sandbox") == ["workspace-write"]
+
+
+def test_a_project_codex_config_that_turns_the_sandbox_off_is_refused(tmp_path, sandbox_on):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text('sandbox_mode = "danger-full-access"\n')
+    env = _home_with_config(tmp_path, "")
+    with pytest.raises(CLIInputRefusedError, match="danger-full-access"):
+        _codex(tmp_path, env=env)
+
+
+@pytest.fixture
+def fake_home(tmp_path, monkeypatch):
+    """A home directory two levels under tmp_path, set as this process's HOME."""
+    home = tmp_path / "users" / "u"
+    (home / "inside").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+def _repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    return repo
+
+
+@pytest.mark.parametrize(
+    "spell",
+    [
+        lambda home: str(home),
+        lambda home: str(home.parent),
+        lambda home: "/",
+        lambda home: "~",
+        lambda home: str(home) + "/",
+    ],
+    ids=["home", "parent", "root", "tilde", "trailing-slash"],
+)
+@pytest.mark.parametrize("where", ["add_dir", "override", "nested", "profile"])
+def test_a_root_reaching_the_home_directory_is_refused_while_confined(
+    tmp_path, fake_home, sandbox_on, spell, where
+):
+    root = spell(fake_home)
+    kw = {
+        "add_dir": {"add_dir": [root]},
+        "override": {"config_overrides": {"sandbox_workspace_write.writable_roots": [root]}},
+        "nested": {"config_overrides": {"sandbox_workspace_write": {"writable_roots": root}}},
+        "profile": {
+            "config_overrides": {"profiles.p.sandbox_workspace_write.writable_roots": [root]}
+        },
+    }[where]
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, **kw)
+
+
+def test_a_link_to_the_home_directory_is_refused_while_confined(tmp_path, fake_home, sandbox_on):
+    link = tmp_path / "link"
+    link.symlink_to(fake_home)
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[str(link)])
+
+
+def test_the_childs_own_home_is_checked_too(tmp_path, fake_home, sandbox_on):
+    other = tmp_path / "other-home"
+    other.mkdir()
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, env={"HOME": str(other)}, add_dir=[str(other)])
+
+
+@pytest.mark.parametrize("which", ["home", "parent"])
+def test_the_account_home_is_refused_under_a_scratch_home(
+    tmp_path, fake_home, sandbox_on, monkeypatch, which
+):
+    """HOME points at a scratch directory; the account's home from the password
+    database, and its parent, are still refused as writable roots."""
+    pwd = pytest.importorskip("pwd")
+    account = tmp_path / "accounts" / "me"
+    (account / "project").mkdir(parents=True)
+    fields = list(pwd.getpwuid(os.getuid()))
+    fields[5] = str(account)
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: pwd.struct_passwd(fields))
+    root = account if which == "home" else account.parent
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[str(root)])
+    inside = str(account / "project")
+    assert inside in _pairs(_codex(_repo(tmp_path), full_auto=True, add_dir=[inside]), "--add-dir")
+
+
+def test_the_real_account_home_is_refused_under_a_scratch_home(tmp_path, fake_home, sandbox_on):
+    """The same with nothing faked but HOME. Builds the argv only; no child starts."""
+    pwd = pytest.importorskip("pwd")
+    account = pwd.getpwuid(os.getuid()).pw_dir
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[account])
+
+
+def test_a_root_inside_the_home_directory_is_kept(tmp_path, fake_home, sandbox_on):
+    inside = str(fake_home / "inside")
+    args = _codex(_repo(tmp_path), full_auto=True, add_dir=[inside])
+    assert inside in _pairs(args, "--add-dir")
+    args = _codex(
+        _repo(tmp_path),
+        full_auto=True,
+        config_overrides={"sandbox_workspace_write.writable_roots": [inside]},
+    )
+    assert [o for o in _pairs(args, "-c") if inside in o]
+
+
+def test_a_writable_roots_value_that_is_not_a_list_of_paths_is_refused(
+    tmp_path, fake_home, sandbox_on
+):
+    with pytest.raises(CLIInputRefusedError, match="other than a list of paths"):
+        _codex(
+            _repo(tmp_path),
+            full_auto=True,
+            config_overrides={"sandbox_workspace_write.writable_roots": 7},
+        )
+
+
+def test_with_the_child_sandbox_off_a_home_root_runs_as_before(tmp_path, fake_home):
+    args = _codex(_repo(tmp_path), full_auto=True, add_dir=[str(fake_home)])
+    assert str(fake_home) in _pairs(args, "--add-dir")
+
+
+@pytest.mark.parametrize("which", ["home", "parent"])
+def test_a_case_changed_spelling_of_a_home_root_is_refused_while_confined(
+    tmp_path, fake_home, sandbox_on, which
+):
+    import os
+
+    target = fake_home if which == "home" else fake_home.parent
+    respelled = str(target.parent / target.name.upper())
+    if not os.path.exists(respelled) or not os.path.samefile(respelled, target):
+        pytest.skip("the volume under tmp_path is case-sensitive")
+    with pytest.raises(CLIInputRefusedError, match="home directory or an ancestor"):
+        _codex(_repo(tmp_path), full_auto=True, add_dir=[respelled])
+
+
+async def _drain_pi(pi_cli, request):
+    async for _ in pi_cli._ndjson_from_cli(request):
+        pass
+
+
+@pytest.fixture
+def pi_launches(tmp_path, monkeypatch):
+    """Pi's launch point replaced by a recorder; the list holds each command it was handed."""
+    import lionhub.providers.pi.cli as pi_cli
+
+    launched: list[list[str]] = []
+
+    async def fake_ndjson(cmd, **_kw):
+        launched.append(list(cmd))
+        if False:
+            yield {}
+
+    monkeypatch.setattr(pi_cli, "PI_CLI", str(tmp_path / "pi-must-not-run"))
+    monkeypatch.setattr(pi_cli, "ndjson_from_cli", fake_ndjson)
+    return launched
+
+
+@pytest.mark.asyncio
+async def test_a_heavy_pi_agent_is_refused_while_the_child_sandbox_is_enabled(
+    tmp_path, monkeypatch, pi_launches
+):
+    import lionhub.agent.child_sandbox as child_sandbox
+    import lionhub.providers.pi.cli as pi_cli
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+    request = pi_cli.PiCodeRequest(prompt="hi", repo=tmp_path)
+    with pytest.raises(CLIInputRefusedError, match="while the child sandbox is enabled"):
+        await _drain_pi(pi_cli, request)
+    assert pi_launches == []
+
+
+@pytest.mark.asyncio
+async def test_a_heavy_pi_agent_runs_as_before_with_the_child_sandbox_disabled(
+    tmp_path, pi_launches
+):
+    import lionhub.providers.pi.cli as pi_cli
+
+    request = pi_cli.PiCodeRequest(prompt="hi", repo=tmp_path)
+    await _drain_pi(pi_cli, request)
+    assert len(pi_launches) == 1
+    assert pi_launches[0][0] == str(tmp_path / "pi-must-not-run")
+
+
+@pytest.mark.asyncio
+async def test_a_pi_agent_is_not_started_when_the_sandbox_settings_cannot_be_read(
+    tmp_path, monkeypatch, pi_launches
+):
+    import lionhub.agent.child_sandbox as child_sandbox
+    import lionhub.providers.pi.cli as pi_cli
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {"child_sandbox": "on"})
+    request = pi_cli.PiCodeRequest(prompt="hi", repo=tmp_path)
+    with pytest.raises(ConfigurationError):
+        await _drain_pi(pi_cli, request)
+    assert pi_launches == []

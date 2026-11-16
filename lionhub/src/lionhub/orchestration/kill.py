@@ -159,6 +159,11 @@ def _pid_addressability(reason: str | None, pid: int | None) -> tuple[str | None
     return ("boot_unverifiable" if alive else "boot_mismatch"), alive
 
 
+# The CLI package. A background flow and the MCP server's fallback command start it
+# with ``-m``, and its name does not begin with the expected command.
+_CLI_PACKAGE = "lionhub.serve.cli"
+
+
 def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
     """Exact-token match: is this cmdline a lionagi CLI invocation?"""
     if not cmdline:
@@ -172,8 +177,11 @@ def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
         if os.path.basename(cmdline[1]) == "li":
             return True
     for flag, mod in zip(cmdline, cmdline[1:], strict=False):
-        if flag == "-m" and (mod == expected_cmd or mod.startswith(expected_cmd + ".")):
-            return True
+        if flag != "-m":
+            continue
+        for package in (expected_cmd, _CLI_PACKAGE):
+            if mod == package or mod.startswith(package + "."):
+                return True
     return False
 
 

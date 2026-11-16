@@ -13,7 +13,9 @@ from unittest.mock import patch
 
 import aiosqlite
 import pytest
+from sqlalchemy import event
 
+import lionagi.state.db as state_db
 from lionagi.state.db import StateDB
 
 
@@ -267,12 +269,28 @@ def test_legacy_pre_flow_yaml_rebuild_preserves_dependent_schedule_runs():
     asyncio.run(_run())
 
 
-def test_rebuild_restores_fk_enforcement_when_pragma_flush_commit_fails():
-    """A failure in the flush commit that makes `PRAGMA foreign_keys = OFF`
-    take effect must still restore enforcement: that commit is awaited, so a
-    cancellation or driver error there is a realistic boundary, and leaving
-    the pooled connection with enforcement disabled would silently disable
-    every cascade/integrity check for the rest of the process."""
+def _fault_before_sql(expected: str):
+    make_engine = state_db.make_engine
+
+    def failing_make_engine(*args, **kwargs):
+        engine = make_engine(*args, **kwargs)
+
+        @event.listens_for(engine.sync_engine, "before_cursor_execute")
+        def fail_before_statement(_conn, cursor, statement, *_args):
+            if statement != expected:
+                return
+            if expected == "BEGIN IMMEDIATE":
+                cursor.execute("PRAGMA foreign_keys")
+                assert cursor.fetchone() == (0,), "foreign keys must be off before BEGIN"
+            raise RuntimeError(f"fault-injected failure before {expected}")
+
+        return engine
+
+    return patch.object(state_db, "make_engine", failing_make_engine)
+
+
+def test_rebuild_restores_fk_enforcement_when_begin_fails():
+    """A failure after disabling foreign keys and before BEGIN restores enforcement."""
 
     async def _run():
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -295,37 +313,14 @@ def test_rebuild_restores_fk_enforcement_when_pragma_flush_commit_fails():
                     "INSERT INTO schedules "
                     "(id, name, trigger_type, action_kind, created_at, updated_at) "
                     "VALUES (?, ?, 'cron', 'agent', 0, 0)",
-                    (sid, "pragma-flush-fault-target"),
+                    (sid, "begin-fault-target"),
                 )
                 await raw.commit()
 
-            real_execute = aiosqlite.Connection.execute
-            real_commit = aiosqlite.Connection.commit
-            fault_state = {"armed": False, "fired": False}
-
-            async def _tracking_execute(self, sql, parameters=None):
-                if (
-                    not fault_state["fired"]
-                    and isinstance(sql, str)
-                    and "foreign_keys = OFF" in sql
-                ):
-                    fault_state["armed"] = True
-                return await real_execute(self, sql, parameters)
-
-            async def _faulty_commit(self):
-                if fault_state["armed"] and not fault_state["fired"]:
-                    fault_state["fired"] = True
-                    fault_state["armed"] = False
-                    raise RuntimeError("fault-injected failure in pragma flush commit")
-                return await real_commit(self)
-
             db = StateDB(db_path)
             try:
-                with (
-                    patch.object(aiosqlite.Connection, "execute", _tracking_execute),
-                    patch.object(aiosqlite.Connection, "commit", _faulty_commit),
-                ):
-                    with pytest.raises(RuntimeError, match="pragma flush commit"):
+                with _fault_before_sql("BEGIN IMMEDIATE"):
+                    with pytest.raises(RuntimeError, match="before BEGIN IMMEDIATE"):
                         await db.open()
 
                 # Enforcement must be back ON on the live connection even
@@ -395,22 +390,9 @@ def test_legacy_pre_flow_yaml_rebuild_rolls_back_on_fault_and_permits_clean_retr
                 )
                 await raw.commit()
 
-            real_execute = aiosqlite.Connection.execute
-            fault_state = {"triggered": False}
-
-            async def _faulty_execute(self, sql, parameters=None):
-                if (
-                    not fault_state["triggered"]
-                    and isinstance(sql, str)
-                    and "RENAME TO schedules" in sql
-                ):
-                    fault_state["triggered"] = True
-                    raise RuntimeError("fault-injected failure before RENAME")
-                return await real_execute(self, sql, parameters)
-
             db = StateDB(db_path)
             try:
-                with patch.object(aiosqlite.Connection, "execute", _faulty_execute):
+                with _fault_before_sql("ALTER TABLE schedules_new RENAME TO schedules"):
                     with pytest.raises(RuntimeError, match="fault-injected"):
                         await db.open()
 

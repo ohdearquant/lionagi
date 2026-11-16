@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import event
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services import invocations
+from lionhub.serve.daemon.services import invocations
 
 
 @pytest.fixture

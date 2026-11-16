@@ -54,7 +54,7 @@ def test_launch_markers_stay_alive_across_boot_time_slew(monkeypatch):
     a run's markers and the one asking about it later. Recorded under a value
     moved by five seconds and read under one moved by ten, a live process must
     still read as alive, not as a recycled pid."""
-    from lionagi.cli.kill import current_pid_markers
+    from lionhub.serve.cli.kill import current_pid_markers
 
     psplatform = psutil._psplatform
     if not hasattr(psplatform, "INIT_BOOT_TIME"):
@@ -117,8 +117,8 @@ def test_node_metadata_pid_with_matching_create_time_but_zombie_status_is_dead(m
 
 async def test_identity_complete_runs_page_does_not_capture_process_table(monkeypatch):
     import lionagi.studio.services.run_tags as run_tags_mod
-    import lionagi.studio.services.runs as runs_mod
     import lionhub.orchestration.scheduler.liveness as admin_mod
+    import lionhub.serve.daemon.services.runs as runs_mod
 
     created = psutil.Process(os.getpid()).create_time()
     sessions = [
@@ -144,8 +144,8 @@ async def test_identity_complete_runs_page_does_not_capture_process_table(monkey
 
 async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(monkeypatch):
     import lionagi.studio.services.run_tags as run_tags_mod
-    import lionagi.studio.services.runs as runs_mod
     import lionhub.orchestration.scheduler.liveness as admin_mod
+    import lionhub.serve.daemon.services.runs as runs_mod
 
     sessions = [
         {

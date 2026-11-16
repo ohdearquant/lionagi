@@ -30,9 +30,18 @@ __all__ = (
 )
 
 # Operations that grant privilege to the caller (every caller is an agent, so
-# trusting a plugin/hook bundle would let the grantee also be the granter). No
-# verb resolves to these paths and none accepts opaque argv, so unreachable.
-FENCED_PATHS = ("state migrate", "plugin trust", "hooks trust")
+# trusting a plugin/hook bundle would let the grantee also be the granter), and
+# `li remote`, which would let an agent start further agents on another machine.
+# No verb resolves to these paths and none accepts opaque argv, so unreachable.
+FENCED_PATHS = (
+    "state migrate",
+    "plugin trust",
+    "hooks trust",
+    "remote run",
+    "remote status",
+    "remote output",
+    "remote cancel",
+)
 
 # Exceeding this is an error naming the count, never a silent truncation.
 MAX_OPS = 8
@@ -475,6 +484,7 @@ _REGISTERED: tuple[Verb, ...] = (
         summary="Observe runs until terminal or the window closes; partial results, never a bool.",
         executor="job",
         own_schema=_JOB_WAIT_SCHEMA,
+        refuses={"timeout": "use 'max_wait' to set the wait window in seconds"},
     ),
     Verb(
         name="job.kill",

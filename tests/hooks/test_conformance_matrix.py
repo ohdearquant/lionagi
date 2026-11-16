@@ -10,7 +10,7 @@ exit-code/stdout decision contract; and the named divergences Dv1-1..Dv1-4.
 Until this file exists and passes, no LionAGI documentation or `li hooks
 import` output may claim a foreign hook runs "unmodified" -- the import
 report always says "imported; verify against profile v1" (see
-``lionagi/cli/hooks.py``).
+``lionhub/src/lionhub/serve/cli/hooks.py``).
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from lionagi.cli.hooks import _translate_config
 from lionagi.protocols.action.tool_hooks import ToolPreDecision
 from lionhub.agent.settings import parse_external_hooks
 from lionhub.hooks.external import build_envelope, external_hook_adapter
+from lionhub.serve.cli.hooks import _translate_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

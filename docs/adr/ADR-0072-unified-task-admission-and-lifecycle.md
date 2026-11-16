@@ -135,7 +135,7 @@ Exact admission semantics:
 Why this way: producers agree on what work is before workers decide how to run it. Requiring the key
 at the core makes idempotency impossible to omit accidentally in a new binding.
 
-Current migration seams: `lionagi/studio/services/task_applications.py`,
+Current migration seams: `lionhub/src/lionhub/serve/daemon/services/task_applications.py`,
 `lionhub/src/lionhub/orchestration/scheduler/engine.py`, `lionagi/state/schema.sql`.
 
 ### D2 — Idempotency is one atomic insert-or-return decision

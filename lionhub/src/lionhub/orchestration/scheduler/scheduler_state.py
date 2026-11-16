@@ -74,6 +74,8 @@ class SchedulerStateService(Protocol):
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None: ...
 
+    async def create_skipped_schedule_run(self, run: dict[str, Any]) -> None: ...
+
     async def create_schedule_run_and_advance(
         self,
         run: dict[str, Any],
@@ -88,6 +90,17 @@ class SchedulerStateService(Protocol):
     ) -> bool: ...
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
+
+    async def create_failed_schedule_run_and_advance(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
+    ) -> bool: ...
 
     async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]: ...
 
@@ -104,6 +117,16 @@ class SchedulerStateService(Protocol):
     ) -> bool: ...
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None: ...
+
+    async def tombstone_and_replace_failed_schedule_run(
+        self,
+        orphan_id: str,
+        replacement_run: dict[str, Any],
+        *,
+        expected_orphan_status: str = "running",
+        reason_summary: str = "undispatched schedule run replaced during recovery",
+        evidence_refs: list[dict[str, Any]] | None = None,
+    ) -> bool: ...
 
     async def create_invocation(self, invocation: dict[str, Any]) -> None: ...
 
@@ -131,6 +154,7 @@ class SchedulerStateService(Protocol):
         metadata: dict | None = None,
         expected_statuses: set[str | None] | frozenset[str | None] | None = None,
         extra_fields: dict[str, Any] | None = None,
+        record_chain_decision: bool = False,
     ) -> bool: ...
 
     async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]: ...
@@ -273,6 +297,10 @@ class _DBSchedulerStateService:
         async with self._db_context() as db:
             await db.create_schedule_run(run)
 
+    async def create_skipped_schedule_run(self, run: dict[str, Any]) -> None:
+        async with self._db_context() as db:
+            await db._create_schedule_run(run, seed_chain_decision=True)
+
     async def create_schedule_run_and_advance(
         self,
         run: dict[str, Any],
@@ -299,6 +327,27 @@ class _DBSchedulerStateService:
                 ),
                 audit_context=audit_context,
                 reason=reason,
+            )
+
+    async def create_failed_schedule_run_and_advance(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
+    ) -> bool:
+        async with self._db_context() as db:
+            return await db._create_schedule_run_and_advance(
+                run,
+                schedule_id=schedule_id,
+                schedule_fields=schedule_fields,
+                expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
+                expect_target_generation=expect_target_generation,
+                seed_chain_decision=True,
             )
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
@@ -335,6 +384,25 @@ class _DBSchedulerStateService:
         async with self._db_context() as db:
             await db.update_schedule_run(run_id, **fields)
 
+    async def tombstone_and_replace_failed_schedule_run(
+        self,
+        orphan_id: str,
+        replacement_run: dict[str, Any],
+        *,
+        expected_orphan_status: str = "running",
+        reason_summary: str = "undispatched schedule run replaced during recovery",
+        evidence_refs: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        async with self._db_context() as db:
+            return await db._tombstone_and_replace_schedule_run(
+                orphan_id,
+                replacement_run,
+                expected_orphan_status=expected_orphan_status,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                seed_chain_decision=True,
+            )
+
     async def create_invocation(self, invocation: dict[str, Any]) -> None:
         async with self._db_context() as db:
             await db.create_invocation(invocation)
@@ -369,6 +437,7 @@ class _DBSchedulerStateService:
         metadata: dict | None = None,
         expected_statuses: set[str | None] | frozenset[str | None] | None = None,
         extra_fields: dict[str, Any] | None = None,
+        record_chain_decision: bool = False,
     ) -> bool:
         async with self._db_context() as db:
             return await db.update_status(
@@ -383,6 +452,7 @@ class _DBSchedulerStateService:
                 metadata=metadata,
                 expected_statuses=expected_statuses,
                 extra_fields=extra_fields,
+                **({"record_chain_decision": True} if record_chain_decision else {}),
             )
 
     async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:
@@ -408,7 +478,7 @@ async def create_skipped_run(
 ) -> None:
     """Create a skipped schedule_run record and its status event."""
     sid = schedule["id"]
-    await svc.create_schedule_run(
+    await svc.create_skipped_schedule_run(
         {
             "id": run_id,
             "schedule_id": sid,

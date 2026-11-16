@@ -213,7 +213,7 @@ def _prepare_run_kwargs(
     """Compile the request for ``ins`` from the branch's active view.
 
     With the prompt cache placed, ``cache_view``, when given, is filled with where the compiled
-    messages hold the end of the first round (``frontier``: message index, block index, and the
+    messages hold the end of the first round (``round_end``: message index, block index, and the
     round's message ids) and the newest compaction note (``note``), as (message, block) places in
     ``kw["messages"]``.
     """
@@ -760,6 +760,6 @@ def _note_view(view: dict, source, entry, index: int, slot: int, last: int, roun
         return
     # The round's results open the message that follows its answer: its last block is theirs.
     if entry.results_of and all(str(r.id) in round_ids for r in entry.results_of):
-        view["frontier"] = (index, slot)
+        view["round_end"] = (index, slot)
     elif source is not None and str(source.id) in round_ids:
-        view["frontier"] = (index, last)
+        view["round_end"] = (index, last)

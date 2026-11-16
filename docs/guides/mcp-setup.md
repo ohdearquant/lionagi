@@ -9,16 +9,16 @@ For what the server exposes once connected, see the
 
 ## 1. Install
 
-The server needs the optional `mcp` extra:
+Use Python 3.10 or later and install the optional `mcp` extra.
 
 ```bash
-pip install 'lionagi[mcp]'
+pip install "lionagi[mcp]"
 ```
 
-or, with uv:
+With uv, use the equivalent command.
 
 ```bash
-uv pip install 'lionagi[mcp]'
+uv pip install "lionagi[mcp]"
 ```
 
 That installs two things you will use below: the `li` console script, and the
@@ -26,10 +26,9 @@ That installs two things you will use below: the `li` console script, and the
 `bin/` and `site-packages/`, so a virtualenv that contains nothing else is
 enough.
 
-Importing `lionhub.serve.mcp` does not pull the extra — only serving does. If the
-extra is missing, `li mcp` refuses to start with a message naming the install
-command and exits with the environment-error code, so a misconfigured client
-sees a failed launch rather than a server that half-works.
+You can import `lionhub.serve.mcp` without the extra. Run `li doctor` to check
+whether `fastmcp` is available. If the extra is missing, `li mcp` gives the
+install command and exits with the environment-error code.
 
 ## 2. Register it with your client
 
@@ -80,7 +79,7 @@ The server itself reads four variables. Every one of them is optional.
 | Variable | Effect | When unset |
 |----------|--------|------------|
 | `LIONAGI_HOME` | Root of all on-disk state. Runs go to `$LIONAGI_HOME/runs/`, the server's own job records to `$LIONAGI_HOME/mcp/jobs/`. | Defaults to `~/.lionagi`. The directory is created on first write; nothing fails if it does not exist yet. |
-| `LIONAGI_MCP_LI_BIN` | Explicit argv prefix for the `li` CLI the server spawns, split on whitespace. A value that is not an absolute path (a bare `li`) is executed as-is, so the OS resolves it through `PATH` — give an absolute path unless you specifically want that. | The server uses the `li` script in its own interpreter's directory, by absolute path. Failing that, `<that interpreter> -m lionagi.cli`. Neither default consults `PATH`, so leaving this unset is the normal case. |
+| `LIONAGI_MCP_LI_BIN` | Explicit argv prefix for the `li` CLI the server spawns, split on whitespace. A value that is not an absolute path (a bare `li`) is executed as-is, so the OS resolves it through `PATH` — give an absolute path unless you specifically want that. | The server uses the `li` script in its own interpreter's directory, by absolute path. Failing that, `<that interpreter> -m lionhub.serve.cli`. Neither default consults `PATH`, so leaving this unset is the normal case. |
 | `LIONAGI_MCP_NOTIFY_TARGET` | Value substituted for the `{target}` placeholder in the terminal-run notification command. | The placeholder resolves to an empty string. |
 | `LIONAGI_MCP_NOTIFY_COMMAND` | JSON argv list delivering a notice when a background run reaches a terminal state. Overrides the configured `notify.on_terminal` adapter. | Falls back to lionagi's own `notify.on_terminal` setting. If that is unconfigured too, no notification is sent — deliberate silence, distinct from a notifier that was configured and failed, which is reported rather than swallowed. |
 

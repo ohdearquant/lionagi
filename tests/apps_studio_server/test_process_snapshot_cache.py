@@ -30,7 +30,7 @@ def _running_row(*, session_id: str, node_metadata: dict[str, Any] | None) -> di
 
 def _isolate_snapshot_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep module-global cache state from coupling otherwise independent tests."""
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_CACHE", None, raising=False)
     monkeypatch.setattr(scheduler_liveness, "_PS_SNAPSHOT_INFLIGHT", {}, raising=False)
@@ -42,7 +42,7 @@ async def _stub_run_dependencies(
     monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]]
 ) -> None:
     import lionagi.studio.services.run_tags as run_tags
-    import lionagi.studio.services.runs as runs_svc
+    import lionhub.serve.daemon.services.runs as runs_svc
 
     async def list_sessions(**_kwargs: Any) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
@@ -56,8 +56,8 @@ async def _stub_run_dependencies(
 
 def test_identity_complete_run_page_does_not_capture_process_table(monkeypatch):
     """Targeted PID identity must be evaluated before the host-wide fallback."""
-    import lionagi.studio.services.admin as admin_svc
-    import lionagi.studio.services.runs as runs_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
+    import lionhub.serve.daemon.services.runs as runs_svc
 
     _isolate_snapshot_cache(monkeypatch)
     create_time = psutil.Process(os.getpid()).create_time()
@@ -84,8 +84,8 @@ def test_identity_complete_run_page_does_not_capture_process_table(monkeypatch):
 
 def test_concurrent_legacy_run_pages_share_one_process_capture(monkeypatch):
     """Concurrent viewers inside the TTL share one off-loop fallback capture."""
-    import lionagi.studio.services.admin as admin_svc
-    import lionagi.studio.services.runs as runs_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
+    import lionhub.serve.daemon.services.runs as runs_svc
 
     _isolate_snapshot_cache(monkeypatch)
     session_id = "legacy-session-without-pid"
@@ -116,7 +116,7 @@ def test_concurrent_legacy_run_pages_share_one_process_capture(monkeypatch):
 
 def test_admin_health_exposes_process_fallback_coverage(monkeypatch):
     """Operators can see identity coverage, fallback volume, cache age and scan cost."""
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
     monkeypatch.setattr(admin_svc, "require_file_store", lambda: None)
@@ -143,8 +143,8 @@ def test_admin_health_exposes_process_fallback_coverage(monkeypatch):
 
 def test_invocation_health_avoids_host_scan_for_terminal_and_identity_rows(monkeypatch):
     """Invocation listings inherit the same targeted-first process contract."""
-    import lionagi.studio.services.admin as admin_svc
-    import lionagi.studio.services.invocations as invocations_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
+    import lionhub.serve.daemon.services.invocations as invocations_svc
 
     _isolate_snapshot_cache(monkeypatch)
     now = time.time()
@@ -189,7 +189,7 @@ def test_a_second_event_loop_gets_its_own_capture_instead_of_a_cross_loop_error(
     """
     import threading
 
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 
@@ -251,7 +251,7 @@ async def test_concurrent_callers_on_one_loop_still_share_a_single_capture(
     Without this, the fix above is equally satisfied by removing the shared
     capture entirely and letting every caller run its own `ps`.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 
@@ -289,7 +289,7 @@ async def test_an_older_capture_does_not_overwrite_newer_liveness_evidence(
     """
     import threading
 
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 
@@ -344,7 +344,7 @@ async def test_captures_that_start_inside_one_clock_tick_still_publish_in_start_
     """
     import threading
 
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 
@@ -460,7 +460,7 @@ def test_a_second_loop_does_not_evict_the_first_loops_singleflight_slot(
     """
     import threading
 
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 
@@ -553,7 +553,7 @@ def test_cache_publish_is_mutually_exclusive_across_loops(monkeypatch):
     """
     import threading
 
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 
@@ -638,7 +638,7 @@ async def test_a_scan_slower_than_the_ttl_still_produces_a_cache_that_hits(
     after it. Slow scans are what the cache exists for, so this is the load
     under which it would quietly stop being a cache at all.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 
@@ -692,7 +692,7 @@ async def test_the_cache_still_expires_once_the_ttl_actually_elapses(
     An entry that never expired would satisfy that one too, so without this
     the suite would read a broken TTL as a working cache.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 
@@ -738,7 +738,7 @@ async def test_a_page_of_legacy_rows_launches_one_scan_even_when_the_scan_is_slo
     made every row in a page pay for its own, so the health and phantom loops
     got slower the slower scanning already was.
     """
-    import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.daemon.services.admin as admin_svc
 
     _isolate_snapshot_cache(monkeypatch)
 

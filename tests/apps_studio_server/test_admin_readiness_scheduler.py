@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.studio.services import admin as admin_svc
 from lionhub.orchestration.scheduler import engine as engine_mod
+from lionhub.serve.daemon.services import admin as admin_svc
 
 
 async def _healthy_probe(*, timeout_ms: int) -> dict:

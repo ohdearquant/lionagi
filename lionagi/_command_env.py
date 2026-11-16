@@ -110,7 +110,8 @@ def scrub_command_env(
 
     Removal matches declarations, shared sensitive-name patterns and shell
     startup names without regard to case. Grants match only the exact input
-    key. The state-store URL remains excluded even when explicitly granted.
+    key. The state-store URL and migration opt-in stay excluded even when
+    explicitly granted.
     """
     from lionagi.ln._proc import env_without_state_db_url
     from lionagi.service.connections.mcp_wrapper import _SENSITIVE_ENV_PATTERNS

@@ -97,17 +97,16 @@ def _marker_matches(value: str | None, expected: str) -> bool:
     return isinstance(value, str) and secrets.compare_digest(value, expected)
 
 
-# Where a lionagi process finds its state store. A configured command (a scheduled command, a notify
-# command, a tool hook) often runs a lionagi of its own, so it never inherits this from its parent:
-# a lionagi on a newer store schema would open the parent's store through it and migrate the file.
+# A configured command can run its own LionAGI. Keep the parent's store selection
+# and migration opt-in out of that command's inherited environment.
 STATE_DB_URL_ENV = "LIONAGI_STATE_DB_URL"
+_STATE_STORE_ENV_NAMES = frozenset({STATE_DB_URL_ENV, "LIONAGI_STATE_AUTO_MIGRATE"})
 
 
 def env_without_state_db_url(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """*env* (default: this process's environment) without the state-store URL in any letter case,
-    since the settings that read it match names case-insensitively."""
+    """Copy *env*, or this process's environment, without either state-store setting in any case."""
     source = os.environ if env is None else env
-    return {k: v for k, v in source.items() if k.upper() != STATE_DB_URL_ENV}
+    return {k: v for k, v in source.items() if k.upper() not in _STATE_STORE_ENV_NAMES}
 
 
 def prepare_process_group_env(
@@ -1331,7 +1330,8 @@ async def communicate_in_process_group(
 ) -> tuple[int | None, bytes, bytes]:
     """Run *argv* in a session of its own, feed it *stdin*, and return its exit and output.
 
-    The child gets this process's environment without the state-store URL (``env_without_state_db_url``).
+    The child inherits this process's environment without the state-store URL
+    or automatic migration opt-in.
 
     Whatever ends the exchange early -- the timeout, a failed exchange, a cancelled
     caller, including one cancelled while the child is being started -- kills the

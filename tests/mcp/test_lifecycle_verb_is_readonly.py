@@ -22,7 +22,7 @@ import pytest
 
 pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from lionagi.cli.machine import lifecycle_data
+from lionhub.serve.cli.machine import lifecycle_data
 
 
 def _redirect(monkeypatch, db_path: Path) -> None:

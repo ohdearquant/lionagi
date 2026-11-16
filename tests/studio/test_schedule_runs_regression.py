@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services.schedules import get_schedule_run, list_schedule_runs_route
+from lionhub.serve.daemon.services.schedules import get_schedule_run, list_schedule_runs_route
 
 
 @pytest.fixture

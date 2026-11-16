@@ -15,12 +15,12 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from unittest.mock import AsyncMock, patch
 
-from lionagi.studio.services.schedules import create_schedule, update_schedule
 from lionhub.orchestration.schedule.parsing import (
     _MAX_CHAIN_DEPTH,
     _parse_chain_action,
     _validate_chain_kinds,
 )
+from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
 FIELDS = ("on_success", "on_fail")
 
@@ -87,7 +87,7 @@ def _run_create(data: dict):
     """Run create_schedule against a stubbed store; return (store, ValueError | None)."""
 
     async def _go():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -106,7 +106,7 @@ def _run_update(fields: dict, existing: dict | None = None):
     row = existing if existing is not None else _existing()
 
     async def _go():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=row)
             mock_db.update_schedule = AsyncMock()

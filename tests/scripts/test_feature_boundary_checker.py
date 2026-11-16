@@ -1,10 +1,13 @@
 """Static inventory and manifest validation tests."""
 
 import json
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from lionagi import _moved
 from scripts import build_feature_boundaries as builder
 from scripts import check_feature_boundaries as checker
 
@@ -30,7 +33,7 @@ def fixture_project(tmp_path: Path):
     adr = root / "docs/adr"
     adr.mkdir(parents=True)
     (adr / "ADR-0138-fixture.md").write_text("lionhub.serve\n", encoding="utf-8")
-    (adr / "ADR-0139-fixture.md").write_text("lionhub.cli\n", encoding="utf-8")
+    (adr / "ADR-0139-fixture.md").write_text("lionhub.serve.cli\nlionhub.cli\n", encoding="utf-8")
     (root / "pyproject.toml").write_text(
         """\n[project]\ndependencies = ["Example_Package>=1"]\n[project.optional-dependencies]\nextra = ["Some.Extra>=2", "lionagi[extra]"]\n[dependency-groups]\ndev = ["pytest"]\n[build-system]\nrequires = ["hatchling"]\n[tool.uv]\nconstraint-dependencies = ["Safety-Pkg"]\n""",
         encoding="utf-8",
@@ -263,19 +266,100 @@ def test_secondary_users_and_module_coverage_fail_closed(tmp_path):
 
 def test_target_notes_use_recorded_destinations_only():
     fallback = "lionhub (destination not yet recorded)"
-    assert builder.match(builder.TARGET_RULES, "lionagi.cli.agent") == (
-        "pending the CLI location decision (ADR-0139 D1)"
-    )
+    assert builder.match(builder.TARGET_RULES, "lionhub.serve.cli.agent") == "lionhub.serve.cli"
+    assert builder.match(builder.TARGET_RULES, "lionagi.studio.cli") == "lionhub.serve.cli"
     assert builder.match(builder.TARGET_RULES, "lionhub.orchestration.scheduler") == (
         "lionhub.orchestration.scheduler"
     )
     assert builder.match(builder.TARGET_RULES, "lionagi.tools.khive_injection") == fallback
-    assert (
-        builder.match(builder.TARGET_RULES, "lionagi.studio.services.sessions") == "lionhub.serve"
-    )
-    assert builder.ADDITIONAL_TARGETS["lionagi.cli.orchestrate"] == [
+    # A module that has arrived at its destination carries no target note.
+    assert builder.match(builder.TARGET_RULES, "lionhub.serve.daemon.services.sessions") is None
+    assert builder.ADDITIONAL_TARGETS["lionhub.serve.cli.orchestrate"] == [
         "lionhub.orchestration.flow.parsing"
     ]
+
+
+def _adr_0139_step_3_table(section, columns, label):
+    _, header, table = section.partition(columns)
+    assert header, f"ADR-0139 D2 {label} table is missing"
+    separator, *rows = table.partition("\n\n")[0].splitlines()
+    assert separator == "| --- | --- | --- |" and rows, (
+        f"ADR-0139 D2 {label} table has no data rows"
+    )
+    return [[cell.strip() for cell in row.strip().strip("|").split("|", 2)] for row in rows]
+
+
+def test_adr_0139_step_3_destinations_match_moves_or_target_rules():
+    root = builder.ROOT
+    adr = root / "docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md"
+    _, heading, d2 = adr.read_text(encoding="utf-8").partition("\n### D2 — ")
+    assert heading, "ADR-0139 D2 heading is missing"
+    section = d2.partition("\n### ")[0]
+    rows = _adr_0139_step_3_table(section, "| Step-3 destination | Scope |\n", "whole-module")
+    assert len(rows) == 17, (
+        f"ADR-0139 D2 specifies seventeen complete source modules; found {len(rows)}"
+    )
+
+    tracked = set(
+        subprocess.check_output(
+            ["git", "ls-files", "-z", "--", "lionagi", "lionhub/src/lionhub"],
+            cwd=root,
+            encoding="utf-8",
+        ).split("\0")
+    )
+    seen = {}
+    for row in rows:
+        assert len(row) == 3, f"invalid ADR-0139 D2 row: {row}"
+        source, destination, _ = row
+        path = re.match(r"`(lionagi/[\w/]+\.py)(?::[^`]+)?`(?:\s|$)", source)
+        target = re.fullmatch(r"`(lionhub(?:\.\w+)+)`", destination)
+        assert path and target, f"invalid ADR-0139 D2 source or destination: {row}"
+        original, expected = path[1], target[1]
+        old = original.removesuffix(".py").replace("/", ".")
+        assert old not in seen, f"duplicate ADR-0139 D2 source: {old}"
+        seen[old] = expected
+
+        destinations = [move.new for move in _moved.MOVED if move.old == old]
+        if destinations:
+            assert destinations == [expected], f"{old}: ADR-0139 D2 requires {expected} in MOVED"
+            target_path = Path("lionhub/src", *expected.split("."))
+            assert any(
+                file.as_posix() in tracked and (root / file).is_file()
+                for file in (target_path.with_suffix(".py"), target_path / "__init__.py")
+            ), f"{expected}: ADR-0139 D2 destination file is missing or untracked"
+        else:
+            assert original in tracked and (root / original).is_file(), (
+                f"{old}: ADR-0139 D2 needs an exact MOVED entry or a tracked original file"
+            )
+            assert builder.TARGET_RULES.get(old) == expected, (
+                f"{old}: ADR-0139 D2 requires an exact TARGET_RULES entry for {expected}"
+            )
+
+    # The parent package moves separately. A descendant's exact route must be
+    # represented by the step-3 table even if the parent can resolve that name.
+    cli_moves = {move.old for move in _moved.MOVED if move.old.startswith("lionagi.cli.")}
+    unlisted = cli_moves - seen.keys()
+    assert not unlisted, f"Exact CLI routes missing from ADR-0139 D2: {sorted(unlisted)}"
+
+    shared = _adr_0139_step_3_table(
+        section, "| Step-3 public owner | Extraction; retained adapter |\n", "shared-definition"
+    )
+    assert len(shared) == 1 and len(shared[0]) == 3, "ADR-0139 D2 specifies one shared definition"
+    adapter, owner, extraction = shared[0]
+    assert re.match(r"`lionagi/cli/orchestrate/_orchestration\.py(?::[^`]+)?`", adapter), (
+        "ADR-0139 D2 must name the retained orchestration adapter"
+    )
+    assert extraction.startswith("`register_branch_hook`"), "ADR-0139 D2 must name the shared hook"
+
+    from lionhub.serve.cli.orchestrate._orchestration import register_branch_hook
+
+    actual_owner = register_branch_hook.__module__
+    assert owner == f"`{actual_owner}`", (
+        f"ADR-0139 D2 must assign register_branch_hook to {actual_owner}"
+    )
+    assert actual_owner == seen["lionagi.cli._runs"], (
+        "ADR-0139 D2 must assign register_branch_hook and its enclosing module the same owner"
+    )
 
 
 def test_committed_inventory_matches_generator_and_rejects_hand_edit(tmp_path):
@@ -329,8 +413,23 @@ def test_target_notes_require_public_evidence(tmp_path):
     data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.serve.unrecorded"
     with pytest.raises(checker.ManifestError, match="unrecorded destination"):
         checker.validate_target_notes(root, data, checker.lionhub_targets(root))
-    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.cli"
-    with pytest.raises(checker.ManifestError, match="pending CLI destination"):
+    # The adopted CLI destination is recorded; the one it superseded is refused even
+    # though the record still names it.
+    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.serve.cli"
+    checker.validate_target_notes(root, data, checker.lionhub_targets(root))
+    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.cli.catalog"
+    with pytest.raises(checker.ManifestError, match="superseded CLI destination"):
+        checker.validate_target_notes(root, data, checker.lionhub_targets(root))
+    # A superseded name is refused even when a package of that name still exists.
+    with pytest.raises(checker.ManifestError, match="superseded CLI destination"):
+        checker.validate_target_notes(
+            root, data, checker.lionhub_targets(root) | {"lionhub.cli.catalog"}
+        )
+    # The placeholder used before the decision is no longer accepted.
+    data["modules"]["lionagi.foundation"]["target_owner"] = (
+        "pending the CLI location decision (ADR-0139 D1)"
+    )
+    with pytest.raises(checker.ManifestError, match="unrecorded destination"):
         checker.validate_target_notes(root, data, checker.lionhub_targets(root))
 
 

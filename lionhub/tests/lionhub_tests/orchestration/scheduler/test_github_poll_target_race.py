@@ -9,10 +9,10 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from lionagi.studio.services import schedules
 from lionhub.orchestration.scheduler import github as github_module
 from lionhub.orchestration.scheduler import subprocess as subprocess_module
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
+from lionhub.serve.daemon.services import schedules
 
 from .test_github_poll_stagnation import (
     _NOW,
@@ -321,7 +321,7 @@ async def test_setup_refusal_is_not_recorded_after_target_claim_is_lost(
     service = _Service(db)
     engine = SchedulerEngine(svc=service)
     entered, release = asyncio.Event(), asyncio.Event()
-    original = service.create_schedule_run_and_advance
+    original = service.create_failed_schedule_run_and_advance
     started = []
     spawn = subprocess_module.asyncio.create_subprocess_exec
 
@@ -340,7 +340,7 @@ async def test_setup_refusal_is_not_recorded_after_target_claim_is_lost(
     monkeypatch.setattr(engine_module, "_resolve_action_cwd", fail_cwd)
     monkeypatch.setattr(subprocess_module.asyncio, "create_subprocess_exec", capture_spawn)
     if retarget:
-        monkeypatch.setattr(service, "create_schedule_run_and_advance", pause_claim)
+        monkeypatch.setattr(service, "create_failed_schedule_run_and_advance", pause_claim)
     task = asyncio.create_task(engine._tick_github(schedule, _NOW))
     try:
         if retarget:

@@ -191,6 +191,9 @@ def _find_run_dir_by_id(run_id: str) -> RunDir | None:
     the caller did not ask: they named a run, not "the newest run starting
     with this", and the commands built on this act on what comes back.
     """
+    if not run_id or run_id in {".", ".."} or any(char in run_id for char in "/\\\0*?["):
+        return None
+
     exact = RUNS_ROOT / run_id
     if exact.is_dir():
         return RunDir(run_id=run_id, state_root=exact, artifact_root=exact / "artifacts")

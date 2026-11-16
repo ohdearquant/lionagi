@@ -53,7 +53,7 @@ async def _seed_engine_run(
 
 @pytest.fixture
 def patched_engine_runs_svc(tmp_path: Path, monkeypatch):
-    import lionagi.studio.services.engine_runs as svc
+    import lionhub.serve.daemon.services.engine_runs as svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -202,7 +202,7 @@ def patched_app(tmp_path: Path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.engine_runs as er_svc
+    import lionhub.serve.daemon.services.engine_runs as er_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -355,7 +355,7 @@ def test_list_endpoint_bearer_auth(tmp_path: Path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from fastapi.testclient import TestClient
 
-    import lionagi.studio.services.engine_runs as er_svc
+    import lionhub.serve.daemon.services.engine_runs as er_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

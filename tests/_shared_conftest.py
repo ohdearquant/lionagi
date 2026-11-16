@@ -350,6 +350,27 @@ def _contain_the_frontend_dist_variable(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_child_sandbox_by_default(monkeypatch: pytest.MonkeyPatch):
+    """Keep the CLI child sandbox out of tests that do not ask for it.
+
+    The sandbox is on by default, so every Claude Code argv would gain a ``--settings`` flag
+    and a ``claude --version`` probe, and the policy would be read from the developer's own
+    ``~/.lionagi/settings.yaml``. This makes the settings source answer "disabled" for each
+    test. Tests of the sandbox itself pass their settings explicitly or restore the real
+    source.
+    """
+    try:
+        import importlib
+
+        child_sandbox = importlib.import_module("lionhub.agent.child_sandbox")
+    except ImportError:
+        return
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+
+
+@pytest.fixture(autouse=True)
 def _reset_plugin_registry():
     """Reset PluginRegistry's process-lifetime scan cache around every test.
 

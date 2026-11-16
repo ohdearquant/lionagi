@@ -23,6 +23,7 @@ from typing import Any
 from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
+from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 
 from . import config, jobs, projection, roster
 from .verbs import (
@@ -50,6 +51,7 @@ MACHINE_TIMEOUT_SECONDS = 60.0
 # result is an explicit overflow error rather than a truncated JSON document that
 # would fail to parse with a misleading message.
 MACHINE_OUTPUT_LIMIT = 1_000_000
+_MACHINE_STDERR_TAIL = 2_000
 
 _STARTED_AT = now_utc().isoformat()
 _STARTED_MONOTONIC = time.time()
@@ -228,6 +230,21 @@ def _describe_fingerprint(
     entry["schema_fingerprint"] = schema_fingerprint(schema)
 
 
+# The one statement of how a caller recovers from a stale_schema refusal. Spawn-verb help
+# and both refusal branches carry this text; docs/reference/mcp-server.md states the rule.
+_SPAWN_RETRY_RULE = (
+    "Send schema_fingerprint beside 'args'. If the server returns stale_schema and your "
+    "arguments match the schema it returns (error.schema, or error.schema_ref naming the "
+    "op_index whose error already carries that schema in the same response), retry once "
+    "with error.detail.schema_fingerprint."
+)
+# Help for a verb whose fingerprint depends on an argument help was not given.
+_FINGERPRINT_NEEDS_ARGUMENT = (
+    "This verb's fingerprint depends on the parameters in schema_fingerprint_varies_with; "
+    "pass them to help to get the fingerprint its ops carry. "
+)
+
+
 def _require_fingerprint(
     name: str,
     verb: Verb,
@@ -236,7 +253,7 @@ def _require_fingerprint(
     *,
     playbook: str | None = None,
 ) -> None:
-    """Spawn ops carry the fingerprint targeted help returned for them.
+    """Spawn ops carry the current fingerprint from help or the refusal.
 
     Establishes that the schema the caller validated against is the schema
     about to run (not, in general, that the caller itself read it — a
@@ -266,16 +283,15 @@ def _require_fingerprint(
     if supplied is None:
         raise OpError(
             "stale_schema",
-            f"{name!r} needs the schema_fingerprint that help returns for it; ask for "
-            f"{ask} and send the fingerprint as a sibling of 'args', not a "
-            f"member of it: {shape}",
+            f"{name!r} requires a schema_fingerprint, as a sibling of 'args': {shape}. "
+            f"{_SPAWN_RETRY_RULE} The schema alone: {ask}.",
             remedy,
         )
     raise OpError(
         "stale_schema",
         f"{name!r} was called with schema_fingerprint {supplied!r}, which is not the "
         f"current {current!r}; the parameters changed since that schema was read. "
-        f"Re-read {ask} and send: {shape}",
+        f"{_SPAWN_RETRY_RULE} Send: {shape}. The schema alone: {ask}.",
         remedy,
     )
 
@@ -840,8 +856,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
         and not args.get("playbook")
         and not args.get("resume")
     ):
-        from lionagi.cli.orchestrate import _resolve_model_and_prompt
-        from lionagi.cli.orchestrate._orchestration import _select_orchestrator_agent
+        from lionhub.serve.cli.orchestrate import _resolve_model_and_prompt
+        from lionhub.serve.cli.orchestrate._orchestration import _select_orchestrator_agent
 
         query = [*(args.get("query") or []), *([prompt] if prompt is not None else [])]
         resolved = _resolve_model_and_prompt(query)
@@ -897,8 +913,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
 
 
 def _server_info() -> dict[str, Any]:
-    from lionagi.cli.machine import CONTRACT_VERSION
     from lionagi.version import __version__
+    from lionhub.serve.cli.machine import CONTRACT_VERSION
     from lionhub.serve.diagnostics import code_identity
 
     return {
@@ -957,6 +973,51 @@ def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
         raise OpError("invalid_input", str(exc)) from exc
 
 
+def _machine_environment_error(
+    cli_path: str, completed: subprocess.CompletedProcess[bytes]
+) -> OpError:
+    """Classify a startup refusal from its exit status and keep usable diagnostics."""
+    from lionagi.state.engine import mask_credentials
+    from lionhub.serve.cli._machine_envelope import _CONTRACT_VERSION
+
+    stderr = mask_credentials(completed.stderr.decode("utf-8", "replace"))[-_MACHINE_STDERR_TAIL:]
+    detail = {"exit_code": completed.returncode, "stderr": stderr}
+    fallback = OpError("unavailable", f"`{cli_path}` could not start in this environment", detail)
+    if not completed.stdout or len(completed.stdout) > MACHINE_OUTPUT_LIMIT:
+        return fallback
+    try:
+        envelope = json.loads(completed.stdout.decode("utf-8"))
+    except (ValueError, RecursionError):
+        return fallback
+    if not isinstance(envelope, dict) or envelope.get("ok") is not False:
+        return fallback
+    version = envelope.get("contract_version")
+    if type(version) is not int or version != _CONTRACT_VERSION:
+        return fallback
+    if "data" not in envelope or envelope["data"] is not None:
+        return fallback
+    error = envelope.get("error")
+    if not isinstance(error, dict) or error.get("kind") != "unavailable":
+        return fallback
+    message = error.get("message")
+    envelope_detail = error.get("detail")
+    if not isinstance(message, str) or (
+        envelope_detail is not None and not isinstance(envelope_detail, dict)
+    ):
+        return fallback
+    envelope_detail = envelope_detail or {}
+    pending = [envelope_detail]
+    while pending:
+        container = pending.pop()
+        items = container.items() if isinstance(container, dict) else enumerate(container)
+        for key, value in items:
+            if isinstance(value, str):
+                container[key] = mask_credentials(value)
+            elif isinstance(value, (dict, list)):
+                pending.append(value)
+    return OpError("unavailable", mask_credentials(message), {**envelope_detail, **detail})
+
+
 def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     """Run the verb's CLI path as a subprocess and return its versioned envelope.
 
@@ -980,6 +1041,8 @@ def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> di
     except OSError as exc:
         raise OpError("internal", f"could not launch `{verb.cli_path}`: {exc}") from exc
 
+    if completed.returncode == EXIT_CODE_ENVIRONMENT_ERROR:
+        raise _machine_environment_error(verb.cli_path, completed)
     if len(completed.stdout) > MACHINE_OUTPUT_LIMIT:
         raise OpError(
             "internal",
@@ -988,7 +1051,7 @@ def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> di
         )
 
     text = completed.stdout.decode("utf-8", "replace").strip()
-    stderr_tail = completed.stderr.decode("utf-8", "replace")[-2000:]
+    stderr_tail = completed.stderr.decode("utf-8", "replace")[-_MACHINE_STDERR_TAIL:]
     if not text:
         raise OpError(
             "internal",
@@ -1055,6 +1118,11 @@ def _help(target: Any) -> dict[str, Any]:
     answer: dict[str, Any] = {"verb": name, "schema": schema}
     if verb.executor == "spawn":
         _describe_fingerprint(answer, verb, schema, playbook=playbook)
+        answer["help_usage"] = (
+            _SPAWN_RETRY_RULE
+            if "schema_fingerprint" in answer
+            else _FINGERPRINT_NEEDS_ARGUMENT + _SPAWN_RETRY_RULE
+        )
     return answer
 
 

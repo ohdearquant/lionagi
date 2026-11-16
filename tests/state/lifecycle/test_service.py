@@ -8,15 +8,17 @@ tested elsewhere)."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 import uuid
 from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import JSON, bindparam, text
 
-from lionagi.state.db import StateDB
+from lionagi.state.db import SCHEMA_VERSION, StateDB, TransitionRejectedError
 from lionagi.state.lifecycle import (
     ActorRecord,
     LifecycleNotFoundError,
@@ -26,6 +28,8 @@ from lionagi.state.lifecycle import (
     TransitionCommand,
 )
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
+from lionagi.state.reasons import RunReasons
+from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 
 # Fixtures
 
@@ -50,7 +54,9 @@ async def _make_session(db: StateDB, *, status: str = "running") -> str:
     return sid
 
 
-async def _make_schedule_run(db: StateDB, *, status: str = "queued") -> str:
+async def _make_schedule_run(
+    db: StateDB, *, status: str = "queued", seed_chain_decision: bool = False
+) -> str:
     sched_id = _uid()
     await db.create_schedule(
         {
@@ -62,17 +68,19 @@ async def _make_schedule_run(db: StateDB, *, status: str = "queued") -> str:
         }
     )
     run_id = _uid()
-    await db.create_schedule_run(
-        {
-            "id": run_id,
-            "schedule_id": sched_id,
-            "trigger_context": {},
-            "action_kind": "agent",
-            "action_args": [],
-            "status": status,
-            "fired_at": time.time(),
-        }
-    )
+    row = {
+        "id": run_id,
+        "schedule_id": sched_id,
+        "trigger_context": {},
+        "action_kind": "agent",
+        "action_args": [],
+        "status": status,
+        "fired_at": time.time(),
+    }
+    if seed_chain_decision:
+        await db._create_schedule_run(row, seed_chain_decision=True)
+    else:
+        await db.create_schedule_run(row)
     return run_id
 
 
@@ -925,3 +933,327 @@ async def test_a_stored_duration_is_cleared_when_a_transition_marks_the_end_appr
     row = await db.get_session(sid)
     assert row is not None
     assert row["duration_ms"] is None, "a pre-existing duration outlived the approximate mark"
+
+
+_DECISION = {"kind": "chain_decision", "v": 1, "ref": "on_fail"}
+_NO_CHAIN = {**_DECISION, "ref": "none"}
+_INVOCATION_REF = {"kind": "invocation", "id": "inv"}
+
+
+@pytest_asyncio.fixture(params=["sqlite", "postgresql"], loop_scope="function")
+async def chain_db(request, tmp_path):
+    store = (
+        StateDB(tmp_path / "chain.db")
+        if request.param == "sqlite"
+        else StateDB(url=request.getfixturevalue("pg_url"))
+    )
+    async with store:
+        yield store
+
+
+async def _chain_history(store, run_id):
+    return await store.fetch_all(
+        "SELECT status, evidence_refs FROM status_transitions "
+        "WHERE entity_type='schedule_run' AND entity_id=? ORDER BY created_at, id",
+        (run_id,),
+    )
+
+
+async def _chain_rejections(store, run_id):
+    return await store.fetch_all(
+        "SELECT details FROM admin_events WHERE action='status_transition_rejected' AND target_id=?",
+        (run_id,),
+    )
+
+
+def _history_refs(history_row):
+    refs = history_row["evidence_refs"]
+    return json.loads(refs) if isinstance(refs, str) else refs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "target", "expected", "marked", "decision"),
+    [
+        ("running", "completed", {"running"}, False, _DECISION),
+        ("running", "completed", {"running"}, True, {**_DECISION, "v": True}),
+        ("running", "completed", None, True, _DECISION),
+        ("queued", "running", {"queued"}, True, _DECISION),
+    ],
+    ids=["unmarked", "boolean-version", "no-running-guard", "nonterminal-target"],
+)
+async def test_schedule_decision_requires_an_authorized_guarded_terminal_write(
+    chain_db, status, target, expected, marked, decision
+):
+    store = chain_db
+    run_id = await _make_schedule_run(store, status=status)
+    before = await store.get_schedule_run(run_id)
+    history = await _chain_history(store, run_id)
+    service = store._lifecycle_service()
+    outcome = await service.transition(
+        _command(
+            entity_type="schedule_run",
+            entity_id=run_id,
+            to_status=target,
+            reason=ReasonRecord(code=RunReasons.COMPLETED_OK, evidence_refs=(decision,)),
+            expected_statuses=frozenset(expected) if expected is not None else None,
+            record_chain_decision=marked,
+        )
+    )
+    assert (
+        outcome.result,
+        outcome.current_status,
+        outcome.transition_id,
+        outcome.rejection_reason,
+    ) == ("rejected", status, None, "decision_conflict")
+    events = await _chain_rejections(store, run_id)
+    assert len(events) == 1
+    with pytest.raises(TransitionRejectedError, match="decision_conflict") as rejection:
+        await store.update_status(
+            "schedule_run",
+            run_id,
+            new_status=target,
+            reason_code=RunReasons.COMPLETED_OK,
+            expected_statuses=expected,
+            evidence_refs=[decision],
+            record_chain_decision=marked,
+        )
+    assert rejection.value.reason == "decision_conflict"
+    assert rejection.value.previous_status == status
+    events = await _chain_rejections(store, run_id)
+    assert len(events) == 2
+    assert await store.get_schedule_run(run_id) == before
+    assert await _chain_history(store, run_id) == history
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("stamp", "decision_expected"), [("6", False), ("7", True)])
+async def test_schedule_decisions_read_the_same_store_stamp_as_the_writer(
+    chain_db, stamp, decision_expected
+):
+    store = chain_db
+    async with store._tx() as conn:
+        await conn.execute(
+            text("UPDATE schema_meta SET value=:stamp WHERE key='version'"),
+            {"stamp": stamp},
+        )
+    try:
+        run_id = await _make_schedule_run(store, status="running")
+        assert await store.update_status(
+            "schedule_run",
+            run_id,
+            new_status="failed",
+            reason_code=RunReasons.FAILED_EXCEPTION,
+            expected_statuses={"running"},
+            evidence_refs=[_INVOCATION_REF, _DECISION],
+            record_chain_decision=True,
+        )
+        run = await store.get_schedule_run(run_id)
+        terminal_refs = [_INVOCATION_REF, _DECISION] if decision_expected else [_INVOCATION_REF]
+        assert run["status_evidence_refs"] == terminal_refs
+        assert _history_refs((await _chain_history(store, run_id))[-1]) == terminal_refs
+
+        for status in ("failed", "skipped", "running", "queued"):
+            run_id = await _make_schedule_run(store, status=status, seed_chain_decision=True)
+            row = await store.get_schedule_run(run_id)
+            seed = [_NO_CHAIN] if decision_expected and status in ("failed", "skipped") else []
+            assert row["status_evidence_refs"] == seed
+            assert _history_refs((await _chain_history(store, run_id))[0]) == seed
+        for status in ("failed", "skipped"):
+            run_id = await _make_schedule_run(store, status=status)
+            row = await store.get_schedule_run(run_id)
+            assert row["status_evidence_refs"] == []
+            assert _history_refs((await _chain_history(store, run_id))[0]) == []
+    finally:
+        async with store._tx() as conn:
+            await conn.execute(
+                text("UPDATE schema_meta SET value=:stamp WHERE key='version'"),
+                {"stamp": SCHEMA_VERSION},
+            )
+
+
+@pytest.mark.asyncio
+async def test_schedule_decision_survives_an_append_based_on_a_running_snapshot(chain_db):
+    store = chain_db
+    run_id = await _make_schedule_run(store, status="running")
+    read_complete, append_allowed = asyncio.Event(), asyncio.Event()
+
+    async def later_writer():
+        snapshot = await store.get_schedule_run(run_id)
+        assert snapshot["status"] == "running"
+        read_complete.set()
+        await append_allowed.wait()
+        return await store.update_status(
+            "schedule_run",
+            run_id,
+            new_status="failed",
+            reason_code=RunReasons.FAILED_EXCEPTION,
+            evidence_refs=snapshot["status_evidence_refs"],
+        )
+
+    pending_append = asyncio.create_task(later_writer())
+    try:
+        await asyncio.wait_for(read_complete.wait(), timeout=5)
+        assert await store.update_status(
+            "schedule_run",
+            run_id,
+            new_status="failed",
+            reason_code=RunReasons.FAILED_EXCEPTION,
+            expected_statuses={"running"},
+            evidence_refs=[_INVOCATION_REF, _DECISION],
+            record_chain_decision=True,
+        )
+    finally:
+        append_allowed.set()
+        assert await pending_append
+    row = await store.get_schedule_run(run_id)
+    assert row["status_evidence_refs"] == [_DECISION]
+    history = await _chain_history(store, run_id)
+    assert [_history_refs(item) for item in history] == [
+        [],
+        [_INVOCATION_REF, _DECISION],
+        [_DECISION],
+    ]
+
+
+def _legacy_chain_command(run_id, *, origin="failed", target="failed", evidence_refs=()):
+    return TransitionRequest(
+        entity_type="schedule_run",
+        entity_id=run_id,
+        from_state=origin,
+        to_state=target,
+        reason=StateReason(code=RunReasons.FAILED_EXCEPTION, evidence_refs=list(evidence_refs)),
+        actor=Actor(type="scheduler", id="scheduler"),
+        idempotency_key=_uid(),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [1, 2], ids=["known-version", "future-version"])
+async def test_schedule_decision_survives_terminal_override_and_legacy_history(chain_db, version):
+    store = chain_db
+    run_id = await _make_schedule_run(store, status="failed")
+    decision = {**_NO_CHAIN, "v": version}
+    async with store._tx() as conn:
+        await conn.execute(
+            text("UPDATE schedule_runs SET status_evidence_refs=:refs WHERE id=:run_id").bindparams(
+                bindparam("refs", type_=JSON)
+            ),
+            {"refs": [decision], "run_id": run_id},
+        )
+
+    assert await store.update_status(
+        "schedule_run",
+        run_id,
+        new_status="completed",
+        reason_code=RunReasons.COMPLETED_OK,
+        evidence_refs=[_INVOCATION_REF],
+        override=True,
+        override_actor="operator",
+        override_justification="observed completion",
+    )
+    assert await store.update_status(
+        "schedule_run",
+        run_id,
+        new_status="completed",
+        reason_code=RunReasons.COMPLETED_OK,
+        evidence_refs=[_INVOCATION_REF, decision],
+    )
+    before_legacy = await store.get_schedule_run(run_id)
+    assert before_legacy["status_evidence_refs"] == [_INVOCATION_REF, decision]
+
+    ordinary = {"kind": "schedule", "id": "definition"}
+    outcome = await transition(
+        store,
+        _legacy_chain_command(
+            run_id, origin="completed", target="completed", evidence_refs=(ordinary,)
+        ),
+    )
+    assert outcome.applied
+    after_legacy = await store.get_schedule_run(run_id)
+    assert after_legacy["status_evidence_refs"] == before_legacy["status_evidence_refs"]
+    assert after_legacy["status_reason_code"] == before_legacy["status_reason_code"]
+    assert _history_refs((await _chain_history(store, run_id))[-1]) == [ordinary, decision]
+
+
+@pytest.mark.asyncio
+async def test_schedule_decision_policy_loses_stale_guards_before_an_audit(chain_db):
+    store = chain_db
+    run_id = await _make_schedule_run(store, status="failed", seed_chain_decision=True)
+    before = await store.get_schedule_run(run_id)
+    history = await _chain_history(store, run_id)
+
+    assert not await store.update_status(
+        "schedule_run",
+        run_id,
+        new_status="completed",
+        reason_code=RunReasons.COMPLETED_OK,
+        evidence_refs=[_DECISION],
+        expected_updated_at=-1.0,
+    )
+    outcome = await transition(
+        store,
+        _legacy_chain_command(run_id, evidence_refs=(_DECISION,)),
+        guard={"lease_attempts": 1},
+    )
+    assert (outcome.applied, outcome.conflict, outcome.transition_id) == (False, True, None)
+    with pytest.raises(LifecycleValidationError, match="not in the declared transition"):
+        await transition(
+            store, _legacy_chain_command(run_id, target="completed", evidence_refs=(_DECISION,))
+        )
+    assert not await _chain_rejections(store, run_id)
+    assert await store.get_schedule_run(run_id) == before
+    assert await _chain_history(store, run_id) == history
+
+
+@pytest.mark.asyncio
+async def test_schedule_terminal_floor_and_decision_refusals_keep_current_and_history(chain_db):
+    store = chain_db
+    run_id = await _make_schedule_run(store, status="failed", seed_chain_decision=True)
+    before = await store.get_schedule_run(run_id)
+    history = await _chain_history(store, run_id)
+    with pytest.raises(TransitionRejectedError, match="without override=True") as rejection:
+        await store.update_status(
+            "schedule_run",
+            run_id,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            evidence_refs=[_DECISION],
+        )
+    assert rejection.value.reason == "no_override"
+    with pytest.raises(TransitionRejectedError, match="terminal_floor"):
+        await store.update_status(
+            "schedule_run",
+            run_id,
+            new_status="running",
+            reason_code=RunReasons.STARTED_OK,
+            override=True,
+            override_actor="operator",
+            override_justification="retry old occurrence",
+        )
+    with pytest.raises(TransitionRejectedError, match="terminal_floor"):
+        await transition(store, _legacy_chain_command(run_id, target="running"))
+    with pytest.raises(TransitionRejectedError, match="decision_conflict"):
+        await transition(store, _legacy_chain_command(run_id, evidence_refs=(_DECISION,)))
+    with pytest.raises(TransitionRejectedError, match="decision_conflict"):
+        await store.update_status(
+            "schedule_run",
+            run_id,
+            new_status="failed",
+            reason_code=RunReasons.FAILED_EXCEPTION,
+            evidence_refs=[{**_NO_CHAIN, "v": True}],
+        )
+    events = await _chain_rejections(store, run_id)
+    assert len(events) == 5
+    assert await store.get_schedule_run(run_id) == before
+    assert await _chain_history(store, run_id) == history
+
+    undecided = await _make_schedule_run(store, status="failed")
+    before = await store.get_schedule_run(undecided)
+    history = await _chain_history(store, undecided)
+    with pytest.raises(TransitionRejectedError, match="decision_conflict"):
+        await transition(store, _legacy_chain_command(undecided, evidence_refs=(_DECISION,)))
+    events = await _chain_rejections(store, undecided)
+    assert len(events) == 1
+    assert await store.get_schedule_run(undecided) == before
+    assert await _chain_history(store, undecided) == history

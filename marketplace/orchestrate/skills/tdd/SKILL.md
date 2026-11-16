@@ -64,9 +64,9 @@ lint/quality commands.
 
 - `lionhub/src/lionhub/serve/mcp/server.py`, `lionhub/src/lionhub/serve/mcp/verbs.py` — `fanout.submit` / `agent.submit`, the
   MCP path for parallel and single-agent TDD sessions
-- `lionagi/cli/orchestrate/fanout.py` — `li o fanout`, the checkout-local equivalent for
+- `lionhub/src/lionhub/serve/cli/orchestrate/fanout.py` — `li o fanout`, the checkout-local equivalent for
   parallel workers
-- `lionagi/cli/agent.py` — `li agent`, the checkout-local equivalent for a single-agent
+- `lionhub/src/lionhub/serve/cli/agent.py` — `li agent`, the checkout-local equivalent for a single-agent
   implementation session
 - `docs/internals/ci.md` — documents the supported Python test, coverage, lint, and format entry point
 - `pyproject.toml` — project test and Pyright configuration

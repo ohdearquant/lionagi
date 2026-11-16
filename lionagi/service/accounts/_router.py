@@ -9,7 +9,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
@@ -64,6 +64,15 @@ _test_ledger_path: Any = _UNSET
 _test_sources: Any = _UNSET
 
 
+@dataclass(frozen=True, slots=True)
+class RoutedCacheEvidence:
+    """Cache facts supplied by the selected adapter for the frozen request."""
+
+    cert: str | None
+    hour_after_key: bool
+    server_tools: bool
+
+
 @dataclass(slots=True)
 class RouterAttempt:
     reservation: Reservation
@@ -112,6 +121,7 @@ class AccountRouter:
         endpoint: Any,
         request_kwargs: Mapping[str, Any],
         body_kwargs: Mapping[str, Any],
+        cache_evidence_for: Callable[[dict[str, Any]], RoutedCacheEvidence],
         client_kwargs: Mapping[str, Any] | None = None,
         url: str | None = None,
         method: str | None = None,
@@ -136,18 +146,13 @@ class AccountRouter:
             final_payload["service_tier"] = "standard_only"
         ttls = request_ttls(final_payload)
         body = freeze_request(final_payload)
-        # Imported here because that module imports the Messages endpoint, which uses this one.
-        from lionhub.providers.anthropic._prompt_cache import _server_tools
-
-        parsed = json.loads(body)
-        cert, hour_after_key = _warm_evidence(parsed)
-        server_tools = _server_tools(parsed)
+        cache = cache_evidence_for(json.loads(body))
         quote = quote_ceiling(self.revision, body)
         attempt_id = uuid4()
         # Shielded so a cancelled caller cannot leave a committed reservation unknown to it.
         with CancelScope(shield=True):
             reservation = await self.ledger.reserve(
-                scope, attempt_id, quote, self.accounts, cert=cert
+                scope, attempt_id, quote, self.accounts, cert=cache.cert
             )
         account = next(spec for spec in self.accounts if spec.name == reservation.account)
         try:
@@ -169,9 +174,9 @@ class AccountRouter:
             body,
             ttls,
             key,
-            cert=cert,
-            hour_after_key=hour_after_key,
-            server_tools=server_tools,
+            cert=cache.cert,
+            hour_after_key=cache.hour_after_key,
+            server_tools=cache.server_tools,
         )
         label = attempt.account
         if (
@@ -298,62 +303,6 @@ class AccountRouter:
                 attempt.attempt_id, evidence, http_status=http_status
             )
             return reason
-
-
-def _has_hour_mark(value: Any) -> bool:
-    """Whether ``value`` holds a cache mark of one hour at any depth."""
-    if isinstance(value, dict):
-        mark = value.get("cache_control")
-        if isinstance(mark, dict) and mark.get("ttl") == "1h":
-            return True
-        return any(_has_hour_mark(inner) for inner in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_has_hour_mark(inner) for inner in value)
-    return False
-
-
-def _warm_evidence(parsed: Mapping[str, Any]) -> tuple[str | None, bool]:
-    """The cache point a request is certified by, and whether a one-hour mark follows it.
-
-    The point is the last block of the tools or the system that takes a mark and carries a
-    one-hour one, and its certificate names the prefix up to and including that block. A request
-    with no such block has no point and yields ``(None, False)``. The flag is true when a block
-    read after the point carries a one-hour mark, at any depth, or when the request's own
-    top-level one-hour mark has a block after the point to land on. A system or message content
-    given as a string carries no mark.
-    """
-    # Imported here because that module imports the Messages endpoint, which uses this one.
-    from lionhub.providers.anthropic._prompt_cache import points
-
-    blocks, _ = points(parsed)
-    keys = [
-        point
-        for point in blocks
-        if point.tier in ("tools", "system") and point.markable and point.mark == "1h"
-    ]
-    if not keys:
-        return None, False
-    key = keys[-1]
-    tools = parsed.get("tools")
-    system = parsed.get("system")
-    later: list[Any] = []
-    if key.tier == "tools":
-        if isinstance(tools, list):
-            later.extend(tools[key.slot + 1 :])
-        if isinstance(system, list):
-            later.extend(system)
-    elif isinstance(system, list):
-        later.extend(system[key.slot + 1 :])
-    for message in parsed.get("messages") or ():
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list):
-            later.extend(content)
-    if _has_hour_mark(later):
-        return key.cert, True
-    top = parsed.get("cache_control")
-    if isinstance(top, dict) and top.get("ttl") == "1h":
-        return key.cert, any(point.markable and point.index > key.index for point in blocks)
-    return key.cert, False
 
 
 def _refuse(code: RouterErrorCode) -> AccountRoutingError:

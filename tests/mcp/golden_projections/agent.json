@@ -103,6 +103,11 @@
         "type": "string",
         "x-flag": "--notify"
       },
+      "notify_sender": {
+        "description": "Include this sender label in the configured terminal notice.",
+        "type": "string",
+        "x-flag": "--notify-sender"
+      },
       "preset": {
         "description": "Apply a built-in agent configuration preset. Supported values: coding. 'coding' wires CodingToolkit with path-guard hooks and a coding system prompt; cwd defaults to the invocation directory.",
         "enum": [

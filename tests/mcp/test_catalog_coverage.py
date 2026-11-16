@@ -21,7 +21,7 @@ import argparse
 
 import pytest
 
-from lionhub.cli.catalog import iter_cli_seeds, load_cli_command
+from lionhub.serve.cli.catalog import iter_cli_seeds, load_cli_command
 from lionhub.serve.mcp.verbs import ABSENT, FENCED_PATHS, VERBS
 
 
@@ -98,12 +98,9 @@ def _measured_surface() -> dict[str, str]:
     return leaves
 
 
-# A fence for a capability that has no command yet. Kept deliberately: removing a
-# fence because its path is absent today is how the path comes back unfenced, and
-# store migration is exactly the capability that must not arrive reachable. Listed
-# here so that a *typo* or a retired path in FENCED_PATHS still fails the
-# existence check below instead of hiding inside a blanket exemption.
-PREEMPTIVE_FENCES = frozenset({"state migrate"})
+# A capability can be fenced before its CLI command exists. List those paths
+# explicitly so the existence check still catches typos and retired commands.
+PREEMPTIVE_FENCES: frozenset[str] = frozenset()
 
 
 def test_every_cli_command_is_registered_or_named_absent():

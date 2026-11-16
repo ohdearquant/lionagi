@@ -20,17 +20,22 @@ from starlette.staticfiles import StaticFiles
 from lionagi._errors import LionError
 from lionagi.version import __version__
 from lionhub.orchestration.state_store import StoreNotAddressableError
-
-from ._host import admitted_host_names, normalize_host
-from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
-from .config import CORS_ORIGINS, HOST
-from .launch_access import (
+from lionhub.serve.daemon._host import admitted_host_names, normalize_host
+from lionhub.serve.daemon._traceback_dump import arm_traceback_dump, disarm_traceback_dump
+from lionhub.serve.daemon.launch_access import (
     PAIRING_REDEEM_PATH,
     begin_serving,
     launch_bearer,
     mint_pairing_code,
 )
-from .reconnect import ReconnectChannel, default_socket_path, port_proof, unix_sockets_supported
+from lionhub.serve.daemon.reconnect import (
+    ReconnectChannel,
+    default_socket_path,
+    port_proof,
+    unix_sockets_supported,
+)
+from lionhub.serve.daemon.settings import CORS_ORIGINS, HOST
+
 from .registry import iter_studio_routes, load_studio_route_modules
 
 _log = logging.getLogger(__name__)
@@ -224,7 +229,7 @@ def _emit_startup_warnings() -> None:
 
 def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, None]:
     """Start the in-process Claude Code mirror tail if enabled; return (stop, task)."""
-    from .config import (
+    from lionhub.serve.daemon.settings import (
         MIRROR_CLAUDE_ENABLED,
         MIRROR_CLAUDE_INTERVAL,
         MIRROR_CLAUDE_ROOT,
@@ -344,13 +349,32 @@ async def _finalize_warmup(task: asyncio.Task | None) -> None:
         _log.warning("Startup warmup task failed (non-fatal)", exc_info=True)
 
 
+async def _refuse_or_prepare_leg_host() -> None:
+    """In leg-host mode, refuse an unsafe start, then remove worktrees a previous run left."""
+    from lionhub.serve.daemon import leg_host
+
+    if not leg_host.enabled():
+        return
+    bind_host = normalize_host(os.getenv("LIONAGI_STUDIO_HOST", HOST))
+    refusals = leg_host.startup_refusals(host=bind_host)
+    if refusals:
+        raise RuntimeError("Leg-host mode refused to start: " + "; ".join(refusals))
+    for repo in leg_host.load_repos().values():
+        await leg_host.sweep_worktrees(repo, live=set())
+
+
+#: The write routes a leg host serves: a launch and its cancellation. Every other write
+#: answers 403 there, so a caller holding the bearer can launch, read and cancel, nothing more.
+_LEG_HOST_WRITE_PATHS = re.compile(r"/api/launches/?|/api/invocations/[0-9a-f]{8,32}/cancel")
+
+
 @asynccontextmanager
 async def lifespan(app_instance):
     from lionhub.orchestration.scheduler.engine import scheduler
     from lionhub.orchestration.scheduler.lifecycle import run_startup_reconciliation
+    from lionhub.serve.daemon.daemon_log import daemon_log_handler
     from lionhub.serve.diagnostics import snapshot_git_position
 
-    from .daemon_log import daemon_log_handler
     from .services.operator import operator_shutdown, operator_startup
 
     # First, before anything else can run and long before the first request:
@@ -368,14 +392,27 @@ async def lifespan(app_instance):
     arm_traceback_dump()
 
     _emit_startup_warnings()
+    await _refuse_or_prepare_leg_host()
     # The second of the two settings-driven notify bootstrap points (CLI is the first).
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
 
     register_settings_terminal_callback()
     # The scheduler's INFO lines (a schedule firing) print on stderr however the app is
     # served: li studio, python -m lionagi.studio, or uvicorn pointed at this module.
+    from lionhub.serve.daemon import leg_host
+    from lionhub.serve.daemon.daemon_log import SCHEDULER_LOGGER
+
+    # A leg host runs only the legs its callers launch. The scheduler engine would fire this
+    # account's schedules, and the mirror would copy this account's other transcripts into the
+    # host's store, so neither starts there. Said on the daemon's own stderr logger.
+    quiet_host = leg_host.enabled()
     with daemon_log_handler():
-        await scheduler.start()
+        if quiet_host:
+            logging.getLogger(SCHEDULER_LOGGER).info(
+                "Leg host: the scheduler engine is not started"
+            )
+        else:
+            await scheduler.start()
         # Corrects phantom/stale-status rows /api routes read directly; must precede serving.
         await run_startup_reconciliation()
         # Recover any accepted Operator turn that was interrupted by a prior daemon
@@ -387,15 +424,20 @@ async def lifespan(app_instance):
         begin_serving()
         reconnect = _start_reconnect_channel()
         app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
-        mirror_stop, mirror_task = _start_claude_mirror()
+        if quiet_host:
+            logging.getLogger(SCHEDULER_LOGGER).info(
+                "Leg host: the transcript mirror is not started"
+            )
+            mirror_stop, mirror_task = None, None
+        else:
+            mirror_stop, mirror_task = _start_claude_mirror()
         # Pure maintenance; deferred so readiness isn't gated on it.
         warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
         try:
             yield
         finally:
             from lionagi.ln.concurrency import CancelScope, ExceptionGroup
-
-            from .services.launches import shutdown_launches
+            from lionhub.serve.daemon.services.launches import shutdown_launches
 
             failures: list[Exception] = []
 
@@ -588,6 +630,23 @@ def create_app() -> FastAPI:
                 "backend": exc.backend,
             },
         )
+
+    # Added before the bearer check, so it runs inside it: an unauthenticated caller
+    # gets 401 and learns nothing about which routes a leg host serves.
+    @application.middleware("http")
+    async def refuse_leg_host_writes(request: Request, call_next):
+        from lionhub.serve.daemon import leg_host
+
+        if (
+            request.method not in ("GET", "HEAD", "OPTIONS")
+            and leg_host.enabled()
+            and not _LEG_HOST_WRITE_PATHS.fullmatch(request.url.path)
+        ):
+            return JSONResponse(
+                {"detail": "A leg host accepts only launches and their cancellation"},
+                status_code=403,
+            )
+        return await call_next(request)
 
     @application.middleware("http")
     async def require_studio_bearer_token(request: Request, call_next):

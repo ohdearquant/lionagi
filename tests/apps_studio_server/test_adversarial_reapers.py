@@ -141,7 +141,7 @@ def test_1172_admin_prune_phantom_delegates_no_delete(tmp_path, monkeypatch):
         )
     )
 
-    from lionagi.studio.services.admin import prune_phantom_sessions
+    from lionhub.serve.daemon.services.admin import prune_phantom_sessions
 
     count = run_async(prune_phantom_sessions(stale_hours=1.0))
     assert count == 1

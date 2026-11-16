@@ -19,7 +19,6 @@ from sqlalchemy import text
 
 from lionagi.state.db import StateDB
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
-from lionagi.studio.services.task_applications import TaskApplication, submit_task
 from lionhub.orchestration.scheduler.worker import (
     DEFAULT_HEARTBEAT_TTL_SECONDS,
     _matching_candidates,
@@ -29,6 +28,7 @@ from lionhub.orchestration.scheduler.worker import (
     register_heartbeat,
     worker_tick,
 )
+from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
 
 
 @pytest_asyncio.fixture
