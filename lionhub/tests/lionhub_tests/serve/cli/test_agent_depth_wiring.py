@@ -176,11 +176,15 @@ async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
     # Every variable this process holds reaches the child, so anything an
     # endpoint stamps is inherited without further wiring. Compared by name
     # only: the spawn env also carries resolved secrets, and a failure here
-    # must not print their values. The process-group token is the exception:
-    # each child is handed its own, over one a run inside an agent inherits.
+    # must not print their values. Two exceptions: each child is handed its own
+    # process-group token, over one a run inside an agent inherits; and a
+    # credential-named variable is withheld, so it is absent rather than changed.
+    from lionhub.providers._cli_subprocess import _CREDENTIAL_NAME_RE
+
     spawn_env = captured_kwargs["env"]
     changed = {key for key, value in os.environ.items() if spawn_env.get(key) != value}
-    assert not changed - {_PROCESS_GROUP_MARKER}
+    withheld = {key for key in changed if key not in spawn_env and _CREDENTIAL_NAME_RE.search(key)}
+    assert not changed - withheld - {_PROCESS_GROUP_MARKER}
     assert spawn_env[_PROCESS_GROUP_MARKER] != "inherited-group-token"
     assert spawn_env[DEPTH_ENV] == "1"
     assert captured_kwargs["_depth_at_spawn"] == "1"

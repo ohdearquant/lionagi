@@ -36,6 +36,7 @@ from lionhub.providers._cli_subprocess import (
     SpawnedProcess,
     _resolve_cli_path,
     build_declarative_cli_args,
+    claude_code_auth_env,
     declarative_cli_flags,
     discover_cli,
     env_as_the_spawn_encodes_it,
@@ -864,6 +865,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
                 engine="claude",
                 workload=request.workload,
                 secret_fill_skip=request.secret_fill_skip,
+                auth_env=claude_code_auth_env(request.env),
             )
         ) as stream:
             async for obj in stream:

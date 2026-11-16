@@ -31,8 +31,16 @@ from lionhub.providers import _cli_subprocess as cs
 from lionhub.providers._cli_subprocess import (
     _abandoned_without_output_note,
     _no_stderr_reason,
-    ndjson_from_cli,
 )
+from lionhub.providers._cli_subprocess import ndjson_from_cli as _ndjson_from_cli
+
+#: These tests are about the redactor. Their credential-named variables stand for a provider's
+#: own login, the one kind of credential a child is still handed, so they are named as such.
+_PROVIDER_LOGIN_NAMES = frozenset({"LIONAGI_TEST_API_KEY", "LIONAGI_TEST_PASSWORD"})
+
+
+def ndjson_from_cli(cmd, **kwargs):
+    return _ndjson_from_cli(cmd, auth_env=_PROVIDER_LOGIN_NAMES, **kwargs)
 
 
 def _cmd(script: str) -> list[str]:
