@@ -171,7 +171,9 @@ def _call(remote: Remote, method: str, path: str, body: dict[str, Any] | None = 
     except ValueError:
         data = None
     if status >= 400:
-        detail = data.get("detail") if isinstance(data, dict) else raw[:500].decode(errors="replace")
+        detail = (
+            data.get("detail") if isinstance(data, dict) else raw[:500].decode(errors="replace")
+        )
         raise RemoteError(f"remote {remote.name!r} answered HTTP {status}: {detail}")
     return data
 
@@ -302,7 +304,9 @@ def add_remote_subparser(subparsers: argparse._SubParsersAction) -> argparse.Arg
     return remote
 
 
-@auto_register(area="remote", cli=CliDeclaration(seed="remote", parser_factory=add_remote_subparser))
+@auto_register(
+    area="remote", cli=CliDeclaration(seed="remote", parser_factory=add_remote_subparser)
+)
 def run_remote(args: argparse.Namespace) -> int:
     try:
         remote = load_remote(args.remote)

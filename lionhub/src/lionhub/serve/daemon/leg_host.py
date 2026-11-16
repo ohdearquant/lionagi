@@ -207,7 +207,30 @@ def startup_refusals(*, host: str) -> list[str]:
             )
     if not load_repos():
         reasons.append("~/.lionagi/leg_repos.yaml configures no repository")
+    reasons.extend(_sandbox_refusals())
     return reasons
+
+
+def _sandbox_refusals() -> list[str]:
+    """Why the host's child sandbox cannot confine a leg; empty when it can."""
+    from lionagi._errors import ConfigurationError
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+    try:
+        policy = resolve_child_sandbox(None)
+    except ConfigurationError as exc:
+        return [f"the child sandbox settings do not resolve: {exc}"]
+    if not policy.enabled:
+        return ["child_sandbox is disabled in ~/.lionagi/settings.yaml: every leg runs under it"]
+    return []
+
+
+def _lifted_read_denials(agent: str) -> list[str]:
+    """The default read denials *agent*'s profile is exempted from on this host."""
+    from lionhub.agent.child_sandbox import DEFAULT_DENY_READ, resolve_child_sandbox
+
+    denied = set(resolve_child_sandbox(agent).deny_read)
+    return [path for path in DEFAULT_DENY_READ if path not in denied]
 
 
 @dataclass(frozen=True)
@@ -271,6 +294,12 @@ def validate_launch(data: dict[str, Any]) -> LegLaunch:
             f"profile {agent!r} runs on {provider or 'no named provider'}; a leg host runs only "
             f"{', '.join(sorted(_CONTAINED_PROVIDERS))} profiles, whose sandbox denies reads of "
             "the account's credential files"
+        )
+    lifted = _lifted_read_denials(agent)
+    if lifted:
+        raise ValueError(
+            f"profile {agent!r} is exempted from reading {', '.join(lifted)}; a leg host lifts no "
+            "read denial"
         )
     return LegLaunch(repo=repo, head=head, agent=agent)
 

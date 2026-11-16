@@ -39,7 +39,12 @@ def remotes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_a_remote_is_read_with_its_own_token(remotes) -> None:
     remote = load_remote("legbox")
-    assert (remote.scheme, remote.host, remote.port, remote.token) == ("http", "127.0.0.1", 1, TOKEN)
+    assert (remote.scheme, remote.host, remote.port, remote.token) == (
+        "http",
+        "127.0.0.1",
+        1,
+        TOKEN,
+    )
 
 
 @pytest.mark.parametrize(
@@ -50,7 +55,10 @@ def test_a_remote_is_read_with_its_own_token(remotes) -> None:
         ({"url": "ftp://h:1", "token_env": "LIONAGI_REMOTE_LEGBOX_TOKEN"}, "http"),
         ({"url": "http://u:p@h:1", "token_env": "LIONAGI_REMOTE_LEGBOX_TOKEN"}, "credentials"),
         ({"url": "http://h:1/api", "token_env": "LIONAGI_REMOTE_LEGBOX_TOKEN"}, "no path"),
-        ({"url": "http://h:1", "token_env": "LIONAGI_REMOTE_LEGBOX_TOKEN", "token": "x"}, "exactly"),
+        (
+            {"url": "http://h:1", "token_env": "LIONAGI_REMOTE_LEGBOX_TOKEN", "token": "x"},
+            "exactly",
+        ),
     ],
 )
 def test_a_remote_that_could_leak_its_token_is_refused(remotes, entry: dict, names: str) -> None:
@@ -77,7 +85,9 @@ def test_a_remote_never_gets_this_machines_studio_token(remotes, monkeypatch) ->
         ("::ffff:192.0.2.1", False),
     ],
 )
-def test_only_loopback_and_tailnet_addresses_carry_a_plain_http_token(address: str, inside: bool) -> None:
+def test_only_loopback_and_tailnet_addresses_carry_a_plain_http_token(
+    address: str, inside: bool
+) -> None:
     assert remote_cli._is_loopback_or_tailnet(address) is inside
 
 
@@ -110,11 +120,18 @@ class _FakeLegHost(BaseHTTPRequestHandler):
             self.send_header("Location", "http://127.0.0.1:9/")
             self.end_headers()
         elif self.path == "/api/launches/capabilities":
-            self._send(200, {"leg_host": self.leg_host, "pinned_head": self.leg_host, "max_concurrent": 2})
+            self._send(
+                200, {"leg_host": self.leg_host, "pinned_head": self.leg_host, "max_concurrent": 2}
+            )
         elif self.path == f"/api/invocations/{INV}":
-            self._send(200, {"id": INV, "status": self.statuses.pop(0) if self.statuses else "completed"})
+            self._send(
+                200, {"id": INV, "status": self.statuses.pop(0) if self.statuses else "completed"}
+            )
         elif self.path == f"/api/launches/{INV}/result":
-            self._send(200, {"invocation_id": INV, "status": "completed", "result": "LGTM", "truncated": False})
+            self._send(
+                200,
+                {"invocation_id": INV, "status": "completed", "result": "LGTM", "truncated": False},
+            )
         else:
             self._send(404, {"detail": "no"})
 
@@ -177,7 +194,9 @@ def test_a_run_pins_the_head_waits_and_prints_the_result(fake_host, capsys, monk
     assert paths[:2] == [("GET", "/api/launches/capabilities"), ("POST", "/api/launches/")]
     assert {auth for _m, _p, auth, _h in _FakeLegHost.seen} == {f"Bearer {TOKEN}"}
     # Connected by name, but the Host sent is the address the socket reached.
-    assert {host for _m, _p, _a, host in _FakeLegHost.seen} == {f"127.0.0.1:{fake_host.server_port}"}
+    assert {host for _m, _p, _a, host in _FakeLegHost.seen} == {
+        f"127.0.0.1:{fake_host.server_port}"
+    }
     assert TOKEN not in capsys.readouterr().err
 
 
@@ -189,7 +208,9 @@ def test_a_daemon_that_is_not_a_leg_host_gets_no_launch(fake_host, capsys, monke
     assert [p for _m, p, _a, _h in _FakeLegHost.seen] == ["/api/launches/capabilities"]
 
 
-def test_a_launch_that_does_not_confirm_the_head_is_cancelled(fake_host, capsys, monkeypatch) -> None:
+def test_a_launch_that_does_not_confirm_the_head_is_cancelled(
+    fake_host, capsys, monkeypatch
+) -> None:
     monkeypatch.setattr(remote_cli, "_refused_inside_an_agent", lambda: False)
     _FakeLegHost.echo_head = False
     assert remote_cli.run_remote(_run_args()) == 1
@@ -216,7 +237,9 @@ def test_an_interrupted_wait_cancels_the_remote_leg(fake_host, capsys, monkeypat
     assert _FakeLegHost.seen[-1][:2] == ("POST", f"/api/invocations/{INV}/cancel")
 
 
-def test_a_peer_off_the_tailnet_is_refused_before_anything_is_sent(fake_host, capsys, monkeypatch) -> None:
+def test_a_peer_off_the_tailnet_is_refused_before_anything_is_sent(
+    fake_host, capsys, monkeypatch
+) -> None:
     """The check reads the connected socket's peer; a refused peer receives no request at all."""
     monkeypatch.setattr(remote_cli, "_refused_inside_an_agent", lambda: False)
     monkeypatch.setattr(remote_cli, "_is_loopback_or_tailnet", lambda address: False)
@@ -247,3 +270,24 @@ def test_an_agent_cannot_start_a_remote_leg(fake_host, monkeypatch) -> None:
 def test_only_a_full_commit_is_a_head(head: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError):
         remote_cli._head(head)
+
+
+def test_only_li_remote_opens_a_raw_http_connection() -> None:
+    """A raw connection bypasses the Studio request factory's origin check; the one module that
+    opens one checks the peer itself before writing its token."""
+    import ast
+
+    from lionhub.serve.cli import studio_client
+
+    src = Path(studio_client.__file__).resolve().parents[3]
+    users = []
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = {
+            node.attr if isinstance(node, ast.Attribute) else node.id
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Attribute, ast.Name))
+        }
+        if names & {"HTTPConnection", "HTTPSConnection"}:
+            users.append(path.relative_to(src).as_posix())
+    assert users == ["lionhub/serve/cli/remote.py"]

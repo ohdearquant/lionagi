@@ -37,6 +37,17 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv(leg_host.LEG_HOST_ENV, "1")
+    # The suite turns the child sandbox off for every test; a leg host reads its own settings.
+    import yaml
+
+    from lionhub.agent import child_sandbox
+
+    settings = home / ".lionagi" / "settings.yaml"
+    monkeypatch.setattr(
+        child_sandbox,
+        "_global_settings",
+        lambda: (yaml.safe_load(settings.read_text()) or {}) if settings.exists() else {},
+    )
     return home
 
 
@@ -351,3 +362,37 @@ def test_a_plain_daemon_serves_no_pinned_heads_and_keeps_no_results(
     assert "leg-host mode" in resp.json()["detail"]
     assert client.get("/api/launches/0123abcd4567/result").status_code == 404
     assert client.get("/api/launches/capabilities").json()["leg_host"] is False
+
+
+# The child sandbox is what confines a leg's reads, so a leg host runs nothing without it.
+
+
+def _write_settings(home: Path, text: str) -> None:
+    (home / ".lionagi" / "settings.yaml").write_text(text)
+
+
+def test_a_host_with_the_child_sandbox_off_does_not_start(
+    host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", TOKEN)
+    _write_settings(host, "child_sandbox:\n  enabled: false\n")
+
+    [reason] = leg_host.startup_refusals(host="127.0.0.1")
+
+    assert "child_sandbox is disabled" in reason
+
+
+def test_a_profile_exempted_from_a_read_denial_is_refused(host: Path) -> None:
+    _write_settings(
+        host, "child_sandbox:\n  profiles:\n    reviewer:\n      allow_read: ['~/.secrets']\n"
+    )
+
+    with pytest.raises(ValueError, match=r"exempted from reading ~/\.secrets"):
+        leg_host.validate_launch(_request())
+
+
+def test_the_secrets_directory_is_denied_by_default() -> None:
+    from lionhub.agent.child_sandbox import DEFAULT_DENY_READ, resolve_child_sandbox
+
+    assert "~/.secrets" in DEFAULT_DENY_READ
+    assert "~/.secrets" in resolve_child_sandbox(None, settings={}).deny_read

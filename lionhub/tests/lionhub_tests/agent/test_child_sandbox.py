@@ -142,6 +142,7 @@ _EXPECTED_DENY_READ = (
     "~/.config/rclone",
     "~/.pgpass",
     "~/.my.cnf",
+    "~/.secrets",
     "~/.codex/auth.json",
     "~/.claude/.credentials.json",
     "~/.claude.json",

@@ -53,6 +53,10 @@ export LIONAGI_REMOTE_LEGBOX_TOKEN=<the leg host's token>
 li remote run legbox -a reviewer --repo lionagi --head <40-hex commit> "Review the change at HEAD."
 ```
 
+Over plain `http` the remote must answer from a loopback or tailnet address, read off the
+connected socket before the token is sent. `li remote` sends that address as the `Host` header,
+the one name a leg host bound to it admits. Proxies and redirects are never followed.
+
 `li remote run` waits for the leg and prints its result. Ctrl-C cancels the remote leg.
 `li remote status`, `li remote output` and `li remote cancel` take an invocation id.
 
@@ -66,7 +70,8 @@ Each of these is refused before an invocation is recorded or a process starts.
 - it would listen on an address that is neither loopback nor a tailnet address
   (100.64.0.0/10, fd7a:115c:a1e0::/48);
 - `~/.lionagi/.mcp.json` or `~/.claude.json` names an MCP server;
-- `leg_repos.yaml` configures no repository.
+- `leg_repos.yaml` configures no repository;
+- the child sandbox is disabled in `~/.lionagi/settings.yaml`, or its settings do not resolve.
 
 At start-up it also removes worktrees left behind by an earlier run.
 
@@ -81,6 +86,7 @@ At start-up it also removes worktrees left behind by an earlier run.
   host's own `~/.lionagi/agents`; a repository's own `.lionagi/agents` is never searched;
 - a profile whose provider is not `claude_code`, or that names no model. Other providers' child
   processes have no measured read denial for the account's credential files;
+- a profile the child sandbox exempts from any default read denial (`allow_read`);
 - an `action_head` that is not exactly 40 lowercase hex characters. Branch names, tags and
   short hashes are refused;
 - an `action_repo` the host does not serve.
@@ -103,13 +109,18 @@ nothing more. A caller without it gets 401 from every route except `/health`.
 - **An environment built from an allow-list**: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
   `LC_ALL`, `LC_CTYPE`, `TERM`, `TMPDIR`, and `CLAUDE_CODE_OAUTH_TOKEN` when the daemon has it.
   The daemon's bearer, any `LIONAGI_REMOTE_*` variable and every other credential variable stay
-  with the daemon. Claude Code withholds `CLAUDE_CODE_OAUTH_TOKEN` from the processes it starts
-  (observed with Claude Code 2.1.325), so the Claude login is the one credential the leg's Claude
-  Code holds, and the commands it runs do not.
+  with the daemon. lionagi then removes every credential-named variable other than the provider's
+  own login from the Claude Code process it starts, on any machine. Claude Code withholds
+  `CLAUDE_CODE_OAUTH_TOKEN` from the processes it starts (observed with Claude Code 2.1.325), so
+  the Claude login is the one credential the leg's Claude Code holds, and the commands it runs do
+  not. That was measured on a hook process Claude Code starts, which stands in for the shell of
+  its Bash tool; the Bash tool's own shell was not measured.
 - **No MCP servers**: the leg runs with `--no-mcp-config`, and the start-up check above refuses a
   host that configures any.
-- **The child sandbox** from the host's global `~/.lionagi/settings.yaml`. A repository's settings
-  cannot relax it.
+- **The child sandbox** from the host's global `~/.lionagi/settings.yaml`, which must be enabled.
+  Its default read denials (credential files, `~/.secrets`, the Claude and Codex logins, khive's
+  home) apply to every leg; a repository's settings cannot relax them, and no profile exemption
+  is accepted.
 
 ## What a leg host does not return
 
