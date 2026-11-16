@@ -10,6 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -18,13 +23,13 @@ from lionhub.orchestration.mcp_config import (
     discover_mcp_config,
     resolve_spawn_mcp_servers,
 )
-from lionhub.serve.mcp import config, dispatch, jobs
+from lionhub.serve.mcp import _terminal_cause, config, dispatch, jobs
 
 
 @pytest.fixture
 def sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(config, "li_command", lambda: ["echo"])
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda run_id: None)
     return tmp_path
@@ -382,8 +387,6 @@ def test_a_relative_jobs_root_still_hands_the_child_an_absolute_snapshot_path(
     told to read a file that exists only under the server's own directory. The
     path handed over has to be absolute whatever the root was written as.
     """
-    from pathlib import Path
-
     (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"s1": {"command": "one"}}}))
     monkeypatch.setattr(config, "JOBS_DIR", Path("relative-jobs"))
     other = tmp_path / "other"
@@ -393,7 +396,10 @@ def test_a_relative_jobs_root_still_hands_the_child_an_absolute_snapshot_path(
     monkeypatch.setattr(
         jobs.subprocess,
         "Popen",
-        lambda argv, **kw: (captured.update(argv=argv), _FakeProc())[1],
+        lambda argv, **kw: (
+            captured.update(argv=argv, cause_path=kw["env"][config.CAUSE_FILE_ENV_VAR]),
+            _FakeProc(),
+        )[1],
     )
 
     handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(other))
@@ -403,3 +409,76 @@ def test_a_relative_jobs_root_still_hands_the_child_an_absolute_snapshot_path(
     assert Path(handed).is_absolute(), handed
     assert (other / handed).is_file(), "the child's own directory must be able to read it"
     assert handle["mcp_config"] == handed
+    prompt = Path(captured["argv"][captured["argv"].index("--prompt-file") + 1])
+    cause = Path(captured["cause_path"])
+    assert prompt.is_absolute() and prompt.read_text() == "hi"
+    assert cause == config.job_dir(handle["run_id"]).absolute() / config.CAUSE_FILENAME
+
+
+def _check_detached_paths_child_startup(execution_cwd: str) -> None:
+    server_home = Path.cwd() / "configured-home"
+    prompt_text = "fixture prompt"
+    servers = {"fixture": {"command": "unused-fixture"}}
+    Path(".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+
+    def popen(argv, *, cwd, env, **_kwargs):
+        assert cwd == execution_cwd
+        assert Path(env["LIONAGI_HOME"]) == server_home
+        job_dir = server_home / "mcp" / "jobs" / env[config.JOB_MARKER_ENV_VAR]
+        prompt = Path(argv[argv.index("--prompt-file") + 1])
+        snapshot = Path(_config_arg(argv))
+        cause = Path(env[config.CAUSE_FILE_ENV_VAR])
+        assert prompt.parent == snapshot.parent == cause.parent == job_dir
+        assert (Path(cwd) / prompt).read_text() == prompt_text
+        view = json.loads((Path(cwd) / snapshot).read_text())
+        assert view["mcpServers"] == servers
+        with patch.dict(os.environ, {config.CAUSE_FILE_ENV_VAR: str(Path(cwd) / cause)}):
+            _terminal_cause.write_terminal_cause(TimeoutError("synthetic terminal cause"))
+        return _FakeProc()
+
+    with (
+        patch.object(config, "li_command", return_value=["unused-fixture"]),
+        patch.object(jobs, "refuse_nested_agent"),
+        patch.object(jobs, "_process_create_time", return_value=("gone", None)),
+        patch.object(jobs, "_spawned_pgid", return_value=None),
+        patch.object(jobs.subprocess, "Popen", side_effect=popen),
+    ):
+        handle = jobs.submit("agent", ["-m", "x"], prompt=prompt_text, cwd=execution_cwd)
+
+    cause = _terminal_cause.read_terminal_cause(jobs.failure_cause_path(handle["run_id"]))
+    assert cause is not None and cause["class"] == _terminal_cause.UNKNOWN_CAUSE
+
+
+def test_relative_configured_home_keeps_detached_paths_at_server_startup(tmp_path):
+    server, child = tmp_path / "server", tmp_path / "child"
+    server.mkdir()
+    child.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    (server / "configured-home").symlink_to(home, target_is_directory=True)
+    root = Path(__file__).resolve().parents[2]
+    script = (
+        "import runpy, sys\n"
+        "sys.path[:0] = sys.argv[1:3]\n"
+        "runpy.run_path(sys.argv[3])['_check_detached_paths_child_startup'](sys.argv[4])\n"
+    )
+    checked = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            script,
+            str(root),
+            str(root / "lionhub/src"),
+            str(Path(__file__).resolve()),
+            str(child),
+        ],
+        cwd=server,
+        env={**os.environ, "LIONAGI_HOME": "configured-home"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert checked.returncode == 0, checked.stderr

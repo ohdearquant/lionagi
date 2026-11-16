@@ -31,7 +31,7 @@ from lionhub.serve.mcp import _notify_hook, config, jobs
 @pytest.fixture
 def job(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_TARGET", raising=False)
     rid = jobs.new_run_id()
@@ -993,6 +993,7 @@ def test_outer_notify_timeout_keeps_an_attempt_record_after_delivery(monkeypatch
     The CLI writes its terminal manifest after the callback returns.
     """
     monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    monkeypatch.setattr(config, "LIONAGI_HOME", tmp_path)
     monkeypatch.setenv(
         "PYTHONPATH",
         os.pathsep.join(
@@ -1000,7 +1001,7 @@ def test_outer_notify_timeout_keeps_an_attempt_record_after_delivery(monkeypatch
         ),
     )
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
 
     shim = tmp_path / "li_shim.py"
     shim.write_text(_LI_SHIM_WITH_A_DELIVERY_GATED_NOTIFY_TIMEOUT)
@@ -1222,6 +1223,7 @@ def test_the_failure_notice_survives_the_runs_own_remaining_output(monkeypatch, 
     # from the environment, so patching the constant here alone would leave the
     # two halves of this test writing to two different directories.
     monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    monkeypatch.setattr(config, "LIONAGI_HOME", tmp_path)
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
     # The run is launched by absolute script path, so it imports whichever
     # lionagi its interpreter resolves — which is this checkout only when the
@@ -1320,7 +1322,7 @@ def test_delivery_runs_where_the_run_was_submitted_not_where_it_ran(monkeypatch,
 @pytest.mark.parametrize("explicit_run_cwd", [True, False], ids=["submit-cwd", "recorded-cwd"])
 def test_both_callers_deliver_from_the_same_directory(monkeypatch, tmp_path, explicit_run_cwd):
     """The hook and the reaper deliver the same run details from the signing directory."""
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.delenv("LIONAGI_NOTIFY_PAYLOAD", raising=False)
     submit_dir = tmp_path / "seat"
     submit_dir.mkdir()

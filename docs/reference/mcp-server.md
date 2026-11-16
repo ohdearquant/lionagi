@@ -20,6 +20,16 @@ passed to that tool rather than a tool of its own, because an advertised tool
 schema is sent to the model on every request in every session for as long as the
 server is registered. A verb's parameters are fetched by asking for them.
 
+### Job authority
+
+The stdio server uses the LionAGI home set at startup by `LIONAGI_HOME`. The default is
+`~/.lionagi`. A relative home is interpreted from the server's startup directory, and detached
+jobs use that same home even when they execute in another directory. Clients and operators
+whose servers use the same home share access to jobs in that store, including older detached
+jobs whose records lack caller information. This access covers both the inline reply and its
+artifact path when polling a job, including after automatic resume. To isolate callers, launch
+their servers with separate homes and separate filesystem access to those homes.
+
 ## Install and client registration
 
 Use Python 3.10 or later and install the optional `mcp` extra.
@@ -324,11 +334,11 @@ The reply carries the allocated `run_id`. Poll it, or read what it wrote:
 
 For a finished `agent.submit` job, `final` contains the last assistant reply
 captured for the leg that ended the job. `final_path` points to the UTF-8 file
-holding the same text on the server. An automatic resume keeps the result under
-the original submitted run ID. If the file exceeds 1 MiB, `final` is null and
-`final_path` still points to the full reply. Both fields are null while the job
-is live or when a reply file is unavailable. The `tail_chars` argument only
-affects the console tail.
+holding the same text in the server's configured runs directory. An automatic
+resume keeps the result under the original submitted run ID. If the file exceeds
+1 MiB, `final` is null and `final_path` still points to the full reply. Both fields
+are null while the job is live or when a reply file is unavailable. The
+`tail_chars` argument only affects the console tail.
 
 To block instead of polling, use `job.wait`, which observes runs until they are
 terminal or the window closes and returns partial results rather than a bare

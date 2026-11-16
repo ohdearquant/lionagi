@@ -69,7 +69,7 @@ async def _seed_runs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[s
     runs_root = tmp_path / "runs"
     open_shared_db = _orchestration._open_shared_db
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", runs_root)
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", runs_root)
     monkeypatch.setattr(_checkpoint, "RUNS_ROOT", runs_root)
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda run_id: None)
@@ -189,7 +189,7 @@ def _status_with_run_json(
 ) -> dict:
     runs_root = tmp_path / "runs"
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", runs_root)
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", runs_root)
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda run_id: None)
     run = _run_dir(runs_root, run_id)
     if payload is not None:

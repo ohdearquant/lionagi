@@ -612,22 +612,58 @@ async def test_mcp_job_output_uses_only_the_terminal_leg_reply(monkeypatch, tmp_
     from lionhub.serve.mcp.dispatch import request
 
     _wire_agent_stubs_real_persist(monkeypatch, tmp_path, operate_side_effect=lambda _: None)
-    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
-    monkeypatch.setattr(runs, "RUNS_ROOT", config.RUNS_DIR)
+    home = tmp_path / "configured-home"
+    runs_root = home / "runs"
+    submitter, reader = tmp_path / "submitter", tmp_path / "reader"
+    submitter.mkdir()
+    reader.mkdir()
+    monkeypatch.setattr(config, "LIONAGI_HOME", home)
+    monkeypatch.setattr(config, "JOBS_DIR", home / "mcp" / "jobs")
+    monkeypatch.setattr(runs, "RUNS_ROOT", runs_root)
     monkeypatch.setattr(agent_cli, "allocate_run", runs.allocate_run)
     monkeypatch.setattr(agent_cli, "find_branch", runs.find_branch)
     monkeypatch.setattr(
         jobs, "_run_process_liveness", lambda *_: jobs.ProcessLiveness(True, "alive", "pid_match")
     )
+    monkeypatch.setattr(jobs, "_process_create_time", lambda _pid: ("found", 100.0))
+    monkeypatch.setattr(jobs, "_spawned_pgid", lambda _pid: 4242)
+    monkeypatch.setattr(config, "li_command", lambda: ["unused-fixture"])
 
-    run_id = jobs.new_run_id()
-    monkeypatch.setenv(config.RUN_ID_ENV_VAR, run_id)
-    monkeypatch.setenv(config.JOB_MARKER_ENV_VAR, run_id)
-    console = tmp_path / "console.log"
+    launched_env = {}
+
+    def popen(_argv, *, env, **_kwargs):
+        for name in ("LIONAGI_HOME", config.RUN_ID_ENV_VAR, config.JOB_MARKER_ENV_VAR):
+            launched_env[name] = env[name]
+        return SimpleNamespace(pid=4242, wait=lambda: 0)
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    with monkeypatch.context() as first_caller:
+        first_caller.chdir(submitter)
+        help_info = await request(help="agent.submit")
+        submitted = await request(
+            ops=[
+                {
+                    "op": "agent.submit",
+                    "args": {
+                        "query": ["claude_code/sonnet"],
+                        "prompt": "return a synthetic value",
+                        "no_mcp_config": True,
+                    },
+                    "schema_fingerprint": help_info["schema_fingerprint"],
+                }
+            ]
+        )
+    assert submitted["status"] == "success", submitted
+    run_id = submitted["ops"][0]["result"]["run_id"]
+    assert jobs._read_job(run_id)["submit_cwd"] == str(submitter.resolve())
+    assert launched_env["LIONAGI_HOME"] == str(home)
+    for name in (config.RUN_ID_ENV_VAR, config.JOB_MARKER_ENV_VAR):
+        assert launched_env[name] == run_id
+        monkeypatch.setenv(name, launched_env[name])
+
+    console = config.job_dir(run_id) / "console.log"
     console.write_text("resuming\nformatted terminal summary\n", encoding="utf-8")
-    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running", "log": str(console)})
-    artifact = config.run_dir(run_id) / "job-final-response.md"
+    artifact = runs_root / run_id / "job-final-response.md"
     final = "  The resumed answer ✓.\nThe second line stays.\n"
     leg_ids = []
     terminal_deferred = []
@@ -639,9 +675,11 @@ async def test_mcp_job_output_uses_only_the_terminal_leg_reply(monkeypatch, tmp_
         monkeypatch.setattr(runs.RunDir, "_write_mcp_final_response", refuse_write)
 
     async def job_output():
-        answer = await request(
-            ops=[{"op": "job.output", "args": {"run_id": run_id, "tail_chars": 8}}]
-        )
+        with monkeypatch.context() as second_caller:
+            second_caller.chdir(reader)
+            answer = await request(
+                ops=[{"op": "job.output", "args": {"run_id": run_id, "tail_chars": 8}}]
+            )
         assert answer["status"] == "success", answer
         return answer["ops"][0]["result"]
 
@@ -697,8 +735,11 @@ async def test_mcp_job_output_uses_only_the_terminal_leg_reply(monkeypatch, tmp_
     view = await job_output()
     assert view["known"] and view["terminal"] and view["status"] == status
     assert view["console"] == "summary\n"
+    assert view["run_dir"] == str(artifact.parent)
     assert view["final"] == (final if reply_state == "fresh-reply" else None)
     assert view["final_path"] == (str(artifact) if reply_state == "fresh-reply" else None)
+    if reply_state == "fresh-reply":
+        assert Path(view["final_path"]).read_bytes() == view["final"].encode("utf-8")
     assert not (config.run_dir(leg_ids[1]) / artifact.name).exists()
 
 

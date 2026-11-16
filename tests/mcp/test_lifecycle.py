@@ -144,6 +144,7 @@ def home(monkeypatch, tmp_path):
     with _submitted_job_guard() as tracked_submit:
         monkeypatch.setattr(jobs, "submit", tracked_submit)
         monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+        monkeypatch.setattr(config, "LIONAGI_HOME", tmp_path)
         # Children are launched by absolute script path, so their `sys.path[0]` is
         # the directory that script sits in, and this checkout is not on it. They
         # then import whichever `lionagi` the interpreter's environment resolves,
@@ -162,7 +163,7 @@ def home(monkeypatch, tmp_path):
         )
         monkeypatch.delenv("LIONAGI_SESSION_ID", raising=False)
         monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
-        monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+        monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
         shim = tmp_path / "li"
         shim.write_text(_LI_SHIM)
         monkeypatch.setattr(config, "li_command", lambda: [sys.executable, str(shim)])
