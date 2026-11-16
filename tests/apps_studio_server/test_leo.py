@@ -249,8 +249,8 @@ def test_leo_tool_registry_shape():
 
 @pytest.mark.asyncio
 async def test_tool_launch_playbook_returns_proposal(monkeypatch):
-    from lionagi.studio.services import launches as launches_svc
     from lionagi.studio.services.leo import tool_launch_playbook
+    from lionhub.serve.daemon.services import launches as launches_svc
 
     mock_launch = AsyncMock()
     monkeypatch.setattr(launches_svc, "launch", mock_launch)

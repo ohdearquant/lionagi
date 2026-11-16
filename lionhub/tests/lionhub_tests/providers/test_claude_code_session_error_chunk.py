@@ -22,6 +22,11 @@ from unittest.mock import patch
 
 import pytest
 
+from lionagi._provider_errors import (
+    ProviderQuotaError,
+    ProviderStreamDisconnectError,
+    classify_provider_error,
+)
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionhub.providers.anthropic.claude_code import (
@@ -141,3 +146,109 @@ async def test_a_failure_already_carrying_an_error_chunk_is_not_reported_twice()
     assert [c for c in collected if c.type == "error"] == [], (
         "the session already carried an error chunk, so the endpoint added a second report"
     )
+
+
+def _partial_turn(emit_done: bool) -> list[dict]:
+    events = [
+        {"type": "system", "session_id": "test-session"},
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "partial text"},
+            },
+        },
+    ]
+    if emit_done:
+        events.append({"type": "done"})
+    return events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("emit_done", [False, True], ids=["eof", "done"])
+async def test_missing_result_yields_error_after_partial_text(emit_done):
+    chunks = await _endpoint_chunks(_partial_turn(emit_done))
+
+    assert [c.type for c in chunks] == ["system", "text", "error"]
+    assert chunks[0].metadata["session_id"] == "test-session"
+    assert chunks[1].content == "partial text"
+    assert chunks[1].is_delta is True
+    error = chunks[-1]
+    assert error.is_error is True
+    assert "Claude Code stream ended without a result event" in error.content
+    assert "test-session" in error.content
+    assert isinstance(
+        classify_provider_error(error.content, status=error.metadata.get("error_status")),
+        ProviderStreamDisconnectError,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("emit_done", [False, True], ids=["eof", "done"])
+async def test_missing_result_raises_without_auto_finish(emit_done):
+    async def fake_events(_request):
+        for event in _partial_turn(emit_done):
+            yield event
+
+    endpoint = ClaudeCodeCLIEndpoint()
+    request = ClaudeCodeRequest(prompt="test", verbose_output=False, auto_finish=True)
+    with patch(
+        "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
+        side_effect=fake_events,
+    ) as raw_stream:
+        with pytest.raises(
+            ProviderStreamDisconnectError, match="Claude Code stream ended without a result event"
+        ) as exc:
+            await endpoint._call({"request": request}, {})
+
+    assert "test-session" in str(exc.value)
+    assert exc.value.retryable is True
+    assert endpoint.session_id == "test-session"
+    raw_stream.assert_called_once_with(request)
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_result_succeeds_without_auto_finish():
+    events = [{"type": "result", "result": ""}, {"type": "done"}]
+
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    endpoint = ClaudeCodeCLIEndpoint()
+    request = ClaudeCodeRequest(prompt="test", verbose_output=False, auto_finish=True)
+    with patch(
+        "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
+        side_effect=fake_events,
+    ) as raw_stream:
+        response = await endpoint._call({"request": request}, {})
+
+    assert response["result"] == ""
+    assert response["is_error"] is False
+    raw_stream.assert_called_once_with(request)
+    assert all(chunk.type != "error" for chunk in await _endpoint_chunks(events))
+
+
+@pytest.mark.asyncio
+async def test_explicit_error_result_keeps_its_classification():
+    event = _result_event(result="usage limit reached", api_error_status=429)
+
+    async def fake_events(_request):
+        yield event
+        yield {"type": "done"}
+
+    endpoint = ClaudeCodeCLIEndpoint()
+    request = ClaudeCodeRequest(prompt="test", verbose_output=False)
+    with patch(
+        "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
+        side_effect=fake_events,
+    ):
+        with pytest.raises(ProviderQuotaError, match="usage limit reached"):
+            await endpoint._call({"request": request}, {})
+
+    chunks = await _endpoint_chunks([event, {"type": "done"}])
+    error = chunks[-1]
+    assert error.type == "error"
+    assert error.content == "usage limit reached"
+    assert error.metadata["error_status"] == 429

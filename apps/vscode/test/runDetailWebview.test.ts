@@ -35,7 +35,10 @@ describe("runDetail.js reason banner", () => {
     sendReason({
       code: "run.failed.exception",
       summary: "RuntimeError: boom",
-      evidenceRefs: [{ kind: "session", id: "s-1" }, { id: "report" }],
+      evidenceRefs: [
+        { kind: "session", id: "s-1" },
+        { kind: "chain_decision", v: 1, ref: "on_fail" },
+      ],
     });
 
     const banner = document.getElementById("reasonBanner");

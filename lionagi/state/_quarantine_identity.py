@@ -7,7 +7,10 @@ from __future__ import annotations
 import json
 import math
 import socket
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
+
+T = TypeVar("T")
 
 UNVERIFIABLE_PID_QUARANTINE_THRESHOLD = 3
 
@@ -67,7 +70,7 @@ def encode_identity(pid: Any, create_time: Any, generation: Any) -> str:
     return json.dumps(identity, separators=(",", ":"), allow_nan=False)
 
 
-def is_current_quarantine(row: dict[str, Any], *, raise_on_scope_error: bool = False) -> bool:
+def is_current_quarantine(row: dict[str, Any], *, raise_on_probe_error: bool = False) -> bool:
     """Whether a running row's canonical marker names its current local identity."""
     if not isinstance(row, dict):
         return False
@@ -94,16 +97,13 @@ def is_current_quarantine(row: dict[str, Any], *, raise_on_scope_error: bool = F
         if "process_identity_mode" in metadata and metadata["process_identity_mode"] != "local":
             return False
         host = metadata.get("pid_host")
+        # A present host that is not non-empty text cannot be scoped; null reads as absent.
+        if host is not None and (not isinstance(host, str) or not host):
+            return False
         if isinstance(host, str) and host:
-            host_probe_failed = False
-            try:
-                current_host = socket.gethostname()
-            except Exception:
-                host_probe_failed = True
-            if host_probe_failed:
-                if raise_on_scope_error:
-                    # Raise after the handler so __context__ stays empty; see
-                    # tests/state/test_quarantine_probe_exception_privacy.py.
+            probed, current_host = run_probe(socket.gethostname)
+            if not probed:
+                if raise_on_probe_error:
                     raise QuarantineProbeError("quarantine host identity probe failed")
                 return False
             if host != current_host:
@@ -120,30 +120,82 @@ def is_current_quarantine(row: dict[str, Any], *, raise_on_scope_error: bool = F
         return False
 
 
-def _is_unreadable_quarantine(row: dict[str, Any]) -> bool:
-    """Classify malformed running records without calling a foreign host corrupt."""
+def run_probe(
+    probe: Callable[[], T],
+    *,
+    catch: type[BaseException] | tuple[type[BaseException], ...] = Exception,
+) -> tuple[bool, T | None]:
+    """Run ``probe`` and report ``(True, value)``, or ``(False, None)`` when it raised ``catch``.
+
+    A caller that turns a failed probe into :class:`QuarantineProbeError` raises it at its own
+    call site, which has no ``except`` block, so the public error never carries the probe's
+    exception (and its private detail) as ``__context__``.
+    """
+    try:
+        return True, probe()
+    except catch:
+        pass
+    return False, None
+
+
+def _quarantine_record_status(row: dict[str, Any]) -> str | None:
+    """Classify quarantine metadata for display and disposition safeguards."""
     if not isinstance(row, dict) or row.get("status") != "running":
-        return False
+        return None
     metadata = row.get("node_metadata")
     if isinstance(metadata, str):
         try:
             metadata = json.loads(metadata)
         except (TypeError, ValueError, RecursionError):
-            return False
+            return None
     if not isinstance(metadata, dict) or metadata.get("unverifiable_quarantined") is not True:
-        return False
+        return None
+    host = metadata.get("pid_host")
+    if host is not None and (not isinstance(host, str) or not host):
+        return "unreadable"
 
     # A valid record can name this host or a different one. Omit only the host
     # while checking the complete canonical identity and history; a foreign
     # host does not excuse an invalid token, count, epoch, or process mode.
     hostless = {key: value for key, value in metadata.items() if key != "pid_host"}
+    identity = quarantine_identity({**row, "node_metadata": hostless})
+    if identity is None:
+        return "unreadable"
+    token = metadata.get("unverifiable_identity")
+    try:
+        decoded_token = json.loads(token) if isinstance(token, str) else None
+        canonical_token = json.dumps(decoded_token, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        return "unreadable"
+    if not isinstance(decoded_token, list) or len(decoded_token) != 3 or canonical_token != token:
+        return "unreadable"
+    try:
+        if encode_identity(*decoded_token) != token:
+            return "unreadable"
+    except (TypeError, ValueError):
+        return "unreadable"
+    if token != encode_identity(*identity):
+        return "stale"
     if not is_current_quarantine({**row, "node_metadata": hostless}):
-        return True
+        return "unreadable"
     host = metadata.get("pid_host")
     if isinstance(host, str) and host:
         try:
             socket.gethostname()
         except Exception:
             # If local scope cannot be determined, retain the existing warning.
-            return True
-    return False
+            return "probe_failed"
+    # A canonical record whose identity no longer matches is stale, not corrupt.
+    return None
+
+
+_STATUS_LABELS = {
+    "unreadable": "quarantine record unreadable",
+    "probe_failed": "quarantine host probe failed",
+    "stale": "quarantine record stale",
+}
+
+
+def _quarantine_status_label(row: dict[str, Any]) -> str | None:
+    """The display label for a running quarantine record that is not current, else None."""
+    return _STATUS_LABELS.get(_quarantine_record_status(row))

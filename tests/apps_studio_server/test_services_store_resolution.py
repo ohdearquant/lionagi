@@ -42,8 +42,8 @@ def test_health_and_data_answers_come_from_the_same_store(tmp_path, monkeypatch)
     assertion between them passes whichever file was measured, which is worth
     less than no assertion at all.
     """
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.sessions as sessions_mod
+    import lionhub.serve.daemon.services.admin as admin_mod
+    import lionhub.serve.daemon.services.sessions as sessions_mod
 
     default = tmp_path / "default_state.db"
     configured = tmp_path / "configured_state.db"

@@ -13,7 +13,7 @@ import re
 import shutil
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 
@@ -439,13 +439,16 @@ def _validated_deadline_seconds(value: str | int | float) -> float:
     return seconds
 
 
-async def _drain_tail(stream: asyncio.StreamReader | None, limit: int) -> bytes:
+async def _drain_tail(
+    stream: asyncio.StreamReader | None, limit: int, *, counter: list[int] | None = None
+) -> bytes:
     """Read a pipe to EOF, keeping only its last *limit* bytes.
 
     Reading has to continue to EOF even though nearly all of it is thrown away.
     A child writing to a pipe nobody drains blocks once the OS buffer fills, so
     "read what I want and stop" is a deadlock for any process that outproduces
-    the buffer — which is every streaming agent leg.
+    the buffer — which is every streaming agent leg. *counter*, if given, has its
+    first item increased by every byte read.
     """
     if stream is None:
         return b""
@@ -454,6 +457,8 @@ async def _drain_tail(stream: asyncio.StreamReader | None, limit: int) -> bytes:
         chunk = await stream.read(8192)
         if not chunk:
             return tail
+        if counter is not None:
+            counter[0] += len(chunk)
         tail = (tail + chunk)[-limit:]
 
 
@@ -483,6 +488,9 @@ async def spawn_and_wait(
     action_kind: str | None = None,
     on_launched: Callable[[], Awaitable[None]] | None = None,
     deadline_seconds: float | None = None,
+    env: Mapping[str, str] | None = None,
+    stdout_sink: Callable[[bytes, int], None] | None = None,
+    stdout_sink_bytes: int = _TAIL_BYTES,
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, output_tail).
 
@@ -500,6 +508,12 @@ async def spawn_and_wait(
     *deadline_seconds* defaults to the validated global/per-action-kind
     Studio setting; expiry terminates the owned process group before
     raising :class:`SubprocessDeadlineExceededError`.
+
+    *env*, if given, is the whole environment the child starts with in place of
+    the daemon's own (the invocation id is still added). *stdout_sink*, if given,
+    is called once after a normal exit with the last *stdout_sink_bytes* of
+    standard output and the total byte count, so a caller can keep more of it than
+    the diagnostic tail holds.
     """
     if deadline_seconds is None:
         from lionhub.orchestration.scheduler.settings import invocation_deadline_seconds
@@ -512,7 +526,7 @@ async def spawn_and_wait(
         _validate_action_command(command)
         _validate_command_allowlisted(command)
 
-    base_env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
+    base_env = {**(os.environ if env is None else env), "LIONAGI_INVOCATION_ID": invocation_id}
     if action_kind == "command":
         # A command is an arbitrary program, often run by another interpreter with its own
         # lionagi; see env_without_state_db_url. Every `li` child keeps the URL, so its run
@@ -539,8 +553,13 @@ async def spawn_and_wait(
     )
     # Pgid == proc.pid; cleanup authority remains bound to this spawn identity.
 
+    stdout_total = [0]
     drain = asyncio.gather(
-        _drain_tail(proc.stdout, _TAIL_BYTES),
+        _drain_tail(
+            proc.stdout,
+            max(_TAIL_BYTES, stdout_sink_bytes) if stdout_sink is not None else _TAIL_BYTES,
+            counter=stdout_total,
+        ),
         _drain_tail(proc.stderr, _TAIL_BYTES),
     )
 
@@ -606,7 +625,12 @@ async def spawn_and_wait(
                 os.unlink(tmp_path)
 
     exit_code = proc.returncode or 0
-    output_tail = _diagnostic_tail(stdout, stderr)
+    if stdout_sink is not None:
+        try:
+            stdout_sink(stdout, stdout_total[0])
+        except Exception:
+            _log.exception("stdout sink failed for invocation %s", invocation_id)
+    output_tail = _diagnostic_tail(stdout[-_TAIL_BYTES:], stderr)
 
     _log.info("Process exited with code %d", exit_code)
     return exit_code, output_tail

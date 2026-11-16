@@ -710,7 +710,7 @@ reads from. Durable delivery covers committed `session_signals` rows, not every 
 the record says what is lost and when. For a durable subscriber the source fact is a
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
-(`session_signals` in `lionagi/state/schema.sql`), the sink writes it with the sequence the store assigns
+(`lionagi/state/schema.sql:845-849`), the sink writes it with the sequence the store assigns
 (`lionagi/state/db.py::StateDB.insert_session_signal`), and the cursor is a position in that sequence, read forward with
 `after_seq` (`lionagi/state/db.py::StateDB.get_session_signals_after`), whose forward read defaults to 500 rows
 (`lionagi/state/db.py::StateDB.get_session_signals_after`). Registration requires a bound usable sink and replayable filters, and persists source
@@ -813,8 +813,8 @@ everything since; facts past the range belong to the next wake.
 - No per-subscriber cursor exists. The durable reader positions nearest to one exist and none is a
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
-  not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round`, `lionagi/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.build_round_operations`;
-  `lionagi/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`). A schedule holds `github_cursor`, a reader
+  not a per-subscriber position (`lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round`, `lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.build_round_operations`;
+  `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:493`, `:564-572`; `lionagi/state/db.py::StateDB._build_update_schedule_stmt`, `lionagi/state/db.py::StateDB.create_schedule_run_and_advance`;
@@ -823,7 +823,7 @@ everything since; facts past the range belong to the next wake.
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`session_signals` in `lionagi/state/schema.sql`; writer `lionagi/state/db.py::StateDB.insert_session_signal`; forward reader
+  (`lionagi/state/schema.sql:845-849`; writer `lionagi/state/db.py::StateDB.insert_session_signal`; forward reader
   `lionagi/state/db.py::StateDB.get_session_signals_after`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py::SessionObserver.persist_dropped`).

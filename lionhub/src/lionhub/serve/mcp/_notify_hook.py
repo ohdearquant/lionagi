@@ -40,6 +40,7 @@ from lionagi.ln import (
 )
 from lionagi.ln._proc import env_without_state_db_url
 from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
+from lionagi.state.lifecycle.notify_settings import build_terminal_notice_payload
 
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
 # the path because that interpreter is the one lionagi is installed in.
@@ -386,7 +387,7 @@ def _unverifiable_reason(argv: list[str]) -> str | None:
 
 def _deliver(
     argv: list[str],
-    payload: dict[str, str],
+    payload: dict[str, Any],
     env: dict[str, str] | None = None,
     *,
     program: str | None = None,
@@ -562,9 +563,10 @@ def deliver_terminal_notice(
     target = target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
     sender = sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
     label = (job or {}).get("label") or (job or {}).get("kind") or "run"
+    run_cwd = (job or {}).get("cwd")
     template, unusable = _resolve_command(
         command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
-        cwd=(job or {}).get("cwd"),
+        cwd=run_cwd,
     )
     # Taken before a missing sender can drop the template, so a refusal still
     # names the program that would have run.
@@ -597,9 +599,28 @@ def deliver_terminal_notice(
             fields["reason_code"] = reason_code
         if reason_detail:
             fields["reason_detail"] = reason_detail
+        # The run manifest records the CLI's actual artifact root, including a
+        # custom save directory. The subprocess still signs from delivery_cwd.
+        manifest = jobs._read_run_json_bounded(run_id) or {}
+        artifact_root = manifest.get("artifact_root")
+        notice_cwd = run_cwd or manifest.get("cwd")
+        payload = build_terminal_notice_payload(
+            run_id=run_id,
+            status=status,
+            reason_code=reason_code or None,
+            label=label if isinstance(label, str) else None,
+            sender=sender or None,
+            cwd=notice_cwd if isinstance(notice_cwd, str) else None,
+            output_dir=(
+                artifact_root
+                if isinstance(artifact_root, str) and os.path.isabs(artifact_root)
+                else None
+            ),
+            extensions=fields,
+        )
         return _deliver(
             _substitute(template, fields),
-            fields,
+            payload,
             _delivery_env(sender),
             program=program,
             cwd=delivery_cwd,

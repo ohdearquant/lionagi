@@ -23,7 +23,7 @@ from tests.apps_studio_server.test_admin_transition import _seed_stale_session
 def test_admin_committed_transition_is_pushed_and_replayable(tmp_path, monkeypatch):
     import lionagi.state.db as state_db_mod
     import lionagi.state.health as health_mod
-    import lionagi.studio.services.admin as admin
+    import lionhub.serve.daemon.services.admin as admin
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())

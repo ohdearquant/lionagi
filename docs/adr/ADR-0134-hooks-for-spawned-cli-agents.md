@@ -189,7 +189,7 @@ that starts another `li` process hands it on in that child's environment: the MC
 (`lionhub/src/lionhub/orchestration/scheduler/subprocess.py`) all of it to a `li` child and all but the state-store
 URL to a command action, and `li o flow --background` (`lionagi/cli/orchestrate/__init__.py`) a
 copy of it to the `python -m lionagi.cli` child it starts, and the run-resume worker
-(`lionagi/studio/services/run_resume_worker.py`) and the MCP verb dispatcher
+(`lionhub/src/lionhub/serve/daemon/services/run_resume_worker.py`) and the MCP verb dispatcher
 (`lionagi/mcp/dispatch.py`) start `li` with the inherited one. Each of the five sets
 `LIONAGI_HOOKS_REQUIREMENT` explicitly after building the child's environment, to the absolute
 path of the requirement file this process read, or removes it when this process read none, so a

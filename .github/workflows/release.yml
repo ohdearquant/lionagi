@@ -33,6 +33,7 @@ jobs:
     outputs:
       version: ${{ steps.release.outputs.version }}
       sha: ${{ steps.release.outputs.sha }}
+      python_versions: ${{ steps.release.outputs.python_versions }}
     steps:
     - uses: actions/checkout@v7
       with:
@@ -52,9 +53,12 @@ jobs:
       contents: read
     needs: source
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13']
+        python-version: ${{ fromJSON(needs.source.outputs.python_versions) }}
     steps:
     - name: Require the resolved source commit
       shell: bash
@@ -97,14 +101,26 @@ jobs:
         uv venv
         uv sync --all-extras
     
-    # Validate modern test roots; older release tags may not have the helper.
     - name: Run tests
+      shell: bash
       run: |
-        source .venv/bin/activate
-        if [ -f scripts/test_roots.py ]; then
-          uv run python scripts/test_roots.py > /dev/null
-        fi
-        uv run pytest --maxfail=1 --disable-warnings
+        case "${GITHUB_EVENT_NAME-}" in
+          release)
+            # Report failures across the full test selection before publishing.
+            MAXFAIL=0 exec scripts/ci.sh test-python
+            ;;
+          workflow_dispatch)
+            # Older tags lack the configured-root helper.
+            if [ -f scripts/test_roots.py ]; then
+              uv run python scripts/test_roots.py > /dev/null
+            fi
+            exec uv run pytest --maxfail=1 --disable-warnings
+            ;;
+          *)
+            echo '::error::unsupported release test event'
+            exit 1
+            ;;
+        esac
 
   deploy:
     permissions:

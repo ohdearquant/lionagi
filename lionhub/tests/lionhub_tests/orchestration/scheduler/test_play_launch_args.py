@@ -107,7 +107,7 @@ class TestBuildArgvPlay:
         from lionhub.orchestration.schedule.action_validation import _PLAY_SUBCOMMANDS
 
         # The module, not the `main` function the package exports under the same name.
-        cli_main = importlib.import_module("lionagi.cli.main")
+        cli_main = importlib.import_module("lionhub.serve.cli.main")
 
         (shortcut,) = [
             node

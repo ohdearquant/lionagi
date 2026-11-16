@@ -28,7 +28,7 @@ from tests._runs_checkpoint_json_test_support import (
 
 
 def test_orchestration_branch_snapshot_refuses_non_finite(tmp_path):
-    from lionagi.cli.orchestrate._orchestration import _write_branch_snapshot
+    from lionhub.serve.cli.orchestrate._orchestration import _write_branch_snapshot
 
     class _Branch:
         def __init__(self, dict_):
@@ -48,7 +48,7 @@ def test_orchestration_branch_snapshot_refuses_non_finite(tmp_path):
 
 
 def test_team_inbox_refuses_non_finite(tmp_path):
-    from lionagi.cli.team import _locked_team
+    from lionhub.serve.cli.team import _locked_team
 
     target = tmp_path / "team.json"
 

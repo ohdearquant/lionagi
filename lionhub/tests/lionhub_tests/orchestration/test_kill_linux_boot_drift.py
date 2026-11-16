@@ -11,9 +11,9 @@ import psutil
 import pytest
 
 import lionhub.orchestration.kill as kill_service
-from lionagi.cli import kill as kill_mod
 from lionagi.ln import _proc
 from lionagi.state.db import StateDB
+from lionhub.serve.cli import kill as kill_mod
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 from tests._kill_linux_boot_drift_test_support import (
     _imported_run_manifest as _imported_run_manifest,
@@ -307,7 +307,7 @@ async def test_direct_kill_refuses_foreign_host_before_parsing_infinite_pid(monk
 async def test_recorded_worker_cleanup_distinguishes_dead_and_live_boot_disagreement(
     monkeypatch, alive
 ):
-    from tests.cli.test_kill_recorded_workers import _CleanupDB
+    from ..serve.cli.test_kill_recorded_workers import _CleanupDB
 
     db = _CleanupDB(status="running")
     db.session["node_metadata"]["pid_boot_time"] = 900.0
@@ -348,7 +348,7 @@ async def test_recorded_worker_cleanup_distinguishes_dead_and_live_boot_disagree
 async def test_recorded_workers_invalid_pid_and_boot_disagreement_keep_legacy_refusal(
     monkeypatch, pid
 ):
-    from tests.cli.test_kill_recorded_workers import _CleanupDB
+    from ..serve.cli.test_kill_recorded_workers import _CleanupDB
 
     db = _CleanupDB(status="running")
     db.session["node_metadata"] = {"pid": pid, "pid_boot_time": 900.0}

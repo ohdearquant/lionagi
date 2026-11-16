@@ -48,7 +48,7 @@ def _make_svc() -> AsyncMock:
     svc.get_schedule = AsyncMock(return_value=None)
     svc.list_schedules = AsyncMock(return_value=[])
     svc.update_schedule = AsyncMock()
-    svc.create_schedule_run = AsyncMock()
+    svc.create_skipped_schedule_run = AsyncMock()
     svc.update_schedule_run = AsyncMock()
     svc.create_invocation = AsyncMock()
     svc.update_invocation = AsyncMock()
@@ -71,7 +71,7 @@ def test_svc_validate_budget_usd_rejects_non_finite(bad_value):
     A plain ``<= 0`` predicate lets nan/inf through; nan then round-trips to NULL
     in SQLite and _check_budget treats the schedule as unbounded forever.
     """
-    from lionagi.studio.services.schedules import _svc_validate_budget_usd
+    from lionhub.serve.daemon.services.schedules import _svc_validate_budget_usd
 
     with pytest.raises(ValueError, match="finite positive number"):
         _svc_validate_budget_usd(bad_value)
@@ -79,7 +79,7 @@ def test_svc_validate_budget_usd_rejects_non_finite(bad_value):
 
 @pytest.mark.parametrize("good_value", [0.01, 1, 12.5, 1000.0])
 def test_svc_validate_budget_usd_accepts_finite_positive(good_value):
-    from lionagi.studio.services.schedules import _svc_validate_budget_usd
+    from lionhub.serve.daemon.services.schedules import _svc_validate_budget_usd
 
     _svc_validate_budget_usd(good_value)  # does not raise
 
@@ -191,8 +191,8 @@ async def test_maybe_fire_disables_and_records_when_over_budget():
     svc.update_schedule.assert_awaited_once_with(
         "sched-001", enabled=0, audit_context=ANY, reason=ANY
     )
-    svc.create_schedule_run.assert_awaited_once()
-    (run_payload,), _ = svc.create_schedule_run.await_args
+    svc.create_skipped_schedule_run.assert_awaited_once()
+    (run_payload,), _ = svc.create_skipped_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True
     budget_calls = [
         c
@@ -225,8 +225,8 @@ async def test_disable_still_lands_when_the_annotation_reread_fails():
     svc.update_schedule.assert_awaited_once_with(
         "sched-001", enabled=0, audit_context=ANY, reason=ANY
     )
-    svc.create_schedule_run.assert_awaited_once()
-    (run_payload,), _ = svc.create_schedule_run.await_args
+    svc.create_skipped_schedule_run.assert_awaited_once()
+    (run_payload,), _ = svc.create_skipped_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True
     budget_calls = [
         c
@@ -373,8 +373,8 @@ async def test_tick_github_disables_without_polling_when_over_budget():
     svc.update_schedule.assert_awaited_once_with(
         "sched-001", enabled=0, audit_context=ANY, reason=ANY
     )
-    svc.create_schedule_run.assert_awaited_once()
-    (run_payload,), _ = svc.create_schedule_run.await_args
+    svc.create_skipped_schedule_run.assert_awaited_once()
+    (run_payload,), _ = svc.create_skipped_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True
     # The budget check runs before slot reservation, so a bailed fire must leave
     # the global concurrency counter untouched -- a regression that moved the
@@ -494,7 +494,7 @@ async def test_spawned_cli_session_is_included_in_schedule_spend(tmp_path, monke
             import argparse
             import asyncio
 
-            from lionhub.cli.catalog import build_cli_parser, seed_for
+            from lionhub.serve.cli.catalog import build_cli_parser, seed_for
             from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
             from lionagi.session.branch import Branch
             from lionagi.state.db import StateDB

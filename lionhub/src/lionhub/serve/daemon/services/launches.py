@@ -1,0 +1,556 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Launch service — backs POST /api/launches."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import os
+import time
+from typing import Any
+
+from fastapi import HTTPException
+from pydantic import BaseModel
+
+from lionagi.ln import short_id
+from lionagi.ln.concurrency.errors import shield_quietly
+from lionagi.state.db import StateDB
+from lionhub.orchestration.schedule.execution_root import _is_usable_execution_root
+from lionhub.orchestration.scheduler import settings as config
+from lionhub.orchestration.scheduler.subprocess import build_argv, resolve_li_executable
+from lionhub.serve.daemon import leg_host
+from lionhub.serve.daemon.routes import studio_route
+from lionhub.serve.daemon.services import engine_lookup
+from lionhub.serve.daemon.services.engine_lookup import is_registered_engine_kind
+
+from ..services.schedules import (
+    _svc_validate_action_model,
+    _svc_validate_extra_args,
+    _svc_validate_identifier,
+    _svc_validate_prompt,
+)
+
+_log = logging.getLogger("lionagi.studio.services.launches")
+
+_LAUNCH_VALID_KINDS = frozenset(
+    {"agent", "flow", "fanout", "play", "flow_yaml", "engine", "command"}
+)
+
+_detached_tasks: set[asyncio.Task] = set()
+_user_cancelled: set[str] = set()
+
+_launch_semaphore: asyncio.Semaphore | None = None
+
+
+class TooManyLaunchesError(Exception):
+    """Raised when the in-flight launch count reaches the configured cap."""
+
+
+class LiExecutableUnavailableError(RuntimeError):
+    """The daemon cannot resolve the installed ``li`` console script."""
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Return (creating on first call) the module-level admission semaphore."""
+    global _launch_semaphore  # noqa: PLW0603
+    if _launch_semaphore is None:
+        cap = leg_host.max_launches() if leg_host.enabled() else config.MAX_LAUNCHES
+        _launch_semaphore = asyncio.Semaphore(cap)
+    return _launch_semaphore
+
+
+def _validate_action_cwd(cwd: object) -> None:
+    """Refuse a working directory that is not an existing absolute directory on this host.
+
+    The rule is the one a schedule's ``action_cwd`` is held to. A launch that names a
+    directory runs there or not at all: there is no fallback to the daemon's own.
+    """
+    if cwd is None:
+        return
+    if not isinstance(cwd, str) or "\x00" in cwd or not _is_usable_execution_root(cwd):
+        raise ValueError(
+            f"action_cwd {cwd!r} is not usable: it must be an existing absolute directory "
+            "on the Studio daemon's host"
+        )
+
+
+def _validate_request(data: dict[str, Any]) -> None:
+    """Raise ValueError if *data* fails security or structural checks."""
+    if leg_host.enabled():
+        leg_host.validate_launch(data)
+    elif data.get("action_repo") or data.get("action_head"):
+        raise ValueError(
+            "action_repo and action_head are served only by a Studio daemon in leg-host mode"
+        )
+    kind = data.get("action_kind") or ""
+    if kind not in _LAUNCH_VALID_KINDS:
+        raise ValueError(
+            f"action_kind {kind!r} is not supported for on-demand launches. "
+            f"Valid kinds: {sorted(_LAUNCH_VALID_KINDS)}"
+        )
+    _svc_validate_action_model(data.get("action_model"))
+    _svc_validate_prompt(data.get("action_prompt"))
+    _svc_validate_identifier(data.get("action_agent"), "action_agent")
+    _svc_validate_identifier(data.get("action_project"), "action_project")
+    _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
+    _validate_action_cwd(data.get("action_cwd"))
+    _svc_validate_extra_args(data.get("action_extra_args"))
+    if data.get("action_playbook_args"):
+        from lionhub.orchestration.schedule.action_validation import _validate_playbook_args
+
+        _validate_playbook_args(data["action_playbook_args"])
+        if kind != "play":
+            raise ValueError("action_playbook_args is only valid for play launches")
+    if kind == "engine":
+        if not (data.get("action_engine_def") or "").strip():
+            raise ValueError(
+                "action_engine_def (an engine definition id or name) is required "
+                "for engine launches"
+            )
+        if not (data.get("action_prompt") or "").strip():
+            raise ValueError("action_prompt (the engine spec) is required for engine launches")
+        _svc_validate_identifier(data.get("action_engine_def"), "action_engine_def")
+    if kind == "flow_yaml" and not (data.get("action_flow_yaml") or "").strip():
+        raise ValueError(
+            "action_flow_yaml (the inline flow spec) is required for flow_yaml launches"
+        )
+    if kind == "command":
+        from lionhub.orchestration.schedule.action_validation import (
+            _validate_action_command,
+            _validate_command_allowlisted,
+        )
+
+        command = data.get("action_command") or ""
+        if not command.strip():
+            raise ValueError("action_command is required for command launches")
+        _validate_action_command(command)
+        _validate_command_allowlisted(command)
+        command_args = data.get("action_command_args")
+        if command_args is not None and not isinstance(command_args, list):
+            raise ValueError("action_command_args must be a list of strings")
+
+
+async def launch(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate *data*, record an invocation, spawn a detached process, return identifiers.
+
+    Raises TooManyLaunchesError at the in-flight cap; session IDs appear in the DB
+    only after the process starts.
+    """
+    _validate_request(data)
+
+    schedule_dict: dict[str, Any] = {
+        "action_kind": data["action_kind"],
+        "action_model": data.get("action_model") or "",
+        "action_prompt": data.get("action_prompt") or "",
+        "action_agent": data.get("action_agent"),
+        "action_playbook": data.get("action_playbook"),
+        "action_playbook_args": data.get("action_playbook_args") or {},
+        "action_project": data.get("action_project"),
+        "action_extra_args": data.get("action_extra_args") or [],
+        "action_flow_yaml": data.get("action_flow_yaml"),
+        "action_command": data.get("action_command"),
+        "action_command_args": data.get("action_command_args") or [],
+    }
+    cwd = data.get("action_cwd")
+    if data["action_kind"] == "engine":
+        defn = await _resolve_engine_def(data["action_engine_def"])
+        if not is_registered_engine_kind(defn.get("kind")):
+            raise ValueError("Engine preset kind is not registered")
+        # The saved definition supplies engine kind/model/flags; the request
+        # supplies the spec prompt and may override the model.
+        schedule_dict["action_agent"] = defn["kind"]
+        if not schedule_dict["action_model"]:
+            schedule_dict["action_model"] = defn.get("model") or ""
+        opts: dict[str, Any] = dict(defn.get("options") or {})
+        for k in ("max_depth", "max_agents"):
+            if defn.get(k) is not None:
+                opts[k] = defn[k]
+        schedule_dict["action_engine_options"] = opts
+    if data["action_kind"] == "command":
+        # Allow-listed command actions execute their own binary directly.
+        argv, tmp_path = build_argv(schedule_dict, {})
+    else:
+        executable_prefix, resolve_error = resolve_li_executable()
+        if executable_prefix is None:
+            raise LiExecutableUnavailableError(
+                "The Studio daemon could not resolve the installed `li` executable"
+                + (f": {resolve_error}" if resolve_error else "")
+            )
+        argv, tmp_path = build_argv(
+            schedule_dict,
+            {},
+            executable_prefix=executable_prefix,
+        )
+
+    leg = leg_host.validate_launch(data) if leg_host.enabled() else None
+    if leg is not None:
+        # The leg reaches no MCP server: none is configured on a leg host, and this
+        # turns off the search for one from the worktree upward.
+        argv.insert(argv.index("--"), "--no-mcp-config")
+        # A worktree a crash or restart left behind goes before another is made.
+        await leg_host.sweep_worktrees(leg.repo, live=_live_invocation_ids())
+    inv_id = await launch_detached_argv(
+        argv,
+        skill=f"launch:{data['action_kind']}",
+        plugin="studio_launch",
+        prompt=data.get("action_prompt") or data.get("action_playbook"),
+        tmp_path=tmp_path,
+        action_kind=data["action_kind"],
+        node_metadata=(
+            {"repo": leg.repo.name, "head": leg.head}
+            if leg is not None
+            else ({"cwd": cwd} if cwd else None)
+        ),
+        cwd=cwd,
+        leg=leg,
+    )
+
+    response = {"invocation_id": inv_id, "action_kind": data["action_kind"]}
+    if leg is not None:
+        response["action_head"] = leg.head
+    return response
+
+
+def _with_action_kind(
+    node_metadata: dict[str, Any] | None, action_kind: str | None
+) -> dict[str, Any] | None:
+    """Fold *action_kind* into *node_metadata* without disturbing its other keys.
+
+    The kind was passed to the spawn path and dropped before the row was
+    written, so the stored invocation could not say what it had launched.
+    """
+    if action_kind is None:
+        return node_metadata
+    return {**(node_metadata or {}), "action_kind": action_kind}
+
+
+async def launch_detached_argv(
+    argv: list[str],
+    *,
+    skill: str,
+    plugin: str,
+    prompt: str | None,
+    tmp_path: str | None = None,
+    action_kind: str | None = None,
+    node_metadata: dict[str, Any] | None = None,
+    cwd: str | None = None,
+    leg: leg_host.LegLaunch | None = None,
+) -> str:
+    """Record and supervise one already-validated argv launch.
+
+    Callers own argv construction and validation, including *cwd*, the directory
+    the process starts in (``None`` inherits the daemon's own). This helper owns
+    the shared launch admission cap, canonical invocation row, detached task
+    retention, cancellation lookup, and terminal status update.
+    """
+    if not argv or any(not isinstance(token, str) or "\x00" in token for token in argv):
+        raise ValueError("argv must be a non-empty list of NUL-free string tokens")
+
+    sem = _get_semaphore()
+    if sem.locked():
+        raise TooManyLaunchesError(
+            f"Maximum concurrent launches ({config.MAX_LAUNCHES}) reached. "
+            "Retry when an existing launch completes."
+        )
+    await sem.acquire()
+
+    inv_id = short_id(12)
+    now = time.time()
+
+    try:
+        async with StateDB() as db:
+            await db.create_invocation(
+                {
+                    "id": inv_id,
+                    "skill": skill,
+                    "plugin": plugin,
+                    "prompt": prompt,
+                    "started_at": now,
+                    "status": "running",
+                    "node_metadata": _with_action_kind(node_metadata, action_kind),
+                }
+            )
+
+        task = asyncio.create_task(
+            _spawn_detached(
+                argv, inv_id, tmp_path=tmp_path, action_kind=action_kind, cwd=cwd, leg=leg
+            ),
+            name=f"launch-{inv_id}",
+        )
+    except BaseException:
+        sem.release()
+        raise
+
+    task.add_done_callback(lambda _t: sem.release())
+    _detached_tasks.add(task)
+    task.add_done_callback(_detached_tasks.discard)
+    return inv_id
+
+
+async def _resolve_engine_def(ref: str) -> dict[str, Any]:
+    """Resolve *ref* (engine definition id, then name) or raise ValueError."""
+    defn = await engine_lookup.get_engine_def(ref)
+    if defn is None:
+        defn = await engine_lookup.get_engine_def_by_name(ref)
+    if defn is None:
+        raise ValueError(f"Engine definition {ref!r} not found")
+    return defn
+
+
+async def shutdown_launches() -> None:
+    """Cancel all in-flight launch tasks on shutdown; each task writes a terminal DB row before re-raising."""
+    tasks = [t for t in list(_detached_tasks) if not t.done()]
+    if not tasks:
+        return
+    for t in tasks:
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+_MAX_FAILURE_REASON_CHARS = 4000
+
+
+def _failure_reason_summary(status: str, output_tail: str) -> str:
+    """Prefer the subprocess's own diagnostic tail over a generic message.
+
+    A failed detached launch (e.g. a checkpoint resume refused for a
+    concrete reason) names that reason in its own output; discarding it
+    here would surface as an unexplained "Detached launch failed." Kept
+    short and tail-truncated — this lands in a DB column meant for a
+    summary, not a full traceback.
+    """
+    if status != "failed" or not output_tail.strip():
+        return f"Detached launch {status}."
+    tail = output_tail.strip()
+    if len(tail) > _MAX_FAILURE_REASON_CHARS:
+        tail = tail[-_MAX_FAILURE_REASON_CHARS:]
+    return tail
+
+
+async def _remove_leg_worktree(leg: leg_host.LegLaunch | None, inv_id: str) -> None:
+    """Remove a leg's worktree, shielded so a second cancel cannot leave it half removed."""
+    if leg is None:
+        return
+    try:
+        if not await shield_quietly(leg_host.remove_worktree(leg.repo, inv_id)):
+            _log.warning("Leg worktree for invocation %s was not removed", inv_id)
+    except Exception:
+        _log.exception("Removing the leg worktree for invocation %s failed", inv_id)
+
+
+def _live_invocation_ids() -> set[str]:
+    """The invocation ids of launches still running in this process."""
+    return {t.get_name().removeprefix("launch-") for t in _detached_tasks if not t.done()}
+
+
+async def _spawn_detached(
+    argv: list[str],
+    inv_id: str,
+    *,
+    tmp_path: str | None,
+    action_kind: str | None = None,
+    cwd: str | None = None,
+    leg: leg_host.LegLaunch | None = None,
+) -> None:
+    """Spawn the process and update the invocation row when it exits.
+
+    A leg-host launch (*leg*) first gets a worktree at its head, runs there with the
+    leg's allow-listed environment, keeps its standard output as the result, and has the
+    worktree removed on every way out, cancellation included.
+    """
+    from lionagi.state.reasons import RunReasons
+    from lionhub.orchestration.scheduler.subprocess import (
+        SubprocessDeadlineExceededError,
+        spawn_and_wait,
+    )
+
+    output_tail = ""
+    try:
+        if leg is not None:
+            worktree = await leg_host.make_worktree(leg, inv_id)
+            refusal = leg_host.worktree_refusal(worktree)
+            if refusal is not None:
+                raise leg_host.LegSetupError(refusal)
+            exit_code, output_tail = await spawn_and_wait(
+                argv,
+                inv_id,
+                tmp_path=tmp_path,
+                cwd=str(worktree),
+                action_kind=action_kind,
+                env=leg_host.leg_env(os.environ),
+                stdout_sink=lambda out, total: leg_host.write_result(inv_id, out, total=total),
+                stdout_sink_bytes=leg_host.RESULT_CAP_BYTES,
+            )
+        else:
+            exit_code, output_tail = await spawn_and_wait(
+                argv, inv_id, tmp_path=tmp_path, cwd=cwd, action_kind=action_kind
+            )
+        if exit_code == 0:
+            status, reason = "completed", RunReasons.COMPLETED_OK
+        else:
+            status, reason = "failed", RunReasons.FAILED_EXIT_NONZERO
+    except asyncio.CancelledError:
+        # Write a terminal row before propagating; distinguish user vs shutdown.
+        is_user = inv_id in _user_cancelled
+        _user_cancelled.discard(inv_id)
+        reason_summary = (
+            "Launch cancelled by user." if is_user else "Launch cancelled by server shutdown."
+        )
+        try:
+            async with StateDB() as db:
+                # ended_at rides in extra_fields so it lands in the same
+                # atomic transition as the status write -- a separate prior
+                # update_invocation() call could persist ended_at on a row
+                # this status write then fails or loses the race to update.
+                cancelled_written = await db.update_status(
+                    "invocation",
+                    inv_id,
+                    new_status="cancelled",
+                    reason_code=RunReasons.CANCELLED_SYSTEM,
+                    reason_summary=reason_summary,
+                    evidence_refs=[],
+                    source="executor",
+                    actor=inv_id,
+                    metadata={},
+                    expected_statuses={"running"},
+                    extra_fields={"ended_at": time.time()},
+                )
+                if not cancelled_written:
+                    stored = await db.get_invocation(inv_id)
+                    _log.info(
+                        "Refused cancellation write for launch invocation %s: stored status "
+                        "%s refused %s.",
+                        inv_id,
+                        (stored or {}).get("status"),
+                        "cancelled",
+                    )
+        except Exception:
+            _log.exception(
+                "Failed to record cancellation for launch invocation %s",
+                inv_id,
+            )
+        with contextlib.suppress(asyncio.CancelledError):
+            await _remove_leg_worktree(leg, inv_id)
+        raise
+    except SubprocessDeadlineExceededError as exc:
+        status, reason = "timed_out", RunReasons.TIMED_OUT_DEADLINE
+        output_tail = str(exc)
+    except leg_host.LegSetupError as exc:
+        status, reason = "failed", RunReasons.FAILED_EXCEPTION
+        output_tail = str(exc)
+    except Exception:
+        _log.exception("Detached launch failed for invocation %s", inv_id)
+        status, reason = "failed", RunReasons.FAILED_EXCEPTION
+    await _remove_leg_worktree(leg, inv_id)
+
+    try:
+        async with StateDB() as db:
+            exit_written = await db.update_status(
+                "invocation",
+                inv_id,
+                new_status=status,
+                reason_code=reason,
+                reason_summary=(
+                    output_tail
+                    if status == "timed_out"
+                    else _failure_reason_summary(status, output_tail)
+                ),
+                evidence_refs=[],
+                source="executor",
+                actor=inv_id,
+                metadata={},
+                expected_statuses={"running"},
+                extra_fields={"ended_at": time.time()},
+            )
+            if not exit_written:
+                stored = await db.get_invocation(inv_id)
+                _log.info(
+                    "Refused exit write for launch invocation %s: stored status %s refused %s.",
+                    inv_id,
+                    (stored or {}).get("status"),
+                    status,
+                )
+    except Exception:
+        _log.exception("Failed to update invocation %s after detached launch", inv_id)
+
+
+class LaunchRequest(BaseModel):
+    action_kind: str
+    action_model: str | None = None
+    action_prompt: str | None = None
+    action_agent: str | None = None
+    action_playbook: str | None = None
+    action_playbook_args: dict[str, Any] | None = None
+    action_project: str | None = None
+    action_flow_yaml: str | None = None
+    action_engine_def: str | None = None
+    action_extra_args: list[str] | None = None
+    action_command: str | None = None
+    action_command_args: list[str] | None = None
+    action_cwd: str | None = None
+    action_repo: str | None = None
+    action_head: str | None = None
+
+
+@studio_route("/launches/", method="POST", area="launches", status_code=202)
+async def launch_run(body: LaunchRequest) -> dict[str, Any]:
+    """Fire an orchestration run immediately; process runs detached.
+
+    Returns invocation_id; monitor via GET /api/invocations/{id} and GET /api/sessions/{id}/signals.
+    """
+    try:
+        return await launch(body.model_dump(exclude_none=True))
+    except TooManyLaunchesError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except LiExecutableUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@studio_route("/launches/capabilities", method="GET", area="launches")
+async def launch_capabilities() -> dict[str, Any]:
+    """What this daemon launches: a client of a leg host refuses a daemon that is not one."""
+    return leg_host.capabilities()
+
+
+@studio_route("/launches/{invocation_id}/result", method="GET", area="launches")
+async def launch_result(invocation_id: str) -> dict[str, Any]:
+    """A leg-host launch's result: the last part of the leg's standard output, once it exits.
+
+    ``result`` is null while the leg runs, and stays null for a leg that never started.
+    Only a leg host keeps results; any other daemon answers 404.
+    """
+    if not leg_host.enabled():
+        raise HTTPException(status_code=404, detail="Only a leg host keeps launch results")
+    try:
+        stored = leg_host.read_result(invocation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    async with StateDB() as db:
+        row = await db.get_invocation(invocation_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No invocation {invocation_id!r}")
+    return {
+        "invocation_id": invocation_id,
+        "status": row["status"],
+        "result": stored["result"] if stored else None,
+        "truncated": bool(stored and stored["truncated"]),
+    }
+
+
+@studio_route(
+    "/invocations/{invocation_id}/cancel", method="POST", area="launches", status_code=202
+)
+async def cancel_launch(invocation_id: str) -> dict[str, Any]:
+    """Cancel an in-flight launch: terminate its detached process; the task records a cancelled invocation row."""
+    for t in list(_detached_tasks):
+        if t.get_name() == f"launch-{invocation_id}" and not t.done():
+            _user_cancelled.add(invocation_id)
+            t.cancel()
+            return {"invocation_id": invocation_id, "status": "cancelling"}
+    raise HTTPException(
+        status_code=404, detail=f"No in-flight launch for invocation {invocation_id!r}"
+    )

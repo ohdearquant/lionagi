@@ -11,12 +11,14 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/agent/` | Agent profiles, permissions, hooks, and construction. |
 | `lionhub/src/lionhub/agent/casts/` | Cast patterns, roles, modes, profiles, packs, and emission contracts. |
 | `lionhub/src/lionhub/tools/` | Built-in tool interfaces and implementations. |
-| `lionhub/src/lionhub/cli/` | Built-in CLI command catalog, lazy command discovery, and the `li studio` and `li schedule` command adapters. |
+| `lionhub/src/lionhub/serve/cli/` | The `li` command-line interface: the entry point, the built-in command catalog, lazy command discovery, and every command module. |
 | `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, work forms, and scheduler services and helpers. |
 | `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
+| `lionhub/src/lionhub/integrations/` | Optional third-party integrations: the RuVector vector store and memory store. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
+| `lionhub/src/lionhub/serve/daemon/` | Studio daemon process services: host admission, the reconnect channel, the scheduler log, stack-dump diagnostics, launch access and pairing, the daemon's route inventory, and the daemon's routes for runs, sessions, invocations, launches, schedules, identity and maintenance. |
 | `lionhub/tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
 
 ## Moved imports
@@ -44,11 +46,13 @@ Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0. The a
 | `lionagi.providers._subagent_admission` | `lionagi.service._subagent_admission` |
 | `lionagi.providers.openai._chat_schemas` | `lionagi.service.connections._chat_schemas` |
 
-The shared CLI leaf modules below are deprecated at their old paths in 0.38.0
-and are scheduled for removal in 2.0.0.
+The CLI package and the shared CLI leaf modules below are deprecated at their old
+paths in 0.38.0 and are scheduled for removal in 2.0.0. Each leaf module row takes
+precedence over the package row.
 
 | Old import | Current import |
 | --- | --- |
+| `lionagi.cli` | `lionhub.serve.cli` |
 | `lionagi.cli._project` | `lionhub.orchestration.project` |
 | `lionagi.cli._mcp_resolve` | `lionhub.orchestration.mcp_config` |
 | `lionagi.cli._team_service` | `lionhub.orchestration.team` |
@@ -77,6 +81,39 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.studio.services.schedule_export` | `lionhub.orchestration.schedule.export` |
 | `lionagi.studio.services.project_lookup` | `lionhub.orchestration.project_store` |
 | `lionagi.studio.services._db` | `lionhub.orchestration.state_store` |
+| `lionagi.integrations` | `lionhub.integrations` |
+| `lionagi.studio._host` | `lionhub.serve.daemon._host` |
+| `lionagi.studio._traceback_dump` | `lionhub.serve.daemon._traceback_dump` |
+| `lionagi.studio.daemon_log` | `lionhub.serve.daemon.daemon_log` |
+| `lionagi.studio.reconnect` | `lionhub.serve.daemon.reconnect` |
+| `lionagi.studio.services._io` | `lionhub.serve.daemon.services._io` |
+| `lionagi.studio.services._path_safety` | `lionhub.serve.daemon.services._path_safety` |
+| `lionagi.studio.services._sse` | `lionhub.serve.daemon.services._sse` |
+| `lionagi.studio.services.artifact_verification` | `lionhub.serve.daemon.services.artifact_verification` |
+| `lionagi.studio.services.signals` | `lionhub.serve.daemon.services.signals` |
+| `lionagi.studio.services.run_view` | `lionhub.serve.daemon.services.run_view` |
+| `lionagi.studio.services.task_applications` | `lionhub.serve.daemon.services.task_applications` |
+| `lionagi.studio.operator.redact` | `lionhub.serve.daemon.services.redact` |
+| `lionagi.studio.launch_access` | `lionhub.serve.daemon.launch_access` |
+| `lionagi.studio.services.runs` | `lionhub.serve.daemon.services.runs` |
+| `lionagi.studio.services.run_resume` | `lionhub.serve.daemon.services.run_resume` |
+| `lionagi.studio.services.run_resume_worker` | `lionhub.serve.daemon.services.run_resume_worker` |
+| `lionagi.studio.services.engine_runs` | `lionhub.serve.daemon.services.engine_runs` |
+| `lionagi.studio.services.invocations` | `lionhub.serve.daemon.services.invocations` |
+| `lionagi.studio.services.launches` | `lionhub.serve.daemon.services.launches` |
+| `lionagi.studio.services.identity` | `lionhub.serve.daemon.services.identity` |
+| `lionagi.studio.services.pairing` | `lionhub.serve.daemon.services.pairing` |
+| `lionagi.studio.services.sessions` | `lionhub.serve.daemon.services.sessions` |
+| `lionagi.studio.services.admin` | `lionhub.serve.daemon.services.admin` |
+| `lionagi.studio.services.schedules` | `lionhub.serve.daemon.services.schedules` |
+| `lionagi.studio.services._session_tail` | `lionhub.serve.daemon.services._session_tail` |
+
+## Logger names
+
+Moved modules keep their original logger names so existing log handlers and filters
+still match. New modules use `logging.getLogger(__name__)` by default and follow an
+existing logging namespace where their package documents one. The scheduler documents
+its namespace in the [orchestration README](src/lionhub/orchestration/README.md).
 
 ## Tests
 

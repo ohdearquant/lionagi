@@ -6,6 +6,9 @@ import asyncio
 import os
 import socket
 import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -318,3 +321,242 @@ async def test_frozen_witness_is_in_result_and_logs_once_without_marker(
     assert len(starts) == len(outcomes) == 1
     assert "((4242, 1.0),)" in starts[0] and "((4242, 1.0),)" in outcomes[0]
     assert "private-marker-must-not-appear" not in " ".join(messages)
+
+
+@pytest.mark.asyncio
+async def test_witness_capture_runs_off_the_event_loop(monkeypatch):
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    proc = SimpleNamespace(pid=4242)
+    spawned = cli.SpawnedProcess(4242, 4242, 1.0)
+    seen, gaps = {}, []
+    ticking, stop = asyncio.Event(), asyncio.Event()
+
+    def capture(_proc, _spawned):
+        seen["thread"] = threading.get_ident()
+        time.sleep(0.3)  # stands in for a walk over a large process table
+        return ((4242, 1.0),)
+
+    async def group(_proc, *, witnesses, **_kwargs):
+        seen["witnesses"] = witnesses
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    async def tick():
+        last = loop.time()
+        ticking.set()
+        while not stop.is_set():
+            await asyncio.sleep(0.005)
+            now = loop.time()
+            gaps.append(now - last)
+            last = now
+
+    monkeypatch.setattr(cli, "_witnesses_for_spawn", capture)
+    monkeypatch.setattr(cli, "end_child_group", group)
+    ticker = asyncio.create_task(tick())
+    try:
+        await ticking.wait()
+        result = await cli._bounded_cli_cleanup(proc, spawned)
+    finally:
+        stop.set()
+        await ticker
+    assert max(gaps) < 0.15, f"event loop stalled for {max(gaps):.3f}s during witness capture"
+    assert seen["thread"] != loop_thread
+    assert seen["witnesses"] == result.witnesses == ((4242, 1.0),)
+    assert result.outcome is cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+
+@pytest.mark.asyncio
+async def test_witness_capture_past_its_budget_fails_closed(monkeypatch):
+    loop = asyncio.get_running_loop()
+    proc = SimpleNamespace(pid=4242)
+    spawned = cli.SpawnedProcess(4242, 4242, 1.0)
+    release = threading.Event()
+    seen = {}
+
+    def capture(_proc, _spawned):
+        release.wait(0.6)
+        return ((4242, 1.0),)
+
+    async def group(_proc, *, witnesses, **_kwargs):
+        seen["witnesses"] = witnesses
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    monkeypatch.setattr(cli, "_witnesses_for_spawn", capture)
+    monkeypatch.setattr(cli, "end_child_group", group)
+    started = loop.time()
+    try:
+        result = await asyncio.wait_for(cli._bounded_cli_cleanup(proc, spawned, grace=0.05), 2)
+    finally:
+        release.set()
+    assert loop.time() - started < 0.4
+    assert result.witnesses == () and seen["witnesses"] == ()
+    assert result.error is None and result.cancellation is None
+    assert result.outcome is cli._ChildGroupCleanup.UNCONFIRMED
+
+
+@pytest.mark.asyncio
+async def test_witness_capture_is_independent_of_the_default_executor(monkeypatch):
+    loop = asyncio.get_running_loop()
+    proc = SimpleNamespace(pid=4242)
+    spawned = cli.SpawnedProcess(4242, 4242, 1.0)
+    occupied, release = asyncio.Event(), threading.Event()
+    received = []
+
+    def hold_default_worker():
+        loop.call_soon_threadsafe(occupied.set)
+        return release.wait(15)
+
+    async def group(_proc, *, witnesses, **_kwargs):
+        received.append(witnesses)
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    monkeypatch.setattr(cli, "end_child_group", group)
+    with ThreadPoolExecutor(max_workers=1) as default, monkeypatch.context() as patch:
+        patch.setattr(loop, "_default_executor", default)
+        blocker = loop.run_in_executor(None, hold_default_worker)
+        try:
+            await asyncio.wait_for(occupied.wait(), 5)
+            result = await asyncio.wait_for(cli._bounded_cli_cleanup(proc, spawned, grace=1), 10)
+            assert not blocker.done()
+            assert received == [((4242, 1.0),)]
+            assert result.witnesses == ((4242, 1.0),)
+            assert result.outcome is cli._ChildGroupCleanup.CONFIRMED_EMPTY
+        finally:
+            release.set()
+            assert await asyncio.wait_for(blocker, 5)
+
+
+@pytest.mark.asyncio
+async def test_missing_witness_deadline_keeps_lease_and_reserves_group_cleanup(monkeypatch, caplog):
+    loop = asyncio.get_running_loop()
+    clock = loop.time()
+    grace = 1.0
+    proc = SimpleNamespace(pid=4242)
+    spawned = cli.SpawnedProcess(4242, 4242, 1.0)
+    started = asyncio.Event()
+    release = threading.Event()
+    deadlines, captures, received, released = [], [], [], []
+    lease = SimpleNamespace(
+        slots=[SimpleNamespace(pool="fixture")], release=lambda: released.append(1)
+    )
+
+    def capture(_proc, _spawned):
+        loop.call_soon_threadsafe(started.set)
+        release.wait(10)
+        return ((4242, 1.0),)
+
+    async def group(_proc, *, witnesses, **_kwargs):
+        received.append(witnesses)
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    class _DeadlineWait:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def wait(self, tasks, *, timeout):
+            nonlocal clock
+            deadlines.append(timeout)
+            if len(deadlines) == 1:
+                captures.extend(tasks)
+                await started.wait()
+                clock += timeout
+                return set(), tasks
+            return await asyncio.wait(tasks)
+
+    monkeypatch.setattr(cli, "_witnesses_for_spawn", capture)
+    monkeypatch.setattr(cli, "end_child_group", group)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(loop, "time", lambda: clock)
+            patch.setattr(cli, "asyncio", _DeadlineWait())
+            result = await cli._bounded_cli_cleanup(proc, spawned, grace=grace)
+        [capture_future] = captures
+        assert not capture_future.done()
+        assert received == [()]
+        assert result.witnesses == ()
+        assert cli._finish_bounded_lease(lease, result) is cli._ChildGroupCleanup.UNCONFIRMED
+        assert not released
+        assert "CLI cleanup witness capture exceeded its budget" in caplog.text
+        assert "its subagent slots stay held until this process exits" in caplog.text
+        assert deadlines == [2 * grace, grace]
+    finally:
+        release.set()
+        for capture_future in captures:
+            await asyncio.wait_for(asyncio.shield(capture_future), 5)
+
+
+@pytest.mark.asyncio
+async def test_direct_cancel_during_capture_is_recorded_and_witnesses_are_kept(monkeypatch):
+    loop = asyncio.get_running_loop()
+    proc = SimpleNamespace(pid=4242)
+    spawned = cli.SpawnedProcess(4242, 4242, 1.0)
+    in_capture, release = asyncio.Event(), threading.Event()
+
+    def capture(_proc, _spawned):
+        loop.call_soon_threadsafe(in_capture.set)
+        release.wait(2)
+        return ((4242, 1.0),)
+
+    async def group(_proc, *, witnesses, **_kwargs):
+        assert witnesses == ((4242, 1.0),)
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    monkeypatch.setattr(cli, "_witnesses_for_spawn", capture)
+    monkeypatch.setattr(cli, "end_child_group", group)
+    task = asyncio.create_task(cli._bounded_cli_cleanup(proc, spawned, grace=1))
+    try:
+        await asyncio.wait_for(in_capture.wait(), 1)
+        task.cancel("direct")
+        await asyncio.sleep(0)
+        release.set()
+        result = await asyncio.wait_for(task, 2)
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert result.error is None
+    assert result.cancellation.args == ("direct",)
+    assert result.witnesses == ((4242, 1.0),)
+    assert result.outcome is cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+
+@pytest.mark.asyncio
+async def test_second_direct_cancel_during_capture_is_unconfirmed(monkeypatch):
+    loop = asyncio.get_running_loop()
+    proc = SimpleNamespace(pid=4242)
+    spawned = cli.SpawnedProcess(4242, 4242, 1.0)
+    in_capture, release = asyncio.Event(), threading.Event()
+    backstop, owned = [], []
+    retain = cli._retain_cli_task
+
+    def capture(_proc, _spawned):
+        loop.call_soon_threadsafe(in_capture.set)
+        release.wait(2)
+        return ((4242, 1.0),)
+
+    async def group(_proc, **_kwargs):
+        return cli._ChildGroupCleanup.CONFIRMED_EMPTY
+
+    def record_backstop(_proc, witnesses, **_kwargs):
+        backstop.append(witnesses)
+
+    def record_retain(task, *args, **kwargs):
+        owned.append(task)
+        retain(task, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "_witnesses_for_spawn", capture)
+    monkeypatch.setattr(cli, "end_child_group", group)
+    monkeypatch.setattr(cli, "_end_group_with_evidence", record_backstop)
+    monkeypatch.setattr(cli, "_retain_cli_task", record_retain)
+    task = asyncio.create_task(cli._bounded_cli_cleanup(proc, spawned, grace=1))
+    try:
+        await asyncio.wait_for(in_capture.wait(), 1)
+        task.cancel("first")
+        await asyncio.sleep(0)
+        task.cancel("second")
+        result = await asyncio.wait_for(task, 1)
+    finally:
+        release.set()
+        await asyncio.gather(task, *owned, return_exceptions=True)
+    assert result.cancellation.args == ("first",)
+    assert result.witnesses == () and backstop == [()]
+    assert result.outcome is cli._ChildGroupCleanup.UNCONFIRMED

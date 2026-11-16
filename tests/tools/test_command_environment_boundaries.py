@@ -12,9 +12,9 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from lionhub_tests.serve.cli.test_agent_api_write_set import roots as roots
 
 from lionhub.tools._seatbelt import _uv_cache_dir as _real_uv_cache_dir
-from tests.cli.test_agent_api_write_set import roots as roots
 
 _CANARY = "SOMEVENDOR_API_KEY"
 _ALIAS = "somevendor_api_key"

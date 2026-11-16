@@ -9,6 +9,7 @@ import logging
 
 import pytest
 
+from lionagi._errors import ConfigurationError
 from lionhub.orchestration.spawn import (
     AgentProfile,
     _parse_profile,
@@ -65,6 +66,52 @@ def test_profile_fields_parse_and_stay_out_of_extra():
     config = profile_config(profile)
     assert config["contain_account_integrations"] is True
     assert config["account_connectors"] == ["github", "gmail"]
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "contain_account_integrations: true\nDeadline: 2026-02-30\n",
+        "contain_account_integrations: true\nnotes: [unfinished\n",
+        "# contain_account_integrations: false\nnotes: [unfinished\n",
+    ],
+    ids=["invalid-date", "syntax", "unreadable-comment"],
+)
+def test_unreadable_frontmatter_retains_account_containment(block):
+    profile = _parse_profile("role", f"---\n{block}---\nBody.\n")
+    assert profile.contain_account_integrations is True
+    assert profile_config(profile)["contain_account_integrations"] is True
+    assert profile.raw_body == "Body."
+
+
+def test_unclosed_mapping_with_account_containment_retains_it():
+    profile = _parse_profile("role", "---\ncontain_account_integrations: true\n")
+    assert profile.contain_account_integrations is True
+
+
+def test_unclosed_readable_mapping_only_counts_account_containment_as_a_key():
+    profile = _parse_profile("role", "---\nmodel: codex\n# contain_account_integrations\n")
+    assert profile.contain_account_integrations is None
+
+
+def test_hidden_frontmatter_retains_both_containment_keys():
+    profile = _parse_profile(
+        "role",
+        "Notes ---\ncontain_user_settings: true\ncontain_account_integrations: true\n---\nBody.\n",
+    )
+    assert profile.contain_user_settings is True
+    assert profile.contain_account_integrations is True
+
+
+def test_misplaced_account_containment_setting_is_refused():
+    with pytest.raises(ConfigurationError, match="contain_account_integrations declaration"):
+        _parse_profile("role", "Notes.\n---\ncontain_account_integrations: true\n---\nBody.\n")
+
+
+def test_readable_false_preserves_account_integration_access():
+    profile = _profile("contain_account_integrations: false\n")
+    assert profile.contain_account_integrations is False
+    assert profile_config(profile)["contain_account_integrations"] is False
 
 
 def test_unreadable_containment_flag_warns_and_contains(caplog):

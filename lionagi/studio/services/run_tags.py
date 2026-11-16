@@ -3,126 +3,24 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
-from fastapi import HTTPException
 from pydantic import BaseModel
 
 from lionagi._errors import NotFoundError
-from lionagi.state.db import StateDB
-from lionhub.orchestration.state_store import open_db as _open_db
-from lionhub.orchestration.state_store import require_file_store, store_exists, store_path
+
+# Tag storage and reads live in lionhub; these names stay importable from here.
+from lionhub.serve.daemon.services.run_tags_store import (  # noqa: F401 -- preserve the compatibility import
+    _ENSURE_TABLE_SQL,
+    _MAX_SQL_VARS,
+    _ensure_table,
+    add_tag,
+    remove_tag,
+    session_ids_with_tags,
+    tags_for_sessions,
+)
 
 from ..registry import studio_route
-
-# Keep each IN(...) bind list under SQLite's default SQLITE_MAX_VARIABLE_NUMBER
-# (999 on builds older than 3.32) so tag hydration cannot overflow it.
-_MAX_SQL_VARS = 900
-
-_ENSURE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS run_tags (
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    tag        TEXT NOT NULL,
-    created_at REAL NOT NULL,
-    PRIMARY KEY (session_id, tag)
-);
-CREATE INDEX IF NOT EXISTS idx_run_tags_tag ON run_tags(tag);
-"""
-
-
-async def _ensure_table(db) -> None:
-    await db.executescript(_ENSURE_TABLE_SQL)
-
-
-async def add_tag(session_id: str, tag: str) -> None:
-    """Attach a free-form tag to a run (session). Idempotent (INSERT OR IGNORE)."""
-    clean = (tag or "").strip()
-    if not clean:
-        raise HTTPException(status_code=422, detail="tag must not be empty")
-
-    require_file_store()
-    if not store_exists():
-        # Apply the full schema first so a tag write never leaves a partial
-        # db behind (only run_tags, no sessions/etc).
-        _db = StateDB()
-        await _db.open()
-        await _db.close()
-
-    now = time.time()
-    async with _open_db(store_path()) as db:
-        await _ensure_table(db)
-        await db.execute(
-            "INSERT OR IGNORE INTO run_tags (session_id, tag, created_at) VALUES (?, ?, ?)",
-            (session_id, clean, now),
-        )
-        await db.commit()
-
-
-async def remove_tag(session_id: str, tag: str) -> None:
-    """Detach a tag from a run (session)."""
-    require_file_store()
-    if not store_exists():
-        # Nothing to detach; a delete must never create the db file (a bare
-        # _ensure_table would leave a run_tags-only db behind).
-        return
-    async with _open_db(store_path()) as db:
-        await _ensure_table(db)
-        await db.execute(
-            "DELETE FROM run_tags WHERE session_id = ? AND tag = ?",
-            (session_id, tag),
-        )
-        await db.commit()
-
-
-async def tags_for_sessions(session_ids: list[str]) -> dict[str, list[str]]:
-    """Batch-fetch tags for many sessions in ONE query (no N+1). Returns
-    {session_id: [tags...]}; sessions with no tags are absent from the result."""
-    if not store_exists():
-        return {}
-    if not session_ids:
-        return {}
-
-    # Chunk the IN(...) list so a large run history cannot exceed SQLite's
-    # bound-variable limit (SQLITE_MAX_VARIABLE_NUMBER, 999 on older builds).
-    out: dict[str, list[str]] = {}
-    async with _open_db(store_path()) as db:
-        await _ensure_table(db)
-        for i in range(0, len(session_ids), _MAX_SQL_VARS):
-            chunk = session_ids[i : i + _MAX_SQL_VARS]
-            placeholders = ",".join("?" for _ in chunk)
-            cur = await db.execute(
-                f"SELECT session_id, tag FROM run_tags "  # noqa: S608
-                f"WHERE session_id IN ({placeholders}) ORDER BY tag",
-                chunk,
-            )
-            for r in await cur.fetchall():
-                out.setdefault(r["session_id"], []).append(r["tag"])
-    return out
-
-
-async def session_ids_with_tags(tags: list[str]) -> set[str] | None:
-    """The F8 SQL pre-filter: session_ids carrying ALL of `tags` (AND-composed).
-    Contract: empty/None `tags` returns None ("no filter"), not "no matches" —
-    callers must treat None as pass-through."""
-    if not store_exists():
-        return None
-    if not tags:
-        return None
-
-    unique_tags = list(dict.fromkeys(tags))
-    placeholders = ",".join("?" for _ in unique_tags)
-    async with _open_db(store_path()) as db:
-        await _ensure_table(db)
-        cur = await db.execute(
-            f"SELECT session_id FROM run_tags "  # noqa: S608
-            f"WHERE tag IN ({placeholders}) "
-            f"GROUP BY session_id HAVING COUNT(DISTINCT tag) = ?",
-            [*unique_tags, len(unique_tags)],
-        )
-        rows = await cur.fetchall()
-
-    return {r["session_id"] for r in rows}
 
 
 class TagBody(BaseModel):
@@ -133,7 +31,7 @@ class TagBody(BaseModel):
 async def add_run_tag(session_id: str, body: TagBody) -> dict[str, Any]:
     # Reject tagging a nonexistent session: list_runs() only surfaces rows
     # joined from `sessions`, so a tag on a stale id would be a silent orphan.
-    from .sessions import session_exists
+    from lionhub.serve.daemon.services.sessions import session_exists
 
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")

@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from lionagi.ln import _proc
-from lionhub.orchestration import mcp_config as _mcp_resolve
+from lionhub.orchestration import mcp_config
 from lionhub.serve.mcp import _notify_hook, config, jobs
 
 
@@ -269,14 +269,56 @@ def test_status_running_then_terminal(sandbox, monkeypatch):
     assert st["terminal"] is True and st["outcome"] == "succeeded"
 
 
+def _wait_until_exited_unreaped(pid: int, timeout: float = 10.0) -> bool:
+    """Poll until ``pid`` has exited, leaving it unreaped (a zombie)."""
+    import sys
+    import time
+
+    flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
+    if hasattr(os, "waitid"):
+
+        def exited() -> bool:
+            info = os.waitid(os.P_PID, pid, flags)
+            return info is not None and info.si_pid == pid
+
+    elif sys.platform == "darwin":
+        import ctypes
+        import struct
+
+        waitid = ctypes.CDLL(None, use_errno=True).waitid
+        waitid.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        waitid.restype = ctypes.c_int
+
+        def exited() -> bool:
+            info = ctypes.create_string_buffer(128)
+            if waitid(os.P_PID, pid, ctypes.byref(info), flags) != 0:
+                return False
+            # Darwin siginfo_t: si_signo, si_errno, si_code, then si_pid at byte 12.
+            return struct.unpack_from("i", info.raw, 12)[0] == pid
+
+    else:
+        pytest.skip("no non-reaping wait on this platform")
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if exited():
+            return True
+        time.sleep(0.01)
+    return False
+
+
 def test_pid_alive_reaps_zombie_child():
     """A detached child that exited must not read as alive via kill -0 (zombie)."""
     import subprocess
-    import time
 
     p = subprocess.Popen(["sleep", "0.05"], start_new_session=True)
-    time.sleep(0.35)  # exited, but an unreaped zombie of this process
+    if not _wait_until_exited_unreaped(p.pid):
+        p.kill()
+        p.wait()
+        raise AssertionError("child did not exit before the deadline")
     assert jobs._pid_alive(p.pid) is False
+    with pytest.raises(ChildProcessError):
+        os.waitpid(p.pid, os.WNOHANG)
 
 
 def test_submit_reaps_the_child_it_spawns(sandbox, monkeypatch):
@@ -2063,6 +2105,130 @@ def test_a_manifest_read_failure_nobody_anticipated_still_costs_only_the_manifes
     assert answer["known"] is True
 
 
+@pytest.fixture
+def final_response_run(sandbox):
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("final response reads require no-follow directory descriptors")
+    rid = jobs.new_run_id()
+    jobs._write_job({"run_id": rid, "kind": "agent", "status": "completed", "finished_at": 12.0})
+    run_dir = config.run_dir(rid)
+    run_dir.mkdir(parents=True)
+    return rid, run_dir / "job-final-response.md"
+
+
+@pytest.mark.parametrize(("status", "outcome"), [("completed", "succeeded"), ("failed", "failed")])
+def test_output_reads_the_exact_final_response_without_a_notice(
+    final_response_run, status, outcome
+):
+    rid, path = final_response_run
+    log = config.job_dir(rid) / "console.log"
+    log.write_text("progress\nconsole tail", encoding="utf-8")
+    jobs._write_job(
+        {
+            "run_id": rid,
+            "kind": "agent",
+            "status": status,
+            "finished_at": 12.0,
+            "log": str(log),
+        }
+    )
+    text = "  final answer ☃\r\n" + ("é" * 6000) + "\n"
+    path.write_bytes(text.encode("utf-8"))
+
+    result = jobs.output(rid, tail_chars=12)
+
+    assert result["terminal"] is True
+    assert result["outcome"] == outcome
+    assert result["console"] == "console tail"
+    assert result["final"] == text
+    assert result["final_path"] == str(path.resolve())
+
+
+@pytest.mark.parametrize(
+    ("kind", "finished_at", "matches_run"),
+    [
+        pytest.param("agent", None, True, id="live-agent"),
+        pytest.param("flow", 12.0, True, id="terminal-flow"),
+        pytest.param("agent", 12.0, False, id="mismatched-run-id"),
+    ],
+)
+def test_output_ignores_a_result_outside_a_terminal_agent_job(
+    final_response_run, kind, finished_at, matches_run
+):
+    rid, path = final_response_run
+    _write_raw_record(
+        rid,
+        json.dumps(
+            {
+                "run_id": rid if matches_run else jobs.new_run_id(),
+                "kind": kind,
+                "status": "running" if finished_at is None else "completed",
+                "finished_at": finished_at,
+            }
+        ),
+    )
+    path.write_text("unpublished reply", encoding="utf-8")
+
+    result = jobs.output(rid)
+
+    assert result["known"] is True
+    assert result["terminal"] is (finished_at is not None)
+    assert result["final"] is None
+    assert result["final_path"] is None
+
+
+@pytest.mark.parametrize("data", [None, b"\xff"], ids=["legacy", "invalid-utf8"])
+def test_output_omits_an_unavailable_final_response(final_response_run, data):
+    rid, path = final_response_run
+    if data is not None:
+        path.write_bytes(data)
+
+    result = jobs.output(rid)
+
+    assert result["known"] is True
+    assert result["terminal"] is True
+    assert result["final"] is None
+    assert result["final_path"] is None
+
+
+def test_output_returns_only_the_path_above_the_inline_limit(final_response_run, monkeypatch):
+    rid, path = final_response_run
+    text = "café"
+    limit = len(text.encode("utf-8"))
+    monkeypatch.setattr(jobs, "_MAX_FINAL_RESPONSE_BYTES", limit)
+    path.write_bytes(text.encode("utf-8"))
+    assert jobs.output(rid)["final"] == text
+
+    oversized = (text + "!").encode("utf-8")
+    path.write_bytes(oversized)
+
+    result = jobs.output(rid)
+
+    assert result["final"] is None
+    assert result["final_path"] == str(path.resolve())
+    assert path.read_bytes() == oversized
+
+
+@pytest.mark.parametrize("link_run_dir", [False, True], ids=["file-link", "directory-link"])
+def test_output_does_not_follow_a_final_response_link(final_response_run, sandbox, link_run_dir):
+    rid, path = final_response_run
+    if link_run_dir:
+        other_dir = sandbox / "other-run"
+        path.parent.rename(other_dir)
+        (other_dir / path.name).write_text("another run's reply", encoding="utf-8")
+        path.parent.symlink_to(other_dir, target_is_directory=True)
+    else:
+        other_file = sandbox / "other-file.md"
+        other_file.write_text("unrelated text", encoding="utf-8")
+        path.symlink_to(other_file)
+
+    result = jobs.output(rid)
+
+    assert result["terminal"] is True
+    assert result["final"] is None
+    assert result["final_path"] is None
+
+
 def test_an_artifacts_directory_that_denies_its_own_read_is_not_a_run_that_wrote_nothing(
     sandbox,
 ):
@@ -3136,9 +3302,9 @@ def test_a_submission_that_fails_between_its_writes_leaves_no_job_behind(sandbox
     """
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
     monkeypatch.setattr(
-        _mcp_resolve,
+        mcp_config,
         "resolve_spawn_mcp_servers",
-        lambda launch_dir: _mcp_resolve.McpResolution(
+        lambda launch_dir: mcp_config.McpResolution(
             servers={"a-server": {"command": "true"}},
             reason=None,
             source=Path("/somewhere/.mcp.json"),

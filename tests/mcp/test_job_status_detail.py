@@ -392,7 +392,7 @@ async def test_detail_true_reads_stall_activity_past_the_message_page(isolated_s
         "operations": [{"id": "write", "agent_id": "a1", "depends_on": []}],
     }
     # More messages than one page holds, so the newest ones fall outside it.
-    from lionagi.studio.services.sessions import DEFAULT_MESSAGE_LIMIT
+    from lionhub.serve.daemon.services.sessions import DEFAULT_MESSAGE_LIMIT
 
     msg_ids = [f"m{i}" for i in range(DEFAULT_MESSAGE_LIMIT + 1)]
     await seed_session(db_path, session_id=session_id, run_id=run_id, node_metadata=meta)

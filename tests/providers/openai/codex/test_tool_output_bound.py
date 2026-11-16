@@ -578,7 +578,7 @@ async def test_a_list_of_changes_nested_too_deep_to_measure_is_echoed_bounded(le
 async def test_an_entry_whose_key_does_not_fit_is_left_out_whole():
     """A key is never cut: a redactor classifies an entry by its key, and a cut can drop the
     part that names a credential, so the entry is left out and counted."""
-    from lionagi.studio.operator.redact import redact_arguments
+    from lionhub.serve.daemon.services.redact import redact_arguments
 
     marked = "k" * 15_000 + "password" + "k" * 15_000
     arguments = {marked: "s3cr3t-value", "path": "a.txt"}

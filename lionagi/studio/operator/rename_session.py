@@ -28,9 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lionagi.ln.concurrency import sleep
 from lionagi.state.session_naming import resolve_display_name, validate_name_characters
+from lionhub.serve.daemon.services.redact import public_project
 
 from . import _common
-from .redact import public_project
 from .run_progress import MissingOwnerContextError, resolve_run
 from .store import OperatorStore
 

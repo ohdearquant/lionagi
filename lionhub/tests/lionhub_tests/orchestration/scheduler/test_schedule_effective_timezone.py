@@ -56,7 +56,7 @@ def _pin_scheduler_tz(monkeypatch: pytest.MonkeyPatch, name: str, source: str) -
 
 
 async def _create_cron_schedule(name: str, **extra) -> str:
-    from lionagi.studio.services.schedules import create_schedule
+    from lionhub.serve.daemon.services.schedules import create_schedule
 
     created = await create_schedule(
         {

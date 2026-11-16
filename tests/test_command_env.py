@@ -232,7 +232,7 @@ def test_operator_allowlist_preserves_case_order_and_exact_deduplication():
 @pytest.mark.parametrize(
     "grant", ["SOMEVENDOR_API_KEY", "somevendor_api_key"], ids=["upper", "lower"]
 )
-def test_operator_grants_are_exact_and_never_restore_the_state_store_url(grant):
+def test_operator_grants_are_exact_and_never_restore_state_store_settings(grant):
     from lionagi._command_env import scrub_command_env
 
     parent = {
@@ -240,6 +240,8 @@ def test_operator_grants_are_exact_and_never_restore_the_state_store_url(grant):
         "somevendor_api_key": "synthetic-lower",
         "LIONAGI_STATE_DB_URL": "sqlite:///synthetic-upper.db",
         "lionagi_state_db_url": "sqlite:///synthetic-lower.db",
+        "LIONAGI_STATE_AUTO_MIGRATE": "1",
+        "lionagi_state_auto_migrate": "1",
         "MY_TOKENIZER_PATH": "literal=path with spaces",
     }
     before = dict(parent)
@@ -251,10 +253,12 @@ def test_operator_grants_are_exact_and_never_restore_the_state_store_url(grant):
             "MISSING_NAME",
             "LIONAGI_STATE_DB_URL",
             "lionagi_state_db_url",
+            "LIONAGI_STATE_AUTO_MIGRATE",
+            "lionagi_state_auto_migrate",
         ),
     )
     assert result == {grant: parent[grant], "MY_TOKENIZER_PATH": parent["MY_TOKENIZER_PATH"]}, (
-        "an exact operator grant must not release a case alias or the state-store URL"
+        "an exact operator grant must not release a case alias or the state-store settings"
     )
     assert parent == before
 

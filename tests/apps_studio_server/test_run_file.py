@@ -44,7 +44,7 @@ def patched_runs_svc(tmp_path: Path, monkeypatch: Any):
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
-    import lionagi.studio.services.runs as runs_svc
+    import lionhub.serve.daemon.services.runs as runs_svc
 
     return runs_svc, db_path
 
@@ -320,7 +320,7 @@ async def test_short_reads_still_mark_oversized_file_truncated(
 
 
 async def test_open_helper_refuses_target_swapped_to_symlink_after_validation(tmp_path):
-    import lionagi.studio.services.runs as runs_svc
+    import lionhub.serve.daemon.services.runs as runs_svc
 
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir()
@@ -343,7 +343,7 @@ async def test_open_helper_refuses_target_swapped_to_symlink_after_validation(tm
 
 
 async def test_open_helper_refuses_intermediate_dir_swapped_to_symlink(tmp_path):
-    import lionagi.studio.services.runs as runs_svc
+    import lionhub.serve.daemon.services.runs as runs_svc
 
     artifact_root = tmp_path / "artifacts"
     (artifact_root / "sub").mkdir(parents=True)
@@ -488,7 +488,7 @@ def test_route_non_utf8_returns_415(tmp_path, monkeypatch):
 
 
 def test_route_binary_file_over_cap_returns_415(tmp_path, monkeypatch):
-    import lionagi.studio.services.runs as runs_svc
+    import lionhub.serve.daemon.services.runs as runs_svc
 
     db_path = tmp_path / "state.db"
     client = _make_client(db_path, monkeypatch)
@@ -504,7 +504,7 @@ def test_route_binary_file_over_cap_returns_415(tmp_path, monkeypatch):
 
 
 def test_route_bounded_read_and_truncation(tmp_path, monkeypatch):
-    import lionagi.studio.services.runs as runs_svc
+    import lionhub.serve.daemon.services.runs as runs_svc
 
     db_path = tmp_path / "state.db"
     client = _make_client(db_path, monkeypatch)

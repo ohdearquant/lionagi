@@ -604,7 +604,7 @@ async def test_an_agent_session_reports_whether_a_control_would_reach_anyone(
         _admission_refusal,
         session_has_control_consumer,
     )
-    from lionagi.studio.services.sessions import get_session
+    from lionhub.serve.daemon.services.sessions import get_session
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)

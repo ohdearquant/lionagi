@@ -57,11 +57,23 @@ def _exited_group_probe(proc, signal_calls):
 
 
 def _spawn_call_for(mock_exec, executable: str):
-    """Return the provider spawn, excluding credential-helper subprocesses."""
+    """Return the provider spawn, excluding credential-helper subprocesses.
+
+    A provider launched under the macOS sandbox has ``sandbox-exec`` as its first argument and
+    the provider binary later in the argv.
+    """
+
+    def names(call):
+        return [str(arg).rsplit("/", 1)[-1] for arg in call.args]
+
     matches = [
         call
         for call in mock_exec.call_args_list
-        if call.args and str(call.args[0]).rsplit("/", 1)[-1] == executable
+        if call.args
+        and (
+            names(call)[0] == executable
+            or (names(call)[0] == "sandbox-exec" and executable in names(call))
+        )
     ]
     assert len(matches) == 1
     return matches[0]

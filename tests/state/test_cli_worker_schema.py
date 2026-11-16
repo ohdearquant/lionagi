@@ -101,11 +101,13 @@ async def test_version_four_upgrade_preserves_unknown_and_recorded_generations(
 ) -> None:
     path = tmp_path / "old.db"
     _version_four_store(path, legacy=legacy, generation=generation)
-    async with StateDB(path) as store:
+    store = StateDB(path)
+    await store.migrate()
+    async with store:
         row = await store.get_session("old-session")
         assert row is not None and row["status"] == "running"
         assert row.get("cli_worker_generation") == generation
-        assert await store.schema_version() == "6"
+        assert await store.schema_version() == SCHEMA_VERSION
     with closing(sqlite3.connect(path)) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)")}
         assert "cli_worker_generation" in columns
@@ -178,7 +180,7 @@ async def test_worker_schema_matches_raw_creation_and_native_metadata(tmp_path: 
         "ON cli_worker_spawns(session_id, confirmed_empty_at, generation_id)"
     )
     assert all(index in MIGRATION_INDEXES[dialect] for dialect in ("sqlite", "postgresql"))
-    assert SCHEMA_VERSION == "6"
+    assert int(SCHEMA_VERSION) >= 6
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -358,8 +360,10 @@ async def test_compatibility_generation_create_refuses_before_any_write(tmp_path
 @pytest.mark.asyncio(loop_scope="function")
 async def test_version_four_writer_refuses_the_version_six_store(tmp_path, monkeypatch):
     path = tmp_path / "new.db"
-    async with StateDB(path):
-        pass
+    with monkeypatch.context() as version_six:
+        version_six.setattr(state_db, "SCHEMA_VERSION", "6")
+        async with StateDB(path):
+            pass
     before = _dump(path)
     monkeypatch.setattr(state_db, "SCHEMA_VERSION", "4")
     store = StateDB(path)

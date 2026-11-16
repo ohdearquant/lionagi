@@ -12,16 +12,42 @@ and PostgreSQL does not.
 The native tables are declared in `schema_meta.py` as SQLAlchemy `Table`
 objects, with a parity-tested `schema.sql` mirror. Legacy SQLite table rebuilds
 also carry replacement DDL and must preserve every reconciled column when they
-copy rows into the replacement table. `SCHEMA_VERSION`
-records the shape this code understands. A native writable `StateDB.open()` rewrites
-an older on-disk database into the current shape and stamps the new version;
-if the on-disk version is *higher* than `SCHEMA_VERSION`, open refuses rather
-than guessing what a later release's shape means (`SchemaTooNewError`).
-It also refuses a SQLite store whose `schema_meta` `lineage` row names another
-application (`ForeignLineageError`, ADR-0128 D7), reading that row on each
-writable connection before the connection's settings change the file; a store
-with no such row, or one naming lionagi, opens as before. Read-only opens
-apply no schema migration at all and are unaffected by these checks.
+copy rows into the replacement table. `SCHEMA_VERSION` identifies the schema
+this build writes. A native writable open creates and stamps a fresh store.
+An existing store at a higher version is refused with `SchemaTooNewError`. A
+native SQLite open also refuses a store whose `schema_meta` `lineage` row names
+another application (`ForeignLineageError`, ADR-0128 D7), checking before the
+connection's settings change the file. Read-only opens apply no migration.
+
+### Upgrading an existing store
+
+By default, an ordinary native writable open refuses both a recognized
+older store and a current-version store with incomplete historical
+session end-time repair.
+During the offline cutover, close ordinary client admission, stop writers,
+and verify that their open handles have been closed. Run `li state migrate` with
+the upgraded build against the configured store, or call `await StateDB.migrate()`
+on a native SDK handle. The CLI prints the committed version and closes its
+handle. The SDK leaves its handle open for inspection and the caller closes it.
+
+Migration stamps the target version only once the required changes are ready
+to commit. A failed migration leaves the old version usable by the matching
+build. The historical session end-time repair runs inside the migration
+transaction. If the migration process is killed before that transaction
+commits, the next migration restarts the repair from the beginning.
+On PostgreSQL, columns added by the migration and the repair commit together,
+so the `sessions` table stays locked against reads and writes until the whole
+repair has finished.
+
+Confirm that the committed version is the expected one and that a
+fresh writable open by the older build is refused before restarting upgraded
+writers. When the end-time repair is already recorded, upgrading from version
+6 to 7 changes only the stamp. Version 7 keeps older writers from erasing
+recorded schedule chain decisions.
+
+Setting `LIONAGI_STATE_AUTO_MIGRATE=1` opts native writable opens into the same
+migration path during an upgrade. The setting defaults to off. Use the same
+offline cutover when opting in.
 
 ### Durable CLI worker records
 

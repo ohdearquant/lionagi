@@ -11,8 +11,8 @@ from sqlalchemy.exc import IntegrityError
 
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
-from lionagi.studio.services.schedules import compute_schedule_health
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
+from lionhub.serve.daemon.services.schedules import compute_schedule_health
 
 _COUNTER = "poller_consecutive_cap_no_dispatch"
 _LIMIT = "poller_last_capped_page_limit"
@@ -95,8 +95,8 @@ async def test_postgres_capped_limit_is_integer_and_reset_clears_it(pg_url):
 
 
 async def test_merged_page_limit_is_validated_and_survives_reopen(tmp_path):
-    from lionagi.studio.services.schedules import _svc_validate_github_filter
     from lionhub.orchestration.schedule.validation import merged_page_limit
+    from lionhub.serve.daemon.services.schedules import _svc_validate_github_filter
 
     config = {"event": "pr_merged", "merged_page_limit": 20}
     _svc_validate_github_filter(config)

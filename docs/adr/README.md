@@ -159,6 +159,8 @@ its area block.
   CLI agents (sequential number; see Numbering)
 - [ADR-0140](ADR-0140-provider-discovery-contract.md) — Provider discovery and composition
   through the 1.x transition (sequential number; see Numbering)
+- [ADR-0142](ADR-0142-child-agent-credential-isolation.md) — Child-agent credential isolation
+  from the OS keychain and credential helpers (sequential number; see Numbering)
 
 ### orchestration (0033-0040)
 
@@ -336,7 +338,8 @@ its area block.
   github-poll schedules (area: scheduling-control-plane; numbering exception)
 - [ADR-0095](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md) — Run-terminal
   callbacks and orphan recovery (area: scheduling-control-plane; numbering exception;
-  supersedes ADR-0060)
+  supersedes ADR-0060). The proposed [commit-ordered consumer enrollment amendment](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md#proposed-partial-amendment-commit-ordered-consumer-enrollment)
+  is pending sign-off.
 - [ADR-0088](ADR-0088-plugin-system.md) — Plugin system (directory-bundle manifest with
   lazy activation; number from the adjacent free gap — the substrates block is exhausted)
 

@@ -1048,7 +1048,7 @@ class OperatorStore:
 
         Feeding the same claimed id into every turn's ``Branch()`` lets the
         CLI's own "resume" logic (``setup_agent_persist`` in
-        ``lionagi/cli/_runs.py``) find it in the ``branches`` table and
+        ``lionhub.orchestration.runs``) find it in the ``branches`` table and
         append to the existing session, instead of a fresh random id
         creating a new ``sessions`` row on every turn. This method only
         decides what id gets handed in; a brand-new in-process ``Branch``

@@ -8,12 +8,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.cli._api_usage import APIUsageCollector
 from lionagi.protocols.types import EventStatus
 from lionagi.service._api_telemetry import collect_api_turn
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionagi.service.imodel import iModel
+from lionhub.serve.cli._api_usage import APIUsageCollector
 from tests.service.hooks.test_hooked_event import _fake_hook
 
 
@@ -200,7 +201,13 @@ async def test_local_cache_miss_records_and_hit_stays_unknown(monkeypatch):
     cache = SimpleMemoryCache(serializer=JsonSerializer())
     monkeypatch.setattr(caches, "get", lambda alias: cache)
     endpoint = _endpoint("openai")
-    response = {"usage": {"prompt_tokens_details": {"cached_tokens": 11, "cache_write_tokens": 4}}}
+    response = {
+        "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 8,
+            "prompt_tokens_details": {"cached_tokens": 11, "cache_write_tokens": 4},
+        },
+    }
     transport = AsyncMock(return_value=response)
     monkeypatch.setattr(endpoint, "_call", transport)
     collector = _collector()
@@ -208,14 +215,52 @@ async def test_local_cache_miss_records_and_hit_stays_unknown(monkeypatch):
     with collect_api_turn(collector, 1):
         first = APICalling(endpoint=endpoint, payload=payload, cache_control=True)
         second = APICalling(endpoint=endpoint, payload=payload, cache_control=True)
-    await first.invoke()
-    await second.invoke()
+    async with iModel(endpoint=endpoint, api_key="test-key") as model:
+        await model.invoke(api_call=first)
+        await model.invoke(api_call=second)
     assert first.status is second.status is EventStatus.COMPLETED
     assert second.response == response and isinstance(second.response, dict)
     assert transport.await_count == 1
     rows = collector.snapshot()["requests"]
     assert (rows[0]["cache_read_tokens"], rows[0]["cache_write_tokens"]) == (11, 4)
     assert (rows[1]["cache_read_tokens"], rows[1]["cache_write_tokens"]) == (None, None)
+    assert [(row["input_tokens"], row["output_tokens"]) for row in rows] == [
+        (12, 8),
+        (None, None),
+    ]
+    assert collector.snapshot()["totals"] == {"input_tokens": 12, "output_tokens": 8}
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_does_not_hide_a_later_miss(monkeypatch):
+    from aiocache import SimpleMemoryCache, caches
+    from aiocache.serializers import JsonSerializer
+
+    from lionagi.config import settings
+
+    monkeypatch.setattr(settings.aiocache_config, "alias", "default")
+    cache = SimpleMemoryCache(serializer=JsonSerializer())
+    monkeypatch.setattr(caches, "get", lambda alias: cache)
+    endpoint = _endpoint("openai")
+    transport = AsyncMock(
+        side_effect=[
+            {"usage": {"prompt_tokens_details": {"cached_tokens": 5}}},
+            {"usage": {"prompt_tokens_details": {"cached_tokens": 12}}},
+        ]
+    )
+    monkeypatch.setattr(endpoint, "_call", transport)
+    collector = _collector()
+    with collect_api_turn(collector, 1):
+        first = APICalling(endpoint=endpoint, payload={"key": "first"}, cache_control=True)
+        hit = APICalling(endpoint=endpoint, payload={"key": "first"}, cache_control=True)
+        miss = APICalling(endpoint=endpoint, payload={"key": "second"}, cache_control=True)
+    await first.invoke()
+    await hit.invoke()
+    await miss.invoke()
+
+    rows = collector.snapshot()["requests"]
+    assert [row["cache_read_tokens"] for row in rows] == [5, None, 12]
+    assert transport.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -332,3 +377,164 @@ async def test_streamed_usage_is_not_reported_as_a_final_response(monkeypatch):
     assert [item async for item in call.stream()]
     row = collector.snapshot()["requests"][0]
     assert (row["cache_read_tokens"], row["cache_write_tokens"]) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_the_response_cache_key_holds_no_credential(monkeypatch):
+    from aiocache import SimpleMemoryCache, caches
+    from aiocache.serializers import JsonSerializer
+
+    from lionagi.config import settings
+
+    monkeypatch.setattr(settings.aiocache_config, "alias", "default")
+    cache = SimpleMemoryCache(serializer=JsonSerializer())
+    monkeypatch.setattr(caches, "get", lambda alias: cache)
+    secret = "sk-test-" + uuid.uuid4().hex
+    other = "sk-test-" + uuid.uuid4().hex
+    sent = []
+
+    async def transport(payload, headers, **kwargs):
+        sent.append(dict(headers))
+        return {"ok": len(sent)}
+
+    endpoints = []
+    for key in (secret, other):
+        endpoint = Endpoint(
+            config=EndpointConfig(
+                name="test", endpoint="chat/completions", provider="openai", api_key=key
+            )
+        )
+        monkeypatch.setattr(endpoint, "_call", transport)
+        endpoints.append(endpoint)
+    request = {"model": "gpt-4.1-mini", "messages": [{"role": "user", "content": uuid.uuid4().hex}]}
+
+    first = await endpoints[0].call(request, cache_control=True)
+    again = await endpoints[0].call(request, cache_control=True)
+    second_key = await endpoints[1].call(request, cache_control=True)
+
+    # The request itself still carries the real credential.
+    assert any(secret in str(value) for value in sent[0].values())
+    # One entry per key, and a repeat with the same key is a hit.
+    assert first == again == {"ok": 1}
+    assert second_key == {"ok": 2}
+    keys = list(cache._cache)
+    assert len(keys) == 2
+    assert all(secret not in str(k) and other not in str(k) for k in keys)
+    assert all("sha256:" in str(k) for k in keys)
+
+
+@pytest.mark.asyncio
+async def test_pair_list_headers_and_keyword_arguments_stay_out_of_the_cache_key(monkeypatch):
+    from aiocache import SimpleMemoryCache, caches
+    from aiocache.serializers import JsonSerializer
+
+    from lionagi.config import settings
+
+    monkeypatch.setattr(settings.aiocache_config, "alias", "default")
+    cache = SimpleMemoryCache(serializer=JsonSerializer())
+    monkeypatch.setattr(caches, "get", lambda alias: cache)
+    token = "sk-test-" + uuid.uuid4().hex
+    password = uuid.uuid4().hex
+    proxy = f"http://user:{password}@proxy.invalid:8080"
+    sent = []
+
+    async def transport(payload, headers, **kwargs):
+        sent.append((list(headers), kwargs))
+        return {"ok": len(sent)}
+
+    # An endpoint with no stored key leaves a caller's header list as given.
+    endpoint = Endpoint(
+        config=EndpointConfig(
+            name="test", endpoint="chat/completions", provider="openai", auth_type="none"
+        )
+    )
+    monkeypatch.setattr(endpoint, "_call", transport)
+    payload = {"model": str(uuid.uuid4())}
+    pairs = [("Authorization", f"Bearer {token}"), ("X-Trace", "t1")]
+
+    first = await endpoint.call(
+        payload, cache_control=True, skip_payload_creation=True, extra_headers=pairs, proxy=proxy
+    )
+    again = await endpoint.call(
+        payload, cache_control=True, skip_payload_creation=True, extra_headers=pairs, proxy=proxy
+    )
+
+    # The request still carries the real header and keyword argument.
+    assert sent[0] == (pairs, {"proxy": proxy})
+    assert first == again == {"ok": 1}
+    keys = [str(k) for k in cache._cache]
+    assert len(keys) == 1
+    assert token not in keys[0] and password not in keys[0]
+    assert "X-Trace" in keys[0]
+
+
+@pytest.mark.asyncio
+async def test_a_proxy_keyword_stays_out_of_the_body_and_the_cache_key(monkeypatch):
+    from aiocache import SimpleMemoryCache, caches
+    from aiocache.serializers import JsonSerializer
+
+    from lionagi.config import settings
+
+    monkeypatch.setattr(settings.aiocache_config, "alias", "default")
+    cache = SimpleMemoryCache(serializer=JsonSerializer())
+    monkeypatch.setattr(caches, "get", lambda alias: cache)
+    password = uuid.uuid4().hex
+    proxy = f"http://user:{password}@proxy.invalid:8080"
+    sent = []
+
+    async def transport(payload, headers, **kwargs):
+        sent.append((dict(payload), kwargs))
+        return {"ok": len(sent)}
+
+    endpoint = Endpoint(
+        config=EndpointConfig(
+            name="test", endpoint="chat/completions", provider="openai", auth_type="none"
+        )
+    )
+    monkeypatch.setattr(endpoint, "_call", transport)
+    request = {"model": "gpt-4.1-mini", "messages": [{"role": "user", "content": uuid.uuid4().hex}]}
+
+    # The ordinary path: the payload is built from the request and the keyword arguments.
+    first = await endpoint.call(request, cache_control=True, proxy=proxy, ssl=False)
+    again = await endpoint.call(request, cache_control=True, proxy=proxy, ssl=False)
+
+    body, options = sent[0]
+    assert "proxy" not in body and "ssl" not in body and password not in str(body)
+    assert options == {"proxy": proxy, "ssl": False}
+    assert first == again == {"ok": 1}
+    keys = [str(k) for k in cache._cache]
+    assert len(keys) == 1
+    assert password not in keys[0]
+
+
+@pytest.mark.asyncio
+async def test_keyword_values_with_the_same_text_get_separate_cache_entries(monkeypatch):
+    from aiocache import SimpleMemoryCache, caches
+    from aiocache.serializers import JsonSerializer
+
+    from lionagi.config import settings
+
+    monkeypatch.setattr(settings.aiocache_config, "alias", "default")
+    cache = SimpleMemoryCache(serializer=JsonSerializer())
+    monkeypatch.setattr(caches, "get", lambda alias: cache)
+    sent = []
+
+    async def transport(payload, headers, **kwargs):
+        sent.append(kwargs)
+        return {"ok": len(sent)}
+
+    endpoint = Endpoint(
+        config=EndpointConfig(
+            name="test", endpoint="chat/completions", provider="openai", auth_type="none"
+        )
+    )
+    monkeypatch.setattr(endpoint, "_call", transport)
+    payload = {"model": str(uuid.uuid4())}
+
+    none = await endpoint.call(payload, cache_control=True, skip_payload_creation=True, proxy=None)
+    text = await endpoint.call(
+        payload, cache_control=True, skip_payload_creation=True, proxy="None"
+    )
+
+    assert (none, text) == ({"ok": 1}, {"ok": 2})
+    assert sent == [{"proxy": None}, {"proxy": "None"}]

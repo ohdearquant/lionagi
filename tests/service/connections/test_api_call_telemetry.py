@@ -3,11 +3,11 @@
 import asyncio
 import json
 import math
+from contextlib import aclosing
 
 import pytest
 
 from lionagi._errors import InputTokenCapError
-from lionagi.cli._api_usage import APIUsageCollector
 from lionagi.protocols.generic.processor import Processor
 from lionagi.service._api_telemetry import (
     activate_request,
@@ -19,6 +19,8 @@ from lionagi.service.connections.api_calling import APICalling, estimate_payload
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.imodel import iModel
+from lionagi.service.types import StreamChunk
+from lionhub.serve.cli._api_usage import APIUsageCollector
 
 
 @pytest.fixture
@@ -250,6 +252,34 @@ async def test_stream_frame_resets_between_chunks_and_applies_during_close(endpo
     b_ids = [x["attempt_id"] for x in b.snapshot()["requests"][0]["selected_attempts"]]
     assert a_ids == ["inside-first", "inside-close"]
     assert b_ids == ["consumer-b"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consume_all", [True, False], ids=["completed", "closed"])
+async def test_stream_records_observed_tokens_only_at_completion(
+    endpoint, monkeypatch, consume_all
+):
+    async def stream(**kwargs):
+        yield StreamChunk(type="text", content="hello", metadata={"raw": {"model": "served-model"}})
+        yield StreamChunk(
+            type="text",
+            content="",
+            metadata={"raw": {"usage": {"prompt_tokens": 13, "completion_tokens": 0}}},
+        )
+
+    monkeypatch.setattr(endpoint, "stream", stream)
+    collector = _collector()
+    with collect_api_turn(collector, 1):
+        call = APICalling(endpoint=endpoint, payload=_payload())
+    async with iModel(endpoint=endpoint, api_key="test-key") as model:
+        async with aclosing(model.stream(api_call=call)) as source:
+            async for chunk in source:
+                if not consume_all:
+                    break
+    (row,) = collector.snapshot()["requests"]
+    assert row["served_model"] == "served-model"
+    assert (row["input_tokens"], row["output_tokens"]) == ((13, 0) if consume_all else (None, None))
+    assert row["estimated_cost_nusd"] is None
 
 
 @pytest.mark.asyncio

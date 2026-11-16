@@ -39,11 +39,11 @@ def test_fresh_named_marker_remains_explicit(tmp_path):
 
 
 def test_legacy_check_and_use_the_same_read(tmp_path, monkeypatch):
-    from lionhub.orchestration import mcp_config as _mcp_resolve
+    from lionhub.orchestration import mcp_config
 
     path = tmp_path / "recorded.json"
     path.write_text(json.dumps({"mcpServers": {"before": {"command": "echo"}}}))
-    original = _mcp_resolve._read_config
+    original = mcp_config._read_config
     calls = []
 
     def changed_after_read(value):
@@ -56,7 +56,7 @@ def test_legacy_check_and_use_the_same_read(tmp_path, monkeypatch):
         )
         return data
 
-    monkeypatch.setattr(_mcp_resolve, "_read_config", changed_after_read)
+    monkeypatch.setattr(mcp_config, "_read_config", changed_after_read)
     resolved = resolve_spawn_mcp_servers(path, launch_dir=tmp_path, reject_legacy_snapshot=True)
     assert calls == [path]
     assert resolved.explicit is True

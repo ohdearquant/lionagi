@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,20 +20,9 @@ import pytest
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.serve.mcp import dispatch, jobs, verbs
+from tests.mcp._removed_surface import REMOVED_VERB_ALIASES
 
-# The flat names of the earlier one-tool-per-operation surface, now removed.
-PREVIOUS_SURFACE_NAMES = (
-    "submit_agent",
-    "submit_flow",
-    "submit_fanout",
-    "submit_play",
-    "job_status",
-    "job_output",
-    "job_kill",
-    "job_wait",
-    "jobs_list",
-    "server_info",
-)
+PREVIOUS_SURFACE_NAMES = tuple(REMOVED_VERB_ALIASES)
 
 
 def call(**kwargs):
@@ -278,6 +268,20 @@ def test_a_misspelled_parameter_is_refused_by_name(submitted):
     assert "tiemout" in error["message"]
 
 
+def test_job_wait_refuses_timeout_and_names_max_wait(monkeypatch):
+    async def unexpected_wait(*args, **kwargs):
+        pytest.fail("invalid wait arguments reached the job engine")
+
+    monkeypatch.setattr(jobs, "wait", unexpected_wait)
+    answer = call(ops=[{"op": "job.wait", "args": {"run_ids": ["rid"], "timeout": 30}}])
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "invalid_input"
+    assert "'timeout'" in error["message"]
+    assert "use 'max_wait'" in error["message"]
+    assert "max_wait" in error["schema"]["properties"]
+    assert "timeout" not in error["schema"]["properties"]
+
+
 def test_a_rejected_op_carries_the_schema_it_was_judged_against(submitted):
     # This is what makes the first mistake cost one round-trip: the caller is
     # told the shape in the same reply that refuses them.
@@ -340,6 +344,34 @@ def test_a_flag_a_detached_run_cannot_honour_is_refused_with_its_reason(submitte
     assert "job.output" in answer["ops"][0]["error"]["message"]
 
 
+@pytest.mark.parametrize("verb", ["agent.submit", "flow.submit", "fanout.submit", "play.submit"])
+def test_detached_submit_keeps_sender_attestation_server_owned(verb, a_playbook, submitted):
+    sender = "agent:reviewer"
+    if verb == "play.submit":
+        help_target = {"verb": verb, "playbook": a_playbook}
+        args = {"playbook": a_playbook, "notify_sender": sender}
+    else:
+        help_target = verb
+        args = {"query": ["m", "do it"], "notify_sender": sender}
+    help_reply = call(help=help_target)
+    properties = help_reply["schema"]["properties"]
+    assert "sender" not in properties
+    assert properties["notify_sender"]["x-server-owned"] is True
+    assert "x-flag" not in properties["notify_sender"]
+
+    op = {"op": verb, "schema_fingerprint": help_reply["schema_fingerprint"]}
+    refused = call(ops=[{**op, "args": {**args, "sender": "local reviewer"}}])["ops"][0]
+    assert refused["ok"] is False
+    assert refused["error"]["kind"] == "invalid_input"
+    assert "sender" in refused["error"]["message"]
+    assert submitted == {}
+
+    accepted = call(ops=[{**op, "args": args}])["ops"][0]
+    assert accepted["ok"] is True, accepted
+    assert submitted["notify_sender"] == sender
+    assert not any(flag.split("=", 1)[0] == "--notify-sender" for flag in submitted["flags"])
+
+
 def test_a_missing_required_parameter_names_itself(submitted):
     # No fingerprint is sent, deliberately: for a verb that requires a playbook and
     # was given none, the missing playbook is the error the caller can act on, and
@@ -400,6 +432,11 @@ def test_a_previous_surface_name_is_refused_as_an_unknown_verb(old):
     assert answer["ops"][0]["error"]["kind"] == "not_found"
     with pytest.raises(ValueError, match="no such verb"):
         call(help=old)
+
+
+def test_each_removed_name_has_a_registered_replacement():
+    listed = {entry["verb"] for entry in call(help=True)["verbs"]}
+    assert set(REMOVED_VERB_ALIASES.values()) <= listed
 
 
 def test_neither_the_catalog_nor_server_info_reports_a_synonym_sunset():
@@ -503,6 +540,37 @@ def a_playbook(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     return "remedy-fixture"
+
+
+@pytest.mark.parametrize("verb", ["flow.submit", "play.submit"])
+def test_detached_playbook_sender_stays_distinct_from_notify_sender(
+    verb, a_playbook, submitted, tmp_path
+):
+    path = tmp_path / ".lionagi" / "playbooks" / f"{a_playbook}.playbook.yaml"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    spec["args"]["sender"] = {"type": "str", "default": "scheduled"}
+    path.write_text(json.dumps(spec), encoding="utf-8")
+
+    help_reply = call(help={"verb": verb, "playbook": a_playbook})
+    assert help_reply["schema"]["properties"]["sender"]["x-flag"] == "--sender"
+
+    reply = call(
+        ops=[
+            {
+                "op": verb,
+                "args": {
+                    "playbook": a_playbook,
+                    "sender": "release bot",
+                    "notify_sender": "agent:reviewer",
+                },
+                "schema_fingerprint": help_reply["schema_fingerprint"],
+            }
+        ]
+    )["ops"][0]
+    assert reply["ok"] is True, reply
+    assert "--sender=release bot" in submitted["flags"]
+    assert not any(flag.split("=", 1)[0] == "--notify-sender" for flag in submitted["flags"])
+    assert submitted["notify_sender"] == "agent:reviewer"
 
 
 @pytest.fixture
@@ -742,6 +810,134 @@ def test_a_machine_verb_that_writes_something_other_than_json_is_an_error(monkey
     assert "one JSON value" in answer["ops"][0]["error"]["message"]
 
 
+@pytest.fixture
+def machine_process_result(monkeypatch):
+    def set_result(returncode, stdout, stderr=b""):
+        def run(argv, **kwargs):
+            assert argv == ["fixture-li", "handshake", "--machine"]
+            assert kwargs["capture_output"] is True
+            assert kwargs["check"] is False
+            return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+        monkeypatch.setattr(dispatch.config, "li_command", lambda: ["fixture-li"])
+        monkeypatch.setattr(dispatch.subprocess, "run", run)
+
+    return set_result
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [b"", b'{"ok": false,', b"null", b"\xff", b'{"ok": true, "contract_version": 1, "data": {}}'],
+    ids=["empty", "truncated", "not-an-envelope", "invalid-utf8", "contradictory-success"],
+)
+def test_machine_environment_exit_without_unavailable_envelope_is_unavailable(
+    machine_process_result, stdout
+):
+    machine_process_result(78, stdout, b"Example missing feature\n")
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "unavailable"
+    assert "handshake" in result["error"]["message"]
+    assert result["error"]["detail"] == {"exit_code": 78, "stderr": "Example missing feature\n"}
+
+
+def test_machine_environment_exit_preserves_unavailable_envelope_diagnostics(
+    machine_process_result,
+):
+    message = "Example missing feature"
+    detail = {"exit_code": 78, "feature": "optional-feature"}
+    envelope = {
+        "ok": False,
+        "contract_version": 1,
+        "data": None,
+        "error": {"kind": "unavailable", "message": message, "detail": detail},
+    }
+    # The source text contains a synthetic URL split by the tail boundary.
+    # Masking before trimming leaves only the placeholder and host.
+    stderr = "postgresql://fixture:" + "x" * 2010 + "@example.invalid\n" + "p" * 1980
+    machine_process_result(78, json.dumps(envelope).encode(), stderr.encode())
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "unavailable"
+    assert result["error"]["message"] == message
+    expected_stderr = ("postgresql://fixture:***@example.invalid\n" + "p" * 1980)[-2000:]
+    assert result["error"]["detail"] == {**detail, "stderr": expected_stderr}
+
+
+def test_machine_environment_exit_masks_envelope_diagnostics(machine_process_result):
+    uri = "postgresql://fixture:synthetic-password@example.invalid"
+    masked = "postgresql://fixture:***@example.invalid"
+    envelope = {
+        "ok": False,
+        "contract_version": 1,
+        "data": None,
+        "error": {
+            "kind": "unavailable",
+            "message": f"Unable to access {uri}",
+            "detail": {
+                "endpoint": uri,
+                "causes": [uri, {"endpoint": uri}, None, 2, True],
+                "exit_code": 1,
+            },
+        },
+    }
+    machine_process_result(78, json.dumps(envelope).encode(), b"Startup failed\n")
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    error = result["error"]
+    assert error["kind"] == "unavailable"
+    assert error["message"] == f"Unable to access {masked}"
+    assert error["detail"] == {
+        "endpoint": masked,
+        "causes": [masked, {"endpoint": masked}, None, 2, True],
+        "exit_code": 78,
+        "stderr": "Startup failed\n",
+    }
+
+
+def test_machine_environment_exit_does_not_parse_oversized_result(
+    machine_process_result, monkeypatch
+):
+    stdout = json.dumps(
+        {
+            "ok": False,
+            "contract_version": 1,
+            "data": None,
+            "error": {
+                "kind": "unavailable",
+                "message": "The envelope exceeds the configured bound",
+                "detail": {"feature": "optional-feature"},
+            },
+        }
+    ).encode()
+    monkeypatch.setattr(dispatch, "MACHINE_OUTPUT_LIMIT", len(stdout) - 1)
+    machine_process_result(78, stdout, b"Example missing feature\n")
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "unavailable"
+    assert result["error"]["detail"] == {"exit_code": 78, "stderr": "Example missing feature\n"}
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "message"),
+    [(0, b"", "no machine result"), (1, b'{"ok": false,', "one JSON value")],
+)
+def test_other_machine_exit_codes_keep_transport_errors(
+    machine_process_result, returncode, stdout, message
+):
+    machine_process_result(returncode, stdout, b"Example diagnostic\n")
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "internal"
+    assert message in result["error"]["message"]
+    assert result["error"]["detail"] == {"stderr": "Example diagnostic\n"}
+
+
 def test_a_machine_command_that_cannot_be_launched_is_an_error(monkeypatch):
     monkeypatch.setattr(
         dispatch.config, "li_command", lambda: ["/nonexistent/li-that-is-not-installed"]
@@ -853,23 +1049,54 @@ def test_help_for_a_spawn_verb_returns_a_fingerprint(submitted):
     assert answer["schema_fingerprint"] == call(help="agent.submit")["schema_fingerprint"]
 
 
+@pytest.mark.parametrize("verb", ["agent.submit", "flow.submit", "fanout.submit"])
+def test_help_for_every_spawn_verb_states_the_retry_rule(submitted, verb):
+    answer = call(help=verb)
+    assert answer["schema_fingerprint"]
+    assert answer["help_usage"] == dispatch._SPAWN_RETRY_RULE
+
+
+def test_help_without_the_argument_a_fingerprint_needs_says_to_pass_it(submitted):
+    """play.submit quotes no fingerprint without a playbook, so its help says how to get one."""
+    answer = call(help="play.submit")
+    assert "schema_fingerprint" not in answer
+    assert answer["schema_fingerprint_varies_with"] == ["playbook"]
+    assert answer["help_usage"] == (
+        dispatch._FINGERPRINT_NEEDS_ARGUMENT + dispatch._SPAWN_RETRY_RULE
+    )
+
+
 @pytest.mark.parametrize("verb", ["job.status", "job.wait", "job.kill", "server.info"])
 def test_a_verb_that_is_not_a_spawn_neither_offers_nor_demands_one(verb):
     # The kill path is the deliberate exemption: a discovery round-trip in front
     # of stopping a runaway run is friction at the moment it is most expensive.
     assert "schema_fingerprint" not in call(help=verb)
+    assert "help_usage" not in call(help=verb)
     answer = call(ops=[{"op": verb, "args": {"run_id": "nope"} if verb != "server.info" else {}}])
     error = answer["ops"][0].get("error") or {}
     assert error.get("kind") != "stale_schema"
 
 
 def test_a_spawn_op_without_a_fingerprint_is_refused_with_the_call_that_fixes_it(submitted):
-    answer = call(ops=[{"op": "agent.submit", "args": {"query": ["m"]}}])
-    error = answer["ops"][0]["error"]
+    op = {"op": "agent.submit", "args": {"query": ["m"], "prompt": "work"}}
+    first = call(ops=[op])["ops"][0]
+    assert first["ok"] is False
+    error = first["error"]
     assert error["kind"] == "stale_schema"
-    assert error["detail"]["help"] == "agent.submit"
-    assert error["detail"]["schema_fingerprint"] == call(help="agent.submit")["schema_fingerprint"]
+    help_answer = call(help="agent.submit")
+    assert error["detail"] == {
+        "help": "agent.submit",
+        "schema_fingerprint": help_answer["schema_fingerprint"],
+    }
+    # The schema the retry rule tells the caller to check its arguments against.
+    assert error["schema"] == help_answer["schema"]
+    assert dispatch._SPAWN_RETRY_RULE in error["message"]
     assert submitted == {}
+
+    retry = call(ops=[{**op, "schema_fingerprint": error["detail"]["schema_fingerprint"]}])
+    assert retry["ops"][0]["ok"] is True
+    assert retry["ops"][0]["result"]["run_id"] == "rid"
+    assert submitted["kind"] == "agent"
 
 
 def test_a_stale_fingerprint_is_refused_and_says_it_is_the_schema_that_moved(submitted):
@@ -883,8 +1110,40 @@ def test_a_stale_fingerprint_is_refused_and_says_it_is_the_schema_that_moved(sub
         ]
     )
     error = answer["ops"][0]["error"]
+    help_answer = call(help="agent.submit")
     assert error["kind"] == "stale_schema"
+    assert error["detail"]["schema_fingerprint"] == help_answer["schema_fingerprint"]
+    assert error["schema"] == help_answer["schema"]
+    # Both refusal branches state the same rule; the stale one used to drop its condition.
+    assert dispatch._SPAWN_RETRY_RULE in error["message"]
     assert "changed since that schema was read" in error["message"]
+    assert submitted == {}
+
+
+def test_a_refusal_points_at_an_earlier_error_of_another_kind_holding_the_schema(submitted):
+    fingerprint = call(help="agent.submit")["schema_fingerprint"]
+    bad_args = {
+        "op": "agent.submit",
+        "args": {"query": ["m"], "prompt": "work", "not_a_parameter": 1},
+        "schema_fingerprint": fingerprint,
+    }
+    missing = {"op": "agent.submit", "args": {"query": ["m"], "prompt": "work"}}
+    first, second = call(ops=[bad_args, missing])["ops"]
+    assert first["error"]["kind"] != "stale_schema"
+    assert first["error"]["schema"] == call(help="agent.submit")["schema"]
+    assert second["error"]["kind"] == "stale_schema"
+    assert "schema" not in second["error"]
+    assert second["error"]["schema_ref"] == {"op_index": 0, "schema_fingerprint": fingerprint}
+    assert submitted == {}
+
+
+def test_later_identical_refusals_point_at_the_first_copy_of_the_schema(submitted):
+    op = {"op": "agent.submit", "args": {"query": ["m"], "prompt": "work"}}
+    first, second = call(ops=[op, op])["ops"]
+    fingerprint = first["error"]["detail"]["schema_fingerprint"]
+    assert first["error"]["schema"] == call(help="agent.submit")["schema"]
+    assert "schema" not in second["error"]
+    assert second["error"]["schema_ref"] == {"op_index": 0, "schema_fingerprint": fingerprint}
     assert submitted == {}
 
 

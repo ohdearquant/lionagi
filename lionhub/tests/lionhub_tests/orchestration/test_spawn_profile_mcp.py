@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import sys
+from datetime import date
+
 import pytest
 
 from lionagi._errors import ConfigurationError
@@ -112,12 +115,91 @@ def test_mcp_after_same_line_preface_is_refused():
         _parse_profile("reviewer", "Reviewer ---\nmcp: none\n---\nReview.")
 
 
+@pytest.fixture(params=[1000, 3000], ids=["default-limit", "raised-limit"])
+def recursion_limit(request):
+    # A library can raise the limit for the whole process (jedi sets 3000 on import),
+    # so a depth refusal is checked at the default and at a raised limit.
+    saved = sys.getrecursionlimit()
+    sys.setrecursionlimit(request.param)
+    yield request.param
+    sys.setrecursionlimit(saved)
+
+
+def _nested_flow(depth: int) -> str:
+    return "x: " + "[" * depth + "a" + "]" * depth + "\n"
+
+
 @pytest.mark.parametrize("position", ["before", "after"])
-def test_deep_closed_mcp_frontmatter_is_refused(position):
-    nested = "x: " + "[" * 500 + "a" + "]" * 500 + "\n"
+def test_deep_closed_mcp_frontmatter_is_refused(position, recursion_limit):
+    nested = _nested_flow(500)
     block = "mcp: none\n" + nested if position == "before" else nested + "mcp: none\n"
-    with pytest.raises(ConfigurationError, match="mcp"):
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
         _parse_profile("reviewer", "---\n" + block + "---\nReview.")
+
+
+def test_deep_closed_frontmatter_without_mcp_is_refused(recursion_limit):
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
+        _parse_profile("reviewer", "---\n" + _nested_flow(65) + "---\nReview.")
+
+
+def _compose_out_of_stack(monkeypatch):
+    import yaml
+
+    def out_of_stack(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(yaml, "compose", out_of_stack)
+
+
+@pytest.mark.parametrize("mcp", ["", "mcp: none\n"])
+def test_stack_exhausted_by_the_caller_is_not_reported_as_deep_frontmatter(monkeypatch, mcp):
+    # A caller already near the recursion limit can exhaust the stack on a shallow block;
+    # that is the caller's error, not a nesting refusal naming the profile.
+    _compose_out_of_stack(monkeypatch)
+    with pytest.raises(RecursionError):
+        _parse_profile("reviewer", "---\n" + mcp + "model: example\n---\nReview.")
+
+
+def test_stack_exhausted_on_deep_frontmatter_is_the_nesting_refusal(monkeypatch):
+    _compose_out_of_stack(monkeypatch)
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
+        _parse_profile("reviewer", "---\n" + _nested_flow(65) + "---\nReview.")
+
+
+def _aliased_stages(stages: int = 40, width: int = 30) -> str:
+    # Each stage is written inside the one before it and anchored; a later top-level key
+    # aliases it, so the shortest path to every stage is two levels however deep it is written.
+    inner = "a"
+    for k in reversed(range(stages + 1)):
+        inner = f"&A{k} " + "[" * width + inner + "]" * width
+    keys = [f"b{k}: *A{k}" for k in range(1, stages)]
+    return "\n".join(["a: " + inner, *keys, "mcp: none"]) + "\n"
+
+
+def test_deep_closed_frontmatter_reached_through_aliases_is_refused(recursion_limit):
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
+        _parse_profile("reviewer", "---\n" + _aliased_stages() + "---\nReview.")
+
+
+def test_deep_unclosed_frontmatter_reached_through_aliases_is_refused(recursion_limit):
+    with pytest.raises(ConfigurationError, match="mcp"):
+        _parse_profile("reviewer", "---\n" + _aliased_stages())
+    lenient = _aliased_stages().replace("mcp: none", "other: none")
+    assert _parse_profile("reviewer", "---\n" + lenient).mcp is None
+
+
+def test_closed_frontmatter_at_the_depth_bound_is_read(recursion_limit):
+    # The top mapping is one level, so 63 lists under it reach the bound of 64.
+    flow = _parse_profile("reviewer", "---\nmcp: none\n" + _nested_flow(63) + "---\nReview.")
+    assert flow.mcp == "none" and "x" in flow.extra
+    lines = "".join("  " * i + f"k{i}:\n" for i in range(63)) + "  " * 63 + "v: 1\n"
+    block = _parse_profile("reviewer", "---\n" + lines + "---\nReview.")
+    assert "k0" in block.extra
+    with pytest.raises(ConfigurationError, match="deeper than 64 levels"):
+        _parse_profile(
+            "reviewer",
+            "---\n" + lines.replace("v: 1", "k63:\n" + "  " * 64 + "v: 1") + "---\nReview.",
+        )
 
 
 @pytest.mark.parametrize(
@@ -142,6 +224,167 @@ def test_mcp_examples_after_preface_do_not_warn(monkeypatch, text):
 def test_unrelated_unreadable_frontmatter_keeps_existing_leniency():
     profile = _parse_profile("reviewer", "---\nmodel: [unterminated\n---\nReview.")
     assert profile.mcp is None
+
+
+def test_profile_loads_with_an_unreadable_date(monkeypatch):
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    profile = _parse_profile("p", "---\nDeadline: 2026-02-30\n---\nBody.\n")
+    assert profile.raw_body == "Body."
+    assert "Deadline" not in profile.extra
+    assert any("frontmatter" in warning and "ignored" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    ("block", "ending"),
+    [
+        ("disallowed_tools: [Example]\nDeadline: 2026-02-30\n", "---\nBody.\n"),
+        ("'allowed_tools': [Example]\nDeadline: 2026-02-30\n", "---\nBody.\n"),
+        ('"tools": [Example]\nDeadline: 2026-02-30\n', "---\nBody.\n"),
+        ("disallowed_tools: [Example]\ninvalid: [\n", "---\nBody.\n"),
+        ("disallowed_tools: [Example]\n", ""),
+        ("description: |\n  notes\ntools: [Example]\ninvalid: [\n", "---\nBody.\n"),
+        ("{disallowed_tools: [Example], bad: [}\n", "---\nBody.\n"),
+        ("? disallowed_tools\n: [Example]\nbad: [\n", "---\nBody.\n"),
+        ("&example !!str disallowed_tools: [Example]\nbad: [\n", "---\nBody.\n"),
+        (
+            'description: "Example settings:\n  {disallowed_tools: [Example]}"\nbad: [\n',
+            "---\nBody.\n",
+        ),
+    ],
+    ids=[
+        "deny-list-date",
+        "allow-list-date",
+        "tools-date",
+        "deny-list-syntax",
+        "unclosed",
+        "key-after-scalar",
+        "flow-mapping",
+        "explicit-key",
+        "anchored-tagged-key",
+        "multiline-double-quoted-scalar",
+    ],
+)
+def test_unreadable_profile_tool_settings_are_refused(block, ending):
+    with pytest.raises(ConfigurationError, match="agent profile 'reviewer'.*tool settings"):
+        _parse_profile("reviewer", f"---\n{block}{ending}")
+
+
+def test_readable_profile_keeps_tool_settings():
+    profile = _parse_profile(
+        "reviewer",
+        "---\ntools: [First, Second]\nallowed_tools: [First]\ndisallowed_tools: [Second]\n---\n",
+    )
+    assert profile.extra == {
+        "tools": ["First", "Second"],
+        "allowed_tools": ["First"],
+        "disallowed_tools": ["Second"],
+    }
+
+
+@pytest.mark.parametrize(
+    "mention",
+    [
+        "description: 'allowed_tools: [Example]'\n",
+        "# Notes about tools\n",
+        "description: |-\n  tools: [Example]\n",
+        "description: >2 # Example\n  disallowed_tools: [Example]\n",
+        "description:\n  - |-\n    allowed_tools: [Example]\n",
+    ],
+)
+def test_tool_names_in_an_unreadable_profile_value_or_comment_are_refused(mention):
+    with pytest.raises(ConfigurationError, match="agent profile 'reviewer'.*tool settings"):
+        _parse_profile("reviewer", f"---\n{mention}Deadline: 2026-02-30\n---\nBody.\n")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You are a reviewer.\n\n---\n\n**Rules**\n* Use the tools: read: carefully\n\n---\n\nEnd.\n",
+        "You are a reviewer.\n\n---\n\n**Rules**\n* Use the tools: read: carefully\n",
+        "Intro ---\n* Use the tools: read: carefully\n---\nEnd.\n",
+    ],
+    ids=["closed-rule", "single-rule", "hidden-block"],
+)
+def test_markdown_after_prompt_text_that_mentions_tools_loads(text):
+    profile = _parse_profile("reviewer", text)
+    assert "tools" in profile.raw_body
+    assert profile.extra == {}
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "disallowed_tools: [Example]\n",
+        "'allowed_tools': [Example]\n",
+        "- tools: [Example]\n",
+        "&example !!str disallowed_tools: [Example]\n",
+        "? disallowed_tools\n: [Example]\n",
+        "{bad: x, disallowed_tools: [Example]}\n",
+    ],
+    ids=["key", "quoted-key", "list-item", "anchored-tagged-key", "explicit-key", "flow-mapping"],
+)
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [("Prompt.\n\n---\n", "bad: [\n---\nEnd.\n"), ("Intro ---\n", "bad: [\n---\nEnd.\n")],
+    ids=["after-prose", "hidden-block"],
+)
+def test_a_tool_key_line_in_an_unreadable_block_after_prompt_text_is_refused(
+    declaration, before, after
+):
+    with pytest.raises(ConfigurationError, match="agent profile 'reviewer'.*tool settings"):
+        _parse_profile("reviewer", f"{before}{declaration}{after}")
+
+
+@pytest.mark.parametrize("key", ("tools", "allowed_tools", "disallowed_tools"))
+@pytest.mark.parametrize(
+    "declaration",
+    ("{key}: [Example]", "- {key}: [Example]", "{{{key}: [Example]}}"),
+    ids=("mapping", "list-item", "flow-mapping"),
+)
+def test_readable_tool_setting_after_prompt_text_is_refused(key, declaration):
+    text = f"Prompt.\n\n---\n{declaration.format(key=key)}\n---\nEnd."
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"--- block on line 3.*{key} declaration.*move the block to the top of the file",
+    ):
+        _parse_profile("reviewer", text)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    (
+        "Prompt.\n\n---\ndescription: |\n  allowed_tools: [Example]\n---\nEnd.",
+        "Prompt.\n\n```yaml\n---\nallowed_tools: [Example]\n---\n```\nEnd.",
+    ),
+    ids=("scalar-value", "fenced-example"),
+)
+def test_readable_tool_mentions_after_prompt_text_stay_in_the_prompt(prompt):
+    profile = _parse_profile("reviewer", prompt)
+    assert profile.raw_body == prompt
+    assert profile.extra == {}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("2026-02-28", date(2026, 2, 28)), ('"2026-02-30"', "2026-02-30")],
+    ids=["valid-date", "quoted-date"],
+)
+def test_profile_preserves_valid_date_values(value, expected):
+    profile = _parse_profile("p", f"---\nDeadline: {value}\n---\nBody.\n")
+    assert profile.raw_body == "Body."
+    assert profile.extra["Deadline"] == expected
+
+
+@pytest.mark.parametrize(
+    ("ending", "message"),
+    [("---\nBody.\n", "invalid YAML"), ("", "no closing ---")],
+    ids=["closed", "unclosed"],
+)
+def test_profile_refuses_mcp_mentioned_with_an_unreadable_date(ending, message):
+    text = f"---\nDeadline: 2026-02-30\n# mcp\n{ending}"
+    with pytest.raises(ConfigurationError, match=message):
+        _parse_profile("p", text)
 
 
 @pytest.mark.parametrize(
@@ -489,13 +732,13 @@ def test_unclosed_valid_yaml_does_not_rescan_each_line(monkeypatch):
     assert scans <= 1
 
 
-def test_deep_unclosed_unrelated_frontmatter_keeps_leniency():
+def test_deep_unclosed_unrelated_frontmatter_keeps_leniency(recursion_limit):
     text = "---\nx: " + "[" * 500 + "a" + "]" * 500
     assert _parse_profile("reviewer", text).mcp is None
 
 
 @pytest.mark.parametrize("position", ["before", "after"])
-def test_deep_unclosed_mcp_frontmatter_is_refused(position):
+def test_deep_unclosed_mcp_frontmatter_is_refused(position, recursion_limit):
     nested = "x: " + "[" * 500 + "a" + "]" * 500 + "\n"
     block = "mcp: none\n" + nested if position == "before" else nested + "mcp: none\n"
     with pytest.raises(ConfigurationError, match="mcp"):

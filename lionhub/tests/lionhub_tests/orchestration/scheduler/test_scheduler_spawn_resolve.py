@@ -120,7 +120,7 @@ def test_resolve_li_executable_falls_back_to_entry_point_module(monkeypatch, tmp
 
     class _FakeEntryPoint:
         name = "li"
-        value = "lionagi.cli.main:main"
+        value = "lionhub.serve.cli.main:main"
 
     monkeypatch.setattr(sched_subprocess.shutil, "which", lambda name: None)
     monkeypatch.setattr(sched_subprocess.sys, "executable", str(fake_python))
@@ -133,7 +133,7 @@ def test_resolve_li_executable_falls_back_to_entry_point_module(monkeypatch, tmp
     prefix, detail = sched_subprocess.resolve_li_executable()
 
     assert detail is None
-    assert prefix == [str(fake_python), "-m", "lionagi.cli.main"]
+    assert prefix == [str(fake_python), "-m", "lionhub.serve.cli.main"]
 
 
 def test_resolve_li_executable_relative_sys_executable_skips_entry_point_fallback(monkeypatch):
@@ -145,7 +145,7 @@ def test_resolve_li_executable_relative_sys_executable_skips_entry_point_fallbac
 
     class _FakeEntryPoint:
         name = "li"
-        value = "lionagi.cli.main:main"
+        value = "lionhub.serve.cli.main:main"
 
     monkeypatch.setattr(sched_subprocess.shutil, "which", lambda name: None)
     monkeypatch.setattr(sched_subprocess.sys, "executable", "python3")
@@ -158,7 +158,7 @@ def test_resolve_li_executable_relative_sys_executable_skips_entry_point_fallbac
     prefix, detail = sched_subprocess.resolve_li_executable()
 
     assert prefix is None
-    assert prefix != ["python3", "-m", "lionagi.cli.main"]
+    assert prefix != ["python3", "-m", "lionhub.serve.cli.main"]
     assert detail is not None
     assert "sys.executable" in detail
     assert "not absolute" in detail

@@ -17,6 +17,7 @@ bytes in a multibyte encoding can stay silent.
 from __future__ import annotations
 
 import ast
+import copy
 import functools
 import importlib.metadata
 import json
@@ -27,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from importlib.util import resolve_name
 from pathlib import Path
 
 import pytest
@@ -99,7 +101,7 @@ TRIGGERS = {
     "issue-links.yml": {
         "pull_request": {
             "types": ["opened", "edited", "reopened", "synchronize", "ready_for_review"],
-            "branches": ["main", "develop"],
+            "branches": ["main", "develop", "dev/lionagi"],
         },
     },
 }
@@ -304,9 +306,42 @@ def _values(node: object, key: str) -> list[object]:
 
 
 def _yaml_files() -> list[Path]:
-    # Workflows with either suffix, and any composite action kept under .github.
+    # The nightly job stages its setup action under .github, along with other
+    # files from the sparse checkout. Read workflow and action definitions.
     root = WORKFLOWS.parent
-    return sorted([*root.rglob("*.yml"), *root.rglob("*.yaml")])
+    return sorted(
+        {
+            *WORKFLOWS.glob("*.yml"),
+            *WORKFLOWS.glob("*.yaml"),
+            *root.rglob("action.yml"),
+            *root.rglob("action.yaml"),
+        }
+    )
+
+
+def test_yaml_inventory_reads_workflows_and_staged_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = tmp_path / ".github"
+    workflows = github / "workflows"
+    monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
+    configs = {
+        workflows / "ci.yml": "jobs: {}\n",
+        workflows / "docs.yaml": "jobs: {}\n",
+        github / "actions/setup/action.yml": "runs: {using: composite, steps: []}\n",
+        github / ".workflow-source/.github/actions/setup/action.yaml": (
+            "runs: {using: composite, steps: []}\n"
+        ),
+    }
+    for path, text in configs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    (github / ".workflow-source/mkdocs.yml").write_text(
+        "emoji_index: !!python/name:material.emoji.twemoji\n"
+    )
+
+    assert _yaml_files() == sorted(configs)
+    assert not any(_reads_a_variable(path) for path in _yaml_files())
 
 
 class _DuplicateKeyError(ValueError):
@@ -514,7 +549,7 @@ def _local_target(uses: str) -> str | None:
 
 def test_a_local_action_lives_where_the_variable_search_reads() -> None:
     # A composite action used by path runs inside the job that uses it, so it is
-    # searched like a workflow, and the search covers .github only. The path is
+    # searched like a workflow, and action metadata is read under .github. The path is
     # read after resolving `..`, so `./.github/../actions/x` counts as outside.
     uses = [value for path in _yaml_files() for value in _values(_parse(path.read_text()), "uses")]
     assert uses
@@ -703,6 +738,32 @@ def _pull_request_branch_filter(parsed: object) -> bool:
     return False
 
 
+# The one event detail a required job may read: the test matrix runs the two
+# ends of the supported set on a pull request into dev/lionagi and the full set
+# on every other base, so the pull request that promotes dev/lionagi into main
+# still runs every version before main moves. It is matched as this exact text
+# and removed before the scan, so any edit to it is refused here and has to be
+# argued again; its selections are pinned by the matrix tests below.
+SANCTIONED_TEST_MATRIX = "${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '[\"3.10\",\"3.14\"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '[\"3.10\"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '[\"3.10\",\"3.14\"]' || '[\"3.10\",\"3.11\",\"3.12\",\"3.13\",\"3.14\"]') }}"
+
+
+def _sanctioned_matrix_removed(parsed: object) -> object:
+    """The parsed workflow with the test job's sanctioned matrix value blanked.
+
+    Only that one location is exempt: the same text anywhere else, a job's
+    `if:` or another job's matrix, stays in the scan and is refused.
+    """
+    try:
+        matrix = parsed["jobs"]["test"]["strategy"]["matrix"]  # type: ignore[index]
+    except (KeyError, TypeError):
+        return parsed
+    if not isinstance(matrix, dict) or matrix.get("python-version") != SANCTIONED_TEST_MATRIX:
+        return parsed
+    parsed = copy.deepcopy(parsed)
+    parsed["jobs"]["test"]["strategy"]["matrix"]["python-version"] = ""  # type: ignore[index]
+    return parsed
+
+
 def _other_switches(text: str) -> list[str]:
     """What in a required workflow or action could act as a switch.
 
@@ -719,16 +780,24 @@ def _other_switches(text: str) -> list[str]:
     `secrets: inherit` does. A `pull_request` or `pull_request_target` trigger
     with a branch or path filter is refused outright, because it starts no run
     for the pull requests it excludes.
+
+    One event detail is exempt: `SANCTIONED_TEST_MATRIX` as the test job's
+    `strategy.matrix.python-version`, and only there. The parsed scan blanks that
+    one value; the raw-text scan drops the expression only where it follows a
+    `python-version:` key, and a copy under another job's matrix is still found
+    by the parsed scan.
     """
     try:
         parsed = _parse(text)
     except _DuplicateKeyError:
         return ["duplicate mapping key"]
-    raw = _uncommented(text)
+    raw = _uncommented(text).replace(
+        f"python-version: {SANCTIONED_TEST_MATRIX}", "python-version: "
+    )
     found = [
         match.group(0)
         for pattern in (LABEL, EVENT_DETAIL, ENV_DETAIL)
-        for string in (raw, *_strings(parsed))
+        for string in (raw, *_strings(_sanctioned_matrix_removed(parsed)))
         for match in pattern.finditer(string)
     ]
     if [s for s in _strings(parsed, "with", reusable_secrets=True) if SECRET.search(s)]:
@@ -807,6 +876,100 @@ def test_a_required_job_cannot_gate_on_a_manual_run_input(tmp_path: Path) -> Non
     (workflows / "ci.yml").write_text(text)
     assert _input_gated(text)
     assert _required_switches(tmp_path)[".github/workflows/ci.yml"]
+
+
+def _test_matrix_versions(
+    expression: str, *, event: str, base: str = "", code: str = "", matrix: str = ""
+) -> list[str]:
+    """Evaluate the test job's python-version expression for one event.
+
+    GitHub's `a && b || c` takes the same branches as Python's `a and b or c` here,
+    because every value the expression selects is a non-empty string.
+    """
+    inner = expression.removeprefix("${{").removesuffix("}}").strip()
+    names = {
+        "github.event_name": "EVENT",
+        "github.base_ref": "BASE",
+        "needs.changes.outputs.code": "CODE",
+        "inputs.python-matrix": "MATRIX",
+        "fromJSON": "FROM_JSON",
+        "&&": " and ",
+        "||": " or ",
+    }
+    for spelling, name in names.items():
+        inner = inner.replace(spelling, name)
+    scope = {"EVENT": event, "BASE": base, "CODE": code, "MATRIX": matrix, "FROM_JSON": json.loads}
+    return eval(inner, {"__builtins__": {}}, scope)  # noqa: S307 - the pinned text above
+
+
+FULL_SET = ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+
+def test_the_test_matrix_reads_the_sanctioned_expression() -> None:
+    matrix = _load("ci.yml")["jobs"]["test"]["strategy"]["matrix"]
+    assert matrix["python-version"] == SANCTIONED_TEST_MATRIX
+
+
+@pytest.mark.parametrize(
+    ("event", "base", "code", "matrix", "expected"),
+    [
+        ("pull_request", "dev/lionagi", "true", "", ["3.10", "3.14"]),
+        ("pull_request", "main", "true", "", FULL_SET),
+        ("pull_request", "release/x", "true", "", FULL_SET),
+        ("pull_request", "dev/lionagi", "false", "", ["3.10"]),
+        ("pull_request", "main", "false", "", FULL_SET),
+        ("pull_request", "release/x", "false", "", FULL_SET),
+        # `changes` failed or was skipped: its output is empty.
+        ("pull_request", "dev/lionagi", "", "", ["3.10", "3.14"]),
+        ("pull_request", "main", "", "", FULL_SET),
+        ("push", "", "true", "", FULL_SET),
+        ("push", "", "false", "", FULL_SET),
+        ("workflow_dispatch", "", "", "full", FULL_SET),
+        ("workflow_dispatch", "", "", "endpoints", ["3.10", "3.14"]),
+    ],
+)
+def test_the_test_matrix_selection(event, base, code, matrix, expected) -> None:
+    versions = _test_matrix_versions(
+        SANCTIONED_TEST_MATRIX, event=event, base=base, code=code, matrix=matrix
+    )
+    assert versions == expected
+
+
+def test_a_base_ref_read_beside_the_sanctioned_matrix_is_still_refused() -> None:
+    text = _ci_gate_text()
+    assert _other_switches(text) == []
+    condition = (
+        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-24.04\n    # Every job in this workflow"
+    )
+    assert text.count(condition) == 1, "the test job header in ci.yml changed; update this fixture"
+    edited = text.replace(
+        condition, condition.replace("!cancelled()", "!cancelled() && github.base_ref != ''"), 1
+    )
+    assert "github.base_ref" in _other_switches(edited)
+
+
+def test_the_sanctioned_matrix_text_is_refused_anywhere_but_the_test_matrix() -> None:
+    text = _ci_gate_text()
+    condition = (
+        "    if: ${{ !cancelled() }}\n    runs-on: ubuntu-24.04\n    # Every job in this workflow"
+    )
+    assert text.count(condition) == 1, "the test job header in ci.yml changed; update this fixture"
+    as_condition = text.replace(
+        condition, condition.replace("${{ !cancelled() }}", SANCTIONED_TEST_MATRIX), 1
+    )
+    assert "github.base_ref" in _other_switches(as_condition)
+    as_flag = text.replace(
+        condition, condition + f"\n    continue-on-error: {SANCTIONED_TEST_MATRIX}", 1
+    )
+    assert "github.base_ref" in _other_switches(as_flag)
+
+
+def test_an_edited_matrix_expression_is_refused() -> None:
+    text = _ci_gate_text()
+    widened = SANCTIONED_TEST_MATRIX.replace("'dev/lionagi'", "'main'")
+    assert widened != SANCTIONED_TEST_MATRIX
+    edited = text.replace(SANCTIONED_TEST_MATRIX, widened, 1)
+    assert "github.base_ref" in _other_switches(edited)
 
 
 def test_a_required_job_cannot_switch_off_in_its_own_code(tmp_path: Path) -> None:
@@ -965,7 +1128,14 @@ def test_a_required_workflow_without_a_secret_still_passes(tmp_path: Path) -> No
     workflows = tmp_path / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "ci.yml").write_text(ci)
-    assert _required_switches(tmp_path) == {".github/workflows/ci.yml": []}
+    expected = {".github/workflows/ci.yml": []}
+    for source in _required_files()[1:]:
+        relative = source.relative_to(REPO)
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        expected[relative.as_posix()] = []
+    assert _required_switches(tmp_path) == expected
 
 
 def test_a_repeated_mapping_key_is_refused(tmp_path: Path) -> None:
@@ -1190,6 +1360,45 @@ CI_CHANGES_FILTERS = {
     "compat": [
         "pyproject.toml",
         "uv.lock",
+        # LionHub imports and their load-time dependencies are checked below.
+        "lionhub/src/lionhub/__init__.py",
+        "lionhub/src/lionhub/agent/__init__.py",
+        "lionhub/src/lionhub/agent/casts/__init__.py",
+        "lionhub/src/lionhub/agent/casts/emission.py",
+        "lionhub/src/lionhub/agent/casts/pack.py",
+        "lionhub/src/lionhub/agent/casts/pattern.py",
+        "lionhub/src/lionhub/agent/casts/profile.py",
+        "lionhub/src/lionhub/agent/child_sandbox.py",
+        "lionhub/src/lionhub/agent/factory.py",
+        "lionhub/src/lionhub/agent/khive_actor.py",
+        "lionhub/src/lionhub/agent/spec.py",
+        "lionhub/src/lionhub/orchestration/__init__.py",
+        "lionhub/src/lionhub/orchestration/arguments.py",
+        "lionhub/src/lionhub/orchestration/console.py",
+        "lionhub/src/lionhub/orchestration/flow/__init__.py",
+        "lionhub/src/lionhub/orchestration/flow/checkpoint.py",
+        "lionhub/src/lionhub/orchestration/flow/parsing.py",
+        "lionhub/src/lionhub/orchestration/inspection.py",
+        "lionhub/src/lionhub/orchestration/job.py",
+        "lionhub/src/lionhub/orchestration/mcp_config.py",
+        "lionhub/src/lionhub/orchestration/patterns.py",
+        "lionhub/src/lionhub/orchestration/project.py",
+        "lionhub/src/lionhub/orchestration/prompts.py",
+        "lionhub/src/lionhub/orchestration/runs.py",
+        "lionhub/src/lionhub/orchestration/spawn.py",
+        "lionhub/src/lionhub/orchestration/team.py",
+        "lionhub/src/lionhub/providers/__init__.py",
+        "lionhub/src/lionhub/providers/openai/__init__.py",
+        "lionhub/src/lionhub/providers/openai/_codex_profile.py",
+        "lionhub/src/lionhub/serve/__init__.py",
+        "lionhub/src/lionhub/serve/cli/**",
+        "lionhub/src/lionhub/serve/mcp/__init__.py",
+        "lionhub/src/lionhub/serve/mcp/_errors.py",
+        "lionhub/src/lionhub/serve/mcp/config.py",
+        "lionhub/src/lionhub/tools/__init__.py",
+        "lionhub/src/lionhub/tools/base.py",
+        "lionhub/src/lionhub/tools/communication/__init__.py",
+        "lionhub/src/lionhub/tools/communication/messenger.py",
         "tests/conftest.py",
         "tests/_shared_conftest.py",
         "tests/state/conftest.py",
@@ -1200,7 +1409,9 @@ CI_CHANGES_FILTERS = {
     "lion1": ["lion1/**", ".github/workflows/ci.yml"],
 }
 CI_CHANGES_OUTPUTS = {
-    name: f"${{{{ steps.filter.outputs.{name} }}}}" for name in CI_CHANGES_FILTERS
+    **{name: f"${{{{ steps.filter.outputs.{name} }}}}" for name in CI_CHANGES_FILTERS},
+    # From its own step: true when any changed file is outside the documentation paths.
+    "code": "${{ steps.code.outputs.code }}",
 }
 
 # Anchored at the start of the `run:` text and at its end: the heredoc has to feed
@@ -2675,13 +2886,125 @@ def _compat_names_in(
     return found, unresolved
 
 
+def _compat_lionhub_imports(
+    tree: ast.AST,
+    modules: dict[str, Path],
+    package: str | None,
+    *,
+    at_load: bool,
+) -> list[tuple[str, int]]:
+    """Find static LionHub imports and the literal imports made by test support code."""
+    nodes = _compat_module_load_imports(tree) if at_load else list(ast.walk(tree))
+    imported: list[tuple[str, int]] = []
+    importlib_names: set[str] = set()
+    import_module_names: set[str] = set()
+
+    def record(name: str, line: int) -> None:
+        if name == "lionhub" or name.startswith("lionhub."):
+            imported.append((name, line))
+
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib":
+                    importlib_names.add(alias.asname or alias.name)
+                record(alias.name, node.lineno)
+        elif isinstance(node, ast.ImportFrom):
+            name = node.module or ""
+            if node.level:
+                if package is None:
+                    continue
+                name = resolve_name("." * node.level + name, package)
+            if name == "importlib":
+                import_module_names.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name == "import_module"
+                )
+            record(name, node.lineno)
+            for alias in node.names:
+                child = f"{name}.{alias.name}"
+                if child in modules:
+                    record(child, node.lineno)
+
+    if at_load:
+        return imported
+
+    for node in nodes:
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        by_name = isinstance(function, ast.Name) and function.id in import_module_names
+        qualified = (
+            isinstance(function, ast.Attribute)
+            and function.attr == "import_module"
+            and isinstance(function.value, ast.Name)
+            and function.value.id in importlib_names
+        )
+        builtin = isinstance(function, ast.Name) and function.id == "__import__"
+        if not (by_name or qualified or builtin):
+            continue
+        argument = (
+            node.args[0]
+            if node.args
+            else next((kw.value for kw in node.keywords if kw.arg == "name"), None)
+        )
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            record(argument.value, node.lineno)
+    return imported
+
+
+def _compat_lionhub_dependencies(
+    root: Path, test_sources: list[Path], listed: list[str]
+) -> dict[str, str]:
+    """Find dependencies without importing code or visiting unrelated files in a filter glob."""
+    hub_src = root / "lionhub" / "src"
+    modules: dict[str, Path] = {}
+    for path in sorted((hub_src / "lionhub").rglob("*.py")):
+        parts = path.relative_to(hub_src).with_suffix("").parts
+        name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        modules[name] = path
+
+    origins: dict[str, str] = {}
+    pending: list[tuple[str, Path]] = []
+
+    def add(name: str, source: str) -> None:
+        if name not in modules:
+            origins.setdefault(name, source)
+            return
+        parts = name.split(".")
+        for length in range(1, len(parts) + 1):
+            ancestor = ".".join(parts[:length])
+            path = modules.get(ancestor)
+            if path is None:
+                continue
+            entry = path.relative_to(root).as_posix()
+            if entry not in origins:
+                origins[entry] = source
+                pending.append((ancestor, path))
+
+    for path in test_sources:
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for name, line in _compat_lionhub_imports(tree, modules, None, at_load=False):
+            add(name, f"{path.relative_to(root).as_posix()}:{line}")
+    for name, path in modules.items():
+        if path.relative_to(root).as_posix() in listed:
+            add(name, "the listed import")
+    for name, path in pending:
+        package = name if path.name == "__init__.py" else name.rpartition(".")[0]
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for dependency, line in _compat_lionhub_imports(tree, modules, package, at_load=True):
+            add(dependency, f"{path.relative_to(root).as_posix()}:{line}")
+    return origins
+
+
 def _compat_filter_problems(
     workflows: Path = WORKFLOWS,
     root: Path = REPO_ROOT,
     state: Path | None = None,
     init: Path | None = None,
 ) -> list[str]:
-    """How the compat filter's `lionagi/` entries differ from what its sources import.
+    """Check LionAGI filter entries and coverage of LionHub import dependencies.
 
     *state* is the directory read as lionagi/state, *init* the file read as
     lionagi/__init__.py, and the `tests/` files come from the filter's own entries,
@@ -2702,6 +3025,7 @@ def _compat_filter_problems(
             )
         )
     problems = []
+    test_sources: list[Path] = []
     for pattern in listed:
         if not pattern.startswith("tests/"):
             continue
@@ -2709,6 +3033,7 @@ def _compat_filter_problems(
         if not matched:
             problems.append(f"the compat filter names {pattern!r}, which matches no file")
         sources.extend((p.relative_to(root).as_posix(), p, None) for p in matched)
+        test_sources.extend(matched)
     needed = {"lionagi/state/**": "the lionagi/state tree itself"}
     for label, path, package in sources:
         found, unresolved = _compat_names_in(path, package, names)
@@ -2734,12 +3059,132 @@ def _compat_filter_problems(
             f"the compat filter lists {entry!r}, which none of the {len(sources)} files read "
             "for it import, and lionagi/__init__.py does not import at module load"
         )
+    # The pinned filter uses exact paths and recursive directory entries for LionHub.
+    hub_trees = [
+        entry.removesuffix("**")
+        for entry in listed
+        if entry.startswith("lionhub/") and entry.endswith("/**")
+    ]
+    hub_dependencies = _compat_lionhub_dependencies(root, test_sources, listed)
+    for entry, source in sorted(hub_dependencies.items()):
+        if entry not in listed and not any(entry.startswith(tree) for tree in hub_trees):
+            problems.append(f"the compat filter lacks {entry!r}, which {source} needs")
     return problems
 
 
 def test_the_compat_filter_lists_what_its_sources_import() -> None:
     problems = _compat_filter_problems()
     assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize(
+    ("entry", "missing", "importer"),
+    [
+        (
+            "lionhub/src/lionhub/orchestration/runs.py",
+            "lionhub/src/lionhub/orchestration/runs.py",
+            "tests/state/test_compatibility_",
+        ),
+        (
+            "lionhub/src/lionhub/serve/cli/**",
+            "lionhub/src/lionhub/serve/cli/agent.py",
+            "tests/state/test_compatibility_",
+        ),
+        (
+            "lionhub/src/lionhub/orchestration/job.py",
+            "lionhub/src/lionhub/orchestration/job.py",
+            "lionhub/src/lionhub/orchestration/runs.py:",
+        ),
+        (
+            "lionhub/src/lionhub/agent/child_sandbox.py",
+            "lionhub/src/lionhub/agent/child_sandbox.py",
+            "tests/_shared_conftest.py:",
+        ),
+        (
+            "lionhub/src/lionhub/__init__.py",
+            "lionhub/src/lionhub/__init__.py",
+            "tests/",
+        ),
+        (
+            "lionhub/src/lionhub/serve/__init__.py",
+            "lionhub/src/lionhub/serve/__init__.py",
+            "tests/",
+        ),
+        (
+            "lionhub/src/lionhub/orchestration/__init__.py",
+            "lionhub/src/lionhub/orchestration/__init__.py",
+            "tests/",
+        ),
+    ],
+    ids=["direct", "tree", "dependency", "literal", "root", "ancestor", "from-package"],
+)
+def test_the_compat_filter_refuses_an_uncovered_lionhub_import(
+    entry: str, missing: str, importer: str, tmp_path: Path
+) -> None:
+    old = f"            - '{entry}'\n"
+    text = _ci_gate_text()
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text.replace(old, ""))
+    problems = _compat_filter_problems(workflows)
+    assert old in text
+    assert any(f"lacks {missing!r}" in problem and importer in problem for problem in problems), (
+        problems
+    )
+
+
+def test_compat_lionhub_dependencies_follow_load_time_imports_without_cycles(
+    tmp_path: Path,
+) -> None:
+    hub = tmp_path / "lionhub" / "src" / "lionhub"
+    (hub / "example").mkdir(parents=True)
+    files = {
+        "tests/support.py": (
+            "import importlib as loader\n"
+            "from importlib import import_module as load\n"
+            "def fixture():\n"
+            "    loader.import_module(name='lionhub.example.worker')\n"
+            "    load('lionhub.dynamic')\n"
+            "    __import__('lionhub.builtin')\n"
+            "    __import__(name)\n"
+        ),
+        "lionhub/src/lionhub/__init__.py": "",
+        "lionhub/src/lionhub/example/__init__.py": "from . import start\n",
+        "lionhub/src/lionhub/example/worker.py": (
+            "from .. import real\n"
+            "if TYPE_CHECKING:\n"
+            "    from lionhub import types_only\n"
+            "def deferred():\n"
+            "    from lionhub import lazy\n"
+        ),
+        "lionhub/src/lionhub/example/start.py": "from . import worker\n",
+        "lionhub/src/lionhub/real.py": "from .example import start\n",
+        "lionhub/src/lionhub/dynamic.py": "",
+        "lionhub/src/lionhub/builtin.py": "",
+        "lionhub/src/lionhub/types_only.py": "",
+        "lionhub/src/lionhub/lazy.py": "",
+        "lionhub/src/lionhub/listed.py": "from . import listed_dependency\n",
+        "lionhub/src/lionhub/listed_dependency.py": "",
+    }
+    (tmp_path / "tests").mkdir()
+    for name, contents in files.items():
+        (tmp_path / name).write_text(contents)
+
+    needed = _compat_lionhub_dependencies(
+        tmp_path, [tmp_path / "tests/support.py"], ["lionhub/src/lionhub/listed.py"]
+    )
+    assert set(needed) == {
+        name
+        for name in files
+        if name.startswith("lionhub/") and not name.endswith(("types_only.py", "lazy.py"))
+    }
+    assert needed["lionhub/src/lionhub/example/__init__.py"] == "tests/support.py:4"
+    assert needed["lionhub/src/lionhub/real.py"] == "lionhub/src/lionhub/example/worker.py:1"
+    assert (
+        needed["lionhub/src/lionhub/example/start.py"]
+        == "lionhub/src/lionhub/example/__init__.py:1"
+    )
+    assert needed["lionhub/src/lionhub/listed_dependency.py"] == "lionhub/src/lionhub/listed.py:1"
 
 
 def _copy_the_state_tree(tmp_path: Path) -> Path:

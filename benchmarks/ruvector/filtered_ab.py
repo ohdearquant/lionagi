@@ -17,8 +17,8 @@ for key in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
 import numpy as np  # noqa: E402
 
 from lionagi import Node  # noqa: E402
-from lionagi.integrations.ruvector import RuVectorStore, SearchHit  # noqa: E402
-from lionagi.integrations.ruvector.store import _integer  # noqa: E402
+from lionhub.integrations.ruvector import RuVectorStore, SearchHit  # noqa: E402
+from lionhub.integrations.ruvector.store import _integer  # noqa: E402
 
 
 def baseline(store, vector, k, predicate):

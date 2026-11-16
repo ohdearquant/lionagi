@@ -10,7 +10,6 @@ import multiprocessing
 import queue
 import sqlite3
 import traceback
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
@@ -74,54 +73,18 @@ def _create_pre_claim_controls_db(db_path: Path) -> None:
         )
 
 
-def _open_state_db_worker(
-    db_path: str,
-    start_barrier,
-    inspection_barrier,
-    result_queue,
-) -> None:
-    """Open and close one StateDB in a spawned process."""
-    import lionagi.state.db as state_db_module
+def _migrate_state_db_worker(db_path: str, start_barrier, result_queue) -> None:
+    """Run an explicit migration in a spawned process."""
     from lionagi.state.db import StateDB
 
-    original_make_engine = state_db_module.make_engine
-
-    class _SynchronizedEngine:
-        def __init__(self, engine) -> None:
-            self._engine = engine
-            self._alter_synchronized = False
-
-        def begin(self):
-            if not self._alter_synchronized:
-                self._alter_synchronized = True
-
-                @asynccontextmanager
-                async def synchronized_begin():
-                    inspection_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
-                    async with self._engine.begin() as connection:
-                        yield connection
-
-                return synchronized_begin()
-            return self._engine.begin()
-
-        def __getattr__(self, name: str):
-            return getattr(self._engine, name)
-
-    def synchronized_make_engine(*args, **kwargs):
-        return _SynchronizedEngine(original_make_engine(*args, **kwargs))
-
-    # This fixture is missing only cc_session_id, so the first begin() follows
-    # its missing-column inspection and immediately precedes its ALTER.
-    state_db_module.make_engine = synchronized_make_engine
-
-    async def _open() -> None:
+    async def _migrate() -> None:
         state = StateDB(db_path)
-        await state.open()
+        await state.migrate()
         await state.close()
 
     try:
         start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
-        asyncio.run(_open())
+        asyncio.run(_migrate())
     except Exception:  # noqa: BLE001
         result_queue.put(traceback.format_exc())
     else:
@@ -271,7 +234,7 @@ async def test_an_existing_controls_table_gains_claimed_at_without_losing_its_ro
     assert "claimed_at" not in before, "fixture did not actually predate the column"
 
     state = StateDB(db_path)
-    await state.open()
+    await state.migrate()
     try:
         async with state._read() as conn:
             columns = (
@@ -377,7 +340,7 @@ async def test_statedb_upgrade_adds_cc_session_lookup_index(tmp_path: Path) -> N
     _create_pre_cc_session_db(db_path)
 
     state = StateDB(db_path)
-    await state.open()
+    await state.migrate()
     try:
         await state.create_progression("progression-1")
         await state.execute(
@@ -421,11 +384,11 @@ _BRANCHES_LISTING_QUERY = (
 )
 
 
-async def _open_and_populate_branches_index_db(db_path: Path) -> None:
+async def _migrate_and_populate_branches_index_db(db_path: Path) -> None:
     from lionagi.state.db import StateDB
 
     state = StateDB(db_path)
-    await state.open()
+    await state.migrate()
     try:
         await state.create_progression("progression-idx")
         await state.execute(
@@ -483,9 +446,9 @@ async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Pat
     """A database provisioned before this migration — carrying the old
     single-column `idx_branches_session(session_id)` a real deployment would
     have — gains the composite `idx_branches_session_created(session_id,
-    created_at)` after StateDB.open() runs the runtime migration, with the
+    created_at)` after StateDB.migrate() runs the migration, with the
     same name, column order, and query plan as a freshly provisioned
-    database. Without opening through the pre-index arm, a regression in
+    database. Without migrating the pre-index database, a regression in
     MIGRATION_INDEXES would leave real deployed databases on the old index
     while fresh ones pass — this proves the upgrade path itself adds it."""
     fresh_db_path = tmp_path / "fresh-branches-index.db"
@@ -504,8 +467,8 @@ async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Pat
     assert "idx_branches_session" in pre_index_names
     assert "idx_branches_session_created" not in pre_index_names
 
-    await _open_and_populate_branches_index_db(fresh_db_path)
-    await _open_and_populate_branches_index_db(pre_index_db_path)
+    await _migrate_and_populate_branches_index_db(fresh_db_path)
+    await _migrate_and_populate_branches_index_db(pre_index_db_path)
 
     fresh_columns, fresh_plan = await _branches_index_evidence(fresh_db_path)
     upgraded_columns, upgraded_plan = await _branches_index_evidence(pre_index_db_path)
@@ -519,22 +482,20 @@ async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Pat
     assert upgraded_plan == fresh_plan
 
 
-def test_concurrent_statedb_opens_reconcile_cc_session_column(tmp_path: Path) -> None:
-    """Concurrent first opens tolerate another process winning the ALTER race."""
+def test_concurrent_migrations_reconcile_cc_session_column_once(tmp_path: Path) -> None:
+    """Concurrent migrations serialize the inspection and ALTER under the write lock."""
     db_path = tmp_path / "concurrent-pre-cc-session.db"
     _create_pre_cc_session_db(db_path)
 
     context = multiprocessing.get_context("spawn")
     start_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS + 1)
-    inspection_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS)
     result_queue = context.Queue()
     processes = [
         context.Process(
-            target=_open_state_db_worker,
+            target=_migrate_state_db_worker,
             args=(
                 str(db_path),
                 start_barrier,
-                inspection_barrier,
                 result_queue,
             ),
         )
@@ -1270,8 +1231,8 @@ async def test_dispatched_at_backfill_runs_when_column_already_exists(tmp_path):
         await raw.commit()
 
     state = StateDB(db_path)
-    await state.open()
     try:
+        await state.migrate()
         migrated = await state.get_schedule_run("run-existing-da")
         assert migrated is not None
         assert migrated["dispatched_at"] == migrated["fired_at"] == 100.0
@@ -1336,7 +1297,7 @@ def _schema_meta_version(db_path: Path) -> str | None:
 
 
 async def test_migrated_db_reports_current_schema_version(tmp_path):
-    """A database whose tables were rewritten on open reports the version this
+    """A database whose tables were rewritten by migration reports the version this
     code applies, not the version it was created at."""
     from lionagi.state.db import SCHEMA_VERSION, StateDB
 
@@ -1350,8 +1311,11 @@ async def test_migrated_db_reports_current_schema_version(tmp_path):
     assert "'aborted')" in _sessions_create_sql(db_path)
 
     state = StateDB(f"sqlite+aiosqlite:///{db_path}")
-    async with state:
+    try:
+        await state.migrate()
         version = await state.schema_version()
+    finally:
+        await state.close()
 
     # The migration ran ...
     assert "'aborted')" not in _sessions_create_sql(db_path)
@@ -1399,8 +1363,8 @@ async def test_narrow_source_kind_check_is_widened_for_codex_imports(tmp_path):
     _insert_session(db_path, "kept", "imported_fs")
 
     state = StateDB(f"sqlite+aiosqlite:///{db_path}")
-    async with state:
-        pass
+    await state.migrate()
+    await state.close()
 
     assert "'imported_codex'" in _sessions_create_sql(db_path)
     _insert_session(db_path, "post", "imported_codex")
@@ -1417,11 +1381,15 @@ async def test_narrow_source_kind_check_is_widened_for_codex_imports(tmp_path):
 async def test_current_schema_db_is_not_rebuilt(tmp_path):
     """A database created by this release carries neither legacy CHECK, so opening
     it leaves the sessions table byte-identical."""
-    from lionagi.state.db import _SCHEMA_PATH, StateDB
+    from lionagi.state.db import _SCHEMA_PATH, _SESSION_ENDED_AT_BACKFILL_KEY, StateDB
 
     db_path = tmp_path / "current.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES (?, '1')",
+            (_SESSION_ENDED_AT_BACKFILL_KEY,),
+        )
     before = _sessions_create_sql(db_path)
     assert not StateDB._sessions_rebuild_needed(before)
 
@@ -1517,7 +1485,9 @@ async def test_old_schedules_gain_zero_stagnation_without_history_backfill(tmp_p
         before = dict(conn.execute("SELECT * FROM schedules WHERE id='old'").fetchone())
         assert "poller_consecutive_cap_no_dispatch" not in before
 
-    async with StateDB(path) as state:
+    state = StateDB(path)
+    await state.migrate()
+    async with state:
         row = await state.get_schedule("old")
         assert row["poller_consecutive_cap_no_dispatch"] == 0
         assert row["poller_consecutive_401"] == 7

@@ -64,11 +64,11 @@ class UnparsedResponse(str):
 
     Subclasses ``str`` so callers that only ever wanted the text are unaffected
     — equality, formatting and ``isinstance(x, str)`` all behave as before —
-    while ``failure_kind`` and ``validation_error`` make the reason reachable
-    without a second round trip.
+    while ``failure_kind``, ``validation_error`` and ``reason`` make the reason
+    reachable without a second round trip.
     """
 
-    __slots__ = ("failure_kind", "validation_error")
+    __slots__ = ("failure_kind", "validation_error", "reason")
 
     def __new__(
         cls,
@@ -76,10 +76,12 @@ class UnparsedResponse(str):
         *,
         failure_kind: ParseFailureKind,
         validation_error: Exception | None = None,
+        reason: str | None = None,
     ) -> "UnparsedResponse":
         obj = super().__new__(cls, text)
         obj.failure_kind = failure_kind
         obj.validation_error = validation_error
+        obj.reason = reason
         return obj
 
     def __getnewargs_ex__(self) -> tuple[tuple[str], dict[str, Any]]:
@@ -88,6 +90,7 @@ class UnparsedResponse(str):
         return (str(self),), {
             "failure_kind": self.failure_kind,
             "validation_error": self.validation_error,
+            "reason": self.reason,
         }
 
 

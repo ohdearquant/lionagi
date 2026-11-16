@@ -132,7 +132,7 @@ token for its own daemon into its frontend.
 
 Authentication, Host validation, and browser origins are defined in
 `lionagi/studio/app.py` and `lionagi/studio/config.py`, and pairing in
-`lionagi/studio/services/pairing.py`. Operator decisions use
+`lionhub/src/lionhub/serve/daemon/services/pairing.py`. Operator decisions use
 `lionagi/studio/services/operator.py`; frontend credential handling is defined
 in `apps/studio/frontend/src/lib/api.ts`.
 

@@ -158,7 +158,7 @@ async def _raw_collections(db: StateDB) -> list[str]:
 # written, and the case would pass whether or not this guard exists.
 @pytest.mark.parametrize("literal", ["Infinity", "-Infinity"])
 async def test_import_writes_no_non_finite_collection(db, tmp_path, literal):
-    from lionagi.cli.state import _import_one_run
+    from lionhub.serve.cli.state import _import_one_run
 
     run_dir = _write_run_dir(tmp_path / "home", msg_id_literal=literal)
     with pytest.raises(Exception):
@@ -173,7 +173,7 @@ async def test_import_writes_no_non_finite_collection(db, tmp_path, literal):
 async def test_import_writes_the_session_collection_through_the_db_operation(db, tmp_path):
     """The session-wide collection is set by the DB operation rather than by an
     UPDATE the CLI builds itself — the CLI holds no JSON serializer of its own."""
-    from lionagi.cli.state import _import_one_run
+    from lionhub.serve.cli.state import _import_one_run
 
     calls: list[tuple[str, list[str]]] = []
     real = db._set_progression_in_tx

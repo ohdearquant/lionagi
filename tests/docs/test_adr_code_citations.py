@@ -13,6 +13,11 @@ code in one of four forms instead:
 * a module, ``path.py`` alone, for a record that means the whole file: it carries no line
   and no name, so nothing in it can go stale. The file it names must still be tracked.
 
+Python stubs (``.pyi``) use the same pin syntax as ``.py`` files.
+Other files can be cited with a complete backticked ``path:N@<full SHA>`` or
+``path:N-M@<full SHA>`` pin. All complete pins are checked against the cited commit.
+The inventory tracks only Python pins outside the edit record.
+
 Eight checks keep that true. Each is a plain function over the record texts and a
 ``Source`` (the tracked files, their current text, and the file text at a commit), so a
 small in-memory fixture can carry exactly one defect and a test can require the check to
@@ -28,8 +33,8 @@ item or of a table cell. A path inside running text may name a file that was ret
 still planned, so only the list item and the table cell are checked against the tracked
 files.
 
-A symbol citation is checked for existing in a tracked file, not for being the code its
-sentence describes, and the checks read citations of Python files only.
+A Python symbol citation is checked for existing in a tracked file, not for being the code
+its sentence describes.
 """
 
 from __future__ import annotations
@@ -50,7 +55,7 @@ ADR_DIR = REPO_ROOT / "docs" / "adr"
 # pin, and the pins are exempt from the list below.
 EDIT_RECORD = "edits/ADR-0126-amendment-9-edits.md"
 
-# Pins outside the edit record, by record file (relative to docs/adr). A pin is allowed
+# Python pins outside the edit record, by record file (relative to docs/adr). A pin is allowed
 # while the cited code has no symbol at the head in that file, or while the sentence says
 # where the code stood at the pinned commit. A new pin fails
 # test_pins_outside_the_edit_record_are_listed, and a pin that is gone from its record
@@ -69,10 +74,27 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/cli/orchestrate/_checkpoint.py:188@ee589cb2",
         "lionagi/cli/orchestrate/_checkpoint.py:80@ee589cb2",
         "lionagi/cli/orchestrate/_manifest.py:333@72461356",
+        "lionagi/cli/orchestrate/flow.py:1092-1103@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1102-1103@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1197-1208@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1229-1237@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1255-1263@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1265-1273@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1275-1285@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1290-1306@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1308-1351@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1353-1376@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1519-1527@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:2858@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:2860-2872@ee589cb2",
     ),
     "ADR-0117-normalized-progression-membership-and-online-cutover.md": (
         "lionagi/cli/_runs.py:1922@e1800c3b",
         "lionagi/cli/_runs.py:2236-2237@e1800c3b",
+        "lionagi/cli/orchestrate/_orchestration.py:2268@e1800c3b",
+        "lionagi/cli/state.py:507@e1800c3b",
+        "lionagi/cli/state.py:555@e1800c3b",
+        "lionagi/cli/state.py:560@e1800c3b",
         "lionagi/studio/services/db_maintenance.py:328@e1800c3b",
     ),
     "ADR-0126-provider-credential-routing-and-monthly-account-budgets.md": (
@@ -112,6 +134,11 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/scheduler/subprocess.py:279@c4abb363",
     ),
     "ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md": (
+        "lionagi/_auto.py:116@264f3e19",
+        "lionagi/_auto.py:191@264f3e19",
+        "lionagi/_auto.py:201@264f3e19",
+        "lionagi/_auto.py:225@264f3e19",
+        "lionagi/_auto.py:236@264f3e19",
         "lionagi/cli/_schedule_parsing.py:32-79@fa46d0e8",
         "lionagi/cli/_schedule_parsing.py:358@fa46d0e8",
         "lionagi/cli/_schedule_parsing.py:429-441@fa46d0e8",
@@ -146,7 +173,6 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/services/schedule_declaration.py:482@8c119ecc",
         "lionagi/studio/services/schedule_declaration.py:482@b4a3bebf",
         "lionagi/studio/services/schedule_declaration.py:534@b4a3bebf",
-        "tests/test_moved_modules.py:669@b4a3bebf",
     ),
     "ADR-0139-cli-package-location-and-console-script-ownership.md": (
         "lionagi/_auto.py:143@2a49c9fe",
@@ -187,48 +213,45 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/cli/_schedule_parsing.py:1@327665f3",
         "lionagi/cli/_team_service.py:16@327665f3",
         "lionagi/cli/_util.py:14@327665f3",
+        "lionagi/cli/doctor.py:28@ad5c45eb",
         "lionagi/cli/main.py:32-33@2a49c9fe",
         "lionagi/cli/main.py:370@2a49c9fe",
         "lionagi/cli/orchestrate/__init__.py:26@4af5b0a9",
         "lionagi/cli/orchestrate/__init__.py:27-28@2ced5e58",
         "lionagi/cli/orchestrate/__init__.py:27@4af5b0a9",
+        "lionagi/cli/orchestrate/__init__.py:29@1717674a",
         "lionagi/cli/orchestrate/__init__.py:425@1717674a",
+        "lionagi/cli/orchestrate/__init__.py:725@ad5c45eb",
         "lionagi/cli/orchestrate/_checkpoint.py:21@327665f3",
         "lionagi/cli/orchestrate/_checkpoint.py:242@2ced5e58",
         "lionagi/cli/orchestrate/_orchestration.py:2137@1717674a",
         "lionagi/cli/status.py:17@8ed68552",
         "lionagi/cli/status.py:29@8ed68552",
+        "lionagi/cli/status.py:41@8ed68552",
         "lionagi/studio/scheduler/subprocess.py:251@2ced5e58",
         "lionagi/studio/scheduler/subprocess.py:279@1717674a",
         "lionagi/studio/scheduler/subprocess.py:279@2a49c9fe",
+        "lionhub/src/lionhub/serve/__init__.py:4@ad5c45eb",
+        "lionhub/src/lionhub/serve/mcp/config.py:116@ad5c45eb",
     ),
 }
 
 # Symbols a Proposed record asks for that do not exist yet, by record file. A name is allowed
 # here only while the head holds no such code; once it exists the entry fails and must go.
-PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {
-    "ADR-0141-recorded-chain-decisions-for-schedule-runs.md": (
-        "tests/studio/test_scheduler_engine.py::"
-        "test_normal_path_terminal_write_records_chain_decision",
-        "tests/studio/test_scheduler_engine.py::"
-        "test_recovery_terminal_write_records_chain_decision",
-        "tests/studio/test_scheduler_engine.py::test_selection_is_none_at_depth_cap",
-        "tests/state/lifecycle/test_schedule_adapter.py::"
-        "test_schedule_run_status_write_keeps_reason_columns",
-        "tests/studio/test_scheduler_engine.py::test_lost_terminal_cas_does_not_chain_normal_path",
-        "tests/cli/test_monitor_run.py::test_chain_decision_none_returns_without_sleep",
-        "tests/cli/test_monitor_run.py::test_chain_decision_branch_follows_child",
-        "tests/cli/test_monitor_run.py::test_chain_decision_survives_schedule_edit",
-        "tests/cli/test_monitor_run.py::"
-        "test_chain_decision_unknown_version_is_legacy_with_one_warning",
-    ),
-}
+PLANNED_SYMBOLS: dict[str, tuple[str, ...]] = {}
 
-_PATH = r"[\w./-]+\.py"
+_PYTHON_SUFFIX = "pyi?"
+_PATH = rf"[\w./-]+\.{_PYTHON_SUFFIX}"
+_PYTHON_PATH = re.compile(_PATH)
+_LINE_RANGE = r":(?P<lo>\d+)(?:[-–](?P<hi>\d+))?"
 # ``path.py:N``, ``path.py:N-M``, either with an optional ``@<hash>`` pin.
-_LINE = re.compile(
-    rf"(?<![\w./-])(?P<path>{_PATH}):(?P<lo>\d+)(?:[-–](?P<hi>\d+))?(?:@(?P<sha>[0-9a-f]+))?"
+_LINE = re.compile(rf"(?<![\w./-])(?P<path>{_PATH}){_LINE_RANGE}(?:@(?P<sha>[0-9a-f]+))?")
+_CODE_SPAN = re.compile(r"`(?P<span>[^`\n]+)`")
+_INLINE_PIN = re.compile(
+    rf"(?P<path>[\w.-]+(?:/[\w.-]+)*){_LINE_RANGE}@(?P<sha>[0-9a-fA-F]+)(?P<annotation>.*)"
 )
+# A 19-digit bound accommodates any sequence length on supported 64-bit platforms.
+_MAX_LINE_DIGITS = 19
 # ``path.py::Class.method`` and ``path.py::NAME``.
 _SYMBOL = re.compile(rf"(?<![\w./-])(?P<path>{_PATH})::(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)")
 # `path.py` followed by one backticked line of that file.
@@ -236,8 +259,8 @@ _QUOTE = re.compile(rf"`(?P<path>{_PATH})` `(?P<quote>[^`\n]+)`")
 # A code span followed by line numbers written outside backticks: ``path.py::name`, :12; :15-18``.
 _BARE_RUN = re.compile(r"`(?P<span>[^`\n]+)`(?P<run>(?:[,;] :\d+(?:[-–]\d+)?(?![\w@]))+)")
 _BARE_MEMBER = re.compile(r"[,;] (?P<number>:\d+(?:[-–]\d+)?)")
-# The path a code span starts with, when it is a repository path to a file that is not Python.
-_OTHER_PATH = re.compile(r"[\w.-]+(?:/[\w.-]+)+\.(?!pyi?$)[A-Za-z]\w*")
+# A path with a directory and extension, used to distinguish files from prose tokens.
+_REPOSITORY_PATH = re.compile(r"[\w.-]+(?:/[\w.-]+)+\.[A-Za-z]\w*")
 # A Python path that is the whole content of a list item, or of one cell of a table row.
 _ITEM = re.compile(rf"\s*(?:[-*+]|\d+[.)])\s+`(?P<path>{_PATH})`\s*")
 _CELL = re.compile(rf"\s*`(?P<path>{_PATH})`\s*")
@@ -245,7 +268,7 @@ _CELL = re.compile(rf"\s*`(?P<path>{_PATH})`\s*")
 _FLOATING = re.compile(r"`:(?P<number>\d+(?:[-–]\d+)?)`")
 # A path to a file of a kind the records cite, with or without a symbol or line after it.
 _ANY_PATH = re.compile(
-    r"(?<![\w./-])(?P<path>[\w./-]+\.(?:py|sql|tsx|ts|md|toml|rs|yaml|yml|json|js|sh|cfg))(?!\w)"
+    rf"(?<![\w./-])(?P<path>[\w./-]+\.(?:{_PYTHON_SUFFIX}|sql|tsx|ts|md|toml|rs|yaml|yml|json|js|sh|cfg))(?!\w)"
 )
 
 
@@ -332,7 +355,7 @@ class GitSource:
     def text_at(self, sha: str, path: str) -> str | None:
         key = (sha, path)
         if key not in self._texts:
-            done = self._git("show", f"{sha}:{path}")
+            done = self._git("cat-file", "blob", f"{sha}:{path}")
             self._texts[key] = done.stdout if done.returncode == 0 else None
         return self._texts[key]
 
@@ -464,13 +487,27 @@ def check_symbols_exist(
 def check_pins_exist(records: dict[str, str], source: Source) -> list[str]:
     """Check 3: each pin's commit exists and its file has the pinned line(s) there."""
     problems: list[str] = []
-    for name, line, m in pin_tokens(records):
+    pins = pin_tokens(records)
+    for name, text in records.items():
+        for span in _CODE_SPAN.finditer(text):
+            match = _INLINE_PIN.fullmatch(span.group("span"))
+            if match is not None and not _PYTHON_PATH.fullmatch(match.group("path")):
+                pins.append((name, _lineno(text, span.start("span")), match))
+    for name, line, m in pins:
         path, sha = m.group("path"), m.group("sha")
-        lo = int(m.group("lo"))
-        hi = int(m.group("hi") or lo)
+        if m.re is _INLINE_PIN and m.group("annotation"):
+            problems.append(f"{name}:{line}: {path} has a malformed pin span")
+            continue
+        lo_text = m.group("lo")
+        hi_text = m.group("hi") or lo_text
+        if max(len(lo_text), len(hi_text)) > _MAX_LINE_DIGITS:
+            problems.append(f"{name}:{line}: {path} line number is too long")
+            continue
+        lo, hi = int(lo_text), int(hi_text)
         where = f"{name}:{line}: {m.group(0)}"
-        if len(sha) != 8:
-            problems.append(f"{where} carries {len(sha)} hex digits, not 8")
+        digits = 8 if _PYTHON_PATH.fullmatch(path) else 40
+        if len(sha) != digits:
+            problems.append(f"{where} carries {len(sha)} hex digits, not {digits}")
         elif not source.commit_exists(sha):
             problems.append(f"{where} names a commit that does not exist")
         else:
@@ -500,7 +537,7 @@ def check_quotes_unique(records: dict[str, str], source: Source) -> list[str]:
 
 
 def check_pins_are_listed(records: dict[str, str], known: dict[str, tuple[str, ...]]) -> list[str]:
-    """Check 5: outside the edit record, the pins are exactly the ones in ``known``."""
+    """Check 5: outside the edit record, Python pins are the ones in ``known``."""
     problems: list[str] = []
     seen: dict[str, set[str]] = {}
     for name, line, m in pin_tokens(records):
@@ -508,7 +545,9 @@ def check_pins_are_listed(records: dict[str, str], known: dict[str, tuple[str, .
             continue
         seen.setdefault(name, set()).add(m.group(0))
         if m.group(0) not in known.get(name, ()):
-            problems.append(f"{name}:{line}: {m.group(0)} is a new pin; cite a symbol instead")
+            problems.append(
+                f"{name}:{line}: {m.group(0)} is a new Python pin; cite a symbol instead"
+            )
     for name, tokens in known.items():
         for token in tokens:
             if token not in seen.get(name, set()):
@@ -527,7 +566,8 @@ def check_no_bare_members(records: dict[str, str]) -> list[str]:
     for name, text in records.items():
         for run in _BARE_RUN.finditer(text):
             span = run.group("span")
-            if _OTHER_PATH.fullmatch(span.split(None, 1)[0].split(":", 1)[0]):
+            path = span.split(None, 1)[0].split(":", 1)[0]
+            if _REPOSITORY_PATH.fullmatch(path) and not _PYTHON_PATH.fullmatch(path):
                 continue
             line = _lineno(text, run.start("run"))
             problems.extend(
@@ -567,7 +607,7 @@ def check_no_floating_line_numbers(records: dict[str, str]) -> list[str]:
         for first, paragraph in _paragraphs(text):
             for span in _FLOATING.finditer(paragraph):
                 before = list(_ANY_PATH.finditer(paragraph[: span.start()]))
-                if before and before[-1].group("path").endswith(".py"):
+                if before and _PYTHON_PATH.fullmatch(before[-1].group("path")):
                     line = first + paragraph.count("\n", 0, span.start())
                     problems.append(
                         f"{name}:{line}: `:{span.group('number')}` follows "
@@ -745,15 +785,15 @@ def test_path_in_running_text_is_not_a_module_citation() -> None:
     assert check_module_paths_exist(records, TREE) == []
 
 
-def test_line_range_after_a_python_path_in_the_paragraph_is_reported() -> None:
+@pytest.mark.parametrize("path", ["pkg/registry.py", "pkg/registry.pyi"])
+def test_line_range_after_a_python_path_in_the_paragraph_is_reported(path: str) -> None:
     doc = (
-        "The registry resolves a name with `pkg/registry.py::Registry.match`, and\n"
+        f"The registry resolves a name with `{path}::Registry.match`, and\n"
         "`build_registry` at `:20-22` constructs it.\n"
     )
     problems = check_no_floating_line_numbers({"ADR-0001-registry.md": doc})
     assert problems == [
-        "ADR-0001-registry.md:2: `:20-22` follows pkg/registry.py as a bare line number; "
-        "cite a symbol"
+        f"ADR-0001-registry.md:2: `:20-22` follows {path} as a bare line number; cite a symbol"
     ]
 
 
@@ -851,6 +891,128 @@ def test_pin_with_a_short_hash_is_reported() -> None:
     assert "not 8" in problems[0]
 
 
+FULL_PIN = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ("pkg/schema.sql", "docs/guide.md", "pyproject.toml", ".github/workflows/ci.yml", "Makefile"),
+)
+def test_non_python_pin_checks_the_line_range_at_the_commit(path: str) -> None:
+    source = MemorySource(
+        files={path: "one\ntwo\nthree\n"},
+        commits={FULL_PIN: {path: "one\ntwo\n"}},
+    )
+    records = {"adr.md": f"See `{path}:1–2@{FULL_PIN}`.\nNot `{path}:3@{FULL_PIN}`.\n"}
+    assert _all_checks(records, source, {}) == [
+        f"adr.md:2: {path}:3@{FULL_PIN} cites lines the file does not have at that commit"
+    ]
+
+
+def test_non_python_pin_can_name_a_removed_file() -> None:
+    path = "archive/old-schema.sql"
+    source = MemorySource(files={}, commits={FULL_PIN: {path: "one\n"}})
+    records = {"adr.md": f"See `{path}:1@{FULL_PIN}` and `{path}:2@{FULL_PIN}`.\n"}
+    assert _all_checks(records, source, {}) == [
+        f"adr.md:1: {path}:2@{FULL_PIN} cites lines the file does not have at that commit"
+    ]
+
+
+def test_non_python_pin_refuses_a_missing_commit_or_blob() -> None:
+    path = "pkg/schema.sql"
+    source = MemorySource(files={path: "one\n"}, commits={FULL_PIN: {}})
+    absent = "a" * 40
+    records = {"adr.md": f"See `{path}:1@{FULL_PIN}` and `{path}:1@{absent}`.\n"}
+    assert check_pins_exist(records, source) == [
+        f"adr.md:1: {path}:1@{FULL_PIN} cites {path}, which is not in that commit",
+        f"adr.md:1: {path}:1@{absent} names a commit that does not exist",
+    ]
+
+
+def test_non_python_pin_refuses_a_directory_at_the_commit(git_source: GitSource) -> None:
+    sha = git_source._git("rev-parse", "HEAD").stdout.strip()
+    records = {"adr.md": f"See `lionagi/state:1@{sha}`.\n"}
+    assert check_pins_exist(records, git_source) == [
+        f"adr.md:1: lionagi/state:1@{sha} cites lionagi/state, which is not in that commit"
+    ]
+
+
+def test_non_python_pin_reports_the_out_of_range_schema_citation(git_source: GitSource) -> None:
+    sha = git_source._git("rev-parse", "HEAD").stdout.strip()
+    path = "lionagi/state/schema.sql"
+    schema = git_source.text_at(sha, path)
+    assert schema is not None
+    last_line = len(schema.splitlines())
+    records = {
+        "adr.md": f"See `{path}:{last_line}@{sha}`.\nNot `{path}:{last_line + 1}@{sha}`.\n",
+    }
+    assert _all_checks(records, git_source, {}) == [
+        f"adr.md:2: {path}:{last_line + 1}@{sha} cites lines the file does not have at that commit"
+    ]
+
+
+def test_non_python_pin_requires_the_full_sha() -> None:
+    records = {"adr.md": "See `pkg/schema.sql:1@0123abcd`.\n"}
+    assert check_pins_exist(records, TREE) == [
+        "adr.md:1: pkg/schema.sql:1@0123abcd carries 8 hex digits, not 40"
+    ]
+
+
+def test_python_pin_still_requires_eight_digits() -> None:
+    records = {"adr.md": f"See `pkg/registry.py:1@{FULL_PIN}`.\n"}
+    assert check_pins_exist(records, TREE) == [
+        f"adr.md:1: pkg/registry.py:1@{FULL_PIN} carries 40 hex digits, not 8"
+    ]
+
+
+def test_python_stub_pin_accepts_eight_digits() -> None:
+    path = "pkg/registry.pyi"
+    sha = "0123abcd"
+    source = MemorySource(files={}, commits={sha: {path: "class Registry: ...\n"}})
+    records = {"adr.md": f"See `{path}:1@{sha}`.\nNot `{path}:2@{sha}`.\n"}
+    assert check_pins_exist(records, source) == [
+        f"adr.md:2: {path}:2@{sha} cites lines the file does not have at that commit"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "sha", "diagnostic"),
+    [
+        ("pkg/schema.sql", FULL_PIN, "malformed pin span"),
+        ("pkg/registry.py", "0123abcd", "cites lines the file does not have at that commit"),
+    ],
+    ids=["sql", "python"],
+)
+def test_pin_with_text_inside_the_code_span(path: str, sha: str, diagnostic: str) -> None:
+    source = MemorySource(files={}, commits={sha: {path: "one\ntwo\n"}})
+    records = {"adr.md": f"Schema details.\nSee `{path}:3@{sha} after the migration`.\n"}
+    (problem,) = check_pins_exist(records, source)
+    assert problem.startswith(f"adr.md:2: {path}")
+    assert diagnostic in problem
+
+
+@pytest.mark.parametrize("oversized_end", [False, True], ids=["start", "end"])
+def test_pin_with_an_oversized_line_number_is_reported(oversized_end: bool) -> None:
+    path = "pkg/schema.sql"
+    source = MemorySource(files={}, commits={FULL_PIN: {path: "one\ntwo\n"}})
+    long_number = "1" * 4301
+    lines = f"1-{long_number}" if oversized_end else f"{long_number}-2"
+    records = {"adr.md": f"Schema details.\nSee `{path}:{lines}@{FULL_PIN}`.\n"}
+    (problem,) = check_pins_exist(records, source)
+    assert problem.startswith(f"adr.md:2: {path}")
+    assert "line number is too long" in problem
+
+
+def test_non_python_unpinned_and_prose_references_are_preserved() -> None:
+    records = {
+        "adr.md": (
+            f"An ordinary foo:1@{FULL_PIN} label and `notes/old.md:200` in prose.\n"
+            f"`prefix`pkg/schema.sql:1@{FULL_PIN} also remains outside `backticks`.\n"
+        ),
+    }
+    assert _all_checks(records, TREE, {}) == []
+
+
 def test_quote_absent_from_the_file_is_reported() -> None:
     doc = "The builder is `pkg/registry.py` `def build_registrar():`.\n"
     problems = check_quotes_unique({"ADR-0001-registry.md": doc}, TREE)
@@ -903,11 +1065,15 @@ def test_planned_symbol_that_is_no_longer_cited_is_reported() -> None:
     assert "is planned but no longer cited" in problems[0]
 
 
-def test_pin_missing_from_the_list_is_reported() -> None:
-    doc = "The first release held it at `pkg/registry.py:3-7@0123abcd`.\n"
-    problems = check_pins_are_listed({"ADR-0001-registry.md": doc}, {})
-    assert len(problems) == 1
-    assert "is a new pin" in problems[0]
+def test_only_python_pins_need_an_inventory_entry() -> None:
+    sql_path = "pkg/schema.sql"
+    source = MemorySource(files=TREE.files, commits={**TREE.commits, FULL_PIN: {sql_path: "one\n"}})
+    python_pin = "pkg/registry.py:3-7@0123abcd"
+    records = {"adr.md": f"See `{sql_path}:1@{FULL_PIN}`.\nSee `{python_pin}`.\n"}
+    assert check_pins_exist(records, source) == []
+    (problem,) = check_pins_are_listed(records, {})
+    assert problem.startswith(f"adr.md:2: {python_pin} ")
+    assert "is a new Python pin" in problem
 
 
 def test_pin_in_the_edit_record_needs_no_entry() -> None:
@@ -922,11 +1088,12 @@ def test_listed_pin_that_is_no_longer_cited_is_reported() -> None:
     assert "is listed but no longer cited" in problems[0]
 
 
-def test_line_number_after_a_python_token_is_reported() -> None:
-    doc = "The registry matches a name with `pkg/registry.py::Registry.match`, :12.\n"
+@pytest.mark.parametrize("path", ["pkg/registry.py", "pkg/registry.pyi"])
+def test_line_number_after_a_python_token_is_reported(path: str) -> None:
+    doc = f"The registry matches a name with `{path}::Registry.match`, :12.\n"
     problems = check_no_bare_members({"ADR-0001-registry.md": doc})
     assert problems == [
-        "ADR-0001-registry.md:1: :12 follows `pkg/registry.py::Registry.match` "
+        f"ADR-0001-registry.md:1: :12 follows `{path}::Registry.match` "
         "as a bare line number; cite a symbol"
     ]
 
@@ -960,7 +1127,7 @@ def test_fixture_with_every_defect_is_reported_by_every_check() -> None:
         "is not a tracked file",
         "names a commit that does not exist",
         "occurs 2 times",
-        "is a new pin",
+        "is a new Python pin",
         "as a bare line number",
     ):
         assert any(fragment in p for p in problems), fragment

@@ -61,6 +61,11 @@
         "type": "string",
         "x-flag": "--notify"
       },
+      "notify_sender": {
+        "description": "Include this sender label in the configured terminal notice.",
+        "type": "string",
+        "x-flag": "--notify-sender"
+      },
       "num_workers": {
         "default": 3,
         "description": "Maximum assignments the orchestrator generates (default 3). It may generate fewer if the task does not divide that far, and `workers` specs beyond this cap go unused.",

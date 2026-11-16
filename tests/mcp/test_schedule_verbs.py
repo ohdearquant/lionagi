@@ -445,7 +445,7 @@ def test_every_admitted_parameter_is_one_the_child_parser_accepts():
     builds would be rendered into argv and then rejected there, which is a
     rejection a caller cannot anticipate from the schema it was given.
     """
-    from lionagi.cli.machine_schedule import _schedule_subparsers
+    from lionhub.serve.cli.machine_schedule import _schedule_subparsers
     from lionhub.serve.mcp import verbs
 
     parsers = _schedule_subparsers()

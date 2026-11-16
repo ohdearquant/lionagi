@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 __all__ = (
@@ -130,9 +130,9 @@ def codex_unset_effort_default(
     depth. The table is the boundary of the guarantee, and widening the
     guarantee means widening the table.
 
-    Every seam that builds a codex request from an unset effort routes through
-    here: the CLI builders, the Studio operator path, and the generic agent
-    factory. A seam that skips it silently reinstates the defect.
+    The selected adapter supplies its configuration reader to the shared
+    selector. This entry point keeps cold compatibility for Python callers
+    without a selected adapter.
 
     ``env`` is the environment the spawned codex process will run under, when
     the caller knows it. A request may carry a complete replacement
@@ -140,11 +140,21 @@ def codex_unset_effort_default(
     resolving against our own would clamp against a file the child never opens
     while leaving unclamped the one it does.
     """
+    from lionagi.service.connections._provider_compat import codex_unset_effort_1x
+
+    return codex_unset_effort_1x(model, profile_overrides, env)
+
+
+def _codex_unset_effort_from_reader(
+    model: str,
+    profile_overrides: dict | None,
+    env: Mapping[str, str] | None,
+    *,
+    read_global_effort: Callable[[Mapping[str, str] | None], str | None],
+) -> str | None:
     if profile_overrides and "model_reasoning_effort" in profile_overrides:
         return None
-    from lionhub.providers.openai._codex_profile import global_codex_reasoning_effort
-
-    global_effort = normalize_effort(global_codex_reasoning_effort(env))
+    global_effort = normalize_effort(read_global_effort(env))
     if global_effort is None:
         return None
     model_part = (model or "").split("/", 1)[-1]

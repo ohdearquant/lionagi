@@ -76,6 +76,7 @@ MOVED: tuple[Moved, ...] = (
         "0.37.0",
         "2.0.0",
     ),
+    Moved("lionagi.cli", "lionhub.serve.cli", "0.38.0", "2.0.0"),
     Moved("lionagi.cli._argtypes", "lionhub.orchestration.arguments", "0.38.0", "2.0.0"),
     Moved("lionagi.cli._code_identity", "lionhub.serve.diagnostics", "0.38.0", "2.0.0"),
     Moved("lionagi.cli._logging", "lionhub.orchestration.console", "0.38.0", "2.0.0"),
@@ -187,6 +188,141 @@ MOVED: tuple[Moved, ...] = (
         "2.0.0",
     ),
     Moved("lionagi.studio.services._db", "lionhub.orchestration.state_store", "0.38.0", "2.0.0"),
+    Moved("lionagi.integrations", "lionhub.integrations", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.studio._host",
+        "lionhub.serve.daemon._host",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio._traceback_dump",
+        "lionhub.serve.daemon._traceback_dump",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.daemon_log",
+        "lionhub.serve.daemon.daemon_log",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.reconnect",
+        "lionhub.serve.daemon.reconnect",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services._io",
+        "lionhub.serve.daemon.services._io",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services._path_safety",
+        "lionhub.serve.daemon.services._path_safety",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services._sse",
+        "lionhub.serve.daemon.services._sse",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.artifact_verification",
+        "lionhub.serve.daemon.services.artifact_verification",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.signals",
+        "lionhub.serve.daemon.services.signals",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.run_view",
+        "lionhub.serve.daemon.services.run_view",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.task_applications",
+        "lionhub.serve.daemon.services.task_applications",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.operator.redact", "lionhub.serve.daemon.services.redact", "0.38.0", "2.0.0"
+    ),
+    Moved("lionagi.studio.launch_access", "lionhub.serve.daemon.launch_access", "0.38.0", "2.0.0"),
+    Moved("lionagi.studio.services.runs", "lionhub.serve.daemon.services.runs", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.studio.services.run_resume",
+        "lionhub.serve.daemon.services.run_resume",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.run_resume_worker",
+        "lionhub.serve.daemon.services.run_resume_worker",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.engine_runs",
+        "lionhub.serve.daemon.services.engine_runs",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.invocations",
+        "lionhub.serve.daemon.services.invocations",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.launches",
+        "lionhub.serve.daemon.services.launches",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.identity",
+        "lionhub.serve.daemon.services.identity",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.pairing",
+        "lionhub.serve.daemon.services.pairing",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.sessions",
+        "lionhub.serve.daemon.services.sessions",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.admin", "lionhub.serve.daemon.services.admin", "0.38.0", "2.0.0"
+    ),
+    Moved(
+        "lionagi.studio.services.schedules",
+        "lionhub.serve.daemon.services.schedules",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services._session_tail",
+        "lionhub.serve.daemon.services._session_tail",
+        "0.38.0",
+        "2.0.0",
+    ),
 )
 
 

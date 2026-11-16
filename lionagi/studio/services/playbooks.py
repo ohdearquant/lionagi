@@ -21,9 +21,9 @@ from lionagi._flow_spec import (
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.ln import hash_file
 from lionagi.ln.concurrency import run_sync
+from lionhub.serve.daemon.services._path_safety import public_path, safe_path_join
 
 from ..registry import studio_route
-from ._path_safety import public_path, safe_path_join
 
 _PLAYBOOKS_ROOT = LIONAGI_HOME / "playbooks"
 

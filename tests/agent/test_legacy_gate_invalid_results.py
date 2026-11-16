@@ -14,6 +14,26 @@ from lionagi.protocols.action.gate import GateResult, adapt_legacy_hook, run_gat
 _SECRET = "sensitive-return-content-7195"
 
 
+@pytest.mark.parametrize("field", ["allowed", "errored"])
+def test_gate_result_requires_boolean_verdict_fields(field):
+    with pytest.raises(TypeError, match=f"{field} must be a bool"):
+        GateResult(
+            **{
+                "allowed": 1 if field == "allowed" else True,
+                "errored": 1 if field == "errored" else False,
+                "control": "policy",
+                "tool_name": "bash",
+                "action": "run",
+                "reason": "invalid",
+            }
+        )
+
+
+def test_gate_result_cannot_allow_an_errored_verdict():
+    with pytest.raises(ValueError, match="cannot allow"):
+        GateResult(True, "policy", "bash", "run", "invalid", errored=True)
+
+
 class _UnreadableField:
     def __repr__(self):
         return _SECRET
@@ -24,7 +44,22 @@ class _UnreadableField:
 
 def _verdict(**changes):
     result = GateResult(True, "policy", "bash", "run", "allowed")
-    return replace(result, **changes)
+    try:
+        return replace(result, **changes)
+    except (TypeError, ValueError):
+        # Simulate malformed third-party instances that bypass dataclass construction.
+        malformed = object.__new__(GateResult)
+        for name in (
+            "allowed",
+            "control",
+            "tool_name",
+            "action",
+            "reason",
+            "mutated_args",
+            "errored",
+        ):
+            object.__setattr__(malformed, name, changes.get(name, getattr(result, name)))
+        return malformed
 
 
 @pytest.mark.asyncio

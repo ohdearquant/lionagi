@@ -26,7 +26,7 @@ counts, the numeric P1 inventory figures below have not been reverified at `bb57
    lines and declares 34 tables, 408 directly declared columns and 93 named `Index(...)` objects
    in a SQLAlchemy `MetaData`. Its own docstring calls it the "single source of truth for schema
    DDL". It is what production creates from: `await conn.run_sync(metadata.create_all)` at
-   `lionagi/state/db.py::StateDB._apply_schema`.
+   `lionagi/state/db.py::StateDB._apply_schema_changes`.
 2. At `bb57cc9619765bd03e7dd2b3369725335d48af21`, `lionagi/state/schema.sql` has 1,102
    lines and contains 34 `CREATE TABLE` and 97 `CREATE [UNIQUE] INDEX` statements describing the
    schema in DDL text.
@@ -129,13 +129,14 @@ they are interpolated into SQL at `lionagi/state/lifecycle/service.py::SQLAlchem
 **P5 — migration is an additive ledger, and the version is not a shape identity.** Schema
 evolution uses `MIGRATION_COLUMNS` at startup plus bespoke `*_new` copy-and-rename rebuilds
 for changes SQLite's `ALTER TABLE` cannot express. `_reconcile_columns` inspects table and
-column presence and raises on inspection failures (`lionagi/state/db.py::StateDB._reconcile_columns`); the open
-sequence runs that reconciliation before writing `SCHEMA_VERSION`
-(`lionagi/state/db.py::StateDB._apply_schema`). This hardening does not make the version integer
-a fingerprint of the complete physical catalog. The schedules rebuilds already derive their
-target table from `schema_meta.py` via `to_metadata`
-(`lionagi/state/db.py::StateDB._drop_legacy_action_kind_check`, `lionagi/state/db.py::StateDB._drop_legacy_schedules_command_check`, `lionagi/state/db.py::StateDB._drop_legacy_schedules_trigger_type_check`), and so does the definitions rebuild (`lionagi/state/db.py::StateDB._drop_legacy_definitions_kind_check`), so that generated
-path already exists on SQLite.
+column presence and raises on inspection failures (`lionagi/state/db.py::StateDB._reconcile_columns`).
+When the open sequence applies schema changes, it reconciles columns in
+`lionagi/state/db.py::StateDB._apply_schema_changes` before writing `SCHEMA_VERSION` in
+`lionagi/state/db.py::StateDB._stamp_schema_version` (`lionagi/state/db.py::StateDB._apply_schema`).
+The version integer still describes a migration level. The three schedules checks share one rebuild
+that derives the target table from `schema_meta.py` via `to_metadata`
+(`lionagi/state/db.py::StateDB._rebuild_legacy_schedules_check`). The definitions rebuild uses the
+same approach (`lionagi/state/db.py::StateDB._drop_legacy_definitions_kind_check`).
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
 At `bb57cc96`, tracked Python files under `lionagi/state/` comprise 24,659 lines in 33 files,
@@ -422,11 +423,11 @@ object blocks the plan before DDL or version writes; a declared extension affect
 is recreated from its authored extension spec and re-introspected afterward. `CASCADE` is never
 used to bypass ownership.
 
-The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
-copy statement's column list from catalog-read names and re-executing index DDL strings taken from
-`sqlite_master` (`lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table`, `lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table._rebuild`, and the same shape in the six other rebuild paths).
-That preserves catalog index DDL replayed by those paths, including objects nothing declares, so
-a rebuild can carry drift forward instead of resolving it. It is also the one place where
+The current rebuilds read the live catalog and replay it. The shared rebuild function assembles the
+copy statement's column list from catalog-read names and re-executes index DDL strings taken from
+`sqlite_master` (`lionagi/state/db.py::StateDB._sqlite_rebuild_table`). The legacy sessions rebuild is
+one caller (`lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table`). This preserves indexes
+absent from the declared schema, so a rebuild can carry drift forward. It is also the one place where
 identifiers reach SQL from a source no allow-list covers.
 
 "Additive" is not a safe synonym for "cheap", and the classifier has to say so. D1 lets a field

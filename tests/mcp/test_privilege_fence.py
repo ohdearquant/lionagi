@@ -20,16 +20,24 @@ import asyncio
 
 import pytest
 
-from lionagi.cli import machine
+from lionhub.serve.cli import machine
 from lionhub.serve.mcp import dispatch, jobs, projection, verbs
+from tests.mcp._removed_surface import REMOVED_VERB_ALIASES
 
 # Named by the operation an agent could otherwise perform on itself, not by a
 # spelling: a rename that keeps the capability must still fail this.
-FENCED_PATHS = ("state migrate", "plugin trust", "hooks trust")
+FENCED_PATHS = (
+    "state migrate",
+    "plugin trust",
+    "hooks trust",
+    "remote run",
+    "remote status",
+    "remote output",
+    "remote cancel",
+)
 
-# The previous surface's names for the same capabilities: a fenced capability
-# must not be reachable by an old name either.
-FENCED_LEGACY_NAMES = ("plugin_trust", "hooks_trust", "state_migrate")
+# Test the flat spellings of these fenced capabilities as well as their command paths.
+FENCED_FLAT_NAMES = ("plugin_trust", "hooks_trust", "state_migrate")
 
 # Every command path this surface can execute, written out here rather than read
 # off the registry, so the two have to agree. Matching against a list of forbidden
@@ -136,8 +144,9 @@ def test_no_catalog_entry_names_a_fenced_operation():
         assert fenced.replace(" ", ".") not in listed
 
 
-@pytest.mark.parametrize("name", FENCED_LEGACY_NAMES)
-def test_a_previous_surface_name_for_a_fenced_operation_resolves_to_nothing(name):
+@pytest.mark.parametrize("name", FENCED_FLAT_NAMES)
+def test_a_flat_spelling_of_a_fenced_operation_resolves_to_nothing(name):
+    assert name not in REMOVED_VERB_ALIASES
     answer = call(ops=[{"op": name}])
     assert answer["ops"][0]["ok"] is False
 

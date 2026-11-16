@@ -94,13 +94,33 @@ def test_get_agent_surfaces_lion_system(tmp_path, monkeypatch):
     assert result.get("fast_mode") is False
 
 
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["bare", "bom"])
+def test_agent_reads_keep_model_and_protection(prefix, tmp_path, monkeypatch):
+    from lionagi.studio.services.agents import get_agent, list_agents
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    (root / "sysagent.md").write_text(
+        f"{prefix}---\nprovider: claude\nmodel: claude-sonnet-4-6\n"
+        "lion_system: true\n---\nSystem prompt here.\n",
+        encoding="utf-8",
+    )
+
+    (listed,) = list_agents()
+    detail = get_agent("sysagent")
+    assert detail is not None
+    for agent in (listed, detail):
+        assert agent["protected"] is True
+        assert agent["model"] == "claude-sonnet-4-6"
+    assert detail["system_prompt"] == "System prompt here."
+
+
 # Tests 1c/1d/1e: absent bool fields emit CLI defaults
 
 
 def test_get_agent_lion_system_defaults_true(tmp_path, monkeypatch):
     """get_agent() on a profile WITHOUT lion_system: key returns lion_system: True.
 
-    The CLI treats absent lion_system as True (lionagi/cli/_agents.py:180,
+    The CLI treats absent lion_system as True (lionhub/src/lionhub/serve/cli/_agents.py:180,
     AgentSpec.lion_system default in lionhub/src/lionhub/agent/spec.py). Studio must emit
     the same default so callers see consistent behaviour regardless of whether
     the key is present.
@@ -131,7 +151,7 @@ def test_get_agent_lion_system_defaults_true(tmp_path, monkeypatch):
 def test_get_agent_yolo_defaults_false(tmp_path, monkeypatch):
     """get_agent() on a profile WITHOUT yolo: key returns yolo: False.
 
-    The CLI defaults yolo to False (lionagi/cli/_agents.py:191).
+    The CLI defaults yolo to False (lionhub/src/lionhub/serve/cli/_agents.py:191).
     """
     from lionagi.studio.services.agents import get_agent
 
@@ -159,7 +179,7 @@ def test_get_agent_yolo_defaults_false(tmp_path, monkeypatch):
 def test_get_agent_fast_mode_defaults_false(tmp_path, monkeypatch):
     """get_agent() on a profile WITHOUT fast_mode: key returns fast_mode: False.
 
-    The CLI defaults fast_mode to False (lionagi/cli/_agents.py:192).
+    The CLI defaults fast_mode to False (lionhub/src/lionhub/serve/cli/_agents.py:192).
     """
     from lionagi.studio.services.agents import get_agent
 

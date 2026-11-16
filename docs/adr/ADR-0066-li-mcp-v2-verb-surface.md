@@ -105,6 +105,12 @@ Three drivers, in the order they carry weight:
 Also corrected: the original D1 headed its list "Discrete core (10 tools)" while enumerating
 nine. The superseded shape was nine discrete tools plus `request`.
 
+## Implementation status
+
+**2026-11-02 (0.37.0).** The server removed the flat operation aliases and
+refuses them as unknown verbs (`not_found`). The catalog and `server.info`
+omit `synonyms_removed_after`. [Replacement verbs](../reference/mcp-server.md#compatibility)
+
 ## Depth contract
 
 This ADR decides the shape of the MCP verb surface, not its implementation schedule. The
@@ -176,9 +182,6 @@ namespaced form before dispatch, and **absent from the catalog** so they are nev
 advertised or taught. They exist for callers already scripted against the old names. They
 are accepted for exactly one release and removed in the first minor release after the one
 that introduces this surface, and no later than 2026-09-30.
-
-They have since been removed: an old name is refused as an unknown verb (`not_found`), and
-the catalog and `server.info` no longer carry `synonyms_removed_after`.
 
 **Ops are JSON, never a DSL string.** `ops` is a list of objects:
 
@@ -418,7 +421,7 @@ It is not sufficient once `play.submit` exists. `li kill` performs transitive
 `play → session → invocation` reaping, implied for plays without `--recursive`
 (`_list_running_children` in `lionagi/cli/kill.py:378@95b559a4` documents which plays carry a session,
 `lionagi/cli/kill.py:383@95b559a4` joins that session, and `lionagi/cli/kill.py:392-418@95b559a4` follows the session/invocation frontier;
-`_do_kill` at `lionagi/cli/kill.py::_do_kill` invokes the play walk without a `recursive` guard). That path also
+`_do_kill` at `lionhub/src/lionhub/serve/cli/kill.py::_do_kill` invokes the play walk without a `recursive` guard). That path also
 writes the lifecycle status transitions and fires the terminal-notify emit. The cancellation
 write guards running invocations and clears a session's live phase in the same update
 (`_persist_cancel`, `lionhub/src/lionhub/orchestration/kill.py::_persist_cancel`). A raw `killpg` stops the processes while leaving
@@ -452,7 +455,7 @@ so delegation adds no new dependency.
 
 **Known gap, inherited deliberately:** show-level reaping is deferred — `li kill <show_id>`
 marks the show row terminal and does not reap its plays or their workers
-(`_do_kill`, `lionagi/cli/kill.py::_do_kill`). The MCP surface therefore does **not** expose a show-level kill. A
+(`_do_kill`, `lionhub/src/lionhub/serve/cli/kill.py::_do_kill`). The MCP surface therefore does **not** expose a show-level kill. A
 verb that silently half-stops a tree is worse than no verb; if a show-level operation is
 added later, it must either recurse properly or fail explicitly.
 

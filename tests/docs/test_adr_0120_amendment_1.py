@@ -310,14 +310,14 @@ def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
 
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
-    orchestration = "lionagi/cli/orchestrate/_orchestration.py"
+    orchestration = "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py"
     check_round = _def_source(orchestration, "TeamLifecycleCoordinator.check_round")
     assert "pending_targets = frozenset(state.pending_targets) | frozenset(exchange_pending)" in (
         check_round
     )
     build = _def_source(orchestration, "TeamLifecycleCoordinator.build_round_operations")
     assert build.startswith("def build_round_operations")
-    flow = "lionagi/cli/orchestrate/flow.py"
+    flow = "lionhub/src/lionhub/serve/cli/orchestrate/flow.py"
     assert _def_source(flow, "_execute_dag._on_team_op_complete").startswith(
         "def _on_team_op_complete"
     )
@@ -333,7 +333,9 @@ def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None
     assert after.startswith("async def get_session_signals_after(")
     assert "limit: int = 500" in after
     advance = _def_source(db, "StateDB.create_schedule_run_and_advance")
-    assert "guard_cursor_forward=True" in advance
+    assert "self._create_schedule_run_and_advance(" in advance
+    advance_in_tx = _def_source(db, "StateDB._create_schedule_run_and_advance")
+    assert "guard_cursor_forward=True" in advance_in_tx
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -352,10 +354,7 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    signal_table = _table("lionagi/state/schema.sql", "session_signals")
-    assert "session_id" in signal_table
-    assert "seq" in signal_table
-    assert "session_signals` in `lionagi/state/schema.sql" in flat
+    assert "lionagi/state/schema.sql:845-849" in flat
     assert "lionagi/state/db.py::StateDB.insert_session_signal" in flat
     assert "lionagi/state/db.py::StateDB.get_session_signals_after" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
@@ -499,7 +498,10 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
-    assert "lionagi/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round" in flat
+    assert (
+        "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round"
+        in flat
+    )
     assert "lionagi/state/schema.sql:493" in flat
     assert "lionagi/state/db.py::StateDB._build_update_schedule_stmt" in flat
     assert "lionagi/state/db.py::StateDB.create_schedule_run_and_advance" in flat
@@ -512,7 +514,10 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete" in flat
+    assert (
+        "lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete"
+        in flat
+    )
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 
