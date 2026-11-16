@@ -102,6 +102,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/providers/anthropic/messages.py:981-1011@04e03ffe",
         "lionagi/service/accounts/_ledger.py:548@c6ac2d97",
         "lionagi/service/accounts/_ledger.py:1624@02fcd3b0",
+        "lionhub/src/lionhub/providers/anthropic/messages.py:478-503@c6a3b4af",
     ),
     "ADR-0130-per-request-input-ceiling-and-context-management-past-it.md": (
         "lionagi/providers/anthropic/messages.py:988@2a8b69c9",
