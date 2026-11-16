@@ -24,12 +24,24 @@ def codex_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture
+def refuse_codex_compatibility_lookup(monkeypatch):
+    from lionagi.service.connections import _provider_compat
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("A selected Codex adapter called the compatibility lookup")
+
+    monkeypatch.setattr(_provider_compat, "codex_unset_effort_1x", unexpected_lookup)
+
+
 def _write_global(codex_home, body: str) -> None:
     (codex_home / "config.toml").write_text(body)
 
 
 class TestGlobalEffortIsClampedToTheResolvedModel:
-    def test_over_ceiling_global_effort_is_clamped_for_a_capped_model(self, codex_home):
+    def test_over_ceiling_global_effort_is_clamped_for_a_capped_model(
+        self, codex_home, refuse_codex_compatibility_lookup
+    ):
         """The defect: global ultra + spark must emit xhigh, not nothing."""
         _write_global(codex_home, 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "ultra"\n')
         m = build_chat_model(
@@ -191,7 +203,9 @@ class TestGlobalEffortIsClampedToTheResolvedModel:
         assert "reasoning_effort" not in m.endpoint.config.kwargs
         assert m.endpoint.config.kwargs["config_overrides"]["model_reasoning_effort"] == "medium"
 
-    def test_build_imodel_from_spec_clamps_the_same_way(self, codex_home, monkeypatch):
+    def test_build_imodel_from_spec_clamps_the_same_way(
+        self, codex_home, monkeypatch, refuse_codex_compatibility_lookup
+    ):
         _write_global(codex_home, 'model_reasoning_effort = "ultra"\n')
         import lionhub.orchestration.spawn as pmod
         from lionagi.testing import IModelKwargCaptor

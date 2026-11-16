@@ -1671,10 +1671,7 @@ class CodexCodeRequest(BaseModel):
         `Branch()`) reaches the CLI through this request model, so the fix
         belongs here rather than at each of them.
         """
-        from lionagi.service.providers import (
-            _clamp_codex_effort,
-            codex_unset_effort_default,
-        )
+        from lionagi.service.providers import _clamp_codex_effort
 
         _redact_codex_runtime_fields_in_place(values)
         values = cls._resolve_config_profile(values)
@@ -1695,12 +1692,14 @@ class CodexCodeRequest(BaseModel):
         # user config derives nothing from it: the child never reads that file,
         # so there is no configured value to clamp.
         if not hermetic and values.get("reasoning_effort") is None:
+            from ._codex_profile import codex_unset_effort_from_config
+
             # The child's own environment decides which config codex reads, and
             # `env` replaces that environment wholesale when it is set. By this
             # point an earlier before-validator has wrapped it for redaction,
             # so it must be revealed to be read at all.
             env = reveal_redacted(values.get("env"))
-            derived = codex_unset_effort_default(
+            derived = codex_unset_effort_from_config(
                 model,
                 reveal_redacted(values.get("config_overrides")),
                 env if isinstance(env, Mapping) else None,

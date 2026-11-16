@@ -1438,10 +1438,12 @@ def _provider_inventory() -> dict[str, list[str]]:
 # table changes when an edge is removed or a new one is added, never as a side effect.
 PROVIDER_INTERIM_EDGES = {
     # Every import here is inside a function (see the test of that below).
-    "service/providers.py": ["lionhub.providers.openai._codex_profile"],
-    # ``_MANIFEST_MODULE`` in the compatibility loader: the hub's manifest module, imported on
-    # the first call that needs the default provider catalog.
-    "service/connections/_provider_compat.py": ["lionhub.providers.manifest"],
+    "service/connections/_provider_compat.py": [
+        # ``_MANIFEST_MODULE`` loads the default provider catalog on its first use.
+        "lionhub.providers.manifest",
+        # Temporary 1.x adapter for Codex's configured default effort.
+        "lionhub.providers.openai._codex_profile",
+    ],
     "studio/operator/engine.py": [
         "lionhub.providers.anthropic.claude_code",
         "lionhub.providers.google.gemini_code",
@@ -1452,6 +1454,38 @@ PROVIDER_INTERIM_EDGES = {
 def test_provider_interim_edge_inventory():
     expected = {path: sorted(names) for path, names in PROVIDER_INTERIM_EDGES.items()}
     assert _provider_inventory() == expected
+
+
+# Studio's temporary 1.x Codex profile access is indirect through the compatibility module.
+STUDIO_PROVIDER_COMPAT_INTERIM_USE = (
+    "studio/operator/engine.py",
+    "lionagi.service.connections._provider_compat.codex_unset_effort_1x",
+)
+
+
+def test_studio_codex_effort_uses_the_temporary_compatibility_edge():
+    path, qualified_name = STUDIO_PROVIDER_COMPAT_INTERIM_USE
+    module, _, helper = qualified_name.rpartition(".")
+    engine = SOURCE_ROOTS[0] / path
+    tree = ast.parse(engine.read_text(encoding="utf-8"), filename=str(engine))
+    apply_effort = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_apply_operator_effort"
+    )
+    local_nodes = list(ast.walk(apply_effort))
+    imports = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and _absolute(node.module, node.level, engine) == module
+    ]
+    assert [ast.unparse(node) for node in imports] == [f"from {module} import {helper}"]
+    assert imports[0] in local_nodes
+    assert [
+        ast.unparse(node)
+        for node in local_nodes
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == helper
+    ] == [f"{helper}(model_name)"]
 
 
 def test_the_agent_factory_imports_the_hub_providers_only_inside_functions():

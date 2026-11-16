@@ -10,10 +10,15 @@ that config's own default model. Over the resolved model's ceiling, that is a
 route, so each seam gets an arm here.
 """
 
+import subprocess
+import sys
+
 import pytest
 from pydantic import ValidationError
 
 from lionagi.service.providers import codex_unset_effort_default, reclamp_effort_for_model
+from tests._core_imports import ROOT
+from tests.service.test_hub_absent_characterization import _run_blocked
 
 
 @pytest.fixture
@@ -23,6 +28,16 @@ def global_ultra(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture
+def refuse_codex_compatibility_lookup(monkeypatch):
+    from lionagi.service.connections import _provider_compat
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("A selected Codex adapter called the compatibility lookup")
+
+    monkeypatch.setattr(_provider_compat, "codex_unset_effort_1x", unexpected_lookup)
 
 
 class TestTheStudioOperatorSeam:
@@ -49,7 +64,9 @@ class TestTheStudioOperatorSeam:
 
 
 class TestTheGenericAgentFactorySeam:
-    async def test_an_effortless_codex_spec_carries_the_clamped_default(self, global_ultra):
+    async def test_an_effortless_codex_spec_carries_the_clamped_default(
+        self, global_ultra, refuse_codex_compatibility_lookup
+    ):
         from lionhub.agent.factory import create_agent
         from lionhub.agent.spec import AgentSpec
 
@@ -106,7 +123,9 @@ class TestTheRequestModelBackstop:
     resolves an unset effort as well.
     """
 
-    def test_an_effortless_request_carries_the_clamped_global_default(self, global_ultra):
+    def test_an_effortless_request_carries_the_clamped_global_default(
+        self, global_ultra, refuse_codex_compatibility_lookup
+    ):
         from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", model="gpt-5.3-codex-spark")
@@ -393,3 +412,84 @@ class TestTheHelperItself:
 
     def test_a_provider_qualified_model_resolves_to_its_bare_name(self, global_ultra):
         assert codex_unset_effort_default("codex/gpt-5.3-codex-spark") == "xhigh"
+
+    def test_injected_reader_and_public_fallback_without_hub(self, tmp_path):
+        report = _run_blocked(
+            """
+from lionagi.service.providers import (
+    _codex_unset_effort_from_reader,
+    codex_unset_effort_default,
+)
+
+model = "gpt-5.3-codex-spark"
+replacement = {}
+calls = []
+
+
+def read_global_effort(env):
+    calls.append(env)
+    return "ULTRA"
+
+
+derived = [
+    _codex_unset_effort_from_reader(model, None, env, read_global_effort=read_global_effort)
+    for env in (None, replacement)
+]
+pinned = [
+    _codex_unset_effort_from_reader(
+        model, {"model_reasoning_effort": pin}, replacement, read_global_effort=read_global_effort
+    )
+    for pin in ("medium", None)
+]
+public_pinned = codex_unset_effort_default(model, {"model_reasoning_effort": None})
+try:
+    codex_unset_effort_default(model)
+except ModuleNotFoundError as exc:
+    missing_module = exc.name
+else:
+    missing_module = None
+
+print(json.dumps({
+    "derived": derived,
+    "pinned": pinned,
+    "reader_received_original_envs": len(calls) == 2 and calls[0] is None and calls[1] is replacement,
+    "public_pinned": public_pinned,
+    "public_missing_module": missing_module,
+}))
+""",
+            tmp_path,
+        )
+
+        assert report == {
+            "derived": ["xhigh", "xhigh"],
+            "pinned": [None, None],
+            "reader_received_original_envs": True,
+            "public_pinned": None,
+            "public_missing_module": "lionhub",
+        }
+
+    def test_cold_public_default_loads_only_the_codex_config_reader(self, global_ultra):
+        code = """
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+sys.path[:0] = [str(root), str(root / "lionhub" / "src")]
+from lionagi.service.providers import codex_unset_effort_default
+
+assert "lionhub" not in sys.modules
+assert codex_unset_effort_default("gpt-5.3-codex-spark") == "xhigh"
+assert "lionhub.providers.openai._codex_profile" in sys.modules
+assert "lionhub.providers.manifest" not in sys.modules
+assert "lionhub.providers.openai.codex" not in sys.modules
+"""
+        proc = subprocess.run(  # noqa: S603 -- this interpreter, a fixed script
+            [sys.executable, "-c", code, str(ROOT)],
+            cwd=global_ultra,
+            env={"CODEX_HOME": str(global_ultra), "HOME": str(global_ultra)},
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
