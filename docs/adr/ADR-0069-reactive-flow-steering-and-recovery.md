@@ -388,9 +388,13 @@ Exact persistence semantics:
 - Serialization failures leave the previous target in place; the current caller suppresses some
   checkpoint task exceptions at drain time, so checkpoint freshness is not guaranteed when a
   write fails.
-- `load_checkpoint()` performs `json.loads(path.read_text())`. The current resume path does not
-  reject an unsupported `version` field explicitly; version 2 is descriptive, not a complete
-  migration gate (`lionhub/src/lionhub/orchestration/flow/checkpoint.py::load_checkpoint`).
+- `lionhub/src/lionhub/orchestration/flow/checkpoint.py::load_checkpoint` uses
+  `lionagi/_checkpoint_version.py::load_legacy_checkpoint_json` to read single-file snapshots.
+  An explicit top-level `version` must be the integer 1 or 2. An omitted `version` retains legacy
+  parsing. An unsupported value or duplicate top-level `version` key raises
+  `lionagi/_checkpoint_version.py::UnsupportedCheckpointVersionError`, which the flow loader wraps
+  as `lionhub/src/lionhub/orchestration/flow/checkpoint.py::UnsupportedFlowCheckpointVersionError`
+  before graph construction.
 
 `CHECKPOINT_VERSION = 2` (`lionagi/_checkpoint_version.py::CHECKPOINT_VERSION`) is the current shape: 2 adds
 the spawn-reconstruction fields resume reads (`operation`, `assignee`, `instruction`, `parent_id`,
@@ -859,7 +863,7 @@ The writer may batch ordered records and omit identical normalized context. Capt
 
 The proposed format aims to reduce bytes for the specified workload and bound journal replay between compactions; the actual byte reduction remains subject to the measured acceptance gate. It preserves the v2 process-termination recovery boundary while changing atomic visibility from one file to the loader's coherent logical state and adding explicit file synchronization. It introduces handle-based file ownership, cached immutable context representations, stricter format validation, explicit error propagation and a visible recovery report. It does not promise power-loss durability, O(delta) detection for untracked mutable context, arbitrary Python-object restoration, immutable outcome history, artifact verification, or exactly-once external effects.
 
-When integrating this amendment, mark the earlier D4 as the v2 description and update its summary row and related statements consistently. In `docs/adr/ADR-0069-reactive-flow-steering-and-recovery.md`, the full-snapshot decision at line 47, absence-of-fsync statement at line 59, D4 at line 289, single-file argument at line 651, consequences at line 663, version-dispatch delta at line 688, and rejected journal alternative at line 723 must point to this amendment for v3. The version-dispatch delta remains open until implemented; the new proposal must not mark it complete. The journal alternative becomes the selected v3 design, while Amendment 1's independent output/artifact settlement questions remain unchanged.
+When integrating this amendment, mark the earlier D4 as the v2 description and update its summary row and related statements consistently. In `docs/adr/ADR-0069-reactive-flow-steering-and-recovery.md`, the full-snapshot decision at line 47, absence-of-fsync statement at line 59, D4 at line 289, single-file argument at line 651, consequences at line 663, version-dispatch delta at line 688, and rejected journal alternative at line 723 must point to this amendment for v3. D4 records the shipped single-file version guard. Journal-aware version dispatch and the supported-reader rollout are pending under this amendment. The journal alternative becomes the selected v3 design, while Amendment 1's independent output/artifact settlement questions remain unchanged.
 
 ## Amendment 3 (2026-10-26) — resumable graceful flow deadlines
 
@@ -945,12 +949,10 @@ version or implement the journal.
    no new journal record kind is introduced here. The explicit version dispatch, supported-reader
    rollout, acknowledgement, identity and recovery-report requirements remain Amendment 2's.
 
-The shipped old v2 `json.loads` loader does not enforce `version`. Therefore a numeric v3 stamp
-does not protect that old binary, and a pending record found only in a journal cannot guard a
-base-only read. V2 refusal guards do **not** make old v2 readers compatible with v3. All common
-readers must be updated before enabling v3 output as Amendment 2 requires; an incidental extra
-field rejection is not a supported v3 reader. Until that implementation exists, guarded-v2
-readers fail closed on v3 rather than inventing journal replay.
+Binaries released before the single-file version guard used plain `json.loads` and ignored
+`version`. A base-only read by those binaries omits pending records stored only in the journal.
+The current single-file reader rejects v3 before graph construction. Amendment 2 requires every
+common reader to recover a coherent base and journal before v3 output is enabled.
 
 ### Verification requirements
 
@@ -999,7 +1001,7 @@ artifact/output questions by recorded status alone.
 | 1 | Add a terminal reactive-flow cancel control; acceptance: after acknowledgement, no new operation starts and the run persists a cancelled terminal state. | M | (filled at issue-open time) |
 | 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing or empty (presence and non-empty size, not content), it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles, and a reactively spawned node's contract is persisted when that node completes rather than only after `run_dag`, where the spawned-entry extension is written today (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag`). Depends on delta 9 — without the original run's artifact root every declared path resolves against a root that never held the artifact, so presence cannot be checked until row 9 lands. | M | #2015 |
 | 3 | Persist predecessor conversation state needed by `inherit_context`; acceptance: eligible resumed operations receive the same inherited conversation without requiring degraded mode. | L | #2015 |
-| 4 | Enforce checkpoint-version compatibility and report unsupported versions before graph construction; acceptance: a checkpoint with an unknown version fails with a typed migration/compatibility error. | S | (filled at issue-open time) |
+| 4 | Single-file checkpoint version compatibility is implemented. Integer versions 1 and 2 and unversioned legacy snapshots proceed to the normal resume checks. An unsupported or duplicate top-level `version` raises `lionhub/src/lionhub/orchestration/flow/checkpoint.py::UnsupportedFlowCheckpointVersionError` before graph construction. Amendment 2 tracks journal-aware v3 dispatch and rollout. | S | #4252 |
 | 5 | Add operator recovery for controls stranded in `applying`; acceptance: status distinguishes definitely-applied, definitely-not-applied, and indeterminate messages without automatic duplicate injection. | M | (filled at issue-open time) |
 | 6 | Give a completed node's settlement an independent recorded result identity, for the nodes delta 2's artifact check cannot cover; acceptance: a checkpoint records a `result_digest` beside the entry's `status` and `response` when the node completes, so a completed node that declared no artifact contract is re-checked from that digest instead of being trusted from its recorded `status`. The bytes hashed are the node's own recorded result — the `<id>.md` file `_record_result` writes into the node's artifact directory once the DAG finishes (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._record_result`), which today lands only after `run_dag`, not at node completion. | L | (filled at issue-open time) |
 | 7 | Make the artifact check byte-level with a per-artifact completion digest, and recompute the dependent closure when a value a consumer already read must be re-produced; acceptance: a checkpoint records a completion digest per declared artifact, so a result whose bytes changed under a preserved path, size, and mtime is detected, and a dependent of a re-run producer is never left reading a stale value. Depends on delta 2 — the digest is compared against artifacts row 2 has already shown are present; the size-and-mtime check alone narrows the window rather than closing it. | L | (filled at issue-open time) |
