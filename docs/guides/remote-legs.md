@@ -122,6 +122,20 @@ nothing more. A caller without it gets 401 from every route except `/health`.
   other locations listed under `child_sandbox` in the CLI reference) apply to every leg; a repository's settings cannot relax them, and no profile exemption
   is accepted.
 
+## What a leg host does not run
+
+A leg-host daemon starts neither the scheduler engine nor the transcript mirror. The account's
+schedules do not fire there, and its other Claude Code and Codex sessions are not copied into the
+host's store. The boot log says so in one line each:
+
+```text
+Leg host: the scheduler engine is not started
+Leg host: the transcript mirror is not started
+```
+
+Without the scheduler engine its periodic sweeps do not run either. A leg records its own end
+when it exits, fails or is cancelled.
+
 ## What a leg host does not return
 
 - **The result is the leg's final output only**: the last 1 MiB of its standard output, served by
