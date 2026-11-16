@@ -6,8 +6,12 @@ For the relationship between execution and stored definitions, see
 [the Studio model](../concepts/studio-model.md).
 
 Each section names the implementation checked for its available actions.
-UI source paths below are relative to `apps/studio/frontend/src/`; service
-paths are relative to `lionagi/studio/services/`. Navigation labels follow
+UI source paths below are relative to `apps/studio/frontend/src/`. Service
+files are named without a directory: `admin.py`, `engine_runs.py`, `invocations.py`,
+`run_resume.py`, `runs.py`, `schedules.py` and `sessions.py` are in
+`lionhub/src/lionhub/serve/daemon/services/`, `db_maintenance.py` is in
+`lionhub/src/lionhub/orchestration/scheduler/`, and the others are in
+`lionagi/studio/services/`. Navigation labels follow
 `messages/en.json` and `components/shell/IconRail.tsx`. Backend area names
 refer to service registrations; the running daemon's generated schema is the
 reference for exact requests and responses.
