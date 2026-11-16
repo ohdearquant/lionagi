@@ -45,7 +45,7 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
 # landing in model/provider fields.
 _CREDENTIAL_RE = re.compile(
     r"(?i)^(?:bearer[\s_-]|basic[\s_-]|sk-|sk_|pk-|pk_|rk_|ak_|api[_-]?key|"
-    r"token[_-]|secret[_-]|ghp_|gho_|ghs_|ghr_|github_pat_|xox[baprs]-)"
+    r"token[_-]|secret[_-]|ghp_|gho_|ghs_|ghr_|github_pat_|xox[baprs]-|gsk_|hf_|aiza|akia)"
 )
 
 
