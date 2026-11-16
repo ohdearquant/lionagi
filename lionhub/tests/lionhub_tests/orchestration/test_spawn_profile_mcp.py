@@ -346,9 +346,88 @@ def test_readable_tool_setting_after_prompt_text_is_refused(key, declaration):
     text = f"Prompt.\n\n---\n{declaration.format(key=key)}\n---\nEnd."
     with pytest.raises(
         ConfigurationError,
-        match=rf"--- block on line 3.*{key} declaration.*move the block to the top of the file",
+        match=rf"--- block on line 3.*{key} declaration on line 4.*move the setting",
     ):
         _parse_profile("reviewer", text)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "line"),
+    [
+        ("\n\n---\nmodel: example\n---\n\nReview.\n---\n", 10),
+        ("---\n{}\n---\nReview.\n---\n", 7),
+        ("\nReview ---\n\n", 5),
+    ],
+    ids=["after-leading-settings", "after-empty-mapping", "prose-opener"],
+)
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "allowed_tools: [Example]",
+        r'"allowed\u005ftools": [Example]',
+        "defaults: &defaults {allowed_tools: [Example]}\n<<: *defaults",
+    ],
+    ids=["plain-key", "escaped-key", "merged-key"],
+)
+def test_misplaced_readable_tool_setting_names_its_source_line(prefix, line, declaration):
+    text = f"{prefix}# A comment before the setting.\n{declaration}\n---\nEnd."
+    with pytest.raises(ConfigurationError, match=rf"allowed_tools declaration on line {line}\b"):
+        _parse_profile("reviewer", text)
+
+
+def test_tools_prose_after_a_rule_names_its_source_line():
+    text = "Review.\n---\n\n# A comment before the prose.\ntools: Use Read to open files.\n---"
+    with pytest.raises(
+        ConfigurationError, match=r"--- block on line 2.*tools declaration on line 5"
+    ):
+        _parse_profile("reviewer", text)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "line"),
+    [
+        ("\n---\n", 4),
+        ("---\nmodel: example\n---\nReview.\n---\n", 7),
+        ("\nReview ---\n\n", 5),
+        ("Review.\n---\n", 4),
+    ],
+    ids=["leading", "after-leading-settings", "prose-opener", "after-prompt"],
+)
+@pytest.mark.parametrize(
+    ("spelling", "supported"),
+    [("allowed-tools", "allowed_tools"), ("disallowed-tools", "disallowed_tools")],
+)
+def test_hyphenated_tool_setting_names_the_supported_spelling(prefix, line, spelling, supported):
+    text = f"{prefix}# A comment before the setting.\n{spelling}: [Example]\n---\nEnd."
+    with pytest.raises(
+        ConfigurationError, match=rf"'{spelling}' on line {line}\b.*use '{supported}'"
+    ):
+        _parse_profile("reviewer", text)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "A plain example:\nallowed_tools: [Example]",
+        "A fenced example:\n```yaml\n---\nallowed_tools: [Example]\n---\n```\nEnd.",
+        "An unclosed fence:\n```yaml\n---\nallowed_tools: [Example]\n---\nEnd.",
+        "A nested list:\n---\n- - allowed_tools: [Example]\n---\nEnd.",
+        "A scalar example:\n---\ndescription: |\n  allowed_tools: [Example]\n---\nEnd.",
+    ],
+    ids=["plain", "fenced", "unclosed-fence", "nested-list", "scalar"],
+)
+def test_tool_examples_leave_valid_leading_settings_and_prompt_intact(body):
+    text = f"---\nallowed_tools: [Read]\n---\n{body}"
+    profile = _parse_profile("reviewer", text)
+    assert profile.extra == {"allowed_tools": ["Read"]}
+    assert profile.raw_body == body
+
+
+def test_tool_example_as_a_scalar_after_a_prose_opener_loads():
+    text = "Review ---\ndescription: |\n  allowed_tools: [Example]\n---\nEnd."
+    profile = _parse_profile("reviewer", text)
+    assert profile.extra == {}
+    assert profile.raw_body == text
 
 
 @pytest.mark.parametrize(
