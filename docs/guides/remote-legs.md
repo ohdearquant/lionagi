@@ -114,9 +114,9 @@ nothing more. A caller without it gets 401 from every route except `/health`.
   with the daemon. lionagi then removes every credential-named variable other than the provider's
   own login from the Claude Code process it starts, on any machine. Claude Code withholds
   `CLAUDE_CODE_OAUTH_TOKEN` from the processes it starts (observed with Claude Code 2.1.325), so
-  the Claude login is the one credential the leg's Claude Code holds, and the commands it runs do
-  not. Measured with Claude Code 2.1.325 on a leg host started with both
-  `CLAUDE_CODE_OAUTH_TOKEN` and `LIONAGI_STUDIO_AUTH_TOKEN` set:
+  the Claude login is the one credential the leg's Claude Code holds, and it is not in the
+  environment of the commands it runs. Measured with Claude Code 2.1.325 on a leg host started
+  with both `CLAUDE_CODE_OAUTH_TOKEN` and `LIONAGI_STUDIO_AUTH_TOKEN` set:
 
   - The Claude login reaches the leg's Claude Code through that variable. The same host started
     without it ran a leg that answered "Not logged in", and with it the leg completed.
@@ -128,8 +128,13 @@ nothing more. A caller without it gets 401 from every route except `/health`.
     /usr/bin/python3 -I -c "import os; print('HOME' in os.environ)"                       True
     ```
 
-    The leg's profile allowed that one command form (`allowed_tools:
-    ["Bash(/usr/bin/python3 -I -c:*)"]`), which a non-interactive leg otherwise asks approval for.
+    The leg's profile allowed these commands with `allowed_tools:
+    ["Bash(/usr/bin/python3 -I -c:*)"]`; a non-interactive leg otherwise asks approval for them.
+    That rule matches by prefix, so it admits any Python program passed to `-c`. Put it on a
+    probe profile used only for this check, never on a working leg profile.
+
+    These commands read the environment only. Whether a leg can read a login from a file or the
+    keychain depends on the child sandbox below, which this measurement does not cover.
   - In that leg, Claude Code refused `test -n "$CLAUDE_CODE_OAUTH_TOKEN"` before running it ("A
     variable in this command can't be checked before it runs"), so a check in that form records
     no reading at all, neither present nor absent.
