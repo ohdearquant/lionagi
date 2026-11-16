@@ -996,10 +996,21 @@ def test_help_for_a_spawn_verb_returns_a_fingerprint(submitted):
     assert answer["schema_fingerprint"] == call(help="agent.submit")["schema_fingerprint"]
 
 
-@pytest.mark.parametrize("verb", ["agent.submit", "flow.submit", "fanout.submit", "play.submit"])
+@pytest.mark.parametrize("verb", ["agent.submit", "flow.submit", "fanout.submit"])
 def test_help_for_every_spawn_verb_states_the_retry_rule(submitted, verb):
-    """play.submit quotes no fingerprint without a playbook, but the retry rule is the same."""
-    assert call(help=verb)["help_usage"] == dispatch._SPAWN_RETRY_RULE
+    answer = call(help=verb)
+    assert answer["schema_fingerprint"]
+    assert answer["help_usage"] == dispatch._SPAWN_RETRY_RULE
+
+
+def test_help_without_the_argument_a_fingerprint_needs_says_to_pass_it(submitted):
+    """play.submit quotes no fingerprint without a playbook, so its help says how to get one."""
+    answer = call(help="play.submit")
+    assert "schema_fingerprint" not in answer
+    assert answer["schema_fingerprint_varies_with"] == ["playbook"]
+    assert answer["help_usage"] == (
+        dispatch._FINGERPRINT_NEEDS_ARGUMENT + dispatch._SPAWN_RETRY_RULE
+    )
 
 
 @pytest.mark.parametrize("verb", ["job.status", "job.wait", "job.kill", "server.info"])
@@ -1052,6 +1063,24 @@ def test_a_stale_fingerprint_is_refused_and_says_it_is_the_schema_that_moved(sub
     assert error["schema"] == help_answer["schema"]
     # Both refusal branches state the same rule; the stale one used to drop its condition.
     assert dispatch._SPAWN_RETRY_RULE in error["message"]
+    assert "changed since that schema was read" in error["message"]
+    assert submitted == {}
+
+
+def test_a_refusal_points_at_an_earlier_error_of_another_kind_holding_the_schema(submitted):
+    fingerprint = call(help="agent.submit")["schema_fingerprint"]
+    bad_args = {
+        "op": "agent.submit",
+        "args": {"query": ["m"], "prompt": "work", "not_a_parameter": 1},
+        "schema_fingerprint": fingerprint,
+    }
+    missing = {"op": "agent.submit", "args": {"query": ["m"], "prompt": "work"}}
+    first, second = call(ops=[bad_args, missing])["ops"]
+    assert first["error"]["kind"] != "stale_schema"
+    assert first["error"]["schema"] == call(help="agent.submit")["schema"]
+    assert second["error"]["kind"] == "stale_schema"
+    assert "schema" not in second["error"]
+    assert second["error"]["schema_ref"] == {"op_index": 0, "schema_fingerprint": fingerprint}
     assert submitted == {}
 
 

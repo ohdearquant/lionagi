@@ -230,13 +230,18 @@ def _describe_fingerprint(
     entry["schema_fingerprint"] = schema_fingerprint(schema)
 
 
-# The one statement of how a caller recovers from a stale_schema refusal; spawn-verb
-# help, both refusal branches and docs/reference/mcp-server.md all say exactly this.
+# The one statement of how a caller recovers from a stale_schema refusal. Spawn-verb help
+# and both refusal branches carry this text; docs/reference/mcp-server.md states the rule.
 _SPAWN_RETRY_RULE = (
     "Send schema_fingerprint beside 'args'. If the server returns stale_schema and your "
-    "arguments match the schema it returns (error.schema on the first such refusal in a "
-    "response; later identical refusals carry error.schema_ref naming the op_index that "
-    "holds it), retry once with error.detail.schema_fingerprint."
+    "arguments match the schema it returns (error.schema, or error.schema_ref naming the "
+    "op_index whose error already carries that schema in the same response), retry once "
+    "with error.detail.schema_fingerprint."
+)
+# Help for a verb whose fingerprint depends on an argument help was not given.
+_FINGERPRINT_NEEDS_ARGUMENT = (
+    "This verb's fingerprint depends on the parameters in schema_fingerprint_varies_with; "
+    "pass them to help to get the fingerprint its ops carry. "
 )
 
 
@@ -1113,7 +1118,11 @@ def _help(target: Any) -> dict[str, Any]:
     answer: dict[str, Any] = {"verb": name, "schema": schema}
     if verb.executor == "spawn":
         _describe_fingerprint(answer, verb, schema, playbook=playbook)
-        answer["help_usage"] = _SPAWN_RETRY_RULE
+        answer["help_usage"] = (
+            _SPAWN_RETRY_RULE
+            if "schema_fingerprint" in answer
+            else _FINGERPRINT_NEEDS_ARGUMENT + _SPAWN_RETRY_RULE
+        )
     return answer
 
 

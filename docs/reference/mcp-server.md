@@ -140,11 +140,13 @@ exclusion.
 A spawn verb's help also returns a `schema_fingerprint`, which that verb's ops
 must carry beside `args`. A `stale_schema` refusal includes the current value at
 `error.detail.schema_fingerprint` and the schema it checked at `error.schema`.
-When several ops in one response are refused against the same schema, only the
-first carries it; each later one carries `error.schema_ref`, the `op_index` of
-the op holding the copy and that schema's fingerprint. If the arguments match
-that schema, retry the op once with the returned fingerprint. Spawn-verb help
-states the same rule in `help_usage`.
+When an earlier op's error in the same response already carries that schema,
+whatever the error kind, the refusal carries `error.schema_ref` instead: the
+`op_index` of the op holding the copy and that schema's fingerprint. If the
+arguments match that schema, retry the op once with the returned fingerprint.
+Spawn-verb help states the same rule in `help_usage`. When the verb's
+fingerprint depends on an argument help was not given (`play.submit` without a
+playbook), `help_usage` says to pass it first.
 `help={"verb": "<verb>", "playbook": "<name>"}` resolves that playbook's own
 declared arguments into the schema.
 
