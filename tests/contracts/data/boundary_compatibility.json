@@ -2677,6 +2677,7 @@
     ],
     "lionagi/service/accounts/_router.py": [
       "AccountRouter",
+      "RoutedCacheEvidence",
       "RouterAttempt",
       "StreamTextRedactor",
       "StreamingSecretRedactor",
@@ -4322,7 +4323,8 @@
     "lionhub/src/lionhub/providers/anthropic/_prompt_cache.py": [
       "Point",
       "place",
-      "points"
+      "points",
+      "routed_cache_evidence"
     ],
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "ClaudeCodeCLIEndpoint",
