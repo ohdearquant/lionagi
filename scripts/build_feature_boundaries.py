@@ -42,15 +42,10 @@ MODULE_RULES = {
     "lionagi.service.connections._provider_compat": ("sdk", "provider_registry"),
     "lionagi.service.types": ("contracts", "provider_contracts"),
     "lionagi.adapters": ("adapter", "data_adapters"),
-    "lionagi.agent": ("adapter", "agent"),
-    "lionhub.agent.casts": ("adapter", "casts"),
     "lionagi.hooks": ("adapter", "hooks"),
     "lionagi.plugins": ("adapter", "plugins"),
     "lionagi.state": ("adapter", "state"),
-    "lionagi.tools": ("adapter", "tools"),
-    "lionagi.tools.base": ("sdk", "tools"),
     "lionagi.testing": ("adapter", "testing"),
-    "lionhub.serve.cli": ("root", "cli"),
     "lionagi.studio": ("root", "studio"),
 }
 
@@ -82,28 +77,7 @@ ROOT_MODULES = {
 # Migration notes identify a destination, not a current owner. Mixed modules
 # keep their current owner; the destination names the extracted portion.
 TARGET_RULES = {
-    "lionagi.agent": "lionhub (destination not yet recorded)",
-    "lionhub.agent.casts": "lionhub.agent.casts",
-    "lionagi.tools": "lionhub (destination not yet recorded)",
-    "lionhub.serve.cli": "lionhub.serve.cli",
-    "lionhub.serve.cli.orchestrate._orchestration": "lionhub.orchestration.runs",
-    "lionhub.serve.cli.status": "lionhub.orchestration.inspection",
-    "lionhub.serve.cli.kill": "lionhub.orchestration.kill",
-    "lionhub.serve.cli.team": "lionhub.orchestration.team",
-    "lionhub.serve.cli.engine": "lionhub.orchestration.engine_definitions",
-    "lionhub.serve.cli.mirror": "lionhub.serve.mirror",
-    "lionhub.orchestration.scheduler": "lionhub.orchestration.scheduler",
     "lionagi.studio.cli": "lionhub.serve.cli",
-    "lionagi.tools.khive_injection": "lionhub (destination not yet recorded)",
-    "lionagi.tools.context.context": "lionhub (destination not yet recorded)",
-    "lionagi.tools.code.bash": "lionhub (destination not yet recorded)",
-    "lionagi.tools.sandbox_backend": "lionhub (destination not yet recorded)",
-    "lionagi.tools.daytona": "lionhub (destination not yet recorded)",
-}
-
-# Mixed modules retain their existing owner while multiple portions move.
-ADDITIONAL_TARGETS = {
-    "lionhub.serve.cli.orchestrate": ["lionhub.orchestration.flow.parsing"],
 }
 
 REQUIREMENT_GROUPS = {
@@ -169,8 +143,6 @@ def main(argv=None):
         target = match(TARGET_RULES, name)
         if target:
             entry["target_owner"] = target
-        if name in ADDITIONAL_TARGETS:
-            entry["additional_targets"] = ADDITIONAL_TARGETS[name]
         modules[name] = entry
     requirements = {}
     for (layer, owner), names in REQUIREMENT_GROUPS.items():
