@@ -1444,7 +1444,7 @@ async def ndjson_from_cli(
     engine: str | None = None,
     workload: str = DEFAULT_WORKLOAD,
     secret_fill_skip: frozenset[str] = frozenset(),
-    auth_env: Iterable[str] | None = frozenset(),
+    auth_env: Iterable[str] | Callable[[Mapping[str, str]], Iterable[str]] | None = frozenset(),
     _prepare_argv: Callable[[dict[str, str]], list[str]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
@@ -1459,7 +1459,9 @@ async def ndjson_from_cli(
     must not fill into this child, on top of the routed account key names; empty
     leaves the fill as it is. ``auth_env`` names the variables the provider reads its own
     login from; every other credential-named variable is removed from the child's environment,
-    and so from every command the child runs. See
+    and so from every command the child runs. A callable ``auth_env`` is given the child's
+    environment after the secret fill, for a provider whose login names depend on what that
+    environment holds. See
     docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # An agent lionagi started cannot start another through lionagi, by its shell or by an
@@ -1498,7 +1500,8 @@ async def ndjson_from_cli(
     # or inherited; the lookup declares where a value comes from, not which child may hold it. ``auth_env=None`` is the one provider whose login names are
     # not yet known here (see its call site).
     if auth_env is not None:
-        withheld.update(_withhold_credentials(spawn_env, frozenset(auth_env), declared))
+        names = auth_env(spawn_env) if callable(auth_env) else auth_env
+        withheld.update(_withhold_credentials(spawn_env, frozenset(names), declared))
     # Every agent lionagi starts carries a depth, so a lionagi it runs refuses to start
     # another (refuse_nested_agent). Set over whatever the environment held: only a
     # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).

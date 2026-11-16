@@ -2947,16 +2947,18 @@ def _provider_env_keys(providers: Any) -> set[str]:
     }
 
 
-def _codex_auth_env(plain: _PlainRequest) -> frozenset[str]:
+def _codex_auth_env(plain: _PlainRequest, env: Mapping[str, str]) -> frozenset[str]:
     """The variables a codex child may read its key from: ``OPENAI_API_KEY``, every ``CODEX_*``
     name, and the ``env_key`` of every model provider the user config or this run's ``-c``
     overrides define. A profile file's providers arrive as overrides. The selected provider is
-    not resolved: a key one of these names is the operator's own, wherever it is defined."""
+    not resolved: a key one of these names is the operator's own, wherever it is defined.
+
+    *env* is the child's environment after the secret fill, so a ``CODEX_HOME`` the lookup
+    supplies is kept and its config is the one read."""
     names = {"OPENAI_API_KEY"}
-    source = os.environ if plain.env is None else plain.env
-    names |= {name for name in source if name.upper().startswith("CODEX_")}
+    names |= {name for name in env if name.upper().startswith("CODEX_")}
     try:
-        config = _read_codex_config(codex_home_for_env(plain.env) / "config.toml") or {}
+        config = _read_codex_config(codex_home_for_env(env) / "config.toml") or {}
     except ValueError:
         # An unreadable config is codex's own refusal to make; this child keeps no key it names.
         config = {}
@@ -3017,7 +3019,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             on_spawn=request.on_spawn,
             engine="codex",
             workload=plain.workload,
-            auth_env=_codex_auth_env(plain),
+            auth_env=functools.partial(_codex_auth_env, plain),
             **({"_prepare_argv": prepare_argv} if prepare_argv is not None else {}),
         )
     ) as stream:

@@ -558,7 +558,8 @@ Codex reads a key from the variable a model provider's `env_key` names, so a cod
 `OPENAI_API_KEY`, every `CODEX_*` variable, and the `env_key` of every model provider defined in
 `CODEX_HOME/config.toml` or in the run's own `-c` overrides (a config profile file's providers
 arrive as overrides). The selected provider is not resolved: every key one of those names is the
-operator's own.
+operator's own. The names are read from the child's environment after the secret fill, so a
+`CODEX_HOME` the lookup supplies is kept and its config is the one read.
 
 There is no setting that turns the removal off. Removed values are still given to the log
 redactor.
