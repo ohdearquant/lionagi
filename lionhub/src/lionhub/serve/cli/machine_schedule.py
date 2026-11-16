@@ -56,11 +56,15 @@ def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) 
     url = f"{_studio_url()}/api/schedules{path}"
     data = json.dumps(body).encode() if body is not None else None
     declares_json = data is not None or method.upper() not in {"GET", "HEAD", "OPTIONS"}
-    request = urllib.request.Request(  # noqa: S310 — fixed http(s) Studio base URL
-        url,
-        data=data,
-        method=method,
-        headers={"Content-Type": "application/json"} if declares_json else {},
+    from lionhub.orchestration.schedule.parsing import with_studio_bearer
+
+    request = with_studio_bearer(
+        urllib.request.Request(  # noqa: S310 — fixed http(s) Studio base URL
+            url,
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json"} if declares_json else {},
+        )
     )
     started_at = time.monotonic()
     try:
@@ -126,7 +130,12 @@ def _http_message(code: int, detail: str) -> str:
             detail = parsed["detail"]
     except json.JSONDecodeError:
         pass
-    return f"Studio refused with HTTP {code}: {detail}"
+    message = f"Studio refused with HTTP {code}: {detail}"
+    if code == 401:
+        from lionhub.orchestration.schedule.parsing import STUDIO_UNAUTHORIZED_HINT
+
+        message = f"{message}. {STUDIO_UNAUTHORIZED_HINT}"
+    return message
 
 
 # ── argv, parsed by the parser the CLI itself builds ─────────────────────────

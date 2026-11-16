@@ -175,22 +175,31 @@ def _check_studio_daemon(url: str | None = None, timeout: float = 1.5) -> dict[s
     import urllib.request
 
     from lionagi.ln._ssrf import open_url
+    from lionhub.orchestration.schedule.parsing import STUDIO_UNAUTHORIZED_HINT, with_studio_bearer
 
     target = url or _STUDIO_READINESS_URL_DEFAULT
     try:
-        req = urllib.request.Request(target, method="GET")  # noqa: S310
+        req = with_studio_bearer(urllib.request.Request(target, method="GET"))  # noqa: S310
         with open_url(req, timeout=timeout) as resp:
             if resp.status != 200:
                 return _result("warn", f"Studio daemon at {target} returned HTTP {resp.status}")
             body = resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            return _result("warn", f"Studio daemon at {target}: {STUDIO_UNAUTHORIZED_HINT}")
+        return _unreachable(target, exc)
     except Exception as exc:  # noqa: BLE001 — connection refused, timeout, DNS, etc.
-        return _result(
-            "warn",
-            f"Studio daemon unreachable at {target} ({type(exc).__name__}: {exc}) — "
-            "optional; scheduled/agent-spawn actions that route through it will fail "
-            "until `li studio` is running.",
-        )
+        return _unreachable(target, exc)
     return _readiness_verdict(target, body)
+
+
+def _unreachable(target: str, exc: BaseException) -> dict[str, str]:
+    return _result(
+        "warn",
+        f"Studio daemon unreachable at {target} ({type(exc).__name__}: {exc}) — "
+        "optional; scheduled/agent-spawn actions that route through it will fail "
+        "until `li studio` is running.",
+    )
 
 
 def _check_lionagi_home(home: Path | None = None) -> dict[str, str]:

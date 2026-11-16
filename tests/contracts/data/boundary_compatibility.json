@@ -117,7 +117,8 @@
     "lionhub/src/lionhub/orchestration/schedule/parsing.py": [
       "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
       "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_URL\""
+      "os.environ.get:\"LIONAGI_STUDIO_URL\"",
+      "os.environ.get:STUDIO_TOKEN_ENV"
     ],
     "lionhub/src/lionhub/orchestration/schedule/timing.py": [
       "os.environ.get:\"TZ\"",
@@ -4087,7 +4088,8 @@
       "build_create_body",
       "build_quick_create_parser",
       "normalize_host",
-      "suggest_schedule_flag"
+      "suggest_schedule_flag",
+      "with_studio_bearer"
     ],
     "lionhub/src/lionhub/orchestration/schedule/timing.py": [
       "ScheduleTimezone",

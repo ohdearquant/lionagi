@@ -21,13 +21,37 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lionagi._log_channels import warn
 from lionagi.ln import now_utc
 from lionhub.orchestration.arguments import JsonArgument
 
+if TYPE_CHECKING:
+    import urllib.request
+
 _warned_api_suffix = False
+
+#: The variable a Studio daemon reads its bearer token from, and the one its CLI clients send.
+STUDIO_TOKEN_ENV = "LIONAGI_STUDIO_AUTH_TOKEN"  # noqa: S105 — a variable name, not a value
+
+#: What a client says when Studio answers 401: the variable to set, never its value.
+STUDIO_UNAUTHORIZED_HINT = (
+    f"Studio refused the request as unauthorized; set {STUDIO_TOKEN_ENV} to the token the "
+    "daemon was started with."
+)
+
+
+def with_studio_bearer(request: urllib.request.Request) -> urllib.request.Request:
+    """Add ``Authorization: Bearer <token>`` when ``LIONAGI_STUDIO_AUTH_TOKEN`` is set.
+
+    The header is added as an unredirected header, so urllib does not carry it to the
+    target of a redirect. An empty value counts as unset, as it does for the daemon.
+    """
+    token = os.environ.get(STUDIO_TOKEN_ENV)
+    if token:
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
+    return request
 
 
 def _url_authority(host: str) -> str:
