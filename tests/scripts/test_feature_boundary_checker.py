@@ -1,8 +1,10 @@
 """Static inventory and manifest validation tests."""
 
+import ast
 import json
 import re
 import subprocess
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -318,55 +320,71 @@ def test_moved_feature_boundaries_use_tracked_lionhub_destinations():
         assert _tracked_lionhub_module(root, tracked, target) is not None, target
 
 
-def _adr_0139_step_3_table(section, columns, label):
-    _, header, table = section.partition(columns)
-    assert header, f"ADR-0139 D2 {label} table is missing"
-    separator, *rows = table.partition("\n\n")[0].splitlines()
-    assert separator == "| --- | --- | --- |" and rows, (
-        f"ADR-0139 D2 {label} table has no data rows"
+def _adr_0139_step_3_section(root):
+    adr = root / "docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md"
+    _, heading, d2 = adr.read_text(encoding="utf-8").partition("\n### D2 — ")
+    assert heading, "ADR-0139 D2 heading is missing"
+    return d2.partition("\n### ")[0]
+
+
+def _adr_0139_step_3_table(section, columns):
+    header = "| " + " | ".join(columns) + " |"
+    lines = section.splitlines()
+    assert lines.count(header) == 1, f"ADR-0139 D2 requires exactly one {header}"
+    boundary = lines.index(header) + 1
+    separator = "| " + " | ".join("---" for _ in columns) + " |"
+    assert lines[boundary : boundary + 1] == [separator], (
+        f"ADR-0139 D2 invalid separator for {header}"
     )
-    return [[cell.strip() for cell in row.strip().strip("|").split("|", 2)] for row in rows]
+    rows = []
+    for row in lines[boundary + 1 :]:
+        if not row.strip():
+            break
+        cells = [cell.strip() for cell in row.strip().split("|")]
+        assert len(cells) == len(columns) + 2 and not (cells[0] or cells[-1]), (
+            f"ADR-0139 D2 invalid table row: {row}"
+        )
+        rows.append(cells[1:-1])
+    assert rows, f"ADR-0139 D2 table has no data rows: {header}"
+    return rows
+
+
+def _adr_0139_step_3_destinations(section):
+    rows = _adr_0139_step_3_table(
+        section,
+        (
+            "Source before relocation (line numbers are at `327665f3966cb66987c726a6059470e9791e9cce`)",
+            "Step-3 destination",
+            "Scope",
+        ),
+    )
+    destinations_by_source = {}
+    for source, destination, _ in rows:
+        path = re.match(r"`(lionagi/[\w/]+\.py)(?::[^`]+)?`(?:\s|$)", source)
+        target = re.fullmatch(r"`(lionhub(?:\.\w+)+)`", destination)
+        assert path and target, (
+            f"ADR-0139 D2 invalid source or destination: {source} | {destination}"
+        )
+        old = path[1].removesuffix(".py").replace("/", ".")
+        assert old not in destinations_by_source, f"duplicate ADR-0139 D2 source: {old}"
+        destinations_by_source[old] = target[1]
+    return destinations_by_source
 
 
 def test_adr_0139_step_3_destinations_match_moves_or_target_rules():
     root = builder.ROOT
-    adr = root / "docs/adr/ADR-0139-cli-package-location-and-console-script-ownership.md"
-    _, heading, d2 = adr.read_text(encoding="utf-8").partition("\n### D2 — ")
-    assert heading, "ADR-0139 D2 heading is missing"
-    section = d2.partition("\n### ")[0]
-    rows = _adr_0139_step_3_table(section, "| Step-3 destination | Scope |\n", "whole-module")
-    assert len(rows) == 17, (
-        f"ADR-0139 D2 specifies seventeen complete source modules; found {len(rows)}"
-    )
-
-    tracked = set(
-        subprocess.check_output(
-            ["git", "ls-files", "-z", "--", "lionagi", "lionhub/src/lionhub"],
-            cwd=root,
-            encoding="utf-8",
-        ).split("\0")
-    )
-    seen = {}
-    for row in rows:
-        assert len(row) == 3, f"invalid ADR-0139 D2 row: {row}"
-        source, destination, _ = row
-        path = re.match(r"`(lionagi/[\w/]+\.py)(?::[^`]+)?`(?:\s|$)", source)
-        target = re.fullmatch(r"`(lionhub(?:\.\w+)+)`", destination)
-        assert path and target, f"invalid ADR-0139 D2 source or destination: {row}"
-        original, expected = path[1], target[1]
-        old = original.removesuffix(".py").replace("/", ".")
-        assert old not in seen, f"duplicate ADR-0139 D2 source: {old}"
-        seen[old] = expected
-
+    section = _adr_0139_step_3_section(root)
+    destinations_by_source = _adr_0139_step_3_destinations(section)
+    tracked = _tracked_boundary_paths(root)
+    for old, expected in destinations_by_source.items():
         destinations = [move.new for move in _moved.MOVED if move.old == old]
         if destinations:
             assert destinations == [expected], f"{old}: ADR-0139 D2 requires {expected} in MOVED"
-            target_path = Path("lionhub/src", *expected.split("."))
-            assert any(
-                file.as_posix() in tracked and (root / file).is_file()
-                for file in (target_path.with_suffix(".py"), target_path / "__init__.py")
-            ), f"{expected}: ADR-0139 D2 destination file is missing or untracked"
+            assert _tracked_lionhub_module(root, tracked, expected) is not None, (
+                f"{expected}: ADR-0139 D2 destination file is missing or untracked"
+            )
         else:
+            original = old.replace(".", "/") + ".py"
             assert original in tracked and (root / original).is_file(), (
                 f"{old}: ADR-0139 D2 needs an exact MOVED entry or a tracked original file"
             )
@@ -374,31 +392,93 @@ def test_adr_0139_step_3_destinations_match_moves_or_target_rules():
                 f"{old}: ADR-0139 D2 requires an exact TARGET_RULES entry for {expected}"
             )
 
-    # The parent package moves separately. A descendant's exact route must be
-    # represented by the step-3 table even if the parent can resolve that name.
+    # The step-6 package move is separate. D2 must record every exact CLI descendant route.
     cli_moves = {move.old for move in _moved.MOVED if move.old.startswith("lionagi.cli.")}
-    unlisted = cli_moves - seen.keys()
+    unlisted = cli_moves - destinations_by_source.keys()
     assert not unlisted, f"Exact CLI routes missing from ADR-0139 D2: {sorted(unlisted)}"
 
-    shared = _adr_0139_step_3_table(
-        section, "| Step-3 public owner | Extraction; retained adapter |\n", "shared-definition"
+
+def _adr_0139_step_3_shared_hook(section):
+    rows = _adr_0139_step_3_table(
+        section, ("Source at this HEAD", "Step-3 public owner", "Extraction; retained adapter")
     )
-    assert len(shared) == 1 and len(shared[0]) == 3, "ADR-0139 D2 specifies one shared definition"
-    adapter, owner, extraction = shared[0]
-    assert re.match(r"`lionagi/cli/orchestrate/_orchestration\.py(?::[^`]+)?`", adapter), (
-        "ADR-0139 D2 must name the retained orchestration adapter"
+    assert len(rows) == 1, "ADR-0139 D2 specifies one shared definition"
+    historical_source, owner, extraction = rows[0]
+    historical = re.fullmatch(
+        r"`(lionagi/cli/orchestrate/_orchestration\.py):([1-9]\d*)@([0-9a-f]{8})` \(at `\3`\)",
+        historical_source,
     )
+    assert historical, "ADR-0139 D2 must pin the historical orchestration source"
+    extracted = re.search(
+        r"`register_branch_hook` is defined in `(lionagi/cli/_runs\.py):([1-9]\d*)@([0-9a-f]{8})`",
+        section,
+    )
+    assert extracted, "ADR-0139 D2 must pin the extracted hook definition"
+    declared_owner = re.fullmatch(r"`(lionhub(?:\.\w+)+)`", owner)
+    assert declared_owner, f"ADR-0139 D2 invalid hook owner: {owner}"
     assert extraction.startswith("`register_branch_hook`"), "ADR-0139 D2 must name the shared hook"
+    return historical.groups(), extracted.groups(), declared_owner[1]
 
-    from lionhub.serve.cli.orchestrate._orchestration import register_branch_hook
 
+def test_adr_0139_historical_shared_hook_pins_name_the_definitions():
+    root = builder.ROOT
+    shallow = subprocess.check_output(
+        ["git", "rev-parse", "--is-shallow-repository"], cwd=root, encoding="utf-8"
+    ).strip()
+    if shallow == "true":
+        pytest.skip("historic source pins require full Git history")
+
+    historical, extracted, _ = _adr_0139_step_3_shared_hook(_adr_0139_step_3_section(root))
+    for path, line, revision in (historical, extracted):
+        pin = f"{path}:{line}@{revision}"
+        source = subprocess.check_output(
+            ["git", "show", f"{revision}:{path}"], cwd=root, encoding="utf-8"
+        )
+        assert any(
+            isinstance(node, ast.FunctionDef)
+            and node.name == "register_branch_hook"
+            and node.lineno == int(line)
+            for node in ast.parse(source, filename=pin).body
+        ), f"{pin} does not define register_branch_hook"
+
+
+def test_adr_0139_retained_adapter_exports_the_declared_hook():
+    root = builder.ROOT
+    section = _adr_0139_step_3_section(root)
+    historical, extracted, declared_owner = _adr_0139_step_3_shared_hook(section)
+    old_adapter = historical[0].removesuffix(".py").replace("/", ".")
+    adapter_name = _moved.resolve(old_adapter)
+    assert adapter_name is not None, f"ADR-0139 D2 cannot resolve retained adapter {old_adapter}"
+    adapter_path = _tracked_lionhub_module(root, _tracked_boundary_paths(root), adapter_name)
+    assert adapter_path is not None, f"{adapter_name}: retained adapter is missing or untracked"
+
+    # Import through the adapter so a duplicate definition there cannot masquerade as a re-export.
+    adapter = import_module(adapter_name)
+    assert Path(adapter.__file__).resolve() == (root / adapter_path).resolve()
+    register_branch_hook = adapter.register_branch_hook
     actual_owner = register_branch_hook.__module__
-    assert owner == f"`{actual_owner}`", (
+    assert declared_owner == actual_owner, (
         f"ADR-0139 D2 must assign register_branch_hook to {actual_owner}"
     )
-    assert actual_owner == seen["lionagi.cli._runs"], (
+    assert register_branch_hook is import_module(declared_owner).register_branch_hook, (
+        f"{adapter_name} must re-export the same register_branch_hook object from {declared_owner}"
+    )
+    source_owner = extracted[0].removesuffix(".py").replace("/", ".")
+    assert actual_owner == _adr_0139_step_3_destinations(section)[source_owner], (
         "ADR-0139 D2 must assign register_branch_hook and its enclosing module the same owner"
     )
+
+
+def test_step_3_table_validates_a_complete_header_and_uses_its_width():
+    columns = ("Source", "Destination")
+    table = "| Source | Destination |\n| --- | --- |\n| before | after |"
+    assert _adr_0139_step_3_table(table, columns) == [["before", "after"]]
+    with pytest.raises(AssertionError, match="requires exactly one"):
+        _adr_0139_step_3_table(table.replace("Source", "Other"), columns)
+    with pytest.raises(AssertionError, match="invalid separator"):
+        _adr_0139_step_3_table(table.replace("| --- | --- |", "| --- | --- | --- |"), columns)
+    with pytest.raises(AssertionError, match="invalid table row"):
+        _adr_0139_step_3_table(table.replace("| before | after |", "| before |"), columns)
 
 
 def test_committed_inventory_matches_generator_and_rejects_hand_edit(tmp_path):
