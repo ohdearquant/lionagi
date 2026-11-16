@@ -251,8 +251,8 @@ async def test_each_provider_names_its_own_login_to_the_spawn(tmp_path, monkeypa
     monkeypatch.setattr(codex, "CODEX_CLI", "codex")
     seen = _capture_spawn_kwargs(monkeypatch, codex)
     await _drain(codex._ndjson_from_cli(codex.CodexCodeRequest(prompt="hi", repo=tmp_path)))
-    # Codex is the one provider whose login names are not resolved yet; it says so explicitly.
-    assert seen["auth_env"] is None
+    assert "OPENAI_API_KEY" in seen["auth_env"]
+    assert "GH_TOKEN" not in seen["auth_env"]
 
 
 @pytest.mark.asyncio
