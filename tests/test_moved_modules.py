@@ -1372,7 +1372,6 @@ def _provider_inventory() -> dict[str, list[str]]:
 # table changes when an edge is removed or a new one is added, never as a side effect.
 PROVIDER_INTERIM_EDGES = {
     # Every import here is inside a function (see the test of that below).
-    "service/accounts/_router.py": ["lionhub.providers.anthropic._prompt_cache"] * 2,
     "service/providers.py": ["lionhub.providers.openai._codex_profile"],
     # ``_MANIFEST_MODULE`` in the compatibility loader: the hub's manifest module, imported on
     # the first call that needs the default provider catalog.
