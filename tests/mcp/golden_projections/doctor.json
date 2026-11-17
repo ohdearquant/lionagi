@@ -9,11 +9,6 @@
         "description": "Emit JSON instead of plain text.",
         "type": "boolean",
         "x-flag": "--json"
-      },
-      "probe_anthropic_account": {
-        "description": "Send one billed request on a named account blocked for low credit or its spend limit. Lift its block only on a 2xx response. Runs instead of the ordinary environment checks, and only from an interactive terminal.",
-        "type": "string",
-        "x-flag": "--probe-anthropic-account"
       }
     },
     "title": "doctor",
