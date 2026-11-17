@@ -1551,6 +1551,14 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
                 "fix the frontmatter to proceed"
             )
 
+    def refuse_misplaced_tools(block: str, reads: bool, document: Any, opening: int) -> None:
+        if reads:
+            _refuse_readable_tool_settings(
+                name, block, document, line_offset=line_offset + opening + 1, misplaced=True
+            )
+        else:
+            refuse_unread_tool_settings(block, key_lines_only=True)
+
     def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
         if (reads and isinstance(document, dict) and "mcp" in document) or (
             not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M)
@@ -1593,12 +1601,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
                 reads, document = _read_profile_settings(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)
                 declared = set(_FLAG_KEY_LINE.findall(block))
-                if not reads:
-                    refuse_unread_tool_settings(block, key_lines_only=True)
-                else:
-                    _refuse_readable_tool_settings(
-                        name, block, document, line_offset=line_offset + opening + 1, misplaced=True
-                    )
+                refuse_misplaced_tools(block, reads, document, opening)
                 if not reads or isinstance(document, dict):
                     declared.update(containment_settings(block, document))
                 if declared:
@@ -1618,12 +1621,15 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         block = "\n".join("" if i in fenced else lines[i] for i in range(1, end))
         reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, 1)
-        if reads:
-            _refuse_readable_tool_settings(
-                name, block, document, line_offset=line_offset + 1, misplaced=True
-            )
-        else:
-            refuse_unread_tool_settings(block, key_lines_only=True)
+        refuse_misplaced_tools(block, reads, document, 0)
+        if closing is not None:
+            # The closing rule can also open a later span. The final fence has been checked.
+            remaining = [i for i in delimiters if i >= closing]
+            for opening, later in _profile_body_blocks(
+                name, lines, line_offset=line_offset, layout=(remaining, fenced, None)
+            ):
+                later_reads, later_document = _read_profile_settings(later)
+                refuse_misplaced_tools(later, later_reads, later_document, opening)
         if reads and isinstance(document, dict):
             if not document:
                 return {}

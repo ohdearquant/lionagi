@@ -506,6 +506,35 @@ def test_first_line_prose_rule_leaves_fenced_examples_in_prompt(prefix, body, li
 
 
 @pytest.mark.parametrize(
+    ("before_close", "line"),
+    [("~~~yaml\n---\ntools: [Example]\n---\n~~~\n", 8), ("", 3)],
+    ids=["fenced-example", "no-fence"],
+)
+def test_first_line_prose_rule_refuses_tools_after_first_unfenced_close(before_close, line):
+    text = f"Review ---\n{before_close}---\ntools: [Read]\n---"
+
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"--- block on line {line - 1}\b.*tools declaration on line {line}\b",
+    ):
+        _parse_profile("reviewer", text)
+
+
+def test_first_line_prose_rule_leaves_fenced_tools_after_first_unfenced_close_in_prompt(
+    monkeypatch,
+):
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    text = "Review ---\n---\n~~~yaml\n---\ntools: [Example]\n---\n~~~"
+
+    profile = _parse_profile("reviewer", text)
+
+    assert profile.raw_body == text
+    assert profile.extra == {}
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
     ("after_merge", "line"),
     [
         ("", 5),
