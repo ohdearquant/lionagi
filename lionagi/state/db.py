@@ -1248,7 +1248,7 @@ class StateDB:
                         # a store another writer moved to a later version or another table is
                         # refused here, as a fresh open refuses it, rather than inside the schema
                         # transaction, whose disposal would fold the store's log into its file.
-                        await run_sync(self._read_lineage_without_writing, _held_files())
+                        await self._read_lineage_in_a_worker()
                 await self._apply_schema()
             except _NATIVE_OPEN_REFUSALS:
                 with CancelScope(shield=True):
@@ -1296,7 +1296,7 @@ class StateDB:
             # refusal from those reads changes no file of the store, and each new writable
             # connection reads them again before its settings change the file, for a row written
             # in between (ADR-0128 D7).
-            await run_sync(self._read_lineage_without_writing, _held_files())
+            await self._read_lineage_in_a_worker()
             self._connection_read = False
             self._native_file = None
             self._schema_committed = False
@@ -1357,6 +1357,32 @@ class StateDB:
         if self._native_file is not None:
             _OPEN_NATIVE.add(self)
 
+    async def _read_lineage_in_a_worker(self) -> None:
+        """Run ``_read_lineage_without_writing`` in a worker thread that a cancellation stops.
+
+        The read can copy the whole store file (``_read_lineage_from_a_copy``), which takes as
+        long as the store is large. A cancelled open therefore returns at once instead of waiting
+        for the worker, and tells the worker to stop: the read raises ``_CopyStoppedError``
+        before its next attempt or its next chunk of the copy, and the copy's directory is
+        removed. Nothing the worker reads is used once the open is cancelled.
+        """
+        stop = threading.Event()
+        try:
+            await run_sync(
+                self._read_lineage_until_stopped, _held_files(), stop, abandon_on_cancel=True
+            )
+        finally:
+            stop.set()
+
+    def _read_lineage_until_stopped(self, held: tuple, stop: threading.Event) -> None:
+        """``_read_lineage_without_writing`` with *stop* as this thread's ``_LINEAGE_READ.stop``,
+        cleared on return, since the worker thread is reused for other calls."""
+        _LINEAGE_READ.stop = stop
+        try:
+            self._read_lineage_without_writing(held)
+        finally:
+            _LINEAGE_READ.stop = None
+
     def _read_lineage_without_writing(self, held: tuple) -> None:
         """Refuse a file this process holds in compatibility mode, or a store a native migration
         must not touch (``_refuse_unless_native``), or one whose journal or log cannot be read
@@ -1389,6 +1415,7 @@ class StateDB:
             return
         sidecar = False
         for _ in range(_COPY_ATTEMPTS):
+            _raise_if_stopped()
             read = _read_lineage(target)
             if read is None:
                 return
@@ -8791,6 +8818,23 @@ _UNREAD = object()
 # two may not be of one state; the read is taken again, up to _COPY_ATTEMPTS times.
 _MOVED = object()
 _COPY_ATTEMPTS = 3
+# The store file is copied this many bytes at a time, and a stop is checked after each read.
+_COPY_CHUNK_BYTES = 1 << 20
+# The stop of the lineage read running on this thread (``StateDB._read_lineage_until_stopped``),
+# set once the open that started it is cancelled; None outside such a read.
+_LINEAGE_READ = threading.local()
+
+
+class _CopyStoppedError(Exception):
+    """A lineage read stopped because the open that started it was cancelled."""
+
+
+def _raise_if_stopped() -> None:
+    stop = getattr(_LINEAGE_READ, "stop", None)
+    if stop is not None and stop.is_set():
+        raise _CopyStoppedError
+
+
 # The first eight bytes of a rollback journal's header. A commit deletes, truncates or zeroes it.
 _JOURNAL_HEADER = bytes.fromhex("d9d505f920a163d7")
 # The first four bytes of a write-ahead log's header, in its two checksum byte orders.
@@ -8894,16 +8938,21 @@ _COPY_DESCRIPTORS_LOCK = threading.Lock()
 def _copy_store_file(path: str, copy: str) -> None:
     """Copy the file at *path* to *copy* byte for byte, whatever its pages hold, through a
     descriptor of the file this process keeps open, so the copy closes no descriptor of it. On
-    Windows a lock belongs to the handle that took it, and the file is copied as usual."""
+    Windows a lock belongs to the handle that took it, and the file is copied as usual. A
+    cancelled open's copy raises ``_CopyStoppedError`` before its first chunk and after each
+    chunk of ``_COPY_CHUNK_BYTES`` (``_LINEAGE_READ``); a Windows copy checks only before it
+    starts."""
+    _raise_if_stopped()
     if os.name == "nt":
         shutil.copyfile(path, copy)
         return
     descriptor = _copy_descriptor(path)
     with open(copy, "wb") as target:
         offset = 0
-        while chunk := os.pread(descriptor, 1 << 20, offset):
+        while chunk := os.pread(descriptor, _COPY_CHUNK_BYTES, offset):
             target.write(chunk)
             offset += len(chunk)
+            _raise_if_stopped()
 
 
 def _copy_descriptor(path: str) -> int:

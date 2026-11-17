@@ -3,11 +3,14 @@ its shape is one lionagi produced (ADR-0128 D7)."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 import shutil
 import sqlite3
+import threading
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -496,6 +499,83 @@ async def test_a_log_a_closing_writer_removes_while_the_store_is_copied_reads_th
         await _open_and_close(path)
     finally:
         writer.close()
+
+
+def test_a_stopped_copy_ends_before_its_next_chunk(tmp_path, monkeypatch):
+    """A copy whose stop is set while it reads a chunk raises before it reads another."""
+    from lionagi.state import db as db_mod
+
+    store = tmp_path / "store.db"
+    store.write_bytes(b"s" * (3 * db_mod._COPY_CHUNK_BYTES + 1))
+    stop = threading.Event()
+    offsets = []
+    real_pread = os.pread
+
+    def pread(descriptor, size, offset):
+        offsets.append(offset)
+        stop.set()
+        return real_pread(descriptor, size, offset)
+
+    monkeypatch.setattr(db_mod.os, "pread", pread)
+    db_mod._LINEAGE_READ.stop = stop
+    try:
+        with pytest.raises(db_mod._CopyStoppedError):
+            db_mod._copy_store_file(str(store), str(tmp_path / "copy.db"))
+    finally:
+        db_mod._LINEAGE_READ.stop = None
+    assert offsets == [0]
+
+
+async def test_a_cancelled_open_returns_at_once_and_stops_copying_the_store(tmp_path, monkeypatch):
+    """The open reads the lineage from a copy of a store file that takes seconds to copy. A
+    deadline cancels the open: it returns without waiting for the copy, and the copy stops at its
+    next chunk and removes its directory instead of copying the rest of the file."""
+    from lionagi.state import db as db_mod
+
+    path = tmp_path / "store.db"
+    await _open_and_close(path)
+    chunks = 12
+    padding = "p" * (chunks * db_mod._COPY_CHUNK_BYTES)
+    _execute(path, f"INSERT INTO schema_meta (key, value) VALUES ('padding', '{padding}')")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(db_mod.tempfile, "tempdir", str(scratch))
+    writer = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    try:
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute("INSERT INTO schema_meta (key, value) VALUES ('written', '1')")
+        assert Path(f"{path}-wal").stat().st_size > 0
+        # The read-only read of the log through its index fails, so the store is copied.
+        read = db_mod._read_lineage
+        monkeypatch.setattr(
+            db_mod,
+            "_read_lineage",
+            lambda target: None if "readonly_shm" in str(target) else read(target),
+        )
+        offsets = []
+        real_pread = os.pread
+
+        def slow_pread(descriptor, size, offset):
+            offsets.append(offset)
+            time.sleep(0.3)
+            return real_pread(descriptor, size, offset)
+
+        monkeypatch.setattr(db_mod.os, "pread", slow_pread)
+        started = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(StateDB(path).open(), timeout=0.5)
+        returned = time.monotonic() - started
+        stop_by = time.monotonic() + 2.0
+        while any(scratch.iterdir()) and time.monotonic() < stop_by:
+            await asyncio.sleep(0.05)
+        left = list(scratch.iterdir())
+    finally:
+        writer.close()
+
+    # A whole copy reads every chunk at 0.3 s each.
+    assert returned < 1.5
+    assert left == []
+    assert 0 < len(offsets) < chunks
 
 
 @pytest.mark.parametrize("journal", ["unreadable", "directory"])
