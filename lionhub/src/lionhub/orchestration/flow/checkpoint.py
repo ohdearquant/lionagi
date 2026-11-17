@@ -19,6 +19,7 @@ from lionagi._checkpoint_version import (
 from lionagi._errors import LionError
 from lionagi._paths import RUNS_ROOT
 from lionagi.ln._json_dump import raise_if_non_finite
+from lionagi.ln.concurrency import CapacityLimiter, run_sync
 from lionhub.orchestration.job import AmbiguousIdError
 from lionhub.orchestration.runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
 
@@ -30,6 +31,10 @@ __all__ = (
     "load_checkpoint",
     "resolve_checkpoint_target",
 )
+
+# Every checkpoint read uses this limit with run_sync, including future
+# coherent base and journal capture and decoding.
+CHECKPOINT_READ_LIMIT = CapacityLimiter(2)
 
 
 class FlowResumeError(LionError):
@@ -226,6 +231,16 @@ def _raise_if_persistence_degraded(run_dir: RunDir) -> None:
         )
 
 
+def _load_checkpoint_for_run(target: str) -> tuple[RunDir, dict[str, Any]] | None:
+    run_dir = _find_run_dir_by_id(target)
+    if run_dir is None:
+        return None
+    if run_dir.checkpoint_path.exists():
+        return run_dir, load_checkpoint(run_dir.checkpoint_path)
+    _raise_if_persistence_degraded(run_dir)
+    return None
+
+
 async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]]:
     """Resolve a run_id, or a session/invocation/play id, to (RunDir, checkpoint dict).
 
@@ -234,11 +249,9 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
     resolution `li o ctl status` uses) to its backing session, whose
     node_metadata carries the run_id every flow run stamps at startup.
     """
-    run_dir = _find_run_dir_by_id(target)
-    if run_dir is not None:
-        if run_dir.checkpoint_path.exists():
-            return run_dir, load_checkpoint(run_dir.checkpoint_path)
-        _raise_if_persistence_degraded(run_dir)
+    loaded = await run_sync(_load_checkpoint_for_run, target, limiter=CHECKPOINT_READ_LIMIT)
+    if loaded is not None:
+        return loaded
 
     from lionagi.state.db import StateDB
     from lionhub.orchestration.inspection import resolve_any_target, resolve_primary_session
@@ -260,14 +273,9 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
             "(it predates checkpoint support, or never reached _build_dag)."
         )
 
-    run_dir = _find_run_dir_by_id(run_id)
-    if run_dir is None:
+    loaded = await run_sync(_load_checkpoint_for_run, run_id, limiter=CHECKPOINT_READ_LIMIT)
+    if loaded is None:
         raise FlowResumeError(
             f"No checkpoint.json found for run {run_id!r} (resolved from {target!r})."
         )
-    if not run_dir.checkpoint_path.exists():
-        _raise_if_persistence_degraded(run_dir)
-        raise FlowResumeError(
-            f"No checkpoint.json found for run {run_id!r} (resolved from {target!r})."
-        )
-    return run_dir, load_checkpoint(run_dir.checkpoint_path)
+    return loaded

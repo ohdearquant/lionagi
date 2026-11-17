@@ -87,7 +87,7 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     # node id that isn't hashable) must not turn an opt-in detail request into
     # an error on the base job.status call, so the whole reshape is guarded.
     try:
-        nodes = _build_nodes(session, run_id)
+        nodes = await _build_nodes(session, run_id)
         return {
             "nodes": nodes,
             "artifact_contract": _build_artifact_contract(session),
@@ -206,10 +206,13 @@ def _session_has_no_detail_material(session: dict[str, Any]) -> bool:
     return not _node_metadata_recorded(session)
 
 
-def _build_nodes(session: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
+async def _build_nodes(session: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
+    from lionagi.ln.concurrency import run_sync
+    from lionhub.orchestration.flow.checkpoint import CHECKPOINT_READ_LIMIT
+
     branches = session.get("branches") or []
     branch_by_name = _branch_by_name(session)
-    spawned_by_map = _spawned_by_map(run_id)
+    spawned_by_map = await run_sync(_spawned_by_map, run_id, limiter=CHECKPOINT_READ_LIMIT)
     graph = session.get("graph")
 
     if graph is None:
