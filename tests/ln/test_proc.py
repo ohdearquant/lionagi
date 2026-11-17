@@ -1538,9 +1538,28 @@ def test_a_leader_whose_group_cannot_be_read_is_not_bound_unless_it_is_this_proc
     import lionagi.ln._proc as proc_mod
 
     monkeypatch.setattr(proc_mod, "pinned_member", lambda *a, **k: ("gone", None))
-    began = time.monotonic()
 
     assert (
         proc_mod.observe_process_group_leader(os.getppid(), expected_marker="spawn-token") is None
     )
-    assert time.monotonic() - began < proc_mod._EXITING_CHILD_WAIT_SECONDS
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups")
+def test_a_running_child_whose_group_cannot_be_read_is_refused_without_waiting(monkeypatch):
+    """Only a child that is exiting waits to become a zombie; a running one is refused at once."""
+    import subprocess
+
+    import lionagi.ln._proc as proc_mod
+
+    monkeypatch.setattr(proc_mod, "pinned_member", lambda *a, **k: ("gone", None))
+    child = subprocess.Popen(["/bin/sleep", "5"], start_new_session=True)
+    try:
+        began = time.monotonic()
+        bound = proc_mod.observe_process_group_leader(child.pid, expected_marker="spawn-token")
+        elapsed = time.monotonic() - began
+    finally:
+        child.kill()
+        child.wait()
+
+    assert bound is None
+    assert elapsed < proc_mod._EXITING_CHILD_WAIT_SECONDS / 2

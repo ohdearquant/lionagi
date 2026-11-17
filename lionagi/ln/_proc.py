@@ -371,7 +371,8 @@ def _exited_child_created(pid: int) -> float | None:
 
     macOS reports an exiting process as idle, with its group no longer readable,
     before it becomes a zombie; a child of this process seen in that state is
-    given a short, bounded wait to finish exiting.
+    given a short, bounded wait to finish exiting. A child in any other state is
+    refused at once, without waiting.
     """
     import psutil
 
@@ -387,6 +388,12 @@ def _exited_child_created(pid: int) -> float | None:
         if state == "zombie" and created is not None:
             break
         if state != "found" or time.monotonic() >= deadline:
+            return None
+        try:
+            exiting = psutil.Process(pid).status() == psutil.STATUS_IDLE
+        except (psutil.Error, OSError):
+            return None
+        if not exiting:
             return None
         time.sleep(0.001)
     again, created_again = _recorded_process_create_time(pid, expected_created=created)
