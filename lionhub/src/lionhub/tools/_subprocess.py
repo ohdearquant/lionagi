@@ -22,6 +22,9 @@ _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
 _MAX_OUTPUT_BYTES = 100_000
 _CLEANUP_GRACE_SECONDS = 1.0
+# After a command exits inside its deadline, the pipe readers get at least this long to take
+# the output already written, so a reader slowed by load is not reported as a timeout.
+_DRAIN_GRACE_SECONDS = 1.0
 
 
 def _drain(stream, buf: bytearray) -> bool:
@@ -106,8 +109,11 @@ def _subprocess_sync(
     except subprocess.TimeoutExpired:
         timed_out = True
     else:
-        t_out.join(timeout=max(0.0, deadline - time.monotonic()))
-        t_err.join(timeout=max(0.0, deadline - time.monotonic()))
+        # A descendant that keeps a pipe open is bounded by the deadline; output the command
+        # wrote before exiting is still collected when it exits just before the deadline.
+        drain_deadline = max(deadline, time.monotonic() + _DRAIN_GRACE_SECONDS)
+        t_out.join(timeout=max(0.0, drain_deadline - time.monotonic()))
+        t_err.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         timed_out = t_out.is_alive() or t_err.is_alive()
 
     if timed_out:
