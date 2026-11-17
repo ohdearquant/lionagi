@@ -672,3 +672,72 @@ async def test_toolkit_bash_refuses_as_the_standalone_tool_does(tmp_path, comman
 
     assert standalone.return_code == -1
     assert from_toolkit == standalone.model_dump()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups and /bin/sh")
+def test_a_descendant_holding_the_pipe_is_bounded_and_keeps_printed_output(tmp_path):
+    """A real child that backgrounds a long sleep keeps stdout open after the leader exits.
+
+    The call must return within the deadline plus the cleanup grace, keep what the
+    leader printed, report a timeout, and leave the backgrounded process stopped.
+    """
+    import os
+    import time
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    pid_file = tmp_path / "bg.pid"
+    # Python on both sides: the group-kill authority reads the spawn marker from
+    # the process environment, which macOS does not expose for system binaries.
+    script = (
+        "import subprocess, sys\n"
+        "bg = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(bg.pid))\n"
+        "print('started', flush=True)\n"
+    )
+    start = time.monotonic()
+    result = subprocess_mod._subprocess_sync([sys.executable, "-c", script], False, 1.0, None)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0 + subprocess_mod._CLEANUP_GRACE_SECONDS + 3.0
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]
+
+    bg_pid = int(pid_file.read_text().strip())
+    stop_by = time.monotonic() + 2.0
+    alive = True
+    while time.monotonic() < stop_by:
+        try:
+            os.kill(bg_pid, 0)
+        except ProcessLookupError:
+            alive = False
+            break
+        time.sleep(0.05)
+    if alive:
+        os.kill(bg_pid, 9)
+    assert not alive, "the backgrounded process outlived the call"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell background job")
+def test_output_printed_before_the_deadline_is_kept_while_a_descendant_holds_the_pipe(tmp_path):
+    """Output already in the pipe is returned even when the pipe stays open past the deadline."""
+    import os
+    import time
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    pid_file = tmp_path / "bg.pid"
+    script = f"echo started; sleep 30 & echo $! > {pid_file}; exit 0"
+    start = time.monotonic()
+    try:
+        result = subprocess_mod._subprocess_sync(["/bin/sh", "-c", script], False, 1.0, None)
+        elapsed = time.monotonic() - start
+    finally:
+        try:
+            os.kill(int(pid_file.read_text().strip()), 9)
+        except (OSError, ValueError):
+            pass
+
+    assert elapsed < 1.0 + subprocess_mod._CLEANUP_GRACE_SECONDS + 3.0
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]

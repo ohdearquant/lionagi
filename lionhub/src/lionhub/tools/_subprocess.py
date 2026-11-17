@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import re
 import subprocess
 import threading
@@ -25,9 +26,12 @@ _CLEANUP_GRACE_SECONDS = 1.0
 
 def _drain(stream, buf: bytearray) -> bool:
     truncated = False
+    # read1 returns what the pipe holds now instead of waiting for a full chunk,
+    # so output printed before a deadline is kept even when the pipe never closes.
+    read = stream.read1 if isinstance(stream, io.BufferedIOBase) else stream.read
     while True:
         try:
-            chunk = stream.read(8192)
+            chunk = read(8192)
         except Exception:
             break
         if not chunk:
