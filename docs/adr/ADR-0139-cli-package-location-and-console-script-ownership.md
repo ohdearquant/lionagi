@@ -213,6 +213,9 @@ its parser. [ADR-0122 D2](ADR-0122-feature-boundaries-and-optional-runtime-profi
 assigns reusable argument parsing to contracts or authoring adapters. This
 amendment supersedes D3's seed and token-index ownership and its MCP catalog
 import. D3 continues to govern CLI startup and selected-handler realization.
+At this revision, MCP projection still imports the CLI catalog and realizes a
+CLI handler for its parser, with the supersession of D3's MCP catalog import
+taking effect at the cutover in item 5.
 
 **Decision.**
 
@@ -224,8 +227,8 @@ import. D3 continues to govern CLI startup and selected-handler realization.
    authoring adapter below the composition roots. A default used by a handler
    and parser has one definition in that owner, including the runs, monitor and
    stats defaults. The implementation documents the owner and dependency closure
-   for all 22 seed factories. Under Amendment 5 item 5, the `lionhub.serve`
-   initializer remains import-free.
+   for every seed factory (22 at this revision). Under Amendment 5 item 5, the
+   `lionhub.serve` initializer remains import-free.
 2. `lionhub.serve.cli.catalog` references the same token index and re-exports the
    same lookup function objects. The index is read-only in production and the
    declaration package exposes no mutation API. The boundary test inserts and
