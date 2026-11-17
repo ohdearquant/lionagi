@@ -23,7 +23,9 @@ from uuid import UUID, uuid5
 from lionagi.ln import now_utc
 from lionagi.ln.concurrency import move_on_after, run_sync
 from lionagi.service.accounts._types import (
+    _BILLING_BLOCKS,
     _PROVIDER_ERROR_TYPES,
+    _REASON_RE,
     _REJECTION_CLASSES,
     INT64_MAX,
     AccountRoutingError,
@@ -41,11 +43,11 @@ from lionagi.service.accounts._types import (
     StreamUsageEstimate,
     UnknownOutcome,
     _check_member,
+    _validate_reason,
 )
 
 __all__ = ("CredentialLedger", "AccountStatus", "default_ledger_path")
 
-_REASON_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MONTH_RE = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])\Z")
@@ -150,9 +152,14 @@ def _routing_error(
     account: str | None = None,
     attempt_id: UUID | None = None,
     billing_block: str | None = None,
+    block_reason: str | None = None,
 ) -> AccountRoutingError:
     return AccountRoutingError(
-        code, account=account, attempt_id=attempt_id, billing_block=billing_block
+        code,
+        account=account,
+        attempt_id=attempt_id,
+        billing_block=billing_block,
+        block_reason=block_reason,
     )
 
 
@@ -160,12 +167,6 @@ def _checked_int(value: object, *, minimum: int, maximum: int, label: str) -> in
     if type(value) is not int or value < minimum or value > maximum:
         raise ValueError(f"invalid {label}")
     return value
-
-
-def _validate_reason(reason: object) -> str:
-    if not isinstance(reason, str) or _REASON_RE.fullmatch(reason) is None:
-        raise ValueError("invalid reason code")
-    return reason
 
 
 def _validate_source(source_ref: object) -> str:
@@ -1350,6 +1351,30 @@ class CredentialLedger:
                     )
 
                 provider = scope.provider
+                selected: AccountSpec | None = None
+                probe_block = None
+                if scope.kind == "probe":
+                    (selected,) = specs.values()
+                    probe_block = self._account_block(connection, provider, selected.name)
+                    reason = probe_block[0]
+                    if reason is None:
+                        raise _routing_error(
+                            RouterErrorCode.PROBE_ACCOUNT_NOT_BLOCKED,
+                            account=selected.name,
+                            attempt_id=attempt_id,
+                        )
+                    if reason not in _BILLING_BLOCKS:
+                        try:
+                            refusal = _routing_error(
+                                RouterErrorCode.PROBE_BLOCK_NOT_BILLING,
+                                account=selected.name,
+                                attempt_id=attempt_id,
+                                block_reason=reason,
+                            )
+                        except ValueError:
+                            raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
+                        raise refusal
+
                 for spec in specs.values():
                     existing = connection.execute(
                         "SELECT key_env FROM account WHERE provider = ? AND name = ?",
@@ -1381,7 +1406,6 @@ class CredentialLedger:
                     connection, provider, list(specs), month_utc, created_at
                 )
                 quote_json = _quote_envelope(quote) or None
-                selected: AccountSpec | None = None
                 binding = None
                 if scope.kind != "probe":
                     binding = connection.execute(
@@ -1392,17 +1416,9 @@ class CredentialLedger:
                         (scope.kind, str(scope.id), provider),
                     ).fetchone()
 
-                if scope.kind == "probe":
-                    (selected,) = specs.values()
-                    reason, last_clear, last_failure, generation = self._account_block(
-                        connection, provider, selected.name
-                    )
-                    if reason is None:
-                        raise _routing_error(
-                            RouterErrorCode.PROBE_ACCOUNT_NOT_BLOCKED,
-                            account=selected.name,
-                            attempt_id=attempt_id,
-                        )
+                if probe_block is not None:
+                    assert selected is not None
+                    reason, last_clear, last_failure, generation = probe_block
                     settled, adjustments, opened, _ = self._spend_parts(
                         connection, provider, selected.name, month_utc
                     )
@@ -1560,7 +1576,7 @@ class CredentialLedger:
     async def reserve_probe(
         self, account: AccountSpec, attempt_id: UUID, quote: Quote
     ) -> Reservation:
-        """Hold the ordinary quote on one named blocked Anthropic account without a binding."""
+        """Hold the ordinary quote on one billing-blocked Anthropic account without a binding."""
         scope = Scope("probe", attempt_id, "anthropic")
         return await self._run(lambda: self._reserve_sync(scope, attempt_id, quote, (account,)))
 
@@ -2366,7 +2382,8 @@ class CredentialLedger:
                 (str(attempt_id), provider, account, recorded_at, http_status, provider_error_type),
             )
             return False
-        if self._account_block(connection, provider, account) != original_block:
+        current_block = self._account_block(connection, provider, account)
+        if current_block[0] not in _BILLING_BLOCKS or current_block != original_block:
             return False
         return self._clear_block_in_transaction(
             connection,

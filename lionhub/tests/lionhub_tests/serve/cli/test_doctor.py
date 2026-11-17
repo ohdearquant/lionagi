@@ -67,6 +67,22 @@ def test_account_probe_uses_only_the_explicit_operator_mode(monkeypatch, capsys)
     }
 
 
+def test_nonbilling_account_probe_reports_the_refusal_code(monkeypatch, capsys):
+    from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+    from lionhub.serve.cli import doctor
+
+    async def probe(name):
+        raise AccountRoutingError(
+            RouterErrorCode.PROBE_BLOCK_NOT_BILLING, account=name, block_reason="ceiling_exceeded"
+        )
+
+    monkeypatch.setattr(doctor, "_probe_anthropic_account", probe)
+    assert doctor.run_doctor(_doctor_args("--probe-anthropic-account", "primary", "--json")) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Account probe refused (probe_block_not_billing).\n"
+
+
 # _looks_editable
 
 

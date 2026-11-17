@@ -1885,7 +1885,14 @@ record the outcome with the same budget and settlement rules as routed work.
 
 1. An operator may explicitly probe one named, configured, currently blocked
    Anthropic account with `li doctor --probe-anthropic-account NAME`. The probe
-   is available through the operator CLI only.
+   is available through the operator CLI only and admits blocks for
+   `credit_balance_low` and `spend_limit_reached`. Under the ledger lock, an
+   account blocked for another reason returns `probe_block_not_billing` with
+   its account and current reason before reserving an attempt or sending a
+   request. A 2xx settlement also verifies that the current reason is still
+   one of the two billing reasons before it clears the block. When an A12
+   Decision 2 safety block such as `ceiling_exceeded` or `settlement_conflict`
+   replaces a billing reason, the operator must clear it manually.
    It makes one non-streamed Messages request, with retries disabled, a fixed
    short prompt, a one-token output limit, standard service only, and no cache
    control. The current price revision determines the supported model with the
@@ -1895,6 +1902,9 @@ record the outcome with the same budget and settlement rules as routed work.
    scoped to its own ID. The hold counts against budget. The probe creates no
    conversation binding, gains no preference from cache warmth, and leaves
    the ordinary routing eligibility rule in place.
+   On open, the ledger adds the `block_generation` column, the
+   `account_block_generation` trigger, and the `probe_failure` table to an
+   existing version-1 ledger as needed, keeping `user_version` at 1.
 3. A successful HTTP status can clear the observed block in the same
    transaction as settlement. Admission captures the account's block
    generation from the account row's `block_generation` column, a non-negative
@@ -1940,6 +1950,8 @@ record the outcome with the same budget and settlement rules as routed work.
    Amendment 12 Decision 4's sentence “the account stays blocked until an
    operator unblocks it” includes a clear triggered by the operator's
    explicit probe and recorded only on a successful response.
+   Amendment 12 Decision 5's statement that the schema does not change is
+   qualified by Decision 2's additive version-1 ledger changes.
 
 ### Verification
 
@@ -1956,4 +1968,8 @@ Exercise a durable re-block with the same reason during a reserved probe and
 the control without another block write. Settle a successful probe with
 incomplete usage, then record a complete bill above its ceiling. Confirm the
 ordinary block applies and the probe leaves one unblock audit.
+Verify both billing reasons can be admitted and cleared. Verify
+`ceiling_exceeded` and `settlement_conflict` refuse before reserving or
+requesting, preserving the reason and generation, and that a billing block
+replaced by `ceiling_exceeded` during a probe survives a 2xx settlement.
 Use a synthetic transport and a temporary ledger.

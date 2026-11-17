@@ -122,6 +122,53 @@ async def test_probe_requires_current_block_and_available_budget(tmp_path):
     assert caught.value.code is RouterErrorCode.ACCOUNT_BLOCKED
 
 
+@pytest.mark.parametrize("reason", ["ceiling_exceeded", "settlement_conflict"])
+async def test_probe_refuses_nonbilling_blocks_without_reserving(tmp_path, reason):
+    ledger = await _prepare(tmp_path, block=reason)
+    before = _block_state(ledger)
+    attempt = uuid4()
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+
+    assert caught.value.code is RouterErrorCode.PROBE_BLOCK_NOT_BILLING
+    assert caught.value.block_reason == reason
+    assert caught.value.billing_block is None
+    assert _block_state(ledger) == before
+    assert _attempt(ledger, attempt) is None
+    assert _unblocks(ledger) == []
+    assert _failures(ledger) == []
+
+
+@pytest.mark.parametrize("reason", ["credit_balance_low", "spend_limit_reached"])
+async def test_probe_reserves_and_clears_a_billing_block(tmp_path, reason):
+    ledger = await _prepare(tmp_path, block=reason)
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    assert await ledger.settle_probe(attempt, _usage(3), http_status=200)
+    status = (await ledger.status("anthropic"))[0]
+    assert (status.block_reason, status.settled_nusd) == (None, 3)
+    assert _unblocks(ledger) == [(f"probe:{attempt}",)]
+
+
+async def test_probe_does_not_clear_an_intervening_ceiling_block(tmp_path):
+    ledger = await _prepare(tmp_path, block=None)
+    ordinary_attempt = uuid4()
+    await ledger.reserve(Scope("branch", uuid4(), "anthropic"), ordinary_attempt, QUOTE, (ACCOUNT,))
+    await ledger.block("anthropic", ACCOUNT.name, "credit_balance_low")
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    await ledger.settle(ordinary_attempt, _usage(11))
+    before = _block_state(ledger)
+    assert before[0] == "ceiling_exceeded"
+
+    assert not await ledger.settle_probe(attempt, _usage(3), http_status=200)
+    assert _block_state(ledger) == before
+    assert _attempt(ledger, attempt)[:4] == ("settled", 3, "complete", 200)
+    assert _unblocks(ledger) == []
+    assert _failures(ledger) == []
+
+
 async def test_probe_settles_and_clears_atomically_once(tmp_path, monkeypatch):
     ledger = await _prepare(tmp_path)
     attempt = uuid4()
@@ -306,29 +353,28 @@ async def test_probe_distinguishes_a_block_refresh_that_keeps_the_reason(tmp_pat
     ledger = await _prepare(tmp_path, block=None)
     ordinary_attempt = uuid4()
     await ledger.reserve(Scope("branch", uuid4(), "anthropic"), ordinary_attempt, QUOTE, (ACCOUNT,))
-    await ledger.block("anthropic", ACCOUNT.name, "auth_required")
+    reason = "credit_balance_low"
+    await ledger.block("anthropic", ACCOUNT.name, reason)
     attempt = uuid4()
     await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
     _, generation = _block_state(ledger)
 
     if refresh == "operator":
-        await ledger.block("anthropic", ACCOUNT.name, "auth_required")
+        await ledger.block("anthropic", ACCOUNT.name, reason)
     elif refresh == "billing":
         evidence = RejectionZero(
-            400, "invalid_request_error", "credit_balance_low", "request_rejected"
+            400, "invalid_request_error", "spend_limit_reached", "request_rejected"
         )
-        assert (await ledger.settle_billing_rejection(ordinary_attempt, evidence))[1] == (
-            "auth_required"
-        )
+        assert (await ledger.settle_billing_rejection(ordinary_attempt, evidence))[1] == reason
     else:
         await ledger.settle(ordinary_attempt, ProvenNotSent())
 
     cleared = refresh == "untouched"
-    assert _block_state(ledger) == ("auth_required", generation + (not cleared))
+    assert _block_state(ledger) == (reason, generation + (not cleared))
     assert (await ledger.settle_probe(attempt, _usage(3), http_status=200)) is cleared
     status = (await ledger.status("anthropic"))[0]
     assert (status.block_reason, status.settled_nusd) == (
-        None if cleared else "auth_required",
+        None if cleared else reason,
         3,
     )
     assert _unblocks(ledger) == ([(f"probe:{attempt}",)] if cleared else [])

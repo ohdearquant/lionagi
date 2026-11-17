@@ -738,7 +738,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         super().__init__(config, **kwargs)
 
     async def probe_blocked_account(self, name: str) -> _AccountProbeResult:
-        """Send one fixed, ledger-accounted request to a named blocked account."""
+        """Send one fixed, ledger-accounted request to an account with a billing block."""
         from lionagi.service.accounts._router import (
             get_router,
             header_pairs,

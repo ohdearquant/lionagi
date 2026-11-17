@@ -204,7 +204,7 @@ class AccountRouter:
         )
 
     async def begin_probe(self, name: str) -> RouterAttempt:
-        """Reserve the smallest fixed probe on the named blocked account."""
+        """Reserve the smallest fixed probe on a named account with a billing block."""
         account = next((spec for spec in self.accounts if spec.name == name), None)
         if account is None:
             raise AccountRoutingError(RouterErrorCode.PROBE_ACCOUNT_UNKNOWN)

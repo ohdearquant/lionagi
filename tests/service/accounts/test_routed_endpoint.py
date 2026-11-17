@@ -220,7 +220,7 @@ def _cleanup_router():
     router_module._reset_router_test_dependencies()
 
 
-async def _seed_probe_account(*, blocked=True, block_reason="auth_required"):
+async def _seed_probe_account(*, blocked=True, block_reason="credit_balance_low"):
     router = router_module.get_router()
     main_quote = quote_ceiling(
         CURRENT_REVISION, freeze_request({**REQUEST, "service_tier": "standard_only"})
@@ -421,11 +421,39 @@ async def test_blocked_account_probe_refuses_before_transport(
     assert len(_attempts(path)) == 1
 
 
+@pytest.mark.parametrize(
+    "block_reason", ["auth_required", "ceiling_exceeded", "settlement_conflict"]
+)
+async def test_blocked_account_probe_refuses_nonbilling_blocks_without_changes(
+    monkeypatch, tmp_path, block_reason
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    await _seed_probe_account(block_reason=block_reason)
+    attempts = _attempts(path)
+    account_sql = "SELECT * FROM account WHERE provider = 'anthropic' AND name = 'primary'"
+    with sqlite3.connect(path) as connection:
+        account = connection.execute(account_sql).fetchone()
+    model, transport = _model(monkeypatch, [])
+
+    with pytest.raises(AccountRoutingError) as raised:
+        await model.endpoint.probe_blocked_account("primary")
+
+    assert raised.value.code is RouterErrorCode.PROBE_BLOCK_NOT_BILLING
+    assert raised.value.block_reason == block_reason
+    assert raised.value.billing_block is None
+    assert transport.client_kwargs == []
+    assert transport.calls == []
+    assert _attempts(path) == attempts
+    assert _block_reason(path, "primary") == block_reason
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(account_sql).fetchone() == account
+
+
 async def test_normal_reserve_excludes_the_blocked_account_during_an_open_probe(
     monkeypatch, tmp_path
 ):
     path = _install_accounts(monkeypatch, tmp_path)
-    router, seed = await _seed_probe_account()
+    router, seed = await _seed_probe_account(block_reason="spend_limit_reached")
     model, transport = _model(
         monkeypatch,
         [
@@ -453,7 +481,7 @@ async def test_normal_reserve_excludes_the_blocked_account_during_an_open_probe(
     probe = asyncio.create_task(model.endpoint.probe_blocked_account("primary"))
     try:
         await asyncio.wait_for(entered.wait(), timeout=3)
-        assert _block_reason(path, "primary") == "auth_required"
+        assert _block_reason(path, "primary") == "spend_limit_reached"
         _, probe_attempt = _attempts(path)
         assert probe_attempt[1:3] == ("primary", "open")
         normal = await router.ledger.reserve(
@@ -464,6 +492,7 @@ async def test_normal_reserve_excludes_the_blocked_account_during_an_open_probe(
         release.set()
         result = await asyncio.wait_for(probe, timeout=3)
     assert result.cleared and len(transport.calls) == 1
+    assert _block_reason(path, "primary") is None
 
 
 @pytest.fixture(autouse=True)

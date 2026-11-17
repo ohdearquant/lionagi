@@ -348,8 +348,9 @@ def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--probe-anthropic-account",
         metavar="NAME",
         help=(
-            "Send one billed request on the named blocked account. Lift its block only on a "
-            "2xx response. Runs instead of the ordinary environment checks."
+            "Send one billed request on a named account blocked for low credit or its spend "
+            "limit. Lift its block only on a 2xx response. Runs instead of the ordinary "
+            "environment checks."
         ),
     )
 
