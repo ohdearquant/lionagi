@@ -48,6 +48,30 @@ def test_plain_doctor_sends_no_account_probe(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out) == {"python": {"status": "ok", "detail": "ready"}}
 
 
+@pytest.fixture
+def operator_terminal(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+
+
+def test_account_probe_refuses_without_an_interactive_terminal(monkeypatch, capsys):
+    import sys
+
+    from lionhub.serve.cli import doctor
+
+    async def unexpected_probe(name):
+        pytest.fail("the probe ran without a terminal")
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(doctor, "_probe_anthropic_account", unexpected_probe)
+    assert doctor.run_doctor(_doctor_args("--probe-anthropic-account", "primary")) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "only from an interactive terminal" in captured.err
+
+
+@pytest.mark.usefixtures("operator_terminal")
 def test_account_probe_uses_only_the_explicit_operator_mode(monkeypatch, capsys):
     from lionhub.providers.anthropic.messages import _AccountProbeResult
     from lionhub.serve.cli import doctor
@@ -67,6 +91,7 @@ def test_account_probe_uses_only_the_explicit_operator_mode(monkeypatch, capsys)
     }
 
 
+@pytest.mark.usefixtures("operator_terminal")
 def test_nonbilling_account_probe_reports_the_refusal_code(monkeypatch, capsys):
     from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
     from lionhub.serve.cli import doctor
@@ -80,7 +105,10 @@ def test_nonbilling_account_probe_reports_the_refusal_code(monkeypatch, capsys):
     assert doctor.run_doctor(_doctor_args("--probe-anthropic-account", "primary", "--json")) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "Account probe refused (probe_block_not_billing).\n"
+    assert captured.err == (
+        "Account probe refused "
+        "(probe_block_not_billing account=primary block_reason=ceiling_exceeded).\n"
+    )
 
 
 # _looks_editable

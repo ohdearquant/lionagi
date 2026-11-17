@@ -642,7 +642,7 @@
           },
           "probe_anthropic_account": {
             "type": "string",
-            "description": "Send one billed request on a named account blocked for low credit or its spend limit. Lift its block only on a 2xx response. Runs instead of the ordinary environment checks.",
+            "description": "Send one billed request on a named account blocked for low credit or its spend limit. Lift its block only on a 2xx response. Runs instead of the ordinary environment checks, and only from an interactive terminal.",
             "x-flag": "--probe-anthropic-account"
           }
         },

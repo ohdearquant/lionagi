@@ -316,7 +316,8 @@ def _run_account_probe(name: str, *, json_output: bool) -> int:
     try:
         result = run_async(_probe_anthropic_account(name))
     except AccountRoutingError as exc:
-        print(f"Account probe refused ({exc.code.value}).", file=sys.stderr)
+        # The message carries only the code and validated fields (account, reason).
+        print(f"Account probe refused ({exc}).", file=sys.stderr)
         return 1
 
     fields = asdict(result)
@@ -350,7 +351,7 @@ def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Send one billed request on a named account blocked for low credit or its spend "
             "limit. Lift its block only on a 2xx response. Runs instead of the ordinary "
-            "environment checks."
+            "environment checks, and only from an interactive terminal."
         ),
     )
 
@@ -361,6 +362,16 @@ def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
 def run_doctor(args: argparse.Namespace) -> int:
     account = getattr(args, "probe_anthropic_account", None)
     if account is not None:
+        # The probe spends a billed request and may lift a block, so it is an
+        # operator action: refuse it when no one is at a terminal, as from an
+        # agent's shell or an MCP server.
+        if not sys.stdin.isatty():
+            print(
+                "The account probe sends a billed request and runs only from an "
+                "interactive terminal.",
+                file=sys.stderr,
+            )
+            return 2
         return _run_account_probe(account, json_output=getattr(args, "json", False))
     checks = collect_checks()
     if getattr(args, "json", False):
