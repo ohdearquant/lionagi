@@ -13,6 +13,7 @@ import secrets
 import signal
 import socket
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -336,6 +337,12 @@ def observe_process_group_leader(pid: Any, *, expected_marker: str) -> float | N
     names the spawn unless the child was collected by something other than its
     spawner and the pid reissued to another child of this process before this
     call. That needs the pid space to wrap within that interval.
+
+    A leader that has already exited by this call shows no environment either,
+    and its group can no longer be read. While it is still uncollected its pid
+    is held, so an exited child of this process with a stable start time is
+    bound the same way; the caller spawned it as a session leader, so its pid
+    names the group.
     """
     if (
         type(pid) is not int
@@ -347,13 +354,43 @@ def observe_process_group_leader(pid: Any, *, expected_marker: str) -> float | N
         return None
     state, member = pinned_member(pid, pid, marker_var=_PROCESS_GROUP_MARKER)
     if state != "found" or member is None:
-        return None
+        return _exited_child_created(pid)
     _, created, marker, marker_read = member
     if marker_read and marker is not None:
         if isinstance(marker, str) and secrets.compare_digest(marker, expected_marker):
             return created
         return None
     return created if _is_this_process_child(pid, created) else None
+
+
+_EXITING_CHILD_WAIT_SECONDS = 0.1
+
+
+def _exited_child_created(pid: int) -> float | None:
+    """Start time of *pid* when it is an exited, uncollected child of this process.
+
+    macOS reports an exiting process as idle, with its group no longer readable,
+    before it becomes a zombie; a child of this process seen in that state is
+    given a short, bounded wait to finish exiting.
+    """
+    import psutil
+
+    deadline = time.monotonic() + _EXITING_CHILD_WAIT_SECONDS
+    while True:
+        state, created = _recorded_process_create_time(pid)
+        try:
+            parent = psutil.Process(pid).ppid()
+        except (psutil.Error, OSError):
+            return None
+        if parent != os.getpid():
+            return None
+        if state == "zombie" and created is not None:
+            break
+        if state != "found" or time.monotonic() >= deadline:
+            return None
+        time.sleep(0.001)
+    again, created_again = _recorded_process_create_time(pid, expected_created=created)
+    return created if again == "zombie" and created_again == created else None
 
 
 def _is_this_process_child(pid: int, created: float) -> bool:

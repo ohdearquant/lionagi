@@ -1503,3 +1503,44 @@ def test_a_system_binary_leader_is_bound_by_parentage():
     finally:
         child.kill()
         child.wait()
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups")
+def test_a_leader_that_exited_before_the_observation_is_bound_until_it_is_collected():
+    """A leader that has already exited shows no environment and no group, but while it is an
+    uncollected child of this process its pid is held, so the observation binds it."""
+    import subprocess
+
+    import psutil
+
+    from lionagi.ln._proc import observe_process_group_leader, prepare_process_group_env
+
+    env, marker = prepare_process_group_env(dict(os.environ))
+    child = subprocess.Popen(["/bin/sh", "-c", "exit 0"], env=env, start_new_session=True)
+    try:
+        stop_by = time.monotonic() + 5.0
+        while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < stop_by, "the child did not exit"
+            time.sleep(0.005)
+        started = psutil.Process(child.pid).create_time()
+        bound = observe_process_group_leader(child.pid, expected_marker=marker)
+        assert bound is not None
+        assert abs(bound - started) <= 1.0
+    finally:
+        child.wait()
+
+    assert observe_process_group_leader(child.pid, expected_marker=marker) is None
+
+
+def test_a_leader_whose_group_cannot_be_read_is_not_bound_unless_it_is_this_process_child(
+    monkeypatch,
+):
+    import lionagi.ln._proc as proc_mod
+
+    monkeypatch.setattr(proc_mod, "pinned_member", lambda *a, **k: ("gone", None))
+    began = time.monotonic()
+
+    assert (
+        proc_mod.observe_process_group_leader(os.getppid(), expected_marker="spawn-token") is None
+    )
+    assert time.monotonic() - began < proc_mod._EXITING_CHILD_WAIT_SECONDS

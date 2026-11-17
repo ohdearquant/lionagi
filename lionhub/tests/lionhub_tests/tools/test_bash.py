@@ -834,3 +834,43 @@ def test_a_system_shell_leader_does_not_leave_its_background_job_running(tmp_pat
     assert result["timed_out"] is True
     assert "started" in result["stdout"]
     assert stopped, "the background job outlived the call"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS hides a system binary's environment")
+def test_a_shell_that_exits_before_it_is_observed_does_not_leave_its_job_running(
+    tmp_path, monkeypatch
+):
+    """A thread preempted between the spawn and the leader observation sees the shell
+    already exited. The observation runs only once the shell is an uncollected zombie."""
+    import os
+    import time
+
+    import psutil
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    observe = subprocess_mod.observe_process_group_leader
+
+    def observe_after_exit(pid, **kwargs):
+        stop_by = time.monotonic() + 5.0
+        while psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < stop_by, "the shell did not exit"
+            time.sleep(0.005)
+        return observe(pid, **kwargs)
+
+    monkeypatch.setattr(subprocess_mod, "observe_process_group_leader", observe_after_exit)
+    pid_file = tmp_path / "bg.pid"
+    script = f"sleep 30 & echo $! > {pid_file}; echo started; exit 0"
+    try:
+        result = subprocess_mod._subprocess_sync(["/bin/sh", "-c", script], False, 1.0, None)
+        bg_pid = int(pid_file.read_text().strip())
+        stopped = _stopped_within(bg_pid, 2.0)
+    finally:
+        try:
+            os.kill(int(pid_file.read_text().strip()), 9)
+        except (OSError, ValueError):
+            pass
+
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]
+    assert stopped, "the background job outlived the call"

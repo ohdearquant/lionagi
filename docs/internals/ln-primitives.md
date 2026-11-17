@@ -131,8 +131,11 @@ the leader group, and both sides of a start-time bracket agree. A leader that
 shows no marker at all (macOS discloses no environment for a protected system
 binary such as `/bin/sh`) is accepted instead when it is a child of this
 process, read inside the same bracket: a child's pid is not reissued until the
-child is collected. A marker that is read and differs is never overridden by
-parentage. The caller then
+child is collected. A leader that has already exited by the observation shows
+neither environment nor group; while it is an uncollected child of this process
+its pid is still held, so it is accepted on the same ground, after a short
+bounded wait for an exiting child to finish exiting. A marker that is read and
+differs is never overridden by parentage. The caller then
 uses `capture_group_witnesses()` while that exact leader still anchors the group
 to freeze start-time-pinned member witnesses. An unreadable or mismatched marker
 is fail-closed, as are absent witnesses: the terminators signal only the direct
