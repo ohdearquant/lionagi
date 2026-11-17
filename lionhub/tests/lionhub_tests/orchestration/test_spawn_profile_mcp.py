@@ -545,6 +545,23 @@ def test_first_line_prose_rule_refuses_later_misplaced_settings(declaration, dia
         _parse_profile("reviewer", text)
 
 
+@pytest.mark.parametrize(
+    ("tail", "line"),
+    [
+        ("contain_user_settings: true\n---\n", 3),
+        ("\nWork.\n---\ncontain_user_settings: true\n", 6),
+    ],
+    ids=["bounded-span-after-close", "separate-unclosed-opener"],
+)
+def test_first_line_prose_rule_refuses_a_later_settings_block(tail, line):
+    text = f"Review ---\nmodel: claude_code/sonnet\n---\n{tail}"
+
+    with pytest.raises(
+        ConfigurationError, match=rf"--- block on line {line} .*contain_user_settings declaration"
+    ):
+        _parse_profile("reviewer", text)
+
+
 def test_first_line_prose_rule_leaves_fenced_tools_after_first_unfenced_close_in_prompt(
     monkeypatch,
 ):

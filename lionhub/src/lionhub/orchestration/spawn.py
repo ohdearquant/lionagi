@@ -1625,8 +1625,9 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, 1)
         refuse_misplaced_tools(block, reads, document, 0)
-        if closing is not None:
-            # The closing rule can also open a later span. The final fence has been checked.
+        if closing is not None and closing != delimiters[-1]:
+            # The closing rule opens a later span only if another rule bounds it.
+            # The final fence has already been checked.
             remaining = [i for i in delimiters if i >= closing]
             for opening, later in _profile_body_blocks(
                 name, lines, line_offset=line_offset, layout=(remaining, fenced, None)
