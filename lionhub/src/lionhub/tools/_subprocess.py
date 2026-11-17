@@ -109,8 +109,9 @@ def _subprocess_sync(
     except subprocess.TimeoutExpired:
         timed_out = True
     else:
-        # A descendant that keeps a pipe open is bounded by the deadline; output the command
-        # wrote before exiting is still collected when it exits just before the deadline.
+        # A descendant that keeps a pipe open is bounded by the deadline, or by the drain grace
+        # after the exit when the command exits less than that before the deadline, so output
+        # written before an exit just inside the deadline is still collected.
         drain_deadline = max(deadline, time.monotonic() + _DRAIN_GRACE_SECONDS)
         t_out.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         t_err.join(timeout=max(0.0, drain_deadline - time.monotonic()))
