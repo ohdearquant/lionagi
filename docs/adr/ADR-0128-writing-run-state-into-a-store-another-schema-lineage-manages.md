@@ -206,9 +206,10 @@ classified explicitly rather than falling through a numeric comparison.
 Native initialization writes `lineage = 'lionagi'` in the transaction that applies its schema, and a
 writable native open admits a store by its rows:
 
-- A `lineage` row naming lionagi: the store is this package's. A version above `SCHEMA_VERSION` is
-  refused with `SchemaTooNewError`; a version that is missing or not a whole number is replaced by
-  the stamp, as before the row existed, since the row already says whose store it is.
+- A `lineage` row naming lionagi identifies the package. A missing version or a value outside the
+  canonical format for a positive decimal integer raises `UnrecognizedStoreError`. A canonical
+  version above `SCHEMA_VERSION` raises `SchemaTooNewError`. A refused open leaves the recorded
+  version untouched.
 - No `lineage` row, and a `schema_meta` table: every store lionagi created before the row holds a
   version from 1 to `SCHEMA_VERSION` and the `sessions` table, both created on its first open. Such
   a store is adopted and the migration writes the row into it; so is one that holds no table a
