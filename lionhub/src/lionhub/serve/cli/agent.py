@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, field_validator
 
@@ -68,11 +69,15 @@ from lionhub.orchestration.mcp_config import (
     resolve_spawn_mcp_servers,
 )
 from lionhub.orchestration.runs import (
+    _MCP_AGENT_RUN_ID,
     _MCP_JOB_RUN_ID_ENV_VAR,
+    _SUBSCRIPTION_SWITCH_KEY,
     SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
     TERMINAL_WRITE_LOST_FIELD,
     RunDir,
     _signal_window_marker,
+    _subscription_fallback_resume_refusal,
+    _SubscriptionFallbackResumeError,
     _write_signal_persistence_degraded_at,
     _write_terminal_write_lost,
     allocate_run,
@@ -243,10 +248,6 @@ _API_TOOL_SETS: dict[str, tuple[str, ...]] = {
 _API_CONFINED_TOOL_SETS = ("write",)
 # The tool set and round bound an API branch was launched with, read again on resume.
 _API_LAUNCH_KEY = "api_launch"
-# Set on a branch the subscription fallback moved to the Claude Code route. The child environment
-# that route was handed is runtime state and is not saved with the branch, so a restored branch
-# would spawn Claude Code with this process's whole environment; such a branch is not resumed.
-_SUBSCRIPTION_SWITCH_KEY = "subscription_switch"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
 _API_DEFAULT_MAX_EXTENSIONS = 10
 # The tool loops an API leg can run (`api_loop`): ReAct, the default, batched LNDL rounds
@@ -1949,22 +1950,43 @@ async def _run_agent(
             _, branch_path = find_branch(branch_id)
             branch = Branch.from_dict(json.loads(branch_path.read_text()))
         elif resume:
-            _, branch_path = find_branch(resume)
-            resolved_branch_id = branch_path.stem
-            if resolved_branch_id != resume:
-                hint(f"[resume] prefix-matched {resume} → {resolved_branch_id}")
-            branch = Branch.from_dict(json.loads(branch_path.read_text()))
+            branch_path = None
+            if _MCP_AGENT_RUN_ID.fullmatch(resume):
+                from lionhub.serve.mcp.jobs import _load_saved_agent_branch
+
+                try:
+                    expected_branch_id, branch_data = _load_saved_agent_branch(resume)
+                except _SubscriptionFallbackResumeError as exc:
+                    raise ConfigurationError(str(exc)) from None
+                except (OSError, RuntimeError, ValueError):
+                    raise ConfigurationError(
+                        "That run does not have a readable saved agent branch in this home."
+                    ) from None
+            else:
+                try:
+                    canonical = str(UUID(resume))
+                except ValueError:
+                    canonical = None
+                expected_branch_id = canonical if canonical == resume.lower() else None
+                _, branch_path = find_branch(expected_branch_id or resume)
+                branch_data = json.loads(branch_path.read_text())
+            branch = Branch.from_dict(branch_data)
+            if expected_branch_id is not None and str(branch.id) != expected_branch_id:
+                await branch.mdls.shutdown()
+                raise ConfigurationError(
+                    "The saved branch ID does not match the requested branch ID."
+                )
+            if branch_path is not None and branch_path.stem != (expected_branch_id or resume):
+                hint(f"[resume] prefix-matched {resume} → {branch_path.stem}")
 
         # Capture before the new-branch block below reassigns `branch`: the only
         # reliable "reopened existing" vs "minting new" signal once that block runs.
         is_resumed_branch = branch is not None
 
-        if is_resumed_branch and branch.metadata.get(_SUBSCRIPTION_SWITCH_KEY):
-            raise ConfigurationError(
-                "this branch moved from the Anthropic API route to the subscription route, and "
-                "the reduced environment its Claude Code process ran with is not saved with the "
-                "branch; it cannot be resumed. Start a new branch."
-            )
+        if branch is not None and (
+            reason := _subscription_fallback_resume_refusal(branch.metadata)
+        ):
+            raise ConfigurationError(reason)
 
         if is_resumed_branch and mcp_config is not None:
             launched = branch.metadata.get(_MCP_LAUNCH_KEY)
