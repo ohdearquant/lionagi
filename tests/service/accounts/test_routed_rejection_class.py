@@ -948,6 +948,55 @@ def test_the_message_check_passes_when_a_package_frame_holds_other_text(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_a_cancellation_pending_at_classifier_entry_skips_the_rejection_body(
+    monkeypatch, tmp_path
+):
+    class ImmediateRejection(_Rejection):
+        async def aiter_bytes(self):
+            self.yielded += 1
+            yield self.content
+
+    response = ImmediateRejection(400, _typed(PROMPT))
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [response])
+    writes = _count_ledger_settlements(monkeypatch)
+    classify = messages_module._classify_streamed_rejection_details
+    cancel_message = "cancel before rejection body"
+
+    async def cancel_at_entry(rejection, status):
+        assert rejection is response and status == 400 and response.yielded == 0
+        task = asyncio.current_task()
+        assert task is not None
+        cancellation_requested = task.cancel(cancel_message)
+        assert cancellation_requested
+        return await classify(rejection, status)
+
+    monkeypatch.setattr(messages_module, "_classify_streamed_rejection_details", cancel_at_entry)
+    cancellations = []
+
+    async def consume():
+        try:
+            await _send(model, True)
+        except asyncio.CancelledError as exc:
+            cancellations.append(exc.args)
+            raise
+
+    task = asyncio.create_task(consume())
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Check the message inside the consumer. Python 3.10 may lose it across the task boundary.
+    assert cancellations == [(cancel_message,)]
+    assert response.yielded == 0
+    assert response.closed and task.cancelled() and len(transport.calls) == 1
+    assert len(writes) == 1 and writes[0].reason_code == "request_rejected"
+    assert len(_attempts(path)) == 1
+    assert _attempts(path)[0][2:5] == ("open", None, "request_rejected")
+    assert _rejection_columns(path) == [("request_rejected", "other", "other")]
+    assert _http_statuses(path) == [(400,)]
+
+
+@pytest.mark.asyncio
 @STREAMED
 async def test_a_pending_cancellation_records_the_evidence_available_after_late_headers(
     monkeypatch, tmp_path, streamed

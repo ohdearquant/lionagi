@@ -627,7 +627,12 @@ def _classify_rejection_details(body: bytes, status: int) -> tuple[str, str, boo
 
 
 async def _classify_streamed_rejection_details(response: Any, status: int) -> tuple[str, str, bool]:
-    """Read a bounded rejection body without adding its frames to caller cancellation."""
+    """Read a bounded rejection body without adding its frames to caller cancellation.
+
+    Pending cancellation raises at entry before the read deadline starts (ADR-0126 A14 Rule 1).
+    """
+    # Observe pending cancellation before the reader can consume an available body.
+    await anyio.lowlevel.checkpoint()
     details = ("other", "other", False)
     deadline = anyio.current_time() + _REJECTION_READ_SECONDS
 
