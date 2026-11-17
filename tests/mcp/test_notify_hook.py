@@ -287,6 +287,7 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch, label_field
     assert rec["status"] == "failed"
     assert captured["argv"] == ["notify", job, "failed", expected_label, "downstream"]
     # The notifier receives the common fields and the MCP target on stdin.
+    # Agent jobs also carry a null resume ID before they have a saved branch.
     payload = json.loads(captured["proc"].input)
     assert payload == {
         "schema_version": 1,
@@ -298,6 +299,7 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch, label_field
         "sender": None,
         "cwd": None,
         "output_dir": None,
+        **({"resume_id": None} if label_fields.get("kind") == "agent" else {}),
     }
     assert rec["notify_delivery"] == {
         "attempted": True,
@@ -1395,6 +1397,7 @@ def test_both_callers_deliver_from_the_same_directory(monkeypatch, tmp_path, exp
             "target": "reviewer-b",
             "cwd": str(run_dir),
             "output_dir": str(artifact_root),
+            "resume_id": None,
         }
 
 

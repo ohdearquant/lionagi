@@ -439,14 +439,13 @@ async def test_a_leg_that_will_auto_resume_leaves_the_notice_to_the_resumed_leg(
     async def operate(self, instruction=None, **kw):
         turns["n"] += 1
         if turns["n"] == 1:
+            (tmp_path / f"{self.id}.json").write_text(json.dumps({"id": str(self.id)}))
             raise LionTimeoutError("synthetic")
         return "the resumed leg concluded the task"
 
     monkeypatch.setattr(Branch, "operate", operate)
-    branch_file = tmp_path / "branch.json"
-    branch_file.write_text("{}")
-    monkeypatch.setattr(agent_mod, "find_branch", lambda rid: (None, branch_file))
-    monkeypatch.setattr(Branch, "from_dict", classmethod(lambda cls, data: Branch()))
+    monkeypatch.setattr(agent_mod, "find_branch", lambda rid: (None, tmp_path / f"{rid}.json"))
+    monkeypatch.setattr(Branch, "from_dict", classmethod(lambda cls, data: cls(id=data["id"])))
 
     result = await agent_mod._run_agent(
         "codex/model",
