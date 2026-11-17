@@ -116,6 +116,19 @@ def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
     """
 
     async def evaluate(tool_name: str, action: str, args: dict) -> GateResult:
+        malformed = _malformed_call(control, tool_name, action)
+        if malformed is not None:
+            # A verdict for this call could not be constructed, so refuse it here, with text
+            # that is valid, rather than let the construction raise out of the pass.
+            logger.warning("gate control %r refused a malformed call: %s", control, malformed)
+            return GateResult(
+                False,
+                _as_text(control),
+                _as_text(tool_name),
+                _as_text(action),
+                malformed,
+                errored=True,
+            )
         try:
             result = await maybe_await(hook(tool_name, action, args))
         except ControlUnavailableError as e:
@@ -157,6 +170,20 @@ def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
         )
 
     return evaluate
+
+
+def _malformed_call(control: Any, tool_name: Any, action: Any) -> str | None:
+    """Why a call cannot carry a verdict, or None: every verdict names its control, tool and
+    action as strings. ``action`` can come from a rewrite an earlier control returned."""
+    for name, value in (("control", control), ("tool_name", tool_name), ("action", action)):
+        if not isinstance(value, str):
+            return f"invalid gate call: {name} must be a str, not {type(value).__name__}"
+    return None
+
+
+def _as_text(value: Any) -> str:
+    """*value* when it is a string, otherwise its type name; never the value itself."""
+    return value if isinstance(value, str) else f"<{type(value).__name__}>"
 
 
 def _broken_rule_of(result: GateResult) -> str | None:

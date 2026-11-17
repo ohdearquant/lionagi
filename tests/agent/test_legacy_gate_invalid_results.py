@@ -46,9 +46,9 @@ def test_gate_result_cannot_allow_an_errored_verdict():
     ],
 )
 def test_gate_result_construction_enforces_every_field_rule(changes, message):
-    fields = {"allowed": False, "control": "policy", "tool_name": "bash", "action": "run"}
+    base = {"allowed": False, "control": "policy", "tool_name": "bash", "action": "run"}
     with pytest.raises(TypeError, match=message):
-        GateResult(**{**fields, "reason": "denied", **changes})
+        GateResult(**{**base, "reason": "denied", **changes})
 
 
 class _ClaimsValid(GateResult):
@@ -187,3 +187,42 @@ async def test_valid_gate_results_keep_their_verdict(verdict):
         "bash", "run", {"command": "original"}
     )
     assert result == verdict
+
+
+def _raises(*_args):
+    raise RuntimeError("hook failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hook", [lambda *_args: None, _raises], ids=["allowing", "raising"])
+async def test_a_call_with_a_non_string_action_is_refused_instead_of_raising(hook):
+    args, denied = await run_gate_pass(
+        [adapt_legacy_hook("policy", hook)], "bash", 5, {"command": "original"}
+    )
+    assert args == {"command": "original"}
+    assert denied is not None
+    assert (denied.allowed, denied.errored) == (False, True)
+    assert (denied.control, denied.tool_name, denied.action) == ("policy", "bash", "<int>")
+    assert denied.reason == "invalid gate call: action must be a str, not int"
+
+
+@pytest.mark.asyncio
+async def test_a_rewrite_that_sets_a_non_string_action_is_refused_by_the_next_control():
+    later_hook_calls = []
+    evaluators = [
+        adapt_legacy_hook("rewriter", lambda *_args: {"action": 5}),
+        adapt_legacy_hook("policy", lambda *args: later_hook_calls.append(args)),
+    ]
+
+    args, denied = await run_gate_pass(evaluators, "bash", "run", {"command": "original"})
+
+    assert args == {"action": 5}
+    assert denied is not None
+    assert (denied.control, denied.allowed, denied.errored) == ("policy", False, True)
+    assert denied.reason == "invalid gate call: action must be a str, not int"
+    assert later_hook_calls == []
+
+
+def test_a_change_that_names_no_gate_result_field_is_an_error():
+    with pytest.raises(TypeError, match="not GateResult fields"):
+        built_around_construction(GateResult(False, "policy", "bash", "run", "denied"), alowed=True)
