@@ -2153,7 +2153,10 @@ def _saved_agent_branch_id(run_id: str) -> str | None:
 
 
 def _resolve_agent_resume_id(resume: str) -> str | None:
-    """Resolve a full job run ID. Let the CLI keep resolving legacy branch references."""
+    """Resolve a full job run ID and leave legacy branch references to the CLI.
+
+    The CLI refuses branch selectors for subscription-fallback runs after the job starts.
+    """
     if _AGENT_JOB_PREFIX.match(resume) is None:
         return None
     if _MCP_AGENT_RUN_ID.fullmatch(resume) is None:
