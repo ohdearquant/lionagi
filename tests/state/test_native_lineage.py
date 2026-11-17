@@ -481,13 +481,7 @@ async def test_a_log_a_closing_writer_removes_while_the_store_is_copied_reads_th
         writer.execute("PRAGMA wal_autocheckpoint = 0")
         writer.execute("INSERT INTO schema_meta (key, value) VALUES ('written', '1')")
         assert Path(f"{path}-wal").stat().st_size > 0
-        # The read-only read of the log through its index fails, so the log is read from a copy.
-        read = db_mod._read_lineage
-        monkeypatch.setattr(
-            db_mod,
-            "_read_lineage",
-            lambda target: None if "readonly_shm" in str(target) else read(target),
-        )
+        _fail_the_read_through_the_log_index(monkeypatch)
         real = db_mod._copy_store_file
 
         def closed_during_the_copy(source: str, copy: str) -> None:
@@ -526,10 +520,33 @@ def test_a_stopped_copy_ends_before_its_next_chunk(tmp_path, monkeypatch):
     assert offsets == [0]
 
 
-async def test_a_cancelled_open_returns_at_once_and_stops_copying_the_store(tmp_path, monkeypatch):
-    """The open reads the lineage from a copy of a store file that takes seconds to copy. A
-    deadline cancels the open: it returns without waiting for the copy, and the copy stops at its
-    next chunk and removes its directory instead of copying the rest of the file."""
+def _fail_the_read_through_the_log_index(monkeypatch) -> None:
+    """Make the read-only read of a store's log through its index fail, so the open reads the
+    lineage from a copy of the store and its log."""
+    from lionagi.state import db as db_mod
+
+    read = db_mod._read_lineage
+
+    def without_the_index(target):
+        if "readonly_shm=1" in str(target):
+            return None
+        return read(target)
+
+    monkeypatch.setattr(db_mod, "_read_lineage", without_the_index)
+    built = db_mod._read_only_uri("/store.db", False, immutable=False)
+    assert "readonly_shm=1" in built, "the read through the index must still be recognisable"
+
+
+@pytest.mark.parametrize("cancel", ["task", "anyio-scope"])
+async def test_a_cancelled_open_returns_at_once_and_stops_copying_the_store(
+    tmp_path, monkeypatch, cancel
+):
+    """The open reads the lineage from a copy of a store file that takes seconds to copy. Once the
+    copy has started, the open is cancelled, natively or by an AnyIO cancel scope: it returns
+    without waiting for the copy, and the copy stops at its next chunk and removes its directory
+    instead of copying the rest of the file."""
+    import anyio
+
     from lionagi.state import db as db_mod
 
     path = tmp_path / "store.db"
@@ -545,13 +562,7 @@ async def test_a_cancelled_open_returns_at_once_and_stops_copying_the_store(tmp_
         writer.execute("PRAGMA wal_autocheckpoint = 0")
         writer.execute("INSERT INTO schema_meta (key, value) VALUES ('written', '1')")
         assert Path(f"{path}-wal").stat().st_size > 0
-        # The read-only read of the log through its index fails, so the store is copied.
-        read = db_mod._read_lineage
-        monkeypatch.setattr(
-            db_mod,
-            "_read_lineage",
-            lambda target: None if "readonly_shm" in str(target) else read(target),
-        )
+        _fail_the_read_through_the_log_index(monkeypatch)
         offsets = []
         real_pread = os.pread
 
@@ -561,9 +572,29 @@ async def test_a_cancelled_open_returns_at_once_and_stops_copying_the_store(tmp_
             return real_pread(descriptor, size, offset)
 
         monkeypatch.setattr(db_mod.os, "pread", slow_pread)
+        scopes = []
+
+        async def open_in_a_scope():
+            with anyio.CancelScope() as scope:
+                scopes.append(scope)
+                await StateDB(path).open()
+
+        task = asyncio.ensure_future(
+            open_in_a_scope() if cancel == "anyio-scope" else StateDB(path).open()
+        )
+        # Cancelled once the copy is under way, however long the open took to reach it.
+        reached_by = time.monotonic() + 30.0
+        while not offsets and not task.done() and time.monotonic() < reached_by:
+            await asyncio.sleep(0.01)
+        assert offsets, "the open must reach the copy of the store"
         started = time.monotonic()
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(StateDB(path).open(), timeout=0.5)
+        if cancel == "anyio-scope":
+            scopes[0].cancel()
+            await task
+        else:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
         returned = time.monotonic() - started
         stop_by = time.monotonic() + 2.0
         while any(scratch.iterdir()) and time.monotonic() < stop_by:
@@ -572,10 +603,10 @@ async def test_a_cancelled_open_returns_at_once_and_stops_copying_the_store(tmp_
     finally:
         writer.close()
 
-    # A whole copy reads every chunk at 0.3 s each.
-    assert returned < 1.5
+    # The rest of the copy would read 11 more chunks at 0.3 s each.
+    assert returned < 1.0
     assert left == []
-    assert 0 < len(offsets) < chunks
+    assert len(offsets) < chunks
 
 
 @pytest.mark.parametrize("journal", ["unreadable", "directory"])

@@ -1362,8 +1362,8 @@ class StateDB:
 
         The read can copy the whole store file (``_read_lineage_from_a_copy``), which takes as
         long as the store is large. A cancelled open therefore returns at once instead of waiting
-        for the worker, and tells the worker to stop: the read raises ``_CopyStoppedError``
-        before its next attempt or its next chunk of the copy, and the copy's directory is
+        for the worker, and tells the worker to stop: the read raises ``_CopyStoppedError`` at
+        its next check (``_read_lineage_from_a_copy`` names them), and the copy's directory is
         removed. Nothing the worker reads is used once the open is cancelled.
         """
         stop = threading.Event()
@@ -1402,6 +1402,9 @@ class StateDB:
         committed log, so such a store is refused by ``UnreadableStoreError`` before any writable
         connection opens it. A file that cannot be read at all is left to the writable connection,
         which reads the rows again before its settings and changes no file if it refuses then.
+
+        When the open that started it is cancelled (``_read_lineage_until_stopped``), the read
+        raises ``_CopyStoppedError`` before its next attempt or from the copy it is making.
         """
         from sqlalchemy.dialects.sqlite.aiosqlite import SQLiteDialect_aiosqlite
 
@@ -8821,7 +8824,8 @@ _COPY_ATTEMPTS = 3
 # The store file is copied this many bytes at a time, and a stop is checked after each read.
 _COPY_CHUNK_BYTES = 1 << 20
 # The stop of the lineage read running on this thread (``StateDB._read_lineage_until_stopped``),
-# set once the open that started it is cancelled; None outside such a read.
+# set once the open that started it is cancelled; None outside such a read. A thread-local rather
+# than a parameter, so the read's functions keep the signatures that the tests replacing them use.
 _LINEAGE_READ = threading.local()
 
 
@@ -8878,7 +8882,10 @@ def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
     a process killed while it copies leaves the copy there. ``_MOVED`` when the store committed or
     checkpointed while it was copied, or its journal or log could not be opened or was gone by the
     time it was copied (a commit or a closing checkpoint removes it), so the caller reads the store
-    again from the start; ``_UNREAD`` when the copy or its read fails otherwise."""
+    again from the start; ``_UNREAD`` when the copy or its read fails otherwise. Raises
+    ``_CopyStoppedError`` when the open that started it is cancelled, checked before the copy of
+    the file, after each of its chunks, and before the copy of the journal or log and before the
+    read of the copy; the copy of the journal or log, once started, runs to its end."""
     try:
         with tempfile.TemporaryDirectory(prefix="lionagi-lineage-") as scratch:
             copy = os.path.join(scratch, "store.db")
@@ -8886,12 +8893,14 @@ def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
             if before is None:
                 return _MOVED
             _copy_store_file(path, copy)
+            _raise_if_stopped()
             try:
                 shutil.copyfile(f"{path}{suffix}", f"{copy}{suffix}")
             except FileNotFoundError:
                 return _MOVED
             if _copy_state(path, suffix) != before:
                 return _MOVED
+            _raise_if_stopped()
             read = _read_lineage(Path(copy).as_uri())
     except (OSError, sqlite3.Error):
         return _UNREAD
