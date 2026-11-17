@@ -105,6 +105,9 @@ def test_no_servers_warning_is_leg_scoped(write_settings):
         pytest.param("mcp: {quiet_discovery: 1}", None, True, id="integer"),
         pytest.param("mcp: [true]", None, True, id="non-mapping-mcp"),
         pytest.param("mcp: [", None, True, id="malformed-yaml"),
+        pytest.param(
+            "mcp: {quiet_discovery: !!bool unknown}", None, True, id="invalid-boolean-tag"
+        ),
         pytest.param("true", None, True, id="non-mapping-document"),
         pytest.param(_QUIET_ON, "mcp: [", False, id="project-malformed-ignored"),
     ],

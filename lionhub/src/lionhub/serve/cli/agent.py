@@ -1369,13 +1369,11 @@ def _report_mcp_resolution(
         return
 
     if resolution.reason == "no_mcp_config_found":
-        from yaml import YAMLError
-
         from lionagi._settings import load_global_settings_layer
 
         try:
             settings = load_global_settings_layer()
-        except (OSError, RuntimeError, ValueError, YAMLError):
+        except Exception:  # noqa: BLE001 -- a failed preference read preserves the warning
             settings = None
         mcp_settings = settings.get("mcp") if isinstance(settings, dict) else None
         if isinstance(mcp_settings, dict) and mcp_settings.get("quiet_discovery") is True:
