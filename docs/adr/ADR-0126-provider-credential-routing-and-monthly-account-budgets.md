@@ -1902,18 +1902,29 @@ record the outcome with the same budget and settlement rules as routed work.
    imposed by newer ledger activity or by settlement of an over-ceiling bill.
    An intervening audited unblock ends the original block even if the account
    is subsequently blocked with the same reason.
-4. A non-2xx response or an attempt without a response keeps the account
-   blocked and refreshes the continuing block with a dated status or
-   no-response code that identifies the attempt. Two failures with the same
-   status in one minute create distinct block marks. Proven unsent and typed
-   zero-cost outcomes settle as zero. Keep the ceiling when delivery or usage
-   remains uncertain. A replay of a recorded outcome may supply missing
-   accounting evidence and cannot apply the account disposition a second time.
+4. A non-2xx response or an attempt without a response leaves the account's
+   block reason unchanged. Amendment 12 Decision 2 continues to preserve the
+   original reason, and its Decision 4 continues to derive `billing_block`
+   from that reason. Record a dated diagnostic mark beside the attempt with
+   its ID, nullable HTTP status and nullable closed-set provider error type.
+   Append it in the same transaction as the first recorded failure. A success
+   may not clear the observed block if a newer failure was recorded after
+   its reservation. Proven unsent and typed zero-cost outcomes settle as
+   zero. Keep the ceiling when delivery or usage remains uncertain. A replay
+   may supply missing accounting evidence and leaves the diagnostic mark
+   and account disposition unchanged.
 5. Diagnostic data from the probe is limited to the HTTP status, a closed-set
    provider error type when available, and the accounting outcome. Durably
    record ordinary token counts and cost where available. Exclude the response
    body, exception message, credential, provider request ID and rejection
    class from the probe record and operator output.
+6. **Scope of the exception.** D3's sentence “Candidates are configured,
+   unblocked accounts with room for that attempt” and Amendment 12 Decision
+   3's restatement continue to govern ordinary assignment. This explicit
+   operator probe admits only the named blocked account without assigning
+   it to a conversation. Amendment 12 Decision 4's sentence “the account
+   stays blocked until an operator unblocks it” includes a clear triggered by
+   the operator's explicit probe and recorded only on a successful response.
 
 ### Verification
 
@@ -1923,4 +1934,7 @@ a request proven unsent. Check the held or charged amount, sanitized data,
 single audit entry on success, and continued block on failure. Force an
 unblock-write failure and verify that both the settlement and unblock roll
 back. Cover replay, an intervening unblock and reblock, and a bill above the
-ceiling. Use a synthetic transport and a temporary ledger.
+ceiling. Verify a failed probe on a `credit_balance_low` account preserves its
+reason and `billing_block`, with a separate dated mark. Check that a later
+recorded failure keeps an older successful probe from clearing the block.
+Use a synthetic transport and a temporary ledger.

@@ -359,18 +359,24 @@ def _canonical_json(value: object) -> str:
 
 def _probe_reservation(
     value: str | None,
-) -> tuple[tuple[str, str | None], str | None]:
+) -> tuple[tuple[str, str | None, int | None], str | None]:
     """Read the observed block identity and the ordinary pricing envelope."""
     try:
-        block, unblock, quote = json.loads(value or "null")
+        snapshot = json.loads(value or "null")
+        if not isinstance(snapshot, list) or len(snapshot) not in (3, 4):
+            raise ValueError("invalid probe reservation")
+        block, unblock, quote = snapshot[:3]
+        failure = snapshot[3] if len(snapshot) == 4 else None
         block = _validate_reason(block)
         if unblock is not None and str(UUID(unblock)) != unblock:
             raise ValueError("invalid unblock adjustment")
         if quote is not None and not isinstance(quote, str):
             raise ValueError("invalid probe quote")
+        if failure is not None:
+            _checked_int(failure, minimum=1, maximum=INT64_MAX, label="probe failure sequence")
     except (TypeError, ValueError, AttributeError):
         raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
-    return (block, unblock), quote
+    return (block, unblock, failure), quote
 
 
 def _stored_evidence(
@@ -846,24 +852,24 @@ class CredentialLedger:
 
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
         # Unlocked, these reads can straddle another process's schema commit, so
-        # they only let a complete ledger through, warm-prefix indexes and rejection
-        # columns included; every other answer is read again, together, under the
+        # they only let a complete ledger through, supplemental tables, indexes and
+        # attempt columns included; every other answer is read again, together, under the
         # write lock before anything is refused or created.
         if (
             connection.execute("PRAGMA user_version").fetchone()[0] == 1
-            and (_TABLES | {"warm_prefix"}).issubset(self._table_names(connection))
-            and {"warm_prefix_cert", "warm_prefix_expiry"}.issubset(self._index_names(connection))
+            and (_TABLES | {"warm_prefix", "probe_failure"}).issubset(self._table_names(connection))
+            and {"warm_prefix_cert", "warm_prefix_expiry", "probe_failure_account"}.issubset(
+                self._index_names(connection)
+            )
             and set(_REJECTION_COLUMNS).issubset(self._attempt_columns(connection))
             and set(_EVIDENCE_COLUMNS).issubset(self._attempt_columns(connection))
         ):
             return
 
-        # A ledger written before warm-prefix tracking is still version 1 and has none
-        # of this table, so the table is added whenever it is missing and a reader that
-        # predates it never needs it. The same holds for the attempt columns that record
-        # a rejected request: each missing one is added, after the columns are read again
-        # under this lock because another process may have added them first.
-        warm_prefix_ddl = """
+        # Supplemental tables and attempt columns can be added to an existing version 1
+        # ledger. Check again under the lock because another process may have added them.
+        supplemental_schema = (
+            """
             CREATE TABLE IF NOT EXISTS warm_prefix (
                 provider TEXT NOT NULL,
                 account TEXT NOT NULL,
@@ -873,10 +879,25 @@ class CredentialLedger:
                 PRIMARY KEY (provider, account, cert),
                 FOREIGN KEY (provider, account) REFERENCES account(provider, name)
             )
-            """
-        warm_prefix_indexes = (
+            """,
             "CREATE INDEX IF NOT EXISTS warm_prefix_cert ON warm_prefix (provider, cert)",
             "CREATE INDEX IF NOT EXISTS warm_prefix_expiry ON warm_prefix (provider, expires_at)",
+            """
+            CREATE TABLE IF NOT EXISTS probe_failure (
+                seq INTEGER PRIMARY KEY,
+                attempt_id TEXT NOT NULL UNIQUE,
+                provider TEXT NOT NULL,
+                account TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                http_status INTEGER CHECK (
+                    http_status BETWEEN 100 AND 599 AND http_status NOT BETWEEN 200 AND 299
+                ),
+                provider_error_type TEXT,
+                FOREIGN KEY (attempt_id) REFERENCES attempt(id),
+                FOREIGN KEY (provider, account) REFERENCES account(provider, name)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS probe_failure_account ON probe_failure (provider, account)",
         )
 
         with _transaction(connection):
@@ -885,8 +906,7 @@ class CredentialLedger:
             if version == 1:
                 if not _TABLES.issubset(tables):
                     raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
-                connection.execute(warm_prefix_ddl)
-                for statement in warm_prefix_indexes:
+                for statement in supplemental_schema:
                     connection.execute(statement)
                 columns = self._attempt_columns(connection)
                 for column in _REJECTION_COLUMNS:
@@ -1002,8 +1022,7 @@ class CredentialLedger:
                 "CREATE INDEX adjustment_by_account_month "
                 "ON adjustment(provider, account, month_utc)"
             )
-            connection.execute(warm_prefix_ddl)
-            for statement in warm_prefix_indexes:
+            for statement in supplemental_schema:
                 connection.execute(statement)
             connection.execute("PRAGMA user_version = 1")
 
@@ -1179,7 +1198,7 @@ class CredentialLedger:
     @staticmethod
     def _account_block(
         connection: sqlite3.Connection, provider: str, account: str
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, int | None]:
         reason = connection.execute(
             "SELECT block_reason FROM account WHERE provider = ? AND name = ?",
             (provider, account),
@@ -1192,9 +1211,19 @@ class CredentialLedger:
             """,
             (provider, account),
         ).fetchone()
+        # Failures are append-only. The integer primary key orders concurrent observations
+        # for this account even when their UTC times match.
+        last_failure = connection.execute(
+            """
+            SELECT seq FROM probe_failure
+            WHERE provider = ? AND account = ? ORDER BY seq DESC LIMIT 1
+            """,
+            (provider, account),
+        ).fetchone()
         return (
             None if reason is None else reason[0],
             None if last_clear is None else last_clear[0],
+            None if last_failure is None else last_failure[0],
         )
 
     def _reserve_sync(
@@ -1327,7 +1356,9 @@ class CredentialLedger:
 
                 if scope.kind == "probe":
                     (selected,) = specs.values()
-                    reason, last_clear = self._account_block(connection, provider, selected.name)
+                    reason, last_clear, last_failure = self._account_block(
+                        connection, provider, selected.name
+                    )
                     if reason is None:
                         raise _routing_error(
                             RouterErrorCode.PROBE_ACCOUNT_NOT_BLOCKED,
@@ -1345,7 +1376,7 @@ class CredentialLedger:
                             account=selected.name,
                             attempt_id=attempt_id,
                         )
-                    quote_json = _canonical_json([reason, last_clear, quote_json])
+                    quote_json = _canonical_json([reason, last_clear, quote_json, last_failure])
                 elif binding is not None:
                     bound_name = binding[0]
                     selected = specs.get(bound_name)
@@ -2170,7 +2201,13 @@ class CredentialLedger:
                 if first_probe_result and conflict is None and cost_nusd <= ceiling:
                     assert probe_block is not None
                     cleared = self._apply_probe_block_disposition(
-                        connection, provider, account, attempt_id, probe_block, http_status
+                        connection,
+                        provider,
+                        account,
+                        attempt_id,
+                        probe_block,
+                        http_status,
+                        provider_error_type,
                     )
             if conflict is not None:
                 raise _routing_error(
@@ -2280,29 +2317,30 @@ class CredentialLedger:
         provider: str,
         account: str,
         attempt_id: UUID,
-        original_block: tuple[str, str | None],
+        original_block: tuple[str, str | None, int | None],
         http_status: int | None,
+        provider_error_type: str | None,
     ) -> bool:
+        if http_status is None or not 200 <= http_status < 300:
+            _, recorded_at = _month_and_iso(self._clock)
+            connection.execute(
+                """
+                INSERT INTO probe_failure (
+                    attempt_id, provider, account, recorded_at, http_status, provider_error_type
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (str(attempt_id), provider, account, recorded_at, http_status, provider_error_type),
+            )
+            return False
         if self._account_block(connection, provider, account) != original_block:
             return False
-        if http_status is not None and 200 <= http_status < 300:
-            return self._clear_block_in_transaction(
-                connection,
-                uuid5(_PROBE_UNBLOCK_NAMESPACE, str(attempt_id)),
-                provider,
-                account,
-                f"probe:{attempt_id}",
-            )
-        _, now = _month_and_iso(self._clock)
-        timestamp = datetime.fromisoformat(now).strftime("%Y%m%dt%H%Mz")
-        # A second failure with the same status and timestamp is a different block.
-        reason = f"probe_{http_status or 'no_http'}_{timestamp}_{attempt_id.hex}"
-        connection.execute(
-            "UPDATE account SET block_reason = ? WHERE provider = ? AND name = ?",
-            (reason, provider, account),
+        return self._clear_block_in_transaction(
+            connection,
+            uuid5(_PROBE_UNBLOCK_NAMESPACE, str(attempt_id)),
+            provider,
+            account,
+            f"probe:{attempt_id}",
         )
-        _clear_warm_prefix(connection, provider, account)
-        return False
 
     def _block_sync(self, provider: str, account: str, reason: str) -> None:
         reason = _validate_reason(reason)

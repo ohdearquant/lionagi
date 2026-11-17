@@ -64,6 +64,16 @@ def _unblocks(ledger):
         ).fetchall()
 
 
+def _failures(ledger):
+    with closing(sqlite3.connect(ledger.path)) as connection:
+        return connection.execute(
+            """
+            SELECT attempt_id, provider, account, recorded_at, http_status, provider_error_type
+            FROM probe_failure ORDER BY seq
+            """
+        ).fetchall()
+
+
 async def test_probe_requires_current_block_and_available_budget(tmp_path):
     ledger = await _prepare(tmp_path, block=None)
     attempt = uuid4()
@@ -124,6 +134,7 @@ async def test_probe_settles_and_clears_atomically_once(tmp_path, monkeypatch):
     assert not await ledger.settle_probe(attempt, _usage(3), http_status=200)
     assert _attempt(ledger, attempt)[:7] == ("settled", 3, "complete", 200, None, None, None)
     assert _unblocks(ledger) == [(f"probe:{attempt}",)]
+    assert _failures(ledger) == []
     status = (await ledger.status("anthropic"))[0]
     assert (status.block_reason, status.settled_nusd, status.open_ceiling_nusd) == (None, 3, 0)
 
@@ -150,6 +161,8 @@ async def test_probe_typed_zero_records_type_but_no_rejection_class(
         attempt, first, http_status=status, provider_error_type=error_type
     )
     assert _attempt(ledger, attempt)[:7] == ("open", None, reason, status, error_type, None, None)
+    failures = [(str(attempt), "anthropic", ACCOUNT.name, NOW.isoformat(), status, error_type)]
+    assert _failures(ledger) == failures
 
     evidence = RejectionZero(status, error_type, None, reason)
     assert not await ledger.settle_probe(attempt, evidence, http_status=status)
@@ -159,13 +172,12 @@ async def test_probe_typed_zero_records_type_but_no_rejection_class(
     details = json.loads(row[7])
     assert details["first_failure"]["rejection_class"] is None
     assert details["evidence"]["rejection_class"] is None
-    assert (await ledger.status("anthropic"))[0].block_reason == (
-        f"probe_{status}_20261116t1405z_{attempt.hex}"
-    )
+    assert (await ledger.status("anthropic"))[0].block_reason == "credit_balance_low"
+    assert _failures(ledger) == failures
     assert _unblocks(ledger) == []
 
 
-async def test_probe_no_response_refreshes_the_block_at_zero_when_unsent(tmp_path):
+async def test_probe_no_response_records_failure_at_zero_when_unsent(tmp_path):
     ledger = await _prepare(tmp_path)
     attempt = uuid4()
     await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
@@ -173,10 +185,45 @@ async def test_probe_no_response_refreshes_the_block_at_zero_when_unsent(tmp_pat
         attempt, ProvenNotSent(caller_cancelled=True), http_status=None
     )
     assert _attempt(ledger, attempt)[:7] == ("settled", 0, "not_sent", None, None, None, None)
-    assert (await ledger.status("anthropic"))[0].block_reason == (
-        f"probe_no_http_20261116t1405z_{attempt.hex}"
-    )
+    assert (await ledger.status("anthropic"))[0].block_reason == "credit_balance_low"
+    assert _failures(ledger) == [
+        (str(attempt), "anthropic", ACCOUNT.name, NOW.isoformat(), None, None)
+    ]
     assert _unblocks(ledger) == []
+
+
+async def test_probe_upgrades_version_one_and_preserves_bound_billing_diagnostic(tmp_path):
+    ledger = await _prepare(tmp_path, block=None)
+    bound_scope = Scope("branch", uuid4(), "anthropic")
+    seed = uuid4()
+    await ledger.reserve(bound_scope, seed, QUOTE, (ACCOUNT,))
+    await ledger.settle(seed, ProvenNotSent())
+    await ledger.block("anthropic", ACCOUNT.name, "credit_balance_low")
+    with closing(sqlite3.connect(ledger.path)) as connection:
+        connection.execute("DROP TABLE probe_failure")
+        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+
+    ledger = CredentialLedger(ledger.path, clock=lambda: NOW)
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    held = UnknownOutcome("provider_error")
+    for _ in range(2):
+        assert not await ledger.settle_probe(
+            attempt, held, http_status=503, provider_error_type="api_error"
+        )
+    assert _attempt(ledger, attempt)[:6] == ("open", None, "provider_error", 503, "api_error", None)
+    assert _failures(ledger) == [
+        (str(attempt), "anthropic", ACCOUNT.name, NOW.isoformat(), 503, "api_error")
+    ]
+    status = (await ledger.status("anthropic"))[0]
+    assert (status.block_reason, status.open_ceiling_nusd) == ("credit_balance_low", 10)
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.reserve(bound_scope, uuid4(), QUOTE, (ACCOUNT,))
+    assert caught.value.code is RouterErrorCode.ACCOUNT_BLOCKED
+    assert caught.value.billing_block == "credit_balance_low"
+    with closing(sqlite3.connect(ledger.path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
 
 
 async def test_probe_success_preserves_a_newer_same_status_failure_in_the_same_minute(tmp_path):
@@ -186,7 +233,7 @@ async def test_probe_success_preserves_a_newer_same_status_failure_in_the_same_m
 
     await ledger.reserve_probe(ACCOUNT, initial, QUOTE)
     assert not await ledger.settle_probe(initial, rejection, http_status=529)
-    assert (await ledger.status("anthropic"))[0].block_reason.startswith("probe_529_")
+    assert (await ledger.status("anthropic"))[0].block_reason == "credit_balance_low"
     await ledger.reserve_probe(ACCOUNT, stale, QUOTE)
     await ledger.reserve_probe(ACCOUNT, newer, QUOTE)
 
@@ -195,8 +242,36 @@ async def test_probe_success_preserves_a_newer_same_status_failure_in_the_same_m
 
     assert _attempt(ledger, stale)[:4] == ("settled", 3, "complete", 200)
     status = (await ledger.status("anthropic"))[0]
-    assert status.block_reason == f"probe_529_20261116t1405z_{newer.hex}"
+    assert status.block_reason == "credit_balance_low"
+    assert _failures(ledger) == [
+        (str(attempt), "anthropic", ACCOUNT.name, NOW.isoformat(), 529, "overloaded_error")
+        for attempt in (initial, newer)
+    ]
     assert _unblocks(ledger) == []
+
+    retry = uuid4()
+    await ledger.reserve_probe(ACCOUNT, retry, QUOTE)
+    assert await ledger.settle_probe(retry, _usage(3), http_status=200)
+    assert _unblocks(ledger) == [(f"probe:{retry}",)]
+
+
+async def test_probe_failure_after_a_winning_success_is_recorded_without_reblocking(tmp_path):
+    ledger = await _prepare(tmp_path)
+    winner, failure = uuid4(), uuid4()
+    await ledger.reserve_probe(ACCOUNT, winner, QUOTE)
+    await ledger.reserve_probe(ACCOUNT, failure, QUOTE)
+    assert await ledger.settle_probe(winner, _usage(3), http_status=200)
+    assert not await ledger.settle_probe(
+        failure,
+        UnknownOutcome("provider_error"),
+        http_status=503,
+        provider_error_type="api_error",
+    )
+    assert (await ledger.status("anthropic"))[0].block_reason is None
+    assert _unblocks(ledger) == [(f"probe:{winner}",)]
+    assert _failures(ledger) == [
+        (str(failure), "anthropic", ACCOUNT.name, NOW.isoformat(), 503, "api_error")
+    ]
 
 
 async def test_probe_success_missing_usage_clears_block_but_keeps_ceiling(tmp_path):

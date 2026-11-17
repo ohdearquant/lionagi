@@ -7,13 +7,13 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import re
 import sqlite3
 import threading
 import time
 from collections import deque
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import anyio
@@ -220,7 +220,7 @@ def _cleanup_router():
     router_module._reset_router_test_dependencies()
 
 
-async def _seed_probe_account(*, blocked=True):
+async def _seed_probe_account(*, blocked=True, block_reason="auth_required"):
     router = router_module.get_router()
     main_quote = quote_ceiling(
         CURRENT_REVISION, freeze_request({**REQUEST, "service_tier": "standard_only"})
@@ -231,7 +231,7 @@ async def _seed_probe_account(*, blocked=True):
     assert reservation.account == "primary"
     await router.ledger.settle(reservation.attempt_id, ProvenNotSent())
     if blocked:
-        await router.ledger.block("anthropic", "primary", "auth_required")
+        await router.ledger.block("anthropic", "primary", block_reason)
     return router, reservation
 
 
@@ -262,7 +262,7 @@ async def test_blocked_account_probe_accounts_for_one_redacted_request(
     monkeypatch, tmp_path, caplog, status, error_type
 ):
     path = _install_accounts(monkeypatch, tmp_path)
-    await _seed_probe_account()
+    router, seed = await _seed_probe_account(block_reason="credit_balance_low")
     sentinel = "ephemeral provider response text"
     chosen = _expected_probe_model()
     body = (
@@ -326,11 +326,16 @@ async def test_blocked_account_probe_accounts_for_one_redacted_request(
                     ("adjustment", "SELECT * FROM adjustment"),
                     ("month", "SELECT * FROM month"),
                     ("binding", "SELECT * FROM binding"),
+                    ("probe_failure", "SELECT * FROM probe_failure"),
                 )
             }
         )
         sources = connection.execute(
             "SELECT source_ref FROM adjustment WHERE kind = 'unblock'"
+        ).fetchall()
+        failures = connection.execute(
+            "SELECT attempt_id, recorded_at, http_status, provider_error_type "
+            "FROM probe_failure WHERE provider = 'anthropic' AND account = 'primary'"
         ).fetchall()
 
     block = _block_reason(path, "primary")
@@ -338,11 +343,21 @@ async def test_blocked_account_probe_accounts_for_one_redacted_request(
         assert report.cleared and block is None and state == "settled" and cost > 0
         [(source,)] = sources
         assert report.attempt_id in source
+        assert failures == []
     else:
         assert not report.cleared and not sources
-        assert block is not None
-        attempt_token = report.attempt_id.replace("-", "")
-        assert re.fullmatch(rf"probe_{status}_[0-9]{{8}}t[0-9]{{4}}z_{attempt_token}", block)
+        assert block == "credit_balance_low"
+        [(failed_attempt, when, failed_status, failed_error)] = failures
+        assert (failed_attempt, failed_status, failed_error) == (
+            report.attempt_id,
+            status,
+            error_type,
+        )
+        assert datetime.fromisoformat(when).utcoffset() == timedelta(0)
+        with pytest.raises(AccountRoutingError) as bound:
+            await router.ledger.reserve(seed.scope, uuid4(), seed.quote, router.accounts)
+        assert bound.value.code is RouterErrorCode.ACCOUNT_BLOCKED
+        assert bound.value.billing_block == "credit_balance_low"
         assert (state, cost) == (("open", None) if status == 429 else ("settled", 0))
     for datum in (sentinel, CANARY, "transient-probe-provider-reference"):
         assert datum not in stored and datum not in caplog.text and datum not in repr(report)
