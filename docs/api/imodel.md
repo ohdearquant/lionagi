@@ -119,6 +119,7 @@ AG2 NLIP connects to a remote HTTP endpoint. See
 | `provider=` | `endpoint=` | Key env var |
 |-------------|-------------|-------------|
 | `"exa"` | `"search"` | `EXA_API_KEY` |
+| `"outcrawl"` | `"search"` | `OUTCRAWL_API_KEY` |
 | `"tavily"` | `"search"` | `TAVILY_API_KEY` |
 | `"tavily"` | `"extract"` | `TAVILY_API_KEY` |
 
@@ -128,6 +129,7 @@ AG2 NLIP connects to a remote HTTP endpoint. See
 |-------------|-------------|-------------|
 | `"firecrawl"` | `"scrape"` | `FIRECRAWL_API_KEY` |
 | `"firecrawl"` | `"map"` | `FIRECRAWL_API_KEY` |
+| `"outcrawl"` | `"scrape"` | `OUTCRAWL_API_KEY` |
 
 ### Fallback
 
@@ -198,10 +200,12 @@ model = li.iModel(provider="pi", model="pi")
 # Search
 exa   = li.iModel(provider="exa", endpoint="search")
 tvly  = li.iModel(provider="tavily", endpoint="search")
+ocs   = li.iModel(provider="outcrawl", endpoint="search")
 
 # Scrape / crawl
 crawl = li.iModel(provider="firecrawl", endpoint="scrape")
 cmap  = li.iModel(provider="firecrawl", endpoint="map")
+ocrl  = li.iModel(provider="outcrawl", endpoint="scrape")
 
 # OpenAI-compatible custom host
 model = li.iModel(
@@ -303,6 +307,7 @@ CLI table above for accepted variants).
 | `"exa"` | Exa Search | `EXA_API_KEY` |
 | `"tavily"` | Tavily | `TAVILY_API_KEY` |
 | `"firecrawl"` | Firecrawl | `FIRECRAWL_API_KEY` |
+| `"outcrawl"` | Outcrawl | `OUTCRAWL_API_KEY` |
 | `"claude_code"` | Claude Code CLI | — |
 | `"codex"` | OpenAI Codex CLI | — |
 | `"gemini_code"` | Gemini CLI | — |

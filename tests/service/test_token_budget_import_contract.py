@@ -34,6 +34,7 @@ _CONFIG_TABLES = {
     "ollama": (),
     "openai": ("CONTEXT_WINDOWS", "CODEX_CONTEXT_WINDOWS"),
     "openrouter": ("CONTEXT_WINDOWS",),
+    "outcrawl": (),
     "perplexity": ("CONTEXT_WINDOWS",),
     "pi": ("CONTEXT_WINDOWS",),
     "tavily": (),

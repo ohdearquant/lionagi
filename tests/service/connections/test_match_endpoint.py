@@ -260,6 +260,20 @@ class TestMatchEndpoint:
                 f"got {type(result).__name__}"
             )
 
+    def test_match_endpoint_routes_outcrawl_scrape_and_search(self):
+        from lionhub.providers.outcrawl.scrape import OutcrawlScrapeEndpoint
+        from lionhub.providers.outcrawl.search import OutcrawlSearchEndpoint
+
+        cases = [
+            ("scrape", OutcrawlScrapeEndpoint, "https://api.outcrawl.ai/v1/scrape"),
+            ("search", OutcrawlSearchEndpoint, "https://api.outcrawl.ai/v1/search"),
+        ]
+        for endpoint, expected_cls, expected_url in cases:
+            result = match_endpoint(provider="outcrawl", endpoint=endpoint)
+            assert isinstance(result, expected_cls)
+            assert result.config.full_url == expected_url
+            assert result.config.auth_type == "bearer"
+
     def test_match_endpoint_fallback_builds_openai_compatible_endpoint_config(self):
         result = match_endpoint(provider="custom_provider", endpoint="", openai_compatible=True)
 
