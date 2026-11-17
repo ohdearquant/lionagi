@@ -2391,7 +2391,11 @@ async def _run_agent(
                 if profile is not None:
                     from lionhub.agent.factory import register_profile_injection
 
-                    register_profile_injection(branch, agent_name, profile)
+                    # The CLI child starts in --cwd, which is passed per call rather
+                    # than set on the model, so the injection server is told directly.
+                    register_profile_injection(
+                        branch, agent_name, profile, cwd=cwd if chat_model.is_cli else None
+                    )
 
             # Fail fast, before allocate_run/setup_agent_persist: a bad provider
             # prefix (e.g. 'gpt-5.3-codex-spark' vs 'codex/gpt-5.3-codex-spark')
