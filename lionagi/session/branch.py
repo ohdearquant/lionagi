@@ -827,6 +827,9 @@ class Branch(Element, Relational):
     ):
         """Rebuild a branch from ``to_dict`` output, read as trusted input.
 
+        The caller-supplied ``provider_catalog`` is runtime-only and is never read
+        from or written to the stored branch dictionary.
+
         A stored model is rebuilt by ``iModel.from_dict``, which takes from ``data`` no
         API key, no header or setting whose name reads as a credential, no proxy and no
         user or password in a URL, and lets it turn the local-network opt-in off but never
