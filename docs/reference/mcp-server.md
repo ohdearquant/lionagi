@@ -39,8 +39,9 @@ pip install "lionagi[mcp]"
 ```
 
 You can import `lionhub.serve.mcp` without the extra. `li doctor` checks whether
-`fastmcp` is available, and `li mcp` gives the install command if the extra is
-missing.
+`fastmcp` is available. If the server import reports `fastmcp`, `mcp`, or
+`starlette` missing, `li mcp` exits with status `78` and gives the install
+command. Other import failures report the startup error and exit with status `1`.
 
 Register it with any MCP client, for example in an `.mcp.json`:
 

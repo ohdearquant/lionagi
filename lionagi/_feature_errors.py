@@ -9,7 +9,19 @@ adapter package and no provider hub.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any
+
+
+def declared_missing_import_root(error: BaseException, import_roots: Collection[str]) -> str | None:
+    """Return the missing import name when it exactly matches a declared root."""
+    if (
+        isinstance(error, ModuleNotFoundError)
+        and error.name is not None
+        and error.name in import_roots
+    ):
+        return error.name
+    return None
 
 
 def _rebuild_missing_feature_error(

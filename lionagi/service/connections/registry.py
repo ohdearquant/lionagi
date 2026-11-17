@@ -547,12 +547,11 @@ class EndpointRegistry:
         one of the top-level import roots a requirement of ``declaration`` lists. A module
         missing from inside the provider's own packages, or a submodule of a declared root, is
         a defect and not an absence."""
-        from lionagi._feature_errors import MissingFeatureError
+        from lionagi._feature_errors import MissingFeatureError, declared_missing_import_root
 
-        if not isinstance(error, ModuleNotFoundError) or error.name is None:
-            return None
         for requirement in declaration.requirements:
-            if error.name in requirement.import_roots:
+            root = declared_missing_import_root(error, requirement.import_roots)
+            if root is not None:
                 absent = MissingFeatureError(
                     feature=_PROVIDERS_FEATURE,
                     missing_distribution=requirement.distribution,
@@ -561,7 +560,7 @@ class EndpointRegistry:
                     endpoint=declaration.key,
                     reason="missing_dependency",
                     source=catalog.source,
-                    import_root=error.name,
+                    import_root=root,
                 )
                 absent.__cause__ = error
                 return absent
