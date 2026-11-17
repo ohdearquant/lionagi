@@ -9974,7 +9974,18 @@
               "nargs": 0,
               "default": false,
               "choices": null,
-              "help": "Emit a JSON object of check name -> {status, detail} instead of plain text."
+              "help": "Emit JSON instead of plain text."
+            },
+            {
+              "option_strings": [
+                "--probe-anthropic-account"
+              ],
+              "dest": "probe_anthropic_account",
+              "required": false,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Send one billed request on a named account blocked for low credit or its spend limit. Lift its block only on a 2xx response. Runs instead of the ordinary environment checks."
             }
           ],
           "subparsers": {}

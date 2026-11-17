@@ -636,9 +636,14 @@
         "properties": {
           "json": {
             "type": "boolean",
-            "description": "Emit a JSON object of check name -> {status, detail} instead of plain text.",
+            "description": "Emit JSON instead of plain text.",
             "default": false,
             "x-flag": "--json"
+          },
+          "probe_anthropic_account": {
+            "type": "string",
+            "description": "Send one billed request on a named account blocked for low credit or its spend limit. Lift its block only on a 2xx response. Runs instead of the ordinary environment checks.",
+            "x-flag": "--probe-anthropic-account"
           }
         },
         "additionalProperties": false,
