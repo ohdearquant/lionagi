@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 
 from lionagi._auto import CliDeclaration, auto_register
-from lionagi._feature_errors import declared_missing_import_root
+from lionagi._feature_errors import _declared_missing_import_root
 from lionhub.orchestration.console import log_error
 from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 
@@ -62,7 +62,7 @@ def run_mcp(args: argparse.Namespace) -> int:
         import lionhub.serve.mcp.server  # noqa: F401
         from lionhub.serve.mcp import serve
     except ImportError as exc:
-        missing = declared_missing_import_root(exc, _MCP_IMPORT_ROOTS)
+        missing = _declared_missing_import_root(exc, _MCP_IMPORT_ROOTS)
         if missing is not None:
             log_error(
                 f"cannot serve: {missing} is not installed in this environment. "

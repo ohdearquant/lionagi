@@ -13,7 +13,9 @@ from collections.abc import Collection
 from typing import Any
 
 
-def declared_missing_import_root(error: BaseException, import_roots: Collection[str]) -> str | None:
+def _declared_missing_import_root(
+    error: BaseException, import_roots: Collection[str]
+) -> str | None:
     """Return the missing import name when it exactly matches a declared root."""
     if (
         isinstance(error, ModuleNotFoundError)
