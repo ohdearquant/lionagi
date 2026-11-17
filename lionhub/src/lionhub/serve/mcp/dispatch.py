@@ -13,6 +13,7 @@ moves here with it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -89,6 +90,7 @@ _PRELOAD_MODULES = (
     "lionhub.serve.mcp._run_detail",
 )
 _OWN_PACKAGES = ("lionagi", "lionhub")
+_logger = logging.getLogger(__name__)
 # Replaced in tests; exiting the process is the point in production.
 _exit = os._exit
 
@@ -126,13 +128,21 @@ def preload() -> None:
 
     A module of this server that fails to import here ends the process before it answers
     anything (``_stop_if_own_module_missing``). A module that needs a package which is not
-    installed stays as it was: the verbs that use it report that when they are called.
+    installed, or that raises anything else while it is imported (a configuration value it
+    rejects, a settings file it cannot read), stays as it was: the verbs that use it report
+    that when they are called, and the server answers the rest.
     """
     for name in _PRELOAD_MODULES:
         try:
             import_module(name)
         except ImportError as exc:
             _stop_if_own_module_missing(exc)
+        except Exception:
+            _logger.warning(
+                "lion MCP server: module %s did not load; the verbs that use it will report why",
+                name,
+                exc_info=True,
+            )
     catalog()
 
 

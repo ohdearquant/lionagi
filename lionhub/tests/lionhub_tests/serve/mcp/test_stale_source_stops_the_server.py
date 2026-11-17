@@ -173,6 +173,22 @@ def test_preload_leaves_a_module_that_needs_a_missing_package_to_its_verbs(exits
     dispatch.preload()
 
 
+def test_preload_leaves_a_module_that_fails_for_another_reason_to_its_verbs(exits, monkeypatch):
+    """A module that rejects its configuration while importing does not stop the server."""
+    loaded = []
+
+    def rejects_its_settings(name):
+        if name == "lionagi.state.db":
+            raise PermissionError("cannot read the settings file")
+        loaded.append(name)
+
+    monkeypatch.setattr(dispatch, "import_module", rejects_its_settings)
+
+    dispatch.preload()
+
+    assert loaded == [name for name in dispatch._PRELOAD_MODULES if name != "lionagi.state.db"]
+
+
 class _OneRecordedSession:
     async def __aenter__(self):
         return self
