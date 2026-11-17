@@ -30,6 +30,7 @@ from lionhub.tools.coding import (
     _read_image_sync,
     _write_file_sync,
 )
+from lionhub.tools.file import editor as file_editor
 from lionhub.tools.file import reader as file_reader
 
 
@@ -276,22 +277,16 @@ def test_read_file_sync_nonexistent_returns_error(tmp_path):
     assert "not found" in result["error"].lower()
 
 
-@pytest.mark.parametrize("at_limit", [True, False], ids=["at-limit", "over-limit"])
-def test_read_file_sync_caps_text_input(tmp_path, monkeypatch, at_limit):
-    target = tmp_path / "text-limit.txt"
-    target.write_text("hello\n", encoding="utf-8")
-    cap = target.stat().st_size - (0 if at_limit else 1)
-    monkeypatch.setattr(file_reader, "_MAX_TEXT_READ_BYTES", cap)
+def test_read_file_sync_scans_past_the_old_text_ceiling(tmp_path):
+    target = tmp_path / "large.log"
+    target.write_bytes(b"line\n" * 600_000)
 
-    result = _read_file_sync(str(target), 0, 2000, tmp_path)
+    result = _read_file_sync(str(target), 599_998, 5, tmp_path)
 
-    assert result["success"] is at_limit
-    if at_limit:
-        assert "hello" in result["content"]
-        assert result["total_lines"] == 1
-    else:
-        assert "byte" in result["error"].lower()
-        assert target.name in result["error"]
+    assert result["success"] is True
+    assert result["content"] == "599999\tline\n600000\tline\n"
+    assert result["total_lines"] == 600_000
+    assert result["reached_eof"] is True
 
 
 def test_list_dir_sync_exception_returns_error(tmp_path, monkeypatch):
@@ -333,7 +328,7 @@ def test_edit_file_sync_oserror_on_read(tmp_path, monkeypatch):
     def raise_on_read(*args, **kwargs):
         raise OSError("read error")
 
-    monkeypatch.setattr(coding, "_read_regular_bytes", raise_on_read)
+    monkeypatch.setattr(file_editor, "_read_regular_bytes", raise_on_read)
 
     result = _edit_file_sync(str(f), "hello", "bye", False, tmp_path)
     assert result["success"] is False
@@ -345,7 +340,7 @@ def test_edit_file_sync_caps_the_input_file(tmp_path, monkeypatch, at_limit):
     target = tmp_path / "edit-limit.txt"
     target.write_text("hello", encoding="utf-8")
     cap = target.stat().st_size - (0 if at_limit else 1)
-    monkeypatch.setattr(coding, "_MAX_EDIT_BYTES", cap)
+    monkeypatch.setattr(file_editor, "_MAX_EDIT_BYTES", cap)
 
     result = _edit_file_sync(str(target), "hello", "bye", False, tmp_path)
 

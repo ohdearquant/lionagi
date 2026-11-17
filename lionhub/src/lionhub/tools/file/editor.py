@@ -16,7 +16,11 @@ from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
-from ._bounded_io import _open_regular_file
+from ._bounded_io import _open_regular_file, _read_regular_bytes
+
+# An edit holds the original and the replaced text in memory together, so the
+# peak is about twice this plus the replacement growth.
+_MAX_EDIT_BYTES = 16 * 1024 * 1024
 
 
 def _resolve_existing_workspace_file(path: str, workspace_root: Path) -> Path:
@@ -34,6 +38,12 @@ def _write_text_no_follow(path: Path, content: str, *, create: bool = False) -> 
         os.ftruncate(fd, 0)
         with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as f:
             f.write(content)
+
+
+def _read_text_for_edit(path: Path) -> str:
+    """The file as text with universal newlines, refused above ``_MAX_EDIT_BYTES``."""
+    text = _read_regular_bytes(path, _MAX_EDIT_BYTES).decode("utf-8")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 class EditorAction(str, Enum):
@@ -140,8 +150,8 @@ def _prepare_edit(
         )
 
     try:
-        original = p.read_text(encoding="utf-8")
-    except OSError as e:
+        original = _read_text_for_edit(p)
+    except (OSError, UnicodeError) as e:
         return EditorResponse(success=False, error=f"Read error: {e}")
 
     count = original.count(old_string)

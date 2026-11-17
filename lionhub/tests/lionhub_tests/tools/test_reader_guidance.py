@@ -168,7 +168,6 @@ def test_reader_inclusive_byte_cap_preserves_universal_newlines(tmp_path, monkey
     path = tmp_path / "mixed.txt"
     raw = b"alpha\rbeta\r\ngamma\x0bdelta\ninvalid:\xff"
     path.write_bytes(raw)
-    monkeypatch.setattr(reader_mod, "_MAX_TEXT_READ_BYTES", len(raw))
 
     response = reader_mod._read_sync(str(path), 1, 3, tmp_path)
 
@@ -177,12 +176,53 @@ def test_reader_inclusive_byte_cap_preserves_universal_newlines(tmp_path, monkey
     assert response.total_lines == 4
     assert response.reached_eof is True
 
-    path.write_bytes(raw + b"!")
-    response = reader_mod._read_sync(str(path), 1, 1, tmp_path)
+
+def _over_budget_file(tmp_path, monkeypatch):
+    path = tmp_path / "big.log"
+    path.write_bytes(b"".join(b"row %06d\n" % i for i in range(20_000)))
+    monkeypatch.setattr(reader_mod, "_MAX_TEXT_SCAN_BYTES", 16_384)
+    return path
+
+
+def test_a_window_inside_the_scan_budget_returns_unknown_counts(tmp_path, monkeypatch):
+    path = _over_budget_file(tmp_path, monkeypatch)
+
+    response = reader_mod._read_sync(str(path), 2, 2, tmp_path)
+
+    assert response.success
+    assert response.content == "3\trow 000002\n4\trow 000003\n"
+    assert response.total_lines is None
+    assert response.reached_eof is None
+
+
+def test_an_offset_beyond_the_scan_budget_is_an_error(tmp_path, monkeypatch):
+    path = _over_budget_file(tmp_path, monkeypatch)
+
+    response = reader_mod._read_sync(str(path), 15_000, 5, tmp_path)
 
     assert not response.success
-    assert f"exceeds {len(raw)} bytes" in response.error
+    assert "16,384 bytes" in response.error
     assert response.content is response.total_lines is response.reached_eof is None
+
+
+@pytest.mark.parametrize("tail", [b"", b"\nnext\n"], ids=["no-newline", "then-next-line"])
+def test_a_line_longer_than_the_line_cap_is_cut(tmp_path, monkeypatch, tail):
+    path = tmp_path / "one-line.txt"
+    path.write_bytes(b"x" * 1_000 + tail)
+    monkeypatch.setattr(reader_mod, "_MAX_LINE_CHARS", 100)
+    monkeypatch.setattr(reader_mod, "_LINE_CHUNK_CHARS", 32)
+
+    response = reader_mod._read_sync(str(path), 0, 10, tmp_path)
+
+    assert response.success
+    cut = "1\t" + "x" * 100 + " [... line truncated at 100 characters]"
+    if tail:
+        assert response.content == cut + "\n2\tnext\n"
+        assert response.total_lines == 2
+    else:
+        assert response.content == cut
+        assert response.total_lines == 1
+    assert response.reached_eof is True
 
 
 def test_directory_scan_counts_filtered_entries_across_depth(tmp_path, monkeypatch):
@@ -207,3 +247,36 @@ def test_directory_scan_counts_filtered_entries_across_depth(tmp_path, monkeypat
     recursive = reader_mod._list_dir_sync(str(tmp_path), True, [".py"], tmp_path)
     assert recursive.success
     assert recursive.content == str(tmp_path / "shown.py")
+
+
+def test_an_unreadable_subdirectory_is_skipped_in_a_recursive_listing(tmp_path):
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    (tmp_path / "top.py").touch()
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "hidden.py").touch()
+    locked.chmod(0)
+    try:
+        files = reader_mod._scan_files(tmp_path, True, None)
+    finally:
+        locked.chmod(0o755)
+
+    assert [f.name for f in files] == ["top.py"]
+
+
+def test_an_unreadable_base_directory_still_fails(tmp_path):
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            reader_mod._scan_files(locked, True, None)
+    finally:
+        locked.chmod(0o755)
