@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 from pathlib import Path
@@ -21,9 +22,50 @@ from lionhub.serve.cli.doctor import (
     _check_version,
     _looks_editable,
     _readiness_verdict,
+    add_doctor_subparser,
     collect_checks,
     run_doctor,
 )
+
+
+def _doctor_args(*args):
+    parser = argparse.ArgumentParser()
+    add_doctor_subparser(parser.add_subparsers(required=True))
+    return parser.parse_args(["doctor", *args])
+
+
+def test_plain_doctor_sends_no_account_probe(monkeypatch, capsys):
+    from lionhub.serve.cli import doctor
+
+    async def unexpected_probe(name):
+        pytest.fail("plain doctor attempted an account probe")
+
+    monkeypatch.setattr(doctor, "_probe_anthropic_account", unexpected_probe)
+    monkeypatch.setattr(
+        doctor, "collect_checks", lambda: {"python": {"status": "ok", "detail": "ready"}}
+    )
+    assert doctor.run_doctor(_doctor_args("--json")) == 0
+    assert json.loads(capsys.readouterr().out) == {"python": {"status": "ok", "detail": "ready"}}
+
+
+def test_account_probe_uses_only_the_explicit_operator_mode(monkeypatch, capsys):
+    from lionhub.providers.anthropic.messages import _AccountProbeResult
+    from lionhub.serve.cli import doctor
+
+    async def probe(name):
+        return _AccountProbeResult(name, "probe-attempt", 200, None, True)
+
+    monkeypatch.setattr(doctor, "_probe_anthropic_account", probe)
+    monkeypatch.setattr(doctor, "collect_checks", lambda: pytest.fail("probe ran ordinary checks"))
+    assert doctor.run_doctor(_doctor_args("--probe-anthropic-account", "primary", "--json")) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "attempt_id": "probe-attempt",
+        "account": "primary",
+        "http_status": 200,
+        "provider_error_type": None,
+        "cleared": True,
+    }
+
 
 # _looks_editable
 

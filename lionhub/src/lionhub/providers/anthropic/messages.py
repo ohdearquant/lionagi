@@ -7,19 +7,30 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal, Union
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Union
 
 import anyio.lowlevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from lionagi.ln.concurrency import CancelScope
-from lionagi.service.accounts._types import _PROVIDER_ERROR_TYPES, _REJECTION_CLASSES
+from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
+from lionagi.service.accounts._types import (
+    _PROVIDER_ERROR_TYPES,
+    _REJECTION_CLASSES,
+    ProvenNotSent,
+    RejectionZero,
+    UnknownOutcome,
+)
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
 # CONTEXT_WINDOWS is defined in ._config and re-exported here.
 from ._config import ANTHROPIC_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import AnthropicConfigs
+
+if TYPE_CHECKING:
+    from lionagi.service.accounts._router import AccountRouter, RouterAttempt
+    from lionagi.service.accounts._types import Evidence
 
 logger = logging.getLogger("lionagi.providers.anthropic.messages")
 
@@ -652,6 +663,66 @@ async def _classify_streamed_rejection_details(response: Any, status: int) -> tu
     return details
 
 
+async def _send_routed_messages(
+    client: Any,
+    attempt: RouterAttempt,
+    request_pairs: list[tuple[str, str]],
+    *,
+    method: str,
+    url: str,
+    request_kwargs: dict[str, Any],
+) -> Any:
+    request_headers = {
+        name: value for name, value in request_pairs if name.strip().lower() != "content-type"
+    }
+    request_headers["Content-Type"] = "application/json"
+    request_headers["x-api-key"] = attempt.key.get_secret_value()
+    return await client.request(
+        method=method,
+        url=url,
+        headers=request_headers,
+        content=attempt.body,
+        follow_redirects=False,
+        **request_kwargs,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _AccountProbeResult:
+    account: str
+    attempt_id: str
+    http_status: int | None
+    provider_error_type: str | None
+    cleared: bool
+
+
+def _read_probe_response(router: AccountRouter, response: Any) -> tuple[int, Evidence, str | None]:
+    status = response.status_code
+    if 200 <= status < 300:
+        try:
+            body = response.json()
+        except Exception:
+            return status, UnknownOutcome("usage_incomplete"), None
+        return status, router.probe_usage(body), None
+
+    error_type, _ = _classify_rejection(response.content[: _REJECTION_BODY_LIMIT + 1])
+    if status == 400 and error_type == "invalid_request_error":
+        evidence = RejectionZero(400, error_type, None, "request_rejected")
+    elif status == 529 and error_type == "overloaded_error":
+        evidence = RejectionZero(529, error_type, None, "provider_error")
+    else:
+        if status in (401, 403):
+            reason = "auth_required"
+        elif status == 429:
+            reason = "rate_limited"
+        elif status >= 500:
+            reason = "provider_error"
+        else:
+            reason = "request_rejected"
+        return status, UnknownOutcome(reason), error_type
+    return status, evidence, error_type
+
+
 @AnthropicConfigs.MESSAGES.register
 class AnthropicMessagesEndpoint(Endpoint):
     _account_routing_provider = "anthropic"
@@ -665,6 +736,70 @@ class AnthropicMessagesEndpoint(Endpoint):
         if config is None:
             kwargs.setdefault("default_headers", {"anthropic-version": "2023-06-01"})
         super().__init__(config, **kwargs)
+
+    async def probe_blocked_account(self, name: str) -> _AccountProbeResult:
+        """Send one fixed, ledger-accounted request to a named blocked account."""
+        from lionagi.service.accounts._router import (
+            get_router,
+            header_pairs,
+            routed_client_kwargs,
+            validate_routed_request,
+        )
+
+        url = self.config.full_url
+        method = self.config.method
+        timeout = self.config.timeout
+        headers = header_pairs(self.config.default_headers)
+        client_kwargs = routed_client_kwargs(self.config.client_kwargs)
+        validate_routed_request(
+            self, headers, request_kwargs={}, client_kwargs=client_kwargs, url=url, method=method
+        )
+        router = get_router()
+        attempt = await router.begin_probe(name)
+        entered = False
+        observed = None
+        try:
+            async with self._create_http_session(client_kwargs, timeout=timeout) as client:
+                entered = True
+                observed = _read_probe_response(
+                    router,
+                    await _send_routed_messages(
+                        client, attempt, headers, method=method, url=url, request_kwargs={}
+                    ),
+                )
+        except get_cancelled_exc_class():
+            try:
+                if observed is not None:
+                    status, evidence, error_type = observed
+                    await router.finish_probe(
+                        attempt, evidence, http_status=status, provider_error_type=error_type
+                    )
+                elif entered:
+                    await router.finish_probe(
+                        attempt,
+                        UnknownOutcome("cancelled"),
+                        http_status=None,
+                        provider_error_type=None,
+                    )
+                else:
+                    await router.settle_not_sent(attempt, caller_cancelled=True)
+            except Exception:  # noqa: S110 - preserve the caller's cancellation
+                pass
+            raise
+        except Exception:  # noqa: S110
+            # Settle outside this handler. The transport error can quote the request or response.
+            pass
+        if observed is None:
+            status, error_type = None, None
+            evidence = UnknownOutcome("transport_error") if entered else ProvenNotSent()
+        else:
+            status, evidence, error_type = observed
+        cleared = await router.finish_probe(
+            attempt, evidence, http_status=status, provider_error_type=error_type
+        )
+        return _AccountProbeResult(
+            attempt.account, str(attempt.attempt_id), status, error_type, cleared
+        )
 
     async def _request_attempt(
         self,
@@ -692,7 +827,6 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         import httpx
 
-        from lionagi.ln.concurrency import get_cancelled_exc_class
         from lionagi.service.accounts._router import (
             get_router,
             header_pairs,
@@ -759,25 +893,19 @@ class AnthropicMessagesEndpoint(Endpoint):
             url=url,
             method=method,
         )
-        request_headers = {
-            name: value for name, value in request_pairs if name.strip().lower() != "content-type"
-        }
-        request_headers["Content-Type"] = "application/json"
-        request_headers["x-api-key"] = attempt.key.get_secret_value()
-
         request_entered = False
         status = None
         failure: Exception | None = None
         try:
             async with self._create_http_session(session_kwargs, timeout=timeout) as client:
                 request_entered = True
-                response = await client.request(
+                response = await _send_routed_messages(
+                    client,
+                    attempt,
+                    request_pairs,
                     method=method,
                     url=url,
-                    headers=request_headers,
-                    content=attempt.body,
-                    follow_redirects=False,
-                    **request_kwargs,
+                    request_kwargs=request_kwargs,
                 )
                 status = response.status_code
                 if status in (401, 403):

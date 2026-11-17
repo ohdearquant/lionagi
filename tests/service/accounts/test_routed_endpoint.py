@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -25,7 +26,13 @@ import lionagi.service.accounts._router as router_module
 from lionagi.config import AppSettings
 from lionagi.service.accounts._credentials import CredentialSources
 from lionagi.service.accounts._ledger import CredentialLedger
-from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode, Scope
+from lionagi.service.accounts._pricing import CURRENT_REVISION, freeze_request, quote_ceiling
+from lionagi.service.accounts._types import (
+    AccountRoutingError,
+    ProvenNotSent,
+    RouterErrorCode,
+    Scope,
+)
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.imodel import _branch_routing_context, iModel
@@ -211,6 +218,210 @@ def _http_statuses(path):
 
 def _cleanup_router():
     router_module._reset_router_test_dependencies()
+
+
+async def _seed_probe_account(*, blocked=True):
+    router = router_module.get_router()
+    main_quote = quote_ceiling(
+        CURRENT_REVISION, freeze_request({**REQUEST, "service_tier": "standard_only"})
+    )
+    reservation = await router.ledger.reserve(
+        Scope("branch", uuid4(), "anthropic"), uuid4(), main_quote, router.accounts
+    )
+    assert reservation.account == "primary"
+    await router.ledger.settle(reservation.attempt_id, ProvenNotSent())
+    if blocked:
+        await router.ledger.block("anthropic", "primary", "auth_required")
+    return router, reservation
+
+
+def _expected_probe_model():
+    costs = {}
+    for model_name in CURRENT_REVISION.models:
+        fixed = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "Reply OK."}],
+            "max_tokens": 1,
+            "service_tier": "standard_only",
+        }
+        costs[model_name] = quote_ceiling(CURRENT_REVISION, freeze_request(fixed)).ceiling_nusd
+    return min(costs, key=lambda name: (costs[name], name))
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [
+        (200, None),
+        (201, None),
+        (400, "invalid_request_error"),
+        (529, "overloaded_error"),
+        (429, "rate_limit_error"),
+    ],
+)
+async def test_blocked_account_probe_accounts_for_one_redacted_request(
+    monkeypatch, tmp_path, caplog, status, error_type
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    await _seed_probe_account()
+    sentinel = "ephemeral provider response text"
+    chosen = _expected_probe_model()
+    body = (
+        {
+            "id": "transient-probe-provider-reference",
+            "model": chosen,
+            "content": [{"type": "text", "text": sentinel + CANARY}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        if error_type is None
+        else {"error": {"type": error_type, "message": sentinel + CANARY}}
+    )
+    model, transport = _model(
+        monkeypatch, [StubResponse(status, body, pieces=[json.dumps(body).encode()])]
+    )
+
+    report = await model.endpoint.probe_blocked_account("primary")
+
+    assert (report.account, report.http_status, report.provider_error_type) == (
+        "primary",
+        status,
+        error_type,
+    )
+    [call] = transport.calls
+    assert call["method"].upper() == "POST"
+    assert call["url"] == "https://api.anthropic.com/v1/messages"
+    assert call["follow_redirects"] is False
+    assert call["headers"]["x-api-key"] == CANARY
+    assert call["json"] == {
+        "model": chosen,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "Reply OK."}],
+        "service_tier": "standard_only",
+    }
+    with sqlite3.connect(path) as connection:
+        attempts = connection.execute(
+            """
+            SELECT id, scope_kind, state, cost_nusd, http_status, provider_error_type,
+                   rejection_class, request_id FROM attempt ORDER BY rowid
+            """
+        ).fetchall()
+        assert len(attempts) == 2
+        (aid, kind, state, cost, recorded_status, recorded_error, rejection, request_id) = attempts[
+            -1
+        ]
+        assert (aid, kind, recorded_status, recorded_error, rejection, request_id) == (
+            report.attempt_id,
+            "probe",
+            status,
+            error_type,
+            None,
+            None,
+        )
+        assert connection.execute("SELECT count(*) FROM binding").fetchone() == (1,)
+        stored = repr(
+            {
+                table: connection.execute(query).fetchall()
+                for table, query in (
+                    ("attempt", "SELECT * FROM attempt"),
+                    ("account", "SELECT * FROM account"),
+                    ("adjustment", "SELECT * FROM adjustment"),
+                    ("month", "SELECT * FROM month"),
+                    ("binding", "SELECT * FROM binding"),
+                )
+            }
+        )
+        sources = connection.execute(
+            "SELECT source_ref FROM adjustment WHERE kind = 'unblock'"
+        ).fetchall()
+
+    block = _block_reason(path, "primary")
+    if 200 <= status < 300:
+        assert report.cleared and block is None and state == "settled" and cost > 0
+        [(source,)] = sources
+        assert report.attempt_id in source
+    else:
+        assert not report.cleared and not sources
+        assert block is not None
+        assert re.fullmatch(rf"probe_{status}_[0-9]{{8}}t[0-9]{{4}}z", block, re.IGNORECASE)
+        assert (state, cost) == (("open", None) if status == 429 else ("settled", 0))
+    for datum in (sentinel, CANARY, "transient-probe-provider-reference"):
+        assert datum not in stored and datum not in caplog.text and datum not in repr(report)
+
+
+@pytest.mark.parametrize(
+    ("blocked", "name", "code"),
+    [
+        (False, "primary", RouterErrorCode.PROBE_ACCOUNT_NOT_BLOCKED),
+        (True, "missing", RouterErrorCode.PROBE_ACCOUNT_UNKNOWN),
+        (True, "primary", RouterErrorCode.BUDGET_EXHAUSTED),
+    ],
+)
+async def test_blocked_account_probe_refuses_before_transport(
+    monkeypatch, tmp_path, blocked, name, code
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    router, seed = await _seed_probe_account(blocked=blocked)
+    if code is RouterErrorCode.BUDGET_EXHAUSTED:
+        await router.ledger.adjust(
+            uuid4(),
+            "anthropic",
+            "primary",
+            seed.month_utc,
+            router.accounts[0].budget_nusd,
+            "synthetic consumed budget",
+        )
+    model, transport = _model(monkeypatch, [])
+
+    with pytest.raises(AccountRoutingError) as raised:
+        await model.endpoint.probe_blocked_account(name)
+
+    assert raised.value.code is code
+    assert transport.calls == []
+    assert len(_attempts(path)) == 1
+
+
+async def test_normal_reserve_excludes_the_blocked_account_during_an_open_probe(
+    monkeypatch, tmp_path
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    router, seed = await _seed_probe_account()
+    model, transport = _model(
+        monkeypatch,
+        [
+            StubResponse(
+                200,
+                {
+                    "model": _expected_probe_model(),
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+        ],
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class HoldingSession(StubSession):
+        async def request(self, method, url, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super().request(method, url, **kwargs)
+
+    model.endpoint._create_http_session = lambda _, *, timeout: HoldingSession(
+        transport, timeout=timeout
+    )
+    probe = asyncio.create_task(model.endpoint.probe_blocked_account("primary"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        assert _block_reason(path, "primary") == "auth_required"
+        _, probe_attempt = _attempts(path)
+        assert probe_attempt[1:3] == ("primary", "open")
+        normal = await router.ledger.reserve(
+            Scope("branch", uuid4(), "anthropic"), uuid4(), seed.quote, router.accounts
+        )
+        assert normal.account == "secondary"
+    finally:
+        release.set()
+        result = await asyncio.wait_for(probe, timeout=3)
+    assert result.cleared and len(transport.calls) == 1
 
 
 @pytest.fixture(autouse=True)

@@ -1884,7 +1884,8 @@ record the outcome with the same budget and settlement rules as routed work.
 ### Decision
 
 1. An operator may explicitly probe one named, configured, currently blocked
-   Anthropic account. The probe is available through the operator CLI only.
+   Anthropic account with `li doctor --probe-anthropic-account NAME`. The probe
+   is available through the operator CLI only.
    It makes one non-streamed Messages request, with retries disabled, a fixed
    short prompt, a one-token output limit, standard service only, and no cache
    control. The current price revision determines the supported model with the

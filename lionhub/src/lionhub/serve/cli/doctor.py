@@ -8,6 +8,7 @@ import argparse
 import importlib
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from lionagi._auto import CliDeclaration, auto_register
@@ -301,6 +302,32 @@ def collect_checks() -> dict[str, dict[str, str]]:
     return checks
 
 
+async def _probe_anthropic_account(name: str):
+    from lionagi.service.connections.match_endpoint import match_endpoint
+
+    endpoint = match_endpoint("anthropic", "messages")
+    return await endpoint.probe_blocked_account(name)
+
+
+def _run_account_probe(name: str, *, json_output: bool) -> int:
+    from lionagi.ln.concurrency import run_async
+    from lionagi.service.accounts._types import AccountRoutingError
+
+    try:
+        result = run_async(_probe_anthropic_account(name))
+    except AccountRoutingError as exc:
+        print(f"Account probe refused ({exc.code.value}).", file=sys.stderr)
+        return 1
+
+    fields = asdict(result)
+    if json_output:
+        print(json.dumps(fields, indent=2))
+    else:
+        for field, value in fields.items():
+            print(f"{field}: {value}")
+    return 0 if result.cleared else 1
+
+
 def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register `li doctor` with argparse."""
     p = subparsers.add_parser(
@@ -315,7 +342,15 @@ def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--json",
         action="store_true",
-        help="Emit a JSON object of check name -> {status, detail} instead of plain text.",
+        help="Emit JSON instead of plain text.",
+    )
+    p.add_argument(
+        "--probe-anthropic-account",
+        metavar="NAME",
+        help=(
+            "Send one billed request on the named blocked account. Lift its block only on a "
+            "2xx response. Runs instead of the ordinary environment checks."
+        ),
     )
 
 
@@ -323,6 +358,9 @@ def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
     area="doctor", cli=CliDeclaration(seed="doctor", parser_factory=add_doctor_subparser)
 )
 def run_doctor(args: argparse.Namespace) -> int:
+    account = getattr(args, "probe_anthropic_account", None)
+    if account is not None:
+        return _run_account_probe(account, json_output=getattr(args, "json", False))
     checks = collect_checks()
     if getattr(args, "json", False):
         print(json.dumps(checks, indent=2))

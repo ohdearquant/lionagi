@@ -33,6 +33,7 @@ from ._types import (
     AccountRoutingError,
     AccountSpec,
     CompleteUsage,
+    Evidence,
     ProvenNotSent,
     RejectionZero,
     Reservation,
@@ -154,6 +155,29 @@ class AccountRouter:
             reservation = await self.ledger.reserve(
                 scope, attempt_id, quote, self.accounts, cert=cache.cert
             )
+        attempt = await self._attempt_with_key(reservation, body, ttls, cache)
+        label = attempt.account
+        if (
+            not isinstance(label, str)
+            or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", label) is None
+            or "sk-ant" in label.lower()
+            or mask_key_runs(label, attempt.key) != label
+        ):
+            label = None
+        record_selected_attempt(
+            attempt_id=str(attempt.attempt_id), provider="anthropic", account_label=label
+        )
+        # The prompt-cache entries this attempt writes or reads are evidenced on its account.
+        note_attempt(label)
+        return attempt
+
+    async def _attempt_with_key(
+        self,
+        reservation: Reservation,
+        body: bytes,
+        ttls: frozenset[str],
+        cache: RoutedCacheEvidence,
+    ) -> RouterAttempt:
         account = next(spec for spec in self.accounts if spec.name == reservation.account)
         try:
             key = await resolve_account_key(account.key_env, self.sources)
@@ -169,7 +193,7 @@ class AccountRouter:
             caller_cancelled = isinstance(exc, (get_cancelled_exc_class(), GeneratorExit))
             await self.settle_reservation_not_sent(reservation, caller_cancelled=caller_cancelled)
             raise
-        attempt = RouterAttempt(
+        return RouterAttempt(
             reservation,
             body,
             ttls,
@@ -178,20 +202,55 @@ class AccountRouter:
             hour_after_key=cache.hour_after_key,
             server_tools=cache.server_tools,
         )
-        label = attempt.account
-        if (
-            not isinstance(label, str)
-            or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", label) is None
-            or "sk-ant" in label.lower()
-            or mask_key_runs(label, key) != label
-        ):
-            label = None
-        record_selected_attempt(
-            attempt_id=str(attempt.attempt_id), provider="anthropic", account_label=label
+
+    async def begin_probe(self, name: str) -> RouterAttempt:
+        """Reserve the smallest fixed probe on the named blocked account."""
+        account = next((spec for spec in self.accounts if spec.name == name), None)
+        if account is None:
+            raise AccountRoutingError(RouterErrorCode.PROBE_ACCOUNT_UNKNOWN)
+        candidates = []
+        for model in self.revision.models:
+            body = freeze_request(
+                {
+                    "model": model,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "Reply OK."}],
+                    "service_tier": "standard_only",
+                }
+            )
+            candidates.append((quote_ceiling(self.revision, body), body))
+        quote, body = min(
+            candidates,
+            key=lambda candidate: (candidate[0].ceiling_nusd, candidate[0].requested_model),
         )
-        # The prompt-cache entries this attempt writes or reads are evidenced on its account.
-        note_attempt(label)
-        return attempt
+        with CancelScope(shield=True):
+            reservation = await self.ledger.reserve_probe(account, uuid4(), quote)
+        return await self._attempt_with_key(
+            reservation, body, frozenset(), RoutedCacheEvidence(None, False, False)
+        )
+
+    def probe_usage(self, body: Any) -> CompleteUsage | UnknownOutcome:
+        if isinstance(body, Mapping):
+            return usage_outcome(
+                self.revision, frozenset(), body.get("model"), body.get("usage"), None
+            )
+        return UnknownOutcome("usage_incomplete")
+
+    async def finish_probe(
+        self,
+        attempt: RouterAttempt,
+        evidence: Evidence,
+        *,
+        http_status: int | None,
+        provider_error_type: str | None,
+    ) -> bool:
+        with CancelScope(shield=True):
+            return await self.ledger.settle_probe(
+                attempt.attempt_id,
+                evidence,
+                http_status=http_status,
+                provider_error_type=provider_error_type,
+            )
 
     async def settle_response(
         self, attempt: RouterAttempt, body: Any, *, http_status: int | None = None
@@ -248,10 +307,12 @@ class AccountRouter:
     async def settle_reservation_not_sent(
         self, reservation: Reservation, *, caller_cancelled: bool = False
     ) -> None:
+        evidence = ProvenNotSent(caller_cancelled=caller_cancelled)
         with CancelScope(shield=True):
-            await self.ledger.settle(
-                reservation.attempt_id, ProvenNotSent(caller_cancelled=caller_cancelled)
-            )
+            if reservation.scope.kind == "probe":
+                await self.ledger.settle_probe(reservation.attempt_id, evidence, http_status=None)
+            else:
+                await self.ledger.settle(reservation.attempt_id, evidence)
 
     async def block(self, attempt: RouterAttempt, reason: str) -> None:
         with CancelScope(shield=True):
