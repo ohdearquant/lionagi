@@ -5,6 +5,7 @@
 
 import pytest
 
+from lionhub.tools.file import reader as reader_mod
 from lionhub.tools.file.reader import ReaderRequest, ReaderResponse, ReaderTool
 
 
@@ -161,3 +162,48 @@ def test_reader_response_accepts_unknown_file_extent():
     assert response.error == "File is unavailable"
     assert payload.get("total_lines") is None
     assert payload.get("reached_eof") is None
+
+
+def test_reader_inclusive_byte_cap_preserves_universal_newlines(tmp_path, monkeypatch):
+    path = tmp_path / "mixed.txt"
+    raw = b"alpha\rbeta\r\ngamma\x0bdelta\ninvalid:\xff"
+    path.write_bytes(raw)
+    monkeypatch.setattr(reader_mod, "_MAX_TEXT_READ_BYTES", len(raw))
+
+    response = reader_mod._read_sync(str(path), 1, 3, tmp_path)
+
+    assert response.success
+    assert response.content == "2\tbeta\n3\tgamma\x0bdelta\n4\tinvalid:\ufffd"
+    assert response.total_lines == 4
+    assert response.reached_eof is True
+
+    path.write_bytes(raw + b"!")
+    response = reader_mod._read_sync(str(path), 1, 1, tmp_path)
+
+    assert not response.success
+    assert f"exceeds {len(raw)} bytes" in response.error
+    assert response.content is response.total_lines is response.reached_eof is None
+
+
+def test_directory_scan_counts_filtered_entries_across_depth(tmp_path, monkeypatch):
+    (tmp_path / "ignore.bin").touch()
+    (tmp_path / "shown.py").touch()
+    child = tmp_path / "child"
+    child.mkdir()
+    (child / "nested.py").touch()
+    monkeypatch.setattr(reader_mod, "_MAX_DIRECTORY_ENTRIES", 3)
+    monkeypatch.setattr(reader_mod, "_MAX_LIST_FILES", 1)
+
+    top_only = reader_mod._list_dir_sync(str(tmp_path), False, [".py"], tmp_path)
+    assert top_only.success
+    assert top_only.content == str(tmp_path / "shown.py")
+
+    recursive = reader_mod._list_dir_sync(str(tmp_path), True, [".py"], tmp_path)
+    assert not recursive.success
+    assert "3-entry scan limit" in recursive.error
+    assert recursive.content is None
+
+    monkeypatch.setattr(reader_mod, "_MAX_DIRECTORY_ENTRIES", 4)
+    recursive = reader_mod._list_dir_sync(str(tmp_path), True, [".py"], tmp_path)
+    assert recursive.success
+    assert recursive.content == str(tmp_path / "shown.py")

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import io
+import os
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -14,8 +16,11 @@ from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
+from ._bounded_io import _FileSizeLimitError, _NotRegularFileError, _read_regular_bytes
 
+_MAX_TEXT_READ_BYTES = 2_000_000
 _MAX_LIST_FILES = 1_000
+_MAX_DIRECTORY_ENTRIES = 10_000
 
 
 class ReaderAction(str, Enum):
@@ -30,8 +35,8 @@ class ReaderRequest(BaseModel):
             "Action to perform. One of:\n"
             "- 'read': Read a text file. Each line is returned as `<number>\\t<code>`; "
             "the line-number prefix is for navigation only — strip it (and the tab) "
-            "before using any line as editor old_string. For large files use "
-            "offset+limit to read in windows rather than loading everything at once.\n"
+            "before using any line as editor old_string. Use offset+limit to read "
+            f"a line window in files up to {_MAX_TEXT_READ_BYTES:,} bytes.\n"
             "Text reads include total_lines and reached_eof. An offset at or past the "
             "end of a nonempty file returns an end-of-file notice.\n"
             "- 'list_dir': List files in a directory."
@@ -119,40 +124,36 @@ def _read_sync(
             success=False,
             error=f"Refusing to read symlink: {path!r}. Use the real file path within the workspace.",
         )
-    if not p.exists():
+    try:
+        raw = _read_regular_bytes(p, _MAX_TEXT_READ_BYTES)
+    except FileNotFoundError:
         return ReaderResponse(
             success=False,
             error=f"File not found: {path}. Check the path spelling and that it is within the workspace root.",
         )
-    if not p.is_file():
+    except _NotRegularFileError as e:
         return ReaderResponse(
             success=False,
-            error=f"Path is not a file: {path}. Use action='list_dir' to list directory contents.",
+            error=f"{e} Use action='list_dir' to list directory contents.",
         )
 
-    try:
-        with open(p, "rb") as fbin:
-            chunk = fbin.read(8192)
-        if b"\x00" in chunk:
-            return ReaderResponse(
-                success=False,
-                error=f"Binary file not supported: {path}. Use bash to inspect binary files (e.g. `file {path}`).",
-            )
+    except _FileSizeLimitError as e:
+        return ReaderResponse(success=False, error=str(e))
     except OSError as e:
         return ReaderResponse(
             success=False, error=f"Cannot open file: {e}. Check file permissions."
         )
 
+    if b"\x00" in raw[:8192]:
+        return ReaderResponse(
+            success=False,
+            error=f"Binary file not supported: {path}. Use bash to inspect binary files (e.g. `file {path}`).",
+        )
+
     start = max(0, offset or 0)
     max_lines = limit if (limit is not None and limit > 0) else 2000
-
-    try:
-        with open(p, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except OSError as e:
-        return ReaderResponse(
-            success=False, error=f"Read error: {e}. Check file permissions and encoding."
-        )
+    with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as stream:
+        lines = stream.readlines()
 
     total_lines = len(lines)
     selected = lines[start : start + max_lines]
@@ -169,6 +170,28 @@ def _read_sync(
         total_lines=total_lines,
         reached_eof=start + len(selected) >= total_lines,
     )
+
+
+def _scan_files(base: Path, recursive: bool, file_types: list[str] | None) -> list[Path]:
+    files: list[Path] = []
+    pending = [base]
+    scanned = 0
+    suffixes = None if file_types is None else frozenset(file_types)
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                scanned += 1
+                if scanned > _MAX_DIRECTORY_ENTRIES:
+                    raise ValueError(
+                        f"Directory {base} exceeds the {_MAX_DIRECTORY_ENTRIES:,}-entry scan limit"
+                    )
+                if recursive and entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif len(files) < _MAX_LIST_FILES and entry.is_file():
+                    path = Path(entry.path)
+                    if suffixes is None or path.suffix in suffixes:
+                        files.append(path)
+    return files
 
 
 def _list_dir_sync(
@@ -188,14 +211,8 @@ def _list_dir_sync(
             error=f"Path is not a directory: {path}. Use action='read' to read a file's contents.",
         )
 
-    from lionagi.libs.file.process import dir_to_files
-
     try:
-        files = dir_to_files(
-            str(base),
-            recursive=bool(recursive),
-            file_types=file_types,
-        )[:_MAX_LIST_FILES]
+        files = _scan_files(base, bool(recursive), file_types)
         content = "\n".join(str(f) for f in files)
     except Exception as e:
         return ReaderResponse(
@@ -251,7 +268,7 @@ class ReaderTool(LionTool):
 
                 Use action='read' for text files. Output format is `<number>\\t<code>` per line;
                 the number prefix is for reference only — strip the leading `<digits>\\t` before
-                using any line as an editor old_string. Use offset+limit to read large files in
+                using any line as an editor old_string. Use offset+limit to read text files in
                 windows (e.g. offset=200, limit=200 to get lines 200-400). Text reads
                 include total_lines and reached_eof; an offset at or past a nonempty
                 file's end returns an end-of-file notice instead of numbered content.

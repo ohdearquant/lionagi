@@ -30,6 +30,7 @@ from .code.nav import NavRequest, _find_definition_sync, _find_references_sync, 
 from .code.search import SearchAction as SearchAction  # re-export: preserves the public API
 from .code.search import SearchRequest, _visible_grep_lines
 from .context.context import ContextRequest, ContextTool
+from .file._bounded_io import _FileSizeLimitError, _read_regular_bytes
 from .file.editor import EditorRequest, _write_text_no_follow
 from .file.reader import ReaderRequest, ReaderResponse
 from .file.reader import _list_dir_sync as _file_list_dir_sync
@@ -109,6 +110,8 @@ class SubagentRequest(BaseModel):
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+_MAX_IMAGE_BYTES = 3_500_000
+_MAX_EDIT_BYTES = 2_000_000
 _IMAGE_MEDIA_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -128,7 +131,9 @@ def _read_image_sync(path: str, workspace_root: Path) -> dict:
     ext = p.suffix.lower()
     media_type = _IMAGE_MEDIA_TYPES.get(ext, "image/png")
     try:
-        raw = p.read_bytes()
+        raw = _read_regular_bytes(p, _MAX_IMAGE_BYTES)
+    except _FileSizeLimitError:
+        return {"success": False, "error": f"Image {path!r} exceeds {_MAX_IMAGE_BYTES} bytes."}
     except OSError as e:
         return {"success": False, "error": str(e)}
     encoded = base64.b64encode(raw).decode("ascii")
@@ -200,7 +205,7 @@ def _write_file_sync(
     else:
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content, encoding="utf-8")
+            _write_text_no_follow(p, content, create=True)
         except OSError as e:
             return {"success": False, "error": str(e)}
 
@@ -230,9 +235,10 @@ def _prepare_edit_file(
         return {"success": False, "error": str(e)}
 
     try:
-        original = p.read_text(encoding="utf-8")
-    except OSError as e:
+        original = _read_regular_bytes(p, _MAX_EDIT_BYTES).decode("utf-8")
+    except (OSError, UnicodeError) as e:
         return {"success": False, "error": str(e)}
+    original = original.replace("\r\n", "\n").replace("\r", "\n")
 
     count = original.count(old_string)
     if count == 0:

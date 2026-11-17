@@ -16,6 +16,7 @@ from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
+from ._bounded_io import _open_regular_file
 
 
 def _resolve_existing_workspace_file(path: str, workspace_root: Path) -> Path:
@@ -27,13 +28,12 @@ def _resolve_existing_workspace_file(path: str, workspace_root: Path) -> Path:
     return p
 
 
-def _write_text_no_follow(path: Path, content: str) -> None:
-    flags = os.O_WRONLY | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(content)
+def _write_text_no_follow(path: Path, content: str, *, create: bool = False) -> None:
+    flags = os.O_WRONLY | (os.O_CREAT if create else 0)
+    with _open_regular_file(path, flags) as (fd, _):
+        os.ftruncate(fd, 0)
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as f:
+            f.write(content)
 
 
 class EditorAction(str, Enum):
