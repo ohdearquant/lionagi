@@ -1568,6 +1568,21 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
                 "and its mcp declaration would be ignored; move the block to the top"
             )
 
+    def refuse_misplaced_settings(block: str, opening: int) -> None:
+        reads, document = _read_profile_settings(block)
+        refuse_misplaced_mcp(block, reads, document, opening + 1)
+        declared = set(_FLAG_KEY_LINE.findall(block))
+        refuse_misplaced_tools(block, reads, document, opening)
+        if not reads or isinstance(document, dict):
+            declared.update(containment_settings(block, document))
+        if declared:
+            keys = ", ".join(sorted(declared))
+            raise ConfigurationError(
+                f"agent profile {name!r}: the --- block on line {opening + 1} follows "
+                f"text on lines of its own, so its {keys} declaration "
+                "would be ignored; move the block to the top of the file"
+            )
+
     if text.startswith("---"):
         try:
             parse_frontmatter_strict(text)
@@ -1598,19 +1613,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
             for opening, block in _profile_body_blocks(
                 name, lines, line_offset=line_offset, layout=layout
             ):
-                reads, document = _read_profile_settings(block)
-                refuse_misplaced_mcp(block, reads, document, opening + 1)
-                declared = set(_FLAG_KEY_LINE.findall(block))
-                refuse_misplaced_tools(block, reads, document, opening)
-                if not reads or isinstance(document, dict):
-                    declared.update(containment_settings(block, document))
-                if declared:
-                    keys = ", ".join(sorted(declared))
-                    raise ConfigurationError(
-                        f"agent profile {name!r}: the --- block on line {opening + 1} follows "
-                        f"text on lines of its own, so its {keys} declaration "
-                        "would be ignored; move the block to the top of the file"
-                    )
+                refuse_misplaced_settings(block, opening)
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
         # the next unfenced ``---`` line or, unclosed, to the end.
@@ -1628,8 +1631,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
             for opening, later in _profile_body_blocks(
                 name, lines, line_offset=line_offset, layout=(remaining, fenced, None)
             ):
-                later_reads, later_document = _read_profile_settings(later)
-                refuse_misplaced_tools(later, later_reads, later_document, opening)
+                refuse_misplaced_settings(later, opening)
         if reads and isinstance(document, dict):
             if not document:
                 return {}

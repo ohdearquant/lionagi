@@ -520,17 +520,51 @@ def test_first_line_prose_rule_refuses_tools_after_first_unfenced_close(before_c
         _parse_profile("reviewer", text)
 
 
+@pytest.mark.parametrize(
+    ("declaration", "diagnostic"),
+    [
+        ("mcp: none", "follows prompt text and its mcp declaration"),
+        ("workload: light", "follows text on lines of its own, so its workload declaration"),
+        (
+            "contain_user_settings: true",
+            "follows text on lines of its own, so its contain_user_settings declaration",
+        ),
+        (
+            "contain_account_integrations: true",
+            "follows text on lines of its own, so its contain_account_integrations declaration",
+        ),
+    ],
+    ids=["mcp", "light-workload", "user-settings", "account-integrations"],
+)
+def test_first_line_prose_rule_refuses_later_misplaced_settings(declaration, diagnostic):
+    text = f"Review ---\n---\n{declaration}\n---"
+
+    with pytest.raises(
+        ConfigurationError, match=rf"--- block on line 2 {diagnostic} would be ignored"
+    ):
+        _parse_profile("reviewer", text)
+
+
 def test_first_line_prose_rule_leaves_fenced_tools_after_first_unfenced_close_in_prompt(
     monkeypatch,
 ):
     warnings = []
     monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
-    text = "Review ---\n---\n~~~yaml\n---\ntools: [Example]\n---\n~~~"
+    text = (
+        "Review ---\n---\n~~~yaml\n---\n"
+        "tools: [Example]\nmcp: none\nworkload: light\n"
+        "contain_user_settings: true\ncontain_account_integrations: true\n"
+        "---\n~~~"
+    )
 
     profile = _parse_profile("reviewer", text)
 
     assert profile.raw_body == text
     assert profile.extra == {}
+    assert profile.mcp is None
+    assert profile.workload == AgentProfile(name="reviewer").workload
+    assert profile.contain_user_settings is False
+    assert profile.contain_account_integrations is None
     assert warnings == []
 
 
