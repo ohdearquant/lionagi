@@ -139,6 +139,23 @@ def test_missing_warning_uses_launch_directory_for_search_and_leg_cwd_for_provid
     assert f"discovers from {leg.name} itself" in message
 
 
+def test_launch_directory_setting_cannot_silence_missing_config_warning(write_settings):
+    leg = write_settings()
+    launch = Path.cwd()
+    settings = launch / ".lionagi" / "settings.yaml"
+    settings.parent.mkdir()
+    settings.write_text(_QUIET_ON, encoding="utf-8")
+    resolution = resolve_spawn_mcp_servers(launch_dir=launch)
+
+    [message] = _capture_warnings(
+        lambda: _report_mcp_resolution(resolution, provider="codex", cwd=leg, forwarded=False)
+    )
+
+    assert "no_mcp_config_found" in message
+    assert f"searched from {launch}" in message
+    assert f"discovers from {leg} itself" in message
+
+
 @pytest.mark.parametrize(
     "reason",
     ["mcp_config_unusable:invalid test configuration", "mcp_config_declares_no_servers"],
