@@ -1342,8 +1342,9 @@ def _report_mcp_resolution(
     The whole point of resolving here is that a leg starting without the
     servers its instructions assume should be visible when it is launched
     rather than inferred from its output an hour later. A request for no
-    servers is silent, and a forwarded set is reported as a hint. The caller
-    can also opt out of the warning about an absent configuration file.
+    servers is silent, and a forwarded set is reported as a hint. The global
+    ``mcp.quiet_discovery`` preference can quiet the warning when the search
+    from the launch directory found no configuration file.
 
     ``forwarded`` is the caller's answer to "does this spawn hand the resolved
     set to the leg?", read off the request that spawn built. This function must
@@ -1368,13 +1369,15 @@ def _report_mcp_resolution(
         return
 
     if resolution.reason == "no_mcp_config_found":
-        from lionagi._settings import load_settings
+        from yaml import YAMLError
+
+        from lionagi._settings import load_global_settings_layer
 
         try:
-            settings_dir = Path(cwd).resolve() if cwd else None
-            mcp_settings = load_settings(settings_dir).get("mcp")
-        except Exception:  # noqa: BLE001 -- an unreadable preference leaves the warning enabled
-            mcp_settings = None
+            settings = load_global_settings_layer()
+        except (OSError, RuntimeError, ValueError, YAMLError):
+            settings = None
+        mcp_settings = settings.get("mcp") if isinstance(settings, dict) else None
         if isinstance(mcp_settings, dict) and mcp_settings.get("quiet_discovery") is True:
             return
 

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from lionhub.orchestration.console import _WARN_LOGGER_NAME
-from lionhub.orchestration.mcp_config import McpResolution
+from lionhub.orchestration.mcp_config import McpResolution, resolve_spawn_mcp_servers
 from lionhub.serve.cli.agent import _report_mcp_resolution
 
 _QUIET_ON = "mcp:\n  quiet_discovery: true\n"
@@ -98,16 +98,18 @@ def test_no_servers_warning_is_leg_scoped(write_settings):
     [
         pytest.param(_QUIET_ON, None, False, id="user-on"),
         pytest.param(_QUIET_OFF, None, True, id="user-off"),
-        pytest.param(_QUIET_ON, _QUIET_OFF, True, id="project-overrides-to-off"),
-        pytest.param(_QUIET_OFF, _QUIET_ON, False, id="project-overrides-to-on"),
-        pytest.param(_QUIET_ON, "mcp: {quiet_discovery: 'true'}", True, id="quoted-true"),
-        pytest.param(None, "mcp: {quiet_discovery: 1}", True, id="integer"),
-        pytest.param(None, "mcp: [true]", True, id="non-mapping-mcp"),
-        pytest.param(_QUIET_ON, "mcp: [", True, id="malformed-yaml"),
-        pytest.param(_QUIET_ON, "true", True, id="non-mapping-document"),
+        pytest.param(_QUIET_ON, _QUIET_OFF, False, id="project-cannot-enable-warning"),
+        pytest.param(_QUIET_OFF, _QUIET_ON, True, id="project-cannot-silence-warning"),
+        pytest.param(None, _QUIET_ON, True, id="project-alone-cannot-silence-warning"),
+        pytest.param("mcp: {quiet_discovery: 'true'}", None, True, id="quoted-true"),
+        pytest.param("mcp: {quiet_discovery: 1}", None, True, id="integer"),
+        pytest.param("mcp: [true]", None, True, id="non-mapping-mcp"),
+        pytest.param("mcp: [", None, True, id="malformed-yaml"),
+        pytest.param("true", None, True, id="non-mapping-document"),
+        pytest.param(_QUIET_ON, "mcp: [", False, id="project-malformed-ignored"),
     ],
 )
-def test_missing_config_warning_honors_layered_boolean_setting(write_settings, user, local, warns):
+def test_missing_config_warning_honors_user_boolean_setting(write_settings, user, local, warns):
     cwd = write_settings(user, local)
     resolution = McpResolution(None, "no_mcp_config_found", None, "/tmp")
     messages = _capture_warnings(
@@ -118,19 +120,20 @@ def test_missing_config_warning_honors_layered_boolean_setting(write_settings, u
         assert "no_mcp_config_found" in messages[0]
 
 
-def test_relative_leg_directory_finds_project_setting(write_settings, monkeypatch):
-    leg = Path(write_settings(user=_QUIET_OFF, local=_QUIET_ON))
+def test_missing_warning_uses_launch_directory_for_search_and_leg_cwd_for_provider(
+    write_settings, monkeypatch
+):
+    leg = Path(write_settings(local=_QUIET_ON))
+    launch = Path.cwd()
+    resolution = resolve_spawn_mcp_servers(launch_dir=launch)
+    (leg / ".lionagi").symlink_to(leg / "missing-settings", target_is_directory=True)
     monkeypatch.chdir(leg.parent)
-    resolution = McpResolution(None, "no_mcp_config_found", None, "/tmp")
-
-    assert (
-        _capture_warnings(
-            lambda: _report_mcp_resolution(
-                resolution, provider="codex", cwd=leg.name, forwarded=False
-            )
-        )
-        == []
+    messages = _capture_warnings(
+        lambda: _report_mcp_resolution(resolution, provider="codex", cwd=leg.name, forwarded=False)
     )
+    [message] = messages
+    assert f"searched from {launch}" in message
+    assert f"discovers from {leg.name} itself" in message
 
 
 @pytest.mark.parametrize(
