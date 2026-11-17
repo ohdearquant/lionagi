@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lionagi.protocols.action.tool import Tool
+from lionhub.tools.code import nav as nav_mod
 from lionhub.tools.code.nav import (
     NavRequest,
     NavResponse,
@@ -111,6 +112,32 @@ def test_outline_missing_file(tmp_path):
     resp = _outline_sync(str(tmp_path / "nonexistent.py"))
     assert not resp.success
     assert resp.error is not None
+
+
+def test_nav_does_not_parse_source_past_the_byte_cap(tmp_path, monkeypatch):
+    path = tmp_path / "source.py"
+    source = b"\r\ndef item():\r    return 1\n"
+    path.write_bytes(source)
+    monkeypatch.setattr(nav_mod, "_MAX_NAV_SOURCE_BYTES", len(source))
+
+    response = _outline_sync(str(path))
+    assert response.success
+    assert [(item.name, item.line) for item in response.items] == [("item", 2)]
+
+    def unexpected_parse(*args, **kwargs):
+        raise AssertionError("oversized sources must be refused before parsing")
+
+    monkeypatch.setattr(nav_mod.ast, "parse", unexpected_parse)
+    path.write_bytes(source + b"\n")
+    for action, args in (
+        (_outline_sync, ()),
+        (_find_definition_sync, ("item",)),
+        (_find_references_sync, ("item",)),
+    ):
+        response = action(str(path), *args)
+        assert not response.success
+        assert f"exceeds {len(source)} bytes" in response.error
+        assert not response.items
 
 
 def test_outline_two_classes(typed_file):

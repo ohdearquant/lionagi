@@ -65,8 +65,7 @@ _NETWORK_POLICY = """(allow network-outbound)
 (allow sysctl-read (sysctl-name-regex #"^net.routetable"))
 """
 
-# Runs as `python -I -S -c`: no site, no user or script directory on sys.path. O_NOFOLLOW keeps the
-# editor's refusal to write through a symlink in the child that does the write.
+# Runs as `python -I -S -c`: the confined editor checks the descriptor it will write.
 #: The pseudo-terminals a CLI's shell tool allocates for each command it runs. Only a terminal
 #: the confined process allocated itself carries the ``com.apple.sandbox.pty`` extension, so a
 #: terminal it did not allocate (another program's, a terminal multiplexer's pane) cannot be
@@ -77,12 +76,31 @@ _PTY_POLICY = """(allow pseudo-tty)
   (require-all (regex #"^/dev/ttys[0-9]+$") (extension "com.apple.sandbox.pty")))
 """
 
-_WRITE_CHILD = """import os, sys
+_WRITE_CHILD = """import errno, os, stat, sys
 path = sys.argv[1]
+kinds = {"b": "block device", "c": "character device", "d": "directory",
+         "l": "symbolic link", "p": "FIFO", "s": "socket"}
+
+def require_regular(mode):
+    if not stat.S_ISREG(mode):
+        kind = kinds.get(stat.filemode(mode)[0], "special file")
+        raise OSError(errno.EINVAL, f"Expected a regular file, got {kind}", path)
+
 try:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        fd = os.open(path, flags, 0o666)
+    except OSError as exc:
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError:
+            raise exc from None
+        require_regular(mode)
+        raise
     with os.fdopen(fd, "wb") as f:
+        require_regular(os.fstat(fd).st_mode)
+        os.ftruncate(fd, 0)
         f.write(sys.stdin.buffer.read())
 except OSError as e:
     sys.stderr.write(f"{e.strerror}: {e.filename}")

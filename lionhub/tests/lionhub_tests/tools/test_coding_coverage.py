@@ -3,12 +3,17 @@
 
 """Coverage-targeted tests for tools/coding.py — uncovered paths."""
 
+import builtins
+import errno
 import io
 import os
+import stat
+from pathlib import Path
 
 import pytest
 
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
+from lionhub.tools import coding
 from lionhub.tools._subprocess import (
     _MAX_OUTPUT_BYTES,
     _subprocess_sync,
@@ -25,6 +30,8 @@ from lionhub.tools.coding import (
     _read_image_sync,
     _write_file_sync,
 )
+from lionhub.tools.file import editor as file_editor
+from lionhub.tools.file import reader as file_reader
 
 
 def test_resolve_workspace_path_symlink_raises(tmp_path):
@@ -106,13 +113,144 @@ def test_read_image_sync_oserror(tmp_path, monkeypatch):
     img = tmp_path / "broken.png"
     _make_tiny_png(img)
 
-    def raise_oserror(self):
+    def raise_oserror(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr("pathlib.Path.read_bytes", raise_oserror)
+    monkeypatch.setattr(coding, "_read_regular_bytes", raise_oserror)
     result = _read_image_sync(str(img), tmp_path)
     assert result["success"] is False
     assert "disk full" in result["error"]
+
+
+def test_read_image_sync_accepts_png_at_the_byte_limit(tmp_path, monkeypatch):
+    img = tmp_path / "at-limit.png"
+    _make_tiny_png(img)
+    cap = img.stat().st_size
+    monkeypatch.setattr(coding, "_MAX_IMAGE_BYTES", cap)
+
+    result = _read_image_sync(str(img), tmp_path)
+
+    assert result["success"] is True
+    assert result["media_type"] == "image/png"
+    assert result["size_bytes"] == cap
+
+
+def test_read_image_sync_refuses_an_oversized_png(tmp_path, monkeypatch):
+    img = tmp_path / "over-limit.png"
+    _make_tiny_png(img)
+    monkeypatch.setattr(coding, "_MAX_IMAGE_BYTES", img.stat().st_size - 1)
+
+    result = _read_image_sync(str(img), tmp_path)
+
+    assert result["success"] is False
+    assert "image" in result["error"].lower()
+    assert "byte" in result["error"].lower()
+
+
+def test_read_image_sync_caps_the_open_stream(tmp_path, monkeypatch):
+    img = tmp_path / "growing.png"
+    _make_tiny_png(img)
+    original = img.read_bytes()
+    cap = len(original)
+    monkeypatch.setattr(coding, "_MAX_IMAGE_BYTES", cap)
+
+    class GrowingImage(io.BytesIO):
+        def read(self, size=-1):
+            assert size == cap + 1
+            return super().read(size)
+
+    real_fdopen = os.fdopen
+    expected = img.stat()
+
+    def open_grown_image(fd, mode, *args, **kwargs):
+        observed = os.fstat(fd)
+        assert (observed.st_dev, observed.st_ino) == (expected.st_dev, expected.st_ino)
+        assert mode == "rb"
+        with real_fdopen(fd, mode, *args, **kwargs):
+            return GrowingImage(original + b"excess")
+
+    monkeypatch.setattr(os, "fdopen", open_grown_image)
+
+    result = _read_image_sync(str(img), tmp_path)
+
+    assert result["success"] is False
+    assert "image" in result["error"].lower()
+    assert "byte" in result["error"].lower()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs require os.mkfifo")
+@pytest.mark.parametrize(
+    ("operation", "suffix", "args", "replace_at_open"),
+    [
+        pytest.param(_read_file_sync, ".txt", (0, 2000), False, id="reader-text"),
+        pytest.param(_read_file_sync, ".png", (0, 2000), False, id="reader-image"),
+        pytest.param(_read_image_sync, ".png", (), False, id="image-helper"),
+        pytest.param(_write_file_sync, ".txt", ("new text",), False, id="editor-write"),
+        pytest.param(_edit_file_sync, ".txt", ("old", "new", False), False, id="editor-edit"),
+        pytest.param(_read_file_sync, ".txt", (0, 2000), True, id="reader-text-descriptor"),
+        pytest.param(_read_image_sync, ".png", (), True, id="reader-image-descriptor"),
+        pytest.param(
+            _edit_file_sync, ".txt", ("old", "new", False), True, id="editor-edit-descriptor"
+        ),
+    ],
+)
+def test_regular_file_tools_refuse_fifo_before_io(
+    tmp_path, monkeypatch, operation, suffix, args, replace_at_open
+):
+    fifo = tmp_path.resolve() / f"named-pipe{suffix}"
+    try:
+        os.mkfifo(fifo)
+    except NotImplementedError:
+        pytest.skip("FIFOs are unavailable on this platform")
+    except OSError as exc:
+        if exc.errno not in (errno.ENOSYS, errno.ENOTSUP):
+            raise
+        pytest.skip("FIFOs are unavailable on this filesystem")
+
+    target = fifo
+    if replace_at_open:
+        target = fifo.with_name(f"regular-file{suffix}")
+        target.write_text("old", encoding="utf-8")
+
+    def is_target_path(path):
+        return not isinstance(path, int) and os.fsdecode(path) == str(target)
+
+    def guard_blocking_open(original):
+        def guarded(path, *args, **kwargs):
+            if is_target_path(path):
+                pytest.fail(f"attempted blocking open of fixture {target}")
+            return original(path, *args, **kwargs)
+
+        return guarded
+
+    real_open = os.open
+    real_fdopen = os.fdopen
+
+    def open_nonblocking(path, flags, *args, **kwargs):
+        if is_target_path(path):
+            if not flags & os.O_NONBLOCK:
+                pytest.fail(f"attempted blocking descriptor open of fixture {target}")
+            # For the race arm, return a real FIFO descriptor under a regular path.
+            path = fifo
+        return real_open(path, flags, *args, **kwargs)
+
+    def refuse_special_descriptor(fd, *args, **kwargs):
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            pytest.fail(f"attempted I/O on a non-regular descriptor for {fifo}")
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guard_blocking_open(Path.open))
+    monkeypatch.setattr(io, "open", guard_blocking_open(io.open))
+    monkeypatch.setattr(builtins, "open", guard_blocking_open(builtins.open))
+    monkeypatch.setattr(os, "open", open_nonblocking)
+    monkeypatch.setattr(os, "fdopen", refuse_special_descriptor)
+
+    result = operation(str(target), *args, tmp_path)
+
+    assert result["success"] is False
+    assert "regular file" in result["error"].lower()
+    assert "fifo" in result["error"].lower()
+    assert target.name in result["error"]
 
 
 def test_read_file_sync_delegates_to_image_reader(tmp_path):
@@ -139,13 +277,23 @@ def test_read_file_sync_nonexistent_returns_error(tmp_path):
     assert "not found" in result["error"].lower()
 
 
-def test_list_dir_sync_exception_returns_error(tmp_path, monkeypatch):
-    import lionagi.libs.file.process as fp_mod
+def test_read_file_sync_scans_past_the_old_text_ceiling(tmp_path):
+    target = tmp_path / "large.log"
+    target.write_bytes(b"line\n" * 600_000)
 
+    result = _read_file_sync(str(target), 599_998, 5, tmp_path)
+
+    assert result["success"] is True
+    assert result["content"] == "599999\tline\n600000\tline\n"
+    assert result["total_lines"] == 600_000
+    assert result["reached_eof"] is True
+
+
+def test_list_dir_sync_exception_returns_error(tmp_path, monkeypatch):
     def raise_exc(*_a, **_kw):
         raise RuntimeError("disk error")
 
-    monkeypatch.setattr(fp_mod, "dir_to_files", raise_exc)
+    monkeypatch.setattr(file_reader, "_scan_files", raise_exc)
 
     result = _list_dir_sync(str(tmp_path), False, None, tmp_path)
     assert result["success"] is False
@@ -157,7 +305,7 @@ def test_write_file_sync_oserror_returns_error(tmp_path, monkeypatch):
         raise OSError("no space left")
 
     target = tmp_path / "out.py"
-    monkeypatch.setattr("pathlib.Path.write_text", raise_oserror)
+    monkeypatch.setattr(coding, "_write_text_no_follow", raise_oserror)
 
     result = _write_file_sync(str(target), "hello", tmp_path)
     assert result["success"] is False
@@ -177,15 +325,32 @@ def test_edit_file_sync_oserror_on_read(tmp_path, monkeypatch):
     f = tmp_path / "x.py"
     f.write_text("hello\n")
 
-    import pathlib
-
     def raise_on_read(*args, **kwargs):
         raise OSError("read error")
 
-    monkeypatch.setattr(pathlib.Path, "read_text", raise_on_read)
+    monkeypatch.setattr(file_editor, "_read_regular_bytes", raise_on_read)
 
     result = _edit_file_sync(str(f), "hello", "bye", False, tmp_path)
     assert result["success"] is False
+    assert "read error" in result["error"]
+
+
+@pytest.mark.parametrize("at_limit", [True, False], ids=["at-limit", "over-limit"])
+def test_edit_file_sync_caps_the_input_file(tmp_path, monkeypatch, at_limit):
+    target = tmp_path / "edit-limit.txt"
+    target.write_text("hello", encoding="utf-8")
+    cap = target.stat().st_size - (0 if at_limit else 1)
+    monkeypatch.setattr(file_editor, "_MAX_EDIT_BYTES", cap)
+
+    result = _edit_file_sync(str(target), "hello", "bye", False, tmp_path)
+
+    assert result["success"] is at_limit
+    if at_limit:
+        assert target.read_text(encoding="utf-8") == "bye"
+    else:
+        assert target.read_text(encoding="utf-8") == "hello"
+        assert "byte" in result["error"].lower()
+        assert target.name in result["error"]
 
 
 def test_drain_stream_truncates_at_max(monkeypatch):
