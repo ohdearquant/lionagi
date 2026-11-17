@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -427,6 +427,38 @@ async def test_probe_usage_replay_applies_ceiling_safety_once(tmp_path, new_bloc
         0,
     )
     assert _failures(ledger) == []
+    assert _unblocks(ledger) == [(f"probe:{attempt}",)]
+
+
+async def test_a_bill_after_the_lease_closed_the_probe_records_spend_without_a_block(tmp_path):
+    now = [NOW]
+    ledger = await _prepare(tmp_path)
+    ledger._clock = lambda: now[0]
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    assert await ledger.settle_probe(attempt, UnknownOutcome("usage_incomplete"), http_status=200)
+    assert _block_state(ledger)[0] is None
+
+    # The next admission after the lease closes the open probe hold at zero.
+    now[0] = NOW + ledger.open_lease + timedelta(seconds=1)
+    later = uuid4()
+    await ledger.reserve(Scope("branch", uuid4(), "anthropic"), later, QUOTE, (ACCOUNT,))
+    await ledger.settle(later, ProvenNotSent())
+    assert _attempt(ledger, attempt)[:3] == ("settled", 0, "reconciled")
+
+    await ledger.settle_probe(attempt, _usage(11), http_status=200)
+    status = (await ledger.status("anthropic"))[0]
+    assert (
+        status.block_reason,
+        status.settled_nusd,
+        status.adjustments_nusd,
+        status.open_ceiling_nusd,
+    ) == (None, 0, 11, 0)
+    with closing(sqlite3.connect(ledger.path)) as connection:
+        corrections = connection.execute(
+            "SELECT delta_nusd FROM adjustment WHERE kind = 'correction'"
+        ).fetchall()
+    assert corrections == [(11,)]
     assert _unblocks(ledger) == [(f"probe:{attempt}",)]
 
 

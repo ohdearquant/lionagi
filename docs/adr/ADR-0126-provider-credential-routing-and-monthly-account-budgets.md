@@ -1930,7 +1930,11 @@ record the outcome with the same budget and settlement rules as routed work.
    the probe's own disposition unchanged. The ordinary over-ceiling rule
    still applies when complete usage costs more than the reserved ceiling.
    If the probe cleared the block with incomplete usage, a later above-ceiling
-   bill still blocks the account with `ceiling_exceeded`. Amendment 12
+   bill still blocks the account with `ceiling_exceeded` while the probe's
+   attempt is open. Once the lease closes that attempt at zero (Amendment 11
+   Decision 1), a later bill is recorded as a correction and blocks nothing
+   (Amendment 11 Decision 4): the account stays unblocked, and its recorded
+   spend can stay below the provider's bill until that bill arrives. Amendment 12
    Decision 2 states that “The ledger's other settle-time blocks
    (`ceiling_exceeded`, `settlement_conflict`) are unchanged and may replace a
    billing reason.” That rule also applies to probes, including an attempt
@@ -1967,7 +1971,9 @@ recorded failure keeps an older successful probe from clearing the block.
 Exercise a durable re-block with the same reason during a reserved probe and
 the control without another block write. Settle a successful probe with
 incomplete usage, then record a complete bill above its ceiling. Confirm the
-ordinary block applies and the probe leaves one unblock audit.
+ordinary block applies and the probe leaves one unblock audit. Record the same
+bill after the lease has closed the attempt instead, and confirm one
+correction for the bill, no block and the probe's one unblock audit.
 Verify both billing reasons can be admitted and cleared. Verify
 `ceiling_exceeded` and `settlement_conflict` refuse before reserving or
 requesting, preserving the reason and generation, and that a billing block
