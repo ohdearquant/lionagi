@@ -2131,7 +2131,10 @@ def run_state(args: argparse.Namespace) -> int:
                 print(f"    {table}: {count}")
         if kept := result.get("deferred_victim_progressions"):
             verb, owners = ("would keep", "selected") if args.dry_run else ("kept", "deleted")
-            print(f"  {verb} {kept} non-array progression(s) from {owners} sessions")
+            print(
+                f"  {verb} {kept} non-array progression(s) from {owners} sessions "
+                "(any array progressions from the same sessions are also kept)"
+            )
             print(
                 "  later session prunes leave the orphaned progressions and their messages in place"
             )

@@ -256,9 +256,10 @@ async def test_cli_prune_keeps_messages_of_non_array_progressions(prune_store, m
     assert "deleted 0 session(s), 0 branch(es), 0 orphan message(s)" in later
 
     explanation = "later session prunes leave the orphaned progressions and their messages in place"
-    assert "would keep 1 non-array progression(s) from selected sessions" in preview
+    array_notice = "(any array progressions from the same sessions are also kept)"
+    assert f"would keep 1 non-array progression(s) from selected sessions {array_notice}" in preview
     assert explanation in preview
-    assert "kept 1 non-array progression(s) from deleted sessions" in applied
+    assert f"kept 1 non-array progression(s) from deleted sessions {array_notice}" in applied
     assert explanation in applied
 
 
