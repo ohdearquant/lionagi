@@ -744,6 +744,38 @@ def test_output_printed_before_the_deadline_is_kept_while_a_descendant_holds_the
     assert "started" in result["stdout"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipes")
+def test_a_clean_exit_near_the_deadline_is_not_reported_as_a_timeout_when_the_readers_lag(
+    monkeypatch,
+):
+    """The command exits half a second before its deadline; its pipe readers finish just after
+    the deadline, within the shipped drain grace of the exit. The readers' latency is not the
+    command's: it reports its return code and output."""
+    import time
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    deadline_s = 3.0
+    real_drain = subprocess_mod._drain
+    started = time.monotonic()
+
+    def late_drain(stream, buf):
+        # A reader thread that is scheduled late, as under load: it starts reading 0.3 s after
+        # the deadline, inside the grace that follows an exit 0.5 s before it.
+        time.sleep(max(0.0, started + deadline_s + 0.3 - time.monotonic()))
+        return real_drain(stream, buf)
+
+    monkeypatch.setattr(subprocess_mod, "_drain", late_drain)
+    assert subprocess_mod._DRAIN_GRACE_SECONDS == 1.0
+    code = "import sys, time; time.sleep(2.5); sys.stdout.write('done'); sys.exit(3)"
+
+    result = subprocess_mod._subprocess_sync([sys.executable, "-c", code], False, deadline_s, None)
+
+    assert result.get("timed_out") is None
+    assert result["returncode"] == 3
+    assert result["stdout"] == "done"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell background job")
 def test_a_timed_out_command_marks_truncation_only_when_the_cap_was_reached(monkeypatch):
     import lionhub.tools._subprocess as subprocess_mod
