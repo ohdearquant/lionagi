@@ -27,6 +27,7 @@ from lionagi._paths import ensure_lionagi_dir
 from lionhub.orchestration.console import _refused_inside_an_agent
 from lionhub.orchestration.schedule.parsing import _url_authority
 from lionhub.serve.daemon._host import admitted_host_names, is_unspecified_host, normalize_host
+from lionhub.serve.daemon.settings import _SHUTDOWN_GRACE_SECONDS
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
@@ -538,7 +539,13 @@ def _start_backend_only(host: str, port: int) -> int:
     # channel and mints into its own memory. A worker count from WEB_CONCURRENCY
     # would serve the pairing route from a process that never issued the code,
     # so a --no-frontend start, which mints nothing itself, runs one worker too.
-    uvicorn.run("lionagi.studio.app:app", host=host, port=port, workers=1)
+    uvicorn.run(
+        "lionagi.studio.app:app",
+        host=host,
+        port=port,
+        workers=1,
+        timeout_graceful_shutdown=_SHUTDOWN_GRACE_SECONDS,
+    )
     return 0
 
 
@@ -817,7 +824,13 @@ def _start_local(
     _ignore_sigpipe()
     try:
         # One process, as in _start_backend_only: the dev page's code lives here.
-        uvicorn.run("lionagi.studio.app:app", host=host, port=port, workers=1)
+        uvicorn.run(
+            "lionagi.studio.app:app",
+            host=host,
+            port=port,
+            workers=1,
+            timeout_graceful_shutdown=_SHUTDOWN_GRACE_SECONDS,
+        )
     except KeyboardInterrupt:
         print("\nStopping Lion Studio...")
     finally:
