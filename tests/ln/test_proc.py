@@ -1461,3 +1461,105 @@ async def test_async_escalation_waits_on_the_killed_child_when_the_group_kill_ra
     # Once for the grace, once after the forced kill.
     assert child_waits == [None, -signal.SIGKILL]
     proc.kill.assert_called_once()
+
+
+def test_a_leader_that_shows_a_different_marker_is_not_bound_even_as_a_child(monkeypatch):
+    """A marker that is read and differs denies; parentage is only for a marker not shown."""
+    import lionagi.ln._proc as proc_mod
+
+    monkeypatch.setattr(
+        proc_mod, "pinned_member", lambda *a, **k: ("found", (4242, 12.5, "other", True))
+    )
+    monkeypatch.setattr(proc_mod, "_is_this_process_child", lambda *a: True)
+
+    assert proc_mod.observe_process_group_leader(4242, expected_marker="spawn-token") is None
+
+
+def test_a_leader_that_shows_no_marker_is_bound_only_as_a_child_of_this_process(monkeypatch):
+    import os
+
+    import lionagi.ln._proc as proc_mod
+
+    parent = os.getppid()
+    monkeypatch.setattr(
+        proc_mod, "pinned_member", lambda pid, *a, **k: ("found", (pid, 12.5, None, True))
+    )
+
+    assert proc_mod.observe_process_group_leader(parent, expected_marker="spawn-token") is None
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups")
+def test_a_system_binary_leader_is_bound_by_parentage():
+    """macOS discloses no environment for /bin/sleep, so its marker cannot be read; it is this
+    process's child, so the observation still binds it."""
+    import subprocess
+
+    from lionagi.ln._proc import observe_process_group_leader, prepare_process_group_env
+
+    env, marker = prepare_process_group_env(dict(os.environ))
+    child = subprocess.Popen(["/bin/sleep", "5"], env=env, start_new_session=True)
+    try:
+        assert observe_process_group_leader(child.pid, expected_marker=marker) is not None
+    finally:
+        child.kill()
+        child.wait()
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups")
+def test_a_leader_that_exited_before_the_observation_is_bound_until_it_is_collected():
+    """A leader that has already exited shows no environment and no group, but while it is an
+    uncollected child of this process its pid is held, so the observation binds it."""
+    import subprocess
+
+    import psutil
+
+    from lionagi.ln._proc import observe_process_group_leader, prepare_process_group_env
+
+    env, marker = prepare_process_group_env(dict(os.environ))
+    child = subprocess.Popen(["/bin/sh", "-c", "exit 0"], env=env, start_new_session=True)
+    try:
+        stop_by = time.monotonic() + 5.0
+        while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < stop_by, "the child did not exit"
+            time.sleep(0.005)
+        started = psutil.Process(child.pid).create_time()
+        bound = observe_process_group_leader(child.pid, expected_marker=marker)
+        assert bound is not None
+        assert abs(bound - started) <= 1.0
+    finally:
+        child.wait()
+
+    assert observe_process_group_leader(child.pid, expected_marker=marker) is None
+
+
+def test_a_leader_whose_group_cannot_be_read_is_not_bound_unless_it_is_this_process_child(
+    monkeypatch,
+):
+    import lionagi.ln._proc as proc_mod
+
+    monkeypatch.setattr(proc_mod, "pinned_member", lambda *a, **k: ("gone", None))
+
+    assert (
+        proc_mod.observe_process_group_leader(os.getppid(), expected_marker="spawn-token") is None
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups")
+def test_a_running_child_whose_group_cannot_be_read_is_refused_without_waiting(monkeypatch):
+    """Only a child that is exiting waits to become a zombie; a running one is refused at once."""
+    import subprocess
+
+    import lionagi.ln._proc as proc_mod
+
+    monkeypatch.setattr(proc_mod, "pinned_member", lambda *a, **k: ("gone", None))
+    child = subprocess.Popen(["/bin/sleep", "5"], start_new_session=True)
+    try:
+        began = time.monotonic()
+        bound = proc_mod.observe_process_group_leader(child.pid, expected_marker="spawn-token")
+        elapsed = time.monotonic() - began
+    finally:
+        child.kill()
+        child.wait()
+
+    assert bound is None
+    assert elapsed < proc_mod._EXITING_CHILD_WAIT_SECONDS / 2

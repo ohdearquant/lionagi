@@ -1134,8 +1134,10 @@ async def _observe_running_child(
     """Repeat :func:`observe_spawned` with short sleeps while *child* runs, until its start
     time reads or :data:`_SPAWN_OBSERVATION_BUDGET` passes.
 
-    Repeating is safe: once this child is reaped a stranger may take its pid, but no stranger
-    carries the marker, so a later read can never bind the stranger as this child.
+    Repeating is safe: once this child is reaped a stranger may take its pid, but a stranger
+    never carries this child's marker. One that shows a different marker is refused, and one
+    whose marker cannot be read is bound only when it is also a child of this process, which
+    needs the pid to be reissued to another child of this process before the read.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _SPAWN_OBSERVATION_BUDGET

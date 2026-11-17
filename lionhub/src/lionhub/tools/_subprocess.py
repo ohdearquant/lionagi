@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import re
+import select
 import subprocess
 import threading
 import time
@@ -18,6 +19,9 @@ from lionagi.ln import (
     terminate_process_group,
 )
 
+# The real class, kept before anything can replace the module attribute: only a child this
+# module spawned with it is waited on without being collected.
+_POPEN = subprocess.Popen
 _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
 _MAX_OUTPUT_BYTES = 100_000
@@ -25,6 +29,48 @@ _CLEANUP_GRACE_SECONDS = 1.0
 # After a command exits inside its deadline, the pipe readers get at least this long to take
 # the output already written, so a reader slowed by load is not reported as a timeout.
 _DRAIN_GRACE_SECONDS = 1.0
+
+
+def _wait_for_exit(proc: subprocess.Popen, timeout: float) -> bool:
+    """Whether *proc* exited within *timeout*, leaving it unreaped where the platform allows.
+
+    On a kqueue platform (macOS) the exit is observed without collecting the child, so its pid,
+    and the process group it leads, stay reserved until the caller decides whether to end the
+    group. That is what lets a group whose members cannot show their spawn marker (a protected
+    system binary on macOS) still be ended after its leader has exited. Elsewhere this waits
+    with ``Popen.wait``, which collects the child; a member's marker is readable there.
+    """
+    kqueue = getattr(select, "kqueue", None)
+    if kqueue is None or not isinstance(proc, _POPEN):
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+    queue = kqueue()
+    try:
+        exit_event = select.kevent(
+            proc.pid,
+            filter=select.KQ_FILTER_PROC,
+            flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+            fflags=select.KQ_NOTE_EXIT,
+        )
+        try:
+            return bool(queue.control([exit_event], 1, timeout))
+        except ProcessLookupError:
+            # No such process: it has already been collected, so it has exited.
+            _collect(proc)
+            return True
+    finally:
+        queue.close()
+
+
+def _collect(proc: subprocess.Popen) -> None:
+    """Collect a child that has already exited; bounded, like every wait here."""
+    try:
+        proc.wait(timeout=_CLEANUP_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _drain(stream, buf: bytearray) -> bool:
@@ -104,9 +150,7 @@ def _subprocess_sync(
     t_out.start()
     t_err.start()
 
-    try:
-        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired:
+    if not _wait_for_exit(proc, max(0.0, deadline - time.monotonic())):
         timed_out = True
     else:
         # A descendant that keeps a pipe open is bounded by the deadline, or by the drain grace
@@ -119,7 +163,8 @@ def _subprocess_sync(
 
     if timed_out:
         # A surviving descendant can still pin the group after the leader exits.
-        # Require the spawn marker to distinguish it from a reused PGID.
+        # Require the spawn marker to distinguish it from a reused PGID, or, where
+        # no member shows it, the leader still unreaped.
         group_witnesses = (
             capture_group_witnesses(
                 proc,
@@ -153,6 +198,9 @@ def _subprocess_sync(
             "timed_out": True,
         }
 
+    # Where the exit was observed without collecting the child, collect it now.
+    if proc.returncode is None:
+        _collect(proc)
     return {
         "stdout": _decode_output(stdout_buf, stdout_truncated[0]),
         "stderr": _decode_output(stderr_buf, stderr_truncated[0]),

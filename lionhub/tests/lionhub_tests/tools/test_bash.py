@@ -789,3 +789,88 @@ def test_a_timed_out_command_marks_truncation_only_when_the_cap_was_reached(monk
     assert short["timed_out"] is True and short["stdout"] == "tiny"
     assert full["timed_out"] is True
     assert full["stdout"] == "x" * 16 + "\n\n[... output truncated at 16 bytes ...]\n"
+
+
+def _stopped_within(pid: int, seconds: float) -> bool:
+    import os
+    import time
+
+    stop_by = time.monotonic() + seconds
+    while time.monotonic() < stop_by:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS hides a system binary's environment")
+@pytest.mark.parametrize(
+    "leader_tail",
+    ["sleep 0.3; exit 0", "sleep 30"],
+    ids=["leader-exits-first", "leader-still-running"],
+)
+def test_a_system_shell_leader_does_not_leave_its_background_job_running(tmp_path, leader_tail):
+    """macOS discloses no environment for /bin/sh or /bin/sleep, so neither shows the spawn
+    marker. The timeout still ends the group: whether the shell has already exited and its
+    background job holds the pipe, or the shell is still running at the deadline."""
+    import os
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    pid_file = tmp_path / "bg.pid"
+    script = f"sleep 30 & echo $! > {pid_file}; echo started; {leader_tail}"
+    try:
+        result = subprocess_mod._subprocess_sync(["/bin/sh", "-c", script], False, 1.0, None)
+        bg_pid = int(pid_file.read_text().strip())
+        stopped = _stopped_within(bg_pid, 2.0)
+    finally:
+        try:
+            os.kill(int(pid_file.read_text().strip()), 9)
+        except (OSError, ValueError):
+            pass
+
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]
+    assert stopped, "the background job outlived the call"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS hides a system binary's environment")
+def test_a_shell_that_exits_before_it_is_observed_does_not_leave_its_job_running(
+    tmp_path, monkeypatch
+):
+    """A thread preempted between the spawn and the leader observation sees the shell
+    already exited. The observation runs only once the shell is an uncollected zombie."""
+    import os
+    import time
+
+    import psutil
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    observe = subprocess_mod.observe_process_group_leader
+
+    def observe_after_exit(pid, **kwargs):
+        stop_by = time.monotonic() + 5.0
+        while psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < stop_by, "the shell did not exit"
+            time.sleep(0.005)
+        return observe(pid, **kwargs)
+
+    monkeypatch.setattr(subprocess_mod, "observe_process_group_leader", observe_after_exit)
+    pid_file = tmp_path / "bg.pid"
+    script = f"sleep 30 & echo $! > {pid_file}; echo started; exit 0"
+    try:
+        result = subprocess_mod._subprocess_sync(["/bin/sh", "-c", script], False, 1.0, None)
+        bg_pid = int(pid_file.read_text().strip())
+        stopped = _stopped_within(bg_pid, 2.0)
+    finally:
+        try:
+            os.kill(int(pid_file.read_text().strip()), 9)
+        except (OSError, ValueError):
+            pass
+
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]
+    assert stopped, "the background job outlived the call"
