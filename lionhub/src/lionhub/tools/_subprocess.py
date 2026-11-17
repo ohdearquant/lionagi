@@ -41,11 +41,13 @@ def _drain(stream, buf: bytearray) -> bool:
             buf.extend(chunk[:remaining])
             if len(buf) >= _MAX_OUTPUT_BYTES:
                 truncated = True
+                # Nothing more is kept, so full-chunk reads are enough to keep the pipe drained.
+                read = stream.read
         # keep draining even after cap to avoid deadlocking the child process
     return truncated
 
 
-def _decode_output(buf: bytearray, truncated: bool) -> str:
+def _decode_output(buf: bytes | bytearray, truncated: bool) -> str:
     text = bytes(buf).decode("utf-8", errors="replace")
     if truncated:
         text += f"\n\n[... output truncated at {_MAX_OUTPUT_BYTES} bytes ...]\n"
@@ -135,8 +137,10 @@ def _subprocess_sync(
         t_out.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
         t_err.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
         label = f"{timeout_ms} ms" if timeout_ms is not None else f"{timeout_sec}s"
+        # The drain may still be running, so read the cap from the buffer itself.
+        stdout = bytes(stdout_buf)
         return {
-            "stdout": _decode_output(stdout_buf, True),
+            "stdout": _decode_output(stdout, len(stdout) >= _MAX_OUTPUT_BYTES),
             "stderr": f"Command timed out after {label}",
             "returncode": -1,
             "timed_out": True,

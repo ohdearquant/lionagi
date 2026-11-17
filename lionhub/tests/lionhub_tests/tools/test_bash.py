@@ -427,7 +427,7 @@ def test_subprocess_pipe_drains_share_the_leader_deadline(monkeypatch, pipe_stay
     assert joins[:2] == [(0, 6.0), (1, 3.0)]
     if pipe_stays_open:
         assert result == {
-            "stdout": "partial output\n\n[... output truncated at 100000 bytes ...]\n",
+            "stdout": "partial output",
             "stderr": "Command timed out after 8000 ms",
             "returncode": -1,
             "timed_out": True,
@@ -696,10 +696,11 @@ def test_a_descendant_holding_the_pipe_is_bounded_and_keeps_printed_output(tmp_p
         "print('started', flush=True)\n"
     )
     start = time.monotonic()
-    result = subprocess_mod._subprocess_sync([sys.executable, "-c", script], False, 1.0, None)
+    # A generous deadline so a loaded machine still spawns the child before it fires.
+    result = subprocess_mod._subprocess_sync([sys.executable, "-c", script], False, 2.0, None)
     elapsed = time.monotonic() - start
 
-    assert elapsed < 1.0 + subprocess_mod._CLEANUP_GRACE_SECONDS + 3.0
+    assert elapsed < 2.0 + subprocess_mod._CLEANUP_GRACE_SECONDS + 3.0
     assert result["timed_out"] is True
     assert "started" in result["stdout"]
 
@@ -741,3 +742,18 @@ def test_output_printed_before_the_deadline_is_kept_while_a_descendant_holds_the
     assert elapsed < 1.0 + subprocess_mod._CLEANUP_GRACE_SECONDS + 3.0
     assert result["timed_out"] is True
     assert "started" in result["stdout"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell background job")
+def test_a_timed_out_command_marks_truncation_only_when_the_cap_was_reached(monkeypatch):
+    import lionhub.tools._subprocess as subprocess_mod
+
+    monkeypatch.setattr(subprocess_mod, "_MAX_OUTPUT_BYTES", 16)
+    code = "import sys, time; sys.stdout.write(sys.argv[1]); sys.stdout.flush(); time.sleep(30)"
+
+    short = subprocess_mod._subprocess_sync([sys.executable, "-c", code, "tiny"], False, 1.0, None)
+    full = subprocess_mod._subprocess_sync([sys.executable, "-c", code, "x" * 40], False, 1.0, None)
+
+    assert short["timed_out"] is True and short["stdout"] == "tiny"
+    assert full["timed_out"] is True
+    assert full["stdout"] == "x" * 16 + "\n\n[... output truncated at 16 bytes ...]\n"
