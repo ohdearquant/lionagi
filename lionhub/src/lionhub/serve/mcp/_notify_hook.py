@@ -617,7 +617,7 @@ def deliver_terminal_notice(
                 else None
             ),
             extensions=(
-                {**fields, "resume_id": jobs._job_resume_id(run_id)}
+                {**fields, "resume_id": jobs._saved_agent_branch_id(run_id)}
                 if job and job.get("kind") == "agent"
                 else fields
             ),

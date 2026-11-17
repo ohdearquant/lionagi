@@ -23,13 +23,17 @@ def _write(path, record):
     path.write_text(json.dumps(record), encoding="utf-8")
 
 
+def _save_branch(run_id, branch_id):
+    _write(config.run_dir(run_id) / "branches" / f"{branch_id}.json", {"id": branch_id})
+
+
 def _seed(run_id, branch_id, *, kind="agent", save=True):
     _write(
         config.job_dir(run_id) / "job.json", {"run_id": run_id, "kind": kind, "status": "running"}
     )
     _write(config.run_manifest(run_id), {"run_id": run_id, "branch_id": branch_id})
     if save:
-        _write(config.run_dir(run_id) / "branches" / f"{branch_id}.json", {"id": branch_id})
+        _save_branch(run_id, branch_id)
 
 
 @pytest.fixture
@@ -210,30 +214,52 @@ def test_agent_status_exposes_only_the_branch_in_its_owned_manifest(home_and_spa
     _write(config.run_manifest(_FIRST_RUN), {"run_id": _SECOND_RUN, "branch_id": _SECOND_BRANCH})
     assert _status(_FIRST_RUN)["resume_id"] is None
 
-    _seed(_FIRST_RUN, _FIRST_BRANCH, save=False)
+    _seed(_FIRST_RUN, _FIRST_BRANCH)
     assert _status(_FIRST_RUN)["resume_id"] == _FIRST_BRANCH
 
     _seed(_SECOND_RUN, _SECOND_BRANCH, kind="flow")
     assert "resume_id" not in _status(_SECOND_RUN)
 
 
-@pytest.mark.parametrize("assigned", [False, True])
-def test_agent_terminal_notice_carries_its_resume_id(home_and_spawns, monkeypatch, assigned):
-    if assigned:
-        _seed(_FIRST_RUN, _FIRST_BRANCH)
-    else:
-        _write(config.job_dir(_FIRST_RUN) / "job.json", {"run_id": _FIRST_RUN, "kind": "agent"})
-    job = jobs._read_job(_FIRST_RUN)
-    monkeypatch.setattr(_notify_hook, "_resolve_command", lambda *a, **k: (["notifier"], None))
-    monkeypatch.setattr(_notify_hook, "_resolve_delivery_cwd", lambda *a: (None, None))
+def _notice_resume_id(monkeypatch, run_id):
     delivered = []
 
     def delivery(argv, payload, *args, **kwargs):
         delivered.append(payload)
         return {"attempted": True, "ok": True}
 
-    monkeypatch.setattr(_notify_hook, "_deliver", delivery)
-    result = _notify_hook.deliver_terminal_notice(_FIRST_RUN, job, "completed", target="test")
-
+    with monkeypatch.context() as notice:
+        notice.setattr(_notify_hook, "_resolve_command", lambda *a, **k: (["notifier"], None))
+        notice.setattr(_notify_hook, "_resolve_delivery_cwd", lambda *a: (None, None))
+        notice.setattr(_notify_hook, "_deliver", delivery)
+        job = jobs._read_job(run_id)
+        result = _notify_hook.deliver_terminal_notice(run_id, job, "completed", target="test")
     assert result["ok"]
-    assert delivered[0]["resume_id"] == (_FIRST_BRANCH if assigned else None)
+    (payload,) = delivered
+    return payload["resume_id"]
+
+
+def test_agent_terminal_notice_without_a_manifest_carries_null(home_and_spawns, monkeypatch):
+    _write(config.job_dir(_FIRST_RUN) / "job.json", {"run_id": _FIRST_RUN, "kind": "agent"})
+    assert _notice_resume_id(monkeypatch, _FIRST_RUN) is None
+
+
+def test_agent_resume_id_tracks_the_saved_branch(home_and_spawns, monkeypatch):
+    _seed(_FIRST_RUN, _FIRST_BRANCH, save=False)
+
+    refused = _submit(resume=_FIRST_RUN)
+    assert refused["error"]["kind"] == "invalid_input"
+    assert home_and_spawns == []
+    projected = (_status(_FIRST_RUN)["resume_id"], _notice_resume_id(monkeypatch, _FIRST_RUN))
+    assert projected == (None, None)
+
+    _save_branch(_FIRST_RUN, _FIRST_BRANCH)
+
+    assert _status(_FIRST_RUN)["resume_id"] == _FIRST_BRANCH
+    assert _notice_resume_id(monkeypatch, _FIRST_RUN) == _FIRST_BRANCH
+    resumed = _submit(resume=_FIRST_RUN)
+    assert resumed["ok"], resumed
+    assert resumed["result"]["resume_id"] == _FIRST_BRANCH
+    ((kind, argv, _),) = home_and_spawns
+    assert kind == "agent"
+    assert [flag for flag in argv if flag.startswith("--resume=")] == [f"--resume={_FIRST_BRANCH}"]

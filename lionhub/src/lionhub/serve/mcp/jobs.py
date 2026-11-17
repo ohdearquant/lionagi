@@ -2094,8 +2094,8 @@ def _read_resume_record(run_dir: Path, name: str) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
-def _job_resume_id(run_id: str, *, require_snapshot: bool = False) -> str | None:
-    """Return the branch assigned to an exact agent job in this server's home."""
+def _saved_agent_branch_id(run_id: str) -> str | None:
+    """Return the saved branch ID for an exact agent job in this server's home."""
     if _AGENT_JOB_ID.fullmatch(run_id) is None:
         return None
     try:
@@ -2114,10 +2114,8 @@ def _job_resume_id(run_id: str, *, require_snapshot: bool = False) -> str | None
         branch_id = manifest.get("branch_id")
         if not isinstance(branch_id, str) or str(UUID(branch_id)) != branch_id:
             return None
-        if require_snapshot:
-            with _open_exact_run_file(run_dir, "branches", f"{branch_id}.json"):
-                pass
-        return branch_id
+        with _open_exact_run_file(run_dir, "branches", f"{branch_id}.json"):
+            return branch_id
     except (OSError, RuntimeError, ValueError):
         return None
 
@@ -2128,7 +2126,7 @@ def _resolve_agent_resume_id(resume: str) -> str | None:
         return None
     if _AGENT_JOB_ID.fullmatch(resume) is None:
         raise SubmitInputError("Use a full run ID to resume an agent job.")
-    branch_id = _job_resume_id(resume, require_snapshot=True)
+    branch_id = _saved_agent_branch_id(resume)
     if branch_id is not None:
         return branch_id
     raise SubmitInputError("That run does not have a saved agent branch in this server's home.")
@@ -2526,7 +2524,11 @@ def status(run_id: str) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "kind": (job or {}).get("kind"),
-        **({"resume_id": _job_resume_id(run_id)} if job and job.get("kind") == "agent" else {}),
+        **(
+            {"resume_id": _saved_agent_branch_id(run_id)}
+            if job and job.get("kind") == "agent"
+            else {}
+        ),
         "label": (job or {}).get("label"),
         "status": derived["status"],
         "terminal": derived["terminal"],
