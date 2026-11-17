@@ -257,7 +257,9 @@ _CODE_SPAN = re.compile(r"`(?P<span>[^`\n]+)`")
 _INLINE_PIN = re.compile(
     rf"(?P<path>[\w.-]+(?:/[\w.-]+)*){_LINE_RANGE}@(?P<sha>[0-9a-fA-F]+)(?P<annotation>.*)"
 )
-# A 19-digit bound accommodates any sequence length on supported 64-bit platforms.
+# A cited line number is refused above 19 digits before int() reads it. No file has more lines
+# than a signed 64-bit count holds, and that has 19 digits; and int() raises ValueError on a
+# number past CPython's 4300-digit conversion limit, which a typo in an ADR can reach.
 _MAX_LINE_DIGITS = 19
 # ``path.py::Class.method`` and ``path.py::NAME``.
 _SYMBOL = re.compile(rf"(?<![\w./-])(?P<path>{_PATH})::(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)")
@@ -936,8 +938,13 @@ def test_non_python_pin_refuses_a_missing_commit_or_blob() -> None:
     ]
 
 
+def _head(git_source: GitSource) -> str:
+    """The checkout's HEAD commit: these tests cite files of the repository as it is checked out."""
+    return git_source._git("rev-parse", "HEAD").stdout.strip()
+
+
 def test_non_python_pin_refuses_a_directory_at_the_commit(git_source: GitSource) -> None:
-    sha = git_source._git("rev-parse", "HEAD").stdout.strip()
+    sha = _head(git_source)
     records = {"adr.md": f"See `lionagi/state:1@{sha}`.\n"}
     assert check_pins_exist(records, git_source) == [
         f"adr.md:1: lionagi/state:1@{sha} cites lionagi/state, which is not in that commit"
@@ -945,10 +952,11 @@ def test_non_python_pin_refuses_a_directory_at_the_commit(git_source: GitSource)
 
 
 def test_non_python_pin_reports_the_out_of_range_schema_citation(git_source: GitSource) -> None:
-    sha = git_source._git("rev-parse", "HEAD").stdout.strip()
+    sha = _head(git_source)
     path = "lionagi/state/schema.sql"
     schema = git_source.text_at(sha, path)
-    assert schema is not None
+    if schema is None:
+        pytest.fail(f"{path} is not in HEAD {sha}: this test cites the real schema file")
     last_line = len(schema.splitlines())
     records = {
         "adr.md": f"See `{path}:{last_line}@{sha}`.\nNot `{path}:{last_line + 1}@{sha}`.\n",
@@ -991,6 +999,9 @@ def test_python_stub_pin_accepts_eight_digits() -> None:
     ids=["sql", "python"],
 )
 def test_pin_with_text_inside_the_code_span(path: str, sha: str, diagnostic: str) -> None:
+    """A non-Python pin is read only as a whole code span, so text after it inside the span
+    makes the span malformed. A Python pin is read wherever it stands in prose, inside a code
+    span or not, so text after it is prose and the pin itself is checked."""
     source = MemorySource(files={}, commits={sha: {path: "one\ntwo\n"}})
     records = {"adr.md": f"Schema details.\nSee `{path}:3@{sha} after the migration`.\n"}
     (problem,) = check_pins_exist(records, source)
@@ -998,10 +1009,24 @@ def test_pin_with_text_inside_the_code_span(path: str, sha: str, diagnostic: str
     assert diagnostic in problem
 
 
+@pytest.mark.parametrize(
+    ("digits", "diagnostic"),
+    [(19, "cites lines the file does not have at that commit"), (20, "line number is too long")],
+    ids=["19-digits", "20-digits"],
+)
+def test_the_line_number_digit_cap_is_19(digits: int, diagnostic: str) -> None:
+    path = "pkg/schema.sql"
+    source = MemorySource(files={}, commits={FULL_PIN: {path: "one\ntwo\n"}})
+    records = {"adr.md": f"See `{path}:{'9' * digits}@{FULL_PIN}`.\n"}
+    (problem,) = check_pins_exist(records, source)
+    assert diagnostic in problem
+
+
 @pytest.mark.parametrize("oversized_end", [False, True], ids=["start", "end"])
 def test_pin_with_an_oversized_line_number_is_reported(oversized_end: bool) -> None:
     path = "pkg/schema.sql"
     source = MemorySource(files={}, commits={FULL_PIN: {path: "one\ntwo\n"}})
+    # Past CPython's 4300-digit int() conversion limit, where int() itself would raise.
     long_number = "1" * 4301
     lines = f"1-{long_number}" if oversized_end else f"{long_number}-2"
     records = {"adr.md": f"Schema details.\nSee `{path}:{lines}@{FULL_PIN}`.\n"}
