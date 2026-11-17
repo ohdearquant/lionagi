@@ -39,7 +39,7 @@ __all__ = (
 NANODOLLARS_PER_USD = 10**9
 INT64_MAX = 2**63 - 1
 
-ScopeKind = Literal["branch", "imodel", "endpoint"]
+ScopeKind = Literal["branch", "imodel", "endpoint", "probe"]
 SettleResult = Literal["settled", "already_settled", "still_open"]
 
 
@@ -51,6 +51,8 @@ class RouterErrorCode(str, Enum):
     UNSUPPORTED_PRICING = "unsupported_pricing"
     BUDGET_EXHAUSTED = "budget_exhausted"
     ACCOUNT_BLOCKED = "account_blocked"
+    PROBE_ACCOUNT_UNKNOWN = "probe_account_unknown"
+    PROBE_ACCOUNT_NOT_BLOCKED = "probe_account_not_blocked"
     ACCOUNT_CONFIG_CONFLICT = "account_config_conflict"
     LEDGER_BUSY = "ledger_busy"
     LEDGER_UNAVAILABLE = "ledger_unavailable"
