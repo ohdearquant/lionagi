@@ -284,7 +284,10 @@ def test_subprocess_timeout_passes_spawn_bound_witnesses_to_cleanup(monkeypatch)
     proc.pid = 4242
     proc.stdout.read.return_value = b""
     proc.stderr.read.return_value = b""
-    proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
+    proc.wait.side_effect = [
+        subprocess.TimeoutExpired("cmd", 0.01),
+        subprocess.TimeoutExpired("cmd", 1.0),
+    ]
     witnesses = ((4242, 12.5),)
     seen: dict[str, object] = {}
 
@@ -311,8 +314,8 @@ def test_subprocess_timeout_passes_spawn_bound_witnesses_to_cleanup(monkeypatch)
         raising=False,
     )
 
-    def _capture(child, *, expected_leader_created=None):
-        seen["capture"] = (child, expected_leader_created)
+    def _capture(child, *, expected_leader_created, expected_marker):
+        seen["capture"] = (child, expected_leader_created, expected_marker)
         return witnesses
 
     def _terminate(child, **kwargs):
@@ -331,11 +334,110 @@ def test_subprocess_timeout_passes_spawn_bound_witnesses_to_cleanup(monkeypatch)
     assert result["timed_out"] is True
     assert seen["env"] == {"ONLY": "marked"}
     assert seen["observe"] == (4242, "spawn-token")
-    assert seen["capture"] == (proc, 12.5)
+    assert seen["capture"] == (proc, 12.5, "spawn-token")
     assert seen["terminate"] == (
         proc,
         {"grace": None, "group_witnesses": witnesses},
     )
+    _, reap = proc.wait.call_args_list
+    assert 0 <= reap.kwargs["timeout"] <= 1.0
+
+
+@pytest.mark.parametrize("pipe_stays_open", [False, True], ids=["complete", "drain-timeout"])
+def test_subprocess_pipe_drains_share_the_leader_deadline(monkeypatch, pipe_stays_open):
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    elapsed = 0.0
+    waits = []
+    drains = []
+    joins = []
+    signals = []
+    witnesses = ((4243, 13.0),)
+
+    class Process:
+        pid = 4242
+        returncode = None
+
+        def __init__(self):
+            self.stdout = BytesIO(b"partial output")
+            self.stderr = BytesIO(b"diagnostic")
+
+        def wait(self, timeout=None):
+            nonlocal elapsed
+            assert timeout is not None, "process reap must be bounded"
+            waits.append(timeout)
+            if self.returncode is None:
+                elapsed += 2.0
+                self.returncode = 17
+            return self.returncode
+
+    class Drain:
+        def __init__(self, *, target, daemon):
+            assert daemon, "a pipe drain must not keep the process alive"
+            self.target = target
+            self.index = len(drains)
+            self.duration = 3.0 if self.index == 0 else (float("inf") if pipe_stays_open else 2.0)
+            self.alive = False
+            drains.append(self)
+
+        def start(self):
+            self.alive = True
+
+        def join(self, timeout=None):
+            nonlocal elapsed
+            assert timeout is not None, "pipe drain join must be bounded"
+            joins.append((self.index, timeout))
+            if self.alive:
+                elapsed += min(self.duration, timeout)
+                self.duration -= timeout
+                if self.duration <= 0:
+                    self.target()
+                    self.alive = False
+
+        def is_alive(self):
+            return self.alive
+
+    child = Process()
+
+    def capture(proc, *, expected_leader_created, expected_marker):
+        assert proc is child and proc.returncode == 17
+        assert expected_leader_created == 12.5 and expected_marker == "spawn-token"
+        return witnesses
+
+    monkeypatch.setattr(subprocess_mod.subprocess, "Popen", lambda *a, **kw: child)
+    monkeypatch.setattr(subprocess_mod, "threading", SimpleNamespace(Thread=Drain))
+    monkeypatch.setattr(
+        subprocess_mod, "time", SimpleNamespace(monotonic=lambda: elapsed), raising=False
+    )
+    monkeypatch.setattr(
+        subprocess_mod, "prepare_process_group_env", lambda env: (env, "spawn-token")
+    )
+    monkeypatch.setattr(subprocess_mod, "observe_process_group_leader", lambda *a, **kw: 12.5)
+    monkeypatch.setattr(subprocess_mod, "capture_group_witnesses", capture)
+    monkeypatch.setattr(
+        subprocess_mod, "terminate_process_group", lambda *a, **kw: signals.append((a, kw))
+    )
+
+    result = subprocess_mod._subprocess_sync(["synthetic"], False, 8.0, None, 8000, env={})
+
+    assert waits[0] == 8.0
+    assert joins[:2] == [(0, 6.0), (1, 3.0)]
+    if pipe_stays_open:
+        assert result == {
+            "stdout": "partial output\n\n[... output truncated at 100000 bytes ...]\n",
+            "stderr": "Command timed out after 8000 ms",
+            "returncode": -1,
+            "timed_out": True,
+        }
+        assert signals == [((child,), {"grace": None, "group_witnesses": witnesses})]
+        assert waits == [8.0, 1.0] and joins[2:] == [(0, 1.0), (1, 1.0)]
+        assert elapsed == 9.0 and drains[1].is_alive()
+    else:
+        assert result == {"stdout": "partial output", "stderr": "diagnostic", "returncode": 17}
+        assert waits == [8.0] and len(joins) == 2 and not signals
 
 
 def test_subprocess_marker_mismatch_is_direct_child_only(monkeypatch):

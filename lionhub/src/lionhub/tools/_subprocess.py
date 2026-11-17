@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import subprocess
 import threading
+import time
 from collections.abc import Mapping
 
 from lionagi._command_env_metadata import command_environment
@@ -19,6 +20,7 @@ from lionagi.ln import (
 _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
 _MAX_OUTPUT_BYTES = 100_000
+_CLEANUP_GRACE_SECONDS = 1.0
 
 
 def _drain(stream, buf: bytearray) -> bool:
@@ -71,6 +73,7 @@ def _subprocess_sync(
     except Exception as e:
         return {"stdout": "", "stderr": f"Execution error: {e}", "returncode": -1}
 
+    deadline = time.monotonic() + timeout_sec
     leader_created = observe_process_group_leader(
         getattr(proc, "pid", None),
         expected_marker=group_marker,
@@ -92,14 +95,23 @@ def _subprocess_sync(
     t_out.start()
     t_err.start()
 
-    timed_out = False
     try:
-        proc.wait(timeout=timeout_sec)
+        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
+        timed_out = True
+    else:
+        t_out.join(timeout=max(0.0, deadline - time.monotonic()))
+        t_err.join(timeout=max(0.0, deadline - time.monotonic()))
+        timed_out = t_out.is_alive() or t_err.is_alive()
+
+    if timed_out:
+        # A surviving descendant can still pin the group after the leader exits.
+        # Require the spawn marker to distinguish it from a reused PGID.
         group_witnesses = (
             capture_group_witnesses(
                 proc,
                 expected_leader_created=leader_created,
+                expected_marker=group_marker,
             )
             if leader_created is not None
             else ()
@@ -109,16 +121,15 @@ def _subprocess_sync(
             grace=None,
             group_witnesses=group_witnesses,
         )
-        proc.wait()
-        t_out.join(timeout=1)
-        t_err.join(timeout=1)
-        timed_out = True
-
-    if not timed_out:
-        t_out.join()
-        t_err.join()
-
-    if timed_out:
+        cleanup_deadline = time.monotonic() + _CLEANUP_GRACE_SECONDS
+        try:
+            proc.wait(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        # A pipe held independently of the child may never close. Leave its
+        # daemon drain running when the cleanup grace has elapsed.
+        t_out.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+        t_err.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
         label = f"{timeout_ms} ms" if timeout_ms is not None else f"{timeout_sec}s"
         return {
             "stdout": _decode_output(stdout_buf, True),
