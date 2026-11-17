@@ -5,11 +5,12 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 
 from lionagi.protocols.action.gate import GateResult, adapt_legacy_hook, run_gate_pass
+from tests._gate_results import built_around_construction
 
 _SECRET = "sensitive-return-content-7195"
 
@@ -34,6 +35,46 @@ def test_gate_result_cannot_allow_an_errored_verdict():
         GateResult(True, "policy", "bash", "run", "invalid", errored=True)
 
 
+@pytest.mark.parametrize(
+    "changes,message",
+    [
+        ({"mutated_args": ["a"]}, "mutated_args must be a dict or None, not list"),
+        ({"control": None}, "control must be a str, not NoneType"),
+        ({"tool_name": 3}, "tool_name must be a str, not int"),
+        ({"action": b"run"}, "action must be a str, not bytes"),
+        ({"reason": None}, "reason must be a str, not NoneType"),
+    ],
+)
+def test_gate_result_construction_enforces_every_field_rule(changes, message):
+    fields = {"allowed": False, "control": "policy", "tool_name": "bash", "action": "run"}
+    with pytest.raises(TypeError, match=message):
+        GateResult(**{**fields, "reason": "denied", **changes})
+
+
+class _ClaimsValid(GateResult):
+    __slots__ = ()
+
+    def _broken_rule(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_subclass_cannot_waive_the_rules_for_the_adapter():
+    base = GateResult(True, "policy", "bash", "run", "allowed")
+    claims_valid = object.__new__(_ClaimsValid)
+    for field in fields(GateResult):
+        object.__setattr__(claims_valid, field.name, getattr(base, field.name))
+    object.__setattr__(claims_valid, "allowed", 1)
+
+    async def hook(_tool_name, _action, _args):
+        return claims_valid
+
+    denied = await adapt_legacy_hook("policy", hook)("bash", "run", {})
+
+    assert denied.allowed is False and denied.errored is True
+    assert denied.reason == "invalid GateResult: allowed must be a bool, not int"
+
+
 class _UnreadableField:
     def __repr__(self):
         return _SECRET
@@ -43,23 +84,14 @@ class _UnreadableField:
 
 
 def _verdict(**changes):
+    """An allowing verdict with *changes*, built by one of two paths: through the constructor
+    when the changes keep it valid, and around it (``built_around_construction``) when they
+    break a rule the constructor enforces, as a malformed third-party instance does."""
     result = GateResult(True, "policy", "bash", "run", "allowed")
     try:
         return replace(result, **changes)
     except (TypeError, ValueError):
-        # Simulate malformed third-party instances that bypass dataclass construction.
-        malformed = object.__new__(GateResult)
-        for name in (
-            "allowed",
-            "control",
-            "tool_name",
-            "action",
-            "reason",
-            "mutated_args",
-            "errored",
-        ):
-            object.__setattr__(malformed, name, changes.get(name, getattr(result, name)))
-        return malformed
+        return built_around_construction(result, **changes)
 
 
 @pytest.mark.asyncio
