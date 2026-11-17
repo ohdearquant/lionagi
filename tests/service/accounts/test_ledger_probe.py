@@ -462,6 +462,47 @@ async def test_a_bill_after_the_lease_closed_the_probe_records_spend_without_a_b
     assert _unblocks(ledger) == [(f"probe:{attempt}",)]
 
 
+async def test_a_bill_after_the_lease_expired_with_no_admission_since_still_blocks(tmp_path):
+    now = [NOW]
+    ledger = await _prepare(tmp_path)
+    ledger._clock = lambda: now[0]
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    assert await ledger.settle_probe(attempt, UnknownOutcome("usage_incomplete"), http_status=200)
+
+    # The lease has run out, but no admission has run since, so nothing has closed the attempt.
+    now[0] = NOW + ledger.open_lease + timedelta(seconds=1)
+    assert _attempt(ledger, attempt)[0] == "open"
+
+    _, generation = _block_state(ledger)
+    assert not await ledger.settle_probe(attempt, _usage(11), http_status=200)
+    assert _block_state(ledger) == ("ceiling_exceeded", generation + 1)
+    assert _unblocks(ledger) == [(f"probe:{attempt}",)]
+
+
+async def test_a_bill_for_an_earlier_period_probe_blocks_after_an_admission_in_the_next(tmp_path):
+    # The credit period keyed 2026-11 ends at 2026-11-30T00:00Z.
+    now = [datetime(2026, 11, 29, 23, 0, tzinfo=timezone.utc)]
+    ledger = await _prepare(tmp_path)
+    ledger._clock = lambda: now[0]
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    assert await ledger.settle_probe(attempt, UnknownOutcome("usage_incomplete"), http_status=200)
+
+    # An admission in the next credit period closes only that period's expired attempts.
+    now[0] = now[0] + ledger.open_lease + timedelta(seconds=1)
+    assert now[0] > datetime(2026, 11, 30, tzinfo=timezone.utc)
+    later = uuid4()
+    await ledger.reserve(Scope("branch", uuid4(), "anthropic"), later, QUOTE, (ACCOUNT,))
+    await ledger.settle(later, ProvenNotSent())
+    assert _attempt(ledger, attempt)[0] == "open"
+
+    _, generation = _block_state(ledger)
+    assert not await ledger.settle_probe(attempt, _usage(11), http_status=200)
+    assert _block_state(ledger) == ("ceiling_exceeded", generation + 1)
+    assert _unblocks(ledger) == [(f"probe:{attempt}",)]
+
+
 @pytest.mark.parametrize("update", ["different_block", "reblock_after_clear", "ceiling_exceeded"])
 async def test_probe_does_not_clear_newer_or_stronger_block(tmp_path, update):
     ledger = await _prepare(tmp_path)

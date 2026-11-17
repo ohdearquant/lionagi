@@ -1931,15 +1931,19 @@ record the outcome with the same budget and settlement rules as routed work.
    still applies when complete usage costs more than the reserved ceiling.
    If the probe cleared the block with incomplete usage, a later above-ceiling
    bill still blocks the account with `ceiling_exceeded` while the probe's
-   attempt is open. Once the lease closes that attempt at zero (Amendment 11
-   Decision 1), a later bill is recorded as a correction and blocks nothing
-   (Amendment 11 Decision 4): the account stays unblocked, and its recorded
-   spend can stay below the provider's bill until that bill arrives. Amendment 12
-   Decision 2 states that “The ledger's other settle-time blocks
-   (`ceiling_exceeded`, `settlement_conflict`) are unchanged and may replace a
-   billing reason.” That rule also applies to probes, including an attempt
-   first recorded without a response whose later complete bill exceeds its
-   ceiling. For `ceiling_exceeded`, Decision 4 leaves `billing_block` absent.
+   attempt is open. The attempt stays open after its lease expires until the
+   next admission for the same account in the same credit period closes it at
+   zero (Amendment 11 Decision 1); an attempt from an earlier credit period is
+   never closed that way. Once that closure has happened, a later bill is
+   recorded as a correction and blocks nothing (Amendment 11 Decision 4): the
+   account stays unblocked, and its recorded spend can stay below the
+   provider's bill until that bill arrives. Amendment 12 Decision 2 states that
+   “The ledger's other settle-time blocks (`ceiling_exceeded`,
+   `settlement_conflict`) are unchanged and may replace a billing reason.” That
+   rule also applies to probes while the attempt is still open, including an
+   attempt first recorded without a response whose later complete bill exceeds
+   its ceiling. For `ceiling_exceeded`, Decision 4 leaves `billing_block`
+   absent.
 5. Diagnostic data from the probe is limited to the HTTP status, a closed-set
    provider error type when available, and the accounting outcome. Durably
    record ordinary token counts and cost where available. Exclude the response
@@ -1972,8 +1976,11 @@ Exercise a durable re-block with the same reason during a reserved probe and
 the control without another block write. Settle a successful probe with
 incomplete usage, then record a complete bill above its ceiling. Confirm the
 ordinary block applies and the probe leaves one unblock audit. Record the same
-bill after the lease has closed the attempt instead, and confirm one
-correction for the bill, no block and the probe's one unblock audit.
+bill after an admission in the same credit period has closed the expired
+attempt instead, and confirm one correction for the bill, no block and the
+probe's one unblock audit. Confirm the bill still applies the ordinary block
+when the lease has expired with no admission since, and when the probe
+belongs to an earlier credit period than the admission that followed it.
 Verify both billing reasons can be admitted and cleared. Verify
 `ceiling_exceeded` and `settlement_conflict` refuse before reserving or
 requesting, preserving the reason and generation, and that a billing block
