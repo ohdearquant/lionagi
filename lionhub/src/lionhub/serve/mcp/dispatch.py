@@ -16,7 +16,9 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +57,69 @@ _MACHINE_STDERR_TAIL = 2_000
 
 _STARTED_AT = now_utc().isoformat()
 _STARTED_MONOTONIC = time.time()
+
+
+# Modules this server imports inside its functions. ``preload`` imports them before the server
+# answers anything, so a later change to the installed source cannot leave the process holding
+# some of its modules from before the change and failing to import the others.
+_PRELOAD_MODULES = (
+    "lionagi._flow_spec",
+    "lionagi._paths",
+    "lionagi.state.db",
+    "lionagi.state.engine",
+    "lionagi.state.lifecycle.notify_settings",
+    "lionagi.state.lifecycle.policy",
+    "lionagi.state.reasons",
+    "lionagi.version",
+    "lionhub.orchestration.mcp_config",
+    "lionhub.orchestration.spawn",
+    "lionhub.serve.cli._machine_envelope",
+    "lionhub.serve.cli.machine",
+    "lionhub.serve.cli.orchestrate",
+    "lionhub.serve.cli.orchestrate._orchestration",
+    "lionhub.serve.daemon.services",
+    "lionhub.serve.diagnostics",
+    "lionhub.serve.mcp._notify_hook",
+    "lionhub.serve.mcp._run_detail",
+)
+_OWN_PACKAGES = ("lionagi", "lionhub")
+# Replaced in tests; exiting the process is the point in production.
+_exit = os._exit
+
+
+def _stop_if_own_module_missing(exc: BaseException) -> None:
+    """End the process when *exc* is a failure to import this server's own code.
+
+    Such a failure means the installed source no longer matches the modules this process
+    loaded, so the server would answer with some verbs working and the rest refused. It
+    exits instead, with ``EXIT_CODE_ENVIRONMENT_ERROR`` and a message naming the module, so
+    the client starts a fresh server. A failure to import another package returns.
+    """
+    module = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+    if not module or module.split(".", 1)[0] not in _OWN_PACKAGES:
+        return
+    sys.stderr.write(
+        f"lion MCP server: its own module {module} cannot be imported "
+        f"({type(exc).__name__}: {exc}). The installed source changed after this server "
+        "started, or is broken; exiting so the client starts a fresh server.\n"
+    )
+    sys.stderr.flush()
+    _exit(EXIT_CODE_ENVIRONMENT_ERROR)
+
+
+def preload() -> None:
+    """Import every module this server uses and build every verb's schema, before serving.
+
+    A module of this server that fails to import here ends the process before it answers
+    anything (``_stop_if_own_module_missing``). A module that needs a package which is not
+    installed stays as it was: the verbs that use it report that when they are called.
+    """
+    for name in _PRELOAD_MODULES:
+        try:
+            import_module(name)
+        except ImportError as exc:
+            _stop_if_own_module_missing(exc)
+    catalog()
 
 
 class OpError(Exception):
@@ -169,6 +234,7 @@ def catalog() -> dict[str, Any]:
             if verb.executor == "spawn":
                 _describe_fingerprint(entry, verb, schema)
         except Exception as exc:  # noqa: BLE001 — one unreadable parser must not hide the rest
+            _stop_if_own_module_missing(exc)
             entry["available"] = False
             entry["reason"] = f"schema generation failed: {type(exc).__name__}: {exc}"
         entries.append(entry)
@@ -1285,7 +1351,19 @@ async def _run_one(entry: Any) -> dict[str, Any]:
 
 
 async def request(ops: list[dict[str, Any]] | None = None, help: Any = None) -> dict[str, Any]:  # noqa: A002 — `help` is the parameter name the surface advertises
-    """Run a batch of ops, or answer a help request. Never raises for one bad op."""
+    """Run a batch of ops, or answer a help request. Never raises for one bad op.
+
+    A failure to import this server's own code ends the process instead of answering
+    (``_stop_if_own_module_missing``).
+    """
+    try:
+        return await _request(ops, help)
+    except ImportError as exc:
+        _stop_if_own_module_missing(exc)
+        raise
+
+
+async def _request(ops: list[dict[str, Any]] | None, help: Any) -> dict[str, Any]:  # noqa: A002
     # Shape checked before the help branch, or a malformed `ops` is judged on
     # truthiness (an empty dict would slip past as "no ops").
     if ops is not None and not isinstance(ops, list):

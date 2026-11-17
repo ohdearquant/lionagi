@@ -92,6 +92,9 @@ def main() -> None:
     # modules for its whole life, so a checkout that moves later is divergence
     # to report, not a new answer — only this snapshot can tell the two apart.
     snapshot_git_position()
+    # Every module the verbs use is loaded now, so a later change to the installed source
+    # cannot leave this process with part of its verbs importable.
+    dispatch.preload()
     mcp.run()
 
 
