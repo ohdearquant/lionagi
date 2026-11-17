@@ -1311,6 +1311,15 @@ def _keys_like_the_contain_flag(document: Any) -> list[str]:
     return found
 
 
+def _profile_line_offset(text: str, end: int) -> int:
+    """Count complete splitlines breaks before a source offset."""
+    # A frontmatter match may end between the CR and LF of one line break.
+    if end and text[end - 1 : end + 1] == "\r\n":
+        end -= 1
+    # Append a character so splitlines counts the final line even if it is empty.
+    return len((text[:end] + " ").splitlines()) - 1
+
+
 def _profile_body_layout(lines: list[str]) -> tuple[list[int], set[int], int | None]:
     """Locate unfenced rules, fenced lines, and the final unmatched opening fence."""
     delimiters = []
@@ -1474,9 +1483,12 @@ def _check_readable_profile_settings(
     opening, closing = next(delimiters), next(delimiters)
     source = text[opening.end() : closing.start()]
     _refuse_readable_tool_settings(
-        name, source, frontmatter, line_offset=line_offset + text.count("\n", 0, opening.end())
+        name,
+        source,
+        frontmatter,
+        line_offset=line_offset + _profile_line_offset(text, opening.end()),
     )
-    body_line_offset = line_offset + text.count("\n", 0, closing.end())
+    body_line_offset = line_offset + _profile_line_offset(text, closing.end())
     for opening_line, block in _profile_body_blocks(
         name, text[closing.end() :].splitlines(), line_offset=body_line_offset
     ):
@@ -1631,7 +1643,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
 def _parse_profile(name: str, text: str) -> AgentProfile:
     original = text
     text = _strip_frontmatter_prefix(original)
-    line_offset = original.count("\n", 0, len(original) - len(text))
+    line_offset = _profile_line_offset(original, len(original) - len(text))
     _check_profile_mcp_frontmatter(name, text)
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:

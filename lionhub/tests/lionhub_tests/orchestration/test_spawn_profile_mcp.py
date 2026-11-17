@@ -507,6 +507,33 @@ def test_misplaced_tool_settings_in_nested_sequences_are_refused(
         _parse_profile("reviewer", text)
 
 
+@pytest.mark.parametrize(
+    ("prefix", "first_body_line"),
+    [
+        ("\f\u2028Review.\n", 4),
+        ("---\nmodel: example\n---\n\f\u2028\nReview.\n", 8),
+        ("\f\u2028---\r\nmodel: example\r\n---\r\nReview.\r\n", 7),
+    ],
+    ids=["stripped-prefix", "after-frontmatter", "crlf-frontmatter"],
+)
+@pytest.mark.parametrize("fenced", [True, False], ids=["warning", "nested-refusal"])
+def test_tool_diagnostics_count_all_profile_line_breaks(
+    monkeypatch, prefix, first_body_line, fenced
+):
+    if fenced:
+        warnings = []
+        monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+        _parse_profile("reviewer", f"{prefix}```yaml\n---\nallowed_tools: [Example]\n---")
+        assert len(warnings) == 1
+        assert f"tool settings on line {first_body_line + 2} " in warnings[0]
+    else:
+        with pytest.raises(
+            ConfigurationError,
+            match=rf"--- block on line {first_body_line}.*tools declaration on line {first_body_line + 1}\b",
+        ):
+            _parse_profile("reviewer", f"{prefix}---\n- - tools: [Example]\n---")
+
+
 def test_tool_example_as_a_scalar_after_a_prose_opener_loads():
     text = "Review ---\ndescription: |\n  allowed_tools: [Example]\n---\nEnd."
     profile = _parse_profile("reviewer", text)
