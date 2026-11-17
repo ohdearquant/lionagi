@@ -203,6 +203,72 @@ cost one row for every module.
 **Failure tests:** `test_no_lionhub_cli_package_directory` (item 2) and
 `test_serve_cli_import_loads_no_server` (item 5).
 
+## Amendment 6 (2026-11-16) — share command declarations across front ends
+
+**Status**: Accepted.
+
+**Context.** D3 describes the CLI catalog delivered in step 3. MCP builds
+parameter schemas by importing that catalog and realizing a CLI handler to obtain
+its parser. [ADR-0122 D2](ADR-0122-feature-boundaries-and-optional-runtime-profiles.md#d2-composition-roots-own-selection-contracts-own-reuse)
+assigns reusable argument parsing to contracts or authoring adapters. This
+amendment supersedes D3's seed and token-index ownership and its MCP catalog
+import. D3 continues to govern CLI startup and selected-handler realization.
+
+**Decision.**
+
+1. `lionhub.serve.commands` owns the ordered command seeds, one token index, the
+   lookup functions and lazy parser bindings keyed by canonical seed name. This
+   is the complete declaration package. The bindings cover every canonical seed
+   exactly. Missing and extra keys are errors. Each parser body, default,
+   converter and other dependency belongs to a named feature contract or
+   authoring adapter below the composition roots. A default used by a handler
+   and parser has one definition in that owner, including the runs, monitor and
+   stats defaults. The implementation documents the owner and dependency closure
+   for all 22 seed factories. Under Amendment 5 item 5, the `lionhub.serve`
+   initializer remains import-free.
+2. `lionhub.serve.cli.catalog` references the same token index and re-exports the
+   same lookup function objects. The index is read-only in production and the
+   declaration package exposes no mutation API. The boundary test inserts and
+   removes a temporary alias through the CLI reference and observes each change
+   from CLI main, machine classification and MCP projection. ADR-0122 D2 rule 6
+   still requires separate work to compose two isolated applications with
+   different feature sets in one process.
+3. A seed's `module` string is opaque declaration data. Only the CLI loader
+   resolves it. The declaration and MCP packages use the canonical seed key for
+   parser selection and never import or resolve the handler locator. The CLI
+   keeps its root parser options, `CliBuild`, decorated handlers, marker checks
+   and registration cache. Each handler's marker uses the shared factory object.
+   The public CLI catalog path and existing compatibility forwards preserve
+   their identities and warning behavior.
+4. The declaration package supplies names and syntax. The feature manifest
+   listed in ADR-0122 D2 rule 5 determines which features are available in an
+   installation. MCP keeps its own admission policy, including the distinction
+   between discoverable parser paths and admitted operations.
+5. Land this amendment before or with the first code slice. Cut MCP projection
+   over after every enumerated command has a neutral parser factory and reusable
+   playbook resolution and parser augmentation have moved below the CLI and MCP
+   roots. MCP continues to own schema projection, playbook fingerprints and
+   projection errors.
+
+**Verification.**
+
+- Test the opaque locator by refusing handler-locator resolution from
+  `lionhub.serve.commands` and `lionhub.serve.mcp`. In a fresh installed MCP
+  process, refuse imports of `lionhub.serve.cli` and `lionagi.cli` and their
+  descendants before startup. Use the standalone request path for static, base
+  flow and resolved playbook help. Enumerate every canonical parser path through
+  `available_paths()`, preserve the existing mirror `--since` projection
+  refusal, and assert both CLI prefixes are absent from `sys.modules`.
+- Verify that inspecting seeds imports no parser factory or handler target.
+  Selecting one seed imports only its parser dependency closure. Building its
+  parser twice yields independent parser objects and equivalent syntax.
+- Verify exact seed and binding coverage, the same factory object in each CLI
+  marker, single registration per canonical seed, and refusal of duplicate and
+  foreign-module markers. Preserve order, alias identity and visibility, legacy
+  import identity and warning targets, and cold CLI help.
+- Preserve the distinction among admitted, absent and fenced paths. A newly
+  discoverable path does not grant a new MCP operation.
+
 ## Context
 
 **P1. Code location and executable ownership are different contracts.**
