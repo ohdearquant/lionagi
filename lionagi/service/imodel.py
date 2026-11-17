@@ -648,16 +648,19 @@ class iModel:  # noqa: N801
         cache_control = kwargs.pop("cache_control", False)
 
         try:
-            api_call = APICalling(
-                execution=_ValidationSafeExecution(),
-                payload=payload,
-                headers=headers,
-                endpoint=self.endpoint,
-                call_kwargs=call_kwargs,
-                cache_control=cache_control,
-                include_token_usage_to_model=include_token_usage_to_model,
-                max_input_tokens=self.max_input_tokens,
-                input_token_scale=self.input_token_scale,
+            api_call = APICalling.model_validate(
+                {
+                    "execution": _ValidationSafeExecution(),
+                    "payload": payload,
+                    "headers": headers,
+                    "endpoint": self.endpoint,
+                    "call_kwargs": call_kwargs,
+                    "cache_control": cache_control,
+                    "include_token_usage_to_model": include_token_usage_to_model,
+                    "max_input_tokens": self.max_input_tokens,
+                    "input_token_scale": self.input_token_scale,
+                },
+                context={"provider_catalog": self.provider_catalog},
             )
         except InputTokenCapError as exc:
             if self.input_cap_refusal is None:
