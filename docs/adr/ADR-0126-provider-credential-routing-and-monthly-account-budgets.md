@@ -1868,3 +1868,57 @@ transport request.
   cleared. Verify the ordinary error reaches the caller when no unshielded
   checkpoint follows, the scope's timeout reaches it when one does, and there is
   no second transport request in either arm.
+
+## Amendment 15: Verify a blocked Anthropic account
+
+- **Status**: Proposed
+- **Date**: 2026-11-16
+
+### Context
+
+A billing rejection blocks a routed account before the next request can select
+it. An operator who has resolved the billing problem can clear the block
+manually. A provider-backed check would let the operator verify the account and
+record the outcome with the same budget and settlement rules as routed work.
+
+### Decision
+
+1. An operator may explicitly probe one named, configured, currently blocked
+   Anthropic account. The probe is available through the operator CLI only.
+   It makes one non-streamed Messages request, with retries disabled, a fixed
+   short prompt, a one-token output limit, standard service only, and no cache
+   control. The current price revision determines the supported model with the
+   smallest reservation ceiling, with model name breaking a tie.
+2. Admission rechecks the account's block and monthly headroom under the
+   ordinary ledger lock. It reserves the ordinary ceiling on a probe attempt
+   scoped to its own ID. The hold counts against budget. The probe creates no
+   conversation binding, gains no preference from cache warmth, and leaves
+   the ordinary routing eligibility rule in place.
+3. A successful HTTP status can clear the observed block in the same
+   transaction as settlement. Use the existing audited unblock operation and
+   cite the probe attempt as its source. Record complete usage as ordinary
+   spend or keep the ceiling open when usage is incomplete. Keep a block
+   imposed by newer ledger activity or by settlement of an over-ceiling bill.
+   An intervening audited unblock ends the original block even if the account
+   is subsequently blocked with the same reason.
+4. A non-2xx response or an attempt without a response keeps the account
+   blocked and refreshes the continuing block with a dated status or
+   no-response code. Proven unsent and typed zero-cost outcomes settle as
+   zero. Keep the ceiling when delivery or usage remains uncertain. A replay
+   of a recorded outcome may supply missing accounting evidence and cannot
+   apply the account disposition a second time.
+5. Diagnostic data from the probe is limited to the HTTP status, a closed-set
+   provider error type when available, and the accounting outcome. Durably
+   record ordinary token counts and cost where available. Exclude the response
+   body, exception message, credential, provider request ID and rejection
+   class from the probe record and operator output.
+
+### Verification
+
+Exercise named blocked and unblocked accounts, exhausted headroom, a billed
+success, a success with missing usage, typed and unclassified failures, and
+a request proven unsent. Check the held or charged amount, sanitized data,
+single audit entry on success, and continued block on failure. Force an
+unblock-write failure and verify that both the settlement and unblock roll
+back. Cover replay, an intervening unblock and reblock, and a bill above the
+ceiling. Use a synthetic transport and a temporary ledger.
