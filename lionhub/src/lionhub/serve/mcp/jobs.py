@@ -44,7 +44,11 @@ from lionagi.ln._proc import (
 from lionagi.ln.concurrency import current_time, sleep
 from lionagi.service._subagent_admission import refuse_nested_agent
 from lionhub.agent.khive_actor import MINTED_CHILD_ACTOR_ENV
-from lionhub.orchestration.runs import _MCP_FINAL_RESPONSE_FILENAME, _resolved_run_state_dir
+from lionhub.orchestration.runs import (
+    _MCP_AGENT_RUN_ID,
+    _MCP_FINAL_RESPONSE_FILENAME,
+    _resolved_run_state_dir,
+)
 
 from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
@@ -2081,7 +2085,6 @@ def _read_run_json_bounded(run_id: str) -> dict[str, Any] | None:
     return loaded
 
 
-_AGENT_JOB_ID = re.compile(r"[0-9]{8}T[0-9]{6}-[0-9a-f]{6}")
 _AGENT_JOB_PREFIX = re.compile(r"[0-9]{8}T")
 
 
@@ -2094,37 +2097,54 @@ def _read_resume_record(run_dir: Path, name: str) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
+@contextlib.contextmanager
+def _open_saved_agent_branch(run_id: str) -> Iterator[tuple[str, int]]:
+    """Open the owned agent job's recorded branch and yield its ID and descriptor."""
+    if _MCP_AGENT_RUN_ID.fullmatch(run_id) is None:
+        raise ValueError("Expected a full agent run ID.")
+    job_dir = _resolved_run_state_dir(run_id, runs_root=config.JOBS_DIR)
+    if job_dir is None:
+        raise FileNotFoundError("The agent job directory is unavailable.")
+    job = _read_resume_record(job_dir, "job.json")
+    if job is None or job.get("run_id") != run_id or job.get("kind") != "agent":
+        raise ValueError("This record does not identify the requested agent job.")
+    run_dir = _resolved_run_state_dir(run_id)
+    if run_dir is None:
+        raise FileNotFoundError("The agent run directory is unavailable.")
+    manifest = _read_resume_record(run_dir, "run.json")
+    if manifest is None or manifest.get("run_id") != run_id:
+        raise ValueError("This manifest does not identify the requested agent run.")
+    branch_id = manifest.get("branch_id")
+    if not isinstance(branch_id, str) or str(UUID(branch_id)) != branch_id:
+        raise ValueError("The agent run does not identify a saved branch.")
+    with _open_exact_run_file(run_dir, "branches", f"{branch_id}.json") as fd:
+        yield branch_id, fd
+
+
 def _saved_agent_branch_id(run_id: str) -> str | None:
     """Return the saved branch ID for an exact agent job in this server's home."""
-    if _AGENT_JOB_ID.fullmatch(run_id) is None:
-        return None
     try:
-        job_dir = _resolved_run_state_dir(run_id, runs_root=config.JOBS_DIR)
-        if job_dir is None:
-            return None
-        job = _read_resume_record(job_dir, "job.json")
-        if job is None or job.get("run_id") != run_id or job.get("kind") != "agent":
-            return None
-        run_dir = _resolved_run_state_dir(run_id)
-        if run_dir is None:
-            return None
-        manifest = _read_resume_record(run_dir, "run.json")
-        if manifest is None or manifest.get("run_id") != run_id:
-            return None
-        branch_id = manifest.get("branch_id")
-        if not isinstance(branch_id, str) or str(UUID(branch_id)) != branch_id:
-            return None
-        with _open_exact_run_file(run_dir, "branches", f"{branch_id}.json"):
+        with _open_saved_agent_branch(run_id) as (branch_id, _):
             return branch_id
     except (OSError, RuntimeError, ValueError):
         return None
+
+
+def _load_saved_agent_branch(run_id: str) -> tuple[str, dict[str, Any]]:
+    """Read the owned snapshot from the descriptor used for the readiness check."""
+    with _open_saved_agent_branch(run_id) as (branch_id, fd):
+        with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as snapshot:
+            data = json.load(snapshot)
+    if not isinstance(data, dict):
+        raise ValueError("The saved agent branch is not a JSON object.")
+    return branch_id, data
 
 
 def _resolve_agent_resume_id(resume: str) -> str | None:
     """Resolve a full job run ID. Let the CLI keep resolving legacy branch references."""
     if _AGENT_JOB_PREFIX.match(resume) is None:
         return None
-    if _AGENT_JOB_ID.fullmatch(resume) is None:
+    if _MCP_AGENT_RUN_ID.fullmatch(resume) is None:
         raise SubmitInputError("Use a full run ID to resume an agent job.")
     branch_id = _saved_agent_branch_id(resume)
     if branch_id is not None:

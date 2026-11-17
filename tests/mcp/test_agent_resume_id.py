@@ -86,7 +86,7 @@ def test_two_open_agent_runs_resume_only_the_requested_branch(home_and_spawns):
         assert result["result"]["resume_id"] == branch_id
         kind, argv, kwargs = home_and_spawns[-1]
         assert kind == "agent"
-        assert [flag for flag in argv if flag.startswith("--resume=")] == [f"--resume={branch_id}"]
+        assert [flag for flag in argv if flag.startswith("--resume=")] == [f"--resume={run_id}"]
         assert kwargs["replay_mcp_choice"] is True
         assert kwargs["write_capable"] is True
 
@@ -262,4 +262,4 @@ def test_agent_resume_id_tracks_the_saved_branch(home_and_spawns, monkeypatch):
     assert resumed["result"]["resume_id"] == _FIRST_BRANCH
     ((kind, argv, _),) = home_and_spawns
     assert kind == "agent"
-    assert [flag for flag in argv if flag.startswith("--resume=")] == [f"--resume={_FIRST_BRANCH}"]
+    assert [flag for flag in argv if flag.startswith("--resume=")] == [f"--resume={_FIRST_RUN}"]

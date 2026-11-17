@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -58,6 +59,7 @@ _LEGACY_AGENTS_ROOT = LIONAGI_HOME / "logs" / "agents"
 _LAST_BRANCH_POINTER = LIONAGI_HOME / "last_branch.json"
 _RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 _MCP_JOB_RUN_ID_ENV_VAR = "LIONAGI_MCP_JOB_RUN_ID"
+_MCP_AGENT_RUN_ID = re.compile(r"[0-9]{8}T[0-9]{6}-[0-9a-f]{6}")
 _MCP_FINAL_RESPONSE_FILENAME = "job-final-response.md"
 PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 # The terminal status a run decided and its store did not take, with the reason code and the time

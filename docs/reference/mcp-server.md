@@ -337,8 +337,9 @@ immediately with `resume_id: null`. Agent `job.status` and terminal notices
 report the branch ID when the job's saved branch file is available in this
 server's home. While it is unavailable, they report `resume_id: null`. To
 continue the branch, pass the full `run_id` as `agent.submit`'s `resume`
-value. The submit handle then reports the resolved branch ID. Branch IDs and
-branch prefixes also work. Run IDs must be complete.
+value. The agent loads that run's own saved snapshot, and the submit handle
+reports the resolved branch ID. Branch IDs and branch prefixes also work and
+use the usual branch lookup. Run IDs must be complete.
 
 For a finished `agent.submit` job, `final` contains the last assistant reply
 captured for the leg that ended the job. `final_path` points to the UTF-8 file

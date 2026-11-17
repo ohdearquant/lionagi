@@ -69,6 +69,7 @@ from lionhub.orchestration.mcp_config import (
     resolve_spawn_mcp_servers,
 )
 from lionhub.orchestration.runs import (
+    _MCP_AGENT_RUN_ID,
     _MCP_JOB_RUN_ID_ENV_VAR,
     SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
     TERMINAL_WRITE_LOST_FIELD,
@@ -1950,21 +1951,32 @@ async def _run_agent(
             _, branch_path = find_branch(branch_id)
             branch = Branch.from_dict(json.loads(branch_path.read_text()))
         elif resume:
-            _, branch_path = find_branch(resume)
-            branch = Branch.from_dict(json.loads(branch_path.read_text()))
-            if str(branch.id) != resume:
+            branch_path = None
+            if _MCP_AGENT_RUN_ID.fullmatch(resume):
+                from lionhub.serve.mcp.jobs import _load_saved_agent_branch
+
                 try:
-                    is_full_id = str(UUID(resume)) == resume
-                except ValueError:
-                    is_full_id = False
-                if is_full_id:
-                    await branch.mdls.shutdown()
+                    expected_branch_id, branch_data = _load_saved_agent_branch(resume)
+                except (OSError, RuntimeError, ValueError):
                     raise ConfigurationError(
-                        "The saved branch ID does not match the requested branch ID."
-                    )
-            resolved_branch_id = branch_path.stem
-            if resolved_branch_id != resume:
-                hint(f"[resume] prefix-matched {resume} → {resolved_branch_id}")
+                        "That run does not have a readable saved agent branch in this home."
+                    ) from None
+            else:
+                try:
+                    canonical = str(UUID(resume))
+                except ValueError:
+                    canonical = None
+                expected_branch_id = canonical if canonical == resume.lower() else None
+                _, branch_path = find_branch(expected_branch_id or resume)
+                branch_data = json.loads(branch_path.read_text())
+            branch = Branch.from_dict(branch_data)
+            if expected_branch_id is not None and str(branch.id) != expected_branch_id:
+                await branch.mdls.shutdown()
+                raise ConfigurationError(
+                    "The saved branch ID does not match the requested branch ID."
+                )
+            if branch_path is not None and branch_path.stem != (expected_branch_id or resume):
+                hint(f"[resume] prefix-matched {resume} → {branch_path.stem}")
 
         # Capture before the new-branch block below reassigns `branch`: the only
         # reliable "reopened existing" vs "minting new" signal once that block runs.

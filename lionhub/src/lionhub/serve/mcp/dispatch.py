@@ -881,8 +881,6 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
     try:
         if verb.job_kind == "agent" and args.get("resume"):
             resume_id = jobs._resolve_agent_resume_id(args["resume"])
-            if resume_id is not None:
-                args = {**args, "resume": resume_id}
         flags = render_argv(schema, args)
         result = jobs.submit(
             verb.job_kind,
