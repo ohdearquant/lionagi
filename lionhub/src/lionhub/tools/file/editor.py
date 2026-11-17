@@ -151,7 +151,7 @@ def _prepare_edit(
 
     try:
         original = _read_text_for_edit(p)
-    except (OSError, UnicodeError) as e:
+    except OSError as e:
         return EditorResponse(success=False, error=f"Read error: {e}")
 
     count = original.count(old_string)

@@ -235,7 +235,7 @@ def _prepare_edit_file(
 
     try:
         original = _read_text_for_edit(p)
-    except (OSError, UnicodeError) as e:
+    except OSError as e:
         return {"success": False, "error": str(e)}
 
     count = original.count(old_string)

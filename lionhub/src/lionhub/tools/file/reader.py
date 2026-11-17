@@ -129,11 +129,11 @@ def _scan_window(
 
     The file is decoded in chunks with universal newlines and lines outside the window
     are only counted. The count is None when the scan budget ran out before the end of
-    the file; the budget is checked on the OS read position once per chunk, so the scan
-    can pass it by at most one buffered chunk. The window ends early at the line whose
+    the file; the budget is checked once per chunk on the bytes the decoder has taken
+    from ``binary``, so the scan can pass it by at most one decoder chunk. The OS read
+    position is not used: buffering moves it ahead by an amount that varies by platform. The window ends early at the line whose
     text reaches ``_MAX_TEXT_OUTPUT_CHARS``.
     """
-    raw = binary.raw
     selected: list[str] = []
     end = start + max_lines
     kept_chars = 0
@@ -169,7 +169,7 @@ def _scan_window(
     text = io.TextIOWrapper(binary, encoding="utf-8", errors="replace")
     try:
         while True:
-            if raw.tell() > _MAX_TEXT_SCAN_BYTES:
+            if binary.tell() > _MAX_TEXT_SCAN_BYTES:
                 if open_line and start <= index < end:
                     finish(f" [... read stopped at the {_MAX_TEXT_SCAN_BYTES:,}-byte scan limit]")
                 return selected, None

@@ -3,6 +3,8 @@
 
 """Tests for ReaderTool guidance improvements — line-prefix framing, windowed reads."""
 
+import os
+
 import pytest
 
 from lionhub.tools.file import reader as reader_mod
@@ -177,6 +179,22 @@ def test_reader_preserves_universal_newlines(tmp_path):
     assert response.reached_eof is True
 
 
+@pytest.fixture(params=[None, 1 << 20], ids=["default-buffer", "1MiB-buffer"])
+def read_buffer(request, monkeypatch):
+    """Run with the platform's read buffer and with one large enough to read the whole
+    file ahead, as some platforms do; the scan budget must not depend on it."""
+    if request.param is None:
+        return
+    real_fdopen = os.fdopen
+
+    def fdopen(fd, mode="r", *args, **kwargs):
+        if mode == "rb" and not args and "buffering" not in kwargs:
+            kwargs["buffering"] = request.param
+        return real_fdopen(fd, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", fdopen)
+
+
 def _over_budget_file(tmp_path, monkeypatch):
     path = tmp_path / "big.log"
     path.write_bytes(b"".join(b"row %06d\n" % i for i in range(20_000)))
@@ -185,7 +203,7 @@ def _over_budget_file(tmp_path, monkeypatch):
     return path
 
 
-def test_a_window_inside_the_scan_budget_returns_unknown_counts(tmp_path, monkeypatch):
+def test_a_window_inside_the_scan_budget_returns_unknown_counts(tmp_path, monkeypatch, read_buffer):
     path = _over_budget_file(tmp_path, monkeypatch)
 
     response = reader_mod._read_sync(str(path), 2, 2, tmp_path)
@@ -196,7 +214,7 @@ def test_a_window_inside_the_scan_budget_returns_unknown_counts(tmp_path, monkey
     assert response.reached_eof is None
 
 
-def test_an_offset_beyond_the_scan_budget_is_an_error(tmp_path, monkeypatch):
+def test_an_offset_beyond_the_scan_budget_is_an_error(tmp_path, monkeypatch, read_buffer):
     path = _over_budget_file(tmp_path, monkeypatch)
 
     response = reader_mod._read_sync(str(path), 15_000, 5, tmp_path)
@@ -347,7 +365,7 @@ def test_one_read_returns_a_bounded_amount_of_text(tmp_path, monkeypatch):
     assert response.reached_eof is False
 
 
-def test_a_line_cut_by_the_scan_budget_is_marked(tmp_path, monkeypatch):
+def test_a_line_cut_by_the_scan_budget_is_marked(tmp_path, monkeypatch, read_buffer):
     path = tmp_path / "one-line.txt"
     path.write_bytes(b"z" * 100_000)
     monkeypatch.setattr(reader_mod, "_MAX_TEXT_SCAN_BYTES", 16_384)
