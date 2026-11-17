@@ -24,7 +24,7 @@ import re
 import stat
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -983,6 +983,44 @@ async def test_plain_leg_with_a_found_config_file_stays_additive(monkeypatch, tm
     # A leg run with no profile acts as the anonymous child on khive.
     assert handed["mcp_servers"] == attribute_khive_servers(SERVERS, "agent:anonymous")
     assert handed["mcp_exclusive"] is False
+
+
+@pytest.mark.asyncio
+async def test_plain_leg_continues_when_warning_preference_read_fails(monkeypatch, tmp_path):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import _settings
+    from lionhub.orchestration import console
+    from lionhub.orchestration.mcp_config import McpResolution
+
+    monkeypatch.chdir(tmp_path)
+    resolution = McpResolution(None, "no_mcp_config_found", None, tmp_path)
+    monkeypatch.setattr(agent_mod, "resolve_spawn_mcp_servers", lambda *a, **kw: resolution)
+    handed = _wire_plain_leg_stubs(monkeypatch, tmp_path)
+    warnings: list[str] = []
+    monkeypatch.setattr(console, "warn", warnings.append)
+    load_settings = Mock(return_value={})
+    monkeypatch.setattr(_settings, "load_global_settings_layer", load_settings)
+
+    await agent_mod._run_agent(CODEX_SPEC, "do the thing")
+    expected_inputs = handed.copy()
+    [expected_warning] = [warning for warning in warnings if "no_mcp_config_found" in warning]
+    assert expected_inputs["mcp_servers"] is None
+    assert expected_inputs["mcp_exclusive"] is False
+
+    handed.clear()
+    warnings.clear()
+    load_settings.reset_mock()
+    load_settings.side_effect = OSError("synthetic settings read failure")
+
+    result, _, _, status, _ = await agent_mod._run_agent(CODEX_SPEC, "do the thing")
+
+    load_settings.assert_called_once_with()
+    assert result == "done"
+    assert status == "completed"
+    assert handed == expected_inputs
+    assert [warning for warning in warnings if "no_mcp_config_found" in warning] == [
+        expected_warning
+    ]
 
 
 # Site 2 — the resumed leg.

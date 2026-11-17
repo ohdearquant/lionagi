@@ -1342,18 +1342,15 @@ def _report_mcp_resolution(
 
     The whole point of resolving here is that a leg starting without the
     servers its instructions assume should be visible when it is launched
-    rather than inferred from its output an hour later. Silence is reserved
-    for the two cases where it is accurate: a caller who asked for no servers
-    at all, and a set that was resolved and handed over (which is reported as
-    a hint, not a warning).
+    rather than inferred from its output an hour later. A request for no
+    servers is silent, and a forwarded set is reported as a hint. The global
+    ``mcp.quiet_discovery`` preference can quiet the warning when the search
+    from the launch directory found no configuration file.
 
     ``forwarded`` is the caller's answer to "does this spawn hand the resolved
     set to the leg?", read off the request that spawn built. This function must
     not re-derive it from the provider name: a second list here is what let the
-    message contradict the spawn. It decides what is said about a set that was
-    resolved; it does not decide whether a resolution that produced no set at
-    all is worth a word, since a search that found nothing has nothing to
-    forward and would otherwise be reported by no caller at all.
+    message contradict the spawn.
     """
     from lionhub.orchestration.console import warn
 
@@ -1371,6 +1368,17 @@ def _report_mcp_resolution(
             "its own provider resolves for itself."
         )
         return
+
+    if resolution.reason == "no_mcp_config_found":
+        from lionagi._settings import load_global_settings_layer
+
+        try:
+            settings = load_global_settings_layer()
+        except Exception:  # noqa: BLE001 -- a failed preference read preserves the warning
+            settings = None
+        mcp_settings = settings.get("mcp") if isinstance(settings, dict) else None
+        if isinstance(mcp_settings, dict) and mcp_settings.get("quiet_discovery") is True:
+            return
 
     target = cwd or os.getcwd()
     warn(
