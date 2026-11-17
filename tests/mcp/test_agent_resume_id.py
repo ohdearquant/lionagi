@@ -23,8 +23,11 @@ def _write(path, record):
     path.write_text(json.dumps(record), encoding="utf-8")
 
 
-def _save_branch(run_id, branch_id):
-    _write(config.run_dir(run_id) / "branches" / f"{branch_id}.json", {"id": branch_id})
+def _save_branch(run_id, branch_id, *, metadata=None):
+    record = {"id": branch_id}
+    if metadata is not None:
+        record["metadata"] = metadata
+    _write(config.run_dir(run_id) / "branches" / f"{branch_id}.json", record)
 
 
 def _seed(run_id, branch_id, *, kind="agent", save=True):
@@ -253,7 +256,7 @@ def test_agent_resume_id_tracks_the_saved_branch(home_and_spawns, monkeypatch):
     projected = (_status(_FIRST_RUN)["resume_id"], _notice_resume_id(monkeypatch, _FIRST_RUN))
     assert projected == (None, None)
 
-    _save_branch(_FIRST_RUN, _FIRST_BRANCH)
+    _save_branch(_FIRST_RUN, _FIRST_BRANCH, metadata={"source": "synthetic"})
 
     assert _status(_FIRST_RUN)["resume_id"] == _FIRST_BRANCH
     assert _notice_resume_id(monkeypatch, _FIRST_RUN) == _FIRST_BRANCH
@@ -263,3 +266,61 @@ def test_agent_resume_id_tracks_the_saved_branch(home_and_spawns, monkeypatch):
     ((kind, argv, _),) = home_and_spawns
     assert kind == "agent"
     assert [flag for flag in argv if flag.startswith("--resume=")] == [f"--resume={_FIRST_RUN}"]
+
+
+def test_subscription_fallback_is_unavailable_for_agent_resume(home_and_spawns, monkeypatch):
+    _seed(_FIRST_RUN, _FIRST_BRANCH, save=False)
+    _save_branch(
+        _FIRST_RUN,
+        _FIRST_BRANCH,
+        metadata={"subscription_switch": {"from": "anthropic/claude-haiku-5-5"}},
+    )
+    assert _status(_FIRST_RUN)["resume_id"] is None
+    assert _notice_resume_id(monkeypatch, _FIRST_RUN) is None
+
+    def unexpected_job_preparation(*args, **kwargs):
+        pytest.fail("agent submit prepared a job for a non-resumable branch")
+
+    monkeypatch.setattr(dispatch, "render_argv", unexpected_job_preparation)
+    refused = _submit(resume=_FIRST_RUN)
+    assert refused["error"]["kind"] == "invalid_input"
+    assert (
+        "moved from the Anthropic API route to the subscription route"
+        in refused["error"]["message"]
+    )
+    assert "Start a new branch." in refused["error"]["message"]
+    assert home_and_spawns == []
+
+
+@pytest.mark.parametrize(
+    "defect", ["unreadable", "over-byte-cap", "over-key-cap", "wrong-branch-id", "malformed-json"]
+)
+def test_unverified_saved_snapshot_hides_agent_resume_id(home_and_spawns, monkeypatch, defect):
+    _seed(_FIRST_RUN, _FIRST_BRANCH, save=False)
+    _save_branch(_FIRST_RUN, _FIRST_BRANCH, metadata={"source": "synthetic", "sample": 1})
+    filename = f"{_FIRST_BRANCH}.json"
+    snapshot = config.run_dir(_FIRST_RUN) / "branches" / filename
+    if defect == "over-byte-cap":
+        monkeypatch.setattr(jobs, "_MAX_SAVED_AGENT_BRANCH_BYTES", snapshot.stat().st_size - 1)
+    elif defect == "over-key-cap":
+        monkeypatch.setattr(jobs, "_MAX_SAVED_AGENT_BRANCH_METADATA_KEYS", 1)
+    elif defect == "wrong-branch-id":
+        _write(snapshot, {"id": _SECOND_BRANCH, "metadata": {"source": "synthetic"}})
+    elif defect == "malformed-json":
+        snapshot.write_text("{", encoding="utf-8")
+    else:
+        open_file = jobs._open_exact_run_file
+
+        def deny_snapshot(run_dir, *parts):
+            if parts == ("branches", filename):
+                raise PermissionError("synthetic saved branch read failure")
+            return open_file(run_dir, *parts)
+
+        monkeypatch.setattr(jobs, "_open_exact_run_file", deny_snapshot)
+
+    assert _status(_FIRST_RUN)["resume_id"] is None
+    assert _notice_resume_id(monkeypatch, _FIRST_RUN) is None
+    refused = _submit(resume=_FIRST_RUN)
+    assert refused["error"]["kind"] == "invalid_input"
+    assert "saved agent branch" in refused["error"]["message"]
+    assert home_and_spawns == []

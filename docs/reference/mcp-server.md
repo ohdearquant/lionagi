@@ -334,8 +334,12 @@ The reply carries the allocated `run_id`. Poll it, or read what it wrote:
 
 An `agent.submit` handle has a nullable `resume_id`. A fresh submit returns
 immediately with `resume_id: null`. Agent `job.status` and terminal notices
-report the branch ID when the job's saved branch file is available in this
-server's home. While it is unavailable, they report `resume_id: null`. To
+report the branch ID when the job has an owned, readable snapshot with the
+matching branch ID. The snapshot limit is 16 MiB and the metadata limit is
+1,024 keys. Unavailable or invalid snapshots produce `resume_id: null`.
+A branch that moved from the Anthropic API to the subscription route also
+reports null. Submitting that run's ID returns `invalid_input` and asks
+the caller to start a new branch before any job is prepared. To
 continue the branch, pass the full `run_id` as `agent.submit`'s `resume`
 value. The agent loads that run's own saved snapshot, and the submit handle
 reports the resolved branch ID. Branch IDs and branch prefixes also work and
