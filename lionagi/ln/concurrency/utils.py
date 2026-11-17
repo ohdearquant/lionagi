@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import signal
@@ -12,10 +13,11 @@ from concurrent.futures import Future as _ThreadFuture
 from contextlib import contextmanager
 from functools import partial
 from types import FrameType
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import anyio
 import anyio.to_thread
+from sniffio import current_async_library
 
 from .primitives import CapacityLimiter
 
@@ -48,6 +50,75 @@ def is_coro_func(func: Callable[..., Any]) -> bool:
     )
 
 
+class _WorkerAdmission:
+    """Shield the caller's scope after the worker has borrowed a real token.
+
+    This works because AnyIO's to_thread.run_sync uses its limiter only as an
+    async context manager, a contract guarded by the native-cancellation test.
+    """
+
+    def __init__(
+        self,
+        limiter: anyio.abc.CapacityLimiter,
+        borrower: object,
+        caller_scope: anyio.CancelScope,
+    ):
+        self.limiter = limiter
+        self.borrower = borrower
+        self.caller_scope = caller_scope
+
+    async def __aenter__(self) -> None:
+        await anyio.lowlevel.checkpoint_if_cancelled()
+        try:
+            self.limiter.acquire_on_behalf_of_nowait(self.borrower)
+        except anyio.WouldBlock:
+            await self.limiter.acquire_on_behalf_of(self.borrower)
+        self.caller_scope.shield = True
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self.limiter.release_on_behalf_of(self.borrower)
+
+
+async def _run_sync_shielded(
+    func: Callable[..., R], args: tuple[Any, ...], limiter: anyio.abc.CapacityLimiter | None
+) -> R:
+    actual_limiter = (
+        limiter if limiter is not None else anyio.to_thread.current_default_thread_limiter()
+    )
+    settled = anyio.Event()
+    results: list[R] = []
+    errors: list[BaseException] = []
+
+    async with anyio.create_task_group() as group:
+        with anyio.CancelScope() as caller_scope:
+            admission = cast(
+                anyio.abc.CapacityLimiter,
+                _WorkerAdmission(actual_limiter, asyncio.current_task(), caller_scope),
+            )
+
+            async def invoke() -> None:
+                try:
+                    results.append(await anyio.to_thread.run_sync(func, *args, limiter=admission))
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    if caller_scope.shield:
+                        # Shield group teardown after an active call. While running,
+                        # the worker can still see enclosing scope cancellation.
+                        group.cancel_scope.shield = True
+                    settled.set()
+
+            # The child inherits the group's scope, independently of the caller's
+            # admission shield. Native task cancellation unwinds the group and cancels
+            # the child through AnyIO, which shields the active worker's token.
+            group.start_soon(invoke)
+            await settled.wait()
+
+    if errors:
+        raise errors[0]
+    return results[0]
+
+
 async def run_sync(
     func: Callable[..., R],
     *args: Any,
@@ -61,12 +132,15 @@ async def run_sync(
     ``functools.partial`` when the callable itself needs a keyword named
     ``abandon_on_cancel`` or ``limiter``.
 
-    The default shields the active worker wait from AnyIO scope cancellation;
-    waiting for admission can still be cancelled. With ``abandon_on_cancel=True``,
-    cancellation stops waiting but leaves the thread running, discarding its
-    eventual result or error. ``limiter`` selects an ln capacity limiter instead
-    of AnyIO's default. On asyncio, abandoning the wait releases its token; on
-    Trio, the token stays borrowed until the worker finishes.
+    The default shields the active worker wait through settlement. Native asyncio
+    task cancellation propagates after the worker finishes. AnyIO scope cancellation
+    still leaves an active worker's result or error available to the caller.
+    Waiting for admission can be cancelled before the callable starts.
+    With ``abandon_on_cancel=True``, cancellation stops waiting but leaves the
+    thread running, discarding its eventual result or error. ``limiter`` selects an
+    ln capacity limiter instead of AnyIO's default. On asyncio, abandoning the
+    wait releases its token; on Trio, the token stays borrowed until the worker
+    finishes.
     """
     if limiter is not None and not isinstance(limiter, CapacityLimiter):
         raise TypeError("limiter must be a lionagi.ln.concurrency.CapacityLimiter or None")
@@ -74,11 +148,14 @@ async def run_sync(
         raise TypeError("abandon_on_cancel must be a bool")
     if kwargs:
         func = partial(func, **kwargs)
+    backend_limiter = limiter._lim if limiter is not None else None
+    if not abandon_on_cancel and current_async_library() == "asyncio":
+        return await _run_sync_shielded(func, args, backend_limiter)
     return await anyio.to_thread.run_sync(
         func,
         *args,
         abandon_on_cancel=abandon_on_cancel,
-        limiter=limiter._lim if limiter is not None else None,
+        limiter=backend_limiter,
     )
 
 
