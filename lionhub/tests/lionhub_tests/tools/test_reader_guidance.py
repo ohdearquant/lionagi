@@ -365,6 +365,20 @@ def test_one_read_returns_a_bounded_amount_of_text(tmp_path, monkeypatch):
     assert response.reached_eof is False
 
 
+def test_the_output_bound_counts_the_line_number_prefixes(tmp_path, monkeypatch):
+    """Short lines are mostly prefix: the bound counts what the read returns, prefixes included."""
+    path = tmp_path / "short.txt"
+    path.write_text("a\n" * 100, encoding="utf-8")
+    monkeypatch.setattr(reader_mod, "_MAX_TEXT_OUTPUT_CHARS", 25)
+
+    response = reader_mod._read_sync(str(path), 0, 1_000_000, tmp_path)
+
+    assert response.success
+    # Each returned line is "<n>\ta\n", 4 characters: the seventh reaches 25.
+    assert response.content == "".join(f"{n}\ta\n" for n in range(1, 8))
+    assert response.reached_eof is False
+
+
 def test_a_line_cut_by_the_scan_budget_is_marked(tmp_path, monkeypatch, read_buffer):
     path = tmp_path / "one-line.txt"
     path.write_bytes(b"z" * 100_000)

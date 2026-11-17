@@ -25,7 +25,8 @@ _MAX_TEXT_SCAN_BYTES = 64 * 1024 * 1024
 # Characters kept from one line; the rest of the line is scanned and dropped, so a
 # file without newlines cannot turn a one-line window into the whole file.
 _MAX_LINE_CHARS = 1_000_000
-# Characters one read returns; a window stops at the line that reaches it.
+# Characters one read returns, line-number prefixes included. A window ends with the line
+# that reaches it, so a read can pass it by that one line, up to _MAX_LINE_CHARS.
 _MAX_TEXT_OUTPUT_CHARS = 2_000_000
 _SCAN_CHUNK_CHARS = 1 << 20
 _MAX_LIST_FILES = 1_000
@@ -47,12 +48,12 @@ class ReaderRequest(BaseModel):
             "before using any line as editor old_string. Use offset+limit to read "
             "a line window.\n"
             "Text reads include total_lines and reached_eof. An offset at or past the "
-            "end of a nonempty file returns an end-of-file notice. A read scans at most "
+            "end of a nonempty file returns an end-of-file notice. A read scans about "
             f"the first {_MAX_TEXT_SCAN_BYTES:,} bytes: past that, total_lines and "
             "reached_eof are None, and an offset beyond the scanned part is an error. "
             f"A line longer than {_MAX_LINE_CHARS:,} characters is cut, and a read returns "
-            f"about {_MAX_TEXT_OUTPUT_CHARS:,} characters at most: the window ends at the "
-            "line that reaches that, so continue from the next offset.\n"
+            f"about {_MAX_TEXT_OUTPUT_CHARS:,} characters, line numbers included: the window "
+            "ends with the line that reaches that, so continue from the next offset.\n"
             "- 'list_dir': List files in a directory."
         ),
     )
@@ -131,8 +132,9 @@ def _scan_window(
     are only counted. The count is None when the scan budget ran out before the end of
     the file; the budget is checked once per chunk on the bytes the decoder has taken
     from ``binary``, so the scan can pass it by at most one decoder chunk. The OS read
-    position is not used: buffering moves it ahead by an amount that varies by platform. The window ends early at the line whose
-    text reaches ``_MAX_TEXT_OUTPUT_CHARS``.
+    position is not used: buffering moves it ahead by an amount that varies by platform.
+    The window ends early with the line at which the kept text, each line's number prefix
+    included, reaches ``_MAX_TEXT_OUTPUT_CHARS``.
     """
     selected: list[str] = []
     end = start + max_lines
@@ -158,7 +160,8 @@ def _scan_window(
                     f" [... line truncated at {_MAX_LINE_CHARS:,} characters]"
                 )
             selected.append(line + ending)
-            kept_chars += len(line) + len(ending)
+            # The caller prefixes each line with its number and a tab.
+            kept_chars += len(f"{index + 1}\t") + len(line) + len(ending)
             if kept_chars >= _MAX_TEXT_OUTPUT_CHARS:
                 end = index + 1
         pieces.clear()
