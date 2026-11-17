@@ -1897,16 +1897,20 @@ record the outcome with the same budget and settlement rules as routed work.
    the ordinary routing eligibility rule in place.
 3. A successful HTTP status can clear the observed block in the same
    transaction as settlement. Admission captures the account's block
-   generation. Every write of a block advances that generation, including a
-   re-block with the same reason or a billing write that retains an existing
-   reason. Clear only if the generation, last audited unblock and latest
-   probe-failure mark still match. Use the existing audited unblock operation
-   and cite the probe attempt as its source. Record complete usage as ordinary
-   spend or keep the ceiling open when usage is incomplete.
-4. A non-2xx response or an attempt without a response leaves the account's
-   block reason unchanged. Amendment 12 Decision 2 continues to preserve the
-   original reason, and its Decision 4 continues to derive `billing_block`
-   from that reason. Record a dated diagnostic mark beside the attempt with
+   generation from the account row's `block_generation` column, a non-negative
+   integer initialized to zero. The ledger migration installs the
+   `account_block_generation` trigger, which advances it on every write of a
+   block, including a re-block with the same reason or a billing write that
+   retains an existing reason. Clearing an existing block also advances it.
+   Clear only if the generation, last audited unblock and latest probe-failure
+   mark still match. Use the existing audited unblock operation and cite the
+   probe attempt as its source. Record complete usage as ordinary spend or
+   keep the ceiling open when usage is incomplete.
+4. For a non-2xx response or an attempt without a response, the probe's own
+   disposition leaves the account's block reason unchanged. The stored
+   generation and its advance rule extend Amendment 12. `block_reason` retains
+   its Decision 2 meaning, and Decision 4 still derives `billing_block` from
+   the current reason. Record a dated diagnostic mark beside the attempt with
    its ID, nullable HTTP status and nullable closed-set provider error type.
    Append it in the same transaction as the first recorded failure. A success
    may not clear the observed block if a newer failure was recorded after
@@ -1916,7 +1920,12 @@ record the outcome with the same budget and settlement rules as routed work.
    the probe's own disposition unchanged. The ordinary over-ceiling rule
    still applies when complete usage costs more than the reserved ceiling.
    If the probe cleared the block with incomplete usage, a later above-ceiling
-   bill still blocks the account with `ceiling_exceeded`.
+   bill still blocks the account with `ceiling_exceeded`. Amendment 12
+   Decision 2 states that “The ledger's other settle-time blocks
+   (`ceiling_exceeded`, `settlement_conflict`) are unchanged and may replace a
+   billing reason.” That rule also applies to probes, including an attempt
+   first recorded without a response whose later complete bill exceeds its
+   ceiling. For `ceiling_exceeded`, Decision 4 leaves `billing_block` absent.
 5. Diagnostic data from the probe is limited to the HTTP status, a closed-set
    provider error type when available, and the accounting outcome. Durably
    record ordinary token counts and cost where available. Exclude the response
