@@ -231,9 +231,12 @@ class AccountRouter:
 
     def probe_usage(self, body: Any) -> CompleteUsage | UnknownOutcome:
         if isinstance(body, Mapping):
-            return usage_outcome(
+            evidence = usage_outcome(
                 self.revision, frozenset(), body.get("model"), body.get("usage"), None
             )
+            if isinstance(evidence, CompleteUsage):
+                return evidence
+        # Ordinary pricing refusals can name a field from the provider payload.
         return UnknownOutcome("usage_incomplete")
 
     async def finish_probe(

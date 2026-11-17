@@ -341,10 +341,37 @@ async def test_blocked_account_probe_accounts_for_one_redacted_request(
     else:
         assert not report.cleared and not sources
         assert block is not None
-        assert re.fullmatch(rf"probe_{status}_[0-9]{{8}}t[0-9]{{4}}z", block, re.IGNORECASE)
+        attempt_token = report.attempt_id.replace("-", "")
+        assert re.fullmatch(rf"probe_{status}_[0-9]{{8}}t[0-9]{{4}}z_{attempt_token}", block)
         assert (state, cost) == (("open", None) if status == 429 else ("settled", 0))
     for datum in (sentinel, CANARY, "transient-probe-provider-reference"):
         assert datum not in stored and datum not in caplog.text and datum not in repr(report)
+
+
+async def test_blocked_account_probe_keeps_unknown_usage_fields_out_of_the_ledger(
+    monkeypatch, tmp_path, caplog
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    await _seed_probe_account()
+    supplied_label = "probe_usage_unrecognized_label"
+    body = {
+        "model": _expected_probe_model(),
+        "usage": {"input_tokens": 1, "output_tokens": 1, supplied_label: 1},
+    }
+    model, _ = _model(monkeypatch, [StubResponse(200, body)])
+
+    result = await model.endpoint.probe_blocked_account("primary")
+
+    assert result.cleared and _block_reason(path, "primary") is None
+    with sqlite3.connect(path) as connection:
+        record = connection.execute(
+            "SELECT * FROM attempt WHERE id = ?", (result.attempt_id,)
+        ).fetchone()
+        state = connection.execute(
+            "SELECT state, outcome, http_status FROM attempt WHERE id = ?", (result.attempt_id,)
+        ).fetchone()
+    assert state == ("open", "usage_incomplete", 200)
+    assert supplied_label not in repr(record) and supplied_label not in caplog.text
 
 
 @pytest.mark.parametrize(

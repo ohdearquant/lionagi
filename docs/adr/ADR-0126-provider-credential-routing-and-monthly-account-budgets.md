@@ -1904,10 +1904,11 @@ record the outcome with the same budget and settlement rules as routed work.
    is subsequently blocked with the same reason.
 4. A non-2xx response or an attempt without a response keeps the account
    blocked and refreshes the continuing block with a dated status or
-   no-response code. Proven unsent and typed zero-cost outcomes settle as
-   zero. Keep the ceiling when delivery or usage remains uncertain. A replay
-   of a recorded outcome may supply missing accounting evidence and cannot
-   apply the account disposition a second time.
+   no-response code that identifies the attempt. Two failures with the same
+   status in one minute create distinct block marks. Proven unsent and typed
+   zero-cost outcomes settle as zero. Keep the ceiling when delivery or usage
+   remains uncertain. A replay of a recorded outcome may supply missing
+   accounting evidence and cannot apply the account disposition a second time.
 5. Diagnostic data from the probe is limited to the HTTP status, a closed-set
    provider error type when available, and the accounting outcome. Durably
    record ordinary token counts and cost where available. Exclude the response
