@@ -74,6 +74,14 @@ def _failures(ledger):
         ).fetchall()
 
 
+def _block_state(ledger):
+    with closing(sqlite3.connect(ledger.path)) as connection:
+        return connection.execute(
+            "SELECT block_reason, block_generation FROM account WHERE provider = ? AND name = ?",
+            ("anthropic", ACCOUNT.name),
+        ).fetchone()
+
+
 async def test_probe_requires_current_block_and_available_budget(tmp_path):
     ledger = await _prepare(tmp_path, block=None)
     attempt = uuid4()
@@ -290,6 +298,89 @@ async def test_probe_success_missing_usage_clears_block_but_keeps_ceiling(tmp_pa
         0,
         3,
     )
+    assert _unblocks(ledger) == [(f"probe:{attempt}",)]
+
+
+@pytest.mark.parametrize("refresh", ["untouched", "operator", "billing"])
+async def test_probe_distinguishes_a_block_refresh_that_keeps_the_reason(tmp_path, refresh):
+    ledger = await _prepare(tmp_path, block=None)
+    ordinary_attempt = uuid4()
+    await ledger.reserve(Scope("branch", uuid4(), "anthropic"), ordinary_attempt, QUOTE, (ACCOUNT,))
+    await ledger.block("anthropic", ACCOUNT.name, "auth_required")
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    _, generation = _block_state(ledger)
+
+    if refresh == "operator":
+        await ledger.block("anthropic", ACCOUNT.name, "auth_required")
+    elif refresh == "billing":
+        evidence = RejectionZero(
+            400, "invalid_request_error", "credit_balance_low", "request_rejected"
+        )
+        assert (await ledger.settle_billing_rejection(ordinary_attempt, evidence))[1] == (
+            "auth_required"
+        )
+    else:
+        await ledger.settle(ordinary_attempt, ProvenNotSent())
+
+    cleared = refresh == "untouched"
+    assert _block_state(ledger) == ("auth_required", generation + (not cleared))
+    assert (await ledger.settle_probe(attempt, _usage(3), http_status=200)) is cleared
+    status = (await ledger.status("anthropic"))[0]
+    assert (status.block_reason, status.settled_nusd) == (
+        None if cleared else "auth_required",
+        3,
+    )
+    assert _unblocks(ledger) == ([(f"probe:{attempt}",)] if cleared else [])
+
+
+async def test_probe_without_a_generation_preserves_the_block_and_records_usage(tmp_path):
+    ledger = await _prepare(tmp_path)
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    snapshot = json.loads(_attempt(ledger, attempt)[7])
+    with closing(sqlite3.connect(ledger.path)) as connection, connection:
+        connection.execute(
+            "UPDATE attempt SET settlement_evidence_json = ? WHERE id = ?",
+            (json.dumps(snapshot[:4]), str(attempt)),
+        )
+
+    assert not await ledger.settle_probe(
+        attempt, UnknownOutcome("usage_incomplete"), http_status=200
+    )
+    assert (await ledger.status("anthropic"))[0].open_ceiling_nusd == 10
+    assert not await ledger.settle_probe(attempt, _usage(3), http_status=200)
+    status = (await ledger.status("anthropic"))[0]
+    assert (status.block_reason, status.settled_nusd, status.open_ceiling_nusd) == (
+        "credit_balance_low",
+        3,
+        0,
+    )
+    assert _unblocks(ledger) == []
+
+
+@pytest.mark.parametrize("new_block", [None, "settlement_conflict"])
+async def test_probe_usage_replay_applies_ceiling_safety_once(tmp_path, new_block):
+    ledger = await _prepare(tmp_path)
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    assert await ledger.settle_probe(attempt, UnknownOutcome("usage_incomplete"), http_status=200)
+    assert (await ledger.status("anthropic"))[0].block_reason is None
+
+    if new_block is not None:
+        await ledger.block("anthropic", ACCOUNT.name, new_block)
+    _, generation = _block_state(ledger)
+    assert not await ledger.settle_probe(attempt, _usage(11), http_status=200)
+    assert _block_state(ledger) == ("ceiling_exceeded", generation + 1)
+    assert not await ledger.settle_probe(attempt, _usage(11), http_status=200)
+    assert _block_state(ledger) == ("ceiling_exceeded", generation + 1)
+    status = (await ledger.status("anthropic"))[0]
+    assert (status.block_reason, status.settled_nusd, status.open_ceiling_nusd) == (
+        "ceiling_exceeded",
+        11,
+        0,
+    )
+    assert _failures(ledger) == []
     assert _unblocks(ledger) == [(f"probe:{attempt}",)]
 
 

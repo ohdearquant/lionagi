@@ -1896,12 +1896,13 @@ record the outcome with the same budget and settlement rules as routed work.
    conversation binding, gains no preference from cache warmth, and leaves
    the ordinary routing eligibility rule in place.
 3. A successful HTTP status can clear the observed block in the same
-   transaction as settlement. Use the existing audited unblock operation and
-   cite the probe attempt as its source. Record complete usage as ordinary
-   spend or keep the ceiling open when usage is incomplete. Keep a block
-   imposed by newer ledger activity or by settlement of an over-ceiling bill.
-   An intervening audited unblock ends the original block even if the account
-   is subsequently blocked with the same reason.
+   transaction as settlement. Admission captures the account's block
+   generation. Every write of a block advances that generation, including a
+   re-block with the same reason or a billing write that retains an existing
+   reason. Clear only if the generation, last audited unblock and latest
+   probe-failure mark still match. Use the existing audited unblock operation
+   and cite the probe attempt as its source. Record complete usage as ordinary
+   spend or keep the ceiling open when usage is incomplete.
 4. A non-2xx response or an attempt without a response leaves the account's
    block reason unchanged. Amendment 12 Decision 2 continues to preserve the
    original reason, and its Decision 4 continues to derive `billing_block`
@@ -1911,20 +1912,25 @@ record the outcome with the same budget and settlement rules as routed work.
    may not clear the observed block if a newer failure was recorded after
    its reservation. Proven unsent and typed zero-cost outcomes settle as
    zero. Keep the ceiling when delivery or usage remains uncertain. A replay
-   may supply missing accounting evidence and leaves the diagnostic mark
-   and account disposition unchanged.
+   may supply missing accounting evidence and leaves the diagnostic mark and
+   the probe's own disposition unchanged. The ordinary over-ceiling rule
+   still applies when complete usage costs more than the reserved ceiling.
+   If the probe cleared the block with incomplete usage, a later above-ceiling
+   bill still blocks the account with `ceiling_exceeded`.
 5. Diagnostic data from the probe is limited to the HTTP status, a closed-set
    provider error type when available, and the accounting outcome. Durably
    record ordinary token counts and cost where available. Exclude the response
    body, exception message, credential, provider request ID and rejection
    class from the probe record and operator output.
 6. **Scope of the exception.** D3's sentence “Candidates are configured,
-   unblocked accounts with room for that attempt” and Amendment 12 Decision
-   3's restatement continue to govern ordinary assignment. This explicit
-   operator probe admits only the named blocked account without assigning
-   it to a conversation. Amendment 12 Decision 4's sentence “the account
-   stays blocked until an operator unblocks it” includes a clear triggered by
-   the operator's explicit probe and recorded only on a successful response.
+   unblocked accounts with room for that attempt,” Amendment 5 Decision 5's
+   “The candidate set is unchanged: configured, unblocked accounts with room
+   for the attempt,” and Amendment 12 Decision 3's restatement continue to
+   govern ordinary assignment. This explicit operator probe admits only the
+   named blocked account without assigning it to a conversation.
+   Amendment 12 Decision 4's sentence “the account stays blocked until an
+   operator unblocks it” includes a clear triggered by the operator's
+   explicit probe and recorded only on a successful response.
 
 ### Verification
 
@@ -1937,4 +1943,8 @@ back. Cover replay, an intervening unblock and reblock, and a bill above the
 ceiling. Verify a failed probe on a `credit_balance_low` account preserves its
 reason and `billing_block`, with a separate dated mark. Check that a later
 recorded failure keeps an older successful probe from clearing the block.
+Exercise a durable re-block with the same reason during a reserved probe and
+the control without another block write. Settle a successful probe with
+incomplete usage, then record a complete bill above its ceiling. Confirm the
+ordinary block applies and the probe leaves one unblock audit.
 Use a synthetic transport and a temporary ledger.

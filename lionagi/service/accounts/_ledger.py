@@ -359,14 +359,19 @@ def _canonical_json(value: object) -> str:
 
 def _probe_reservation(
     value: str | None,
-) -> tuple[tuple[str, str | None, int | None], str | None]:
+) -> tuple[tuple[str, str | None, int | None, int | None], str | None]:
     """Read the observed block identity and the ordinary pricing envelope."""
     try:
         snapshot = json.loads(value or "null")
-        if not isinstance(snapshot, list) or len(snapshot) not in (3, 4):
+        if not isinstance(snapshot, list) or len(snapshot) not in (3, 4, 5):
             raise ValueError("invalid probe reservation")
         block, unblock, quote = snapshot[:3]
-        failure = snapshot[3] if len(snapshot) == 4 else None
+        failure = snapshot[3] if len(snapshot) >= 4 else None
+        generation = (
+            _checked_int(snapshot[4], minimum=0, maximum=INT64_MAX, label="block generation")
+            if len(snapshot) == 5
+            else None
+        )
         block = _validate_reason(block)
         if unblock is not None and str(UUID(unblock)) != unblock:
             raise ValueError("invalid unblock adjustment")
@@ -376,7 +381,7 @@ def _probe_reservation(
             _checked_int(failure, minimum=1, maximum=INT64_MAX, label="probe failure sequence")
     except (TypeError, ValueError, AttributeError):
         raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
-    return (block, unblock, failure), quote
+    return (block, unblock, failure, generation), quote
 
 
 def _stored_evidence(
@@ -850,6 +855,15 @@ class CredentialLedger:
     def _attempt_columns(connection: sqlite3.Connection) -> set[str]:
         return {row[1] for row in connection.execute('PRAGMA table_info("attempt")')}
 
+    @staticmethod
+    def _has_block_generation(connection: sqlite3.Connection) -> bool:
+        return (
+            connection.execute(
+                "SELECT 1 FROM pragma_table_info('account') WHERE name = 'block_generation'"
+            ).fetchone()
+            is not None
+        )
+
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
         # Unlocked, these reads can straddle another process's schema commit, so
         # they only let a complete ledger through, supplemental tables, indexes and
@@ -863,11 +877,20 @@ class CredentialLedger:
             )
             and set(_REJECTION_COLUMNS).issubset(self._attempt_columns(connection))
             and set(_EVIDENCE_COLUMNS).issubset(self._attempt_columns(connection))
+            and self._has_block_generation(connection)
+            and connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'account_block_generation'"
+            ).fetchone()
         ):
             return
 
         # Supplemental tables and attempt columns can be added to an existing version 1
         # ledger. Check again under the lock because another process may have added them.
+        # SQLite promotes an overflowing addition to REAL. The type check refuses that write.
+        generation_column = """
+            block_generation INTEGER NOT NULL DEFAULT 0
+            CHECK (typeof(block_generation) = 'integer' AND block_generation >= 0)
+            """
         supplemental_schema = (
             """
             CREATE TABLE IF NOT EXISTS warm_prefix (
@@ -898,6 +921,17 @@ class CredentialLedger:
             )
             """,
             "CREATE INDEX IF NOT EXISTS probe_failure_account ON probe_failure (provider, account)",
+            # Count block writes even when billing preserves an existing reason or an operator
+            # repeats it. A clear advances the generation only if there was a block.
+            """
+            CREATE TRIGGER IF NOT EXISTS account_block_generation
+            AFTER UPDATE OF block_reason ON account
+            WHEN NEW.block_reason IS NOT NULL OR OLD.block_reason IS NOT NULL
+            BEGIN
+                UPDATE account SET block_generation = OLD.block_generation + 1
+                WHERE provider = NEW.provider AND name = NEW.name;
+            END
+            """,
         )
 
         with _transaction(connection):
@@ -906,6 +940,8 @@ class CredentialLedger:
             if version == 1:
                 if not _TABLES.issubset(tables):
                     raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
+                if not self._has_block_generation(connection):
+                    connection.execute(f"ALTER TABLE account ADD COLUMN {generation_column}")
                 for statement in supplemental_schema:
                     connection.execute(statement)
                 columns = self._attempt_columns(connection)
@@ -923,12 +959,13 @@ class CredentialLedger:
             if version != 0 or tables:
                 raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
             connection.execute(
-                """
+                f"""
                 CREATE TABLE account (
                     provider TEXT NOT NULL,
                     name TEXT NOT NULL,
                     key_env TEXT NOT NULL,
                     block_reason TEXT,
+                    {generation_column},
                     PRIMARY KEY (provider, name)
                 )
                 """
@@ -1198,9 +1235,9 @@ class CredentialLedger:
     @staticmethod
     def _account_block(
         connection: sqlite3.Connection, provider: str, account: str
-    ) -> tuple[str | None, str | None, int | None]:
-        reason = connection.execute(
-            "SELECT block_reason FROM account WHERE provider = ? AND name = ?",
+    ) -> tuple[str | None, str | None, int | None, int | None]:
+        block = connection.execute(
+            "SELECT block_reason, block_generation FROM account WHERE provider = ? AND name = ?",
             (provider, account),
         ).fetchone()
         last_clear = connection.execute(
@@ -1221,9 +1258,10 @@ class CredentialLedger:
             (provider, account),
         ).fetchone()
         return (
-            None if reason is None else reason[0],
+            None if block is None else block[0],
             None if last_clear is None else last_clear[0],
             None if last_failure is None else last_failure[0],
+            None if block is None else block[1],
         )
 
     def _reserve_sync(
@@ -1356,7 +1394,7 @@ class CredentialLedger:
 
                 if scope.kind == "probe":
                     (selected,) = specs.values()
-                    reason, last_clear, last_failure = self._account_block(
+                    reason, last_clear, last_failure, generation = self._account_block(
                         connection, provider, selected.name
                     )
                     if reason is None:
@@ -1376,7 +1414,9 @@ class CredentialLedger:
                             account=selected.name,
                             attempt_id=attempt_id,
                         )
-                    quote_json = _canonical_json([reason, last_clear, quote_json, last_failure])
+                    quote_json = _canonical_json(
+                        [reason, last_clear, quote_json, last_failure, generation]
+                    )
                 elif binding is not None:
                     bound_name = binding[0]
                     selected = specs.get(bound_name)
@@ -2169,20 +2209,14 @@ class CredentialLedger:
                         ),
                     )
                     if isinstance(evidence, CompleteUsage) and cost_nusd > ceiling:
-                        current_block = (
-                            self._account_block(connection, provider, account) if probe else None
+                        # A later bill still applies ordinary ceiling safety. Only the
+                        # probe's own clear or failure mark is limited to the first result.
+                        connection.execute(
+                            "UPDATE account SET block_reason = 'ceiling_exceeded' "
+                            "WHERE provider = ? AND name = ?",
+                            (provider, account),
                         )
-                        if (
-                            current_block is None
-                            or current_block[0] is None
-                            or current_block == probe_block
-                        ):
-                            connection.execute(
-                                "UPDATE account SET block_reason = 'ceiling_exceeded' "
-                                "WHERE provider = ? AND name = ?",
-                                (provider, account),
-                            )
-                            _clear_warm_prefix(connection, provider, account)
+                        _clear_warm_prefix(connection, provider, account)
                     elif isinstance(evidence, CompleteUsage):
                         if cert is not None:
                             _record_warm_prefix(
@@ -2253,9 +2287,9 @@ class CredentialLedger:
     ) -> tuple[SettleResult, str | None]:
         """Settle a billing rejection at zero and block its account in the same transaction.
 
-        The block is written only when this settle is the attempt's first closure and only
-        if the account has no block reason yet. Returns the settle result and the account's
-        block reason read inside that transaction, or ``None`` when no closure happened.
+        The first closure writes a block, keeping any existing block reason. Returns the
+        settle result and the account's block reason read inside that transaction, or
+        ``None`` when no closure happened.
         """
         if http_status is not None and (
             type(http_status) is not int or not 100 <= http_status <= 599
@@ -2317,7 +2351,7 @@ class CredentialLedger:
         provider: str,
         account: str,
         attempt_id: UUID,
-        original_block: tuple[str, str | None, int | None],
+        original_block: tuple[str, str | None, int | None, int | None],
         http_status: int | None,
         provider_error_type: str | None,
     ) -> bool:
