@@ -280,7 +280,7 @@ async def test_stale_sweep_cancels_a_previous_boot_command_group_without_signall
         remote = await _invocation(db, {**earlier, "pid_host": "other-host"})
     before = await _read_invocation(invocation_id)
     retained = {row: await _read_invocation(row) for row in (pidless, remote)}
-    _observe_command_groups(monkeypatch)
+    _observe_command_groups(monkeypatch, empty=(5001,))
 
     with monkeypatch.context() as dry_run:
         dry_run.setattr(cli_kill, "_persist_cancel", _unexpected)
@@ -294,8 +294,52 @@ async def test_stale_sweep_cancels_a_previous_boot_command_group_without_signall
     assert len(transitions) == len(before[1]) + 1
     transition = transitions[-1]
     assert transition["reason_code"] == RunReasons.CANCELLED_STALE_AUTO
-    assert transition["reason_summary"] == "Stale auto-cancel: command group predates this boot."
+    assert (
+        transition["reason_summary"]
+        == "Stale auto-cancel: command group empty after boot disagreement."
+    )
     assert {row: await _read_invocation(row) for row in retained} == retained
+
+
+@pytest.mark.parametrize(
+    ("recorded_boot", "census", "expected_probes"),
+    [
+        pytest.param(90.0, ([5001], True), [5001, 5001], id="live-leader"),
+        pytest.param(90.0, ([5002], True), [5001, 5001], id="live-descendant"),
+        pytest.param(90.0, ([], False), [5001, 5001], id="incomplete"),
+        pytest.param(90.0, None, [5001, 5001], id="unreadable"),
+        pytest.param(190.0, ([], True), [], id="future-boot"),
+    ],
+)
+async def test_stale_sweep_retains_command_group_without_confirmed_absence_after_boot_disagreement(
+    temp_db_path, monkeypatch, capsys, recorded_boot, census, expected_probes
+):
+    identity = {
+        **_command_identity(5001),
+        "pid_boot_time": recorded_boot,
+        "pid_create_time": recorded_boot + 5,
+    }
+    async with db_module.StateDB() as db:
+        invocation_id = await _invocation(db, identity)
+    before = await _read_invocation(invocation_id)
+    _observe_command_groups(monkeypatch)
+    monkeypatch.setattr(psutil, "LINUX", True)
+    probes = []
+
+    def observe(pgid):
+        probes.append(pgid)
+        if census is None:
+            raise PermissionError("synthetic group census failed")
+        return census
+
+    monkeypatch.setattr(cli_kill, "group_member_pids", observe)
+    with monkeypatch.context() as dry_run:
+        dry_run.setattr(cli_kill, "_persist_cancel", _unexpected)
+        assert await cli_kill._do_kill_all_stale(threshold_seconds=1, dry_run=True) == 0
+    assert f"would cancel invocation {invocation_id[:12]}" not in capsys.readouterr().out
+    assert await cli_kill._do_kill_all_stale(threshold_seconds=1) == 0
+    assert await _read_invocation(invocation_id) == before
+    assert probes == expected_probes
 
 
 async def test_stale_sweep_records_only_locally_bound_unverifiable_command_groups(
@@ -394,7 +438,7 @@ async def test_stale_snapshot_cannot_cancel_a_command_group_published_during_the
         )
         return await real_persist(db, entity_type, entity_id, **kwargs)
 
-    _observe_command_groups(monkeypatch, live=(5001,))
+    _observe_command_groups(monkeypatch, live=(5001,), empty=(5003,))
     monkeypatch.setattr(cli_kill, "_persist_cancel", publish_first)
 
     assert await cli_kill._do_kill_all_stale(threshold_seconds=1) == 0

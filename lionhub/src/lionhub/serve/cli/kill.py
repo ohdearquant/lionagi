@@ -711,7 +711,7 @@ async def _do_kill_all_stale(
             if user_reason:
                 evidence["user_reason"] = user_reason
             if verdict == "boot_mismatch":
-                reason = "command group predates this boot"
+                reason = "command group empty after boot disagreement"
             else:
                 reason = "command group empty" if pgid is not None else "process dead or no PID"
             applied = await _persist_cancel(
@@ -759,17 +759,20 @@ async def _do_kill_all_stale(
                     continue
 
                 if (group := _inspect_cancel_command_group(entity_type, row_dict)) is not None:
-                    previous_boot = False
+                    empty_after_boot_disagreement = False
                     if group.outcome == "boot_mismatch" and group.pgid is not None:
-                        # Group admission already validated the identity and host.
-                        # Only an earlier boot establishes that the group is gone.
+                        # The reported boot epoch can advance while a group stays live.
                         _, current_boot = run_probe(psutil.boot_time)
                         recorded_boot = row_dict["node_metadata"]["pid_boot_time"]
-                        previous_boot = (
+                        if (
                             _finite_process_time(current_boot)
                             and current_boot - recorded_boot > BOOT_TIME_TOLERANCE
-                        )
-                    if previous_boot or group.outcome in ("no_pid", "already_dead"):
+                        ):
+                            _, census = run_probe(lambda pgid=group.pgid: group_member_pids(pgid))
+                            if census is not None:
+                                members, complete = census
+                                empty_after_boot_disagreement = complete and not members
+                    if empty_after_boot_disagreement or group.outcome in ("no_pid", "already_dead"):
                         await settle_stale(
                             entity_type,
                             row_dict,
