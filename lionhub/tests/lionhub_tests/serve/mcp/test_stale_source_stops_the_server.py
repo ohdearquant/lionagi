@@ -22,7 +22,12 @@ from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 from lionhub.serve.mcp import _run_detail, dispatch
 
 _MCP_PACKAGE = Path(dispatch.__file__).resolve().parent
-_SESSIONS_SERVICE = "lionhub.serve.daemon.services.sessions"
+# Modules outside the server package whose functions the verbs run in the server process.
+_IN_PROCESS_MODULES = (
+    "lionhub.serve.daemon.services.sessions",
+    "lionhub.orchestration.spawn",
+    "lionhub.serve.cli.orchestrate._orchestration",
+)
 
 
 class _Exited(Exception):
@@ -40,15 +45,16 @@ def exits(monkeypatch):
 
 
 def _scanned_modules() -> list[tuple[Path, str]]:
-    """The server package's modules, and the session service it calls into for run detail."""
+    """The server package's modules, and the modules outside it that verbs run in-process."""
     scanned = [
         (path, "lionhub.serve.mcp")
         for path in sorted(_MCP_PACKAGE.glob("*.py"))
         if path.name != "__init__.py"
     ]
-    spec = importlib.util.find_spec(_SESSIONS_SERVICE)
-    assert spec is not None and spec.origin is not None
-    scanned.append((Path(spec.origin), _SESSIONS_SERVICE.rsplit(".", 1)[0]))
+    for module in _IN_PROCESS_MODULES:
+        spec = importlib.util.find_spec(module)
+        assert spec is not None and spec.origin is not None
+        scanned.append((Path(spec.origin), module.rsplit(".", 1)[0]))
     return scanned
 
 
@@ -271,3 +277,21 @@ async def test_run_detail_reports_a_session_read_that_needs_a_missing_package_as
     assert await _run_detail.build_run_detail("run-1") == {
         "detail_unavailable": "session_detail_unreadable"
     }
+
+
+def test_preload_names_a_failed_module_without_its_error_text(exits, monkeypatch, caplog):
+    """A settings error can echo the rejected value, so only the exception type is logged."""
+
+    def rejects_its_settings(name):
+        if name == "lionagi.state.db":
+            raise ValueError("input_value='sk-canary-value'")
+
+    monkeypatch.setattr(dispatch, "import_module", rejects_its_settings)
+
+    with caplog.at_level("WARNING"):
+        dispatch.preload()
+
+    assert "lionagi.state.db" in caplog.text
+    assert "ValueError" in caplog.text
+    assert "canary" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)

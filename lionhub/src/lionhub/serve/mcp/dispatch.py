@@ -66,19 +66,45 @@ _STARTED_MONOTONIC = time.time()
 _PRELOAD_MODULES = (
     "lionagi._flow_spec",
     "lionagi._paths",
+    "lionagi._provider_errors",
+    "lionagi.libs.frontmatter",
+    "lionagi.ln._proc",
     "lionagi.ln.concurrency",
+    "lionagi.ln.concurrency.errors",
+    "lionagi.operations.node",
+    "lionagi.plugins",
+    "lionagi.service.connections.registry",
+    "lionagi.service.providers",
+    "lionagi.session.prompts",
+    "lionagi.state.cli_workers",
+    "lionagi.state.compat",
     "lionagi.state.db",
     "lionagi.state.engine",
     "lionagi.state.lifecycle.notify_settings",
     "lionagi.state.lifecycle.policy",
     "lionagi.state.reasons",
     "lionagi.version",
+    "lionhub.agent",
+    "lionhub.agent.casts.catalog",
+    "lionhub.agent.casts.pack",
+    "lionhub.agent.casts.pattern",
+    "lionhub.agent.child_sandbox",
+    "lionhub.agent.factory",
+    "lionhub.orchestration",
+    "lionhub.orchestration.console",
+    "lionhub.orchestration.job",
     "lionhub.orchestration.mcp_config",
+    "lionhub.orchestration.runs",
     "lionhub.orchestration.spawn",
+    "lionhub.providers.google.gemini_code",
+    "lionhub.providers.openai._codex_profile",
+    "lionhub.serve.cli",
     "lionhub.serve.cli._machine_envelope",
     "lionhub.serve.cli.machine",
     "lionhub.serve.cli.orchestrate",
+    "lionhub.serve.cli.orchestrate._common",
     "lionhub.serve.cli.orchestrate._orchestration",
+    "lionhub.serve.cli.team",
     "lionhub.serve.daemon.services",
     "lionhub.serve.daemon.services._sse",
     "lionhub.serve.daemon.services.run_tags_store",
@@ -137,11 +163,12 @@ def preload() -> None:
             import_module(name)
         except ImportError as exc:
             _stop_if_own_module_missing(exc)
-        except Exception:
+        except Exception as exc:
+            # The type only: an exception's text can echo a rejected setting's value.
             _logger.warning(
-                "lion MCP server: module %s did not load; the verbs that use it will report why",
+                "lion MCP server: module %s did not load (%s); the verbs that use it report why",
                 name,
-                exc_info=True,
+                type(exc).__name__,
             )
     catalog()
 
