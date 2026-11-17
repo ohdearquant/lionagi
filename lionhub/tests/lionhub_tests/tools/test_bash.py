@@ -789,3 +789,48 @@ def test_a_timed_out_command_marks_truncation_only_when_the_cap_was_reached(monk
     assert short["timed_out"] is True and short["stdout"] == "tiny"
     assert full["timed_out"] is True
     assert full["stdout"] == "x" * 16 + "\n\n[... output truncated at 16 bytes ...]\n"
+
+
+def _stopped_within(pid: int, seconds: float) -> bool:
+    import os
+    import time
+
+    stop_by = time.monotonic() + seconds
+    while time.monotonic() < stop_by:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS hides a system binary's environment")
+@pytest.mark.parametrize(
+    "leader_tail",
+    ["sleep 0.3; exit 0", "sleep 30"],
+    ids=["leader-exits-first", "leader-still-running"],
+)
+def test_a_system_shell_leader_does_not_leave_its_background_job_running(tmp_path, leader_tail):
+    """macOS discloses no environment for /bin/sh or /bin/sleep, so neither shows the spawn
+    marker. The timeout still ends the group: whether the shell has already exited and its
+    background job holds the pipe, or the shell is still running at the deadline."""
+    import os
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    pid_file = tmp_path / "bg.pid"
+    script = f"sleep 30 & echo $! > {pid_file}; echo started; {leader_tail}"
+    try:
+        result = subprocess_mod._subprocess_sync(["/bin/sh", "-c", script], False, 1.0, None)
+        bg_pid = int(pid_file.read_text().strip())
+        stopped = _stopped_within(bg_pid, 2.0)
+    finally:
+        try:
+            os.kill(int(pid_file.read_text().strip()), 9)
+        except (OSError, ValueError):
+            pass
+
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]
+    assert stopped, "the background job outlived the call"

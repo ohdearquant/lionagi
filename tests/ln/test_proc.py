@@ -1461,3 +1461,45 @@ async def test_async_escalation_waits_on_the_killed_child_when_the_group_kill_ra
     # Once for the grace, once after the forced kill.
     assert child_waits == [None, -signal.SIGKILL]
     proc.kill.assert_called_once()
+
+
+def test_a_leader_that_shows_a_different_marker_is_not_bound_even_as_a_child(monkeypatch):
+    """A marker that is read and differs denies; parentage is only for a marker not shown."""
+    import lionagi.ln._proc as proc_mod
+
+    monkeypatch.setattr(
+        proc_mod, "pinned_member", lambda *a, **k: ("found", (4242, 12.5, "other", True))
+    )
+    monkeypatch.setattr(proc_mod, "_is_this_process_child", lambda *a: True)
+
+    assert proc_mod.observe_process_group_leader(4242, expected_marker="spawn-token") is None
+
+
+def test_a_leader_that_shows_no_marker_is_bound_only_as_a_child_of_this_process(monkeypatch):
+    import os
+
+    import lionagi.ln._proc as proc_mod
+
+    parent = os.getppid()
+    monkeypatch.setattr(
+        proc_mod, "pinned_member", lambda pid, *a, **k: ("found", (pid, 12.5, None, True))
+    )
+
+    assert proc_mod.observe_process_group_leader(parent, expected_marker="spawn-token") is None
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups")
+def test_a_system_binary_leader_is_bound_by_parentage():
+    """macOS discloses no environment for /bin/sleep, so its marker cannot be read; it is this
+    process's child, so the observation still binds it."""
+    import subprocess
+
+    from lionagi.ln._proc import observe_process_group_leader, prepare_process_group_env
+
+    env, marker = prepare_process_group_env(dict(os.environ))
+    child = subprocess.Popen(["/bin/sleep", "5"], env=env, start_new_session=True)
+    try:
+        assert observe_process_group_leader(child.pid, expected_marker=marker) is not None
+    finally:
+        child.kill()
+        child.wait()
