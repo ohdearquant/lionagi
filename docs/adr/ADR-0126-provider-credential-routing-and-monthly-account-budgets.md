@@ -1893,7 +1893,7 @@ record the outcome with the same budget and settlement rules as routed work.
    one of the two billing reasons before it clears the block. When an A12
    Decision 2 safety block such as `ceiling_exceeded` or `settlement_conflict`
    replaces a billing reason, the operator must clear it manually.
-   It makes one non-streamed Messages request, with retries disabled, a fixed
+   The probe makes one non-streamed Messages request, with retries disabled, a fixed
    short prompt, a one-token output limit, standard service only, and no cache
    control. The current price revision determines the supported model with the
    smallest reservation ceiling, with model name breaking a tie.
