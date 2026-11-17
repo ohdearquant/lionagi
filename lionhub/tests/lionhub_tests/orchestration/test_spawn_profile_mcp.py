@@ -480,6 +480,62 @@ def test_fence_without_a_paired_tool_declaration_stays_silent(body, monkeypatch)
 
 
 @pytest.mark.parametrize(
+    ("prefix", "body", "line"),
+    [
+        ("Review ---\n", "~~~yaml\n---\ntools: [Example]\n---\n~~~", None),
+        ("Review ---\n", "~~~yaml\n---\ntools: [Example]\n---", 4),
+        ("Review ---\n", "~~~yaml\ntools: [Example]", None),
+        ("", "~~~yaml ---\ntools: [Example]\n~~~", None),
+    ],
+    ids=["closed", "unclosed-paired", "unclosed-unpaired", "fence-info"],
+)
+def test_first_line_prose_rule_leaves_fenced_examples_in_prompt(prefix, body, line, monkeypatch):
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    text = prefix + body
+
+    profile = _parse_profile("reviewer", text)
+
+    assert profile.raw_body == text
+    assert profile.extra == {}
+    if line is None:
+        assert warnings == []
+    else:
+        [warning] = warnings
+        assert f"tool settings on line {line} are inside an unclosed code fence" in warning
+
+
+@pytest.mark.parametrize(
+    ("after_merge", "line"),
+    [
+        ("", 5),
+        ("  tools: [Local]\n", 7),
+        ("  tools: explanatory prose\n", None),
+        ("  tools: explanatory prose\n- tools: [Other]\n", 8),
+    ],
+    ids=["merged", "local-list", "local-scalar", "independent-mapping"],
+)
+def test_unclosed_fence_reports_the_effective_tool_list_line(after_merge, line, monkeypatch):
+    warnings = []
+    monkeypatch.setattr("lionhub.orchestration.console.warn", warnings.append)
+    text = (
+        "Review.\n~~~yaml\n---\n"
+        "- example: &defaults\n    tools: [Template]\n  <<: *defaults\n"
+        f"{after_merge}---"
+    )
+
+    profile = _parse_profile("reviewer", text)
+
+    assert profile.raw_body == text
+    assert profile.extra == {}
+    if line is None:
+        assert warnings == []
+    else:
+        [warning] = warnings
+        assert f"tool settings on line {line} are inside an unclosed code fence" in warning
+
+
+@pytest.mark.parametrize(
     ("prefix", "first_content_line"),
     [
         ("Review.\n---\n", 3),

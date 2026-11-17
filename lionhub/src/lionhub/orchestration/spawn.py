@@ -1349,10 +1349,14 @@ def _profile_body_layout(lines: list[str]) -> tuple[list[int], set[int], int | N
 
 
 def _profile_body_blocks(
-    name: str, lines: list[str], *, line_offset: int
+    name: str,
+    lines: list[str],
+    *,
+    line_offset: int,
+    layout: tuple[list[int], set[int], int | None] | None = None,
 ) -> Iterator[tuple[int, str]]:
     """Yield unfenced spans and diagnose settings inside the final unmatched fence."""
-    delimiters, fenced, unmatched = _profile_body_layout(lines)
+    delimiters, fenced, unmatched = _profile_body_layout(lines) if layout is None else layout
     # A rule in the prompt must not hide a declaration, so inspect every span.
     # Blank fenced lines so the offsets of the remaining content stay intact.
     for opening, end in pairwise([*delimiters, len(lines)]):
@@ -1415,12 +1419,17 @@ def _tool_setting_location(
         for mapping in _sequence_leaves(node, yaml.SequenceNode, lambda seq: seq.value):
             if isinstance(mapping, yaml.MappingNode):
                 loader.flatten_mapping(mapping)
-                locations.extend(
-                    (key.start_mark.line, key.start_mark.column, key.value)
+                effective = {
+                    key.value: (key, value)
                     for key, value in mapping.value
                     if isinstance(key, yaml.ScalarNode)
+                    and key.tag == "tag:yaml.org,2002:str"
                     and key.value in declared
-                    and (not require_list or isinstance(value, yaml.SequenceNode))
+                }
+                locations.extend(
+                    (key.start_mark.line, key.start_mark.column, key.value)
+                    for key, value in effective.values()
+                    if not require_list or isinstance(value, yaml.SequenceNode)
                 )
     finally:
         loader.dispose()
@@ -1574,9 +1583,13 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         what = f"its frontmatter does not read as YAML settings ({reason})"
     else:
         lines = text.splitlines()
-        if not (lines and lines[0].rstrip().endswith("---")):
+        layout = _profile_body_layout(lines)
+        delimiters, fenced, unmatched = layout
+        if not (lines and 0 not in fenced and lines[0].rstrip().endswith("---")):
             # A block following prompt text cannot configure tools, MCP or containment.
-            for opening, block in _profile_body_blocks(name, lines, line_offset=line_offset):
+            for opening, block in _profile_body_blocks(
+                name, lines, line_offset=line_offset, layout=layout
+            ):
                 reads, document = _read_profile_settings(block)
                 refuse_misplaced_mcp(block, reads, document, opening + 1)
                 declared = set(_FLAG_KEY_LINE.findall(block))
@@ -1597,13 +1610,12 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
                     )
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
-        # the next ``---`` line or, unclosed, to the end.
-        _, _, unmatched = _profile_body_layout(lines)
+        # the next unfenced ``---`` line or, unclosed, to the end.
         if unmatched is not None:
             _warn_unclosed_fence_tool_settings(name, lines, unmatched, line_offset=line_offset)
-        rest = lines[1:]
-        closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
-        block = "\n".join(rest if closing is None else rest[:closing])
+        closing = next((i for i in delimiters if lines[i].rstrip() == "---"), None)
+        end = len(lines) if closing is None else closing
+        block = "\n".join("" if i in fenced else lines[i] for i in range(1, end))
         reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, 1)
         if reads:
