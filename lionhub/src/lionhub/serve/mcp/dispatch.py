@@ -78,6 +78,7 @@ _PRELOAD_MODULES = (
     "lionhub.serve.cli.orchestrate",
     "lionhub.serve.cli.orchestrate._orchestration",
     "lionhub.serve.daemon.services",
+    "lionhub.serve.daemon.services.sessions",
     "lionhub.serve.diagnostics",
     "lionhub.serve.mcp._notify_hook",
     "lionhub.serve.mcp._run_detail",
@@ -85,6 +86,14 @@ _PRELOAD_MODULES = (
 _OWN_PACKAGES = ("lionagi", "lionhub")
 # Replaced in tests; exiting the process is the point in production.
 _exit = os._exit
+
+
+def _own_module(exc: BaseException) -> str | None:
+    """The module *exc* failed to import when it is this server's own code, otherwise None."""
+    module = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+    if not module or module.split(".", 1)[0] not in _OWN_PACKAGES:
+        return None
+    return module
 
 
 def _stop_if_own_module_missing(exc: BaseException) -> None:
@@ -95,8 +104,8 @@ def _stop_if_own_module_missing(exc: BaseException) -> None:
     exits instead, with ``EXIT_CODE_ENVIRONMENT_ERROR`` and a message naming the module, so
     the client starts a fresh server. A failure to import another package returns.
     """
-    module = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
-    if not module or module.split(".", 1)[0] not in _OWN_PACKAGES:
+    module = _own_module(exc)
+    if module is None:
         return
     sys.stderr.write(
         f"lion MCP server: its own module {module} cannot be imported "

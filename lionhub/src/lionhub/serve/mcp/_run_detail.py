@@ -12,7 +12,9 @@ caller reads, and resolves the CLI run id to the StateDB session backing it
 Every failure mode here is soft: a run with no session, a session with no
 graph, or a missing ``studio`` extra all report through ``detail_unavailable``
 rather than raising, so a caller asking for the richer view never turns a
-plain ``job.status`` into an error.
+plain ``job.status`` into an error. The one exception is a failure to import
+this server's own code, which is not a missing extra: it propagates, and the
+server stops so the client starts a fresh one.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from lionagi._checkpoint_version import (
     UnsupportedCheckpointVersionError,
     load_legacy_checkpoint_json,
 )
+from lionhub.serve.mcp.dispatch import _own_module
 
 __all__ = ("build_run_detail",)
 
@@ -44,7 +47,9 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     """
     try:
         from lionagi.state.db import StateDB
-    except ImportError:
+    except ImportError as exc:
+        if _own_module(exc) is not None:
+            raise
         return {"detail_unavailable": "state_db_not_installed"}
 
     try:
@@ -63,7 +68,9 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
 
     try:
         from lionhub.serve.daemon.services import sessions as sessions_svc
-    except ImportError:
+    except ImportError as exc:
+        if _own_module(exc) is not None:
+            raise
         return {"detail_unavailable": "studio_extra_not_installed"}
 
     try:

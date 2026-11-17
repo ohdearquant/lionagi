@@ -11,13 +11,15 @@ the process with a message naming the module, so the client starts a fresh serve
 from __future__ import annotations
 
 import ast
+import builtins
+import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 
 from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
-from lionhub.serve.mcp import dispatch
+from lionhub.serve.mcp import _run_detail, dispatch
 
 _MCP_PACKAGE = Path(dispatch.__file__).resolve().parent
 
@@ -52,16 +54,31 @@ def _function_level_own_imports() -> set[str]:
                 elif isinstance(node, ast.ImportFrom):
                     if node.level == 0:
                         found.add(node.module or "")
+                        found.update(_submodules(node.module or "", node.names))
                     elif node.module:
                         found.add(f"lionhub.serve.mcp.{node.module}")
                     else:
                         found.update(f"lionhub.serve.mcp.{alias.name}" for alias in node.names)
-    return {name for name in found if name.split(".", 1)[0] in ("lionagi", "lionhub")}
+    return {name for name in found if name.split(".", 1)[0] in dispatch._OWN_PACKAGES}
+
+
+def _submodules(package: str, names: list[ast.alias]) -> set[str]:
+    """The names in ``from package import name, ...`` that are modules of the package."""
+    if package.split(".", 1)[0] not in dispatch._OWN_PACKAGES:
+        return set()
+    spec = importlib.util.find_spec(package)
+    if spec is None or spec.submodule_search_locations is None:
+        return set()
+    candidates = (f"{package}.{alias.name}" for alias in names)
+    return {name for name in candidates if importlib.util.find_spec(name) is not None}
 
 
 def test_every_module_the_server_imports_inside_a_function_is_preloaded():
     imports = _function_level_own_imports()
     assert "lionhub.serve.cli.machine" in imports, "the scan must see the known lazy imports"
+    assert "lionhub.serve.daemon.services.sessions" in imports, (
+        "the scan must see a module imported by name from its package"
+    )
     assert imports <= set(dispatch._PRELOAD_MODULES), sorted(
         imports - set(dispatch._PRELOAD_MODULES)
     )
@@ -139,3 +156,52 @@ def test_preload_leaves_a_module_that_needs_a_missing_package_to_its_verbs(exits
     monkeypatch.setattr(dispatch, "import_module", missing_extra)
 
     dispatch.preload()
+
+
+class _OneRecordedSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def get_sessions_for_run(self, _run_id):
+        return [{"id": "session-1", "updated_at": 1.0}]
+
+
+@pytest.fixture
+def one_recorded_session(monkeypatch):
+    monkeypatch.setattr("lionagi.state.db.StateDB", _OneRecordedSession)
+
+
+async def test_run_detail_raises_when_its_own_session_service_does_not_import(
+    one_recorded_session, monkeypatch
+):
+    """An own module that no longer imports is not reported as a missing extra."""
+    import lionhub.serve.daemon.services as services
+
+    # ``from services import sessions`` reads the package attribute first, so a module that
+    # was already imported never fails; take it away so the import is attempted.
+    monkeypatch.delattr(services, "sessions", raising=False)
+    monkeypatch.setitem(sys.modules, "lionhub.serve.daemon.services.sessions", None)
+
+    with pytest.raises(ImportError) as raised:
+        await _run_detail.build_run_detail("run-1")
+    assert raised.value.name == "lionhub.serve.daemon.services.sessions"
+
+
+async def test_run_detail_reports_a_missing_studio_package_as_a_missing_extra(
+    one_recorded_session, monkeypatch
+):
+    real_import = builtins.__import__
+
+    def without_fastapi(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "lionhub.serve.daemon.services" and "sessions" in (fromlist or ()):
+            raise ModuleNotFoundError("No module named 'fastapi'", name="fastapi")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", without_fastapi)
+
+    assert await _run_detail.build_run_detail("run-1") == {
+        "detail_unavailable": "studio_extra_not_installed"
+    }
