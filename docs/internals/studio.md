@@ -982,9 +982,11 @@ in that zone), and the next plan reports `UNCHANGED`.
   and messages are kept. Later session prunes leave these orphaned
   progressions and messages in place. The CLI's internal
   `deferred_victim_progressions` count covers the kept non-array
-  progressions without surviving owners. The CLI notice also says that any
-  array progressions from those same sessions are kept. Other non-array
-  survivors are reported separately. Malformed JSON aborts the write transaction.
+  progressions without surviving owners. `deferred_array_progressions`
+  counts the array progressions kept because their owner also points at a
+  non-array progression, including one shared with a surviving session, and
+  the CLI reports it on its own line. Other non-array survivors are reported
+  separately. Malformed JSON aborts the write transaction.
 - **Audit event ordering** — Runs after the prune transaction commits;
   `insert_admin_event` opens its own write transaction, and nesting it inside
   the prune transaction would self-deadlock on the sqlite write lock.
