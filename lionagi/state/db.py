@@ -4424,7 +4424,14 @@ class StateDB:
         )
         return {**patch, "node_metadata": merged}
 
-    async def _merge_node_metadata(self, table: str, entity_id: str, patch: dict[str, Any]) -> None:
+    async def _merge_node_metadata(
+        self,
+        table: str,
+        entity_id: str,
+        patch: dict[str, Any],
+        *,
+        expected_status: str | None = None,
+    ) -> bool:
         """Shared body for the two node_metadata merges: build the merge, then UPDATE *table*."""
         ops = self._node_metadata_merge_ops(patch)
         if self._compat is not None:
@@ -4432,6 +4439,9 @@ class StateDB:
         now = time.time()
         clause, owner = self._owner_predicate(table)
         params: dict[str, Any] = {"now": now, "id": entity_id, **owner}
+        if expected_status is not None:
+            clause += " AND status = :merge_expected_status"
+            params["merge_expected_status"] = expected_status
         binds = []
         if self.dialect == "sqlite":
             params["patch"] = patch
@@ -4452,7 +4462,8 @@ class StateDB:
         async with self._tx() as conn:
             if self._compat is not None:
                 await self._require_owned(conn, table, entity_id, table[:-1])
-            await conn.execute(stmt, params)
+            result = await conn.execute(stmt, params)
+            return result.rowcount == 1
 
     @_operation("merge_session_node_metadata")
     async def merge_session_node_metadata(self, session_id: str, patch: dict[str, Any]) -> None:
@@ -4474,6 +4485,14 @@ class StateDB:
         Same semantics as :meth:`merge_session_node_metadata`, for the invocations table.
         """
         await self._merge_node_metadata("invocations", invocation_id, patch)
+
+    async def merge_invocation_node_metadata_if_running(
+        self, invocation_id: str, patch: dict[str, Any]
+    ) -> bool:
+        """Merge invocation metadata and advance its row version while it is running."""
+        return await self._merge_node_metadata(
+            "invocations", invocation_id, patch, expected_status="running"
+        )
 
     @staticmethod
     def _unverifiable_snapshot(snapshot: dict[str, Any]) -> tuple[dict[str, Any], int, bool]:

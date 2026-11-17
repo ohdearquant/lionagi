@@ -11,10 +11,10 @@ import os
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.ln.concurrency import ExceptionGroup, current_time
@@ -66,6 +66,9 @@ from lionhub.orchestration.scheduler.signals import (
     record_handler_failure,
     register_default_handlers,
 )
+
+if TYPE_CHECKING:
+    from lionagi.ln._proc import _RecordedWorkerIdentity
 
 _log = logging.getLogger("lionagi.studio.scheduler.engine")
 
@@ -2619,6 +2622,49 @@ class SchedulerEngine:
             )
         return written
 
+    async def _write_fired_invocation(
+        self,
+        invocation_id: str,
+        outcome: tuple[str, str, str, list[dict], dict],
+        *,
+        ended_at: float,
+        observe_cli_winner: bool = False,
+    ) -> tuple[bool, tuple[str, str, str, list[dict], dict] | None]:
+        status, reason, summary, evidence, metadata = outcome
+        written = await self._guarded_terminal_status(
+            "invocation",
+            invocation_id,
+            new_status=status,
+            reason_code=reason,
+            reason_summary=summary,
+            evidence_refs=evidence,
+            source="executor",
+            actor=invocation_id,
+            extra_fields={"ended_at": ended_at},
+            metadata=metadata,
+        )
+        # Read the winner only after the invocation write loses the race.
+        if observe_cli_winner and not written:
+            return False, await self._command_cli_cancellation(invocation_id)
+        return written, None
+
+    async def _command_cli_cancellation(
+        self, invocation_id: str
+    ) -> tuple[str, str, str, list[dict], dict] | None:
+        """Read a command invocation that the CLI already finalized."""
+        try:
+            invocation = await self._svc.get_invocation(invocation_id)
+        except Exception:
+            _log.warning("Could not read the terminal outcome for invocation %s", invocation_id)
+            return None
+        if invocation is None or invocation.get("status") != "cancelled":
+            return None
+        reason = invocation.get("status_reason_code")
+        if reason not in (RunReasons.CANCELLED_MANUAL_KILL, RunReasons.CANCELLED_FORCE_KILL):
+            return None
+        summary = invocation.get("status_reason_summary") or "Scheduled command was cancelled."
+        return "cancelled", reason, summary, [], {}
+
     async def _dispatch_signal(self, signal: Any) -> None:
         """Emit *signal* on the scheduler's signal bus, recording handler failures."""
         try:
@@ -3170,6 +3216,21 @@ class SchedulerEngine:
                 finally:
                     self._github_pass_clock(pass_sid, running=False)
 
+            async def _publish_command_process(identity: _RecordedWorkerIdentity) -> bool:
+                self._github_pass_clock(pass_sid, running=True)
+                try:
+                    return await self._svc.merge_invocation_node_metadata_if_running(
+                        inv_id, {"action_kind": "command", **asdict(identity)}
+                    )
+                finally:
+                    self._github_pass_clock(pass_sid, running=False)
+
+            action_kind = schedule.get("action_kind")
+            spawn_options = (
+                {"publish_command_process": _publish_command_process}
+                if action_kind == "command"
+                else {}
+            )
             self._github_pass_clock(pass_sid, running=False)
             try:
                 exit_code, stderr_tail = await _subprocess.spawn_and_wait(
@@ -3177,8 +3238,9 @@ class SchedulerEngine:
                     inv_id,
                     tmp_path=_tmp_path,
                     cwd=action_cwd,
-                    action_kind=schedule.get("action_kind"),
+                    action_kind=action_kind,
                     on_launched=_on_launched,
+                    **spawn_options,
                 )
             finally:
                 self._github_pass_clock(pass_sid, running=True)
@@ -3196,9 +3258,16 @@ class SchedulerEngine:
             # success, so it cannot pick the status, signal or chain action a genuine completion
             # would.
             exit_status = "completed" if exit_code == 0 else "failed"
-            inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
+            invocation_outcome = await resolve_invocation_terminal(
                 self._svc, inv_id, fallback_status=exit_status, exit_code=exit_code
             )
+            inv_written = None
+            cli_cancellation = None
+            if action_kind == "command":
+                inv_written, cli_cancellation = await self._write_fired_invocation(
+                    inv_id, invocation_outcome, ended_at=end_time, observe_cli_winner=True
+                )
+            inv_status, inv_rc, inv_rs, _, _ = cli_cancellation or invocation_outcome
             success = inv_status == "completed"
             status = _SCHEDULE_RUN_STATUS_FROM_INVOCATION.get(inv_status, exit_status)
             chain_action, selection = _chain_selection(schedule, success, chain_depth)
@@ -3225,7 +3294,9 @@ class SchedulerEngine:
                 extra_fields={
                     "exit_code": exit_code,
                     "ended_at": end_time,
-                    "error_detail": stderr_tail if exit_code != 0 else None,
+                    "error_detail": (
+                        stderr_tail if exit_code != 0 and cli_cancellation is None else None
+                    ),
                 },
                 record_chain_decision=True,
             )
@@ -3239,21 +3310,15 @@ class SchedulerEngine:
                         action_kind=schedule.get("action_kind", ""),
                         chain_depth=chain_depth,
                         trigger_context=trigger_context,
-                        error_detail=stderr_tail if exit_code != 0 else "",
+                        error_detail=(
+                            stderr_tail if exit_code != 0 and cli_cancellation is None else ""
+                        ),
                     )
                 )
-            inv_written = await self._guarded_terminal_status(
-                "invocation",
-                inv_id,
-                new_status=inv_status,
-                reason_code=inv_rc,
-                reason_summary=inv_rs,
-                evidence_refs=inv_ev,
-                source="executor",
-                actor=inv_id,
-                extra_fields={"ended_at": end_time},
-                metadata=inv_meta,
-            )
+            if inv_written is None:
+                inv_written, _ = await self._write_fired_invocation(
+                    inv_id, invocation_outcome, ended_at=end_time
+                )
             if inv_written:
                 await flush_run_telemetry(
                     self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id
@@ -3370,6 +3435,10 @@ class SchedulerEngine:
                     run_id,
                 )
                 return True
+            error_detail = f"{type(exc).__name__}: {exc}"
+            publication_refused = isinstance(
+                exc, _subprocess._CommandProcessPublicationRefusedError
+            )
             if isinstance(exc, _subprocess.SubprocessDeadlineExceededError):
                 _fire_terminal_status = "timed_out"
                 _fire_exc_reason = RunReasons.TIMED_OUT_DEADLINE
@@ -3392,8 +3461,30 @@ class SchedulerEngine:
                 _fire_terminal_status = "failed"
                 _fire_exc_reason = RunReasons.FAILED_EXCEPTION
                 _fire_reason_summary = f"{type(exc).__name__}: {exc}"
-                _log.exception("Error in schedule fire %s (run %s)", schedule.get("name"), run_id)
+                if not publication_refused:
+                    _log.exception(
+                        "Error in schedule fire %s (run %s)", schedule.get("name"), run_id
+                    )
             _end_time = time.time()
+            inv_written = None
+            if schedule.get("action_kind") == "command":
+                invocation_outcome = await resolve_invocation_terminal(
+                    self._svc,
+                    inv_id,
+                    fallback_status=_fire_terminal_status,
+                    exception=exc,
+                )
+                inv_written, cli_cancellation = await self._write_fired_invocation(
+                    inv_id,
+                    invocation_outcome,
+                    ended_at=_end_time,
+                    observe_cli_winner=publication_refused,
+                )
+                if cli_cancellation is not None:
+                    _fire_terminal_status, _fire_exc_reason, _fire_reason_summary = (
+                        cli_cancellation[:3]
+                    )
+                    error_detail = None
             written = await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
@@ -3406,7 +3497,7 @@ class SchedulerEngine:
                 metadata={"exception_class": type(exc).__name__},
                 extra_fields={
                     "ended_at": _end_time,
-                    "error_detail": f"{type(exc).__name__}: {exc}",
+                    "error_detail": error_detail,
                 },
                 record_chain_decision=True,
             )
@@ -3420,27 +3511,19 @@ class SchedulerEngine:
                         action_kind=schedule.get("action_kind", ""),
                         chain_depth=chain_depth,
                         trigger_context=trigger_context,
-                        error_detail=f"{type(exc).__name__}: {exc}",
+                        error_detail=error_detail or "",
                     )
                 )
-            inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
-                self._svc,
-                inv_id,
-                fallback_status=_fire_terminal_status,
-                exception=exc,
-            )
-            inv_written = await self._guarded_terminal_status(
-                "invocation",
-                inv_id,
-                new_status=inv_status,
-                reason_code=inv_rc,
-                reason_summary=inv_rs,
-                evidence_refs=inv_ev,
-                source="executor",
-                actor=inv_id,
-                metadata=inv_meta,
-                extra_fields={"ended_at": _end_time},
-            )
+            if inv_written is None:
+                invocation_outcome = await resolve_invocation_terminal(
+                    self._svc,
+                    inv_id,
+                    fallback_status=_fire_terminal_status,
+                    exception=exc,
+                )
+                inv_written, _ = await self._write_fired_invocation(
+                    inv_id, invocation_outcome, ended_at=_end_time
+                )
             if inv_written:
                 await flush_run_telemetry(
                     self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id

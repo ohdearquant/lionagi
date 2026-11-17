@@ -1204,6 +1204,8 @@ def test_every_refusal_reason_is_a_not_stopped_signal():
         "boot_mismatch",
         "boot_unverifiable",
         "foreign_mode",
+        "unsafe_group",
+        "unsupported_platform",
         "permission_denied",
         "no_recorded_process",
         "no_recorded_identity",
