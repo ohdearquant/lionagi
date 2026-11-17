@@ -2295,9 +2295,11 @@ class CredentialLedger:
             )
         _, now = _month_and_iso(self._clock)
         timestamp = datetime.fromisoformat(now).strftime("%Y%m%dt%H%Mz")
+        # A second failure with the same status and timestamp is a different block.
+        reason = f"probe_{http_status or 'no_http'}_{timestamp}_{attempt_id.hex}"
         connection.execute(
             "UPDATE account SET block_reason = ? WHERE provider = ? AND name = ?",
-            (f"probe_{http_status or 'no_response'}_{timestamp}", provider, account),
+            (reason, provider, account),
         )
         _clear_warm_prefix(connection, provider, account)
         return False

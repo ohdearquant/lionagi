@@ -159,7 +159,9 @@ async def test_probe_typed_zero_records_type_but_no_rejection_class(
     details = json.loads(row[7])
     assert details["first_failure"]["rejection_class"] is None
     assert details["evidence"]["rejection_class"] is None
-    assert (await ledger.status("anthropic"))[0].block_reason == f"probe_{status}_20261116t1405z"
+    assert (await ledger.status("anthropic"))[0].block_reason == (
+        f"probe_{status}_20261116t1405z_{attempt.hex}"
+    )
     assert _unblocks(ledger) == []
 
 
@@ -171,7 +173,29 @@ async def test_probe_no_response_refreshes_the_block_at_zero_when_unsent(tmp_pat
         attempt, ProvenNotSent(caller_cancelled=True), http_status=None
     )
     assert _attempt(ledger, attempt)[:7] == ("settled", 0, "not_sent", None, None, None, None)
-    assert (await ledger.status("anthropic"))[0].block_reason == "probe_no_response_20261116t1405z"
+    assert (await ledger.status("anthropic"))[0].block_reason == (
+        f"probe_no_http_20261116t1405z_{attempt.hex}"
+    )
+    assert _unblocks(ledger) == []
+
+
+async def test_probe_success_preserves_a_newer_same_status_failure_in_the_same_minute(tmp_path):
+    ledger = await _prepare(tmp_path)
+    initial, stale, newer = uuid4(), uuid4(), uuid4()
+    rejection = RejectionZero(529, "overloaded_error", None, "provider_error")
+
+    await ledger.reserve_probe(ACCOUNT, initial, QUOTE)
+    assert not await ledger.settle_probe(initial, rejection, http_status=529)
+    assert (await ledger.status("anthropic"))[0].block_reason.startswith("probe_529_")
+    await ledger.reserve_probe(ACCOUNT, stale, QUOTE)
+    await ledger.reserve_probe(ACCOUNT, newer, QUOTE)
+
+    assert not await ledger.settle_probe(newer, rejection, http_status=529)
+    assert not await ledger.settle_probe(stale, _usage(3), http_status=200)
+
+    assert _attempt(ledger, stale)[:4] == ("settled", 3, "complete", 200)
+    status = (await ledger.status("anthropic"))[0]
+    assert status.block_reason == f"probe_529_20261116t1405z_{newer.hex}"
     assert _unblocks(ledger) == []
 
 
