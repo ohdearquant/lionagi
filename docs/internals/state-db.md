@@ -726,6 +726,13 @@ spending.
 
 ## Writes that fail closed
 
+`StateDB.validate_progression_message_id(progression_id: str, message_id: object)`
+returns `None` for a non-empty string and raises `ValueError` naming the
+progression for any other value. The static method can run before opening a
+store. `create_progression` applies the same check to each ID in its collection
+snapshot. The CLI checks its selected import entries before opening the write
+transaction and includes the branch filename and original entry index on error.
+
 `update_session` takes a `set_if_null` set naming fields to write as
 `COALESCE(col, :col)` rather than as a plain assignment. The write lands only
 while the column is still NULL, so two callers racing to stamp the same field

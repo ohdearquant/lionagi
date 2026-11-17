@@ -2928,7 +2928,8 @@ class StateDB:
     # Progressions
 
     @staticmethod
-    def _validate_progression_message_id(progression_id: str, message_id: Any) -> None:
+    def validate_progression_message_id(progression_id: str, message_id: object) -> None:
+        """Require a non-empty string message ID, as ``create_progression`` does."""
         if not isinstance(message_id, str) or not message_id:
             raise ValueError(
                 f"progression {progression_id!r} requires non-empty string message IDs"
@@ -2944,7 +2945,7 @@ class StateDB:
             raise ValueError(f"progression {progression_id!r} requires a list or tuple of IDs")
         snapshot = list(collection)
         for message_id in snapshot:
-            StateDB._validate_progression_message_id(progression_id, message_id)
+            StateDB.validate_progression_message_id(progression_id, message_id)
         return snapshot
 
     @_operation("create_progression")
@@ -3041,7 +3042,7 @@ class StateDB:
     async def append_to_progression(self, progression_id: str, message_id: str) -> None:
         """Idempotent append of message_id to the progression JSON array."""
         if self._compat is None:
-            self._validate_progression_message_id(progression_id, message_id)
+            self.validate_progression_message_id(progression_id, message_id)
         async with self._tx() as conn:
             await self._append_to_progression_in_tx(conn, progression_id, message_id)
 
@@ -3086,7 +3087,7 @@ class StateDB:
             self._validate_message(msg)
             if progression_ids:
                 for progression_id in progression_ids:
-                    self._validate_progression_message_id(progression_id, msg["id"])
+                    self.validate_progression_message_id(progression_id, msg["id"])
         if not msgs:
             return
         message_ids = [msg["id"] for msg in msgs]
@@ -4043,7 +4044,7 @@ class StateDB:
         self._validate_message(msg)
         for progression_id in (branch_progression_id, session_progression_id):
             if progression_id is not None:
-                self._validate_progression_message_id(progression_id, msg["id"])
+                self.validate_progression_message_id(progression_id, msg["id"])
         if self._compat is not None:
             # A live message joins only the session, progressions and branch this run
             # created.
