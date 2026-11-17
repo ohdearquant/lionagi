@@ -270,6 +270,34 @@ async def test_stale_sweep_settles_pidless_commands_and_verified_empty_groups(
         assert transitions[-1]["reason_code"] == RunReasons.CANCELLED_STALE_AUTO
 
 
+async def test_stale_sweep_cancels_a_previous_boot_command_group_without_signalling(
+    temp_db_path, monkeypatch, capsys
+):
+    earlier = {**_command_identity(5001), "pid_boot_time": 10.0, "pid_create_time": 60.0}
+    async with db_module.StateDB() as db:
+        invocation_id = await _invocation(db, earlier)
+        pidless = await _invocation(db, {"action_kind": "command", "pid_boot_time": 10.0})
+        remote = await _invocation(db, {**earlier, "pid_host": "other-host"})
+    before = await _read_invocation(invocation_id)
+    retained = {row: await _read_invocation(row) for row in (pidless, remote)}
+    _observe_command_groups(monkeypatch)
+
+    with monkeypatch.context() as dry_run:
+        dry_run.setattr(cli_kill, "_persist_cancel", _unexpected)
+        assert await cli_kill._do_kill_all_stale(threshold_seconds=1, dry_run=True) == 0
+    assert f"would cancel invocation {invocation_id[:12]}" in capsys.readouterr().out
+    assert await _read_invocation(invocation_id) == before
+
+    assert await cli_kill._do_kill_all_stale(threshold_seconds=1) == 0
+    row, transitions = await _read_invocation(invocation_id)
+    assert row["status"] == "cancelled"
+    assert len(transitions) == len(before[1]) + 1
+    transition = transitions[-1]
+    assert transition["reason_code"] == RunReasons.CANCELLED_STALE_AUTO
+    assert transition["reason_summary"] == "Stale auto-cancel: command group predates this boot."
+    assert {row: await _read_invocation(row) for row in retained} == retained
+
+
 async def test_stale_sweep_records_only_locally_bound_unverifiable_command_groups(
     temp_db_path, monkeypatch, capsys
 ):
@@ -283,7 +311,7 @@ async def test_stale_sweep_records_only_locally_bound_unverifiable_command_group
                 {"pid_host": ""},
                 {"pid_host": "other-host"},
                 {"pid_boot_time": None},
-                {"pid_boot_time": 10.0},
+                {"pid_boot_time": 190.0},
                 {"process_identity_mode": "external"},
                 {"pid_create_time": 5000.0},
             )
@@ -342,11 +370,16 @@ async def test_resolve_command_quarantine_rechecks_the_group(temp_db_path, monke
         assert len(updated_transitions) == len(transitions) + 1
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [{"action_kind": "command"}, {**_command_identity(5003), "pid_boot_time": 10.0}],
+    ids=["pidless", "previous-boot"],
+)
 async def test_stale_snapshot_cannot_cancel_a_command_group_published_during_the_sweep(
-    temp_db_path, monkeypatch
+    temp_db_path, monkeypatch, metadata
 ):
     async with db_module.StateDB() as db:
-        invocation_id = await _invocation(db, {"action_kind": "command"})
+        invocation_id = await _invocation(db, metadata)
     _, original_transitions = await _read_invocation(invocation_id)
 
     real_persist = cli_kill._persist_cancel

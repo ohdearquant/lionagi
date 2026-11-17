@@ -710,7 +710,10 @@ async def _do_kill_all_stale(
                 evidence["pgid"] = pgid
             if user_reason:
                 evidence["user_reason"] = user_reason
-            reason = "command group empty" if pgid is not None else "process dead or no PID"
+            if verdict == "boot_mismatch":
+                reason = "command group predates this boot"
+            else:
+                reason = "command group empty" if pgid is not None else "process dead or no PID"
             applied = await _persist_cancel(
                 db,
                 entity_type,
@@ -756,7 +759,17 @@ async def _do_kill_all_stale(
                     continue
 
                 if (group := _inspect_cancel_command_group(entity_type, row_dict)) is not None:
-                    if group.outcome in ("no_pid", "already_dead"):
+                    previous_boot = False
+                    if group.outcome == "boot_mismatch" and group.pgid is not None:
+                        # Group admission already validated the identity and host.
+                        # Only an earlier boot establishes that the group is gone.
+                        _, current_boot = run_probe(psutil.boot_time)
+                        recorded_boot = row_dict["node_metadata"]["pid_boot_time"]
+                        previous_boot = (
+                            _finite_process_time(current_boot)
+                            and current_boot - recorded_boot > BOOT_TIME_TOLERANCE
+                        )
+                    if previous_boot or group.outcome in ("no_pid", "already_dead"):
                         await settle_stale(
                             entity_type,
                             row_dict,
@@ -764,7 +777,7 @@ async def _do_kill_all_stale(
                             pid=group.pid,
                             pgid=group.pgid,
                             pid_alive=False,
-                            verdict="already_dead" if group.outcome == "already_dead" else None,
+                            verdict=group.outcome if group.outcome != "no_pid" else None,
                         )
                     elif group.outcome == "verified":
                         skipped_live += 1
