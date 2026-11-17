@@ -2951,21 +2951,22 @@ class StateDB:
     async def create_progression(
         self, progression_id: str, collection: list[str] | None = None
     ) -> None:
+        """Validate and snapshot message IDs before creating a progression."""
+        collection = self._validate_progression_collection(
+            progression_id, collection, allow_none=True
+        )
         if self._compat is not None:
             # The messages a progression lists are rows this run created.
-            for message_id in collection or ():
+            for message_id in collection:
                 self._require_created("messages", message_id, "message")
             values = {
                 "id": progression_id,
                 "created_at": time.time(),
-                "collection": _to_json_column(collection or []),
+                "collection": _to_json_column(collection),
             }
             async with self._tx() as conn:
                 await self._insert_new_row(conn, "progressions", values)
             return
-        collection = self._validate_progression_collection(
-            progression_id, collection, allow_none=True
-        )
         async with self._tx() as conn:
             await self._create_progression_in_tx(conn, progression_id, collection)
 

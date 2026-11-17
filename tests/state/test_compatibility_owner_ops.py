@@ -1682,7 +1682,7 @@ async def test_an_empty_invocation_id_is_checked_like_any_other(db, store):
 
 
 async def test_a_link_by_an_id_that_is_not_a_string_is_refused(db, store):
-    """A set lookup by Python equality would take 1.0 for the 1 this run created."""
+    """Validate the input before a set lookup can equate 1.0 with the run's numeric 1."""
     await db.insert_message(_system_message(1))
     _execute(
         store,
@@ -1690,7 +1690,7 @@ async def test_a_link_by_an_id_that_is_not_a_string_is_refused(db, store):
         "VALUES ('1.0', 0, '{}', 'system', 1, 'principal:b')",
     )
 
-    with pytest.raises(StateCompatibilityRefused, match="1.0 is not a string id"):
+    with pytest.raises(ValueError, match="progression 'pn' requires non-empty string message IDs"):
         await db.create_progression("pn", [1.0])
 
     assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
