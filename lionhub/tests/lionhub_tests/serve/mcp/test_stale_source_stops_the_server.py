@@ -22,6 +22,7 @@ from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 from lionhub.serve.mcp import _run_detail, dispatch
 
 _MCP_PACKAGE = Path(dispatch.__file__).resolve().parent
+_SESSIONS_SERVICE = "lionhub.serve.daemon.services.sessions"
 
 
 class _Exited(Exception):
@@ -38,12 +39,23 @@ def exits(monkeypatch):
     monkeypatch.setattr(dispatch, "_exit", fake_exit)
 
 
+def _scanned_modules() -> list[tuple[Path, str]]:
+    """The server package's modules, and the session service it calls into for run detail."""
+    scanned = [
+        (path, "lionhub.serve.mcp")
+        for path in sorted(_MCP_PACKAGE.glob("*.py"))
+        if path.name != "__init__.py"
+    ]
+    spec = importlib.util.find_spec(_SESSIONS_SERVICE)
+    assert spec is not None and spec.origin is not None
+    scanned.append((Path(spec.origin), _SESSIONS_SERVICE.rsplit(".", 1)[0]))
+    return scanned
+
+
 def _function_level_own_imports() -> set[str]:
-    """Every lionagi or lionhub module the server package imports inside a function."""
+    """Every lionagi or lionhub module the scanned modules import inside a function."""
     found: set[str] = set()
-    for path in sorted(_MCP_PACKAGE.glob("*.py")):
-        if path.name == "__init__.py":
-            continue
+    for path, package in _scanned_modules():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for function in ast.walk(tree):
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -56,9 +68,9 @@ def _function_level_own_imports() -> set[str]:
                         found.add(node.module or "")
                         found.update(_submodules(node.module or "", node.names))
                     elif node.module:
-                        found.add(f"lionhub.serve.mcp.{node.module}")
+                        found.add(f"{package}.{node.module}")
                     else:
-                        found.update(f"lionhub.serve.mcp.{alias.name}" for alias in node.names)
+                        found.update(f"{package}.{alias.name}" for alias in node.names)
     return {name for name in found if name.split(".", 1)[0] in dispatch._OWN_PACKAGES}
 
 
@@ -78,6 +90,9 @@ def test_every_module_the_server_imports_inside_a_function_is_preloaded():
     assert "lionhub.serve.cli.machine" in imports, "the scan must see the known lazy imports"
     assert "lionhub.serve.daemon.services.sessions" in imports, (
         "the scan must see a module imported by name from its package"
+    )
+    assert "lionhub.serve.daemon.services.runs" in imports, (
+        "the scan must see the session service's relative lazy imports"
     )
     assert imports <= set(dispatch._PRELOAD_MODULES), sorted(
         imports - set(dispatch._PRELOAD_MODULES)
@@ -204,4 +219,39 @@ async def test_run_detail_reports_a_missing_studio_package_as_a_missing_extra(
 
     assert await _run_detail.build_run_detail("run-1") == {
         "detail_unavailable": "studio_extra_not_installed"
+    }
+
+
+class _SessionServiceRaising:
+    def __init__(self, exc: ImportError) -> None:
+        self.exc = exc
+
+    async def get_session(self, _session_id):
+        raise self.exc
+
+
+async def test_run_detail_raises_when_reading_the_session_fails_to_import_its_own_code(
+    one_recorded_session, monkeypatch
+):
+    """The session service imports more of this server's code while it reads a session."""
+    import lionhub.serve.daemon.services as services
+
+    stale = ImportError("cannot import name '_detect_status'", name=f"{services.__name__}.runs")
+    monkeypatch.setattr(services, "sessions", _SessionServiceRaising(stale))
+
+    with pytest.raises(ImportError) as raised:
+        await _run_detail.build_run_detail("run-1")
+    assert raised.value is stale
+
+
+async def test_run_detail_reports_a_session_read_that_needs_a_missing_package_as_unreadable(
+    one_recorded_session, monkeypatch
+):
+    import lionhub.serve.daemon.services as services
+
+    missing = ModuleNotFoundError("No module named 'starlette'", name="starlette")
+    monkeypatch.setattr(services, "sessions", _SessionServiceRaising(missing))
+
+    assert await _run_detail.build_run_detail("run-1") == {
+        "detail_unavailable": "session_detail_unreadable"
     }

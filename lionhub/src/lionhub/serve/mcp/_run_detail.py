@@ -75,6 +75,10 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
 
     try:
         session = await sessions_svc.get_session(session_id)
+    except ImportError as exc:
+        if _own_module(exc) is not None:
+            raise
+        return {"detail_unavailable": "session_detail_unreadable"}
     except Exception:
         return {"detail_unavailable": "session_detail_unreadable"}
 
