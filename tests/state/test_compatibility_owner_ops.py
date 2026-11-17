@@ -1681,7 +1681,7 @@ async def test_an_empty_invocation_id_is_checked_like_any_other(db, store):
     assert _rows(store, "SELECT session_count FROM invocations WHERE id = ''") == [(0,)]
 
 
-async def test_a_link_by_an_id_that_is_not_a_string_is_refused(db, store):
+async def test_progression_creation_raises_value_error_for_a_non_string_message_id(db, store):
     """Validate the input before a set lookup can equate 1.0 with the run's numeric 1."""
     await db.insert_message(_system_message(1))
     _execute(
@@ -1694,6 +1694,16 @@ async def test_a_link_by_an_id_that_is_not_a_string_is_refused(db, store):
         await db.create_progression("pn", [1.0])
 
     assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
+
+
+async def test_session_creation_refuses_a_non_string_message_link(db, store):
+    await db.create_progression("sp")
+
+    with pytest.raises(StateCompatibilityRefused, match=r"message 1\.0 is not a string id"):
+        await db.create_session(_session(first_msg_id=1.0))
+
+    assert _rows(store, "SELECT COUNT(*) FROM sessions") == [(0,)]
+    assert _rows(store, "SELECT COUNT(*) FROM status_transitions") == [(0,)]
 
 
 async def test_an_owner_removed_after_open_is_refused_at_the_next_write(db, store):
