@@ -19,13 +19,15 @@ from ..base import LionTool
 from ._bounded_io import _NotRegularFileError, _open_regular_file
 
 # A read keeps only its line window but still scans from the top of the file to
-# find it and to count lines. The scan stops here so a worker's time stays bounded
-# on any file; 64 MiB reads in well under a second from local disk.
+# find it and to count lines. The scan stops at this many bytes so a worker's time
+# stays bounded on any file.
 _MAX_TEXT_SCAN_BYTES = 64 * 1024 * 1024
 # Characters kept from one line; the rest of the line is scanned and dropped, so a
 # file without newlines cannot turn a one-line window into the whole file.
 _MAX_LINE_CHARS = 1_000_000
-_LINE_CHUNK_CHARS = 65_536
+# Characters one read returns; a window stops at the line that reaches it.
+_MAX_TEXT_OUTPUT_CHARS = 2_000_000
+_SCAN_CHUNK_CHARS = 1 << 20
 _MAX_LIST_FILES = 1_000
 _MAX_DIRECTORY_ENTRIES = 10_000
 
@@ -48,7 +50,9 @@ class ReaderRequest(BaseModel):
             "end of a nonempty file returns an end-of-file notice. A read scans at most "
             f"the first {_MAX_TEXT_SCAN_BYTES:,} bytes: past that, total_lines and "
             "reached_eof are None, and an offset beyond the scanned part is an error. "
-            f"A line longer than {_MAX_LINE_CHARS:,} characters is cut.\n"
+            f"A line longer than {_MAX_LINE_CHARS:,} characters is cut, and a read returns "
+            f"about {_MAX_TEXT_OUTPUT_CHARS:,} characters at most: the window ends at the "
+            "line that reaches that, so continue from the next offset.\n"
             "- 'list_dir': List files in a directory."
         ),
     )
@@ -118,45 +122,85 @@ class ReaderResponse(BaseModel):
     )
 
 
-def _scan_window(binary, start: int, max_lines: int) -> tuple[list[str], int | None]:
-    """Lines ``start`` to ``start + max_lines`` and the line count, within the scan budget.
+def _scan_window(
+    binary: io.BufferedReader, start: int, max_lines: int
+) -> tuple[list[str], int | None]:
+    """The kept lines of the window starting at line ``start``, and the file's line count.
 
-    The count is None when the budget ran out before the end of the file.
+    The file is decoded in chunks with universal newlines and lines outside the window
+    are only counted. The count is None when the scan budget ran out before the end of
+    the file; the budget is checked on the OS read position once per chunk, so the scan
+    can pass it by at most one buffered chunk. The window ends early at the line whose
+    text reaches ``_MAX_TEXT_OUTPUT_CHARS``.
     """
     raw = binary.raw
     selected: list[str] = []
-    index = 0
+    end = start + max_lines
+    kept_chars = 0
+    index = 0  # the line being read
+    pieces: list[str] = []
+    piece_chars = 0
+    open_line = False  # the line being read has text
+
+    def keep(piece: str) -> None:
+        nonlocal piece_chars, open_line
+        open_line = open_line or bool(piece)
+        if start <= index < end and piece_chars <= _MAX_LINE_CHARS:
+            pieces.append(piece)
+            piece_chars += len(piece)
+
+    def finish(ending: str) -> None:
+        nonlocal index, end, kept_chars, piece_chars, open_line
+        if start <= index < end:
+            line = "".join(pieces)
+            if len(line) > _MAX_LINE_CHARS:
+                line = line[:_MAX_LINE_CHARS] + (
+                    f" [... line truncated at {_MAX_LINE_CHARS:,} characters]"
+                )
+            selected.append(line + ending)
+            kept_chars += len(line) + len(ending)
+            if kept_chars >= _MAX_TEXT_OUTPUT_CHARS:
+                end = index + 1
+        pieces.clear()
+        piece_chars = 0
+        open_line = False
+        index += 1
+
     text = io.TextIOWrapper(binary, encoding="utf-8", errors="replace")
     try:
         while True:
             if raw.tell() > _MAX_TEXT_SCAN_BYTES:
+                if open_line and start <= index < end:
+                    finish(f" [... read stopped at the {_MAX_TEXT_SCAN_BYTES:,}-byte scan limit]")
                 return selected, None
-            piece = text.readline(_LINE_CHUNK_CHARS)
-            if not piece:
+            chunk = text.read(_SCAN_CHUNK_CHARS)
+            if not chunk:
+                if open_line:
+                    finish("")
                 return selected, index
-            keep = start <= index < start + max_lines
-            line = piece if keep else ""
-            out_of_budget = False
-            while not piece.endswith("\n"):
-                if raw.tell() > _MAX_TEXT_SCAN_BYTES:
-                    out_of_budget = True
+            newlines = chunk.count("\n")
+            if newlines == 0:
+                keep(chunk)
+                continue
+            if index + newlines < start or index >= end:
+                # No line of this chunk is in the window: count it and move on.
+                index += newlines
+                open_line = not chunk.endswith("\n")
+                continue
+            parts = chunk.split("\n")
+            keep(parts[0])
+            finish("\n")
+            first = index
+            lo = max(start - first, 0)
+            hi = min(end - first, newlines - 1)
+            index = first + lo
+            for part in parts[1 + lo : 1 + max(lo, hi)]:
+                keep(part)
+                finish("\n")
+                if index >= end:
                     break
-                piece = text.readline(_LINE_CHUNK_CHARS)
-                if not piece:
-                    break
-                if keep and len(line) <= _MAX_LINE_CHARS:
-                    line += piece
-            if keep:
-                if len(line) > _MAX_LINE_CHARS:
-                    ending = "\n" if piece.endswith("\n") else ""
-                    line = (
-                        line[:_MAX_LINE_CHARS]
-                        + f" [... line truncated at {_MAX_LINE_CHARS:,} characters]{ending}"
-                    )
-                selected.append(line)
-            if out_of_budget:
-                return selected, None
-            index += 1
+            index = first + newlines - 1
+            keep(parts[-1])
     finally:
         text.detach()
 
@@ -232,7 +276,14 @@ def _read_sync(
     )
 
 
-def _scan_files(base: Path, recursive: bool, file_types: list[str] | None) -> list[Path]:
+def _scan_files(
+    base: Path, recursive: bool, file_types: list[str] | None
+) -> tuple[list[Path], str | None]:
+    """Matching files under ``base`` and a notice when the listing stopped early.
+
+    The listing stops at ``_MAX_LIST_FILES`` files or after inspecting
+    ``_MAX_DIRECTORY_ENTRIES`` entries, filtered ones included.
+    """
     files: list[Path] = []
     pending = [base]
     scanned = 0
@@ -251,16 +302,19 @@ def _scan_files(base: Path, recursive: bool, file_types: list[str] | None) -> li
             for entry in entries:
                 scanned += 1
                 if scanned > _MAX_DIRECTORY_ENTRIES:
-                    raise ValueError(
-                        f"Directory {base} exceeds the {_MAX_DIRECTORY_ENTRIES:,}-entry scan limit"
+                    return files, (
+                        f"[listing stopped after inspecting {_MAX_DIRECTORY_ENTRIES:,} entries; "
+                        "narrow the path or file_types to see the rest]"
                     )
                 if recursive and entry.is_dir(follow_symlinks=False):
                     pending.append(Path(entry.path))
-                elif len(files) < _MAX_LIST_FILES and entry.is_file():
+                elif entry.is_file():
                     path = Path(entry.path)
                     if suffixes is None or path.suffix in suffixes:
                         files.append(path)
-    return files
+                        if len(files) >= _MAX_LIST_FILES:
+                            return files, f"[listing stopped at {_MAX_LIST_FILES:,} files]"
+    return files, None
 
 
 def _list_dir_sync(
@@ -281,8 +335,8 @@ def _list_dir_sync(
         )
 
     try:
-        files = _scan_files(base, bool(recursive), file_types)
-        content = "\n".join(str(f) for f in files)
+        files, notice = _scan_files(base, bool(recursive), file_types)
+        content = "\n".join([*(str(f) for f in files), *([notice] if notice else [])])
     except Exception as e:
         return ReaderResponse(
             success=False,
@@ -341,8 +395,9 @@ class ReaderTool(LionTool):
                 windows (e.g. offset=200, limit=200 to get lines 200-400). Text reads
                 include total_lines and reached_eof; an offset at or past a nonempty
                 file's end returns an end-of-file notice instead of numbered content.
-                A read scans at most the first 64 MiB of a file; past that, total_lines
-                and reached_eof are None and later lines need bash.
+                A read scans a bounded prefix of a large file; past it, total_lines and
+                reached_eof are None and later lines need bash. One read returns a bounded
+                amount of text; continue from the next offset for more.
 
                 Use action='list_dir' for directory listings.
 

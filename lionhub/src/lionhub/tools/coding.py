@@ -567,8 +567,10 @@ class CodingToolkit(LionTool):
         ) -> dict:
             """Read files or list directory contents.
 
-            Text reads include total_lines and reached_eof. Offsets at or past the
-            end of a nonempty file return an end-of-file notice.
+            Text reads include total_lines and reached_eof; both are None when the file
+            is longer than the part a read scans. Offsets at or past the end of a
+            nonempty file return an end-of-file notice. One read returns a bounded
+            amount of text; continue from the next offset for more.
             """
             # Canonical empty-path contract: every reader action requires path,
             # matching ReaderTool.handle_request's pre-dispatch guard.
