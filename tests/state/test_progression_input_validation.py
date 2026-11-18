@@ -230,25 +230,34 @@ async def test_create_checks_and_writes_the_same_snapshot(progression_db):
 
 
 @pytest.mark.asyncio
-async def test_compat_create_preserves_operation_refusal_before_validation(tmp_path):
+async def test_compat_create_validates_before_the_operation_refusal(tmp_path):
     path = await _managed_store(tmp_path / "managed.db")
     profile = _profile(path, operations={"insert_message"})
     async with StateDB(path, compatibility=profile, owner="principal:a") as db:
-        with pytest.raises(StateCompatibilityRefused, match="profile does not name this operation"):
+        with pytest.raises(ValueError, match="compat-undeclared"):
             await db.create_progression("compat-undeclared", [None])
+        # A well-formed call to the same undeclared operation is still refused.
+        with pytest.raises(StateCompatibilityRefused, match="profile does not name this operation"):
+            await db.create_progression("compat-undeclared", [])
         row = await db.fetch_one("SELECT id FROM progressions WHERE id = ?", ("compat-undeclared",))
         assert row is None
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["set", "append"])
-async def test_compat_direct_write_preserves_missing_operation_scope_refusal(tmp_path, method):
+async def test_compat_direct_write_validates_before_the_missing_scope_refusal(tmp_path, method):
     path = await _managed_store(tmp_path / "managed.db")
     async with StateDB(path, compatibility=_profile(path), owner="principal:a") as db:
         await db.create_progression("compat-owned")
-        with pytest.raises(StateCompatibilityRefused, match="inside an operation"):
+        with pytest.raises(ValueError, match="compat-owned"):
             if method == "set":
                 await db.set_progression("compat-owned", [None])
             else:
                 await db.append_to_progression("compat-owned", None)
+        # A well-formed direct write outside an operation is still refused.
+        with pytest.raises(StateCompatibilityRefused, match="inside an operation"):
+            if method == "set":
+                await db.set_progression("compat-owned", ["any-id"])
+            else:
+                await db.append_to_progression("compat-owned", "any-id")
         assert await db.get_progression("compat-owned") == []
