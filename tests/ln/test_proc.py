@@ -1563,3 +1563,26 @@ def test_a_running_child_whose_group_cannot_be_read_is_refused_without_waiting(m
 
     assert bound is None
     assert elapsed < proc_mod._EXITING_CHILD_WAIT_SECONDS / 2
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups")
+def test_a_child_whose_marker_is_not_shown_is_bound_by_parentage_on_any_platform(monkeypatch):
+    """Linux shows /bin/sleep's environment, so the real-process test above takes the marker
+    branch there; this one hides the marker so the parentage branch runs everywhere."""
+    import subprocess
+
+    import lionagi.ln._proc as proc_mod
+
+    child = subprocess.Popen(["/bin/sleep", "5"], start_new_session=True)
+    try:
+        state, created = proc_mod.process_create_time(child.pid)
+        assert state == "found"
+        monkeypatch.setattr(
+            proc_mod,
+            "pinned_member",
+            lambda pid, *a, **k: ("found", (pid, created, None, True)),
+        )
+        assert proc_mod.observe_process_group_leader(child.pid, expected_marker="token") == created
+    finally:
+        child.kill()
+        child.wait()
