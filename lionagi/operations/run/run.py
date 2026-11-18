@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING, Any
 import anyio
 from pydantic import JsonValue
 
-from lionagi._provider_errors import WorkerLivenessError, classify_provider_error
+from lionagi._provider_errors import (
+    ProviderError,
+    WorkerLivenessError,
+    classify_provider_error,
+)
 from lionagi.ln import acreate_path, json_dumps
 from lionagi.ln._json_dump import _to_json_value
 from lionagi.ln.concurrency import current_time, fail_after, run_sync
@@ -913,7 +917,14 @@ async def run(
                 from lionagi._provider_errors import ProviderError
                 from lionagi.state.compat import StateCompatibilityRefused
 
-                if isinstance(_exc, (ProviderError, StateCompatibilityRefused)):
+                if isinstance(_exc, StateCompatibilityRefused):
+                    _run_exc = _exc
+                    raise
+                # Persist text already delivered before the failure, as the error-chunk path
+                # does: a worker that stalls after partial output raises here, not there.
+                if res := await _flush_response():
+                    yield res
+                if isinstance(_exc, ProviderError):
                     _run_exc = _exc
                     raise
                 classified = classify_provider_error(str(_exc))
@@ -1014,13 +1025,21 @@ async def run_and_collect(
 
     all_texts: list[str] = []
     ins_msg = None
-    async for msg in run(branch, instruction, run_param):
-        if isinstance(msg, Instruction) and ins_msg is None:
-            ins_msg = msg
-        if isinstance(msg, AssistantResponse):
-            text = msg.response or ""
-            if text:
-                all_texts.append(text)
+    try:
+        async for msg in run(branch, instruction, run_param):
+            if isinstance(msg, Instruction) and ins_msg is None:
+                ins_msg = msg
+            if isinstance(msg, AssistantResponse):
+                text = msg.response or ""
+                if text:
+                    all_texts.append(text)
+    except ProviderError as exc:
+        # run() flushes the text into the branch before a provider error leaves it; the
+        # error carries it too, so a caller holding only the exception can still
+        # deliver what the turn produced.
+        if all_texts and exc.partial_text is None:
+            exc.partial_text = "\n\n".join(all_texts)
+        raise
 
     if not all_texts:
         return None
