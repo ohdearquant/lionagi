@@ -1248,7 +1248,7 @@ class StateDB:
                         # a store another writer moved to a later version or another table is
                         # refused here, as a fresh open refuses it, rather than inside the schema
                         # transaction, whose disposal would fold the store's log into its file.
-                        await run_sync(self._read_lineage_without_writing, _held_files())
+                        await self._read_lineage_in_a_worker()
                 await self._apply_schema()
             except _NATIVE_OPEN_REFUSALS:
                 with CancelScope(shield=True):
@@ -1296,7 +1296,7 @@ class StateDB:
             # refusal from those reads changes no file of the store, and each new writable
             # connection reads them again before its settings change the file, for a row written
             # in between (ADR-0128 D7).
-            await run_sync(self._read_lineage_without_writing, _held_files())
+            await self._read_lineage_in_a_worker()
             self._connection_read = False
             self._native_file = None
             self._schema_committed = False
@@ -1357,6 +1357,32 @@ class StateDB:
         if self._native_file is not None:
             _OPEN_NATIVE.add(self)
 
+    async def _read_lineage_in_a_worker(self) -> None:
+        """Run ``_read_lineage_without_writing`` in a worker thread that a cancellation stops.
+
+        The read can copy the whole store file (``_read_lineage_from_a_copy``), which takes as
+        long as the store is large. A cancelled open therefore returns at once instead of waiting
+        for the worker, and tells the worker to stop: the read raises ``_CopyStoppedError`` at
+        its next check (``_read_lineage_from_a_copy`` names them), and the copy's directory is
+        removed. Nothing the worker reads is used once the open is cancelled.
+        """
+        stop = threading.Event()
+        try:
+            await run_sync(
+                self._read_lineage_until_stopped, _held_files(), stop, abandon_on_cancel=True
+            )
+        finally:
+            stop.set()
+
+    def _read_lineage_until_stopped(self, held: tuple, stop: threading.Event) -> None:
+        """``_read_lineage_without_writing`` with *stop* as this thread's ``_LINEAGE_READ.stop``,
+        cleared on return, since the worker thread is reused for other calls."""
+        _LINEAGE_READ.stop = stop
+        try:
+            self._read_lineage_without_writing(held)
+        finally:
+            _LINEAGE_READ.stop = None
+
     def _read_lineage_without_writing(self, held: tuple) -> None:
         """Refuse a file this process holds in compatibility mode, or a store a native migration
         must not touch (``_refuse_unless_native``), or one whose journal or log cannot be read
@@ -1376,6 +1402,9 @@ class StateDB:
         committed log, so such a store is refused by ``UnreadableStoreError`` before any writable
         connection opens it. A file that cannot be read at all is left to the writable connection,
         which reads the rows again before its settings and changes no file if it refuses then.
+
+        When the open that started it is cancelled (``_read_lineage_until_stopped``), the read
+        raises ``_CopyStoppedError`` before its next attempt or from the copy it is making.
         """
         from sqlalchemy.dialects.sqlite.aiosqlite import SQLiteDialect_aiosqlite
 
@@ -1389,6 +1418,7 @@ class StateDB:
             return
         sidecar = False
         for _ in range(_COPY_ATTEMPTS):
+            _raise_if_stopped()
             read = _read_lineage(target)
             if read is None:
                 return
@@ -4425,7 +4455,14 @@ class StateDB:
         )
         return {**patch, "node_metadata": merged}
 
-    async def _merge_node_metadata(self, table: str, entity_id: str, patch: dict[str, Any]) -> None:
+    async def _merge_node_metadata(
+        self,
+        table: str,
+        entity_id: str,
+        patch: dict[str, Any],
+        *,
+        expected_status: str | None = None,
+    ) -> bool:
         """Shared body for the two node_metadata merges: build the merge, then UPDATE *table*."""
         ops = self._node_metadata_merge_ops(patch)
         if self._compat is not None:
@@ -4433,6 +4470,9 @@ class StateDB:
         now = time.time()
         clause, owner = self._owner_predicate(table)
         params: dict[str, Any] = {"now": now, "id": entity_id, **owner}
+        if expected_status is not None:
+            clause += " AND status = :merge_expected_status"
+            params["merge_expected_status"] = expected_status
         binds = []
         if self.dialect == "sqlite":
             params["patch"] = patch
@@ -4453,7 +4493,8 @@ class StateDB:
         async with self._tx() as conn:
             if self._compat is not None:
                 await self._require_owned(conn, table, entity_id, table[:-1])
-            await conn.execute(stmt, params)
+            result = await conn.execute(stmt, params)
+            return result.rowcount == 1
 
     @_operation("merge_session_node_metadata")
     async def merge_session_node_metadata(self, session_id: str, patch: dict[str, Any]) -> None:
@@ -4475,6 +4516,14 @@ class StateDB:
         Same semantics as :meth:`merge_session_node_metadata`, for the invocations table.
         """
         await self._merge_node_metadata("invocations", invocation_id, patch)
+
+    async def merge_invocation_node_metadata_if_running(
+        self, invocation_id: str, patch: dict[str, Any]
+    ) -> bool:
+        """Merge invocation metadata and advance its row version while it is running."""
+        return await self._merge_node_metadata(
+            "invocations", invocation_id, patch, expected_status="running"
+        )
 
     @staticmethod
     def _unverifiable_snapshot(snapshot: dict[str, Any]) -> tuple[dict[str, Any], int, bool]:
@@ -8773,6 +8822,24 @@ _UNREAD = object()
 # two may not be of one state; the read is taken again, up to _COPY_ATTEMPTS times.
 _MOVED = object()
 _COPY_ATTEMPTS = 3
+# The store file is copied this many bytes at a time, and a stop is checked after each read.
+_COPY_CHUNK_BYTES = 1 << 20
+# The stop of the lineage read running on this thread (``StateDB._read_lineage_until_stopped``),
+# set once the open that started it is cancelled; None outside such a read. A thread-local rather
+# than a parameter, so the read's functions keep the signatures that the tests replacing them use.
+_LINEAGE_READ = threading.local()
+
+
+class _CopyStoppedError(Exception):
+    """A lineage read stopped because the open that started it was cancelled."""
+
+
+def _raise_if_stopped() -> None:
+    stop = getattr(_LINEAGE_READ, "stop", None)
+    if stop is not None and stop.is_set():
+        raise _CopyStoppedError
+
+
 # The first eight bytes of a rollback journal's header. A commit deletes, truncates or zeroes it.
 _JOURNAL_HEADER = bytes.fromhex("d9d505f920a163d7")
 # The first four bytes of a write-ahead log's header, in its two checksum byte orders.
@@ -8816,7 +8883,10 @@ def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
     a process killed while it copies leaves the copy there. ``_MOVED`` when the store committed or
     checkpointed while it was copied, or its journal or log could not be opened or was gone by the
     time it was copied (a commit or a closing checkpoint removes it), so the caller reads the store
-    again from the start; ``_UNREAD`` when the copy or its read fails otherwise."""
+    again from the start; ``_UNREAD`` when the copy or its read fails otherwise. Raises
+    ``_CopyStoppedError`` when the open that started it is cancelled, checked before the copy of
+    the file, after each of its chunks, and before the copy of the journal or log and before the
+    read of the copy; the copy of the journal or log, once started, runs to its end."""
     try:
         with tempfile.TemporaryDirectory(prefix="lionagi-lineage-") as scratch:
             copy = os.path.join(scratch, "store.db")
@@ -8824,12 +8894,14 @@ def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
             if before is None:
                 return _MOVED
             _copy_store_file(path, copy)
+            _raise_if_stopped()
             try:
                 shutil.copyfile(f"{path}{suffix}", f"{copy}{suffix}")
             except FileNotFoundError:
                 return _MOVED
             if _copy_state(path, suffix) != before:
                 return _MOVED
+            _raise_if_stopped()
             read = _read_lineage(Path(copy).as_uri())
     except (OSError, sqlite3.Error):
         return _UNREAD
@@ -8876,16 +8948,21 @@ _COPY_DESCRIPTORS_LOCK = threading.Lock()
 def _copy_store_file(path: str, copy: str) -> None:
     """Copy the file at *path* to *copy* byte for byte, whatever its pages hold, through a
     descriptor of the file this process keeps open, so the copy closes no descriptor of it. On
-    Windows a lock belongs to the handle that took it, and the file is copied as usual."""
+    Windows a lock belongs to the handle that took it, and the file is copied as usual. A
+    cancelled open's copy raises ``_CopyStoppedError`` before its first chunk and after each
+    chunk of ``_COPY_CHUNK_BYTES`` (``_LINEAGE_READ``); a Windows copy checks only before it
+    starts."""
+    _raise_if_stopped()
     if os.name == "nt":
         shutil.copyfile(path, copy)
         return
     descriptor = _copy_descriptor(path)
     with open(copy, "wb") as target:
         offset = 0
-        while chunk := os.pread(descriptor, 1 << 20, offset):
+        while chunk := os.pread(descriptor, _COPY_CHUNK_BYTES, offset):
             target.write(chunk)
             offset += len(chunk)
+            _raise_if_stopped()
 
 
 def _copy_descriptor(path: str) -> int:

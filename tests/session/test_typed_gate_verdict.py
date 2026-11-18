@@ -11,6 +11,7 @@ from lionagi.protocols.action.gate import GateResult, adapt_session_gate
 from lionagi.session.control import ToolInvocation
 from lionagi.session.observer import SessionObserver
 from lionagi.session.signal import GateDenied, Signal
+from tests._gate_results import built_around_construction
 
 
 class TruthyDecision:
@@ -40,10 +41,9 @@ def _gate(value, calls, is_async):
 
 
 def _malformed_gate_result(allowed, *, errored=False):
-    result = GateResult(True, "policy", "tool", "authorize", "reason")
-    object.__setattr__(result, "allowed", allowed)
-    object.__setattr__(result, "errored", errored)
-    return result
+    return built_around_construction(
+        GateResult(True, "policy", "tool", "authorize", "reason"), allowed=allowed, errored=errored
+    )
 
 
 INVALID_VERDICTS = [
@@ -83,6 +83,22 @@ INVALID_VERDICTS = [
         "allowed",
         "errored",
         id="contradiction",
+    ),
+    pytest.param(
+        built_around_construction(
+            GateResult(False, "policy", "tool", "authorize", "reason"), mutated_args=["x"]
+        ),
+        "mutated_args",
+        "list",
+        id="rewrite-not-dict",
+    ),
+    pytest.param(
+        built_around_construction(
+            GateResult(True, "policy", "tool", "authorize", "reason"), reason=None
+        ),
+        "reason",
+        "NoneType",
+        id="reason-none",
     ),
 ]
 

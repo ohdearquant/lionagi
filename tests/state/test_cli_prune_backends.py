@@ -229,6 +229,7 @@ async def test_cli_prune_keeps_messages_of_non_array_progressions(prune_store, m
         "messages": 2,
         "deferred_victim_progressions": 1,
         "non_array_survivor_progressions": 3,
+        "deferred_array_progressions": 1,
     }
     preview = await prune(dry_run=True)
     assert result == expected
@@ -256,10 +257,86 @@ async def test_cli_prune_keeps_messages_of_non_array_progressions(prune_store, m
     assert "deleted 0 session(s), 0 branch(es), 0 orphan message(s)" in later
 
     explanation = "later session prunes leave the orphaned progressions and their messages in place"
-    assert "would keep 1 non-array progression(s) from selected sessions" in preview
+    arrays = "array progression(s) from {} sessions that also point at a non-array progression"
+    assert "would keep 1 non-array progression(s) from selected sessions\n" in preview
+    assert f"would keep 1 {arrays.format('selected')}" in preview
     assert explanation in preview
-    assert "kept 1 non-array progression(s) from deleted sessions" in applied
+    assert "kept 1 non-array progression(s) from deleted sessions\n" in applied
+    assert f"kept 1 {arrays.format('deleted')}" in applied
     assert explanation in applied
+
+
+async def test_cli_prune_reports_kept_arrays_when_the_non_array_is_shared_with_a_survivor(
+    prune_store, monkeypatch, capsys
+):
+    now = time.time()
+    async with StateDB() as db:
+        for message_id in ("array-member", "survivor-member"):
+            await db.insert_message(
+                {"id": message_id, "created_at": now, "role": "user", "content": {}}
+            )
+        await db.create_progression("victim-array", ["array-member"])
+        await db.create_progression("shared-non-array")
+        await db.execute(
+            "UPDATE progressions SET collection = ? WHERE id = 'shared-non-array'",
+            ('{"member":"survivor-member"}',),
+        )
+        for session_id in ("victim", "survivor"):
+            await db.create_session(
+                {"id": session_id, "progression_id": "shared-non-array", "status": "completed"}
+            )
+        await db.create_branch(
+            {"id": "victim-branch", "session_id": "victim", "progression_id": "victim-array"}
+        )
+        await db.execute(
+            "UPDATE sessions SET updated_at = ? WHERE id = 'victim'", (now - 60 * 86400,)
+        )
+
+    result = {}
+
+    async def capture_prune_result(**kwargs):
+        counts = await _prune(**kwargs)
+        result.clear()
+        result.update(counts)
+        return counts
+
+    monkeypatch.setattr(state_cli, "_prune", capture_prune_result)
+
+    async def prune(*, dry_run):
+        args = Namespace(state_command="prune", keep_days=30, keep_n=1, dry_run=dry_run)
+        assert await asyncio.to_thread(state_cli.run_state, args) == 0
+        return capsys.readouterr().out
+
+    expected = {
+        "sessions": 1,
+        "branches": 1,
+        "messages": 0,
+        "non_array_survivor_progressions": 1,
+        "deferred_array_progressions": 1,
+    }
+    preview = await prune(dry_run=True)
+    assert result == expected
+    assert (
+        "would keep 1 array progression(s) from selected sessions "
+        "that also point at a non-array progression"
+    ) in preview
+    assert "non-array progression(s) from selected sessions" not in preview
+
+    applied = await prune(dry_run=False)
+    assert result == expected
+    assert (
+        "kept 1 array progression(s) from deleted sessions "
+        "that also point at a non-array progression"
+    ) in applied
+    async with StateDB() as db:
+        assert {row["id"] for row in await db.fetch_all("SELECT id FROM progressions")} == {
+            "victim-array",
+            "shared-non-array",
+        }
+        assert {row["id"] for row in await db.fetch_all("SELECT id FROM messages")} == {
+            "array-member",
+            "survivor-member",
+        }
 
 
 @pytest.mark.parametrize("invalid_progression", ["victim-history", "keeper-history"])
@@ -464,6 +541,7 @@ async def test_branch_only_legacy_prune_protects_shared_lineage(
             "branches": 3,
             "messages": 1,
             "deferred_victim_progressions": 1,
+            "deferred_array_progressions": 2,
         }
     elif entry == "explicit":
         assert await db_maintenance.prune_terminal_sessions_by_id(["a-deferred", "b-ordinary"]) == 2

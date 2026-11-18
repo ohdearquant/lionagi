@@ -21,6 +21,8 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from lionagi._feature_errors import MissingFeatureError
 from lionhub.orchestration.job import (
@@ -33,6 +35,11 @@ from lionhub.orchestration.job import (
     run_was_allocated,
 )
 from tests._job_test_support import _no_run_allocated  # noqa: F401
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 # `from lionhub.serve.cli import main` is not a handle on this module. What it yields
 # depends on import order: the package's __getattr__ pins the re-exported
@@ -514,49 +521,71 @@ def test_the_marker_survives_allocation_on_another_thread(monkeypatch, reported)
     assert reported == []
 
 
+def test_li_mcp_import_roots_match_declared_extra():
+    from lionhub.serve.cli.mcp import _MCP_IMPORT_ROOTS
+
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        requirements = tomllib.load(file)["project"]["optional-dependencies"]["mcp"]
+    # Derive the top-level import spellings from the extra's distribution names.
+    expected = {
+        canonicalize_name(Requirement(requirement).name).replace("-", "_")
+        for requirement in requirements
+    }
+    assert sorted(_MCP_IMPORT_ROOTS) == sorted(expected)
+
+
 @pytest.mark.parametrize(
-    ("raised", "expected_code"),
+    ("kind", "name", "expected_code"),
     [
-        (ModuleNotFoundError("No module named 'fastmcp'", name="fastmcp"), 78),
-        (ImportError("cannot import name 'FastMCP'"), 1),
+        pytest.param("absent", "fastmcp", 78, id="fastmcp-absent"),
+        pytest.param("missing", "mcp", 78, id="mcp-absent"),
+        pytest.param("missing", "starlette", 78, id="starlette-absent"),
+        pytest.param("missing", "fastmcp.fixture_submodule", 1, id="broken-submodule"),
+        pytest.param("missing", "fixture_transitive_dependency", 1, id="broken-dependency"),
+        pytest.param("missing", "mcp.fixture_submodule", 1, id="other-feature-submodule"),
+        pytest.param("missing", None, 1, id="unnamed-module"),
+        pytest.param("symbol", "fastmcp", 1, id="broken-symbol"),
     ],
 )
-def test_li_mcp_separates_a_missing_extra_from_a_broken_one(raised, expected_code):
-    """`li mcp` needs an optional extra, and the two ways that fails differ.
-
-    An extra that is not installed means the server never started and nothing
-    ran. An extra that is installed but cannot be imported is a defect in what is
-    present rather than a missing piece of it. Reporting both with the ordinary
-    failure code leaves a caller unable to tell "install this" from "this
-    installation is broken".
-
-    The dependency blocked here is `fastmcp`, the package the extra actually
-    supplies, and the command is driven through `main()`. Blocking `lionhub.serve.mcp`
-    instead would prove nothing: that package is deliberately dependency-free and
-    imports fine without the extra, so the real failure happens one level deeper
-    and would have been missed by a test that never reached it.
-    """
+def test_li_mcp_separates_a_missing_extra_from_a_broken_one(kind, name, expected_code):
+    """Drive the real CLI and server import against isolated absent and broken packages."""
     script = textwrap.dedent(
         f"""
+        import importlib.util
         import sys
 
-        BLOCKED = "fastmcp"
-        RAISED = {raised!r}
+        KIND = {kind!r}
+        error_type = ImportError if KIND == "symbol" else ModuleNotFoundError
+        failure = error_type("fixture import failure", name={name!r})
 
-        class _RefuseOne:
+        class FixtureMCP:
+            looked_up = 0
+            executed = 0
+
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == BLOCKED or fullname.startswith(BLOCKED + "."):
-                    raise RAISED
+                if fullname != "fastmcp":
+                    return None
+                self.looked_up += 1
+                if KIND == "absent":
+                    raise failure
+                return importlib.util.spec_from_loader(fullname, self, is_package=True)
+
+            def create_module(self, spec):
                 return None
 
-        for name in [m for m in list(sys.modules)
-                     if m == BLOCKED or m.startswith(BLOCKED + ".")]:
-            del sys.modules[name]
-        sys.meta_path.insert(0, _RefuseOne())
+            def exec_module(self, module):
+                self.executed += 1
+                raise failure
+
+        fixture = FixtureMCP()
+        sys.meta_path.insert(0, fixture)
 
         from lionhub.serve.cli.main import main
 
-        sys.exit(main(["mcp"]))
+        status = main(["mcp", "serve"])
+        assert fixture.looked_up == 1
+        assert fixture.executed == (KIND != "absent")
+        sys.exit(status)
         """
     )
     proc = subprocess.run(
@@ -569,6 +598,15 @@ def test_li_mcp_separates_a_missing_extra_from_a_broken_one(raised, expected_cod
     )
 
     assert proc.returncode == expected_code, proc.stderr
+    assert proc.stdout == ""
+    if name:
+        assert name in proc.stderr
+    if expected_code == EXIT_CODE_ENVIRONMENT_ERROR:
+        assert "install lionagi[mcp]" in proc.stderr
+        assert "Nothing was started." in proc.stderr
+    else:
+        assert "fixture import failure" in proc.stderr
+        assert "install lionagi[mcp]" not in proc.stderr
 
 
 @pytest.mark.parametrize(

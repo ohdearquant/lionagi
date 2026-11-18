@@ -1173,6 +1173,12 @@ a real degradation rate — see the printed note in `_dispatch_audit`.
 
 ## `agent.py` — `li agent` run dispatch
 
+The profile loader reads tool settings from leading YAML frontmatter. In a readable
+block later in the prompt, it refuses tool keys on mappings reached through YAML
+sequences and reports the declaration's original line. Mapping values remain prompt
+material. The final unclosed Markdown fence remains part of the prompt. A paired
+YAML block with a tool list in that fence emits one warning with its declaration line.
+
 **`_run_agent` role-key validation** — a declared profile `role:` key is validated up front,
 before the resume/new-branch split: a malformed profile must fail loudly on every invocation
 shape, not only when a new branch is composed. The value itself is only USED when composing a
@@ -1364,10 +1370,11 @@ precedes transport and does not prove a network send or billed usage. Safe selec
 also appear in `account_labels`; non-routed calls have no declared label, and a malformed
 label or one overlapping the resolved credential is omitted. Keys, headers, credential
 references and prompt text are excluded from this section. `model` is the requested model.
-`served_model` is the model the provider's response named, or `null` when no response
-that names one was read: the response named none, the call failed or was cancelled
-first, or the call was still queued or in flight when its invoke stopped waiting.
-It is the provider's own report, not a verified identity.
+`served_model` records the provider's reported model when it passes the API usage
+identifier filter. The field is `null` when the name fails the identifier format,
+has a credential-shaped prefix, or is the literal `unknown`. It is also `null` if
+the provider names no model or no report is read before the invoke stops waiting.
+The value is unverified.
 
 Each request also records `cache_read_tokens` and `cache_write_tokens` from the final
 successful non-streaming response, when supplied by OpenAI or Anthropic. `null` means

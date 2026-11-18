@@ -19,7 +19,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from lionagi import Branch
 from lionagi.service.connections import _provider_compat
+from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint, EndpointConfig
 from lionagi.service.connections.provider_catalog import (
     EndpointDeclaration,
@@ -525,3 +527,78 @@ def test_context_window_without_a_catalog_uses_the_default_source(monkeypatch):
 
     assert get_context_window(_stand_in_branch({})) == _UNUSUAL_WINDOW
     assert get_context_window(_stand_in_branch({"provider_catalog": None})) == _UNUSUAL_WINDOW
+
+
+class _RuntimeEndpoint(Endpoint):
+    caches_system_prefix = True
+
+    def __init__(self, config=None, **kwargs):
+        super().__init__(
+            config
+            or EndpointConfig(
+                name="runtime-fixture",
+                provider="openai",
+                endpoint="chat",
+                auth_type="none",
+                requires_tokens=True,
+            ),
+            **kwargs,
+        )
+
+
+def _runtime_catalog(source: str, window: int):
+    original = _window_catalog().providers[0]
+    endpoint = dataclasses.replace(original.endpoints[0], factory=lambda: _RuntimeEndpoint)
+    fragment = dataclasses.replace(
+        original,
+        endpoints=(endpoint,),
+        context_windows={_UNUSUAL_MODEL: window},
+    )
+    return compose_provider_catalog((fragment,), source=source)
+
+
+def test_request_annotation_reads_the_selected_catalog(monkeypatch):
+    first, second, automatic = (
+        _runtime_catalog("first", 4011),
+        _runtime_catalog("second", 8022),
+        _runtime_catalog("automatic", 16044),
+    )
+    monkeypatch.setattr(_provider_compat, "default_provider_catalog", lambda: automatic)
+    monkeypatch.setattr(APICalling, "required_tokens", property(lambda _call: 7))
+
+    for catalog, window in ((first, 4011), (second, 8022), (None, 16044)):
+        model = iModel(provider="openai", model=_UNUSUAL_MODEL, provider_catalog=catalog)
+        call = model.create_api_calling(
+            include_token_usage_to_model=True, messages=[{"role": "user", "content": "hello"}]
+        )
+        assert call.payload["messages"][-1]["content"].endswith(f"7/{window:,}")
+        assert "provider_catalog" not in call.model_dump()
+
+    model.endpoint.config.prompt_caching = True
+    call = model.create_api_calling(
+        include_token_usage_to_model=True, messages=[{"role": "user", "content": "hello"}]
+    )
+    assert call.payload["messages"][-1]["content"] == "hello"
+
+
+def test_restore_branch_rebuilds_stored_models_using_only_the_caller_catalog(
+    forbid_automatic_source,
+):
+    first, second = _runtime_catalog("first", 4011), _runtime_catalog("second", 8022)
+    forbid_automatic_source()
+    chat = iModel(provider="openai", model=_UNUSUAL_MODEL, provider_catalog=first)
+    parse = iModel(provider="openai", model=_UNUSUAL_MODEL, provider_catalog=second)
+    branch = Branch(chat_model=chat, parse_model=parse, log_config={"auto_save_on_exit": False})
+    stored = branch.to_dict(mode="json", include_log_config=True)
+    assert "provider_catalog" not in stored
+    stored["provider_catalog"] = {"id": stored["id"], "ignored": True}
+
+    restored = Branch.from_dict(stored, provider_catalog=second)
+    assert restored.chat_model.provider_catalog is restored.parse_model.provider_catalog is second
+    assert restored.chat_model.id == chat.id
+    assert restored.parse_model.id == parse.id
+    assert stored["provider_catalog"]["ignored"]
+
+    overridden = Branch.from_dict(stored, chat_model=chat, provider_catalog=second)
+    assert overridden.chat_model is chat
+    assert overridden.parse_model.provider_catalog is second

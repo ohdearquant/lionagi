@@ -1077,6 +1077,7 @@ async def test_imodel_stream_propagates_cancellation():
     # make the pending-queue bookkeeping below a no-op.
     api_call.id = uuid4()
     api_call.metadata = {}
+    api_call._telemetry_frame = None
     api_call.execution = AsyncMock()
     api_call.execution.status = EventStatus.PENDING
 

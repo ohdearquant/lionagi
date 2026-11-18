@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from lionagi.ln import _proc
+from lionagi.state.db import StateDB
+from lionagi.state.reasons import RunReasons
 from lionhub.orchestration import kill
 from lionhub.orchestration.kill import CancelPersistenceError, cancel_targets
 
@@ -24,6 +27,226 @@ def _target(kind, entity_id, pid):
             "cli_worker_generation": None,
         },
     )
+
+
+def _command_target(pid: int = 71031):
+    return (
+        "invocation",
+        "command",
+        {
+            "node_metadata": {
+                "action_kind": "command",
+                "pid": pid,
+                "pgid": pid,
+                "pid_create_time": 100.0,
+                "pid_host": "fixture-host",
+                "pid_boot_time": 900.0,
+                "process_identity_mode": "local",
+            }
+        },
+    )
+
+
+def _command_kernel(monkeypatch, behavior):
+    leader, child = 71031, 71032
+    births = {leader: 100.0, child: 101.0}
+    attempted = []
+    delivered = []
+
+    def no_signal(*_args):
+        raise AssertionError("unexpected signal or generic PID termination")
+
+    def read_birth(pid, *, expected_created=None):
+        raw = births.get(pid)
+        return ("gone", None) if raw is None else ("found", raw)
+
+    def get_group(pid):
+        if pid not in births:
+            raise ProcessLookupError
+        return leader
+
+    def read_group(pgid):
+        assert pgid == leader
+        return list(births.items()), True
+
+    def send_group(pgid, sig):
+        assert pgid == leader
+        attempted.append(sig)
+        if sig == signal.SIGTERM:
+            del births[leader]
+            if behavior == "term":
+                births.clear()
+            elif behavior == "replaced":
+                births[child] = 200.0
+        else:
+            assert sig == signal.SIGKILL
+            assert births == {child: 101.0}
+            if behavior == "permission":
+                raise PermissionError
+            births.clear()
+            if behavior == "vanished":
+                raise ProcessLookupError
+        delivered.append(sig)
+
+    monkeypatch.setattr(_proc, "_recorded_process_create_time", read_birth)
+    monkeypatch.setattr(_proc, "_group_member_identities", read_group)
+    monkeypatch.setattr(
+        _proc, "os", SimpleNamespace(getpgrp=lambda: 20, getpgid=get_group, killpg=no_signal)
+    )
+    monkeypatch.setattr(_proc, "socket", SimpleNamespace(gethostname=lambda: "fixture-host"))
+    monkeypatch.setattr(kill.psutil, "boot_time", lambda: 900.0)
+    monkeypatch.setattr(kill, "os", SimpleNamespace(kill=no_signal, killpg=send_group))
+    monkeypatch.setattr(kill, "_terminate_pid", no_signal)
+    return births, attempted, delivered
+
+
+@pytest.mark.parametrize("studio", [False, True], ids=["cli", "studio"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("behavior", "outcome", "did_attempt_kill", "did_deliver_kill", "reason"),
+    [
+        ("term", "sigterm", False, False, RunReasons.CANCELLED_MANUAL_KILL),
+        ("kill", "sigkill", True, True, RunReasons.CANCELLED_FORCE_KILL),
+        ("vanished", "already_dead", True, False, RunReasons.CANCELLED_MANUAL_KILL),
+        ("permission", "permission_denied", True, False, None),
+        ("replaced", "identity_unverifiable_after_sigterm", False, False, None),
+    ],
+)
+async def test_scheduled_command_cancels_the_verified_group(
+    monkeypatch, studio, behavior, outcome, did_attempt_kill, did_deliver_kill, reason
+):
+    births, attempted, delivered = _command_kernel(monkeypatch, behavior)
+    target = _command_target()
+    db = SimpleNamespace(
+        fetch_one=AsyncMock(return_value={"status": "running"}),
+        update_status=AsyncMock(return_value=True),
+    )
+    if studio:
+        (result,) = await cancel_targets(db, [target], user_reason="", grace_seconds=0)
+        assert (result.signal, result.pgid, result.signals_sent) == (
+            outcome,
+            71031,
+            tuple(delivered),
+        )
+        assert result.state_committed is (reason is not None)
+    else:
+        result = await kill.kill_one(db, *target, user_reason="", grace_seconds=0)
+        assert (result["signal"], result["pgid"]) == (outcome, 71031)
+
+    assert attempted == [signal.SIGTERM] + ([signal.SIGKILL] if did_attempt_kill else [])
+    assert delivered == [signal.SIGTERM] + ([signal.SIGKILL] if did_deliver_kill else [])
+    if reason is None:
+        db.update_status.assert_not_awaited()
+        assert births
+    else:
+        db.update_status.assert_awaited_once()
+        assert db.update_status.call_args.kwargs["reason_code"] == reason
+        (evidence,) = db.update_status.call_args.kwargs["evidence_refs"]
+        assert (evidence["signal"], evidence["pgid"]) == (outcome, 71031)
+        assert not births
+
+
+def test_scheduled_command_group_inspection_is_read_only(monkeypatch):
+    births, attempted, delivered = _command_kernel(monkeypatch, "kill")
+    kind, _, row = _command_target()
+    meta = row["node_metadata"]
+    inspect = kill._inspect_cancel_command_group
+    assert inspect("session", row) is None
+    assert inspect(kind, row).outcome == "verified"
+    assert inspect(kind, {"node_metadata": {"action_kind": "command"}}).outcome == "no_pid"
+    assert (
+        inspect(kind, {"node_metadata": {**meta, "pgid": None}}).outcome == "identity_unverifiable"
+    )
+    assert inspect(kind, {"node_metadata": {**meta, "pgid": 20}}).outcome == "unsafe_group"
+    assert (
+        inspect(kind, {"node_metadata": {**meta, "pid_host": "another-host"}}).outcome
+        == "host_mismatch"
+    )
+    del births[71031]
+    assert inspect(kind, row).outcome == "identity_unverifiable"
+    births.clear()
+    assert inspect(kind, row).outcome == "already_dead"
+    monkeypatch.setattr(kill, "group_member_pids", lambda _pgid: ([], False))
+    assert inspect(kind, row).outcome == "identity_unverifiable"
+    assert attempted == delivered == []
+
+
+@pytest.mark.parametrize(
+    "publish_before_cancel", [False, True], ids=["legacy", "racing-publication"]
+)
+@pytest.mark.asyncio
+async def test_no_pid_invocation_cancel_uses_the_resolved_row_version(
+    tmp_path, publish_before_cancel
+):
+    kind, entity_id, launched = _command_target()
+    async with StateDB(tmp_path / "state.db") as db:
+        await db.create_invocation(
+            {"id": entity_id, "skill": "command", "status": "running", "started_at": 100.0}
+        )
+        before = await db.get_invocation(entity_id)
+        if publish_before_cancel:
+            await db.merge_invocation_node_metadata(entity_id, launched["node_metadata"])
+            current = await db.get_invocation(entity_id)
+            assert current["updated_at"] != before["updated_at"]
+
+        result = await kill.kill_one(db, kind, entity_id, before, user_reason="")
+        assert result["signal"] == "no_pid"
+        after = await db.get_invocation(entity_id)
+        if publish_before_cancel:
+            assert result.get("cancel_status") == "conflict"
+            assert after == current
+        else:
+            assert "cancel_error" not in result
+            assert after["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_scheduled_command_group_shares_grace_with_pid_targets(monkeypatch):
+    _, attempted, _ = _command_kernel(monkeypatch, "kill")
+    command_signal = kill.os.killpg
+    command_pid, generic_pid = 71031, 71041
+    signalled = []
+    clock = [0.0]
+    terms = [(command_pid, signal.SIGTERM, 0.0), (generic_pid, signal.SIGTERM, 0.0)]
+
+    def send_group(pid, sig):
+        signalled.append((pid, sig, clock[0]))
+        command_signal(pid, sig)
+
+    def send_pid(pid, sig):
+        assert pid == generic_pid
+        signalled.append((pid, sig, clock[0]))
+
+    def sleep(seconds):
+        assert signalled == terms
+        clock[0] += seconds
+
+    monkeypatch.setattr(kill, "os", SimpleNamespace(kill=send_pid, killpg=send_group))
+    monkeypatch.setattr(
+        kill, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep, time=lambda: 1234)
+    )
+    monkeypatch.setattr(kill, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(kill, "_pid_is_zombie", lambda _pid: False)
+    monkeypatch.setattr(kill, "check_pid_identity", lambda *_args, **_kwargs: "ours")
+    db = SimpleNamespace(
+        fetch_one=AsyncMock(return_value={"status": "running"}),
+        update_status=AsyncMock(return_value=True),
+    )
+    results = await cancel_targets(
+        db,
+        [_command_target(), _target("invocation", "generic", generic_pid)],
+        user_reason="",
+        grace_seconds=1.0,
+    )
+
+    assert attempted == [signal.SIGTERM, signal.SIGKILL]
+    assert signalled == [
+        *terms,
+        (command_pid, signal.SIGKILL, 1.0),
+        (generic_pid, signal.SIGKILL, 1.0),
+    ]
+    assert [result.signal for result in results] == ["sigkill", "sigkill"]
+    assert all(result.state_committed for result in results)
 
 
 @pytest.mark.asyncio

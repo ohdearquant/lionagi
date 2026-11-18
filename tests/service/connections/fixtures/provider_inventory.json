@@ -1,0 +1,1450 @@
+{
+  "compatibility_endpoint": {
+    "aliases": [
+      "chat",
+      "query_cli",
+      "cli"
+    ],
+    "class": "ScriptedEndpoint",
+    "endpoint": "chat/completions",
+    "kind": "agentic",
+    "module": "lionagi.testing._endpoint",
+    "path": "lionagi/testing/_endpoint.py",
+    "provider": "scripted",
+    "settings": {
+      "api_key_env": null,
+      "auth_type": "bearer",
+      "base_url": "internal",
+      "content_type": null,
+      "options": null
+    }
+  },
+  "compatibility_projection": [
+    "provider",
+    "endpoint",
+    "aliases",
+    "type",
+    "class",
+    "options"
+  ],
+  "context_examples": [
+    {
+      "hint": null,
+      "model": "gemini-2.5-pro",
+      "window": 1048576
+    },
+    {
+      "hint": "gemini",
+      "model": "gemini-2.5-pro",
+      "window": 1048576
+    },
+    {
+      "hint": "gemini-api",
+      "model": "gemini-2.5-pro",
+      "window": 1048576
+    },
+    {
+      "hint": null,
+      "model": "o3/gemini-2.5-pro",
+      "window": 200000
+    },
+    {
+      "hint": "gemini",
+      "model": "o3/gemini-2.5-pro",
+      "window": 1048576
+    },
+    {
+      "hint": "gemini-api",
+      "model": "o3/gemini-2.5-pro",
+      "window": 200000
+    }
+  ],
+  "historical_bootstrap": {
+    "commit": "166d7b001f1e56e129dab28ed1f111967a1e56b8",
+    "decorated_endpoint_classes": 36,
+    "modules": 33
+  },
+  "manifest": {
+    "context_window_order": [
+      "openai",
+      "anthropic",
+      "claude_code",
+      "codex",
+      "deepseek",
+      "nvidia_nim",
+      "perplexity",
+      "gemini_code",
+      "pi",
+      "groq",
+      "gemini",
+      "openrouter"
+    ],
+    "contract_version": 1,
+    "path": "lionhub/src/lionhub/providers/manifest.py",
+    "providers": [
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/openai/_config.py::OpenAIConfigs",
+        "context_windows": [
+          [
+            "gpt-6.1-sol",
+            1050000
+          ],
+          [
+            "gpt-6.1-terra",
+            1050000
+          ],
+          [
+            "gpt-6-astra",
+            1050000
+          ],
+          [
+            "gpt-6-sol",
+            1050000
+          ],
+          [
+            "gpt-6-luna",
+            1050000
+          ],
+          [
+            "gpt-5.5",
+            1000000
+          ],
+          [
+            "gpt-5.4-mini",
+            1000000
+          ],
+          [
+            "gpt-5.4",
+            1048576
+          ],
+          [
+            "gpt-5",
+            1000000
+          ],
+          [
+            "gpt-4.1-mini",
+            1000000
+          ],
+          [
+            "gpt-4.1-nano",
+            1000000
+          ],
+          [
+            "gpt-4.1",
+            1000000
+          ],
+          [
+            "gpt-4o-mini",
+            128000
+          ],
+          [
+            "gpt-4o",
+            128000
+          ],
+          [
+            "gpt-4-turbo",
+            128000
+          ],
+          [
+            "gpt-4",
+            128000
+          ],
+          [
+            "o4-mini",
+            200000
+          ],
+          [
+            "o3-mini",
+            200000
+          ],
+          [
+            "o3",
+            200000
+          ],
+          [
+            "o1-pro",
+            200000
+          ],
+          [
+            "o1-mini",
+            128000
+          ],
+          [
+            "o1",
+            200000
+          ]
+        ],
+        "context_windows_source": "CONTEXT_WINDOWS",
+        "default_endpoint": "chat/completions",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat"
+            ],
+            "endpoint": "chat/completions",
+            "implementation": "lionhub.providers.openai.chat:OpenaiChatEndpoint",
+            "kind": "api",
+            "member": "CHAT",
+            "request_options": "lionagi.service.connections._chat_schemas:OpenAIChatCompletionsRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "OPENAI_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.openai.com/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "tts"
+            ],
+            "endpoint": "audio/speech",
+            "implementation": "lionhub.providers.openai.audio:OpenaiAudioSpeechEndpoint",
+            "kind": "api",
+            "member": "AUDIO_SPEECH",
+            "request_options": "lionhub.providers.openai._audio_schemas:AudioSpeechRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "OPENAI_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.openai.com/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "stt",
+              "whisper"
+            ],
+            "endpoint": "audio/transcriptions",
+            "implementation": "lionhub.providers.openai.audio:OpenaiAudioTranscriptionEndpoint",
+            "kind": "api",
+            "member": "AUDIO_TRANSCRIPTION",
+            "request_options": "lionhub.providers.openai._audio_schemas:AudioTranscriptionRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "OPENAI_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.openai.com/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "batch"
+            ],
+            "endpoint": "batches",
+            "implementation": "lionhub.providers.openai.batch:OpenaiBatchEndpoint",
+            "kind": "api",
+            "member": "BATCH",
+            "request_options": "lionhub.providers.openai.batch:OpenAIBatchRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "OPENAI_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.openai.com/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "dalle",
+              "image"
+            ],
+            "endpoint": "images/generations",
+            "implementation": "lionhub.providers.openai.images:OpenaiImageGenerationEndpoint",
+            "kind": "api",
+            "member": "IMAGE_GENERATION",
+            "request_options": "lionhub.providers.openai.images:ImageGenerationRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "OPENAI_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.openai.com/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "image_edit"
+            ],
+            "endpoint": "images/edits",
+            "implementation": "lionhub.providers.openai.images:OpenaiImageEditEndpoint",
+            "kind": "api",
+            "member": "IMAGE_EDIT",
+            "request_options": "lionhub.providers.openai.images:ImageEditRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "OPENAI_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.openai.com/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "embed"
+            ],
+            "endpoint": "embeddings",
+            "implementation": "lionhub.providers.openai.embed:OpenaiEmbedEndpoint",
+            "kind": "api",
+            "member": "EMBED",
+            "request_options": "lionhub.providers.openai.embed:OpenAIEmbeddingRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "OPENAI_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.openai.com/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "response"
+            ],
+            "endpoint": "responses",
+            "implementation": "lionhub.providers.openai.response:OpenaiResponseEndpoint",
+            "kind": "api",
+            "member": "RESPONSE",
+            "request_options": "lionhub.providers.openai.response:OpenAIResponsesRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "OPENAI_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.openai.com/v1",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "openai"
+      },
+      {
+        "aliases": [
+          "openai-codex"
+        ],
+        "configuration": "lionhub/src/lionhub/providers/openai/_config.py::CodexConfigs",
+        "context_windows": [
+          [
+            "gpt-6.1-sol",
+            1050000
+          ],
+          [
+            "gpt-6.1-terra",
+            1050000
+          ],
+          [
+            "gpt-6-astra",
+            1050000
+          ],
+          [
+            "gpt-6-sol",
+            1050000
+          ],
+          [
+            "gpt-6-luna",
+            1050000
+          ],
+          [
+            "codex-mini",
+            200000
+          ],
+          [
+            "o4-mini",
+            200000
+          ],
+          [
+            "o3",
+            200000
+          ]
+        ],
+        "context_windows_source": "CODEX_CONTEXT_WINDOWS",
+        "default_endpoint": "query_cli",
+        "endpoints": [
+          {
+            "aliases": [
+              "cli",
+              "code"
+            ],
+            "endpoint": "query_cli",
+            "implementation": "lionhub.providers.openai.codex:CodexCLIEndpoint",
+            "kind": "agentic",
+            "member": "CLI",
+            "request_options": "lionhub.providers.openai.codex:CodexCodeRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": null,
+              "base_url": null,
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "codex"
+      },
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/anthropic/_config.py::AnthropicConfigs",
+        "context_windows": [
+          [
+            "claude-fable-5-1",
+            1000000
+          ],
+          [
+            "claude-mythos-5-1",
+            1000000
+          ],
+          [
+            "claude-opus-5-5",
+            1000000
+          ],
+          [
+            "claude-sonnet-5-5",
+            1000000
+          ],
+          [
+            "claude-haiku-5-5",
+            1000000
+          ],
+          [
+            "claude-opus-4-7",
+            1000000
+          ],
+          [
+            "claude-opus-4-6",
+            1000000
+          ],
+          [
+            "claude-sonnet-4-6",
+            1000000
+          ],
+          [
+            "claude-sonnet-4-5",
+            200000
+          ],
+          [
+            "claude-haiku-4-5",
+            200000
+          ],
+          [
+            "claude-3-5-sonnet",
+            200000
+          ],
+          [
+            "claude-3-5-haiku",
+            200000
+          ],
+          [
+            "claude-3-opus",
+            200000
+          ]
+        ],
+        "context_windows_source": "ANTHROPIC_CONTEXT_WINDOWS",
+        "default_endpoint": "messages",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat"
+            ],
+            "endpoint": "messages",
+            "implementation": "lionhub.providers.anthropic.messages:AnthropicMessagesEndpoint",
+            "kind": "api",
+            "member": "MESSAGES",
+            "request_options": "lionhub.providers.anthropic.messages:CreateMessageRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "ANTHROPIC_API_KEY",
+              "auth_type": "x-api-key",
+              "base_url": "https://api.anthropic.com/v1",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "anthropic"
+      },
+      {
+        "aliases": [
+          "claude-code",
+          "claude"
+        ],
+        "configuration": "lionhub/src/lionhub/providers/anthropic/_config.py::ClaudeCodeConfigs",
+        "context_windows": [
+          [
+            "fable-5-1",
+            1000000
+          ],
+          [
+            "mythos-5-1",
+            1000000
+          ],
+          [
+            "opus-5-5",
+            1000000
+          ],
+          [
+            "sonnet-5-5",
+            1000000
+          ],
+          [
+            "haiku-5-5",
+            1000000
+          ],
+          [
+            "opus-4-7",
+            1000000
+          ],
+          [
+            "opus-4-6",
+            1000000
+          ],
+          [
+            "opus",
+            1000000
+          ],
+          [
+            "sonnet-5",
+            1000000
+          ],
+          [
+            "sonnet-4-6",
+            1000000
+          ],
+          [
+            "sonnet-4-5",
+            200000
+          ],
+          [
+            "sonnet",
+            1000000
+          ],
+          [
+            "haiku-4-5",
+            200000
+          ],
+          [
+            "haiku",
+            200000
+          ],
+          [
+            "fable-5",
+            1000000
+          ],
+          [
+            "fable",
+            1000000
+          ]
+        ],
+        "context_windows_source": "CLAUDE_CODE_CONTEXT_WINDOWS",
+        "default_endpoint": "query_cli",
+        "endpoints": [
+          {
+            "aliases": [
+              "cli",
+              "code"
+            ],
+            "endpoint": "query_cli",
+            "implementation": "lionhub.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+            "kind": "agentic",
+            "member": "CLI",
+            "request_options": "lionhub.providers.anthropic.claude_code:ClaudeCodeRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": null,
+              "base_url": null,
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "claude_code"
+      },
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/ollama/_config.py::OllamaConfigs",
+        "context_windows": null,
+        "context_windows_source": null,
+        "default_endpoint": "chat/completions",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat"
+            ],
+            "endpoint": "chat/completions",
+            "implementation": "lionhub.providers.ollama.chat:OllamaChatEndpoint",
+            "kind": "api",
+            "member": "CHAT",
+            "request_options": "lionagi.service.connections._chat_schemas:OpenAIChatCompletionsRequest",
+            "requirements": [
+              {
+                "distribution": "ollama",
+                "import_roots": [
+                  "ollama"
+                ],
+                "install_hint": "pip install lionagi[ollama]",
+                "version_constraint": ">=0.6.1"
+              }
+            ],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": "none",
+              "base_url": "http://localhost:11434/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "embed"
+            ],
+            "endpoint": "embeddings",
+            "implementation": "lionhub.providers.ollama.embed:OllamaEmbedEndpoint",
+            "kind": "api",
+            "member": "EMBED",
+            "request_options": "lionhub.providers.ollama.embed:OllamaEmbedRequest",
+            "requirements": [
+              {
+                "distribution": "ollama",
+                "import_roots": [
+                  "ollama"
+                ],
+                "install_hint": "pip install lionagi[ollama]",
+                "version_constraint": ">=0.6.1"
+              }
+            ],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": "none",
+              "base_url": "http://localhost:11434/api",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "generate",
+              "completion"
+            ],
+            "endpoint": "generate",
+            "implementation": "lionhub.providers.ollama.generate:OllamaGenerateEndpoint",
+            "kind": "api",
+            "member": "GENERATE",
+            "request_options": "lionhub.providers.ollama.generate:OllamaGenerateRequest",
+            "requirements": [
+              {
+                "distribution": "ollama",
+                "import_roots": [
+                  "ollama"
+                ],
+                "install_hint": "pip install lionagi[ollama]",
+                "version_constraint": ">=0.6.1"
+              }
+            ],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": "none",
+              "base_url": "http://localhost:11434/api",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "ollama"
+      },
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/lattice/_config.py::LatticeConfigs",
+        "context_windows": null,
+        "context_windows_source": null,
+        "default_endpoint": "chat/completions",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat"
+            ],
+            "endpoint": "chat/completions",
+            "implementation": "lionhub.providers.lattice.chat:LatticeChatEndpoint",
+            "kind": "api",
+            "member": "CHAT",
+            "request_options": "lionhub.providers.lattice.chat:LatticeChatCompletionsRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": "none",
+              "base_url": "http://127.0.0.1:8080/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "embed"
+            ],
+            "endpoint": "embeddings",
+            "implementation": "lionhub.providers.lattice.embed:LatticeEmbedEndpoint",
+            "kind": "api",
+            "member": "EMBED",
+            "request_options": "lionhub.providers.lattice.embed:LatticeEmbedRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": "none",
+              "base_url": "http://127.0.0.1:8080/v1",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "lattice"
+      },
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/tavily/_config.py::TavilyConfigs",
+        "context_windows": null,
+        "context_windows_source": null,
+        "default_endpoint": "search",
+        "endpoints": [
+          {
+            "aliases": [],
+            "endpoint": "search",
+            "implementation": "lionhub.providers.tavily.search:TavilySearchEndpoint",
+            "kind": "api",
+            "member": "SEARCH",
+            "request_options": "lionhub.providers.tavily.search:TavilySearchRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "TAVILY_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.tavily.com",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [],
+            "endpoint": "extract",
+            "implementation": "lionhub.providers.tavily.search:TavilyExtractEndpoint",
+            "kind": "api",
+            "member": "EXTRACT",
+            "request_options": "lionhub.providers.tavily.search:TavilyExtractRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "TAVILY_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.tavily.com",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "tavily"
+      },
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/exa/_config.py::ExaConfigs",
+        "context_windows": null,
+        "context_windows_source": null,
+        "default_endpoint": "search",
+        "endpoints": [
+          {
+            "aliases": [],
+            "endpoint": "search",
+            "implementation": "lionhub.providers.exa.search:ExaSearchEndpoint",
+            "kind": "api",
+            "member": "SEARCH",
+            "request_options": "lionhub.providers.exa.search:ExaSearchRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "EXA_API_KEY",
+              "auth_type": "x-api-key",
+              "base_url": "https://api.exa.ai",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "get_contents"
+            ],
+            "endpoint": "contents",
+            "implementation": "lionhub.providers.exa.contents:ExaContentsEndpoint",
+            "kind": "api",
+            "member": "CONTENTS",
+            "request_options": "lionhub.providers.exa.contents:ExaContentsRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "EXA_API_KEY",
+              "auth_type": "x-api-key",
+              "base_url": "https://api.exa.ai",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "similar",
+              "find_similar"
+            ],
+            "endpoint": "findSimilar",
+            "implementation": "lionhub.providers.exa.find_similar:ExaFindSimilarEndpoint",
+            "kind": "api",
+            "member": "FIND_SIMILAR",
+            "request_options": "lionhub.providers.exa.find_similar:ExaFindSimilarRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "EXA_API_KEY",
+              "auth_type": "x-api-key",
+              "base_url": "https://api.exa.ai",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "exa"
+      },
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/firecrawl/_config.py::FirecrawlConfigs",
+        "context_windows": null,
+        "context_windows_source": null,
+        "default_endpoint": "v1/scrape",
+        "endpoints": [
+          {
+            "aliases": [
+              "scrape"
+            ],
+            "endpoint": "v1/scrape",
+            "implementation": "lionhub.providers.firecrawl.scrape:FirecrawlScrapeEndpoint",
+            "kind": "api",
+            "member": "SCRAPE",
+            "request_options": "lionhub.providers.firecrawl.scrape:FirecrawlScrapeRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "FIRECRAWL_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.firecrawl.dev",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "map"
+            ],
+            "endpoint": "v1/map",
+            "implementation": "lionhub.providers.firecrawl.map:FirecrawlMapEndpoint",
+            "kind": "api",
+            "member": "MAP",
+            "request_options": "lionhub.providers.firecrawl.map:FirecrawlMapRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "FIRECRAWL_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.firecrawl.dev",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "crawl"
+            ],
+            "endpoint": "v1/crawl",
+            "implementation": "lionhub.providers.firecrawl.crawl:FirecrawlCrawlEndpoint",
+            "kind": "api",
+            "member": "CRAWL",
+            "request_options": "lionhub.providers.firecrawl.crawl:FirecrawlCrawlRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "FIRECRAWL_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.firecrawl.dev",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "firecrawl"
+      },
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/perplexity/_config.py::PerplexityConfigs",
+        "context_windows": [
+          [
+            "sonar-pro",
+            200000
+          ],
+          [
+            "sonar",
+            128000
+          ]
+        ],
+        "context_windows_source": "CONTEXT_WINDOWS",
+        "default_endpoint": "chat/completions",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat"
+            ],
+            "endpoint": "chat/completions",
+            "implementation": "lionhub.providers.perplexity.chat:PerplexityChatEndpoint",
+            "kind": "api",
+            "member": "CHAT",
+            "request_options": "lionhub.providers.perplexity.chat:PerplexityChatRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "PERPLEXITY_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.perplexity.ai",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "perplexity"
+      },
+      {
+        "aliases": [
+          "nvidia",
+          "nim"
+        ],
+        "configuration": "lionhub/src/lionhub/providers/nvidia_nim/_config.py::NvidiaNimConfigs",
+        "context_windows": [
+          [
+            "nemotron-ultra",
+            131072
+          ],
+          [
+            "nemotron-super",
+            131072
+          ],
+          [
+            "llama-4-scout",
+            10485760
+          ],
+          [
+            "llama-4-maverick",
+            1048576
+          ],
+          [
+            "llama-3",
+            128000
+          ]
+        ],
+        "context_windows_source": "CONTEXT_WINDOWS",
+        "default_endpoint": "chat/completions",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat"
+            ],
+            "endpoint": "chat/completions",
+            "implementation": "lionhub.providers.nvidia_nim.chat:NvidiaNimChatEndpoint",
+            "kind": "api",
+            "member": "CHAT",
+            "request_options": "lionagi.service.connections._chat_schemas:OpenAIChatCompletionsRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "NVIDIA_NIM_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://integrate.api.nvidia.com/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "embed"
+            ],
+            "endpoint": "embeddings",
+            "implementation": "lionhub.providers.nvidia_nim.embed:NvidiaNimEmbedEndpoint",
+            "kind": "api",
+            "member": "EMBED",
+            "request_options": "lionhub.providers.nvidia_nim.embed:NvidiaNimEmbeddingRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "NVIDIA_NIM_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://integrate.api.nvidia.com/v1",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "nvidia_nim"
+      },
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/deepseek/_config.py::DeepSeekConfigs",
+        "context_windows": [
+          [
+            "deepseek-v4-pro",
+            1000000
+          ],
+          [
+            "deepseek-v4-flash",
+            1000000
+          ],
+          [
+            "deepseek-v4",
+            1000000
+          ],
+          [
+            "deepseek-coder-v2",
+            128000
+          ],
+          [
+            "deepseek-chat",
+            1000000
+          ],
+          [
+            "deepseek-reasoner",
+            1000000
+          ],
+          [
+            "deepseek-v3",
+            128000
+          ],
+          [
+            "deepseek-r1",
+            64000
+          ]
+        ],
+        "context_windows_source": "CONTEXT_WINDOWS",
+        "default_endpoint": "chat/completions",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat"
+            ],
+            "endpoint": "chat/completions",
+            "implementation": "lionhub.providers.deepseek.chat:DeepseekChatEndpoint",
+            "kind": "api",
+            "member": "CHAT",
+            "request_options": "lionhub.providers.deepseek.chat:DeepseekChatCompletionsRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "DEEPSEEK_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.deepseek.com/v1",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "deepseek"
+      },
+      {
+        "aliases": [
+          "gemini-api"
+        ],
+        "configuration": "lionhub/src/lionhub/providers/google/_config.py::GeminiChatConfigs",
+        "context_windows": [
+          [
+            "gemini-3.8-flash",
+            1048576
+          ],
+          [
+            "gemini-2.5-flash",
+            1048576
+          ],
+          [
+            "gemini-2.5-pro",
+            1048576
+          ],
+          [
+            "gemini-2.0-flash",
+            1048576
+          ]
+        ],
+        "context_windows_source": "GEMINI_CONTEXT_WINDOWS",
+        "default_endpoint": "chat/completions",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat"
+            ],
+            "endpoint": "chat/completions",
+            "implementation": "lionhub.providers.google.chat:GeminiChatEndpoint",
+            "kind": "api",
+            "member": "CHAT",
+            "request_options": "lionagi.service.connections._chat_schemas:OpenAIChatCompletionsRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "GEMINI_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "gemini"
+      },
+      {
+        "aliases": [
+          "gemini-code",
+          "gemini_cli",
+          "gemini-cli"
+        ],
+        "configuration": "lionhub/src/lionhub/providers/google/_config.py::GeminiCodeConfigs",
+        "context_windows": [
+          [
+            "gemini-4-argon",
+            1048576
+          ],
+          [
+            "gemini-4",
+            1048576
+          ],
+          [
+            "argon",
+            1048576
+          ],
+          [
+            "gemini-3.8-flash",
+            1048576
+          ],
+          [
+            "gemini-3.6-flash",
+            1048576
+          ],
+          [
+            "gemini-3.5-flash",
+            1048576
+          ],
+          [
+            "gemini-3.1-pro",
+            1048576
+          ],
+          [
+            "gemini-3-flash-preview",
+            1048576
+          ],
+          [
+            "gemini-3-pro-preview",
+            1048576
+          ],
+          [
+            "gemini-2.5-flash",
+            1048576
+          ],
+          [
+            "gemini-2.5-pro",
+            1048576
+          ]
+        ],
+        "context_windows_source": "GEMINI_CODE_CONTEXT_WINDOWS",
+        "default_endpoint": "query_cli",
+        "endpoints": [
+          {
+            "aliases": [
+              "cli"
+            ],
+            "endpoint": "query_cli",
+            "implementation": "lionhub.providers.google.gemini_code:GeminiCLIEndpoint",
+            "kind": "agentic",
+            "member": "CLI",
+            "request_options": "lionhub.providers.google.gemini_code:GeminiCodeRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": null,
+              "base_url": null,
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "gemini_code"
+      },
+      {
+        "aliases": [],
+        "configuration": "lionhub/src/lionhub/providers/groq/_config.py::GroqConfigs",
+        "context_windows": [
+          [
+            "llama-3.3-70b-versatile",
+            128000
+          ],
+          [
+            "llama-3.1-8b-instant",
+            128000
+          ],
+          [
+            "mixtral-8x7b-32768",
+            32768
+          ],
+          [
+            "gemma2-9b-it",
+            8192
+          ]
+        ],
+        "context_windows_source": "CONTEXT_WINDOWS",
+        "default_endpoint": "chat/completions",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat"
+            ],
+            "endpoint": "chat/completions",
+            "implementation": "lionhub.providers.groq.chat:GroqChatEndpoint",
+            "kind": "api",
+            "member": "CHAT",
+            "request_options": "lionagi.service.connections._chat_schemas:OpenAIChatCompletionsRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "GROQ_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.groq.com/openai/v1",
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "whisper",
+              "stt"
+            ],
+            "endpoint": "audio/transcriptions",
+            "implementation": "lionhub.providers.groq.audio_transcription:GroqAudioTranscriptionEndpoint",
+            "kind": "api",
+            "member": "AUDIO_TRANSCRIPTION",
+            "request_options": "lionhub.providers.openai._audio_schemas:AudioTranscriptionRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "GROQ_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://api.groq.com/openai/v1",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "groq"
+      },
+      {
+        "aliases": [
+          "pi-code",
+          "pi_code"
+        ],
+        "configuration": "lionhub/src/lionhub/providers/pi/_config.py::PiConfigs",
+        "context_windows": [
+          [
+            "pi",
+            128000
+          ]
+        ],
+        "context_windows_source": "CONTEXT_WINDOWS",
+        "default_endpoint": "query_cli",
+        "endpoints": [
+          {
+            "aliases": [
+              "cli",
+              "code"
+            ],
+            "endpoint": "query_cli",
+            "implementation": "lionhub.providers.pi.cli:PiCLIEndpoint",
+            "kind": "agentic",
+            "member": "CLI",
+            "request_options": "lionhub.providers.pi.cli:PiCodeRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": null,
+              "base_url": null,
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "pi"
+      },
+      {
+        "aliases": [
+          "open-router"
+        ],
+        "configuration": "lionhub/src/lionhub/providers/openrouter/_config.py::OpenRouterConfigs",
+        "context_windows": [
+          [
+            "google/gemini-3.8-flash",
+            1048576
+          ],
+          [
+            "anthropic/claude-fable-5.1",
+            1000000
+          ],
+          [
+            "anthropic/claude-opus-5.5",
+            1000000
+          ],
+          [
+            "anthropic/claude-sonnet-5.5",
+            1000000
+          ],
+          [
+            "anthropic/claude-haiku-5.5",
+            1000000
+          ],
+          [
+            "openai/gpt-6.1-sol",
+            1050000
+          ],
+          [
+            "openai/gpt-6.1-terra",
+            1050000
+          ],
+          [
+            "openai/gpt-6-astra",
+            1050000
+          ],
+          [
+            "openai/gpt-6-sol",
+            1050000
+          ],
+          [
+            "openai/gpt-6-luna",
+            1050000
+          ],
+          [
+            "google/gemini-2.5-flash",
+            1048576
+          ],
+          [
+            "google/gemini-2.5-pro",
+            1048576
+          ],
+          [
+            "anthropic/claude-opus-4-5",
+            200000
+          ],
+          [
+            "anthropic/claude-sonnet-4-5",
+            200000
+          ],
+          [
+            "openai/gpt-4.1",
+            1000000
+          ],
+          [
+            "meta-llama/llama-3.3-70b-instruct",
+            128000
+          ]
+        ],
+        "context_windows_source": "CONTEXT_WINDOWS",
+        "default_endpoint": "chat/completions",
+        "endpoints": [
+          {
+            "aliases": [
+              "chat",
+              "chat/completions"
+            ],
+            "endpoint": "chat/completions",
+            "implementation": "lionhub.providers.openrouter.chat:OpenRouterEndpoint",
+            "kind": "api",
+            "member": "CHAT",
+            "request_options": "lionhub.providers.openrouter.chat:OpenRouterRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": "OPENROUTER_API_KEY",
+              "auth_type": "bearer",
+              "base_url": "https://openrouter.ai/api/v1",
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "openrouter"
+      },
+      {
+        "aliases": [
+          "autogen"
+        ],
+        "configuration": "lionhub/src/lionhub/providers/ag2/_config.py::AG2Configs",
+        "context_windows": null,
+        "context_windows_source": null,
+        "default_endpoint": "group_chat",
+        "endpoints": [
+          {
+            "aliases": [
+              "groupchat",
+              "chat"
+            ],
+            "endpoint": "group_chat",
+            "implementation": "lionhub.providers.ag2.groupchat:AG2GroupChatEndpoint",
+            "kind": "agentic",
+            "member": "GROUP_CHAT",
+            "request_options": "lionhub.providers.ag2.groupchat:AG2GroupChatRequest",
+            "requirements": [
+              {
+                "distribution": "ag2",
+                "import_roots": [
+                  "autogen"
+                ],
+                "install_hint": "pip install lionagi[ag2]",
+                "version_constraint": ">=0.13.0"
+              }
+            ],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": null,
+              "base_url": null,
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "beta",
+              "ask"
+            ],
+            "endpoint": "agent",
+            "implementation": "lionhub.providers.ag2.agent:AG2BetaEndpoint",
+            "kind": "agentic",
+            "member": "AGENT",
+            "request_options": "lionhub.providers.ag2.agent:AG2AgentRequest",
+            "requirements": [
+              {
+                "distribution": "ag2",
+                "import_roots": [
+                  "autogen"
+                ],
+                "install_hint": "pip install lionagi[ag2]",
+                "version_constraint": ">=0.13.0"
+              }
+            ],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": null,
+              "base_url": null,
+              "content_type": "application/json"
+            }
+          },
+          {
+            "aliases": [
+              "nlip_remote",
+              "remote"
+            ],
+            "endpoint": "nlip",
+            "implementation": "lionhub.providers.ag2.nlip:AG2NlipEndpoint",
+            "kind": "agentic",
+            "member": "NLIP",
+            "request_options": "lionhub.providers.ag2.nlip:AG2NlipRequest",
+            "requirements": [],
+            "settings": {
+              "api_key_env": null,
+              "auth_type": null,
+              "base_url": null,
+              "content_type": "application/json"
+            }
+          }
+        ],
+        "provider": "ag2"
+      }
+    ],
+    "source": "lionhub.providers"
+  },
+  "public_exports": {
+    "lionagi.iModel": "lionagi.service.imodel:iModel",
+    "lionagi.service.connections.EndpointRegistry": "lionagi.service.connections.registry:EndpointRegistry",
+    "lionagi.service.connections.EndpointType": "lionagi.service.connections.registry:EndpointType",
+    "lionagi.service.connections.ProviderAliasCollisionError": "lionagi.service.connections.registry:ProviderAliasCollisionError",
+    "lionagi.service.connections.ProviderConfig": "lionagi.service.connections.provider_config:ProviderConfig",
+    "lionagi.service.connections.ProviderNotFoundError": "lionagi.service.connections.registry:ProviderNotFoundError",
+    "lionagi.service.connections.match_endpoint": "lionagi.service.connections.match_endpoint:match_endpoint",
+    "lionagi.service.connections.register_endpoint": "lionagi.service.connections.registry:register_endpoint",
+    "lionagi.service.iModel": "lionagi.service.imodel:iModel"
+  },
+  "schema_version": 1,
+  "signatures": {
+    "lionagi/service/connections/match_endpoint.py::match_endpoint": "(provider: str, endpoint: str, *, openai_compatible: bool=False, provider_catalog: ProviderCatalog | None=None, **kwargs) -> Endpoint",
+    "lionagi/service/connections/provider_catalog.py::compose_provider_catalog": "(fragments: Iterable[ProviderFragment] | ProviderManifest, *, source: str | None=None, context_window_order: Iterable[str] | None=None) -> ProviderCatalog",
+    "lionagi/service/connections/provider_config.py::ProviderConfig.available": "(cls) -> frozenset[str]",
+    "lionagi/service/connections/provider_config.py::ProviderConfig.register": "(self, cls=None)",
+    "lionagi/service/connections/registry.py::EndpointRegistry.canonical_provider": "(cls, provider: str) -> str",
+    "lionagi/service/connections/registry.py::EndpointRegistry.failed_providers": "(cls) -> list[dict[str, Any]]",
+    "lionagi/service/connections/registry.py::EndpointRegistry.list_providers": "(cls) -> list[dict[str, Any]]",
+    "lionagi/service/connections/registry.py::EndpointRegistry.match": "(cls, provider: str, endpoint: str='', *, openai_compatible: bool=False, provider_catalog: ProviderCatalog | None=None, **kwargs) -> Any",
+    "lionagi/service/connections/registry.py::EndpointRegistry.register": "(cls, provider: str, endpoint: str, aliases: list[str] | None=None, endpoint_type: EndpointType=EndpointType.API, provider_aliases: list[str] | None=None, options: type[BaseModel] | None=None, base_url: str | None=None, auth_type: str | None=None, content_type: str | None=None, api_key_env: str | None=None)",
+    "lionagi/service/connections/registry.py::register_endpoint": "(provider: str, endpoint: str, aliases: list[str] | None=None, endpoint_type: EndpointType=EndpointType.API, provider_aliases: list[str] | None=None, options: type[BaseModel] | None=None, base_url: str | None=None, auth_type: str | None=None, content_type: str | None=None, api_key_env: str | None=None)",
+    "lionagi/service/imodel.py::iModel.__init__": "(self, provider: str | None=None, base_url: str | None=None, endpoint: str | Endpoint='chat', api_key: str | None=None, queue_capacity: int | None=None, capacity_refresh_time: float=60, interval: float | None=None, limit_requests: int | None=None, limit_tokens: int | None=None, concurrency_limit: int | None=None, streaming_process_func: Callable | None=None, provider_metadata: dict | None=None, hook_registry: HookRegistry | dict | None=None, exit_hook: bool=False, id: UUID | str | None=None, created_at: float | None=None, max_input_tokens: int | None=None, tool_result_max_chars: int | None=None, *, provider_catalog: ProviderCatalog | None=None, **kwargs) -> None",
+    "lionagi/service/token_budget.py::get_context_window": "(branch: Branch) -> int",
+    "lionagi/service/token_budget.py::get_token_budget": "(branch: Branch) -> TokenBudget",
+    "lionagi/service/token_budget.py::lookup_context_window": "(model_name: str, provider: str | None=None, *, provider_catalog: ProviderCatalog | None=None) -> int",
+    "lionhub/src/lionhub/providers/manifest.py::get_provider_manifest": "() -> ProviderManifest"
+  }
+}

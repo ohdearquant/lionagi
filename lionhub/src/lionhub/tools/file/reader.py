@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import io
+import os
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -14,8 +16,21 @@ from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
+from ._bounded_io import _NotRegularFileError, _open_regular_file
 
+# A read keeps only its line window but still scans from the top of the file to
+# find it and to count lines. The scan stops at this many bytes so a worker's time
+# stays bounded on any file.
+_MAX_TEXT_SCAN_BYTES = 64 * 1024 * 1024
+# Characters kept from one line; the rest of the line is scanned and dropped, so a
+# file without newlines cannot turn a one-line window into the whole file.
+_MAX_LINE_CHARS = 1_000_000
+# Characters one read returns, line-number prefixes included. A window ends with the line
+# that reaches it, so a read can pass it by that one line, up to _MAX_LINE_CHARS.
+_MAX_TEXT_OUTPUT_CHARS = 2_000_000
+_SCAN_CHUNK_CHARS = 1 << 20
 _MAX_LIST_FILES = 1_000
+_MAX_DIRECTORY_ENTRIES = 10_000
 
 
 class ReaderAction(str, Enum):
@@ -30,10 +45,15 @@ class ReaderRequest(BaseModel):
             "Action to perform. One of:\n"
             "- 'read': Read a text file. Each line is returned as `<number>\\t<code>`; "
             "the line-number prefix is for navigation only — strip it (and the tab) "
-            "before using any line as editor old_string. For large files use "
-            "offset+limit to read in windows rather than loading everything at once.\n"
+            "before using any line as editor old_string. Use offset+limit to read "
+            "a line window.\n"
             "Text reads include total_lines and reached_eof. An offset at or past the "
-            "end of a nonempty file returns an end-of-file notice.\n"
+            "end of a nonempty file returns an end-of-file notice. A read scans about "
+            f"the first {_MAX_TEXT_SCAN_BYTES:,} bytes: past that, total_lines and "
+            "reached_eof are None, and an offset beyond the scanned part is an error. "
+            f"A line longer than {_MAX_LINE_CHARS:,} characters is cut, and a read returns "
+            f"about {_MAX_TEXT_OUTPUT_CHARS:,} characters, line numbers included: the window "
+            "ends with the line that reaches that, so continue from the next offset.\n"
             "- 'list_dir': List files in a directory."
         ),
     )
@@ -103,6 +123,91 @@ class ReaderResponse(BaseModel):
     )
 
 
+def _scan_window(
+    binary: io.BufferedReader, start: int, max_lines: int
+) -> tuple[list[str], int | None]:
+    """The kept lines of the window starting at line ``start``, and the file's line count.
+
+    The file is decoded in chunks with universal newlines and lines outside the window
+    are only counted. The count is None when the scan budget ran out before the end of
+    the file; the budget is checked once per chunk on the bytes the decoder has taken
+    from ``binary``, so the scan can pass it by at most one decoder chunk. The OS read
+    position is not used: buffering moves it ahead by an amount that varies by platform.
+    The window ends early with the line at which the kept text, each line's number prefix
+    included, reaches ``_MAX_TEXT_OUTPUT_CHARS``.
+    """
+    selected: list[str] = []
+    end = start + max_lines
+    kept_chars = 0
+    index = 0  # the line being read
+    pieces: list[str] = []
+    piece_chars = 0
+    open_line = False  # the line being read has text
+
+    def keep(piece: str) -> None:
+        nonlocal piece_chars, open_line
+        open_line = open_line or bool(piece)
+        if start <= index < end and piece_chars <= _MAX_LINE_CHARS:
+            pieces.append(piece)
+            piece_chars += len(piece)
+
+    def finish(ending: str) -> None:
+        nonlocal index, end, kept_chars, piece_chars, open_line
+        if start <= index < end:
+            line = "".join(pieces)
+            if len(line) > _MAX_LINE_CHARS:
+                line = line[:_MAX_LINE_CHARS] + (
+                    f" [... line truncated at {_MAX_LINE_CHARS:,} characters]"
+                )
+            selected.append(line + ending)
+            # The caller prefixes each line with its number and a tab.
+            kept_chars += len(f"{index + 1}\t") + len(line) + len(ending)
+            if kept_chars >= _MAX_TEXT_OUTPUT_CHARS:
+                end = index + 1
+        pieces.clear()
+        piece_chars = 0
+        open_line = False
+        index += 1
+
+    text = io.TextIOWrapper(binary, encoding="utf-8", errors="replace")
+    try:
+        while True:
+            if binary.tell() > _MAX_TEXT_SCAN_BYTES:
+                if open_line and start <= index < end:
+                    finish(f" [... read stopped at the {_MAX_TEXT_SCAN_BYTES:,}-byte scan limit]")
+                return selected, None
+            chunk = text.read(_SCAN_CHUNK_CHARS)
+            if not chunk:
+                if open_line:
+                    finish("")
+                return selected, index
+            newlines = chunk.count("\n")
+            if newlines == 0:
+                keep(chunk)
+                continue
+            if index + newlines < start or index >= end:
+                # No line of this chunk is in the window: count it and move on.
+                index += newlines
+                open_line = not chunk.endswith("\n")
+                continue
+            parts = chunk.split("\n")
+            keep(parts[0])
+            finish("\n")
+            first = index
+            lo = max(start - first, 0)
+            hi = min(end - first, newlines - 1)
+            index = first + lo
+            for part in parts[1 + lo : 1 + max(lo, hi)]:
+                keep(part)
+                finish("\n")
+                if index >= end:
+                    break
+            index = first + newlines - 1
+            keep(parts[-1])
+    finally:
+        text.detach()
+
+
 def _read_sync(
     path: str,
     offset: int | None,
@@ -119,43 +224,46 @@ def _read_sync(
             success=False,
             error=f"Refusing to read symlink: {path!r}. Use the real file path within the workspace.",
         )
-    if not p.exists():
+    start = max(0, offset or 0)
+    max_lines = limit if (limit is not None and limit > 0) else 2000
+    try:
+        with _open_regular_file(p, os.O_RDONLY) as (fd, _info):
+            with os.fdopen(fd, "rb", closefd=False) as binary:
+                if b"\x00" in binary.read(8192):
+                    return ReaderResponse(
+                        success=False,
+                        error=f"Binary file not supported: {path}. Use bash to inspect binary files (e.g. `file {path}`).",
+                    )
+                binary.seek(0)
+                selected, total_lines = _scan_window(binary, start, max_lines)
+    except FileNotFoundError:
         return ReaderResponse(
             success=False,
             error=f"File not found: {path}. Check the path spelling and that it is within the workspace root.",
         )
-    if not p.is_file():
+    except _NotRegularFileError as e:
         return ReaderResponse(
             success=False,
-            error=f"Path is not a file: {path}. Use action='list_dir' to list directory contents.",
+            error=f"{e} Use action='list_dir' to list directory contents.",
         )
-
-    try:
-        with open(p, "rb") as fbin:
-            chunk = fbin.read(8192)
-        if b"\x00" in chunk:
-            return ReaderResponse(
-                success=False,
-                error=f"Binary file not supported: {path}. Use bash to inspect binary files (e.g. `file {path}`).",
-            )
     except OSError as e:
         return ReaderResponse(
             success=False, error=f"Cannot open file: {e}. Check file permissions."
         )
 
-    start = max(0, offset or 0)
-    max_lines = limit if (limit is not None and limit > 0) else 2000
+    if total_lines is None:
+        if start > 0 and not selected:
+            return ReaderResponse(
+                success=False,
+                error=(
+                    f"Offset {start} is beyond the first {_MAX_TEXT_SCAN_BYTES:,} bytes of "
+                    f"{path}, which is as far as a read scans. Use bash (e.g. `tail` or `sed -n`) "
+                    "to reach later lines."
+                ),
+            )
+        content = "".join(f"{start + i + 1}\t{line}" for i, line in enumerate(selected))
+        return ReaderResponse(success=True, content=content, total_lines=None, reached_eof=None)
 
-    try:
-        with open(p, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except OSError as e:
-        return ReaderResponse(
-            success=False, error=f"Read error: {e}. Check file permissions and encoding."
-        )
-
-    total_lines = len(lines)
-    selected = lines[start : start + max_lines]
     if total_lines > 0 and start >= total_lines:
         content = (
             f"Offset {start} is at or beyond the end of the file ({total_lines} lines). "
@@ -169,6 +277,47 @@ def _read_sync(
         total_lines=total_lines,
         reached_eof=start + len(selected) >= total_lines,
     )
+
+
+def _scan_files(
+    base: Path, recursive: bool, file_types: list[str] | None
+) -> tuple[list[Path], str | None]:
+    """Matching files under ``base`` and a notice when the listing stopped early.
+
+    The listing stops at ``_MAX_LIST_FILES`` files or after inspecting
+    ``_MAX_DIRECTORY_ENTRIES`` entries, filtered ones included.
+    """
+    files: list[Path] = []
+    pending = [base]
+    scanned = 0
+    suffixes = None if file_types is None else frozenset(file_types)
+    while pending:
+        directory = pending.pop()
+        try:
+            listing = os.scandir(directory)
+        except OSError:
+            # The base must be readable; an unreadable subdirectory is skipped, as a
+            # recursive glob skips it.
+            if directory is base:
+                raise
+            continue
+        with listing as entries:
+            for entry in entries:
+                scanned += 1
+                if scanned > _MAX_DIRECTORY_ENTRIES:
+                    return files, (
+                        f"[listing stopped after inspecting {_MAX_DIRECTORY_ENTRIES:,} entries; "
+                        "narrow the path or file_types to see the rest]"
+                    )
+                if recursive and entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif entry.is_file():
+                    path = Path(entry.path)
+                    if suffixes is None or path.suffix in suffixes:
+                        files.append(path)
+                        if len(files) >= _MAX_LIST_FILES:
+                            return files, f"[listing stopped at {_MAX_LIST_FILES:,} files]"
+    return files, None
 
 
 def _list_dir_sync(
@@ -188,15 +337,9 @@ def _list_dir_sync(
             error=f"Path is not a directory: {path}. Use action='read' to read a file's contents.",
         )
 
-    from lionagi.libs.file.process import dir_to_files
-
     try:
-        files = dir_to_files(
-            str(base),
-            recursive=bool(recursive),
-            file_types=file_types,
-        )[:_MAX_LIST_FILES]
-        content = "\n".join(str(f) for f in files)
+        files, notice = _scan_files(base, bool(recursive), file_types)
+        content = "\n".join([*(str(f) for f in files), *([notice] if notice else [])])
     except Exception as e:
         return ReaderResponse(
             success=False,
@@ -251,10 +394,13 @@ class ReaderTool(LionTool):
 
                 Use action='read' for text files. Output format is `<number>\\t<code>` per line;
                 the number prefix is for reference only — strip the leading `<digits>\\t` before
-                using any line as an editor old_string. Use offset+limit to read large files in
+                using any line as an editor old_string. Use offset+limit to read text files in
                 windows (e.g. offset=200, limit=200 to get lines 200-400). Text reads
                 include total_lines and reached_eof; an offset at or past a nonempty
                 file's end returns an end-of-file notice instead of numbered content.
+                A read scans a bounded prefix of a large file; past it, total_lines and
+                reached_eof are None and later lines need bash. One read returns a bounded
+                amount of text; continue from the next offset for more.
 
                 Use action='list_dir' for directory listings.
 

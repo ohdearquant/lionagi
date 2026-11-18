@@ -7,8 +7,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -1310,13 +1311,21 @@ def _keys_like_the_contain_flag(document: Any) -> list[str]:
     return found
 
 
-def _profile_body_blocks(lines: list[str]) -> Iterator[tuple[int, str]]:
-    """Yield each span after a Markdown rule and its zero-based opening line."""
-    from itertools import pairwise
+def _profile_line_offset(text: str, end: int) -> int:
+    """Count complete splitlines breaks before a source offset."""
+    # A frontmatter match may end between the CR and LF of one line break.
+    if end and text[end - 1 : end + 1] == "\r\n":
+        end -= 1
+    # Append a character so splitlines counts the final line even if it is empty.
+    return len((text[:end] + " ").splitlines()) - 1
 
+
+def _profile_body_layout(lines: list[str]) -> tuple[list[int], set[int], int | None]:
+    """Locate unfenced rules, fenced lines, and the final unmatched opening fence."""
     delimiters = []
     fenced: set[int] = set()
     fence: str | None = None
+    fence_start = 0
     for i, line in enumerate(lines):
         marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
         if fence is not None:
@@ -1331,14 +1340,29 @@ def _profile_body_blocks(lines: list[str]) -> Iterator[tuple[int, str]]:
             continue
         if marker and (marker[1][0] == "~" or "`" not in marker[2]):
             fence = marker[1]
+            fence_start = i
             fenced.add(i)
             continue
         if _DASHES.fullmatch(line.rstrip()):
             delimiters.append(i)
+    return delimiters, fenced, fence_start if fence is not None else None
+
+
+def _profile_body_blocks(
+    name: str,
+    lines: list[str],
+    *,
+    line_offset: int,
+    layout: tuple[list[int], set[int], int | None] | None = None,
+) -> Iterator[tuple[int, str]]:
+    """Yield unfenced spans and diagnose settings inside the final unmatched fence."""
+    delimiters, fenced, unmatched = _profile_body_layout(lines) if layout is None else layout
     # A rule in the prompt must not hide a declaration, so inspect every span.
     # Blank fenced lines so the offsets of the remaining content stay intact.
     for opening, end in pairwise([*delimiters, len(lines)]):
         yield opening, "\n".join("" if i in fenced else lines[i] for i in range(opening + 1, end))
+    if unmatched is not None:
+        _warn_unclosed_fence_tool_settings(name, lines, unmatched, line_offset=line_offset)
 
 
 def _read_profile_settings(block: str) -> tuple[bool, Any]:
@@ -1352,19 +1376,37 @@ def _read_profile_settings(block: str) -> tuple[bool, Any]:
         return False, None
 
 
-def _refuse_readable_tool_settings(
-    name: str, block: str, document: Any, *, line_offset: int, misplaced: bool = False
-) -> None:
-    fields = tuple(_HYPHENATED_TOOL_FIELDS)
-    if misplaced:
-        fields += _PROFILE_TOOL_FIELDS
-    mappings = document if isinstance(document, list) else (document,)
+def _sequence_leaves(
+    root: Any, sequence_type: type, children: Callable[[Any], Iterable[Any]]
+) -> Iterator[Any]:
+    """Follow YAML sequence items, stopping at mapping values and repeated aliases."""
+    pending = [root]
+    seen = set()
+    while pending:
+        item = pending.pop()
+        identity = id(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(item, sequence_type):
+            pending.extend(children(item))
+        else:
+            yield item
+
+
+def _tool_setting_location(
+    block: str, document: Any, fields: tuple[str, ...], *, require_list: bool = False
+) -> tuple[int, int, str] | None:
     declared = set()
-    for mapping in mappings:
+    for mapping in _sequence_leaves(document, list, iter):
         if isinstance(mapping, dict):
-            declared.update(key for key in fields if key in mapping)
+            declared.update(
+                key
+                for key in fields
+                if key in mapping and (not require_list or isinstance(mapping[key], list))
+            )
     if not declared:
-        return
+        return None
 
     import yaml
 
@@ -1373,19 +1415,60 @@ def _refuse_readable_tool_settings(
     loader = yaml.SafeLoader(block)
     try:
         node = loader.get_single_node()
-        nodes = node.value if isinstance(node, yaml.SequenceNode) else (node,)
         locations: list[tuple[int, int, str]] = []
-        for mapping in nodes:
+        for mapping in _sequence_leaves(node, yaml.SequenceNode, lambda seq: seq.value):
             if isinstance(mapping, yaml.MappingNode):
                 loader.flatten_mapping(mapping)
+                effective = {
+                    key.value: (key, value)
+                    for key, value in mapping.value
+                    if isinstance(key, yaml.ScalarNode)
+                    and key.tag == "tag:yaml.org,2002:str"
+                    and key.value in declared
+                }
                 locations.extend(
                     (key.start_mark.line, key.start_mark.column, key.value)
-                    for key, _ in mapping.value
-                    if isinstance(key, yaml.ScalarNode) and key.value in declared
+                    for key, value in effective.values()
+                    if not require_list or isinstance(value, yaml.SequenceNode)
                 )
     finally:
         loader.dispose()
-    offset, _, key = min(locations)
+    return min(locations)
+
+
+def _warn_unclosed_fence_tool_settings(
+    name: str, lines: list[str], fence_start: int, *, line_offset: int
+) -> None:
+    rules = [i for i in range(fence_start + 1, len(lines)) if lines[i].rstrip() == "---"]
+    for opening, end in pairwise(rules):
+        block = "\n".join(lines[opening + 1 : end])
+        reads, document = _read_profile_settings(block)
+        if reads and (
+            location := _tool_setting_location(
+                block, document, _PROFILE_TOOL_FIELDS, require_list=True
+            )
+        ):
+            from lionhub.orchestration.console import warn
+
+            line = line_offset + opening + location[0] + 2
+            warn(
+                f"agent profile {name!r}: tool settings on line {line} are inside an unclosed "
+                "code fence and have no effect. Move intended settings to the leading "
+                "frontmatter or close the example fence."
+            )
+            return
+
+
+def _refuse_readable_tool_settings(
+    name: str, block: str, document: Any, *, line_offset: int, misplaced: bool = False
+) -> None:
+    fields = tuple(_HYPHENATED_TOOL_FIELDS)
+    if misplaced:
+        fields += _PROFILE_TOOL_FIELDS
+    location = _tool_setting_location(block, document, fields)
+    if location is None:
+        return
+    offset, _, key = location
     line = line_offset + offset + 1
     if supported := _HYPHENATED_TOOL_FIELDS.get(key):
         raise ConfigurationError(
@@ -1409,10 +1492,15 @@ def _check_readable_profile_settings(
     opening, closing = next(delimiters), next(delimiters)
     source = text[opening.end() : closing.start()]
     _refuse_readable_tool_settings(
-        name, source, frontmatter, line_offset=line_offset + text.count("\n", 0, opening.end())
+        name,
+        source,
+        frontmatter,
+        line_offset=line_offset + _profile_line_offset(text, opening.end()),
     )
-    body_line_offset = line_offset + text.count("\n", 0, closing.end())
-    for opening_line, block in _profile_body_blocks(text[closing.end() :].splitlines()):
+    body_line_offset = line_offset + _profile_line_offset(text, closing.end())
+    for opening_line, block in _profile_body_blocks(
+        name, text[closing.end() :].splitlines(), line_offset=body_line_offset
+    ):
         reads, document = _read_profile_settings(block)
         if reads:
             _refuse_readable_tool_settings(
@@ -1463,6 +1551,14 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
                 "fix the frontmatter to proceed"
             )
 
+    def refuse_misplaced_tools(block: str, reads: bool, document: Any, opening: int) -> None:
+        if reads:
+            _refuse_readable_tool_settings(
+                name, block, document, line_offset=line_offset + opening + 1, misplaced=True
+            )
+        else:
+            refuse_unread_tool_settings(block, key_lines_only=True)
+
     def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
         if (reads and isinstance(document, dict) and "mcp" in document) or (
             not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M)
@@ -1470,6 +1566,21 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
             raise ConfigurationError(
                 f"agent profile {name!r}: the --- block on line {line} follows prompt text "
                 "and its mcp declaration would be ignored; move the block to the top"
+            )
+
+    def refuse_misplaced_settings(block: str, opening: int) -> None:
+        reads, document = _read_profile_settings(block)
+        refuse_misplaced_mcp(block, reads, document, opening + 1)
+        declared = set(_FLAG_KEY_LINE.findall(block))
+        refuse_misplaced_tools(block, reads, document, opening)
+        if not reads or isinstance(document, dict):
+            declared.update(containment_settings(block, document))
+        if declared:
+            keys = ", ".join(sorted(declared))
+            raise ConfigurationError(
+                f"agent profile {name!r}: the --- block on line {opening + 1} follows "
+                f"text on lines of its own, so its {keys} declaration "
+                "would be ignored; move the block to the top of the file"
             )
 
     if text.startswith("---"):
@@ -1495,41 +1606,33 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         what = f"its frontmatter does not read as YAML settings ({reason})"
     else:
         lines = text.splitlines()
-        if not (lines and lines[0].rstrip().endswith("---")):
+        layout = _profile_body_layout(lines)
+        delimiters, fenced, unmatched = layout
+        if not (lines and 0 not in fenced and lines[0].rstrip().endswith("---")):
             # A block following prompt text cannot configure tools, MCP or containment.
-            for opening, block in _profile_body_blocks(lines):
-                reads, document = _read_profile_settings(block)
-                refuse_misplaced_mcp(block, reads, document, opening + 1)
-                declared = set(_FLAG_KEY_LINE.findall(block))
-                if not reads:
-                    refuse_unread_tool_settings(block, key_lines_only=True)
-                else:
-                    _refuse_readable_tool_settings(
-                        name, block, document, line_offset=line_offset + opening + 1, misplaced=True
-                    )
-                if not reads or isinstance(document, dict):
-                    declared.update(containment_settings(block, document))
-                if declared:
-                    keys = ", ".join(sorted(declared))
-                    raise ConfigurationError(
-                        f"agent profile {name!r}: the --- block on line {opening + 1} follows "
-                        f"text on lines of its own, so its {keys} declaration "
-                        "would be ignored; move the block to the top of the file"
-                    )
+            for opening, block in _profile_body_blocks(
+                name, lines, line_offset=line_offset, layout=layout
+            ):
+                refuse_misplaced_settings(block, opening)
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
-        # the next ``---`` line or, unclosed, to the end.
-        rest = lines[1:]
-        closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
-        block = "\n".join(rest if closing is None else rest[:closing])
+        # the next unfenced ``---`` line or, unclosed, to the end.
+        if unmatched is not None:
+            _warn_unclosed_fence_tool_settings(name, lines, unmatched, line_offset=line_offset)
+        closing = next((i for i in delimiters if lines[i].rstrip() == "---"), None)
+        end = len(lines) if closing is None else closing
+        block = "\n".join("" if i in fenced else lines[i] for i in range(1, end))
         reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, 1)
-        if reads:
-            _refuse_readable_tool_settings(
-                name, block, document, line_offset=line_offset + 1, misplaced=True
-            )
-        else:
-            refuse_unread_tool_settings(block, key_lines_only=True)
+        refuse_misplaced_tools(block, reads, document, 0)
+        if closing is not None and closing != delimiters[-1]:
+            # The closing rule opens a later span only if another rule bounds it.
+            # The final fence has already been checked.
+            remaining = [i for i in delimiters if i >= closing]
+            for opening, later in _profile_body_blocks(
+                name, lines, line_offset=line_offset, layout=(remaining, fenced, None)
+            ):
+                refuse_misplaced_settings(later, opening)
         if reads and isinstance(document, dict):
             if not document:
                 return {}
@@ -1561,7 +1664,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
 def _parse_profile(name: str, text: str) -> AgentProfile:
     original = text
     text = _strip_frontmatter_prefix(original)
-    line_offset = original.count("\n", 0, len(original) - len(text))
+    line_offset = _profile_line_offset(original, len(original) - len(text))
     _check_profile_mcp_frontmatter(name, text)
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:

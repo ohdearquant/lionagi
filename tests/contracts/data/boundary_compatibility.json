@@ -5188,6 +5188,7 @@
     "lionhub/src/lionhub/serve/mcp/dispatch.py": [
       "OpError",
       "catalog",
+      "preload",
       "render_argv",
       "request",
       "schema_fingerprint",

@@ -13,6 +13,7 @@ import secrets
 import signal
 import socket
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -326,7 +327,22 @@ def observe_process_group_leader(pid: Any, *, expected_marker: str) -> float | N
 
     Start time alone cannot distinguish a child reaped before the first probe
     from a stranger that already reused its pid. The private marker supplies
-    that pre-spawn fact; an unreadable or mismatched marker is no authority.
+    that pre-spawn fact, and a marker that is read and differs is no authority.
+
+    macOS discloses no environment for a protected system binary such as
+    ``/bin/sh`` or ``/usr/bin/make``, so a leader of that kind never shows its
+    marker. Such a leader is bound by parentage instead: it must be a child of
+    this process, read inside the same start-time bracket. A child's pid cannot
+    be handed to another process until the child is reaped, so the pid still
+    names the spawn unless the child was collected by something other than its
+    spawner and the pid reissued to another child of this process before this
+    call. That needs the pid space to wrap within that interval.
+
+    A leader that has already exited by this call shows no environment either,
+    and its group can no longer be read. While it is still uncollected its pid
+    is held, so an exited child of this process with a stable start time is
+    bound the same way; the caller spawned it as a session leader, so its pid
+    names the group.
     """
     if (
         type(pid) is not int
@@ -338,15 +354,64 @@ def observe_process_group_leader(pid: Any, *, expected_marker: str) -> float | N
         return None
     state, member = pinned_member(pid, pid, marker_var=_PROCESS_GROUP_MARKER)
     if state != "found" or member is None:
-        return None
+        return _exited_child_created(pid)
     _, created, marker, marker_read = member
-    if (
-        not marker_read
-        or not isinstance(marker, str)
-        or not secrets.compare_digest(marker, expected_marker)
-    ):
+    if marker_read and marker is not None:
+        if isinstance(marker, str) and secrets.compare_digest(marker, expected_marker):
+            return created
         return None
-    return created
+    return created if _is_this_process_child(pid, created) else None
+
+
+_EXITING_CHILD_WAIT_SECONDS = 0.1
+
+
+def _exited_child_created(pid: int) -> float | None:
+    """Start time of *pid* when it is an exited, uncollected child of this process.
+
+    macOS reports an exiting process as idle, with its group no longer readable,
+    before it becomes a zombie; a child of this process seen in that state is
+    given a short, bounded wait to finish exiting. A child in any other state is
+    refused at once, without waiting.
+    """
+    import psutil
+
+    deadline = time.monotonic() + _EXITING_CHILD_WAIT_SECONDS
+    while True:
+        state, created = _recorded_process_create_time(pid)
+        try:
+            parent = psutil.Process(pid).ppid()
+        except (psutil.Error, OSError):
+            return None
+        if parent != os.getpid():
+            return None
+        if state == "zombie" and created is not None:
+            break
+        if state != "found" or time.monotonic() >= deadline:
+            return None
+        try:
+            exiting = psutil.Process(pid).status() == psutil.STATUS_IDLE
+        except (psutil.Error, OSError):
+            return None
+        if not exiting:
+            return None
+        time.sleep(0.001)
+    again, created_again = _recorded_process_create_time(pid, expected_created=created)
+    return created if again == "zombie" and created_again == created else None
+
+
+def _is_this_process_child(pid: int, created: float) -> bool:
+    """Whether the process at *pid*, started at *created*, is a child of this process."""
+    import psutil
+
+    try:
+        parent = psutil.Process(pid).ppid()
+    except (psutil.Error, OSError):
+        return False
+    if parent != os.getpid():
+        return False
+    state, created_again = process_create_time(pid)
+    return state == "found" and created_again == created
 
 
 def live_group_members(
@@ -862,7 +927,20 @@ def capture_group_witnesses(
         # surviving group member is the remaining proof that this PGID is ours.
         if not _child_is_reaped(proc):
             leader = next(((pid, created) for pid, created in marked if pid == pgid), None)
-            if leader is None or not start_time_matches(leader[1], expected_leader_created):
+            if leader is None:
+                # The leader shows no marker: a protected system binary on macOS, or a
+                # child that has exited and not been collected yet. While it runs, its
+                # start time still binds it to the spawn observation. Once it has exited
+                # it holds its pid uncollected, and the marked survivors are the proof,
+                # as they are after it has been collected.
+                state, created = process_create_time(pgid)
+                if state == "found":
+                    if created is None or not start_time_matches(created, expected_leader_created):
+                        return ()
+                    marked.append((pgid, created))
+                elif state != "gone":
+                    return ()
+            elif not start_time_matches(leader[1], expected_leader_created):
                 return ()
         return _GroupWitnesses(tuple(sorted(set(marked))))
     return _capture_group_witnesses(

@@ -11,9 +11,9 @@ from pydantic import PrivateAttr
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class, move_on_after
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.protocols.types import DataLogger, Event, EventStatus
-from lionagi.service.hooks import HookEvent, HookEventTypes
 
-from ._types import StreamTerminalState
+from ._types import HookEventTypes, StreamTerminalState
+from .hook_event import HookEvent
 
 _logger = logging.getLogger(__name__)
 

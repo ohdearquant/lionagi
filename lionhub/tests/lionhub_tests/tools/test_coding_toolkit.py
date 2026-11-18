@@ -411,7 +411,7 @@ async def test_search_reports_a_timed_out_grep_as_a_failure(tmp_path, monkeypatc
     def run(cmd, *args, **kwargs):
         # The shape _subprocess_sync returns on a timeout.
         return {
-            "stdout": partial + "\n\n[... output truncated at 100000 bytes ...]\n",
+            "stdout": partial,
             "stderr": "Command timed out after 30.0s",
             "returncode": -1,
             "timed_out": True,

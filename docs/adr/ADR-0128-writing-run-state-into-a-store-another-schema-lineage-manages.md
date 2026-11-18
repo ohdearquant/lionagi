@@ -1,12 +1,15 @@
 # ADR-0128: Writing run state into a store another schema lineage manages
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-11-17 (D6: input validation runs before refusal)
 - **Kind**: Aspirational
 - **Implementation-status**: implemented: D1-D8. Items 7 and 9 of D8 have tests
   (`tests/state/test_compatibility_concurrency.py` and
   `tests/state/test_compatibility_recovery.py`). For item 8 the compatibility tests also run on
   each supported aiosqlite release and on SQLAlchemy at its floor and its newest release (CI job
-  `compat-deps`).
+  `compat-deps`). The D6 amendment of 2026-11-17 (input validation runs before refusal
+  classification) is not yet implemented for `create_progression` and `set_progression`: in
+  compatibility mode neither validates the collection first, so a malformed collection there does
+  not reliably raise the `ValueError` native mode raises.
 - **Area**: persistence-state
 - **Date**: 2026-10-14
 - **Relations**: extends ADR-0122 (optional runtime profiles); constrains every writable `StateDB` open;
@@ -192,7 +195,9 @@ A refusal raises `StateCompatibilityRefused` carrying the operation, the profile
 whether anything was committed. The CLI exits nonzero; MCP returns a structured tool error. The live
 persistence retry queue and setup-time persistence handlers re-raise it: a refused write never
 becomes a run that succeeded without persistence. Where an operation spans transactions, the error
-names the phases that committed.
+names the phases that committed. Input validation runs before refusal classification: a malformed
+argument raises the same ValueError as in native mode, and StateCompatibilityRefused is reserved
+for well-formed operations the profile does not admit.
 
 ### D7: lineage
 
@@ -206,9 +211,10 @@ classified explicitly rather than falling through a numeric comparison.
 Native initialization writes `lineage = 'lionagi'` in the transaction that applies its schema, and a
 writable native open admits a store by its rows:
 
-- A `lineage` row naming lionagi: the store is this package's. A version above `SCHEMA_VERSION` is
-  refused with `SchemaTooNewError`; a version that is missing or not a whole number is replaced by
-  the stamp, as before the row existed, since the row already says whose store it is.
+- A `lineage` row naming lionagi identifies the package. A missing version or a value outside the
+  canonical format for a positive decimal integer raises `UnrecognizedStoreError`. A canonical
+  version above `SCHEMA_VERSION` raises `SchemaTooNewError`. A refused open leaves the recorded
+  version untouched.
 - No `lineage` row, and a `schema_meta` table: every store lionagi created before the row holds a
   version from 1 to `SCHEMA_VERSION` and the `sessions` table, both created on its first open. Such
   a store is adopted and the migration writes the row into it; so is one that holds no table a
