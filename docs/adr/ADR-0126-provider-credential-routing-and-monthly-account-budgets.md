@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01, 2026-11-02, 2026-11-09, 2026-11-10, 2026-11-12, 2026-11-14 and 2026-11-17 (see Amendments 1 to 16; Amendment 15 is Proposed).
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01, 2026-11-02, 2026-11-09, 2026-11-10, 2026-11-12, 2026-11-14 and 2026-11-17 (see Amendments 1 to 16).
 - **Kind**: Aspirational
 - **Implementation-status**: partial — D1 to D5 and Amendments 1 to 8 are implemented, and so are
   D6's failure classes and shielded settlement. Within that accepted scope, two clauses remain. D4's single-use runtime ticket:
@@ -1871,7 +1871,7 @@ transport request.
 
 ## Amendment 15: Verify a blocked Anthropic account
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-16
 
 ### Context

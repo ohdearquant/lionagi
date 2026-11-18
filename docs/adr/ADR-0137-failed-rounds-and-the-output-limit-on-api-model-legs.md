@@ -1,9 +1,9 @@
 # ADR-0137: Failed rounds and the output limit on API-model legs
 
-- **Status**: Accepted (2026-10-25, #3763)
+- **Status**: Accepted (2026-10-25, #3763), amended 2026-11-18 (Amendment 1)
 - **Kind**: Aspirational
 - **Implementation-status**: implemented: D1 to D4; the cost measurement has run and keeps D1's
-  limit (Consequences, Cost). Amendment 1 (Proposed): implemented
+  limit (Consequences, Cost). Amendment 1: implemented
 - **Area**: operations
 - **Date**: 2026-10-25
 - **Relations**: extends ADR-0041 Amendment 1 (API-model `li agent` legs) and ADR-0130 Amendment 1
@@ -351,7 +351,7 @@ tests.
 
 ## Amendment 1: the output limit follows the leg's effort
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Amends**: D1 (the limit an Anthropic leg sends and the request timeout beside it), P4 and the
   out-of-scope bullet on bounding thinking, and the Cost section; D2 to D4 are unchanged.
 
@@ -412,7 +412,8 @@ of the leg. It wins over D1, D1a, and a limit the model's own settings name. A v
 model's output cap is refused by the provider and reported as such. The check that the leg's
 models are Anthropic runs where they are put in place for the run, after any model override and
 before the first request; a model of another provider is refused there, naming the key and
-the provider.
+the provider. At effort `max` on a hard task one Claude Sonnet 5.5 request filled 65,536 tokens
+with thinking and returned no text, so D1a does not cover every such leg and D1c is the lever.
 
 #### D1d: new and resumed legs
 
