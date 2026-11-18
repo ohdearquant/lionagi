@@ -1868,3 +1868,121 @@ transport request.
   cleared. Verify the ordinary error reaches the caller when no unshielded
   checkpoint follows, the scope's timeout reaches it when one does, and there is
   no second transport request in either arm.
+
+## Amendment 15: Verify a blocked Anthropic account
+
+- **Status**: Proposed
+- **Date**: 2026-11-16
+
+### Context
+
+A billing rejection blocks a routed account before the next request can select
+it. An operator who has resolved the billing problem can clear the block
+manually. A provider-backed check would let the operator verify the account and
+record the outcome with the same budget and settlement rules as routed work.
+
+### Decision
+
+1. An operator may explicitly probe one named, configured, currently blocked
+   Anthropic account with `li doctor --probe-anthropic-account NAME`. The probe
+   is available through the operator CLI only and admits blocks for
+   `credit_balance_low` and `spend_limit_reached`. Under the ledger lock, an
+   account blocked for another reason returns `probe_block_not_billing` with
+   its account and current reason before reserving an attempt or sending a
+   request. A 2xx settlement also verifies that the current reason is still
+   one of the two billing reasons before it clears the block. When an A12
+   Decision 2 safety block such as `ceiling_exceeded` or `settlement_conflict`
+   replaces a billing reason, the operator must clear it manually.
+   The probe makes one non-streamed Messages request, with retries disabled, a fixed
+   short prompt, a one-token output limit, standard service only, and no cache
+   control. The current price revision determines the supported model with the
+   smallest reservation ceiling, with model name breaking a tie.
+2. Admission rechecks the account's block and monthly headroom under the
+   ordinary ledger lock. It reserves the ordinary ceiling on a probe attempt
+   scoped to its own ID. The hold counts against budget. The probe creates no
+   conversation binding, gains no preference from cache warmth, and leaves
+   the ordinary routing eligibility rule in place.
+   On open, the ledger adds the `block_generation` column, the
+   `account_block_generation` trigger, and the `probe_failure` table to an
+   existing version-1 ledger as needed, keeping `user_version` at 1.
+3. A successful HTTP status can clear the observed block in the same
+   transaction as settlement. Admission captures the account's block
+   generation from the account row's `block_generation` column, a non-negative
+   integer initialized to zero. The ledger migration installs the
+   `account_block_generation` trigger, which advances it on every write of a
+   block, including a re-block with the same reason or a billing write that
+   retains an existing reason. Clearing an existing block also advances it.
+   Clear only if the generation, last audited unblock and latest probe-failure
+   mark still match. Use the existing audited unblock operation and cite the
+   probe attempt as its source. Record complete usage as ordinary spend or
+   keep the ceiling open when usage is incomplete.
+4. For a non-2xx response or an attempt without a response, the probe's own
+   disposition leaves the account's block reason unchanged. The stored
+   generation and its advance rule extend Amendment 12. `block_reason` retains
+   its Decision 2 meaning, and Decision 4 still derives `billing_block` from
+   the current reason. Record a dated diagnostic mark beside the attempt with
+   its ID, nullable HTTP status and nullable closed-set provider error type.
+   Append it in the same transaction as the first recorded failure. A success
+   may not clear the observed block if a newer failure was recorded after
+   its reservation. Proven unsent and typed zero-cost outcomes settle as
+   zero. Keep the ceiling when delivery or usage remains uncertain. A replay
+   may supply missing accounting evidence and leaves the diagnostic mark and
+   the probe's own disposition unchanged. The ordinary over-ceiling rule
+   still applies when complete usage costs more than the reserved ceiling.
+   If the probe cleared the block with incomplete usage, a later above-ceiling
+   bill still blocks the account with `ceiling_exceeded` while the probe's
+   attempt is open. The attempt stays open after its lease expires until the
+   next admission for the same account in the same credit period closes it at
+   zero (Amendment 11 Decision 1); an attempt from an earlier credit period is
+   never closed that way. Once that closure has happened, a later bill is
+   recorded as a correction and blocks nothing (Amendment 11 Decision 4): the
+   account stays unblocked, and its recorded spend can stay below the
+   provider's bill until that bill arrives. Amendment 12 Decision 2 states that
+   “The ledger's other settle-time blocks (`ceiling_exceeded`,
+   `settlement_conflict`) are unchanged and may replace a billing reason.” That
+   rule also applies to probes while the attempt is still open, including an
+   attempt first recorded without a response whose later complete bill exceeds
+   its ceiling. For `ceiling_exceeded`, Decision 4 leaves `billing_block`
+   absent.
+5. Diagnostic data from the probe is limited to the HTTP status, a closed-set
+   provider error type when available, and the accounting outcome. Durably
+   record ordinary token counts and cost where available. Exclude the response
+   body, exception message, credential, provider request ID and rejection
+   class from the probe record and operator output.
+6. **Scope of the exception.** D3's sentence “Candidates are configured,
+   unblocked accounts with room for that attempt,” Amendment 5 Decision 5's
+   “The candidate set is unchanged: configured, unblocked accounts with room
+   for the attempt,” and Amendment 12 Decision 3's restatement continue to
+   govern ordinary assignment. This explicit operator probe admits only the
+   named blocked account without assigning it to a conversation.
+   Amendment 12 Decision 4's sentence “the account stays blocked until an
+   operator unblocks it” includes a clear triggered by the operator's
+   explicit probe and recorded only on a successful response.
+   Amendment 12 Decision 5's statement that the schema does not change is
+   qualified by Decision 2's additive version-1 ledger changes.
+
+### Verification
+
+Exercise named blocked and unblocked accounts, exhausted headroom, a billed
+success, a success with missing usage, typed and unclassified failures, and
+a request proven unsent. Check the held or charged amount, sanitized data,
+single audit entry on success, and continued block on failure. Force an
+unblock-write failure and verify that both the settlement and unblock roll
+back. Cover replay, an intervening unblock and reblock, and a bill above the
+ceiling. Verify a failed probe on a `credit_balance_low` account preserves its
+reason and `billing_block`, with a separate dated mark. Check that a later
+recorded failure keeps an older successful probe from clearing the block.
+Exercise a durable re-block with the same reason during a reserved probe and
+the control without another block write. Settle a successful probe with
+incomplete usage, then record a complete bill above its ceiling. Confirm the
+ordinary block applies and the probe leaves one unblock audit. Record the same
+bill after an admission in the same credit period has closed the expired
+attempt instead, and confirm one correction for the bill, no block and the
+probe's one unblock audit. Confirm the bill still applies the ordinary block
+when the lease has expired with no admission since, and when the probe
+belongs to an earlier credit period than the admission that followed it.
+Verify both billing reasons can be admitted and cleared. Verify
+`ceiling_exceeded` and `settlement_conflict` refuse before reserving or
+requesting, preserving the reason and generation, and that a billing block
+replaced by `ceiling_exceeded` during a probe survives a 2xx settlement.
+Use a synthetic transport and a temporary ledger.

@@ -117,6 +117,14 @@ def test_available_paths_lists_canonical_spellings_only() -> None:
     )
 
 
+def test_the_billed_account_probe_is_not_offered_to_mcp_callers() -> None:
+    """The probe sends a billed request and can lift a block; it stays on the operator's
+    command line, so the doctor verb's schema neither lists nor accepts it."""
+    schema = project("doctor").schema
+    assert "probe_anthropic_account" not in schema["properties"]
+    assert schema["additionalProperties"] is False
+
+
 def test_resume_on_timeout_is_still_offered_where_it_is_inert_but_says_so() -> None:
     """A flag no command reads is still part of the surface until it is retired.
 

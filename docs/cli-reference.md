@@ -46,6 +46,7 @@ worker.
 | `li mirror` | Mirror Claude Code transcripts into StateDB/Studio |
 | `li mcp` | Serve an MCP server that submits `li` runs as background jobs ([details](#li-mcp)) |
 | `li doctor` | Check installation, dependencies, Studio reachability, and writable state |
+| `li doctor --probe-anthropic-account NAME` | Send one billed request on a named account blocked for low credit or its spend limit and clear its block only on a 2xx response; runs only from an interactive terminal |
 
 `play`, `skill`, and `wait` are compatibility-friendly top-level conveniences handled
 before the normal argparse registry, so they may not appear in the command list printed
