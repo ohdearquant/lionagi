@@ -332,6 +332,7 @@ async def test_real_manifest_retains_all_usage_fields_and_actual_selected_accoun
             "context_fold_target",
             "context_fold_tail_margin",
             "prompt_caching",
+            "max_output_tokens",
         }
         assert launch["max_input_tokens"] == 50000
         assert launch["tool_result_max_chars"] is None

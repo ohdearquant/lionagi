@@ -1333,14 +1333,21 @@ before plus a pointer to the opt-in:
   fold cannot clear fails the turn.
   The run's `run.json` records every fold under `context_folds`. Any other value, or
   `max_input_tokens` without `api_tools`, is refused before a run exists.
+- `max_output_tokens`: the output limit, thinking included, each request of an Anthropic API leg
+  sends (ADR-0137 Amendment 1), a positive whole number. It wins over the default below and over a
+  limit the model names. On a model of another provider it is refused before the first request,
+  and without `api_tools` it is refused before a run exists.
 
 `--preset coding` and `--image` are refused for an API model. The leg is handed no MCP server.
 A profile's `khive_injection` keeps its recall on the leg, and its writeback is turned off
 (`_recall_only`): the read set runs in this process, so writeback would store file text in khive.
 An API model is built from its model spec alone: the display options `-v` and `--theme` are CLI
 endpoint settings and are not put on its request, so its key and endpoint stay its own.
-The Anthropic endpoint requires an output limit, so an API leg on it sets `max_tokens` (8192)
-unless the endpoint's settings already carry one. The default role is `reviewer` (a
+The Anthropic endpoint requires an output limit, so an API leg on it sets `max_tokens` unless the
+profile's `max_output_tokens` or the endpoint's settings already carry one: 32,768 (ADR-0137 D1),
+or 65,536 when its requests carry effort `xhigh` or `max` (ADR-0137 Amendment 1). A limit set
+this way above 32,768 raises the model's request timeout to at least one second per 50 tokens of
+it, 1,311 seconds at 65,536; a timeout already longer is kept. The default role is `reviewer` (a
 declared `role:` key still wins).
 
 The branch records `{"tools", "network", "max_extensions", "loop"}` under `metadata["api_launch"]`. When a

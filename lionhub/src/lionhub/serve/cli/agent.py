@@ -282,6 +282,7 @@ _API_POLICY_KEYS = (
     "context_fold_target",
     "context_fold_tail_margin",
     "prompt_caching",
+    "max_output_tokens",
 )
 # How many times one turn (the task, or one queued message) folds and continues after the
 # input cap refused a request.
@@ -319,6 +320,31 @@ _API_REFUSED_RESUME_PROMPT = (
 # request could spend the whole limit on thinking and write nothing. At about 200 output tokens a
 # second this limit takes some 160 seconds, inside the endpoint's 600-second request timeout.
 _API_MAX_OUTPUT_TOKENS = 32_768
+# The same limit when the request carries effort xhigh or max: at those efforts a thinking model can
+# spend more than 32,768 tokens before it writes anything. At about 200 output tokens a second this
+# takes some 330 seconds, still inside the 600-second request timeout; the leg does not stream, so
+# a larger limit would turn a long response into a timeout.
+_API_HIGH_EFFORT_MAX_OUTPUT_TOKENS = 65_536
+_API_HIGH_EFFORTS = frozenset({"xhigh", "max"})
+# A limit above _API_MAX_OUTPUT_TOKENS raises the request timeout to at least one second per
+# this many tokens of the limit (ADR-0137 Amendment 1 D1b), so a full response at the measured
+# output rates finishes inside the timeout.
+_API_TOKENS_PER_TIMEOUT_SECOND = 50
+# Branch metadata recording, per model role, the output limit and the raised request timeout
+# _install_api_input_cap set. Both persist with the branch's models, so a resumed leg reads them
+# back as if its model had named them; the record lets each start re-derive them from the
+# effort the models carry then (ADR-0137 Amendment 1 D1d) instead of keeping an earlier run's.
+_API_INSTALLED_OUTPUT_KEY = "api_installed_output"
+
+
+def _api_default_output_limit(kwargs: dict) -> int:
+    """The output limit an Anthropic leg sends when neither its model nor its profile names one."""
+    output_config = kwargs.get("output_config")
+    effort = output_config.get("effort") if isinstance(output_config, dict) else None
+    if effort in _API_HIGH_EFFORTS:
+        return _API_HIGH_EFFORT_MAX_OUTPUT_TOKENS
+    return _API_MAX_OUTPUT_TOKENS
+
 
 _DETACHED_EXECUTION_BOUNDARY = """[DETACHED EXECUTION BOUNDARY]
 This process was launched as a detached MCP job. No interactive harness is attached, so this turn cannot receive a background completion notification. Keep every command in the foreground. If a command tool yields a live execution handle, poll that same handle until it reaches a terminal result. Do not arm a monitor or finish a turn waiting for an external notification. Verify the requested outputs before reporting completion."""
@@ -520,6 +546,8 @@ def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -
             continue
         if key == "tool_result_max_chars":
             valid = isinstance(value, int) and not isinstance(value, bool) and value >= 1024
+        elif key == "max_output_tokens":
+            valid = isinstance(value, int) and not isinstance(value, bool) and value >= 1
         elif key == "prompt_caching":
             valid = isinstance(value, bool)
         elif key == "context_fold_tail_margin":
@@ -715,10 +743,18 @@ def _install_api_input_cap(
     context_fold_target: float | None = None,
     context_fold_tail_margin: float | None = None,
     prompt_caching: bool | None = None,
+    max_output_tokens: int | None = None,
 ):
     """Put the leg's input cap on its models and fold its context under it.
 
-    An Anthropic model that names no output limit is given ``_API_MAX_OUTPUT_TOKENS``.
+    An Anthropic model is given *max_output_tokens* when the profile names it; otherwise a
+    model that names no output limit is given ``_API_MAX_OUTPUT_TOKENS``, or
+    ``_API_HIGH_EFFORT_MAX_OUTPUT_TOKENS`` when its requests carry effort xhigh or max. A limit
+    set here above ``_API_MAX_OUTPUT_TOKENS`` raises the model's request timeout to at least one
+    second per ``_API_TOKENS_PER_TIMEOUT_SECOND`` tokens of it. A limit and a raised timeout an
+    earlier start set, recorded in the branch's metadata, are re-derived here rather than kept, so
+    a resumed leg's limit follows the effort its models carry now. A profile limit on a model of
+    another provider is refused before anything changes.
     Returns the branch's ContextFold, or None when the leg runs without a cap.
     """
     from lionagi.ln import copy
@@ -737,10 +773,19 @@ def _install_api_input_cap(
             "context_fold_target": context_fold_target,
             "context_fold_tail_margin": context_fold_tail_margin,
             "prompt_caching": prompt_caching,
+            "max_output_tokens": max_output_tokens,
         },
         label="API launch policy",
         stored=True,
     )
+    if max_output_tokens is not None:
+        for api_model in _api_models(branch):
+            provider = getattr(api_model.endpoint.config, "provider", None)
+            if provider != "anthropic":
+                raise ConfigurationError(
+                    f"max_output_tokens sets an Anthropic model's output limit; this leg's "
+                    f"model {api_model.model_name!r} runs on {provider!r}."
+                )
     fold_at = _FOLD_AT if context_fold_at is None else context_fold_at
     target = _FOLD_TARGET if context_fold_target is None else context_fold_target
     tail_margin = _TAIL_MARGIN if context_fold_tail_margin is None else context_fold_tail_margin
@@ -754,17 +799,49 @@ def _install_api_input_cap(
         if cap is not None
         else None
     )
+    earlier = branch.metadata.get(_API_INSTALLED_OUTPUT_KEY)
+    earlier = earlier if isinstance(earlier, dict) else {}
+    installed = {}
     models = {}
-    for api_model in _api_models(branch):
+    for role, api_model in zip(("chat", "parse"), _api_models(branch), strict=False):
         config = api_model.endpoint.config
-        output_limit = (
-            _API_MAX_OUTPUT_TOKENS
-            if getattr(config, "provider", None) == "anthropic"
-            and (config.kwargs or {}).get("max_tokens") is None
-            else None
+        kwargs = config.kwargs or {}
+        prior = earlier.get(role)
+        prior = prior if isinstance(prior, dict) else {}
+        # A limit an earlier start set, still in place, is that start's and not the model's.
+        inherited_limit = (
+            prior.get("max_tokens") is not None and kwargs.get("max_tokens") == prior["max_tokens"]
         )
+        base_timeout = config.timeout
+        prior_timeout = prior.get("timeout")
+        if (
+            isinstance(prior_timeout, list)
+            and len(prior_timeout) == 2
+            and config.timeout == prior_timeout[0]
+        ):
+            base_timeout = prior_timeout[1]
+        output_limit = None
+        if getattr(config, "provider", None) == "anthropic":
+            if max_output_tokens is not None:
+                output_limit = max_output_tokens
+            elif inherited_limit or kwargs.get("max_tokens") is None:
+                output_limit = _api_default_output_limit(kwargs)
+        timeout_floor = None
+        if output_limit is not None and output_limit > _API_MAX_OUTPUT_TOKENS:
+            timeout_floor = -(-output_limit // _API_TOKENS_PER_TIMEOUT_SECOND)
+            if base_timeout >= timeout_floor:
+                timeout_floor = None
+        new_timeout = base_timeout if timeout_floor is None else timeout_floor
+        drop_limit = inherited_limit and output_limit is None
+        if output_limit is not None:
+            installed[role] = {
+                "max_tokens": output_limit,
+                "timeout": [timeout_floor, base_timeout] if timeout_floor is not None else None,
+            }
         changes = (
             output_limit is not None
+            or drop_limit
+            or new_timeout != config.timeout
             or getattr(api_model, "tool_result_max_chars", None) != tool_result_max_chars
             or (prompt_caching is not None and config.prompt_caching != prompt_caching)
             or (
@@ -790,7 +867,18 @@ def _install_api_input_cap(
                     **(selected.endpoint.config.kwargs or {}),
                     "max_tokens": output_limit,
                 }
+            elif drop_limit:
+                selected.endpoint.config.kwargs = {
+                    k: v
+                    for k, v in (selected.endpoint.config.kwargs or {}).items()
+                    if k != "max_tokens"
+                }
+            selected.endpoint.config.timeout = new_timeout
         models[id(api_model)] = selected
+    if installed:
+        branch.metadata[_API_INSTALLED_OUTPUT_KEY] = installed
+    else:
+        branch.metadata.pop(_API_INSTALLED_OUTPUT_KEY, None)
     chat, parse = branch.chat_model, getattr(branch, "parse_model", None)
     branch.chat_model = models[id(chat)]
     if parse is not None:
