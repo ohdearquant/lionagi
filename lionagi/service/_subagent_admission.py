@@ -25,7 +25,8 @@ and a slot whose recorded child is still the same running process counts as
 held even when nobody holds its lock. A child whose start time could not be read
 takes no slot, since a bare pid could name a reused one; under a cap its spawn is refused
 and the child is killed, while any processes it had started are left running, since
-nothing shows its process group is still its own.
+nothing shows its process group is still its own. A child that has already exited and
+been collected is not refused: its own exit status and output reach the caller.
 
 Counting a pool and taking its slot happen under that pool's admission lock
 (``<pool>/.admission``), and an agent takes the admission locks of all its pools,

@@ -226,30 +226,99 @@ async def test_a_start_time_that_reads_only_after_the_launcher_execs_is_admitted
     assert _held()["held"] == 0
 
 
-@pytest.mark.asyncio
-async def test_a_child_that_exits_before_its_start_time_reads_is_refused_at_once(
-    capped, monkeypatch
-):
-    """Re-reading stops when the child is gone, so a child that exits at start is refused
-    without waiting out the observation budget."""
-    from lionhub.providers import _cli_subprocess
-
-    monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 60.0)
-    real_observe = _cli_subprocess.observe_spawned
+def _never_a_start_time(monkeypatch, module):
+    real_observe = module.observe_spawned
 
     def _no_start_time(pid, *, expected_marker):
         observed = real_observe(pid, expected_marker=expected_marker)
-        return _cli_subprocess.SpawnedProcess(
-            pid=observed.pid, pgid=observed.pgid, create_time=None
-        )
+        return module.SpawnedProcess(pid=observed.pid, pgid=observed.pgid, create_time=None)
 
-    monkeypatch.setattr(_cli_subprocess, "observe_spawned", _no_start_time)
-    stream = ndjson_from_cli([sys.executable, "-c", "pass"], engine="codex")
+    monkeypatch.setattr(module, "observe_spawned", _no_start_time)
+
+
+@pytest.mark.asyncio
+async def test_a_child_that_exits_before_its_start_time_reads_reports_its_own_output(
+    capped, monkeypatch
+):
+    """Re-reading stops when the child is gone, and a child already collected is reported
+    by what it wrote, without waiting out the observation budget, and frees its slot."""
+    from lionhub.providers import _cli_subprocess
+
+    monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 60.0)
+    _never_a_start_time(monkeypatch, _cli_subprocess)
+    stream = ndjson_from_cli(
+        [sys.executable, "-c", 'print(\'{"type": "done"}\', flush=True)'], engine="codex"
+    )
     started = time.monotonic()
-    with pytest.raises(SubagentAdmissionRefusedError, match="start time"):
+    async with contextlib.aclosing(stream):
+        events = [event async for event in stream]
+    assert events == [{"type": "done"}]
+    assert time.monotonic() - started < 30.0
+    assert _held()["held"] == 0
+    second = await admission.admit_subagent(engine="codex")
+    try:
+        assert len(second.slots) == 1
+    finally:
+        second.release()
+
+
+@pytest.mark.asyncio
+async def test_a_child_that_fails_before_its_start_time_reads_reports_its_own_exit(
+    capped, monkeypatch
+):
+    """A child that exits nonzero before its start time reads is reported by its exit
+    status and stderr, never as an admission refusal."""
+    from lionhub.providers import _cli_subprocess
+
+    monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 60.0)
+    _never_a_start_time(monkeypatch, _cli_subprocess)
+    stream = ndjson_from_cli(
+        [sys.executable, "-c", "import sys; sys.stderr.write('own failure'); sys.exit(3)"],
+        engine="codex",
+    )
+    with pytest.raises(RuntimeError, match="own failure") as raised:
         async with contextlib.aclosing(stream):
             await stream.__anext__()
-    assert time.monotonic() - started < 30.0
+    assert not isinstance(raised.value, SubagentAdmissionRefusedError)
+    assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_exited_child_whose_run_records_its_worker_is_still_refused(capped, monkeypatch):
+    """The exited-child rule is the subagent admission's alone: a spawn that also writes a
+    worker record for its run needs the start time, so it refuses the child exited or not."""
+    from lionagi._cli_worker_context import _bind_cli_worker_recorder
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
+    from lionhub.providers import _cli_subprocess
+
+    recorded = []
+    finished = []
+
+    class _Admission:
+        async def record(self, identity):
+            recorded.append(identity)
+
+        def retain(self, task):
+            pass
+
+        def finish(self):
+            finished.append(True)
+
+    class _Recorder:
+        def admit(self):
+            return _Admission()
+
+    monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 60.0)
+    _never_a_start_time(monkeypatch, _cli_subprocess)
+    stream = ndjson_from_cli(
+        [sys.executable, "-c", 'print(\'{"type": "done"}\', flush=True)'], engine="codex"
+    )
+    with _bind_cli_worker_recorder(_Recorder()):
+        with pytest.raises(_WorkerSpawnAdmissionError, match="start time could not be observed"):
+            async with contextlib.aclosing(stream):
+                await stream.__anext__()
+    assert recorded == []
+    assert finished == [True]
     assert _held()["held"] == 0
 
 
