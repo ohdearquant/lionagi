@@ -8,13 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [0.38.0] - 2026-11-18
 
-Anthropic API agent legs now size their output limit by effort (65,536 tokens at `xhigh` and
-`max`) and accept a profile `max_output_tokens`. A CLI turn that fails after it has produced text
-keeps that text and `li agent` exits 76. A default `run_sync` now holds its worker token until an
-admitted worker returns, so a native deadline around it can end later than its limit. The command
-catalog functions in the private `lionagi._auto` module are deprecated in favour of
-`lionhub.serve.cli.catalog`, and its unused HTTP route loader is removed. Eighteen security fixes
-are listed under "Security".
+Breaking: Claude Code child agents now run in Claude Code's sandbox by default. Their commands
+cannot read credential locations or write outside the working directory and the toolchain caches,
+and their Edit and Write tools cannot change the configuration later runs load. The sandbox needs
+Claude Code 2.1.323 or newer and a sandbox backend (built into macOS; bubblewrap and socat on Linux
+and WSL2); set `child_sandbox: {enabled: false}` in `~/.lionagi/settings.yaml` to opt out. The
+state store moves to schema version 7, and writing to an older store now needs an explicit
+migration: run `li state migrate` during the upgrade, or set `LIONAGI_STATE_AUTO_MIGRATE=1`. Codex
+launches from `li agent` and orchestration turn off the signed-in account's apps and plugins unless
+the agent profile sets `contain_account_integrations: false`. Anthropic API agent legs size their
+output limit by effort (65,536 tokens at `xhigh` and `max`) and accept a profile
+`max_output_tokens`. The `lionagi.cli`, `lionagi.agent`, `lionagi.tools`, `lionagi.integrations`
+modules and most `lionagi.studio` modules move under `lionhub`; each old path keeps working with a
+deprecation warning until 2.0.0. Eighteen security fixes are listed under "Security".
 
 ### Added
 
