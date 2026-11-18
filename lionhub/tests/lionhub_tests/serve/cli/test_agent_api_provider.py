@@ -246,6 +246,7 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
         "context_fold_target",
         "context_fold_tail_margin",
         "prompt_caching",
+        "max_output_tokens",
     }
     assert all(
         record[key] is None
@@ -1101,6 +1102,134 @@ def test_a_model_that_names_its_output_limit_keeps_it():
     )
     # The model the caller built is left as it was.
     assert unnamed.endpoint.config.kwargs.get("max_tokens") is None
+
+
+@pytest.mark.parametrize(
+    ("effort", "expected", "timeout"),
+    [
+        (None, 32_768, 600),
+        ("low", 32_768, 600),
+        ("medium", 32_768, 600),
+        ("high", 32_768, 600),
+        ("xhigh", 65_536, 1_311),
+        ("max", 65_536, 1_311),
+    ],
+)
+def test_the_default_output_limit_follows_the_requested_effort(effort, expected, timeout):
+    """At effort xhigh or max a thinking model can spend more than 32,768 tokens before it
+    writes anything, so the default limit doubles there, and the request timeout rises to
+    one second per 50 tokens of it."""
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    extra = {"output_config": {"effort": effort}} if effort else {}
+    model = iModel(provider="anthropic", model="claude-haiku-5-5", api_key="k", **extra)
+    branch = Branch(chat_model=model)
+
+    assert model.endpoint.config.timeout == 600
+    agent_mod._install_api_input_cap(branch, "none")
+
+    assert branch.chat_model.endpoint.config.kwargs["max_tokens"] == expected
+    assert branch.chat_model.endpoint.config.timeout == timeout
+    assert model.endpoint.config.timeout == 600
+
+
+def test_a_model_that_names_its_output_limit_keeps_it_at_a_high_effort():
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    named = iModel(
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        api_key="k",
+        max_tokens=64,
+        output_config={"effort": "max"},
+    )
+    branch = Branch(chat_model=named)
+
+    agent_mod._install_api_input_cap(branch, "none")
+
+    assert branch.chat_model.endpoint.config.kwargs["max_tokens"] == 64
+
+
+@pytest.mark.parametrize("named", [None, 64])
+def test_a_profile_output_limit_wins_at_every_effort(named):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    extra = {"max_tokens": named} if named else {}
+    model = iModel(
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        api_key="k",
+        output_config={"effort": "max"},
+        **extra,
+    )
+    branch = Branch(chat_model=model)
+
+    agent_mod._install_api_input_cap(branch, "none", max_output_tokens=100_000)
+
+    assert branch.chat_model.endpoint.config.kwargs["max_tokens"] == 100_000
+    assert model.endpoint.config.kwargs.get("max_tokens") == named
+
+
+@pytest.mark.parametrize(
+    ("limit", "timeout"), [(4_096, 600), (32_768, 600), (32_769, 656), (100_000, 2_000)]
+)
+def test_a_profile_output_limit_above_the_default_raises_the_timeout_by_the_same_rule(
+    limit, timeout
+):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    model = iModel(provider="anthropic", model="claude-sonnet-5-5", api_key="k")
+    branch = Branch(chat_model=model)
+
+    agent_mod._install_api_input_cap(branch, "none", max_output_tokens=limit)
+
+    assert branch.chat_model.endpoint.config.kwargs["max_tokens"] == limit
+    assert branch.chat_model.endpoint.config.timeout == timeout
+
+
+def test_a_timeout_already_above_the_floor_is_kept():
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    model = iModel(provider="anthropic", model="claude-sonnet-5-5", api_key="k")
+    model.endpoint.config.timeout = 5_000
+    branch = Branch(chat_model=model)
+
+    agent_mod._install_api_input_cap(branch, "none", max_output_tokens=100_000)
+
+    assert branch.chat_model.endpoint.config.timeout == 5_000
+
+
+def test_a_profile_output_limit_on_another_provider_is_refused_before_anything_changes():
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi._errors import ConfigurationError
+    from lionagi.service.imodel import iModel
+
+    model = iModel(provider="openai", model="gpt-6-luna", api_key="k")
+    branch = Branch(chat_model=model)
+
+    with pytest.raises(ConfigurationError, match="max_output_tokens"):
+        agent_mod._install_api_input_cap(branch, "none", max_output_tokens=4096)
+    assert branch.chat_model is model
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "4096", 1.5])
+def test_a_profile_output_limit_must_be_a_positive_whole_number(value):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi._errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="max_output_tokens"):
+        agent_mod._api_requested_settings({"max_output_tokens": value}, label="profile")
 
 
 @pytest.mark.asyncio
