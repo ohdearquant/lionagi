@@ -1933,8 +1933,8 @@ record the outcome with the same budget and settlement rules as routed work.
    bill still blocks the account with `ceiling_exceeded` while the probe's
    attempt is open. The attempt stays open after its lease expires until the
    next admission for the same account in the same credit period closes it at
-   zero (Amendment 11 Decision 1); an attempt from an earlier credit period is
-   never closed that way. Once that closure has happened, a later bill is
+   zero (Amendment 11 Decisions 1 and 2); an attempt from an earlier credit
+   period is never closed that way. Once that closure has happened, a later bill is
    recorded as a correction and blocks nothing (Amendment 11 Decision 4): the
    account stays unblocked, and its recorded spend can stay below the
    provider's bill until that bill arrives. Amendment 12 Decision 2 states that
