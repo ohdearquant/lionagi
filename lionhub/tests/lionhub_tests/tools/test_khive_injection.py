@@ -199,6 +199,38 @@ async def test_actor_replaces_the_actor_in_a_supplied_khive_config_and_keeps_the
 
 
 @pytest.mark.asyncio
+async def test_cwd_starts_the_spawned_server_in_the_agent_directory(tmp_path):
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    provider = KhiveInjectionProvider(policy, actor="agent:implementer", cwd=tmp_path)
+
+    config = await _config_sent_to_pool(provider)
+
+    assert config["cwd"] == str(tmp_path)
+    assert config["args"] == ["mcp", "--actor", "agent:implementer"]
+
+
+@pytest.mark.asyncio
+async def test_without_cwd_the_spawned_server_starts_in_the_process_directory():
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    provider = KhiveInjectionProvider(policy, actor="agent:implementer")
+
+    config = await _config_sent_to_pool(provider)
+
+    assert "cwd" not in config
+
+
+@pytest.mark.asyncio
+async def test_a_directory_named_by_the_supplied_config_is_kept(tmp_path):
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    supplied = {"command": "kkernel", "args": ["mcp"], "cwd": "/srv/khive"}
+    provider = KhiveInjectionProvider(policy, supplied, actor="agent:worker", cwd=tmp_path)
+
+    config = await _config_sent_to_pool(provider)
+
+    assert config["cwd"] == "/srv/khive"
+
+
+@pytest.mark.asyncio
 async def test_actor_does_not_touch_a_supplied_config_that_is_not_khive():
     policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
     supplied = {"command": "python", "args": ["-m", "other_server"]}

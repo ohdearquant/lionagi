@@ -6,7 +6,7 @@ import math
 from contextvars import ContextVar
 from typing import Any, Literal
 
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, PrivateAttr, ValidationInfo, model_validator
 from typing_extensions import Self
 
 from lionagi._errors import ProviderStreamError
@@ -128,7 +128,7 @@ class APICalling(HookedEvent):
         return self
 
     @model_validator(mode="after")
-    def _validate_streaming(self) -> Self:
+    def _validate_streaming(self, info: ValidationInfo) -> Self:
         """Validate streaming configuration and add token usage if requested."""
         if self.payload.get("stream") is True:
             self.streaming = True
@@ -144,7 +144,12 @@ class APICalling(HookedEvent):
                 token_msg = f"\n\nEstimated Current Token Usage: {required_tokens}"
 
                 if "model" in self.payload:
-                    limit = lookup_context_window(self.payload["model"])
+                    catalog = (
+                        info.context.get("provider_catalog")
+                        if isinstance(info.context, dict)
+                        else None
+                    )
+                    limit = lookup_context_window(self.payload["model"], provider_catalog=catalog)
                     token_msg += f"/{limit:,}"
 
                 if isinstance(content, str):

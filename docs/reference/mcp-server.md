@@ -39,8 +39,9 @@ pip install "lionagi[mcp]"
 ```
 
 You can import `lionhub.serve.mcp` without the extra. `li doctor` checks whether
-`fastmcp` is available, and `li mcp` gives the install command if the extra is
-missing.
+`fastmcp` is available. If the server import reports `fastmcp`, `mcp`, or
+`starlette` missing, `li mcp` exits with status `78` and gives the install
+command. Other import failures report the startup error and exit with status `1`.
 
 Register it with any MCP client, for example in an `.mcp.json`:
 
@@ -331,6 +332,19 @@ The reply carries the allocated `run_id`. Poll it, or read what it wrote:
 ```json
 {"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
 ```
+
+An `agent.submit` handle has a nullable `resume_id`. A fresh submit returns
+immediately with `resume_id: null`. Agent `job.status` and terminal notices
+report the branch ID when the job has an owned, readable snapshot with the
+matching branch ID. The snapshot limit is 16 MiB and the metadata limit is
+1,024 keys. Unavailable or invalid snapshots produce `resume_id: null`.
+A branch that moved from the Anthropic API to the subscription route also
+reports null. Submitting that run's ID returns `invalid_input` and asks
+the caller to start a new branch before any job is prepared. To
+continue the branch, pass the full `run_id` as `agent.submit`'s `resume`
+value. The agent loads that run's own saved snapshot, and the submit handle
+reports the resolved branch ID. Branch IDs and branch prefixes also work and
+use the usual branch lookup. Run IDs must be complete.
 
 For a finished `agent.submit` job, `final` contains the last assistant reply
 captured for the leg that ended the job. `final_path` points to the UTF-8 file

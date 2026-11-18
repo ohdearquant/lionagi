@@ -616,6 +616,65 @@ async def test_run_and_collect_clears_messages_and_joins_assistant_text(monkeypa
     assert result == "one\n\ntwo"
 
 
+def _text_response(branch: Branch, text: str) -> AssistantResponse:
+    return AssistantResponse(
+        content=AssistantResponseContent(assistant_response=text),
+        sender=branch.id,
+        recipient="user",
+    )
+
+
+async def test_a_provider_error_after_text_carries_the_text_collected_so_far(monkeypatch):
+    """The error that ends a turn after it delivered text carries that text, joined as
+    a completed turn joins it."""
+    from lionagi._provider_errors import ProviderAdapterError
+
+    branch = Branch()
+
+    async def fake_run(b, ins, param):
+        yield _text_response(branch, "first part")
+        yield _text_response(branch, "second part")
+        raise ProviderAdapterError("status=ERROR: The stream was interrupted.")
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+
+    with pytest.raises(ProviderAdapterError) as raised:
+        await run_and_collect(branch, "test", ChatParam(), skip_validation=True)
+    assert raised.value.partial_text == "first part\n\nsecond part"
+
+
+async def test_a_provider_error_before_any_text_carries_no_partial_text(monkeypatch):
+    from lionagi._provider_errors import ProviderAdapterError
+
+    branch = Branch()
+
+    async def fake_run(b, ins, param):
+        yield _text_response(branch, "")
+        raise ProviderAdapterError("status=ERROR: cut off")
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+
+    with pytest.raises(ProviderAdapterError) as raised:
+        await run_and_collect(branch, "test", ChatParam(), skip_validation=True)
+    assert raised.value.partial_text is None
+
+
+async def test_an_error_that_is_not_a_provider_error_is_raised_unchanged(monkeypatch):
+    branch = Branch()
+    boom = ValueError("not a provider failure")
+
+    async def fake_run(b, ins, param):
+        yield _text_response(branch, "some text")
+        raise boom
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+
+    with pytest.raises(ValueError) as raised:
+        await run_and_collect(branch, "test", ChatParam(), skip_validation=True)
+    assert raised.value is boom
+    assert not hasattr(raised.value, "partial_text")
+
+
 async def test_run_and_collect_parses_when_response_format_is_set(monkeypatch):
     """When response_format is set, run_and_collect passes full text to parse."""
     from lionagi.operations.types import ParseParam
@@ -1077,6 +1136,7 @@ async def test_imodel_stream_propagates_cancellation():
     # make the pending-queue bookkeeping below a no-op.
     api_call.id = uuid4()
     api_call.metadata = {}
+    api_call._telemetry_frame = None
     api_call.execution = AsyncMock()
     api_call.execution.status = EventStatus.PENDING
 
@@ -1574,6 +1634,40 @@ async def test_run_idle_watchdog_fails_after_partial_output_without_retry(monkey
     assert exc_info.value.reason == "worker.stream_idle"
     assert len(create_event_calls) == 1
     assert "idle_timeout" not in create_event_calls[0]
+
+
+async def test_a_worker_that_stalls_after_text_keeps_the_text_in_the_branch_and_the_error(
+    monkeypatch,
+):
+    """The idle stall raises inside the stream loop, not on an error chunk; the text the
+    worker delivered before it still reaches the branch and the raised error."""
+    import lionagi.config as config_module
+    from lionagi._provider_errors import WorkerLivenessError
+
+    create_event_calls: list[dict] = []
+    model = _make_scheduled_cli_model(
+        create_event_calls,
+        [(0, StreamChunk(type="text", content="delivered before the stall"))],
+        hang_after=True,
+    )
+    branch = Branch()
+    branch.chat_model = model
+    monkeypatch.setattr(
+        config_module, "settings", config_module.AppSettings(LIONAGI_WORKER_IDLE_TIMEOUT=0.03)
+    )
+
+    with pytest.raises(WorkerLivenessError) as raised:
+        await run_and_collect(
+            branch,
+            "go",
+            RunParam(imodel_kw={"timeout": 0.2, "liveness_timeout": 0.1}),
+            skip_validation=True,
+        )
+
+    assert raised.value.reason == "worker.stream_idle"
+    assert raised.value.partial_text == "delivered before the stall"
+    responses = [m for m in branch.messages if isinstance(m, AssistantResponse)]
+    assert [r.response for r in responses] == ["delivered before the stall"]
 
 
 async def test_run_idle_watchdog_resets_after_every_chunk():

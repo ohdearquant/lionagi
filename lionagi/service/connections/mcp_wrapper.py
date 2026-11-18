@@ -2015,6 +2015,10 @@ class MCPConnectionPool:
             args = config.get("args", [])
             if not isinstance(args, list):
                 raise ValueError("Config 'args' must be a list")
+            # The directory the server starts in; without one it starts in this process's.
+            cwd = config.get("cwd")
+            if cwd is not None and not isinstance(cwd, str):
+                raise ValueError("Config 'cwd' must be a string")
 
             # A configured server is any program; it names its own store if it needs one.
             env = env_without_state_db_url()
@@ -2033,7 +2037,7 @@ class MCPConnectionPool:
             from fastmcp.client.transports import StdioTransport
 
             def open_stdio(mode: str | None) -> tuple[Any, Any]:
-                stdio = StdioTransport(command=command, args=args, env=env)
+                stdio = StdioTransport(command=command, args=args, env=env, cwd=cwd)
                 return stdio, cls._stdio_client(FastMCPClient, stdio, config, mode)
 
             mode = cls._stdio_handshake_mode(FastMCPClient, config)

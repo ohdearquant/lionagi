@@ -127,7 +127,15 @@ Group-wide signals have a stricter identity rule than a liveness probe can
 provide. Before spawn, `prepare_process_group_env()` gives the caller an
 environment carrying a fresh private marker. Immediately after spawn,
 `observe_process_group_leader()` accepts a create time only when that marker,
-the leader group, and both sides of a start-time bracket agree. The caller then
+the leader group, and both sides of a start-time bracket agree. A leader that
+shows no marker at all (macOS discloses no environment for a protected system
+binary such as `/bin/sh`) is accepted instead when it is a child of this
+process, read inside the same bracket: a child's pid is not reissued until the
+child is collected. A leader that has already exited by the observation shows
+neither environment nor group; while it is an uncollected child of this process
+its pid is still held, so it is accepted on the same ground, after a short
+bounded wait for an exiting child to finish exiting. A marker that is read and
+differs is never overridden by parentage. The caller then
 uses `capture_group_witnesses()` while that exact leader still anchors the group
 to freeze start-time-pinned member witnesses. An unreadable or mismatched marker
 is fail-closed, as are absent witnesses: the terminators signal only the direct
@@ -145,12 +153,18 @@ group.
 
 One case has no member witness to match: a spawn marker was supplied but the
 group scan finds no member carrying it, as happens where the platform will not
-list processes. While the leader is still running it holds the group id, so
-`capture_group_witnesses()` anchors the group to the leader instead, and a
+list processes, or on macOS when every member is a protected system binary.
+Until the leader is collected it holds the group id, whether it is still running
+or has exited, so `capture_group_witnesses()` anchors the group to the leader
+instead, and a
 positive `killpg(pgid, 0)` probe stands in for the member match. The anchor is checked again when it is used, not only when it is
 captured: once the leader has been reaped the group id is free to be reissued,
 so the anchor authorizes nothing and no probe is sent. A leader already reaped
-at capture gets no anchor at all.
+at capture gets no anchor at all. That is why the coding tools' synchronous
+runner (`_subprocess_sync`) observes the command's exit with kqueue on macOS
+instead of `Popen.wait`: the exit is seen without collecting the leader, so a
+command whose shell has exited while a background job still holds its pipes can
+still have its group ended at the deadline.
 
 That verification narrows but cannot close the final race. The identity read
 and `killpg()` remain separate system calls; the verified group can drain and

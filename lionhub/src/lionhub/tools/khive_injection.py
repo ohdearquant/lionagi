@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -366,7 +367,13 @@ class KhiveInjectionProvider:
 
     ``actor`` names the khive actor the spawned server runs as (for example
     ``agent:implementer``), so recall and writeback are attributed to it. When it is
-    None the server keeps the identity of the launching process."""
+    None the server keeps the identity of the launching process.
+
+    ``cwd`` is the directory the agent's own khive servers start in. The spawned server
+    starts there too, unless its config names a directory of its own, so it reads the
+    same directory configuration: the actor's visible namespaces come from that
+    configuration even when ``--actor`` names the actor. None starts it in this
+    process's directory."""
 
     def __init__(
         self,
@@ -374,6 +381,7 @@ class KhiveInjectionProvider:
         mcp_config: dict | None = None,
         *,
         actor: str | None = None,
+        cwd: str | os.PathLike[str] | None = None,
     ):
         if policy.snapshot_id is not None:
             raise ValueError(
@@ -386,9 +394,9 @@ class KhiveInjectionProvider:
         self.name = f"khive_injection:{policy.profile_id}"
         server = dict(mcp_config or _DEFAULT_MCP_CONFIG)
         if actor is not None:
-            # The direct stdio transport inherits the process directory, even
-            # when the model itself starts in a different workspace.
-            server = attribute_khive_servers({"khive": server}, actor)["khive"]
+            server = attribute_khive_servers({"khive": server}, actor, cwd=cwd)["khive"]
+        if cwd is not None:
+            server.setdefault("cwd", os.fspath(cwd))
         self._mcp_config = server
         # One provider may serve concurrent branch turns. ContextVar keeps the
         # status paired with the gather task that observed it, so a successful

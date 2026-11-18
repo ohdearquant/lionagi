@@ -1134,8 +1134,10 @@ async def _observe_running_child(
     """Repeat :func:`observe_spawned` with short sleeps while *child* runs, until its start
     time reads or :data:`_SPAWN_OBSERVATION_BUDGET` passes.
 
-    Repeating is safe: once this child is reaped a stranger may take its pid, but no stranger
-    carries the marker, so a later read can never bind the stranger as this child.
+    Repeating is safe: once this child is reaped a stranger may take its pid, but a stranger
+    never carries this child's marker. One that shows a different marker is refused, and one
+    whose marker cannot be read is bound only when it is also a child of this process, which
+    needs the pid to be reissued to another child of this process before the read.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _SPAWN_OBSERVATION_BUDGET
@@ -1591,11 +1593,15 @@ async def ndjson_from_cli(
             if (lease.slots or admission is not None) and observed.create_time is None:
                 if admission is not None:
                     raise _WorkerSpawnAdmissionError("worker start time could not be observed")
-                from lionagi._provider_errors import SubagentAdmissionRefusedError
+                # A child already collected holds nothing a start time would protect, so
+                # its own exit status and output reach the caller; any process it left
+                # has no group identity on record and is not counted against the cap.
+                if child.returncode is None:
+                    from lionagi._provider_errors import SubagentAdmissionRefusedError
 
-                raise SubagentAdmissionRefusedError(
-                    "subagent admission refused: the agent's start time could not be read"
-                )
+                    raise SubagentAdmissionRefusedError(
+                        "subagent admission refused: the agent's start time could not be read"
+                    )
             lease.record_child(observed.pid, observed.create_time)
             if admission is not None:
                 await admission.record(_worker_spawn_identity(observed))

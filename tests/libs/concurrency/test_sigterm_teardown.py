@@ -245,3 +245,75 @@ def test_run_async_sigterm_before_thread_start_still_cancels(monkeypatch, fresh_
     with pytest.raises(SigtermInterrupt):
         run_async(long_running())
     assert completed is False, "the latched signal must cancel rather than complete the coroutine"
+
+
+# SIGTERM arrives while the inner task waits on a run_sync worker. The default
+# call holds the cancellation until the worker returns, so run_async raises
+# after it; the abandon_on_cancel=True control raises while the worker still
+# runs. The process exits after the worker in both cases, because AnyIO's worker
+# threads are not daemon threads and interpreter shutdown joins them.
+_WORKER_SCRIPT = textwrap.dedent("""\
+    import os
+    import sys
+    import time
+    from lionagi.ln.concurrency import SigtermInterrupt, run_async, run_sync
+
+    READY, DONE, ABANDON, HOLD = sys.argv[1], sys.argv[2], sys.argv[3] == "1", float(sys.argv[4])
+
+    def worker():
+        with open(READY, "w") as f:
+            f.write("ready")
+        time.sleep(HOLD)
+        with open(DONE, "w") as f:
+            f.write("done")
+
+    async def main():
+        await run_sync(worker, abandon_on_cancel=ABANDON)
+
+    try:
+        run_async(main())
+    except SigtermInterrupt:
+        sys.stdout.write("done" if os.path.exists(DONE) else "running")
+        sys.stdout.flush()
+        sys.exit(143)
+    sys.exit(0)
+""")
+_WORKER_HOLD_S = 1.5
+
+
+@pytest.mark.parametrize("abandon", [False, True], ids=["default", "abandon-control"])
+def test_sigterm_exit_waits_for_an_in_flight_run_sync_worker(tmp_path, abandon):
+    ready = tmp_path / "ready"
+    done = tmp_path / "done"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _WORKER_SCRIPT,
+            str(ready),
+            str(done),
+            "1" if abandon else "0",
+            str(_WORKER_HOLD_S),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        while not ready.exists():
+            assert proc.poll() is None, "the subprocess exited before its worker started"
+            assert time.monotonic() < deadline, "the worker never started"
+            time.sleep(0.01)
+        signalled = time.monotonic()
+        os.kill(proc.pid, signal.SIGTERM)
+        out, _ = proc.communicate(timeout=15)
+        exit_s = time.monotonic() - signalled
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+    assert proc.returncode == 143
+    assert out == (b"running" if abandon else b"done"), f"exit {exit_s:.3f}s after SIGTERM"
+    assert exit_s >= _WORKER_HOLD_S / 2

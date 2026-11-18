@@ -254,6 +254,31 @@ class TestAlcallRetryTimeout:
         assert results == ["timeout"]
 
     @pytest.mark.anyio
+    async def test_alcall_timeout_does_not_interrupt_a_running_sync_worker(self):
+        import threading
+        import time
+
+        started = threading.Event()
+        finished = []
+
+        def running_sync_func(x: int) -> int:
+            started.set()
+            time.sleep(0.3)
+            finished.append(x)
+            return x
+
+        results = await alcall(
+            [7],
+            running_sync_func,
+            retry_timeout=0.05,
+            retry_default="timeout",
+            retry_attempts=0,
+        )
+        assert started.is_set()
+        assert finished == [7]
+        assert results == [7]
+
+    @pytest.mark.anyio
     @pytest.mark.parametrize("is_coro", [True, False])
     async def test_alcall_timeout_without_a_default_raises_timeout_error(
         self, monkeypatch, is_coro

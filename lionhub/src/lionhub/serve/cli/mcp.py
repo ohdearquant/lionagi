@@ -12,10 +12,14 @@ from __future__ import annotations
 import argparse
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi._feature_errors import _declared_missing_import_root
 from lionhub.orchestration.console import log_error
 from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 
 __all__ = ("add_mcp_subparser", "run_mcp")
+
+# Import roots for the distributions declared in the mcp extra.
+_MCP_IMPORT_ROOTS = ("fastmcp", "mcp", "starlette")
 
 
 def add_mcp_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -57,23 +61,17 @@ def run_mcp(args: argparse.Namespace) -> int:
         # (not mid-session) is what gets classified as "nothing was started".
         import lionhub.serve.mcp.server  # noqa: F401
         from lionhub.serve.mcp import serve
-    except ModuleNotFoundError as exc:
-        # The extra is not installed. The server never started and nothing ran,
-        # so this is the environment rather than a failed command, and returning
-        # the ordinary failure code would leave a caller unable to tell an
-        # uninstalled extra from a server that started and died.
-        missing = exc.name or "a required module"
-        log_error(
-            f"cannot serve: {missing} is not installed in this environment. "
-            "The MCP server needs the 'mcp' extra: install lionagi[mcp], then "
-            "re-run. Nothing was started."
-        )
-        return EXIT_CODE_ENVIRONMENT_ERROR
     except ImportError as exc:
-        # The module is present but something in it could not be imported. That
-        # is a defect in what is installed, not a missing piece of it, so it
-        # keeps the ordinary failure code.
-        log_error(str(exc))
+        missing = _declared_missing_import_root(exc, _MCP_IMPORT_ROOTS)
+        if missing is not None:
+            log_error(
+                f"cannot serve: {missing} is not installed in this environment. "
+                "The MCP server needs the 'mcp' extra: install lionagi[mcp], then "
+                "re-run. Nothing was started."
+            )
+            return EXIT_CODE_ENVIRONMENT_ERROR
+        detail = f"{exc.name}: {exc}" if exc.name else str(exc)
+        log_error(f"cannot serve: {detail}")
         return 1
     serve()
     return 0

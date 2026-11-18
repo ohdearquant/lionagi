@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, field_validator
 
@@ -25,7 +26,7 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi._cli_worker_context import _bind_cli_worker_recorder
 from lionagi._errors import ConfigurationError, FailedRoundError, InputTokenCapError
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi._provider_errors import ProviderSafetyError, _WorkerSpawnAdmissionError
+from lionagi._provider_errors import ProviderError, ProviderSafetyError, _WorkerSpawnAdmissionError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
     CancelScope,
@@ -55,6 +56,7 @@ from lionhub.orchestration.arguments import BoundedInt
 from lionhub.orchestration.console import hint, log_error
 from lionhub.orchestration.job import (
     EXIT_CODE_BY_STATUS,
+    EXIT_CODE_PARTIAL_OUTPUT,
     EXIT_CODE_SUBAGENT_REFUSED,
     classify_exception,
     validate_cwd_exists,
@@ -68,11 +70,15 @@ from lionhub.orchestration.mcp_config import (
     resolve_spawn_mcp_servers,
 )
 from lionhub.orchestration.runs import (
+    _MCP_AGENT_RUN_ID,
     _MCP_JOB_RUN_ID_ENV_VAR,
+    _SUBSCRIPTION_SWITCH_KEY,
     SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
     TERMINAL_WRITE_LOST_FIELD,
     RunDir,
     _signal_window_marker,
+    _subscription_fallback_resume_refusal,
+    _SubscriptionFallbackResumeError,
     _write_signal_persistence_degraded_at,
     _write_terminal_write_lost,
     allocate_run,
@@ -243,10 +249,6 @@ _API_TOOL_SETS: dict[str, tuple[str, ...]] = {
 _API_CONFINED_TOOL_SETS = ("write",)
 # The tool set and round bound an API branch was launched with, read again on resume.
 _API_LAUNCH_KEY = "api_launch"
-# Set on a branch the subscription fallback moved to the Claude Code route. The child environment
-# that route was handed is runtime state and is not saved with the branch, so a restored branch
-# would spawn Claude Code with this process's whole environment; such a branch is not resumed.
-_SUBSCRIPTION_SWITCH_KEY = "subscription_switch"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
 _API_DEFAULT_MAX_EXTENSIONS = 10
 # The tool loops an API leg can run (`api_loop`): ReAct, the default, batched LNDL rounds
@@ -280,6 +282,7 @@ _API_POLICY_KEYS = (
     "context_fold_target",
     "context_fold_tail_margin",
     "prompt_caching",
+    "max_output_tokens",
 )
 # How many times one turn (the task, or one queued message) folds and continues after the
 # input cap refused a request.
@@ -317,6 +320,31 @@ _API_REFUSED_RESUME_PROMPT = (
 # request could spend the whole limit on thinking and write nothing. At about 200 output tokens a
 # second this limit takes some 160 seconds, inside the endpoint's 600-second request timeout.
 _API_MAX_OUTPUT_TOKENS = 32_768
+# The same limit when the request carries effort xhigh or max: at those efforts a thinking model can
+# spend more than 32,768 tokens before it writes anything. At about 200 output tokens a second this
+# takes some 330 seconds, still inside the 600-second request timeout; the leg does not stream, so
+# a larger limit would turn a long response into a timeout.
+_API_HIGH_EFFORT_MAX_OUTPUT_TOKENS = 65_536
+_API_HIGH_EFFORTS = frozenset({"xhigh", "max"})
+# A limit above _API_MAX_OUTPUT_TOKENS raises the request timeout to at least one second per
+# this many tokens of the limit (ADR-0137 Amendment 1 D1b), so a full response at the measured
+# output rates finishes inside the timeout.
+_API_TOKENS_PER_TIMEOUT_SECOND = 50
+# Branch metadata recording, per model role, the output limit and the raised request timeout
+# _install_api_input_cap set. Both persist with the branch's models, so a resumed leg reads them
+# back as if its model had named them; the record lets each start re-derive them from the
+# effort the models carry then (ADR-0137 Amendment 1 D1d) instead of keeping an earlier run's.
+_API_INSTALLED_OUTPUT_KEY = "api_installed_output"
+
+
+def _api_default_output_limit(kwargs: dict) -> int:
+    """The output limit an Anthropic leg sends when neither its model nor its profile names one."""
+    output_config = kwargs.get("output_config")
+    effort = output_config.get("effort") if isinstance(output_config, dict) else None
+    if effort in _API_HIGH_EFFORTS:
+        return _API_HIGH_EFFORT_MAX_OUTPUT_TOKENS
+    return _API_MAX_OUTPUT_TOKENS
+
 
 _DETACHED_EXECUTION_BOUNDARY = """[DETACHED EXECUTION BOUNDARY]
 This process was launched as a detached MCP job. No interactive harness is attached, so this turn cannot receive a background completion notification. Keep every command in the foreground. If a command tool yields a live execution handle, poll that same handle until it reaches a terminal result. Do not arm a monitor or finish a turn waiting for an external notification. Verify the requested outputs before reporting completion."""
@@ -518,6 +546,8 @@ def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -
             continue
         if key == "tool_result_max_chars":
             valid = isinstance(value, int) and not isinstance(value, bool) and value >= 1024
+        elif key == "max_output_tokens":
+            valid = isinstance(value, int) and not isinstance(value, bool) and value >= 1
         elif key == "prompt_caching":
             valid = isinstance(value, bool)
         elif key == "context_fold_tail_margin":
@@ -713,10 +743,18 @@ def _install_api_input_cap(
     context_fold_target: float | None = None,
     context_fold_tail_margin: float | None = None,
     prompt_caching: bool | None = None,
+    max_output_tokens: int | None = None,
 ):
     """Put the leg's input cap on its models and fold its context under it.
 
-    An Anthropic model that names no output limit is given ``_API_MAX_OUTPUT_TOKENS``.
+    An Anthropic model is given *max_output_tokens* when the profile names it; otherwise a
+    model that names no output limit is given ``_API_MAX_OUTPUT_TOKENS``, or
+    ``_API_HIGH_EFFORT_MAX_OUTPUT_TOKENS`` when its requests carry effort xhigh or max. A limit
+    set here above ``_API_MAX_OUTPUT_TOKENS`` raises the model's request timeout to at least one
+    second per ``_API_TOKENS_PER_TIMEOUT_SECOND`` tokens of it. A limit and a raised timeout an
+    earlier start set, recorded in the branch's metadata, are re-derived here rather than kept, so
+    a resumed leg's limit follows the effort its models carry now. A profile limit on a model of
+    another provider is refused before anything changes.
     Returns the branch's ContextFold, or None when the leg runs without a cap.
     """
     from lionagi.ln import copy
@@ -735,10 +773,19 @@ def _install_api_input_cap(
             "context_fold_target": context_fold_target,
             "context_fold_tail_margin": context_fold_tail_margin,
             "prompt_caching": prompt_caching,
+            "max_output_tokens": max_output_tokens,
         },
         label="API launch policy",
         stored=True,
     )
+    if max_output_tokens is not None:
+        for api_model in _api_models(branch):
+            provider = getattr(api_model.endpoint.config, "provider", None)
+            if provider != "anthropic":
+                raise ConfigurationError(
+                    f"max_output_tokens sets an Anthropic model's output limit; this leg's "
+                    f"model {api_model.model_name!r} runs on {provider!r}."
+                )
     fold_at = _FOLD_AT if context_fold_at is None else context_fold_at
     target = _FOLD_TARGET if context_fold_target is None else context_fold_target
     tail_margin = _TAIL_MARGIN if context_fold_tail_margin is None else context_fold_tail_margin
@@ -752,17 +799,49 @@ def _install_api_input_cap(
         if cap is not None
         else None
     )
+    earlier = branch.metadata.get(_API_INSTALLED_OUTPUT_KEY)
+    earlier = earlier if isinstance(earlier, dict) else {}
+    installed = {}
     models = {}
-    for api_model in _api_models(branch):
+    for role, api_model in zip(("chat", "parse"), _api_models(branch), strict=False):
         config = api_model.endpoint.config
-        output_limit = (
-            _API_MAX_OUTPUT_TOKENS
-            if getattr(config, "provider", None) == "anthropic"
-            and (config.kwargs or {}).get("max_tokens") is None
-            else None
+        kwargs = config.kwargs or {}
+        prior = earlier.get(role)
+        prior = prior if isinstance(prior, dict) else {}
+        # A limit an earlier start set, still in place, is that start's and not the model's.
+        inherited_limit = (
+            prior.get("max_tokens") is not None and kwargs.get("max_tokens") == prior["max_tokens"]
         )
+        base_timeout = config.timeout
+        prior_timeout = prior.get("timeout")
+        if (
+            isinstance(prior_timeout, list)
+            and len(prior_timeout) == 2
+            and config.timeout == prior_timeout[0]
+        ):
+            base_timeout = prior_timeout[1]
+        output_limit = None
+        if getattr(config, "provider", None) == "anthropic":
+            if max_output_tokens is not None:
+                output_limit = max_output_tokens
+            elif inherited_limit or kwargs.get("max_tokens") is None:
+                output_limit = _api_default_output_limit(kwargs)
+        timeout_floor = None
+        if output_limit is not None and output_limit > _API_MAX_OUTPUT_TOKENS:
+            timeout_floor = -(-output_limit // _API_TOKENS_PER_TIMEOUT_SECOND)
+            if base_timeout >= timeout_floor:
+                timeout_floor = None
+        new_timeout = base_timeout if timeout_floor is None else timeout_floor
+        drop_limit = inherited_limit and output_limit is None
+        if output_limit is not None:
+            installed[role] = {
+                "max_tokens": output_limit,
+                "timeout": [timeout_floor, base_timeout] if timeout_floor is not None else None,
+            }
         changes = (
             output_limit is not None
+            or drop_limit
+            or new_timeout != config.timeout
             or getattr(api_model, "tool_result_max_chars", None) != tool_result_max_chars
             or (prompt_caching is not None and config.prompt_caching != prompt_caching)
             or (
@@ -788,7 +867,18 @@ def _install_api_input_cap(
                     **(selected.endpoint.config.kwargs or {}),
                     "max_tokens": output_limit,
                 }
+            elif drop_limit:
+                selected.endpoint.config.kwargs = {
+                    k: v
+                    for k, v in (selected.endpoint.config.kwargs or {}).items()
+                    if k != "max_tokens"
+                }
+            selected.endpoint.config.timeout = new_timeout
         models[id(api_model)] = selected
+    if installed:
+        branch.metadata[_API_INSTALLED_OUTPUT_KEY] = installed
+    else:
+        branch.metadata.pop(_API_INSTALLED_OUTPUT_KEY, None)
     chat, parse = branch.chat_model, getattr(branch, "parse_model", None)
     branch.chat_model = models[id(chat)]
     if parse is not None:
@@ -1341,18 +1431,15 @@ def _report_mcp_resolution(
 
     The whole point of resolving here is that a leg starting without the
     servers its instructions assume should be visible when it is launched
-    rather than inferred from its output an hour later. Silence is reserved
-    for the two cases where it is accurate: a caller who asked for no servers
-    at all, and a set that was resolved and handed over (which is reported as
-    a hint, not a warning).
+    rather than inferred from its output an hour later. A request for no
+    servers is silent, and a forwarded set is reported as a hint. The global
+    ``mcp.quiet_discovery`` preference can quiet the warning when the search
+    from the launch directory found no configuration file.
 
     ``forwarded`` is the caller's answer to "does this spawn hand the resolved
     set to the leg?", read off the request that spawn built. This function must
     not re-derive it from the provider name: a second list here is what let the
-    message contradict the spawn. It decides what is said about a set that was
-    resolved; it does not decide whether a resolution that produced no set at
-    all is worth a word, since a search that found nothing has nothing to
-    forward and would otherwise be reported by no caller at all.
+    message contradict the spawn.
     """
     from lionhub.orchestration.console import warn
 
@@ -1370,6 +1457,17 @@ def _report_mcp_resolution(
             "its own provider resolves for itself."
         )
         return
+
+    if resolution.reason == "no_mcp_config_found":
+        from lionagi._settings import load_global_settings_layer
+
+        try:
+            settings = load_global_settings_layer()
+        except Exception:  # noqa: BLE001 -- a failed preference read preserves the warning
+            settings = None
+        mcp_settings = settings.get("mcp") if isinstance(settings, dict) else None
+        if isinstance(mcp_settings, dict) and mcp_settings.get("quiet_discovery") is True:
+            return
 
     target = cwd or os.getcwd()
     warn(
@@ -1949,22 +2047,43 @@ async def _run_agent(
             _, branch_path = find_branch(branch_id)
             branch = Branch.from_dict(json.loads(branch_path.read_text()))
         elif resume:
-            _, branch_path = find_branch(resume)
-            resolved_branch_id = branch_path.stem
-            if resolved_branch_id != resume:
-                hint(f"[resume] prefix-matched {resume} → {resolved_branch_id}")
-            branch = Branch.from_dict(json.loads(branch_path.read_text()))
+            branch_path = None
+            if _MCP_AGENT_RUN_ID.fullmatch(resume):
+                from lionhub.serve.mcp.jobs import _load_saved_agent_branch
+
+                try:
+                    expected_branch_id, branch_data = _load_saved_agent_branch(resume)
+                except _SubscriptionFallbackResumeError as exc:
+                    raise ConfigurationError(str(exc)) from None
+                except (OSError, RuntimeError, ValueError):
+                    raise ConfigurationError(
+                        "That run does not have a readable saved agent branch in this home."
+                    ) from None
+            else:
+                try:
+                    canonical = str(UUID(resume))
+                except ValueError:
+                    canonical = None
+                expected_branch_id = canonical if canonical == resume.lower() else None
+                _, branch_path = find_branch(expected_branch_id or resume)
+                branch_data = json.loads(branch_path.read_text())
+            branch = Branch.from_dict(branch_data)
+            if expected_branch_id is not None and str(branch.id) != expected_branch_id:
+                await branch.mdls.shutdown()
+                raise ConfigurationError(
+                    "The saved branch ID does not match the requested branch ID."
+                )
+            if branch_path is not None and branch_path.stem != (expected_branch_id or resume):
+                hint(f"[resume] prefix-matched {resume} → {branch_path.stem}")
 
         # Capture before the new-branch block below reassigns `branch`: the only
         # reliable "reopened existing" vs "minting new" signal once that block runs.
         is_resumed_branch = branch is not None
 
-        if is_resumed_branch and branch.metadata.get(_SUBSCRIPTION_SWITCH_KEY):
-            raise ConfigurationError(
-                "this branch moved from the Anthropic API route to the subscription route, and "
-                "the reduced environment its Claude Code process ran with is not saved with the "
-                "branch; it cannot be resumed. Start a new branch."
-            )
+        if branch is not None and (
+            reason := _subscription_fallback_resume_refusal(branch.metadata)
+        ):
+            raise ConfigurationError(reason)
 
         if is_resumed_branch and mcp_config is not None:
             launched = branch.metadata.get(_MCP_LAUNCH_KEY)
@@ -2361,7 +2480,11 @@ async def _run_agent(
                 if profile is not None:
                     from lionhub.agent.factory import register_profile_injection
 
-                    register_profile_injection(branch, agent_name, profile)
+                    # The CLI child starts in --cwd, which is passed per call rather
+                    # than set on the model, so the injection server is told directly.
+                    register_profile_injection(
+                        branch, agent_name, profile, cwd=cwd if chat_model.is_cli else None
+                    )
 
             # Fail fast, before allocate_run/setup_agent_persist: a bad provider
             # prefix (e.g. 'gpt-5.3-codex-spark' vs 'codex/gpt-5.3-codex-spark')
@@ -3453,6 +3576,11 @@ async def _run_agent(
                     run_manifest["error"] = (
                         _error or "The run failed; no reason was recorded for it."
                     )
+                    if isinstance(_terminal_exc, ProviderError) and _terminal_exc.partial_text:
+                        # The turn delivered text before the provider error ended it. The text
+                        # is in the saved branch and the command writes it out; the status
+                        # stays failed.
+                        run_manifest["partial"] = True
                     if isinstance(_terminal_exc, FailedRoundError):
                         _stop_reason = _terminal_exc.details.get("stop_reason")
                         if _stop_reason:
@@ -3976,6 +4104,13 @@ def run_agent(args: argparse.Namespace) -> int:
         if _admission_refusal(exc) is not None:
             # The run already printed the one refusal line and recorded the cause on its row.
             return EXIT_CODE_SUBAGENT_REFUSED
+        if isinstance(exc, ProviderError) and exc.partial_text:
+            # The run recorded it as failed with partial=true. Write out what the turn
+            # delivered (a verbose run already streamed it), then one line naming the error.
+            if not args.verbose:
+                print(f"\n{exc.partial_text}", flush=True)
+            log_error(f"output is partial: the turn ended on {type(exc).__name__}: {exc}")
+            return EXIT_CODE_PARTIAL_OUTPUT
         log_error(f"{type(exc).__name__}: {exc}")
         raise
 

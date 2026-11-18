@@ -648,16 +648,19 @@ class iModel:  # noqa: N801
         cache_control = kwargs.pop("cache_control", False)
 
         try:
-            api_call = APICalling(
-                execution=_ValidationSafeExecution(),
-                payload=payload,
-                headers=headers,
-                endpoint=self.endpoint,
-                call_kwargs=call_kwargs,
-                cache_control=cache_control,
-                include_token_usage_to_model=include_token_usage_to_model,
-                max_input_tokens=self.max_input_tokens,
-                input_token_scale=self.input_token_scale,
+            api_call = APICalling.model_validate(
+                {
+                    "execution": _ValidationSafeExecution(),
+                    "payload": payload,
+                    "headers": headers,
+                    "endpoint": self.endpoint,
+                    "call_kwargs": call_kwargs,
+                    "cache_control": cache_control,
+                    "include_token_usage_to_model": include_token_usage_to_model,
+                    "max_input_tokens": self.max_input_tokens,
+                    "input_token_scale": self.input_token_scale,
+                },
+                context={"provider_catalog": self.provider_catalog},
             )
         except InputTokenCapError as exc:
             if self.input_cap_refusal is None:
@@ -821,9 +824,9 @@ class iModel:  # noqa: N801
         ``APICalling.metadata`` is the call-correlated evidence. The model-level
         value holds what the last invoke or stream on this model to write it
         wrote, so under concurrency it is never evidence about a particular call.
-        When the call carries a telemetry frame, the same value is written to that
-        request's row in the run's API usage section. Recording none clears the call
-        and model values and writes ``null`` to the row. A call that failed records none. A
+        The run's API usage row records the provider's report after identifier filtering.
+        A missing or filtered report is ``null`` in the row. A missing report also clears
+        the call and model values. A call that failed records none. A
         stream its consumer closed early, and a stream cancelled after the provider
         named its model (a timeout that cancels it included), have not failed: each
         keeps the model read from what it delivered. A timeout raised inside the
@@ -846,8 +849,9 @@ class iModel:  # noqa: N801
             api_call.metadata.pop("served_model", None)
             if served_model is not None:
                 api_call.metadata["served_model"] = served_model
-            # A call built outside the request path has no telemetry frame.
-            record_served_model(getattr(api_call, "_telemetry_frame", None), served_model)
+            if isinstance(api_call, APICalling):
+                # The telemetry frame is None outside the request path.
+                record_served_model(api_call._telemetry_frame, served_model)
         if served_model is None:
             self.provider_metadata.pop("served_model", None)
         else:

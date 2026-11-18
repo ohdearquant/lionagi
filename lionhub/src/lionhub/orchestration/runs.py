@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -58,13 +59,30 @@ _LEGACY_AGENTS_ROOT = LIONAGI_HOME / "logs" / "agents"
 _LAST_BRANCH_POINTER = LIONAGI_HOME / "last_branch.json"
 _RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 _MCP_JOB_RUN_ID_ENV_VAR = "LIONAGI_MCP_JOB_RUN_ID"
+_MCP_AGENT_RUN_ID = re.compile(r"[0-9]{8}T[0-9]{6}-[0-9a-f]{6}")
 _MCP_FINAL_RESPONSE_FILENAME = "job-final-response.md"
+_SUBSCRIPTION_SWITCH_KEY = "subscription_switch"
 PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 # The terminal status a run decided and its store did not take, with the reason code and the time
 TERMINAL_WRITE_LOST_FIELD = "terminal_write_lost"
 # When the run's signal persistence first stopped waiting on a store that refused the writer lock
 SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD = "signal_persistence_degraded_at"
 _SETUP_RECOVERY_TIMEOUT_SECONDS = 2.0
+
+
+class _SubscriptionFallbackResumeError(ValueError):
+    """The saved branch moved to a subscription route that cannot be replayed."""
+
+
+def _subscription_fallback_resume_refusal(metadata: dict[str, Any]) -> str | None:
+    # The subscription process's reduced environment is runtime state outside the snapshot.
+    if metadata.get(_SUBSCRIPTION_SWITCH_KEY):
+        return (
+            "this branch moved from the Anthropic API route to the subscription route, and "
+            "the reduced environment its Claude Code process ran with is not saved with the "
+            "branch; it cannot be resumed. Start a new branch."
+        )
+    return None
 
 
 def _new_run_id() -> str:
