@@ -968,7 +968,8 @@ already delivered text. The run's status is `failed`, as for any provider error,
 adds `partial: true` beside it; there is no separate terminal status. Like 78 the code sits
 outside `EXIT_CODE_BY_STATUS`, here because it qualifies the `failed` status rather than naming one.
 `li agent` writes the text (carried on `ProviderError.partial_text`, which `run_and_collect` sets)
-and then one line naming the error, so a caller can use what the turn produced and can tell it
+and then, after the error line every failed run writes, a line naming the output as partial, so
+a caller can use what the turn produced and can tell it
 from a complete answer by the exit status alone. It exits 76 (`EX_PROTOCOL`): the remote side
 ended the exchange on an error. A provider error before any text keeps exit 1. A scheduled run
 records the process's exit status on its occurrence, so `exit_code_for_view` returns 76 for an
