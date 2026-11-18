@@ -26,7 +26,6 @@ from lionhub.serve.mcp import _run_detail, dispatch
 _MCP_PACKAGE = Path(dispatch.__file__).resolve().parent
 
 
-# Modules outside the server package whose functions the verbs run in the server process.
 class _Exited(Exception):
     def __init__(self, code: int) -> None:
         self.code = code
@@ -100,8 +99,10 @@ def _submodules(package: str, names: list[ast.alias]) -> set[str]:
 
 
 def test_every_module_the_verbs_import_inside_a_function_is_loaded_by_preload():
-    """Followed transitively: a module the session service imports lazily can itself import
-    another one lazily, and the server must hold both before it answers."""
+    """Followed through function-level imports: a module the session service imports lazily
+    can itself import another one lazily, and the server must hold both before it answers.
+    A module reached only through a top-level import is not scanned for its own lazy imports;
+    a failure there after start ends the server through the request path instead."""
     closure = _lazy_import_closure()
     assert "lionhub.serve.cli.machine" in closure, "the scan must see the known lazy imports"
     assert "lionhub.serve.daemon.services.runs" in closure, "and relative ones"
@@ -323,6 +324,52 @@ def test_preload_ends_the_server_when_its_own_source_no_longer_parses(exits, mon
 
     with pytest.raises(_Exited) as exited:
         dispatch.preload()
+    assert exited.value.code == EXIT_CODE_ENVIRONMENT_ERROR
+
+
+async def test_a_request_that_meets_own_source_that_no_longer_parses_ends_the_server(
+    exits, monkeypatch, capsys
+):
+    """An own module first imported after start, by a verb, that no longer parses."""
+    own_file = str(Path(dispatch.__file__).with_name("verbs.py"))
+
+    async def broken(ops, help):  # noqa: A002
+        raise SyntaxError("invalid syntax", (own_file, 1, 1, "x", 1, 2))
+
+    monkeypatch.setattr(dispatch, "_request", broken)
+
+    with pytest.raises(_Exited) as exited:
+        await dispatch.request(ops=[{"op": "server.info", "args": {}}])
+    assert exited.value.code == EXIT_CODE_ENVIRONMENT_ERROR
+    assert "verbs.py" in capsys.readouterr().err
+
+
+async def test_a_request_that_meets_a_syntax_error_in_another_package_raises_it(
+    exits, monkeypatch, tmp_path
+):
+    foreign_file = str(tmp_path / "elsewhere.py")
+
+    async def broken(ops, help):  # noqa: A002
+        raise SyntaxError("invalid syntax", (foreign_file, 1, 1, "x", 1, 2))
+
+    monkeypatch.setattr(dispatch, "_request", broken)
+
+    with pytest.raises(SyntaxError):
+        await dispatch.request(ops=[{"op": "server.info", "args": {}}])
+
+
+async def test_a_catalog_schema_whose_own_source_no_longer_parses_ends_the_server(
+    exits, monkeypatch
+):
+    own_file = str(Path(dispatch.__file__).with_name("verbs.py"))
+
+    def broken(verb, **_kwargs):
+        raise SyntaxError("invalid syntax", (own_file, 1, 1, "x", 1, 2))
+
+    monkeypatch.setattr(dispatch, "verb_schema", broken)
+
+    with pytest.raises(_Exited) as exited:
+        await dispatch.request(help=True)
     assert exited.value.code == EXIT_CODE_ENVIRONMENT_ERROR
 
 

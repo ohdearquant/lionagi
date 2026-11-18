@@ -92,8 +92,10 @@ def main() -> None:
     # modules for its whole life, so a checkout that moves later is divergence
     # to report, not a new answer — only this snapshot can tell the two apart.
     snapshot_git_position()
-    # Every module the verbs use is loaded now, so a later change to the installed source
-    # cannot leave this process with part of its verbs importable.
+    # The modules the verbs import, and the ones those import inside their functions, are
+    # loaded now. An own module first imported later that no longer imports or parses ends
+    # the process (dispatch._stop_if_own_module_missing) instead of leaving part of the verbs
+    # refused.
     dispatch.preload()
     mcp.run()
 

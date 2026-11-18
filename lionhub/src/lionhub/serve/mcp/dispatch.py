@@ -188,11 +188,16 @@ def _own_module(exc: BaseException) -> str | None:
 def _stop_if_own_module_missing(exc: BaseException) -> None:
     """End the process when *exc* is a failure to import this server's own code.
 
-    Such a failure means the installed source no longer matches the modules this process
-    loaded, so the server would answer with some verbs working and the rest refused. It
-    exits instead, with ``EXIT_CODE_ENVIRONMENT_ERROR`` and a message naming the module, so
-    the client starts a fresh server. A failure to import another package returns.
+    That is an ``ImportError`` naming one of its own modules, or a ``SyntaxError`` in one of
+    its own source files. Either means the installed source no longer matches the modules
+    this process loaded, so the server would answer with some verbs working and the rest
+    refused. It exits instead, with ``EXIT_CODE_ENVIRONMENT_ERROR`` and a message naming the
+    module or file, so the client starts a fresh server. Any other failure returns.
     """
+    if isinstance(exc, SyntaxError):
+        if _own_source(exc.filename):
+            _exit_for_own_module(str(exc.filename), exc)
+        return
     module = _own_module(exc)
     if module is None:
         return
@@ -236,15 +241,8 @@ def preload() -> None:
             import_module(name)
         except ImportError as exc:
             _stop_if_own_module_missing(exc)
-        except SyntaxError as exc:
-            if _own_source(exc.filename):
-                _exit_for_own_module(name, exc)
-            _logger.warning(
-                "lion MCP server: module %s did not load (%s); the verbs that use it report why",
-                name,
-                type(exc).__name__,
-            )
         except Exception as exc:
+            _stop_if_own_module_missing(exc)
             # The type only: an exception's text can echo a rejected setting's value.
             _logger.warning(
                 "lion MCP server: module %s did not load (%s); the verbs that use it report why",
@@ -1485,12 +1483,12 @@ async def _run_one(entry: Any) -> dict[str, Any]:
 async def request(ops: list[dict[str, Any]] | None = None, help: Any = None) -> dict[str, Any]:  # noqa: A002 — `help` is the parameter name the surface advertises
     """Run a batch of ops, or answer a help request. Never raises for one bad op.
 
-    A failure to import this server's own code ends the process instead of answering
-    (``_stop_if_own_module_missing``).
+    A failure to import this server's own code, or own source that no longer parses, ends
+    the process instead of answering (``_stop_if_own_module_missing``).
     """
     try:
         return await _request(ops, help)
-    except ImportError as exc:
+    except (ImportError, SyntaxError) as exc:
         _stop_if_own_module_missing(exc)
         raise
 
