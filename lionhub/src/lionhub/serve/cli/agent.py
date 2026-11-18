@@ -26,7 +26,7 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi._cli_worker_context import _bind_cli_worker_recorder
 from lionagi._errors import ConfigurationError, FailedRoundError, InputTokenCapError
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi._provider_errors import ProviderSafetyError, _WorkerSpawnAdmissionError
+from lionagi._provider_errors import ProviderError, ProviderSafetyError, _WorkerSpawnAdmissionError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
     CancelScope,
@@ -56,6 +56,7 @@ from lionhub.orchestration.arguments import BoundedInt
 from lionhub.orchestration.console import hint, log_error
 from lionhub.orchestration.job import (
     EXIT_CODE_BY_STATUS,
+    EXIT_CODE_PARTIAL_OUTPUT,
     EXIT_CODE_SUBAGENT_REFUSED,
     classify_exception,
     validate_cwd_exists,
@@ -3487,6 +3488,11 @@ async def _run_agent(
                     run_manifest["error"] = (
                         _error or "The run failed; no reason was recorded for it."
                     )
+                    if isinstance(_terminal_exc, ProviderError) and _terminal_exc.partial_text:
+                        # The turn delivered text before the provider error ended it. The text
+                        # is in the saved branch and the command writes it out; the status
+                        # stays failed.
+                        run_manifest["partial"] = True
                     if isinstance(_terminal_exc, FailedRoundError):
                         _stop_reason = _terminal_exc.details.get("stop_reason")
                         if _stop_reason:
@@ -4010,6 +4016,13 @@ def run_agent(args: argparse.Namespace) -> int:
         if _admission_refusal(exc) is not None:
             # The run already printed the one refusal line and recorded the cause on its row.
             return EXIT_CODE_SUBAGENT_REFUSED
+        if isinstance(exc, ProviderError) and exc.partial_text:
+            # The run recorded it as failed with partial=true. Write out what the turn
+            # delivered (a verbose run already streamed it), then one line naming the error.
+            if not args.verbose:
+                print(f"\n{exc.partial_text}", flush=True)
+            log_error(f"output is partial: the turn ended on {type(exc).__name__}: {exc}")
+            return EXIT_CODE_PARTIAL_OUTPUT
         log_error(f"{type(exc).__name__}: {exc}")
         raise
 

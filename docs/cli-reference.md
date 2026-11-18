@@ -168,6 +168,13 @@ li agent status SESSION_OR_INVOCATION   # full ID or unique prefix
 li agent status SESSION_OR_INVOCATION --json
 ```
 
+When a CLI provider ends a turn on an error after the turn has already delivered text, `li agent`
+writes that text to standard output, then one line on standard error, `output is partial: the turn
+ended on <ErrorClass>: <message>`, and exits `76` (`EX_PROTOCOL`). The run's status stays
+`failed`; its `run.json` adds `partial: true`, and the text stays in the saved branch, so
+`li agent -r` resumes after it. A `--verbose` run has already streamed the text and writes only
+the line. An error before any text keeps the ordinary failed exit, `1`.
+
 ### Agent caps and workload
 
 Every CLI worker (`codex`, `claude_code`, `gemini-cli`, `pi`) takes a slot before its process

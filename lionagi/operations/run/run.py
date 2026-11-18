@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING, Any
 import anyio
 from pydantic import JsonValue
 
-from lionagi._provider_errors import WorkerLivenessError, classify_provider_error
+from lionagi._provider_errors import (
+    ProviderError,
+    WorkerLivenessError,
+    classify_provider_error,
+)
 from lionagi.ln import acreate_path, json_dumps
 from lionagi.ln._json_dump import _to_json_value
 from lionagi.ln.concurrency import current_time, fail_after, run_sync
@@ -1014,13 +1018,21 @@ async def run_and_collect(
 
     all_texts: list[str] = []
     ins_msg = None
-    async for msg in run(branch, instruction, run_param):
-        if isinstance(msg, Instruction) and ins_msg is None:
-            ins_msg = msg
-        if isinstance(msg, AssistantResponse):
-            text = msg.response or ""
-            if text:
-                all_texts.append(text)
+    try:
+        async for msg in run(branch, instruction, run_param):
+            if isinstance(msg, Instruction) and ins_msg is None:
+                ins_msg = msg
+            if isinstance(msg, AssistantResponse):
+                text = msg.response or ""
+                if text:
+                    all_texts.append(text)
+    except ProviderError as exc:
+        # The text is already in the branch (run() flushes it before raising); the
+        # error carries it too, so a caller holding only the exception can still
+        # deliver what the turn produced.
+        if all_texts and exc.partial_text is None:
+            exc.partial_text = "\n\n".join(all_texts)
+        raise
 
     if not all_texts:
         return None

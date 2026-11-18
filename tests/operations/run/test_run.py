@@ -616,6 +616,65 @@ async def test_run_and_collect_clears_messages_and_joins_assistant_text(monkeypa
     assert result == "one\n\ntwo"
 
 
+def _text_response(branch: Branch, text: str) -> AssistantResponse:
+    return AssistantResponse(
+        content=AssistantResponseContent(assistant_response=text),
+        sender=branch.id,
+        recipient="user",
+    )
+
+
+async def test_a_provider_error_after_text_carries_the_text_collected_so_far(monkeypatch):
+    """The error that ends a turn after it delivered text carries that text, joined as
+    a completed turn joins it."""
+    from lionagi._provider_errors import ProviderAdapterError
+
+    branch = Branch()
+
+    async def fake_run(b, ins, param):
+        yield _text_response(branch, "first part")
+        yield _text_response(branch, "second part")
+        raise ProviderAdapterError("status=ERROR: The stream was interrupted.")
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+
+    with pytest.raises(ProviderAdapterError) as raised:
+        await run_and_collect(branch, "test", ChatParam(), skip_validation=True)
+    assert raised.value.partial_text == "first part\n\nsecond part"
+
+
+async def test_a_provider_error_before_any_text_carries_no_partial_text(monkeypatch):
+    from lionagi._provider_errors import ProviderAdapterError
+
+    branch = Branch()
+
+    async def fake_run(b, ins, param):
+        yield _text_response(branch, "")
+        raise ProviderAdapterError("status=ERROR: cut off")
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+
+    with pytest.raises(ProviderAdapterError) as raised:
+        await run_and_collect(branch, "test", ChatParam(), skip_validation=True)
+    assert raised.value.partial_text is None
+
+
+async def test_an_error_that_is_not_a_provider_error_is_raised_unchanged(monkeypatch):
+    branch = Branch()
+    boom = ValueError("not a provider failure")
+
+    async def fake_run(b, ins, param):
+        yield _text_response(branch, "some text")
+        raise boom
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+
+    with pytest.raises(ValueError) as raised:
+        await run_and_collect(branch, "test", ChatParam(), skip_validation=True)
+    assert raised.value is boom
+    assert not hasattr(raised.value, "partial_text")
+
+
 async def test_run_and_collect_parses_when_response_format_is_set(monkeypatch):
     """When response_format is set, run_and_collect passes full text to parse."""
     from lionagi.operations.types import ParseParam

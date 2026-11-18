@@ -963,6 +963,15 @@ threading a token through `run_async` into every command's async body — a chan
 concurrency primitive, for an entry point that is not supported, to turn an ambiguous report into a
 precise one. Revisit if concurrent in-process invocation ever becomes supported.
 
+**`EXIT_CODE_PARTIAL_OUTPUT` (76)** — a CLI provider ended the turn on an error after the turn had
+already delivered text. The run's status is `failed`, as for any provider error, and `run.json`
+adds `partial: true` beside it; there is no separate terminal status. Like 78 the code sits
+outside `EXIT_CODE_BY_STATUS`, here because it qualifies the `failed` status rather than naming one.
+`li agent` writes the text (carried on `ProviderError.partial_text`, which `run_and_collect` sets)
+and then one line naming the error, so a caller can use what the turn produced and can tell it
+from a complete answer by the exit status alone. It exits 76 (`EX_PROTOCOL`): the remote side
+ended the exchange on an error. A provider error before any text keeps exit 1.
+
 ## `dispatch.py` — dispatch outbox (ADR-0059)
 
 Module docstring: `li dispatch` inspects and acknowledges durable `dispatch_outbox` rows.
